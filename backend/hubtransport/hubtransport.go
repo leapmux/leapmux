@@ -27,7 +27,7 @@
 //
 // Every other lane REFUSES a WebSocket upgrade with ErrWebSocketLane. An
 // h2c transport that receives one produces `http2: invalid Upgrade request
-// header` from three layers down, which names neither the cause nor the
+// header` from three layers down, which identifies neither the cause nor the
 // remedy, so the refusal happens here instead.
 //
 // # TLS
@@ -51,7 +51,7 @@ import (
 	"github.com/leapmux/leapmux/locallisten"
 )
 
-// DefaultUnaryTimeout bounds one whole request/response exchange on the unary
+// DefaultUnaryTimeout limits one whole request/response exchange on the unary
 // lane: the dial, the write, the response and the body read.
 //
 // A unary lane needs a timeout because a hub that accepts a connection and
@@ -90,18 +90,24 @@ type Endpoint struct {
 	// certificate.
 	rootCAs *x509.CertPool
 
-	// The three lane round trippers. Each one is either a leg or a leg behind
-	// a guard, decided once in New.
+	// The three lane round trippers. Each one is a transport, or a transport
+	// behind a guard, decided once in New.
 	unary     http.RoundTripper
 	http2Only http.RoundTripper
 	webSocket http.RoundTripper
 
-	// legs holds every transport built for this endpoint, so
+	// transports holds every transport built for this endpoint, so
 	// CloseIdleConnections reaches all of them.
-	legs []*http.Transport
+	transports []*http.Transport
 
-	// prober is nil when the protocol needs no proof: a TLS endpoint settles
-	// it with ALPN, and a proxied cleartext endpoint cannot use h2c at all.
+	// prober is nil when the protocol needs no proof, which today means a TLS
+	// endpoint: ALPN settles it inside the handshake, per connection.
+	//
+	// A CLEARTEXT endpoint always has one, even where a proxy is configured for
+	// it. Whether a proxy stands in the way is a property of one REQUEST rather
+	// than of the endpoint -- NO_PROXY answers per host, and a redirect carries
+	// a request to a host the endpoint's own answer does not describe -- so the
+	// lanes test it per request and reach the prober only for a direct one.
 	prober *prober
 }
 
@@ -158,7 +164,7 @@ func newEndpoint(endpointURL string, rootCAs *x509.CertPool) (*Endpoint, error) 
 	}
 }
 
-// buildLocal wires both legs to the socket dialer. A local endpoint is never
+// buildLocal wires both transports to the socket dialer. A local endpoint is never
 // proxied and never uses TLS: the socket's file permissions are its access
 // control.
 func (e *Endpoint) buildLocal(endpointURL string) error {
@@ -171,10 +177,10 @@ func (e *Endpoint) buildLocal(endpointURL string) error {
 	// dial is wired into the transport, which makes the host portion cosmetic.
 	e.baseURL = locallisten.LocalConnectURL
 
-	h2c := e.newLeg(protocolsH2C)
+	h2c := e.newTransport(protocolsH2C)
 	h2c.DialContext = locallisten.HTTPDialContext(dial)
 	h2c.Proxy = nil
-	h1 := e.newLeg(protocolsHTTP1)
+	h1 := e.newTransport(protocolsHTTP1)
 	h1.DialContext = locallisten.HTTPDialContext(dial)
 	h1.Proxy = nil
 
@@ -188,64 +194,89 @@ func (e *Endpoint) buildLocal(endpointURL string) error {
 // what ran before it.
 var proxyForRequest = http.ProxyFromEnvironment
 
-// buildPlaintext wires the legs for an `http://` endpoint.
+// buildPlaintext wires the transports for an `http://` endpoint.
 func (e *Endpoint) buildPlaintext(u *url.URL) {
-	h1 := e.newLeg(protocolsHTTP1)
-
-	if proxyURL, err := proxyForRequest(&http.Request{URL: u}); err == nil && proxyURL != nil {
-		// An HTTP proxy stands between us and the endpoint. Prior-knowledge h2c
-		// cannot pass through one -- a plain proxy reads an HTTP/1.1 request
-		// line -- so the endpoint's own h2c support can be neither used nor
-		// measured, and there is no h2c leg to build. Everything takes HTTP/1.1
-		// through the proxy, which is what these clients did before this package
-		// existed, and the lane that needs HTTP/2 refuses with a message that
-		// names the proxy.
-		e.unary = guardWebSocket{next: h1}
-		e.http2Only = guardWebSocket{next: erringRoundTripper{err: fmt.Errorf(
-			"%w: an HTTP proxy (%s) is configured for %s, and prior-knowledge h2c cannot pass through one",
-			ErrH2CUnsupported, proxyURL.Redacted(), e.url)}}
-		e.webSocket = h1
-		return
-	}
-
-	h2c := e.newLeg(protocolsH2C)
-	// The h2c leg dials directly. A proxied endpoint never reaches it, per the
-	// branch above, so leaving the inherited proxy here would only offer a
-	// route that cannot work.
+	h1 := e.newTransport(protocolsHTTP1)
+	h2c := e.newTransport(protocolsH2C)
+	// The h2c transport dials the endpoint directly. Prior-knowledge h2c cannot
+	// pass through a plain HTTP proxy -- a proxy reads an HTTP/1.1 request line
+	// -- so the lanes in lanes.go send a proxied request to HTTP/1.1 before
+	// they ever reach this transport. Leaving the inherited proxy here would
+	// only offer a route that cannot work.
 	h2c.Proxy = nil
 
-	address := u.Host
-	if u.Port() == "" {
-		address = net.JoinHostPort(u.Host, "80")
-	}
+	address := dialAddress(u)
 	var dialer net.Dialer
 	e.wireCleartext(h2c, h1, func(ctx context.Context) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp", address)
 	})
 }
 
+// dialAddress returns the `host:port` the probe dials for a cleartext endpoint.
+//
+// It reads u.Hostname(), not u.Host, because u.Host KEEPS the brackets around
+// an IPv6 literal and net.JoinHostPort adds its own. `http://[::1]` would
+// otherwise dial `[[::1]]:80`, which no resolver accepts, so the probe failed
+// for every bracketed IPv6 endpoint with no explicit port, the verdict stayed
+// undecided, and an endpoint that speaks HTTP/1.1 only never got the fallback.
+func dialAddress(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	return net.JoinHostPort(u.Hostname(), "80")
+}
+
+// lanes is what one build path decides: the round tripper behind each of the
+// three lanes, before the WebSocket guard.
+//
+// A struct with named fields rather than three parameters, because `unary` and
+// `http2Only` share a type. Positionally they would be silently transposable,
+// and swapping them gives a worker's bidirectional stream the lane that falls
+// back to HTTP/1.1 — a mistake no compiler and no test in this package would
+// report.
+type lanes struct {
+	unary     http.RoundTripper
+	http2Only http.RoundTripper
+	// webSocket is the concrete transport, never a wrapper: this lane is the
+	// one that MUST carry an upgrade, so guardWebSocket never wraps it.
+	webSocket *http.Transport
+}
+
+// setLanes installs one build path's decision, and applies the WebSocket guard
+// to the two lanes that must refuse an upgrade.
+//
+// Every build path routes through here, so the guard is applied in ONE place
+// and a path that forgets it cannot exist. The compiler also demands all three
+// fields of a `lanes` value, so a path cannot leave a lane nil either.
+func (e *Endpoint) setLanes(l lanes) {
+	e.unary = guardWebSocket{next: l.unary}
+	e.http2Only = guardWebSocket{next: l.http2Only}
+	e.webSocket = l.webSocket
+}
+
 // wireCleartext installs the probing lanes shared by a local and a plaintext
 // endpoint. probeDial opens one connection to the endpoint for the h2c proof.
 func (e *Endpoint) wireCleartext(h2c, h1 *http.Transport, probeDial func(ctx context.Context) (net.Conn, error)) {
 	e.prober = newProber(e.url, probeDial)
-	e.unary = guardWebSocket{next: preferH2C{prober: e.prober, h2c: h2c, h1: h1}}
-	e.http2Only = guardWebSocket{next: requireH2C{prober: e.prober, h2c: h2c, endpointURL: e.url}}
-	e.webSocket = h1
+	e.setLanes(lanes{
+		unary:     preferH2C{prober: e.prober, h2c: h2c, h1: h1},
+		http2Only: requireH2C{prober: e.prober, h2c: h2c, endpointURL: e.url},
+		webSocket: h1,
+	})
 }
 
-// buildTLS wires the three ALPN legs. No probe runs: ALPN settles the protocol
+// buildTLS wires the three ALPN transports. No probe runs: ALPN settles the protocol
 // inside the handshake, and it settles it per connection rather than once.
 func (e *Endpoint) buildTLS() {
-	tlsAny := e.newLeg(protocolsHTTP1AndHTTP2)
-	tlsH2 := e.newLeg(protocolsHTTP2)
-	tlsH1 := e.newLeg(protocolsHTTP1)
-	e.unary = guardWebSocket{next: tlsAny}
-	e.http2Only = guardWebSocket{next: tlsH2}
-	e.webSocket = tlsH1
+	e.setLanes(lanes{
+		unary:     e.newTransport(protocolsHTTP1AndHTTP2),
+		http2Only: e.newTransport(protocolsHTTP2),
+		webSocket: e.newTransport(protocolsHTTP1),
+	})
 }
 
 // URL returns the endpoint address the caller supplied. Use it in a log line
-// or an error message; it names what an operator configured.
+// or an error message; it states what an operator configured.
 func (e *Endpoint) URL() string { return e.url }
 
 // BaseURL returns what ConnectRPC clients, REST paths and WebSocket dials must
@@ -255,21 +286,21 @@ func (e *Endpoint) URL() string { return e.url }
 func (e *Endpoint) BaseURL() string { return e.baseURL }
 
 // UnaryClient returns the client for request/response calls: ConnectRPC unary
-// RPCs and plain REST. timeout bounds the whole exchange; pass
+// RPCs and plain REST. timeout limits the whole exchange; pass
 // DefaultUnaryTimeout unless the caller has a reason for a different bound.
 func (e *Endpoint) UnaryClient(timeout time.Duration) *http.Client {
 	return e.client(e.unary, timeout)
 }
 
 // StreamClient returns the client for a long-lived Connect stream. It carries
-// no overall timeout, so the caller must bound the stream with its context.
+// no overall timeout, so the caller must limit the stream with its context.
 func (e *Endpoint) StreamClient() *http.Client {
 	return e.client(e.unary, 0)
 }
 
 // HTTP2OnlyClient returns the client for a lane that HTTP/1.1 cannot carry —
 // today, the worker's bidirectional Connect stream. Against a cleartext
-// endpoint with no h2c it fails with ErrH2CUnsupported, naming the endpoint,
+// endpoint with no h2c it fails with ErrH2CUnsupported, which identifies the endpoint,
 // rather than degrading to a protocol on which the stream cannot work.
 func (e *Endpoint) HTTP2OnlyClient() *http.Client {
 	return e.client(e.http2Only, 0)
@@ -286,35 +317,46 @@ func (e *Endpoint) client(rt http.RoundTripper, timeout time.Duration) *http.Cli
 	return &http.Client{Transport: rt, Timeout: timeout}
 }
 
-// CloseIdleConnections closes the idle connections of every leg. Calling it on
-// one lane's *http.Client reaches that lane's leg only, so a caller that shuts
-// an endpoint down calls this instead.
+// CloseIdleConnections closes the idle connections of every transport this
+// endpoint built. A caller that holds one lane's *http.Client can call
+// CloseIdleConnections on it -- every lane wrapper forwards the method -- but
+// that reaches only the transports of THAT lane, so a caller that shuts the
+// whole endpoint down calls this instead.
 func (e *Endpoint) CloseIdleConnections() {
-	for _, leg := range e.legs {
-		leg.CloseIdleConnections()
+	for _, transport := range e.transports {
+		transport.CloseIdleConnections()
 	}
 }
 
-// newLeg clones http.DefaultTransport — for its dial timeout, its keep-alive,
-// its TLS handshake timeout and its idle-connection limits — and replaces the
-// protocol set. Protocols overrides the conservative HTTP/2 detection that
-// DefaultTransport's ForceAttemptHTTP2 exists for, so the leg gets exactly the
-// protocols named and no others.
-func (e *Endpoint) newLeg(setProtocols func(*http.Protocols)) *http.Transport {
-	leg := http.DefaultTransport.(*http.Transport).Clone()
+// newTransport clones http.DefaultTransport — for its dial timeout, its
+// keep-alive, its TLS handshake timeout and its idle-connection limits — and
+// replaces the protocol set. Protocols overrides the conservative HTTP/2
+// detection that DefaultTransport's ForceAttemptHTTP2 exists for, so the
+// transport gets exactly the protocols this asks for and no others.
+func (e *Endpoint) newTransport(setProtocols func(*http.Protocols)) *http.Transport {
+	// http.DefaultTransport is a package-level variable, so an instrumentation
+	// or tracing package can replace it with a type that is not
+	// *http.Transport. A bare type assertion would then panic inside New for
+	// every endpoint in the process; an empty transport carries the same
+	// protocols and loses only DefaultTransport's tuning.
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
+	}
+	transport := base.Clone()
 	protocols := &http.Protocols{}
 	setProtocols(protocols)
-	leg.Protocols = protocols
-	// The leg and the proxy DECISION in buildPlaintext must consult one
-	// function, or a leg could route around a proxy the decision accounted
+	transport.Protocols = protocols
+	// The transport and the per-request proxy test in lanes.go must consult one
+	// function, or a transport could route around a proxy the lane accounted
 	// for. The clone brings its own http.ProxyFromEnvironment; replacing it
 	// keeps both on this package's one seam.
-	leg.Proxy = proxyForRequest
+	transport.Proxy = proxyForRequest
 	if e.rootCAs != nil {
-		leg.TLSClientConfig = &tls.Config{RootCAs: e.rootCAs, MinVersion: tls.VersionTLS12}
+		transport.TLSClientConfig = &tls.Config{RootCAs: e.rootCAs, MinVersion: tls.VersionTLS12}
 	}
-	e.legs = append(e.legs, leg)
-	return leg
+	e.transports = append(e.transports, transport)
+	return transport
 }
 
 func protocolsH2C(p *http.Protocols)           { p.SetUnencryptedHTTP2(true) }

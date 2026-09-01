@@ -67,11 +67,46 @@ func TestVerdictIsCachedForTheLifeOfTheEndpoint(t *testing.T) {
 	}
 }
 
+// fakeClock is the seam undecidedCooldown is measured against. A test advances
+// it by hand, so the cooldown is exercised with no sleep and no window to race.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock() *fakeClock {
+	// A fixed instant, not time.Now(): the zero value of undecidedUntil must be
+	// strictly BEFORE it, so a prober that has never probed is not suppressed.
+	return &fakeClock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// newTestProber is newProber on a clock the test owns.
+func newTestProber(t *testing.T) (*prober, *fakeClock) {
+	t.Helper()
+	clock := newFakeClock()
+	p := newProber("http://hub.invalid", nil)
+	p.now = clock.Now
+	return p, clock
+}
+
 // TestUndecidedVerdictIsNotCached pins the rule that keeps a momentary outage
-// from pinning a healthy hub to HTTP/1.1 for the life of the process.
+// from pinning a healthy hub to HTTP/1.1 for the life of the process: the
+// answer is never remembered, only the RE-ASKING is paced.
 func TestUndecidedVerdictIsNotCached(t *testing.T) {
 	var answers atomic.Int64
-	p := newProber("http://hub.invalid", nil)
+	p, clock := newTestProber(t)
 	p.run = func(context.Context) verdict {
 		if answers.Add(1) == 1 {
 			return verdictUndecided // the endpoint did not answer at all
@@ -80,8 +115,74 @@ func TestUndecidedVerdictIsNotCached(t *testing.T) {
 	}
 
 	assert.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
-	assert.Equal(t, verdictSupported, p.supportsH2C(context.Background()), "the next request re-probes")
+	clock.Advance(undecidedCooldown)
+	assert.Equal(t, verdictSupported, p.supportsH2C(context.Background()), "the next request after the cooldown re-probes")
 	assert.EqualValues(t, 2, p.calls.Load())
+}
+
+// TestUndecidedVerdictPacesTheNextProbe pins the cooldown itself.
+//
+// Before it, EVERY request against an endpoint that accepts a connection and
+// then says nothing started its own probe and blocked on it for a whole
+// probeTimeout -- inside the caller's own http.Client.Timeout, so a `leapmux
+// control version` with a 5s budget reached the hub with an already-expired
+// context. The wait bought nothing: both cleartext lanes take h2c on
+// undecided, so the caller does the same thing either way.
+func TestUndecidedVerdictPacesTheNextProbe(t *testing.T) {
+	p, clock := newTestProber(t)
+	p.run = func(context.Context) verdict { return verdictUndecided }
+
+	require.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
+	require.EqualValues(t, 1, p.calls.Load())
+
+	// Inside the cooldown: answered from the cooldown, with no probe started.
+	for range 5 {
+		assert.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
+	}
+	assert.EqualValues(t, 1, p.calls.Load(), "a request inside the cooldown must not start a probe")
+
+	// One nanosecond short of the deadline is still inside it.
+	clock.Advance(undecidedCooldown - 1)
+	assert.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
+	assert.EqualValues(t, 1, p.calls.Load(), "the boundary is exclusive at the deadline, not before it")
+
+	// At the deadline the next request probes again.
+	clock.Advance(1)
+	assert.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
+	assert.EqualValues(t, 2, p.calls.Load(), "the cooldown paces the re-probe, it does not stop it")
+}
+
+// The cooldown must not survive a verdict. An endpoint that comes back is
+// measured, and its answer is then kept for the life of the process.
+func TestACooldownDoesNotOutlastAVerdict(t *testing.T) {
+	var answers atomic.Int64
+	p, clock := newTestProber(t)
+	p.run = func(context.Context) verdict {
+		if answers.Add(1) == 1 {
+			return verdictUndecided
+		}
+		return verdictUnsupported
+	}
+
+	require.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
+	clock.Advance(undecidedCooldown)
+	require.Equal(t, verdictUnsupported, p.supportsH2C(context.Background()))
+
+	// Decided now, so neither the cooldown nor the clock matters again.
+	for range 3 {
+		assert.Equal(t, verdictUnsupported, p.supportsH2C(context.Background()))
+	}
+	assert.EqualValues(t, 2, p.calls.Load())
+}
+
+// A prober that has NEVER probed must not be suppressed by the zero value of
+// undecidedUntil, whatever the clock reads.
+func TestAFreshProberIsNotInACooldown(t *testing.T) {
+	p, _ := newTestProber(t)
+	p.run = func(context.Context) verdict { return verdictSupported }
+
+	assert.Equal(t, verdictSupported, p.supportsH2C(context.Background()))
+	assert.EqualValues(t, 1, p.calls.Load())
 }
 
 // TestAWaiterTakesTheUndecidedAnswerInsteadOfReprobing guards against the

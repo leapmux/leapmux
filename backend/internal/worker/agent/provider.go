@@ -175,8 +175,18 @@ type Provider interface {
 	// child tab is read-only. Defaults to false (noopProvider); only Codex
 	// overrides it to true.
 	SupportsChildSteering() bool
-	// ValidateResumeHandle reports why this provider cannot resume from the
-	// client-supplied handle, or nil when it can.
+	// ResolveResumeHandle checks the client-supplied handle and returns the
+	// value that must reach argv, or reports why this provider cannot resume
+	// from it.
+	//
+	// It RETURNS the handle rather than only judging it, and the caller must
+	// pass on what it returns. A rule that NORMALIZES before it judges --
+	// `validate.SanitizePath`, which the path shape uses, strips control
+	// characters and trims whitespace -- otherwise approves one string while
+	// the caller hands the process a different one. Pi opens a session file
+	// without requiring that it exists, so that split silently started an empty
+	// session at a filename nobody typed. One return value makes the checked
+	// string and the sent string the same string.
 	//
 	// A resume handle is NOT one shape across providers, which is why this is a
 	// provider decision rather than one rule in shared code. Claude, Codex and
@@ -195,7 +205,7 @@ type Provider interface {
 	// `homeDir` is for a provider whose handle is a PATH and therefore may open
 	// with `~`. A token provider ignores it. The caller has it either way, and
 	// OpenAgent already hands the same value to `normalizeWorkingDir`.
-	ValidateResumeHandle(handle, homeDir string) error
+	ResolveResumeHandle(handle, homeDir string) (string, error)
 	// ExtractTodoEvent derives a to-do list mutation from one persisted message,
 	// or reports that the message changes nothing.
 	//
@@ -238,12 +248,16 @@ func (noopProvider) ExtractTodoEvent(string, []byte, func() []byte) (todoevents.
 	return todoevents.Event{}, false
 }
 
-// ValidateResumeHandle defaults to the TOKEN rule, which is what every provider
+// ResolveResumeHandle defaults to the TOKEN rule, which is what every provider
 // but Pi issues. `validate.ValidateSessionID` states that rule and says why each
 // half of it exists -- above all the leading hyphen, which one argv element is
-// enough to turn into a flag.
-func (noopProvider) ValidateResumeHandle(handle, _ string) error {
-	return validate.ValidateSessionID(handle)
+// enough to turn into a flag. The token rule refuses rather than normalizes, so
+// an accepted handle comes back exactly as it arrived.
+func (noopProvider) ResolveResumeHandle(handle, _ string) (string, error) {
+	if err := validate.ValidateSessionID(handle); err != nil {
+		return "", err
+	}
+	return handle, nil
 }
 
 func (noopProvider) DefaultPermissionMode() string { return "" }
@@ -627,7 +641,7 @@ type piProvider struct {
 	noopProvider
 }
 
-// piResumeHandleIsFilePath reports whether a Pi resume handle names a session
+// piResumeHandleIsFilePath reports whether a Pi resume handle identifies a session
 // FILE rather than a session ID.
 //
 // The test copies Pi's own resolver (`resolveSessionPath` in pi's main.ts): a
@@ -639,7 +653,7 @@ func piResumeHandleIsFilePath(handle string) bool {
 	return strings.ContainsAny(handle, `/\`) || strings.HasSuffix(handle, ".jsonl")
 }
 
-// ValidateResumeHandle takes EITHER a session file PATH or a session ID.
+// ResolveResumeHandle takes EITHER a session file PATH or a session ID.
 //
 // Pi identifies one session two ways, and `pi --session <path|id>` resolves
 // both: a value that holds a separator or ends in `.jsonl` is a path, and
@@ -660,22 +674,42 @@ func piResumeHandleIsFilePath(handle string) bool {
 // absolute-path questions that a path raises, and the byte cap is the token
 // cap's counterpart for the longer shape. The empty handle means "no resume"
 // and is accepted, exactly as the token rule accepts it.
-func (piProvider) ValidateResumeHandle(handle, homeDir string) error {
+//
+// The PATH shape returns SanitizePath's result, not the handle. SanitizePath
+// normalizes before it judges -- it drops control characters, trims edge
+// whitespace, expands `~` and cleans the path -- so the string it approved and
+// the string the user typed differ whenever any of those applied. Pi's
+// SessionManager.open does not require the file to exist, so sending the typed
+// string started an EMPTY session at a filename that had a stray control
+// character in it, and the user's conversation was simply gone. Returning the
+// approved string removes the gap rather than restating the rule at the sink.
+func (piProvider) ResolveResumeHandle(handle, homeDir string) (string, error) {
 	if handle == "" {
-		return nil
+		return "", nil
 	}
 	if !piResumeHandleIsFilePath(handle) {
-		return validate.ValidateSessionID(handle)
+		if err := validate.ValidateSessionID(handle); err != nil {
+			return "", err
+		}
+		return handle, nil
 	}
 	// Measured before SanitizePath, which expands `~` and can therefore only
 	// make the value longer than what the user typed.
 	if len(handle) > contracts.SessionFilePathByteLimit {
-		return fmt.Errorf("session file path: must be at most %d bytes", contracts.SessionFilePathByteLimit)
+		return "", fmt.Errorf("session file path: must be at most %d bytes", contracts.SessionFilePathByteLimit)
 	}
-	if _, err := validate.SanitizePath(handle, homeDir); err != nil {
-		return fmt.Errorf("session file path: %w", err)
+	// An invisible-format character survives SanitizePath -- U+200B is Cf, not
+	// a control character -- so a path that carries one would reach Pi and open
+	// a different file. The token rule refuses the same class, and refusing it
+	// here keeps one answer for both shapes of one field.
+	if err := validate.RefuseInvisibleSessionChars(handle); err != nil {
+		return "", fmt.Errorf("session file path: %w", err)
 	}
-	return nil
+	sanitized, err := validate.SanitizePath(handle, homeDir)
+	if err != nil {
+		return "", fmt.Errorf("session file path: %w", err)
+	}
+	return sanitized, nil
 }
 
 func (piProvider) Classify(raw json.RawMessage) NotificationClassification {

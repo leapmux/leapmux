@@ -28,7 +28,25 @@ const (
 	verdictUnsupported
 )
 
-// probeTimeout bounds one probe. It has to outlast a dial and one round trip
+// undecidedCooldown is how long an UNDECIDED probe suppresses the next one.
+//
+// An undecided verdict means the probe could not reach the endpoint, so it
+// settles nothing and is not cached. Without a cooldown the NEXT request
+// started another probe and blocked on it, and that wait buys nothing: both
+// cleartext lanes take h2c on undecided, so the caller's behaviour is the same
+// whether it waited or not. Against an endpoint that accepts a connection and
+// then says nothing, that cost every request a whole probeTimeout of dead time
+// -- inside the caller's own http.Client.Timeout, so `leapmux control version`
+// (a 5s budget against a 5s probe) reached the hub with an already-expired
+// context, and the worker's reconnect loop paid it before every backoff.
+//
+// The cooldown is longer than probeTimeout, so a request that arrives while a
+// stalled probe is still running joins that probe rather than starting a new
+// one, and shorter than a person's patience with a hub that came back: an
+// endpoint that recovers is measured again within the minute.
+const undecidedCooldown = 30 * time.Second
+
+// probeTimeout limits one probe. It has to outlast a dial and one round trip
 // on a slow link, and it has to end well inside a caller's patience when the
 // endpoint accepts a connection and then says nothing.
 const probeTimeout = 5 * time.Second
@@ -57,12 +75,16 @@ const probeTimeout = 5 * time.Second
 // misconfigured for the worker's bidirectional stream, which needs HTTP/2 on
 // the same URL.
 //
-// # Why the answer is kept for the life of the process
+// # Why a DECIDED answer is kept for the life of the process
 //
 // An endpoint that gains or loses h2c did so because somebody changed a
 // reverse proxy. A time-to-live would pick that up a few minutes sooner, and
-// would cost a clock, an expiry rule and a window for a test to race. The
+// would cost an expiry rule for a fact that changes at a restart anyway. The
 // restart that follows such a change picks it up instead.
+//
+// An UNDECIDED answer is different, and does carry a clock: it settles
+// nothing, so it must not be cached, but repeating it on the next request
+// costs a whole probeTimeout for no information. See undecidedCooldown.
 type prober struct {
 	endpointURL string
 	dial        func(ctx context.Context) (net.Conn, error)
@@ -75,11 +97,19 @@ type prober struct {
 	// that makes "the waiter reached the wait" observable, so those tests
 	// synchronise on an event instead of on a sleep long enough to look safe.
 	onWait func()
+	// now reads the clock the cooldown below measures against. A test supplies
+	// its own and advances it by hand, so the cooldown is exercised with no
+	// sleep and no window to race: the seam that ends the state is a value the
+	// test sets, not a real timer it has to outlast.
+	now func() time.Time
 
-	mu       sync.Mutex
-	decided  bool
-	result   verdict
-	inflight chan struct{}
+	mu      sync.Mutex
+	decided bool
+	result  verdict
+	// undecidedUntil is the instant an UNDECIDED verdict stops suppressing the
+	// next probe. Zero means "probe now". See undecidedCooldown.
+	undecidedUntil time.Time
+	inflight       chan struct{}
 
 	warnOnce sync.Once
 	// calls counts the probes that ran. Only the tests read it.
@@ -87,7 +117,7 @@ type prober struct {
 }
 
 func newProber(endpointURL string, dial func(ctx context.Context) (net.Conn, error)) *prober {
-	return &prober{endpointURL: endpointURL, dial: dial}
+	return &prober{endpointURL: endpointURL, dial: dial, now: time.Now}
 }
 
 // supportsH2C returns the endpoint's verdict, running at most one probe at a
@@ -108,6 +138,14 @@ func (p *prober) supportsH2C(ctx context.Context) verdict {
 		return result
 	}
 	wait := p.inflight
+	if wait == nil && p.now().Before(p.undecidedUntil) {
+		// A recent probe reached the endpoint and learned nothing. Answer
+		// undecided at once rather than starting another and blocking on it:
+		// the caller takes h2c either way, so the wait cannot change what it
+		// does. See undecidedCooldown.
+		p.mu.Unlock()
+		return verdictUndecided
+	}
 	started := wait == nil
 	if started {
 		wait = make(chan struct{})
@@ -133,7 +171,7 @@ func (p *prober) supportsH2C(ctx context.Context) verdict {
 	// The probe reached no verdict, because it could not reach the endpoint.
 	// Do NOT start another one here: every waiter would then probe in turn,
 	// and a hub that is down would cost one probe per request. The next
-	// request starts the next probe.
+	// request after the cooldown starts the next probe.
 	return verdictUndecided
 }
 
@@ -147,6 +185,10 @@ func (p *prober) runProbe(done chan struct{}) {
 	if result != verdictUndecided {
 		p.decided = true
 		p.result = result
+	} else {
+		// Not cached -- an unreachable endpoint settles nothing -- but the next
+		// request does not repeat it either. See undecidedCooldown.
+		p.undecidedUntil = p.now().Add(undecidedCooldown)
 	}
 	p.mu.Unlock()
 	close(done)

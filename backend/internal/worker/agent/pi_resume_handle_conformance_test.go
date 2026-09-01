@@ -61,12 +61,13 @@ var piResumeHandleRefusalMarkers = map[string]string{
 	"traversal":           "path traversal not allowed",
 	"leading_hyphen":      "must not start with a hyphen",
 	"forbidden_character": "contains invalid characters",
+	"invisible_character": "contains invisible characters",
 	"whitespace_at_edge":  "must not start or end with whitespace",
 }
 
 // TestPiResumeHandleConformance is the worker half of
 // testdata/pi_resume_handle_conformance.json. The browser suite
-// (`validateSessionFileHandle conformance` in frontend/src/lib/validate.test.ts)
+// (`piValidateResumeHandle conformance`, in the Pi plugin's own test file)
 // reads the same file, so a one-sided edit to either implementation turns that
 // side red.
 //
@@ -99,7 +100,7 @@ func TestPiResumeHandleConformance(t *testing.T) {
 				want = c.Worker.Windows
 			}
 			handle := c.Input.build()
-			err := pi.ValidateResumeHandle(handle, homeDir)
+			err := resumeHandleErr(pi, handle, homeDir)
 			if want.Valid {
 				assert.Emptyf(t, want.Refusal, "case %q is valid, so its refusal must be empty", c.Why)
 				assert.NoErrorf(t, err, "case %q must be accepted on %s", c.Why, runtime.GOOS)

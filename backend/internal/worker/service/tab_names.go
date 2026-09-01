@@ -12,10 +12,10 @@ import (
 // dialogs. One table, so the name a dialog offers and the name the worker
 // falls back to can never come from two lists that drift.
 //
-// The worker is the FALLBACK naming authority. It names any tab whose caller
-// sent no title -- the CLI, the quick-open buttons, and ChangeBranchDialog --
-// which is why the pool cannot live in the frontend alone: that arrangement
-// left CLI-created tabs nameless.
+// The worker is the FALLBACK title authority. It supplies the title for any
+// tab whose caller sent none -- the quick-open buttons, and a CLI `tab open`
+// with no --title -- which is why the pool cannot live in the frontend alone:
+// that arrangement left CLI-created tabs nameless.
 
 // pickTabName returns a uniformly random name from the pool. With hundreds of
 // names, collisions are improbable for typical workspaces; we chose

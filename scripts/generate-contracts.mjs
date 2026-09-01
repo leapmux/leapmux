@@ -365,20 +365,24 @@ export function checkTabNames(v) {
   return {}
 }
 
-/** One name per line up to the width gofmt keeps, so a diff stays readable. */
-function goStringRows(values, perRow) {
+/**
+ * A quoted string list, `perRow` entries to a line, each line opened with
+ * `indent`. Several short entries per line keeps the width gofmt keeps and
+ * keeps a diff readable.
+ *
+ * One function for both languages, because only the indent differs: a tab for
+ * Go and two spaces for TS. Two near-identical copies are one place for an
+ * escaping fix to be applied and the other to be missed.
+ */
+function stringRows(values, perRow, indent) {
   const rows = []
   for (let i = 0; i < values.length; i += perRow)
-    rows.push(`\t${values.slice(i, i + perRow).map(jsonString).join(', ')},`)
+    rows.push(`${indent}${values.slice(i, i + perRow).map(jsonString).join(', ')},`)
   return rows.join('\n')
 }
 
-function tsStringRows(values, perRow) {
-  const rows = []
-  for (let i = 0; i < values.length; i += perRow)
-    rows.push(`  ${values.slice(i, i + perRow).map(jsonString).join(', ')},`)
-  return rows.join('\n')
-}
+const goStringRows = (values, perRow) => stringRows(values, perRow, '\t')
+const tsStringRows = (values, perRow) => stringRows(values, perRow, '  ')
 
 export function emitGoTabNames(v) {
   return `${GO_HEADER('tab-names.json')}package contracts
@@ -397,7 +401,7 @@ ${goConstBlock([
 )
 
 // TabNames is the pool itself. Sorted, and every entry matches
-// ^[A-Z][A-Za-z]+$ -- the shape plan_mode.go's auto-title regex accepts.
+// ^[A-Z][A-Za-z]+$, which keeps a title readable and means nothing else.
 var TabNames = []string{
 ${goStringRows(v.names, 8)}
 }
@@ -1094,6 +1098,20 @@ export const NAME_WHITESPACE_MINUS_SPACE_CLASS = ${jsonString(tsClassSource(subt
 ${tsAnnotation([...v.session.refusedControl, ...v.session.refusedAscii, ...v.session.invisibleFormat])}
 /** Everything a session ID may not contain (controls, refused ASCII, format characters). */
 export const SESSION_FORBIDDEN_CLASS = ${jsonString(sessionClass)} as const
+
+${tsAnnotation(v.session.invisibleFormat)}
+/**
+ * The invisible-format half of the session class, on its own.
+ *
+ * The PATH shape of a resume handle cannot use the whole class: it carries a
+ * backslash as a separator, and may carry a dollar or a percent sign, all of
+ * which the token class bans. It still has to refuse THESE, because the
+ * worker's SanitizePath drops a control character and trims edge whitespace
+ * but leaves a format character alone -- U+200B is Cf, not Cc -- so one would
+ * reach the agent inside a filename and name a session that does not exist.
+ * The Go twin is contracts.SessionInvisibleFormat.
+ */
+export const SESSION_INVISIBLE_CLASS = ${jsonString(tsClassSource(v.session.invisibleFormat))} as const
 
 /** Printable ASCII, the whole character set a password may hold. */
 export const PRINTABLE_ASCII_CLASS = ${jsonString(printable)} as const

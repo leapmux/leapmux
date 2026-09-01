@@ -46,10 +46,16 @@ interface UseAvailableShellsResult {
  * - The user override resets whenever `workerId` changes, so picking a
  *   different worker doesn't carry a stale shell selection across the
  *   worker change.
+ * - `onError` and `onLoaded` come as a PAIR. A caller that reports a failed
+ *   load somewhere durable — NewTerminalDialog writes the dialog's error
+ *   banner — must be able to withdraw the report when a later load succeeds,
+ *   or the Refresh-shells button repopulates the menu and arms Create while
+ *   the banner still says the load failed. `onLoaded` is that withdrawal.
  */
 export function useAvailableShells(
   source: Accessor<UseAvailableShellsArgs | null>,
   onError?: (err: unknown) => void,
+  onLoaded?: () => void,
 ): UseAvailableShellsResult {
   const [shells, setShells] = createSignal<string[]>([])
   const [serverDefault, setServerDefault] = createSignal('')
@@ -69,6 +75,7 @@ export function useAvailableShells(
       setShells(resp.shells)
       setServerDefault(resp.defaultShell)
       lastLoadedWorkerId = args.workerId
+      onLoaded?.()
     },
     onError: (err) => {
       onError?.(err)

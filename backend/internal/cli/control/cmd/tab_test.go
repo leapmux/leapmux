@@ -982,3 +982,37 @@ func TestSubagentTombstoneOps_BuildsNothingForAnEmptyList(t *testing.T) {
 	assert.Empty(t, subagentTombstoneOps(bs, nil))
 	assert.Empty(t, subagentTombstoneOps(bs, []string{}))
 }
+
+// TestTerminalOpenRequest_CarriesTheTitle pins the field the CLI dropped.
+//
+// `OpenTerminalRequest` gained a `title`, and `--title` was registered for
+// `--type=agent` alone, so `leapmux control tab open --type=terminal --title X`
+// accepted the flag and silently discarded it: the tab came up with a pooled
+// name and the user's title was gone with no report.
+func TestTerminalOpenRequest_CarriesTheTitle(t *testing.T) {
+	req := terminalOpenRequest(openTerminalArgs{
+		WorkerID:      "w-1",
+		WorkingDir:    "/src/app",
+		Shell:         "/bin/zsh",
+		ShellStartDir: "/src/app/sub",
+		Title:         "Deploy log",
+	})
+
+	assert.Equal(t, "Deploy log", req.GetTitle())
+	assert.Equal(t, "w-1", req.GetWorkerId())
+	assert.Equal(t, "/src/app", req.GetWorkingDir())
+	assert.Equal(t, "/bin/zsh", req.GetShell())
+	assert.Equal(t, "/src/app/sub", req.GetShellStartDir())
+	// Zero so the worker applies its own 80x25 default; the frontend resizes
+	// the PTY as soon as the user attaches.
+	assert.Zero(t, req.GetCols())
+	assert.Zero(t, req.GetRows())
+}
+
+// An omitted --title stays empty on the wire, which is what the field's own
+// contract calls "you pick one": the worker then takes a pooled
+// `Terminal <Name>`, the same answer the quick-open buttons get.
+func TestTerminalOpenRequest_EmptyTitleMeansTheWorkerPicks(t *testing.T) {
+	req := terminalOpenRequest(openTerminalArgs{WorkerID: "w-1", WorkingDir: "/src"})
+	assert.Empty(t, req.GetTitle())
+}

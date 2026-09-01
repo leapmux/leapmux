@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "tab-names.schema.json",
   "title": "Tab name pool contract",
-  "description": "The pool the worker and the browser dialogs both name new tabs from. The name pattern is the one plan_mode.go's auto-title regex accepts, so a name that fails it here would silently disable plan-mode auto-rename instead of failing the build. The 8-character cap keeps a tab title short. Rules the schema CANNOT express -- friendly form only, predictable pronunciation, distinct at a glance, no identity marker -- live in the contract's _rules field and are applied by a reviewer.",
+  "description": "The pool the worker and the browser dialogs both draw new tab titles from. The name pattern keeps a title readable -- one capitalized word after the prefix -- and the 8-character cap keeps it short. It carries no other meaning: plan-mode auto-rename used to read a title back through this same pattern, and now reads the agents row's title_auto_generated instead. Rules the schema CANNOT express -- friendly form only, predictable pronunciation, distinct at a glance, no identity marker -- live in the contract's _rules field and are applied by a reviewer.",
   "type": "object",
   "additionalProperties": false,
   "required": ["_readme", "_rules", "titlePrefixes", "names"],

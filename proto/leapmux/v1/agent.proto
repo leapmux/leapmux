@@ -111,6 +111,22 @@ message OpenAgentRequest {
   string checkout_branch = 11;      // "Switch to branch" mode
   string create_branch = 12;        // "Create new branch" mode -- branch name to create
   string create_branch_base = 13;   // Base branch for "Create new branch" (default: current branch)
+
+  // True when `title` is the suggestion this client PRE-FILLED and the user
+  // left alone, so nobody chose it. The worker records it, and plan mode then
+  // replaces such a title with the plan's own.
+  //
+  // The client has to say so, because the worker cannot tell. A dialog
+  // pre-fills `Agent <Name>` from the shared pool and SENDS it, so the value
+  // that arrives is indistinguishable from one the user typed -- and it used to
+  // be judged by a regex over the rendered string, which overwrote a typed
+  // `Agent Bob` too.
+  //
+  // Default false, and that is the safe direction: a caller that says nothing
+  // (the CLI, and any client that sends a title it did not generate) keeps the
+  // title it sent. An empty `title` is auto-generated regardless -- the worker
+  // picked that one itself.
+  bool title_auto_generated = 14;
 }
 
 message OpenAgentResponse {

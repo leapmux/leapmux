@@ -43,7 +43,7 @@ func Register(ctx context.Context, endpoint *hubtransport.Endpoint, registration
 		endpoint.BaseURL(),
 		connect.WithGRPC(),
 	)
-	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultBackoff())
+	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultBackoff(), registerAttemptTimeout)
 }
 
 func registerWithClient(
@@ -53,6 +53,7 @@ func registerWithClient(
 	version string,
 	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
 	bo backoff,
+	attemptTimeout time.Duration,
 ) (*RegistrationResult, error) {
 	if registrationKey == "" {
 		return nil, errors.New("registration key is required")
@@ -70,7 +71,7 @@ func registerWithClient(
 		// flow, that one is bound to a different RPC.
 		req.Header().Set("Authorization", "Bearer "+registrationKey)
 
-		resp, err := client.Register(ctx, req)
+		resp, err := registerOnce(ctx, client, req, attemptTimeout)
 		if err == nil {
 			// The owner is not recorded here: the Hub delivers it on every Connect
 			// (WorkerIdentity), so the worker never caches a copy that could go stale
@@ -108,4 +109,31 @@ func registerWithClient(
 		case <-time.After(interval):
 		}
 	}
+}
+
+// registerAttemptTimeout limits ONE registration attempt.
+//
+// The retry loop above sits BELOW the call, so an attempt that never returns
+// takes the loop with it. Register runs on the HTTP2Only lane, which carries no
+// http.Client timeout by design — that lane also carries the worker's
+// bidirectional Connect stream, whose body ends only when the stream does — so
+// a hub that completed the TCP accept and the HTTP/2 handshake and then never
+// answered hung `leapmux worker` at startup for ever, with no retry, no backoff
+// and no log line. The limit belongs to this unary CALL rather than to the
+// lane, which is why it is a context deadline here.
+//
+// It is generous: registration is one round trip, but it runs while a hub may
+// still be starting, and the retry costs a fresh key nothing.
+const registerAttemptTimeout = 30 * time.Second
+
+// registerOnce makes one attempt under timeout.
+func registerOnce(
+	ctx context.Context,
+	client leapmuxv1connect.WorkerConnectorServiceClient,
+	req *connect.Request[leapmuxv1.RegisterRequest],
+	timeout time.Duration,
+) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return client.Register(attemptCtx, req)
 }

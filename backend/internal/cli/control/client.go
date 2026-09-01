@@ -58,6 +58,14 @@ type Client struct {
 	bearerMu        sync.RWMutex
 	HTTPClient      *http.Client
 	WSClient        *http.Client // HTTP/1.1 client for the /ws/channel and /ws/userevents upgrades
+	// StreamHTTPClient carries a Connect SERVER STREAM, so it holds no overall
+	// timeout. It is set for a worker-IPC client only, because that is the one
+	// transport whose streams do not ride a WebSocket: `events --local` and
+	// `agent messages --follow` both open ControlIPCService.StreamInner, which
+	// runs on this HTTP client rather than on WSClient. An http.Client timeout
+	// covers the BODY read, and a stream's body ends only when the stream does,
+	// so the timed HTTPClient severed both of them after exactly 60 seconds.
+	StreamHTTPClient *http.Client
 	// Pins is the per-hub TOFU pin store. Read it through pinStore, which
 	// opens it on first use; a test may set the field directly instead.
 	Pins       *PinStore
@@ -126,12 +134,6 @@ const (
 func (c *Client) ConnectURL() string {
 	return c.connectURL
 }
-
-// defaultHTTPTimeout is the per-request timeout on the unary HTTP
-// client used for ConnectRPC unary calls and the auth/version REST
-// endpoints. Streaming RPCs (user events, agent-message follow) use
-// a separate WebSocket client with no overall timeout.
-const defaultHTTPTimeout = 60 * time.Second
 
 // newHubClient builds a hub-bound client for hubURL, carrying creds when
 // the caller holds them and running anonymously when creds is nil.
@@ -246,9 +248,12 @@ func NewLocalClient(socketURL, token string) (*Client, error) {
 	return &Client{
 		HubURL:     socketURL,
 		bearer:     token,
-		HTTPClient: endpoint.UnaryClient(defaultHTTPTimeout),
-		connectURL: endpoint.BaseURL(),
-		peer:       peerWorkerIPC,
+		HTTPClient: endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout),
+		// Both lanes come from ONE endpoint, so the timed unary calls and the
+		// untimed streams share its connection pool and its protocol verdict.
+		StreamHTTPClient: endpoint.StreamClient(),
+		connectURL:       endpoint.BaseURL(),
+		peer:             peerWorkerIPC,
 	}, nil
 }
 
@@ -359,11 +364,29 @@ func (c *Client) ChannelService() leapmuxv1connect.ChannelServiceClient {
 // CallInner requests at the hub's connect URL, which answers 404 rather than
 // anything a caller could diagnose.
 func (c *Client) ControlIPCService() (leapmuxv1connect.ControlIPCServiceClient, error) {
+	return c.controlIPCService(c.HTTPClient)
+}
+
+// ControlIPCStreamService is ControlIPCService for a SERVER STREAM.
+//
+// StreamInner's body ends only when the stream does, and an http.Client
+// timeout covers the body read — so the timed client severed `events --local`
+// and `agent messages --follow` after exactly 60 seconds, with a transport
+// error rather than an end of stream. This client holds no overall timeout;
+// the caller's context is what ends the subscription.
+func (c *Client) ControlIPCStreamService() (leapmuxv1connect.ControlIPCServiceClient, error) {
+	return c.controlIPCService(c.StreamHTTPClient)
+}
+
+func (c *Client) controlIPCService(httpClient *http.Client) (leapmuxv1connect.ControlIPCServiceClient, error) {
 	if !c.IsWorkerIPC() {
 		return nil, errors.New("ControlIPCService is only valid for worker-IPC clients constructed via NewLocalClient")
 	}
+	if httpClient == nil {
+		return nil, errors.New("ControlIPCService: this client carries no HTTP client for that lane")
+	}
 	return leapmuxv1connect.NewControlIPCServiceClient(
-		c.HTTPClient, c.connectURL,
+		httpClient, c.connectURL,
 		connect.WithInterceptors(c.AuthInterceptor()),
 	), nil
 }
@@ -711,5 +734,5 @@ func buildHTTPClients(hubURL string) (*http.Client, *http.Client, string, error)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return endpoint.UnaryClient(defaultHTTPTimeout), endpoint.WebSocketClient(), endpoint.BaseURL(), nil
+	return endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout), endpoint.WebSocketClient(), endpoint.BaseURL(), nil
 }

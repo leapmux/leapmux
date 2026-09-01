@@ -54,7 +54,7 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := registerWithClient(ctx, mock, "key123", "0.0.1", nil, nil, nil, newFastBackoff())
+	result, err := registerWithClient(ctx, mock, "key123", "0.0.1", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
 	require.NoError(t, err)
 
 	assert.Equal(t, int32(failCount+1), attempts.Load(), "Register call count")
@@ -69,7 +69,7 @@ func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
 			return nil, nil
 		},
 	}
-	_, err := registerWithClient(context.Background(), mock, "", "v", nil, nil, nil, newFastBackoff())
+	_, err := registerWithClient(context.Background(), mock, "", "v", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
 	require.Error(t, err)
 }
 
@@ -89,7 +89,7 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, newFastBackoff())
+	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.GreaterOrEqual(t, attempts.Load(), int32(1))
 }
@@ -105,7 +105,7 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("nope"))
 		},
 	}
-	_, err := registerWithClient(context.Background(), mock, "k", "v", nil, nil, nil, newFastBackoff())
+	_, err := registerWithClient(context.Background(), mock, "k", "v", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
 	require.Error(t, err)
 	assert.Equal(t, int32(1), attempts.Load(), "Unauthenticated must not be retried")
 }
@@ -146,7 +146,7 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, rec)
+	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, rec, registerAttemptTimeout)
 	require.NoError(t, err)
 
 	require.Len(t, rec.intervals, failCount,
@@ -154,4 +154,60 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 	for i := 1; i < len(rec.intervals); i++ {
 		assert.GreaterOrEqual(t, rec.intervals[i], rec.intervals[i-1])
 	}
+}
+
+// TestRegisterWithClient_LimitsOneAttempt pins the limit that keeps a stalled
+// hub from wedging worker startup.
+//
+// Register runs on the HTTP2Only lane, which carries NO http.Client timeout by
+// design: that lane also carries the worker's bidirectional Connect stream,
+// whose body ends only when the stream does. The retry loop sits BELOW the
+// call, so before this an attempt that never returned took the loop with it,
+// and `leapmux worker` hung at startup for ever with no retry and no log line.
+func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
+	var attempts atomic.Int32
+	var sawDeadline atomic.Bool
+
+	mock := &mockConnectorClient{
+		registerFn: func(ctx context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+			if _, ok := ctx.Deadline(); ok {
+				sawDeadline.Store(true)
+			}
+			if attempts.Add(1) == 1 {
+				// The hub that accepted the connection and then said nothing.
+				// Without a per-attempt limit this blocks for ever.
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return connect.NewResponse(&leapmuxv1.RegisterResponse{
+				WorkerId: "w-1", AuthToken: "tok",
+			}), nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := registerWithClient(ctx, mock, "key123", "0.0.1", nil, nil, nil, newFastBackoff(), 20*time.Millisecond)
+
+	require.NoError(t, err, "a stalled attempt must end and let the retry run")
+	assert.Equal(t, "w-1", result.WorkerID)
+	assert.True(t, sawDeadline.Load(), "each attempt must carry its own deadline")
+	assert.EqualValues(t, 2, attempts.Load(), "the stalled attempt is abandoned and retried exactly once")
+}
+
+// The per-attempt limit must not swallow the CALLER's cancellation: a worker
+// shutting down during registration still stops rather than retrying.
+func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := &mockConnectorClient{
+		registerFn: func(ctx context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, newFastBackoff(), time.Minute)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
 }

@@ -6,6 +6,7 @@ import { generateSlug } from 'random-word-slugs'
 import { batch, createEffect, createMemo, createSignal, on, Show, untrack } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { labelRow, pathPreview, radioGroup, radioRow, radioSubContent } from '~/components/common/Dialog.css'
+import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WorktreeSelect } from '~/components/shell/WorktreeSelect'
@@ -15,7 +16,7 @@ import { GitMode } from '~/hooks/useGitModeState'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, join, parentDirectory, tildify } from '~/lib/paths'
 import { stripRemotePrefix, validateBranchName } from '~/lib/validate'
-import { errorText, warningText } from '~/styles/shared.css'
+import { warningText } from '~/styles/shared.css'
 
 const log = createLogger('GitOptions')
 
@@ -156,6 +157,9 @@ export function dirtyWarningCopy(mode: GitMode): string | null {
       return null
   }
 }
+
+/** The branch-name error node's id, so its input can point at it. */
+const BRANCH_NAME_ERROR_ID = 'git-options-branch-name-error'
 
 export const GitOptions: Component<GitOptionsProps> = (props) => {
   // `?? DEFAULT_GIT_MODES` only triggers on null/undefined, not on an
@@ -467,25 +471,25 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // optional worktree-path preview the caller slots in below.
   const renderBranchNameAndBase = () => (
     <>
-      <div>
-        <div class={labelRow}>
-          Branch Name
-          <RefreshButton onClick={randomizeBranch} title="Generate random name" />
-        </div>
+      <LabeledField
+        label="Branch Name"
+        actions={<RefreshButton onClick={randomizeBranch} title="Generate random name" />}
+        error={branchError()}
+        errorId={BRANCH_NAME_ERROR_ID}
+      >
         <input
           type="text"
+          aria-label="Branch Name"
+          aria-invalid={branchError() ? 'true' : undefined}
+          aria-describedby={branchError() ? BRANCH_NAME_ERROR_ID : undefined}
           value={branchName()}
           onInput={e => setBranchName(e.currentTarget.value)}
           placeholder="feature-branch"
         />
-        <Show when={branchError()}>
-          <div class={errorText}>{branchError()}</div>
-        </Show>
-      </div>
-      <div>
-        <div class={labelRow}>Base Branch</div>
+      </LabeledField>
+      <LabeledField label="Base Branch">
         {renderBranchSelect({ value: selectedBaseBranch(), onChange: setSelectedBaseBranch, showCurrent: true })}
-      </div>
+      </LabeledField>
     </>
   )
 

@@ -68,6 +68,11 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       return { workerId: id }
     },
     err => setError(formatErrorMessage(err, 'Failed to load shells')),
+    // A later load withdraws the report the failed one wrote. Without this the
+    // Refresh-shells button repopulates the menu and arms Create while the
+    // banner still reads "Failed to load shells", which is the one state that
+    // button exists to leave.
+    () => setError(''),
   )
   const { shell } = shellState
   const title = createTitleState(randomTerminalTitle)
@@ -127,7 +132,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
           <WorkerSelector state={worker} />
           <ShellSelector state={shellState} />
         </DialogTopRow>
-        <TitleInput state={title} placeholder="New Terminal" />
+        <TitleInput state={title} />
       </DialogTopSection>
       <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns

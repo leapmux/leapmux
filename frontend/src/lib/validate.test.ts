@@ -15,7 +15,6 @@ import {
   validateEmail,
   validatePassword,
   validateReservedUsername,
-  validateSessionFileHandle,
   validateSessionId,
 } from './validate'
 
@@ -1231,87 +1230,6 @@ describe('validateSessionId conformance', () => {
     const marker = refusalMarkers[c.refusal]
     expect(marker, `case "${c.why}" carries an unknown refusal token "${c.refusal}"`).toBeDefined()
     expect(got).toContain(marker)
-  })
-})
-
-/**
- * The browser half of `testdata/pi_resume_handle_conformance.json`. The worker
- * suite (`TestPiResumeHandleConformance`) reads the same file, so a one-sided
- * edit to either implementation turns that side red. See the file's own
- * `_readme` for the contract and for the one asymmetry it allows.
- */
-describe('validateSessionFileHandle conformance', () => {
-  interface HandleSpec {
-    head?: string
-    text: string
-    repeat?: number
-    tail?: string
-  }
-
-  interface Verdict {
-    valid: boolean
-    refusal: string
-  }
-
-  interface HandleCase {
-    input: HandleSpec
-    browser: Verdict
-    worker: { posix: Verdict, windows: Verdict }
-    why: string
-  }
-
-  function buildHandle(spec: HandleSpec): string {
-    return (spec.head ?? '') + spec.text.repeat(spec.repeat ?? 1) + (spec.tail ?? '')
-  }
-
-  // Each token maps to a substring of THIS side's message. The worker's
-  // wording differs (it reports `path traversal not allowed` where this
-  // reports the `..` it refuses), so each suite carries its own map and the
-  // fixture stays language-neutral.
-  const refusalMarkers: Record<string, string> = {
-    too_long: 'must be at most',
-    not_absolute: 'must be absolute',
-    traversal: 'must not contain ".."',
-    leading_hyphen: 'must not start with a hyphen',
-    forbidden_character: 'contains invalid characters',
-    whitespace_at_edge: 'must not start or end with whitespace',
-  }
-
-  const fixturePath = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../../testdata/pi_resume_handle_conformance.json',
-  )
-
-  const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as { cases: HandleCase[] }
-
-  // A fixture that silently loads zero cases would make this block pass while
-  // asserting nothing -- the one failure mode a shared fixture must not have.
-  it('loads the shared fixture', () => {
-    expect(fixture.cases.length).toBeGreaterThan(0)
-  })
-
-  it.each(fixture.cases)('$why', (c) => {
-    const got = validateSessionFileHandle(buildHandle(c.input))
-    if (c.browser.valid) {
-      expect(c.browser.refusal, `case "${c.why}" is valid, so its refusal must be empty`).toBe('')
-      expect(got).toBeNull()
-      return
-    }
-    expect(got, `case "${c.why}" must be refused`).not.toBeNull()
-    const marker = refusalMarkers[c.browser.refusal]
-    expect(marker, `case "${c.why}" carries an unknown refusal token "${c.browser.refusal}"`).toBeDefined()
-    expect(got).toContain(marker)
-  })
-
-  // The asymmetry this rule is allowed to have, in the ONE direction that is
-  // safe. The browser may accept what a worker refuses -- it does not know the
-  // worker's host, so it leaves the reserved device names and the spelling of
-  // "absolute" to the side that does. The reverse removes a legitimate resume
-  // with no way to reach it: a value this field refuses never reaches a worker
-  // to be judged. The Go suite asserts the same invariant.
-  it.each(fixture.cases.filter(c => !c.browser.valid))('no worker accepts what the browser refuses: $why', (c) => {
-    expect(c.worker.posix.valid).toBe(false)
-    expect(c.worker.windows.valid).toBe(false)
   })
 })
 

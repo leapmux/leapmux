@@ -59,7 +59,7 @@
  * removed the user's text.
  */
 
-import { BRANCH_FORBIDDEN_CLASS, BRANCH_NAME_BYTE_LIMIT, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_BYTE_LIMIT, NAME_INVISIBLE_CLASS, NAME_WHITESPACE_CLASS, NAME_WHITESPACE_MINUS_SPACE_CLASS, PRINTABLE_ASCII_CLASS, PUBLIC_RESERVED_USERNAMES, SESSION_FILE_PATH_BYTE_LIMIT, SESSION_FORBIDDEN_CLASS, SESSION_ID_BYTE_LIMIT, SYSTEM_RESERVED_USERNAMES } from '~/generated/contracts/validate'
+import { BRANCH_FORBIDDEN_CLASS, BRANCH_NAME_BYTE_LIMIT, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_BYTE_LIMIT, NAME_INVISIBLE_CLASS, NAME_WHITESPACE_CLASS, NAME_WHITESPACE_MINUS_SPACE_CLASS, PRINTABLE_ASCII_CLASS, PUBLIC_RESERVED_USERNAMES, SESSION_FILE_PATH_BYTE_LIMIT, SESSION_FORBIDDEN_CLASS, SESSION_ID_BYTE_LIMIT, SESSION_INVISIBLE_CLASS, SYSTEM_RESERVED_USERNAMES } from '~/generated/contracts/validate'
 
 const NAME_INVISIBLE_G = new RegExp(`[${NAME_INVISIBLE_CLASS}]`, 'g')
 
@@ -451,11 +451,20 @@ export function validateSessionId(value: string): string | null {
  * POSIX root, a UNC or backslash root, a tilde with a separator, and a Windows
  * drive letter.
  *
- * The browser does not know which OS the worker runs, so it accepts the union
- * and lets the worker's own rule (`validate.SanitizePath`, which asks
- * `filepath.IsAbs` for THAT host) decide. The union can only accept more than
- * the worker does, never less, which is the direction this field must fail in:
- * a value the browser refuses never reaches the worker to be judged.
+ * It accepts the UNION and lets the worker's own rule
+ * (`validate.SanitizePath`, which asks `filepath.IsAbs` for THAT host) settle
+ * it. The union can only accept more than the worker does, never less, which
+ * is the direction this field must fail in: a value the browser refuses never
+ * reaches the worker to be judged.
+ *
+ * The union is a deliberate choice and not a missing fact. The browser CAN
+ * learn the worker's OS — `GetWorkerSystemInfoResponse` carries it, and
+ * `workerInfoStore.getOs` already feeds `flavorFromOs` for the directory field
+ * in this same dialog. Narrowing per host would refuse a wrong-host spelling
+ * one round trip sooner, at the cost of a rule that answers differently before
+ * and after the worker-info fetch resolves, and of a second `browser` column
+ * in `testdata/pi_resume_handle_conformance.json`. The worker stays
+ * authoritative either way, so the union costs a round trip and nothing else.
  *
  * A tilde ALONE is not here, because it never reaches this test: it holds no
  * separator, so the shape test above sends it to the token rule. The worker
@@ -467,39 +476,48 @@ const ABSOLUTE_PATH_START = /^(?:[/\\]|~[/\\]|[a-z]:[/\\])/i
 const PATH_TRAVERSAL = /(?:^|[/\\])\.\.(?:[/\\]|$)/
 
 /**
- * Validates a resume handle for a provider whose session is a FILE — the ones
- * whose plugin sets `sessionIdIsFilePath`. Pi is the only one today.
+ * The invisible-format characters a session file path may not hold.
  *
- * Such a provider identifies one session two ways, and it resolves both: a
- * value that holds a separator or ends in `.jsonl` is a session file path, and
- * anything else is a session ID matched inside the working directory's session
- * directory. So this picks the rule by shape, exactly as the worker's
- * `piProvider.ValidateResumeHandle` does. The empty value is accepted and means
- * "no resume".
- *
- * The two shapes cannot share one rule. The token rule bans `\` and caps the
- * value at 128 bytes, and a real session file path holds a directory prefix
- * that passes both -- so the field refused every legitimate path with "Session
- * ID contains invalid characters". The path rule requires an absolute path, so
- * it refused every legitimate ID with "path must be absolute". One rule for
- * both shapes refuses one of them, whichever one it is.
- *
- * The path half is DELIBERATELY narrower than the worker's. It refuses only
- * what is wrong on every host -- a relative path, a `..` escape, a value past
- * the byte cap -- and leaves the Windows device names and the OS-specific
- * absolute-path spelling to the worker, which knows its own host. A browser
- * copy of those rules would refuse paths a POSIX worker accepts, which is the
- * failure this whole function exists to remove.
+ * The path rule cannot reuse the whole token class, which bans the backslash a
+ * Windows path needs. It refuses THIS half because the worker's `SanitizePath`
+ * does not: that rule drops control characters and trims edge whitespace, but
+ * U+200B is Cf rather than Cc, so it travels through untouched and reaches the
+ * agent inside a filename.
  */
-export function validateSessionFileHandle(value: string): string | null {
+const SESSION_INVISIBLE = new RegExp(`[${SESSION_INVISIBLE_CLASS}]`)
+
+/**
+ * Validates a value already known to be a session FILE PATH. The empty value
+ * is accepted and means "no resume".
+ *
+ * This is the generic half of a two-shape resume handle, and it is deliberately
+ * provider-neutral: WHICH values are paths is a provider's own resolver rule
+ * and lives in that provider's plugin (`validateResumeHandle` — Pi's is the
+ * only one today). What a session file path may look like is the same question
+ * for any provider that has one.
+ *
+ * It is DELIBERATELY narrower than the worker's rule. It refuses only what is
+ * wrong on every host -- a relative path, a `..` escape, an invisible-format
+ * character, a value past the byte cap -- and leaves the Windows device names
+ * and the OS-specific spelling of "absolute" to the worker, which knows its own
+ * host. A browser copy of those would refuse paths a POSIX worker accepts,
+ * which is the failure this rule exists to remove. So a value this accepts may
+ * still be refused by the worker; a value this REFUSES must be refused by every
+ * worker, because it never reaches one to be judged.
+ */
+export function validateSessionFilePath(value: string): string | null {
   if (value === '')
     return null
-  // The shape test the worker uses, and the resolver behind it: a separator
-  // anywhere, or the `.jsonl` suffix.
-  if (!/[/\\]/.test(value) && !value.endsWith('.jsonl'))
-    return validateSessionId(value)
   if (UTF8.encode(value).length > SESSION_FILE_PATH_BYTE_LIMIT)
     return `Session file path must be at most ${SESSION_FILE_PATH_BYTE_LIMIT} bytes`
+  // The one refusal the path rule keeps from the token rule. The worker's
+  // `SanitizePath` DROPS a control character and TRIMS edge whitespace before
+  // it judges, so those need no test here — but an invisible-format character
+  // is neither: U+200B is Cf, so it travels through untouched and reaches the
+  // agent inside a filename, naming a session that does not exist. The worker
+  // refuses the same class (`validate.RefuseInvisibleSessionChars`).
+  if (SESSION_INVISIBLE.test(value))
+    return 'Session file path contains invisible characters'
   if (!ABSOLUTE_PATH_START.test(value))
     return 'Session file path must be absolute'
   if (PATH_TRAVERSAL.test(value))

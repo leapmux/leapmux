@@ -1,6 +1,7 @@
 package service
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -27,17 +28,23 @@ func TestTabNamePool(t *testing.T) {
 	}
 }
 
-// The tie between the pool and plan-mode auto-rename. A pooled name that the
-// pattern rejects would leave every tab it named un-renameable by plan mode,
-// with nothing to report it -- the failure is silent by construction, so the
-// whole pool is checked rather than a sample.
-func TestPickAgentTitle_EveryPooledNameMatchesTheAutoTitlePattern(t *testing.T) {
+// pooledTitleShape is what a title built from the pool reads like: the prefix,
+// one space, and one capitalized word.
+//
+// It is a READABILITY property now, not a load-bearing one. Plan-mode
+// auto-rename used to decide "may I overwrite this title?" by matching the
+// rendered string against exactly this pattern, so a pooled name that stopped
+// matching silently disabled the feature. The agents row records the answer
+// instead (title_auto_generated), so the pool is free of that tie -- this
+// keeps the shape the schema still states, and nothing depends on it.
+var pooledTitleShape = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.AgentTitlePrefix) + ` [A-Z][A-Za-z]+$`)
+
+func TestPickAgentTitle_EveryPooledNameKeepsTheTitleShape(t *testing.T) {
 	t.Parallel()
 
 	for _, name := range contracts.TabNames {
 		title := contracts.AgentTitlePrefix + " " + name
-		assert.Regexp(t, agentAutoTitlePattern, title,
-			"plan-mode auto-rename would never overwrite %q", title)
+		assert.Regexp(t, pooledTitleShape, title, "%q does not read as a pooled agent title", title)
 	}
 }
 
@@ -47,7 +54,7 @@ func TestPickAgentTitle_UsesTheContractPrefix(t *testing.T) {
 	title := pickAgentTitle()
 	assert.True(t, strings.HasPrefix(title, contracts.AgentTitlePrefix+" "),
 		"got %q, want the %q prefix", title, contracts.AgentTitlePrefix)
-	assert.Regexp(t, agentAutoTitlePattern, title)
+	assert.Regexp(t, pooledTitleShape, title)
 }
 
 func TestPickTerminalTitle_UsesTheContractPrefix(t *testing.T) {
@@ -56,9 +63,10 @@ func TestPickTerminalTitle_UsesTheContractPrefix(t *testing.T) {
 	title := pickTerminalTitle()
 	assert.True(t, strings.HasPrefix(title, contracts.TerminalTitlePrefix+" "),
 		"got %q, want the %q prefix", title, contracts.TerminalTitlePrefix)
-	// A terminal title must NOT read as an auto-generated agent title, or
-	// plan-mode auto-rename would treat a terminal's name as overwritable.
-	assert.NotRegexp(t, agentAutoTitlePattern, title)
+	// A terminal title must not read as an agent title: the two prefixes are
+	// what tell a reader which kind of tab a name belongs to, and the contract
+	// check refuses a shared prefix for that reason.
+	assert.NotRegexp(t, pooledTitleShape, title)
 }
 
 // pickTabName must reach the whole pool. A picker that returned one name (an

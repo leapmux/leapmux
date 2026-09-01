@@ -166,4 +166,22 @@ describe('newTerminalDialog shell field', () => {
 
     await waitFor(() => expect(workerRpc.listAvailableShells).toHaveBeenCalledTimes(2))
   })
+
+  // A failed load writes the dialog's error banner (the RPC's own message,
+  // per formatErrorMessage), and nothing used to withdraw it: the refresh
+  // button repopulated the menu and armed Create while the banner still
+  // reported the failure -- the one state that button exists to leave.
+  it('clears the load failure once a refresh succeeds', async () => {
+    vi.mocked(workerRpc.listAvailableShells).mockRejectedValueOnce(new Error('worker offline'))
+    renderDialog()
+
+    await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
+    const createButton = await findCreateButton()
+    expect(createButton).toBeDisabled()
+
+    fireEvent.click(screen.getByTestId('shell-selector-refresh'))
+
+    await waitFor(() => expect(screen.queryByText('worker offline')).not.toBeInTheDocument())
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+  })
 })

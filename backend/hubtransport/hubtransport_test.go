@@ -4,10 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -440,10 +445,10 @@ func TestCloseIdleConnectionsReachesEveryLeg(t *testing.T) {
 	_, err = get(t, endpoint.WebSocketClient(), srv.URL+"/rest")
 	require.NoError(t, err)
 
-	require.Len(t, endpoint.legs, 2, "a cleartext endpoint has an h2c leg and an HTTP/1.1 leg")
+	require.Len(t, endpoint.transports, 2, "a cleartext endpoint has an h2c transport and an HTTP/1.1 one")
 	endpoint.CloseIdleConnections()
 
-	// Both legs answer again afterwards, which is what proves the call closed
+	// Both transports answer again afterwards, which proves the call closed
 	// idle connections rather than the transports.
 	_, err = get(t, endpoint.UnaryClient(DefaultUnaryTimeout), srv.URL+"/rpc")
 	require.NoError(t, err)
@@ -547,8 +552,6 @@ func TestProxiedEndpointUsesHTTP11(t *testing.T) {
 	withProxy(t, proxy.URL)
 
 	endpoint := mustNew(t, "http://hub.invalid:4327")
-	assert.Nil(t, endpoint.prober, "a proxied endpoint has no h2c support to measure")
-	require.Len(t, endpoint.legs, 1, "and therefore no h2c leg to build")
 
 	for name, client := range map[string]*http.Client{
 		"unary":     endpoint.UnaryClient(DefaultUnaryTimeout),
@@ -575,4 +578,270 @@ func TestProxiedEndpointRefusesTheHTTP2Lane(t *testing.T) {
 	assert.Contains(t, err.Error(), proxy.URL, "the failure must name the proxy in the way")
 	assert.Contains(t, err.Error(), "http://hub.invalid:4327")
 	assert.Empty(t, rec.all(), "the request must not go out at all")
+}
+
+// --- IPv6, idle connections, and the per-request proxy test ---------------
+
+// TestDialAddressBracketsAnIPv6LiteralOnce pins the address the probe dials.
+//
+// u.Host KEEPS the brackets around an IPv6 literal and net.JoinHostPort adds
+// its own, so the default-port path produced `[[::1]]:80`. net.Dial refuses
+// that, so the probe never reached a bracketed IPv6 endpoint, the verdict
+// stayed undecided, and such an endpoint never fell back to HTTP/1.1.
+func TestDialAddressBracketsAnIPv6LiteralOnce(t *testing.T) {
+	for raw, want := range map[string]string{
+		"http://[::1]":            "[::1]:80",
+		"http://[::1]:8080":       "[::1]:8080",
+		"http://[fe80::1%25en0]":  "[fe80::1%en0]:80",
+		"http://hub.example":      "hub.example:80",
+		"http://hub.example:4327": "hub.example:4327",
+		"http://127.0.0.1":        "127.0.0.1:80",
+	} {
+		u, err := url.Parse(raw)
+		require.NoError(t, err, raw)
+		address := dialAddress(u)
+		assert.Equal(t, want, address, raw)
+		// The address must be one net.Dial accepts, which is the property the
+		// double-bracketed form broke.
+		host, port, err := net.SplitHostPort(address)
+		require.NoErrorf(t, err, "%s -> %q is not a dialable address", raw, address)
+		assert.NotEmpty(t, host)
+		assert.NotEmpty(t, port)
+	}
+}
+
+// countingTransport records CloseIdleConnections reaching the wrapped
+// transport, which is the call the lane wrappers must forward.
+type countingTransport struct{ closed atomic.Int64 }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("countingTransport does not carry requests")
+}
+
+func (c *countingTransport) CloseIdleConnections() { c.closed.Add(1) }
+
+// TestLaneWrappersForwardCloseIdleConnections pins the forwarding that
+// http.Client.CloseIdleConnections depends on.
+//
+// net/http reaches a transport's idle connections through an OPTIONAL
+// interface: Client.CloseIdleConnections type-asserts its Transport for
+// `interface{ CloseIdleConnections() }` and does NOTHING when the assertion
+// fails. A wrapper carrying RoundTrip alone therefore turns the call into a
+// silent no-op — which is how the desktop shutdown stopped releasing the
+// named-pipe handles it must free before it starts the Hub again.
+func TestLaneWrappersForwardCloseIdleConnections(t *testing.T) {
+	t.Run("guardWebSocket forwards to the wrapped round tripper", func(t *testing.T) {
+		inner := &countingTransport{}
+		guardWebSocket{next: inner}.CloseIdleConnections()
+		assert.EqualValues(t, 1, inner.closed.Load())
+	})
+
+	t.Run("preferH2C closes BOTH of its transports", func(t *testing.T) {
+		h2c, h1 := &countingTransport{}, &countingTransport{}
+		preferH2C{h2c: h2c, h1: h1}.CloseIdleConnections()
+		assert.EqualValues(t, 1, h2c.closed.Load(), "the h2c transport")
+		assert.EqualValues(t, 1, h1.closed.Load(), "the HTTP/1.1 transport")
+	})
+
+	t.Run("requireH2C forwards to its transport", func(t *testing.T) {
+		h2c := &countingTransport{}
+		requireH2C{h2c: h2c}.CloseIdleConnections()
+		assert.EqualValues(t, 1, h2c.closed.Load())
+	})
+}
+
+// TestEveryLaneClientCanCloseIdleConnections is the end-to-end half: net/http
+// must find the method on whatever each lane hands out, for every scheme.
+func TestEveryLaneClientCanCloseIdleConnections(t *testing.T) {
+	tls := hubtransporttest.NewTLSServer(t, &recorder{})
+	plaintext := hubtransporttest.NewServer(t, &recorder{})
+	socket := t.TempDir() + "/ht.sock"
+
+	for name, endpoint := range map[string]*Endpoint{
+		"plaintext": mustNew(t, plaintext.URL),
+		"tls":       trusting(t, tls),
+		"socket":    mustNew(t, "unix:"+socket),
+	} {
+		for lane, client := range map[string]*http.Client{
+			"unary":     endpoint.UnaryClient(DefaultUnaryTimeout),
+			"stream":    endpoint.StreamClient(),
+			"http2only": endpoint.HTTP2OnlyClient(),
+			"websocket": endpoint.WebSocketClient(),
+		} {
+			_, ok := client.Transport.(interface{ CloseIdleConnections() })
+			assert.Truef(t, ok, "%s/%s: net/http reaches idle connections only through this interface", name, lane)
+		}
+	}
+}
+
+// TestProxiedRequestNeverRoutesAroundTheProxy pins the per-request proxy test.
+//
+// The proxy decision used to run ONCE, at construction, against the endpoint
+// URL, while the h2c transport carried `Proxy = nil` and dialed every host
+// itself. With a proxy configured and NO_PROXY covering the hub, the two
+// disagreed: construction saw no proxy, so it built the h2c transport, and
+// that transport then dialed a proxied host directly — routing around the
+// proxy the operator configured. net/http follows a redirect through the same
+// round tripper with the new host, and no client here sets CheckRedirect.
+func TestProxiedRequestNeverRoutesAroundTheProxy(t *testing.T) {
+	rec := &recorder{}
+	proxy := hubtransporttest.NewServer(t, rec)
+	hub := hubtransporttest.NewServer(t, &recorder{})
+
+	hubURL, err := url.Parse(hub.URL)
+	require.NoError(t, err)
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+
+	// The shape NO_PROXY produces: the hub is direct, every other host is
+	// proxied. The endpoint IS the hub, so construction sees no proxy at all.
+	previous := proxyForRequest
+	proxyForRequest = func(req *http.Request) (*url.URL, error) {
+		if req.URL.Host == hubURL.Host {
+			return nil, nil
+		}
+		return proxyURL, nil
+	}
+	t.Cleanup(func() { proxyForRequest = previous })
+
+	endpoint := mustNew(t, hub.URL)
+	require.NotNil(t, endpoint.prober, "the hub itself is direct, so its h2c support is still worth measuring")
+
+	// A request to a DIFFERENT host on the h2c-preferring lane. Without the
+	// per-request test this dials elsewhere.invalid directly and fails to
+	// resolve; with it the request goes to the proxy, which answers.
+	resp, err := get(t, endpoint.UnaryClient(DefaultUnaryTimeout), "http://elsewhere.invalid/rpc")
+	require.NoError(t, err, "a proxied host must reach the proxy from every lane")
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.NotEmpty(t, rec.all(), "the proxy carries the request")
+}
+
+// TestProxiedHTTP2LaneNamesTheProxyPerRequest is the requireH2C half of the
+// same rule: the stream lane refuses, and says which proxy is in the way.
+func TestProxiedHTTP2LaneNamesTheProxyPerRequest(t *testing.T) {
+	proxy := hubtransporttest.NewServer(t, &recorder{})
+	hub := hubtransporttest.NewServer(t, &recorder{})
+
+	hubURL, err := url.Parse(hub.URL)
+	require.NoError(t, err)
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	previous := proxyForRequest
+	proxyForRequest = func(req *http.Request) (*url.URL, error) {
+		if req.URL.Host == hubURL.Host {
+			return nil, nil
+		}
+		return proxyURL, nil
+	}
+	t.Cleanup(func() { proxyForRequest = previous })
+
+	endpoint := mustNew(t, hub.URL)
+	// The hub itself is direct, so the stream lane works against it.
+	_, err = get(t, endpoint.HTTP2OnlyClient(), hub.URL+"/connect")
+	require.NoError(t, err, "a direct host keeps the HTTP/2 lane")
+
+	// A proxied host does not, and the refusal identifies the proxy.
+	_, err = get(t, endpoint.HTTP2OnlyClient(), "http://elsewhere.invalid/connect")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrH2CUnsupported)
+	assert.Contains(t, err.Error(), proxy.URL, "the failure must identify the proxy in the way")
+}
+
+// closeCountingBody records Close, so a refusal can be checked against the
+// RoundTripper contract.
+type closeCountingBody struct {
+	io.Reader
+	closed atomic.Int64
+}
+
+func (b *closeCountingBody) Close() error {
+	b.closed.Add(1)
+	return nil
+}
+
+// TestARefusedRequestClosesItsBody pins the half of the http.RoundTripper
+// contract a refusing lane can break.
+//
+// "RoundTrip must always close the body, including on errors" — a caller may be
+// blocked writing to it. A lane that refuses never reaches the transport that
+// would have closed it. connect-go closes its own pipe on a RoundTrip error, so
+// nothing leaks today; that is its defensive code, not a promise this package
+// may rely on.
+func TestARefusedRequestClosesItsBody(t *testing.T) {
+	srv := hubtransporttest.NewHTTP1Server(t, &recorder{})
+	endpoint := mustNew(t, srv.URL)
+
+	t.Run("a WebSocket upgrade on a lane that cannot carry one", func(t *testing.T) {
+		body := &closeCountingBody{Reader: strings.NewReader("payload")}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/ws", body)
+		require.NoError(t, err)
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+
+		_, err = endpoint.UnaryClient(DefaultUnaryTimeout).Do(req)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrWebSocketLane)
+		assert.EqualValues(t, 1, body.closed.Load(), "the refused request's body must be closed")
+	})
+
+	t.Run("an HTTP/2-only lane against an endpoint with no h2c", func(t *testing.T) {
+		body := &closeCountingBody{Reader: strings.NewReader("payload")}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/connect", body)
+		require.NoError(t, err)
+
+		_, err = endpoint.HTTP2OnlyClient().Do(req)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrH2CUnsupported)
+		assert.EqualValues(t, 1, body.closed.Load(), "the refused request's body must be closed")
+	})
+}
+
+// TestEveryLaneRefusesOrCarriesAnUpgradeBySchema is what setLanes exists to
+// guarantee.
+//
+// Three build paths decide the three lanes, and each one used to assign the
+// fields and apply guardWebSocket by hand. A fourth path that forgot the guard
+// would put an upgrade on an h2c connection, where coder/websocket cannot work
+// at all -- and nothing would report it until the first upgrade in production.
+// setLanes applies the guard itself, so this holds for every scheme.
+func TestEveryLaneRefusesOrCarriesAnUpgradeBySchema(t *testing.T) {
+	tlsSrv := hubtransporttest.NewTLSServer(t, &recorder{})
+	plaintext := hubtransporttest.NewServer(t, &recorder{})
+
+	for name, endpoint := range map[string]*Endpoint{
+		"plaintext": mustNew(t, plaintext.URL),
+		"tls":       trusting(t, tlsSrv),
+		"socket":    mustNew(t, "unix:"+t.TempDir()+"/lanes.sock"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Every lane but the WebSocket one refuses an upgrade.
+			for lane, client := range map[string]*http.Client{
+				"unary":     endpoint.UnaryClient(DefaultUnaryTimeout),
+				"stream":    endpoint.StreamClient(),
+				"http2only": endpoint.HTTP2OnlyClient(),
+			} {
+				req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://hub.invalid/ws", nil)
+				require.NoError(t, err)
+				req.Header.Set("Connection", "Upgrade")
+				req.Header.Set("Upgrade", "websocket")
+
+				_, err = client.Do(req)
+				require.Errorf(t, err, "%s/%s", name, lane)
+				assert.ErrorIsf(t, err, ErrWebSocketLane,
+					"%s/%s must refuse an upgrade with the error that identifies the right client", name, lane)
+			}
+
+			// And the WebSocket lane does NOT refuse: it is the one that must
+			// carry the upgrade, so the guard must never reach it.
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://hub.invalid/ws", nil)
+			require.NoError(t, err)
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
+			_, err = endpoint.WebSocketClient().Do(req)
+			// It fails to CONNECT (hub.invalid resolves nowhere), which is the
+			// point: it got past the guard and reached the transport.
+			require.Error(t, err)
+			assert.NotErrorIsf(t, err, ErrWebSocketLane, "%s/websocket must carry an upgrade, not refuse one", name)
+		})
+	}
 }

@@ -22,7 +22,6 @@ import (
 // with the delegation bearer and forwards each frame to the local
 // IPC consumer.
 type HubEventStreamer struct {
-	HubURL string
 	// Delegation is the interface, not the concrete store, for the same
 	// reason HubUnaryBridge takes it: this type calls GetBearer and nothing
 	// else, and a test needs to supply that one method.
@@ -41,7 +40,6 @@ type HubEventStreamer struct {
 // covers the body read, and this body ends only when the subscription does.
 func NewHubEventStreamer(endpoint *hubtransport.Endpoint, delegation crossworker.DelegationProvider) *HubEventStreamer {
 	return &HubEventStreamer{
-		HubURL:     endpoint.URL(),
 		Delegation: delegation,
 		HTTPClient: endpoint.WebSocketClient(),
 		ConnectURL: endpoint.BaseURL(),

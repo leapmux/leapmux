@@ -144,7 +144,9 @@ func streamWatchUserLocal(
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ipcStream, err := c.ControlIPCService()
+	// The STREAM lane: this subscription stays open until the caller cancels,
+	// and the unary lane's timeout would cut it off on a clock.
+	ipcStream, err := c.ControlIPCStreamService()
 	if err != nil {
 		return err
 	}

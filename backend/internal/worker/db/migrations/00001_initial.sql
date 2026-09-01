@@ -12,6 +12,18 @@ CREATE TABLE agents (
     plan_file_path           TEXT    NOT NULL DEFAULT '',
     plan_title               TEXT    NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
+    -- 1 when nobody CHOSE `title`: the worker picked it from the shared pool,
+    -- the model supplied it, or the client sent back the pre-filled suggestion
+    -- untouched. Plan-mode auto-rename overwrites a title only while this is 1.
+    --
+    -- Recorded rather than re-derived. The answer used to come from a regex
+    -- over the rendered string (`^Agent [A-Z][A-Za-z]+$`), which cannot tell a
+    -- pooled name from one a user typed -- so a user who typed `Agent Bob`, or
+    -- who edited the pre-filled `Agent Gabe` to another single word, was
+    -- silently overwritten. It also forced every pooled name to keep that
+    -- shape, a constraint the tab-names schema had to carry for a regex three
+    -- layers away.
+    title_auto_generated INTEGER NOT NULL DEFAULT 1,
     agent_session_id TEXT NOT NULL DEFAULT '',
     resumed          INTEGER NOT NULL DEFAULT 0,
     -- options: chosen option values keyed by option-group id (model, effort,

@@ -27,15 +27,19 @@ import (
 // implicitly by minting a new pair (the old delegation row is
 // revoked when its agent closes).
 //
-// HubURL is the user-visible address (`https://hub.example` or a
-// `unix:`/`npipe:` IPC URL in solo / hub-on-socket deployments).
-// requestBaseURL is what mint/revoke actually POST against: identical
-// to HubURL for remote hubs, but rewritten to a placeholder
-// `http://localhost` for local-IPC hubs because `net/http` rejects
-// any URL whose scheme isn't http(s) with "unsupported protocol
-// scheme" — the socket dial is wired into HTTPClient's Transport.
+// requestBaseURL is what mint/revoke actually POST against: the endpoint
+// address itself for a remote hub, but a placeholder `http://localhost` for a
+// local-IPC hub, because `net/http` rejects any URL whose scheme isn't http(s)
+// with "unsupported protocol scheme" — the socket dial is wired into
+// HTTPClient's Transport instead.
+//
+// There is deliberately no field for the user-visible address. It would be a
+// second copy that a caller could point somewhere the transport does not dial,
+// and for a `unix:`/`npipe:` hub the two ALREADY read differently
+// (`unix:/run/leapmux.sock` against `http://localhost`). The endpoint that
+// built HTTPClient answers that question, which is the same reason this commit
+// removed `bootstrap.Params.HubURL`.
 type DelegationStore struct {
-	HubURL          string
 	WorkerAuthToken string
 	HTTPClient      *http.Client
 	MintGracePeriod time.Duration
@@ -111,7 +115,6 @@ type cachedDelegation struct {
 // that accepts a connection and never answers must not hold a spawn open.
 func NewDelegationStore(endpoint *hubtransport.Endpoint, workerAuthToken, workerID string) *DelegationStore {
 	return &DelegationStore{
-		HubURL:           endpoint.URL(),
 		WorkerAuthToken:  workerAuthToken,
 		HTTPClient:       endpoint.UnaryClient(mintTimeout),
 		MintGracePeriod:  5 * time.Minute,
@@ -125,7 +128,7 @@ func NewDelegationStore(endpoint *hubtransport.Endpoint, workerAuthToken, worker
 	}
 }
 
-// mintTimeout bounds one mint or revoke POST. It is shorter than
+// mintTimeout limits one mint or revoke POST. It is shorter than
 // hubtransport.DefaultUnaryTimeout because these two calls sit in the path of
 // an agent spawn, which a person waits on.
 const mintTimeout = 10 * time.Second

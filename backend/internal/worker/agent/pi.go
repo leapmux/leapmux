@@ -85,40 +85,67 @@ type PiAgent struct {
 // for two reasons. `--session` reaches Pi's own resolver, which takes either
 // shape of handle -- a session file path, or a bare session ID that it matches
 // against the sessions of this working directory -- while the RPC takes a path
-// and nothing else. And the RPC does not fail on a path that names no file: Pi
+// and nothing else. And the RPC does not fail on a path that identifies no file: Pi
 // starts an EMPTY session at that path and answers success, so a handle that
-// named no session became a new file in the working directory and looked like a
+// identified no session became a new file in the working directory and looked like a
 // resume.
 //
 // The value this reads is NOT the one OpenAgent validated.
 // agentOutputSink.UpdateSessionID writes whatever Pi reports into the
 // `agent_session_id` column, and resolveResumeSessionID hands that column back
 // here on every restart. So the rule runs again at the argv sink, which is the
-// same split claudeResumeArgs documents. Losing the resume is recoverable;
-// passing an unvalidated handle to argv is not.
+// same split claudeResumeArgs documents. A handle that fails the rule fails the
+// start; see resumeFailedError.
 //
-// One case reaches Pi and this cannot answer it: a bare session ID that names
-// no session of THIS working directory, but does name one somewhere else. Pi
+// It sends the handle that ResolveResumeHandle RETURNS, never the stored one.
+// The path rule normalizes as it checks -- it drops control characters, trims
+// edge whitespace, expands `~` and cleans the path -- and Pi opens a session
+// file without requiring that it exists, so sending the stored string started
+// an EMPTY session at a filename nobody typed whenever the two differed.
+//
+// One case reaches Pi and this cannot answer it: a bare session ID that matches
+// no session of THIS working directory, but does match one somewhere else. Pi
 // then asks on stdin whether to fork it, nothing answers in RPC mode, and the
 // startup handshake fails on the get_state timeout. That failure is visible,
 // unlike the empty session the RPC path created.
-func piResumeArgs(agentID, resumeSessionID, homeDir string) []string {
+func piResumeArgs(resumeSessionID, homeDir string) ([]string, error) {
 	if resumeSessionID == "" {
-		return nil
+		return nil, nil
 	}
-	if err := (piProvider{}).ValidateResumeHandle(resumeSessionID, homeDir); err != nil {
-		slog.Warn("refusing to resume: the stored Pi session handle is not valid",
-			"agent_id", agentID, "error", err)
-		return nil
+	resolved, err := (piProvider{}).ResolveResumeHandle(resumeSessionID, homeDir)
+	if err != nil {
+		return nil, resumeFailedError(resumeSessionID,
+			fmt.Errorf("the stored Pi session handle is not valid: %w", err))
 	}
-	return []string{"--session", resumeSessionID}
+	return []string{"--session", resolved}, nil
 }
 
 // StartPi starts a `pi --mode rpc` process and performs the startup handshake.
+//
+// A resume Pi cannot honour fails the WHOLE start, and that is deliberate.
+// `--session` is on the launch line rather than in a post-startup RPC, so Pi
+// settles the session before it enters RPC mode: it exits 1 when no session
+// matches the handle, and exits 1 in RPC mode when the session file identifies a
+// working directory that no longer exists — which happens here whenever a git
+// worktree is removed. The switch_session step this replaced warned and
+// continued on a fresh session instead; the launch flag cannot, because the
+// process is already gone by the time the handshake times out.
+//
+// The failure is visible, which the RPC path's was not: switch_session answered
+// SUCCESS for a path that named no file, so Pi wrote a new empty session there
+// and the user saw a resumed tab with no history. Nothing clears
+// `agent_session_id` after a failed start, so a stored handle that Pi refuses
+// keeps failing until `/clear` replaces it -- which is what resumeFailedError
+// tells the user to send.
 func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	launch, err := resolveProviderLaunch(ctx, opts.Shell, opts.LoginShell, leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resumeArgs, err := piResumeArgs(opts.ResumeSessionID, opts.HomeDir)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -130,7 +157,7 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launch,
-		BaseArgs:   append([]string{"--mode", "rpc"}, piResumeArgs(opts.AgentID, opts.ResumeSessionID, opts.HomeDir)...),
+		BaseArgs:   append([]string{"--mode", "rpc"}, resumeArgs...),
 		WorkingDir: opts.WorkingDir,
 	})
 	cmd.Env = FinalizeAgentEnv(cmd.Environ(), opts)
@@ -219,7 +246,7 @@ func StartPi(ctx context.Context, opts Options, sink OutputSink) (Agent, error) 
 // `sessionFile` (the path `pi --session` reopens across restarts) and falling
 // back to the rotating runtime `sessionId`. Both shapes resume: `--session`
 // matches a bare ID against this working directory's sessions. The file wins
-// because it names the session from any directory, and it survives the ID
+// because it identifies the session from any directory, and it survives the ID
 // rotation that new_session performs.
 // Caller must hold a.mu.
 func (a *PiAgent) sessionHandleLocked() string {

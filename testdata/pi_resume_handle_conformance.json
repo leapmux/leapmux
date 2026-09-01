@@ -4,8 +4,8 @@
     "FILE. Pi is the one such provider today.",
     "",
     "WHY THIS FILE EXISTS: the worker enforces the rule (backend/internal/worker/agent/",
-    "provider.go, piProvider.ValidateResumeHandle) and the browser hand-mirrors it",
-    "(frontend/src/lib/validate.ts, validateSessionFileHandle) so the resume field can refuse a",
+    "provider.go, piProvider.ResolveResumeHandle) and the browser hand-mirrors it",
+    "(the Pi plugin's piValidateResumeHandle) so the resume field can refuse a",
     "bad handle at the field instead of after a round trip. The two copies drifted once and the",
     "drift removed the feature: the browser applied the TOKEN rule to every provider, so it",
     "refused a real Pi session path at the 128-byte cap, while the worker applied the PATH rule",
@@ -187,6 +187,33 @@
         "windows": { "valid": false, "refusal": "whitespace_at_edge" }
       },
       "why": "whitespace alone is neither shape, and the token rule reports the edge rule for it"
+    },
+    {
+      "input": { "text": "/Users/dev/.pi/agent/sessions/--p--/a\u200bb.jsonl" },
+      "browser": { "valid": false, "refusal": "invisible_character" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "invisible_character" },
+        "windows": { "valid": false, "refusal": "invisible_character" }
+      },
+      "why": "a zero-width space in a session PATH is refused on every host: the invisible test runs BEFORE the absolute test, because SanitizePath strips a control character but leaves a FORMAT character alone, and that one would reach the agent inside the filename"
+    },
+    {
+      "input": { "text": "C:\\Users\\pi\\sessions\\a\u200bb.jsonl" },
+      "browser": { "valid": false, "refusal": "invisible_character" },
+      "worker": {
+        "posix": { "valid": false, "refusal": "invisible_character" },
+        "windows": { "valid": false, "refusal": "invisible_character" }
+      },
+      "why": "the same refusal for the Windows spelling, so one field gives one answer on both hosts"
+    },
+    {
+      "input": { "text": "/Users/dev/.pi/agent/sessions/--p--/a\u0007b.jsonl" },
+      "browser": { "valid": true, "refusal": "" },
+      "worker": {
+        "posix": { "valid": true, "refusal": "" },
+        "windows": { "valid": false, "refusal": "not_absolute" }
+      },
+      "why": "a control character in a PATH is STRIPPED rather than refused, and the worker sends the stripped path -- so the browser leaves it to the worker rather than refusing what the worker accepts"
     }
   ]
 }

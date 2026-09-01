@@ -271,6 +271,24 @@ func (p *processBase) formatStartupError(phase string, err error) error {
 	return fmt.Errorf("%s", strings.Join(parts, "; "))
 }
 
+// resumeFailedError reports that the agent refused to reopen a stored session,
+// and states the one command that recovers the tab.
+//
+// A resume that fails is FATAL for every provider, and that uniformity is the
+// point. The alternative -- open a fresh session, write a warning to the log,
+// and report success -- discards the conversation that the user asked to
+// continue. The tab comes up with no history, the agent has no memory of the
+// work, and the only record is a log line on the worker that nobody reads. A
+// user who wants a fresh session asks for one with `/clear`, which restarts
+// with no resume handle and clears the stored one.
+//
+// A visible failure also keeps the stored handle, so a resume that fails for a
+// reason that passes -- an app-server that is not ready yet, a worktree that a
+// later step mounts -- succeeds on the next start.
+func resumeFailedError(sessionID string, err error) error {
+	return fmt.Errorf("could not resume session %q: %w (send /clear to start a fresh session)", sessionID, err)
+}
+
 // skipPreamble reads lines from the scanner until the preamble delimiter is
 // found. Shell login preamble (motd, .zshrc output, etc.) appears before the
 // agent's JSONL stream. Metadata lines (key=value pairs prefixed with

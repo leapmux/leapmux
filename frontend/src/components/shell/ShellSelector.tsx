@@ -1,5 +1,5 @@
 import type { Accessor, Component } from 'solid-js'
-import { labelRow } from '~/components/common/Dialog.css'
+import { LabeledField } from '~/components/common/LabeledField'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
 import { RefreshButton } from '~/components/common/RefreshButton'
 
@@ -23,13 +23,14 @@ interface ShellSelectorProps {
 }
 
 /**
- * The Shell field: a label row and the shell menu, laid out exactly as
- * WorkerSelector lays out the Worker field.
+ * The Shell field: LabeledField's frame around the shell menu, so it is laid
+ * out exactly as WorkerSelector lays out the Worker field.
  *
  * It used to be a bare `<label>` wrapping the menu, which took Oat's
  * `label { font-size: var(--text-7); font-weight: var(--font-medium) }` rule
  * and typeset "Shell" differently from "Worker" beside it, and left no slot
- * for a trailing button. ChangeBranchDialog rendered a third variant.
+ * for a trailing button. ChangeBranchDialog rendered a third variant. That
+ * rule now lives on LabeledField, where the element is chosen.
  *
  * The refresh button is the only route to `useAvailableShells().refresh()`.
  * The hook's own effect re-fetches on a workerId TRANSITION, so a transient
@@ -38,16 +39,17 @@ interface ShellSelectorProps {
  * and returning.
  */
 export const ShellSelector: Component<ShellSelectorProps> = props => (
-  <div>
-    <div class={labelRow}>
-      Shell
+  <LabeledField
+    label="Shell"
+    actions={(
       <RefreshButton
         onClick={() => void props.state.refresh()}
         disabled={props.state.loading()}
         title="Refresh shells"
         data-testid="shell-selector-refresh"
       />
-    </div>
+    )}
+  >
     <LoadingMenu
       ariaLabel="Shell"
       value={props.state.shell()}
@@ -60,5 +62,5 @@ export const ShellSelector: Component<ShellSelectorProps> = props => (
       }))}
       data-testid="shell-select-menu"
     />
-  </div>
+  </LabeledField>
 )

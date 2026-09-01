@@ -123,7 +123,7 @@ type Options struct {
 	APITimeout     time.Duration           // Timeout for JSON-RPC requests (default: 10s)
 	Shell          string                  // Default shell path (always set when using shell wrapper)
 	LoginShell     bool                    // If true, use interactive+login shell flags
-	HomeDir        string                  // User's home directory (reads Claude Code settings; expands `~` in a Pi resume handle)
+	HomeDir        string                  // User's home directory (reads Claude Code settings; expands `~` when the Pi rule CHECKS a resume handle -- Pi expands it again itself)
 	AgentProvider  leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 	// ExtraEnv is appended verbatim to the spawned process's
 	// environment after the provider-specific env-var setup. The

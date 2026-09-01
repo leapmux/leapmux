@@ -10,9 +10,14 @@
 package hubtransporttest
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // NewServer starts a cleartext server that speaks HTTP/1.1 and h2c, as the Hub
@@ -66,4 +71,36 @@ func start(t *testing.T, handler http.Handler, useTLS bool, setProtocols func(*h
 	}
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// NewSocketServer starts a server on a `unix:` socket or a Windows named pipe,
+// speaking HTTP/1.1 and h2c, as the Hub's own local listener and the worker's
+// control-IPC listener both do. It returns the listen URL and is closed when
+// the test ends.
+//
+// name only has to be unique within the process: UniqueListenURL keeps the
+// socket path under AF_UNIX's 104-byte sun_path limit, which t.TempDir() blows
+// past on a macOS runner.
+//
+// It is the socket sibling of NewServer. Three suites hand-rolled this same
+// eight-line sequence -- Listen, the two-protocol set, an http.Server with a
+// read-header timeout, a Serve goroutine, WaitReady -- so the policy a local
+// LeapMux listener offers lived in three places and could be edited in one.
+func NewSocketServer(t *testing.T, name string, handler http.Handler) string {
+	t.Helper()
+	socketURL := locallistentest.UniqueListenURL(t, name)
+	ln, err := locallisten.Listen(socketURL)
+	if err != nil {
+		t.Fatalf("hubtransporttest: listen %s: %v", socketURL, err)
+	}
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	if err := locallisten.WaitReady(context.Background(), socketURL); err != nil {
+		t.Fatalf("hubtransporttest: %s never became ready: %v", socketURL, err)
+	}
+	return socketURL
 }

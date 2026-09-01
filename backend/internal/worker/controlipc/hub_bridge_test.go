@@ -45,19 +45,45 @@ func (s stubDelegation) GetBearer(context.Context, crossworker.DelegationScope) 
 	return testBearer, nil
 }
 
-// fakeWorkspaceService answers ListTabs and records the credential it saw.
+// fakeWorkspaceService answers ListTabs and records the credential and the
+// HTTP version it saw.
+//
+// gotProto records `r.Proto` and NOT `req.Peer().Protocol`, the way
+// userEventsHandler does. Peer().Protocol is the RPC protocol token
+// ("grpc"/"connect"), which reads the same against an h2c hub and an
+// HTTP/1.1-only one -- so it cannot tell whether the unary lane took the h2c
+// preference this package exists to provide.
 type fakeWorkspaceService struct {
 	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
 	gotAuth  string
 	gotProto string
 }
 
-func (f *fakeWorkspaceService) ListTabs(_ context.Context, req *connect.Request[leapmuxv1.ListTabsRequest]) (*connect.Response[leapmuxv1.ListTabsResponse], error) {
+func (f *fakeWorkspaceService) ListTabs(ctx context.Context, req *connect.Request[leapmuxv1.ListTabsRequest]) (*connect.Response[leapmuxv1.ListTabsResponse], error) {
 	f.gotAuth = req.Header().Get("Authorization")
-	f.gotProto = req.Peer().Protocol
+	if proto, ok := requestProtoFrom(ctx); ok {
+		f.gotProto = proto
+	}
 	return connect.NewResponse(&leapmuxv1.ListTabsResponse{
 		Tabs: []*leapmuxv1.WorkspaceTab{{TabId: "t-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}},
 	}), nil
+}
+
+// requestProtoKey carries the HTTP version down to the handler. ConnectRPC
+// hands a handler no *http.Request, and Peer().Protocol answers a different
+// question, so the surrounding mux records it.
+type requestProtoKey struct{}
+
+func requestProtoFrom(ctx context.Context) (string, bool) {
+	proto, ok := ctx.Value(requestProtoKey{}).(string)
+	return proto, ok
+}
+
+// recordRequestProto wraps a handler so the request's HTTP version reaches it.
+func recordRequestProto(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestProtoKey{}, r.Proto)))
+	})
 }
 
 // userEventsHandler serves /ws/userevents: it records the credential from the
@@ -108,7 +134,9 @@ func startHub(t *testing.T, newServer func(*testing.T, http.Handler) *httptest.S
 	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaces)
 	mux.Handle(path, handler)
 	mux.Handle(contracts.WSRouteUserEvents, events)
-	return newServer(t, mux).URL, workspaces, events
+	// The unary handler is wrapped so it sees the request's HTTP version; the
+	// WebSocket handler reads r.Proto itself.
+	return newServer(t, recordRequestProto(mux)).URL, workspaces, events
 }
 
 func mustEndpoint(t *testing.T, url string) *hubtransport.Endpoint {
@@ -136,6 +164,10 @@ func TestHubUnaryBridge_ReachesAPlaintextHub(t *testing.T) {
 	require.Len(t, resp.GetTabs(), 1)
 	assert.Equal(t, "t-1", resp.GetTabs()[0].GetTabId())
 	assert.Equal(t, "Bearer "+testBearer, workspaces.gotAuth, "the delegation bearer must reach the hub")
+	// The h2c PREFERENCE, which is the whole reason this lane exists: against a
+	// hub that speaks it, the unary call must arrive over HTTP/2 and not fall
+	// back. Peer().Protocol answers "connect" for both hubs and cannot say this.
+	assert.Equal(t, "HTTP/2.0", workspaces.gotProto, "a hub that speaks h2c must be reached over h2c")
 }
 
 // TestHubUnaryBridge_ReachesAnHTTP11OnlyHub covers the same call against a
@@ -150,6 +182,7 @@ func TestHubUnaryBridge_ReachesAnHTTP11OnlyHub(t *testing.T) {
 	_, err = bridge.CallHub(context.Background(), userid.MustNew("u-1"), "ListTabs", payload)
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer "+testBearer, workspaces.gotAuth)
+	assert.Equal(t, "HTTP/1.1", workspaces.gotProto, "the fallback is the point of this case")
 }
 
 // TestHubEventStreamer_ReachesAPlaintextHub covers the streaming half. It

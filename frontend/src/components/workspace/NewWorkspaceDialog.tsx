@@ -9,7 +9,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
-import { isWorkspaceCreateDisabled } from '~/components/shell/dialogValidation'
+import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
@@ -60,7 +60,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
 
   const sessionId = createSessionIdState(agentProvider)
 
-  const submitDisabled = () => isWorkspaceCreateDisabled({
+  const submitDisabled = () => isAgentCreateDisabled({
     submitting: submitting.loading(),
     workerId: worker.workerId(),
     workingDir: worker.workingDir(),
@@ -194,7 +194,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
             onRefresh={props.onRefreshProviders}
           />
         </DialogTopRow>
-        <TitleInput state={title} placeholder="New Workspace" />
+        <TitleInput state={title} />
       </DialogTopSection>
       <DialogColumns
         left={<DirectorySelector state={worker} tree={tree} repoGitStore={props.repoGitStore} />}

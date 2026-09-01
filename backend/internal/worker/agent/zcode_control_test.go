@@ -904,20 +904,20 @@ func TestZCodeProvider_TurnEndToolUsesReadsTheStatedCount(t *testing.T) {
 // ZCode's handle is an opaque TOKEN from session/list, so the token rule applies and
 // the workspace path is irrelevant to it. A path-based provider resolves its handle
 // against the workspace instead; ZCode must NOT, because a token is not a file.
-func TestZCodeProvider_ValidateResumeHandleTakesATokenNotAPath(t *testing.T) {
+func TestZCodeProvider_ResolveResumeHandleTakesATokenNotAPath(t *testing.T) {
 	t.Parallel()
 
 	provider := zcodeProvider{}
-	require.NoError(t, provider.ValidateResumeHandle("01JQ8Z4T5N6P7R8S9T0V1W2X3Y", "/tmp/work"))
-	require.NoError(t, provider.ValidateResumeHandle("", "/tmp/work"),
+	require.NoError(t, resumeHandleErr(provider, "01JQ8Z4T5N6P7R8S9T0V1W2X3Y", "/tmp/work"))
+	require.NoError(t, resumeHandleErr(provider, "", "/tmp/work"),
 		"an empty handle means no resume, which is not an error")
-	require.NoError(t, provider.ValidateResumeHandle("01JQ8Z4T5N6P7R8S9T0V1W2X3Y", ""),
+	require.NoError(t, resumeHandleErr(provider, "01JQ8Z4T5N6P7R8S9T0V1W2X3Y", ""),
 		"the workspace does not participate: a token is resolved by the app-server, not on disk")
 
 	// The token rule refuses what would corrupt the frame or the stored row.
-	assert.Error(t, provider.ValidateResumeHandle("has\na newline", "/tmp/work"))
-	assert.Error(t, provider.ValidateResumeHandle("  padded  ", "/tmp/work"))
-	assert.Error(t, provider.ValidateResumeHandle(strings.Repeat("x", 4096), "/tmp/work"))
+	assert.Error(t, resumeHandleErr(provider, "has\na newline", "/tmp/work"))
+	assert.Error(t, resumeHandleErr(provider, "  padded  ", "/tmp/work"))
+	assert.Error(t, resumeHandleErr(provider, strings.Repeat("x", 4096), "/tmp/work"))
 }
 
 // A PDF reaches the model as binary garbage or is dropped with no message at all.

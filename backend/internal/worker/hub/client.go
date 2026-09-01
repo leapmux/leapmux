@@ -108,7 +108,7 @@ type Client struct {
 // Both services take the HTTP2Only client, and that is a requirement rather
 // than a preference: Connect is a BIDIRECTIONAL gRPC stream, which HTTP/1.1
 // cannot express. Against a cleartext hub with no h2c this client fails with
-// hubtransport.ErrH2CUnsupported, which names the URL and the remedy, instead
+// hubtransport.ErrH2CUnsupported, which states the URL and the remedy, instead
 // of degrading to a protocol on which the worker could never connect.
 func New(endpoint *hubtransport.Endpoint) *Client {
 	httpClient := endpoint.HTTP2OnlyClient()

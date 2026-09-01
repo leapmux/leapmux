@@ -55,8 +55,14 @@ func TestHelperProcessGooseCLI(*testing.T) {
 		case acpMethodInitialize:
 			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}`, false, true
 		case acpMethodSessionNew:
+			if scenario == "new-refused" {
+				return `{"code":-32000,"message":"workspace is not readable"}`, true, true
+			}
 			return `{"sessionId":"goose-new","models":{"currentModelId":"default-model","availableModels":[{"modelId":"default-model","name":"Default Model","description":"Default"},{"modelId":"fast-model","name":"Fast Model","description":"Fast"}]},"modes":{"currentModeId":"auto","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]},"configOptions":[{"id":"mode","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"approve","name":"Approve"},{"value":"smart_approve","name":"Smart Approve"},{"value":"chat","name":"Chat"}]},{"id":"model","currentValue":"default-model","options":[{"value":"default-model","name":"Default Model"},{"value":"fast-model","name":"Fast Model"}]}]}`, false, true
 		case acpMethodSessionLoad:
+			if scenario == "load-refused" {
+				return `{"code":-32000,"message":"session not found"}`, true, true
+			}
 			if scenario == "load" {
 				return `{"models":{"currentModelId":"fast-model","availableModels":[{"modelId":"fast-model","name":"Fast Model"}]},"modes":{"currentModeId":"approve","availableModes":[{"id":"auto","name":"Auto"},{"id":"approve","name":"Approve"},{"id":"smart_approve","name":"Smart Approve"},{"id":"chat","name":"Chat"}]}}`, false, true
 			}
@@ -125,6 +131,48 @@ func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
 	assert.Equal(t, "goose-resume", agent.sessionID)
 	assert.Equal(t, "fast-model", agent.model)
 	assert.Equal(t, GooseCLIModeApprove, agent.permissionMode)
+}
+
+// A resume the agent refuses fails the whole start, for every ACP provider:
+// startACPAgent is the one handshake behind all of them. It used to answer a
+// refused session/load with session/new, which opened an EMPTY session and
+// reported success -- the user got a tab with no history and no report of why.
+func TestStartGooseCLI_RefusedResumeFailsTheStart(t *testing.T) {
+	installFakeGooseCLI(t, "load-refused")
+
+	provider, err := StartGooseCLI(context.Background(), Options{
+		AgentID:         "goose-load-refused",
+		WorkingDir:      t.TempDir(),
+		ResumeSessionID: "goose-resume",
+		Shell:           testutil.TestShell(),
+		LoginShell:      false,
+		AgentProvider:   leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+	}, &testSink{})
+	require.Error(t, err)
+	assert.Nil(t, provider, "a start that fails hands back no agent to talk to")
+	assert.Contains(t, err.Error(), "goose-resume", "the handle that failed is what the user has to replace")
+	assert.Contains(t, err.Error(), "session not found", "the agent's own reason must reach the tab")
+	assert.Contains(t, err.Error(), "/clear", "the failure must state the command that recovers the tab")
+}
+
+// A start that carries no resume handle must not report a resume failure. The
+// wrap is keyed on the handle, which is also what picks session/load over
+// session/new, so the two can never disagree.
+func TestStartGooseCLI_RefusedNewSessionIsNotReportedAsAResume(t *testing.T) {
+	installFakeGooseCLI(t, "new-refused")
+
+	provider, err := StartGooseCLI(context.Background(), Options{
+		AgentID:       "goose-new-refused",
+		WorkingDir:    t.TempDir(),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+	}, &testSink{})
+	require.Error(t, err)
+	assert.Nil(t, provider)
+	assert.Contains(t, err.Error(), "workspace is not readable")
+	assert.NotContains(t, err.Error(), "could not resume", "nothing was asked to resume")
+	assert.NotContains(t, err.Error(), "/clear", "`/clear` restarts on a fresh session, which is what already failed")
 }
 
 func TestGooseUpdateSettingsSendsLiveACPRequests(t *testing.T) {

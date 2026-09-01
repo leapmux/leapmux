@@ -12,9 +12,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
+	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"github.com/leapmux/leapmux/locallisten"
-	"github.com/leapmux/leapmux/locallisten/locallistentest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -301,21 +300,12 @@ func TestOpenChannel_ReachesAHubOverASocket(t *testing.T) {
 	path, handler := leapmuxv1connect.NewChannelServiceHandler(fake)
 	mux.Handle(path, handler)
 
-	socketURL := locallistentest.UniqueListenURL(t, "crossworker")
-	ln, err := locallisten.Listen(socketURL)
-	require.NoError(t, err)
-	protocols := &http.Protocols{}
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
-	t.Cleanup(func() { _ = srv.Close() })
-	go func() { _ = srv.Serve(ln) }()
-	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
+	socketURL := hubtransporttest.NewSocketServer(t, "crossworker", mux)
 
 	c := New(context.Background(), testEndpointFor(t, socketURL), &PinStore{}, &stubDelegationProvider{bearer: "delegation-bearer"})
 	t.Cleanup(c.Close)
 
-	_, err = c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
+	_, err := c.CallInner(context.Background(), "worker-B", userid.MustNew("user-1"), "OpenAgent", []byte("payload"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sibling worker is not registered",
 		"the refusal must come from the hub, not from a transport that could not dial the socket")

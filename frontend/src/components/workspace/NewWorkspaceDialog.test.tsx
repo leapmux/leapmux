@@ -147,7 +147,7 @@ describe('newWorkspaceDialog', () => {
   it('sends the trimmed title to the hub', async () => {
     renderDialog()
 
-    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+    fireEvent.input(await screen.findByLabelText('Title'), {
       target: { value: '  Spaced Out  ' },
     })
     await submitDialog()
@@ -165,7 +165,7 @@ describe('newWorkspaceDialog', () => {
   it('pre-fills a multi-word title, not a single pooled name', async () => {
     renderDialog()
 
-    const input = await screen.findByPlaceholderText('New Workspace') as HTMLInputElement
+    const input = await screen.findByLabelText('Title') as HTMLInputElement
     expect(input.value.split(' ').length).toBeGreaterThan(1)
     expect(input.value).not.toMatch(/^(?:Agent|Terminal) [A-Z][A-Za-z]+$/)
   })
@@ -173,7 +173,7 @@ describe('newWorkspaceDialog', () => {
   it('re-rolls the title from the refresh button', async () => {
     renderDialog()
 
-    const input = await screen.findByPlaceholderText('New Workspace') as HTMLInputElement
+    const input = await screen.findByLabelText('Title') as HTMLInputElement
     const first = input.value
     // The slug space is large, but a repeat is still possible; click until it
     // moves rather than asserting one click differs.
@@ -189,7 +189,7 @@ describe('newWorkspaceDialog', () => {
     fireEvent.click(screen.getByTestId('pick-dir'))
     await waitFor(() => expect(createButton.disabled).toBe(false))
 
-    fireEvent.input(screen.getByPlaceholderText('New Workspace'), { target: { value: '  ' } })
+    fireEvent.input(screen.getByLabelText('Title'), { target: { value: '  ' } })
     await waitFor(() => expect(createButton.disabled).toBe(true))
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
 
@@ -215,7 +215,7 @@ describe('newWorkspaceDialog', () => {
   ])('sends the cleaned title when the input carries %s', async (_label, typed, stored) => {
     renderDialog()
 
-    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+    fireEvent.input(await screen.findByLabelText('Title'), {
       target: { value: typed },
     })
     await submitDialog()
@@ -230,7 +230,7 @@ describe('newWorkspaceDialog', () => {
   it('sends visible punctuation unchanged', async () => {
     renderDialog()
 
-    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+    fireEvent.input(await screen.findByLabelText('Title'), {
       target: { value: '100% of $HOME "quoted"' },
     })
     await submitDialog()

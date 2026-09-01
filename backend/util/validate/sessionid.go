@@ -31,6 +31,28 @@ const SessionIDByteLimit = contracts.SessionIDByteLimit
 // with no report of why.
 var sessionIDInvisible = contracts.SessionInvisibleFormat
 
+// RefuseInvisibleSessionChars reports an invisible-format character anywhere
+// in a resume handle. It accepts the empty value.
+//
+// It exists for the PATH shape of a handle, which SanitizePath judges. That
+// rule drops control characters and trims edge whitespace, but an
+// invisible-format character is neither: U+200B ZERO WIDTH SPACE is Cf, so it
+// travels through SanitizePath untouched and reaches the agent inside a
+// filename. The token shape already refuses the same class, and both shapes
+// arrive in one field, so one answer for both is what a user can act on.
+//
+// The browser copy is the invisible-format test in `validateSessionFilePath`
+// (`frontend/src/lib/validate.ts`), and
+// `testdata/pi_resume_handle_conformance.json` pins the two together.
+func RefuseInvisibleSessionChars(handle string) error {
+	for _, r := range handle {
+		if unicode.Is(sessionIDInvisible, r) {
+			return fmt.Errorf("contains invisible characters")
+		}
+	}
+	return nil
+}
+
 // ValidateSessionID validates a session ID for resuming an agent session.
 // It accepts the empty value, which means "no resume".
 //

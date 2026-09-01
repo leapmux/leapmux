@@ -166,3 +166,44 @@ describe('sessionIdInput', () => {
     expect(screen.queryByText(/Invalid/i)).toBeNull()
   })
 })
+
+describe('sessionIdInput accessibility', () => {
+  // The visible label is a plain `div`, so without an explicit aria-label the
+  // PLACEHOLDER becomes the last-resort accessible name — and that name then
+  // changes with the selected provider, from "Session ID" to "Session ID or
+  // file path". TitleInput answers this the same way, in this same dialog.
+  it('gives the input a stable accessible name, not the placeholder', () => {
+    const claudeState = createSessionIdState(claude)
+    render(() => <SessionIdInput state={claudeState} />)
+    expect(screen.getByLabelText('Resume an existing session')).toBeInTheDocument()
+
+    const piState = createSessionIdState(pi)
+    render(() => <SessionIdInput state={piState} />)
+    // Both inputs answer to the same name although their placeholders differ.
+    expect(screen.getAllByLabelText('Resume an existing session')).toHaveLength(2)
+    expect(screen.getByPlaceholderText('Session ID or file path')).toBeInTheDocument()
+  })
+
+  it('links the error to the input and announces it', () => {
+    const state = createSessionIdState(claude)
+    render(() => <SessionIdInput state={state} />)
+    const input = screen.getByLabelText('Resume an existing session')
+    fireEvent.input(input, { target: { value: '--dangerous' } })
+
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    const describedBy = input.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const message = document.getElementById(describedBy!)
+    expect(message).toHaveTextContent(state.error()!)
+    expect(message).toHaveAttribute('role', 'alert')
+  })
+
+  it('marks the input valid while the handle is acceptable', () => {
+    const state = createSessionIdState(claude)
+    render(() => <SessionIdInput state={state} />)
+    const input = screen.getByLabelText('Resume an existing session')
+
+    expect(input).not.toHaveAttribute('aria-invalid')
+    expect(input).not.toHaveAttribute('aria-describedby')
+  })
+})

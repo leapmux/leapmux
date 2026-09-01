@@ -675,7 +675,7 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 // listener. Serving the RFC 8628 endpoints on a locallisten socket
 // and driving --hub unix:… --device-code proves the CLI actually
 // dials the socket (the handler runs) against the placeholder
-// http://localhost origin LocalHTTPClient uses, and that the
+// http://localhost origin the local transport uses, and that the
 // credential file is still keyed by the unix: URL.
 func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 	dir := t.TempDir()
@@ -740,7 +740,7 @@ func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, 1, authHits, "device-authorization must arrive on the socket — DefaultClient cannot dial it")
 	assert.Equal(t, 1, tokenHits, "the token poll must also arrive on the socket")
-	assert.Equal(t, "localhost", seenHost, "LocalHTTPClient dials the socket against the placeholder http://localhost origin")
+	assert.Equal(t, "localhost", seenHost, "cliHTTPClient dials the socket against the placeholder http://localhost origin")
 }
 
 // TestRunAuthLogin_LocalRedirectRefusesSocketURL pins the other socket

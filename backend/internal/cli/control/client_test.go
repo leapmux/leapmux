@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // shortIPCSocket builds a unix-socket path under os.TempDir() short
@@ -467,4 +468,53 @@ func TestNewClient_RemoteHubGetsAWebSocketClient(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 		assert.Equal(t, http.StatusNoContent, resp.StatusCode, name)
 	}
+}
+
+// TestWorkerIPCStreamLaneCarriesNoTimeout pins the lane a control-IPC SERVER
+// STREAM must run on.
+//
+// `events --local` and `agent messages --follow` both open
+// ControlIPCService.StreamInner, which rides the HTTP client rather than a
+// WebSocket. An http.Client timeout covers the BODY read and a stream's body
+// ends only when the stream does, so the timed unary client severed both
+// subscriptions after exactly its timeout, reporting a transport error instead
+// of an end of stream.
+func TestWorkerIPCStreamLaneCarriesNoTimeout(t *testing.T) {
+	socketURL := locallistentest.UniqueListenURL(t, "ctlstream")
+	c, err := control.NewLocalClient(socketURL, "tok_local")
+	require.NoError(t, err)
+
+	require.NotNil(t, c.HTTPClient, "the unary lane")
+	require.NotNil(t, c.StreamHTTPClient, "the stream lane")
+	assert.NotZero(t, c.HTTPClient.Timeout,
+		"a unary control-IPC call must be limited: a worker that never answers otherwise hangs the CLI for ever")
+	assert.Zero(t, c.StreamHTTPClient.Timeout,
+		"a control-IPC server stream must NOT be limited by a client timeout, which covers the body read")
+	assert.NotSame(t, c.HTTPClient, c.StreamHTTPClient, "the two lanes hold different timeouts")
+
+	// Both accessors answer, and each one carries its own lane's client.
+	unary, err := c.ControlIPCService()
+	require.NoError(t, err)
+	require.NotNil(t, unary)
+	stream, err := c.ControlIPCStreamService()
+	require.NoError(t, err)
+	require.NotNil(t, stream)
+}
+
+// A hub-bound client has no control-IPC lane at all, and the stream accessor
+// must refuse it for the same reason the unary one does.
+func TestControlIPCStreamServiceRefusesAHubClient(t *testing.T) {
+	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(srv.URL, control.CredentialFile{
+		HubURL: srv.URL, AccessToken: "lmx_test_secret", UserID: "u-1",
+	}))
+	c, err := control.NewClient(srv.URL)
+	require.NoError(t, err)
+
+	_, err = c.ControlIPCStreamService()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worker-IPC")
 }

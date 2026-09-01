@@ -118,9 +118,10 @@ If you already have a workspace open and want another agent in it, open the tab 
 - **Agent Provider** — choose your provider; the dropdown lists only providers whose CLI was detected, sorted alphabetically by name. If none are found, the button reads **"No agents available"** — install an agent CLI and use the provider section's refresh control (**"Refresh available providers"**).
 - **Directory** — the working directory (use the directory tree to pick it, or type a path in the box above the tree).
 - **Resume an existing session** *(optional)* — paste a session ID to continue a prior conversation via the CLI's resume support.
+- **Title** — the tab name. Defaults to a random `Agent <Name>`; click **"Generate random name"** to pick another, or type your own. It cannot be empty.
 - **Git options** — your branch/worktree choice (step 5).
 
-Click **"Create"** (it shows **"Creating..."** while the agent starts).
+Click **"Create"**.
 
 {{< callout type="info" >}}
 The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's default model, effort, and permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.

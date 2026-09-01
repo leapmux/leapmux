@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +28,7 @@ func TestProbeHubRefusesOffOriginRedirect(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	err := probeHub(context.Background(), hub.URL)
+	err := probeHub(context.Background(), endpointFor(t, hub.URL))
 	require.Error(t, err, "a probe redirect leaving the hub origin must not be followed")
 	assert.False(t, reachedTarget, "the off-origin target must never be reached")
 }
@@ -47,7 +48,7 @@ func TestProbeHubFollowsSameOriginRedirect(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	err := probeHub(context.Background(), hub.URL)
+	err := probeHub(context.Background(), endpointFor(t, hub.URL))
 	require.NoError(t, err, "a same-origin probe redirect must be followed")
 	assert.True(t, finalHit, "the same-origin target must be reached")
 }
@@ -59,7 +60,7 @@ func TestProbeHubSucceedsOnOK(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	require.NoError(t, probeHub(context.Background(), hub.URL))
+	require.NoError(t, probeHub(context.Background(), endpointFor(t, hub.URL)))
 }
 
 // A non-200 status is surfaced as an error so ConnectDistributed does not treat an
@@ -70,7 +71,18 @@ func TestProbeHubFailsOnNon200(t *testing.T) {
 	}))
 	t.Cleanup(hub.Close)
 
-	err := probeHub(context.Background(), hub.URL)
+	err := probeHub(context.Background(), endpointFor(t, hub.URL))
 	require.Error(t, err, "a non-200 probe response must be an error")
 	assert.Contains(t, err.Error(), "unexpected status")
+}
+
+// endpointFor builds the endpoint a caller of probeHub holds. ConnectDistributed
+// builds ONE for the whole connect and hands it to the probe and then to the
+// proxy, so the hub is probed once and the two share a connection pool.
+func endpointFor(t *testing.T, hubURL string) *hubtransport.Endpoint {
+	t.Helper()
+	endpoint, err := hubtransport.New(hubURL)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.CloseIdleConnections)
+	return endpoint
 }

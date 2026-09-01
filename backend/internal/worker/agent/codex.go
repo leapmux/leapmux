@@ -222,13 +222,15 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 	// 4. Send "thread/start" or "thread/resume" request.
 	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, a.approvalPolicy, a.sandboxPolicy, a.serviceTier)
 
+	// The method is the label that formatStartupError prefixes the failure with.
+	// startOrResumeThread makes the same choice from the same field, so the two
+	// cannot disagree about what ran.
 	threadMethod := "thread/start"
 	if opts.ResumeSessionID != "" {
 		threadMethod = "thread/resume"
-		threadParams["threadId"] = opts.ResumeSessionID
 	}
 
-	threadID, err := a.startOrResumeThread(threadParams, threadMethod, opts.AgentID, timeout)
+	threadID, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError(threadMethod, err)
@@ -250,22 +252,17 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 	return a, nil
 }
 
-// startOrResumeThread sends thread/start (or thread/resume when resuming). If
-// thread/resume fails for any reason (RPC error, unparseable response, empty
-// thread ID), it falls back to thread/start automatically.
+// startOrResumeThread sends thread/start, or thread/resume when the launch
+// carries a stored thread ID. A resume that does not hold fails the whole
+// start; see resumeFailedError.
 func (a *CodexAgent) startOrResumeThread(
-	threadParams map[string]interface{}, method, agentID string, timeout time.Duration,
+	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
 ) (string, error) {
-	if method == "thread/resume" {
-		threadID, err := a.tryResumeThread(threadParams, agentID, timeout)
-		if err == nil && threadID != "" {
-			return threadID, nil
-		}
-		// resume path returns "" + nil to request fallback; any other
-		// error has already been logged inside tryResumeThread.
-		delete(threadParams, "threadId")
+	if resumeSessionID != "" {
+		threadParams["threadId"] = resumeSessionID
+		return a.resumeThread(threadParams, resumeSessionID, timeout)
 	}
-	threadID, err := a.startThread(threadParams, agentID, timeout)
+	threadID, err := a.startThread(threadParams, timeout)
 	if err != nil {
 		return "", err
 	}
@@ -275,21 +272,26 @@ func (a *CodexAgent) startOrResumeThread(
 	return threadID, nil
 }
 
-// tryResumeThread sends `thread/resume`. Returns ("", nil) when the
-// server's response indicates the caller should fall back to
-// thread/start (RPC error logged + suppressed, unparseable response,
-// empty thread id). Returns ("", err) for genuine errors that should
-// abort the resume attempt.
-func (a *CodexAgent) tryResumeThread(threadParams map[string]interface{}, agentID string, timeout time.Duration) (string, error) {
+// resumeThread sends `thread/resume` and returns the thread ID that Codex
+// reopened. An RPC error, a response that does not parse, and a response that
+// carries no thread ID all fail: none of the three reopens the conversation.
+func (a *CodexAgent) resumeThread(
+	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
+) (string, error) {
 	paramsJSON, err := json.Marshal(threadParams)
 	if err != nil {
-		return "", fmt.Errorf("marshal thread/resume params: %w", err)
+		return "", resumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
 	}
 	resp, err := a.sendRequest("thread/resume", paramsJSON, timeout)
+	if err == nil {
+		// An RPC error arrives as a delivered body, not as a transport error, so
+		// the agent's own message is here and nowhere else. Without this test it
+		// falls through to the "carried no thread ID" case below, which reports
+		// the symptom and hides the reason.
+		err = jsonRPCResultError(resp)
+	}
 	if err != nil {
-		slog.Warn("codex thread/resume failed, falling back to thread/start",
-			"agent_id", agentID, "error", err)
-		return "", nil
+		return "", resumeFailedError(resumeSessionID, err)
 	}
 	var result struct {
 		Thread struct {
@@ -297,21 +299,18 @@ func (a *CodexAgent) tryResumeThread(threadParams map[string]interface{}, agentI
 		} `json:"thread"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
-		slog.Warn("codex thread/resume: failed to parse response, falling back to thread/start",
-			"agent_id", agentID, "error", err, "response", string(resp))
-		return "", nil
+		return "", resumeFailedError(resumeSessionID,
+			fmt.Errorf("failed to parse response %q: %w", string(resp), err))
 	}
 	if result.Thread.ID == "" {
-		slog.Warn("codex thread/resume: response had empty thread ID, falling back to thread/start",
-			"agent_id", agentID, "response", string(resp))
-		return "", nil
+		return "", resumeFailedError(resumeSessionID,
+			fmt.Errorf("response %q carried no thread ID", string(resp)))
 	}
 	return result.Thread.ID, nil
 }
 
 // startThread sends `thread/start` and returns the new thread id.
-// Unlike resume, every error is fatal — no fallback is meaningful.
-func (a *CodexAgent) startThread(threadParams map[string]interface{}, agentID string, timeout time.Duration) (string, error) {
+func (a *CodexAgent) startThread(threadParams map[string]interface{}, timeout time.Duration) (string, error) {
 	paramsJSON, err := json.Marshal(threadParams)
 	if err != nil {
 		return "", fmt.Errorf("marshal thread/start params: %w", err)
@@ -328,7 +327,6 @@ func (a *CodexAgent) startThread(threadParams map[string]interface{}, agentID st
 	if err := json.Unmarshal(resp, &result); err != nil {
 		return "", fmt.Errorf("codex thread/start: failed to parse response: %w", err)
 	}
-	_ = agentID // kept for symmetry with resume; not logged in the start happy path
 	return result.Thread.ID, nil
 }
 
@@ -384,7 +382,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 
 	threadParams := codexThreadParams(model, workingDir, approvalPolicy, sandboxPolicy, serviceTier)
 
-	threadID, err := a.startThread(threadParams, a.agentID, a.APITimeout())
+	threadID, err := a.startThread(threadParams, a.APITimeout())
 	if err != nil || threadID == "" {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false

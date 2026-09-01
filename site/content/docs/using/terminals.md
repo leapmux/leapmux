@@ -59,13 +59,14 @@ The dialog has these fields:
 | Field | What it does |
 | --- | --- |
 | **"Worker"** | Selects which Worker spawns the shell. Options show `name (version, os, arch)`. A **"Refresh workers"** button re-queries online Workers. When none are connected: **"No workers online"**. |
-| **"Shell"** | Picks the shell binary. See [Shell selection](#shell-selection). |
+| **"Shell"** | Picks the shell binary. A **"Refresh shells"** button re-queries the selected Worker. See [Shell selection](#shell-selection). |
 | **"Working Directory"** | Browses the Worker's filesystem from `~`. Type a path and press Enter (or click away) to go there. |
+| **"Title"** | The tab name. Pre-filled with a random `Terminal <Name>`; the refresh button beside the label (tooltip **"Generate random name"**) picks another. Type your own to replace it. It cannot be empty. |
 | **"Git options"** | Appears when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
 
 The directory box abbreviates your home directory as `~`. If the path style does not match the Worker's OS, a hint appears below the box. The tree includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button, and shows **"No workers online. Connect a worker to browse directories."** when no Worker is selected.
 
-Submit with the **"Create"** button (it reads **"Creating..."** while in flight); cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a valid git-mode choice, and a workspace. If creation fails, the dialog reports the failure.
+Submit with the **"Create"** button; cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a non-blank title, a valid git-mode choice, and a workspace. If creation fails, the dialog reports the failure.
 
 ### Opening a terminal from the CLI
 

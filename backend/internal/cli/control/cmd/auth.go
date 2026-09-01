@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -774,9 +775,6 @@ func hubCheck(c *control.Client) (user *leapmuxv1.User, warning string, outcome 
 
 // --- helpers ----------------------------------------------------------
 
-// cliRESTTimeout caps one CLI-auth REST request over EITHER transport.
-const cliRESTTimeout = 60 * time.Second
-
 // cliHTTPClient returns the HTTP client the CLI-auth REST calls should use for
 // hubURL, and the base URL to build their paths against.
 //
@@ -787,14 +785,43 @@ const cliRESTTimeout = 60 * time.Second
 // live in hubtransport, which every hub client in the tree shares.
 //
 // A URL this cannot build a transport for is reported here rather than
-// deferred: the error names the URL and the schemes that are accepted, which
+// deferred: the error states the URL and the schemes that are accepted, which
 // the "unsupported protocol scheme" from a later request does not.
+//
+// It MEMOIZES the endpoint per URL, because a command reaches it more than
+// once: `auth login` against a hub the machine already holds a credential for
+// revokes the old bearer and then runs the whole login, and each step asked
+// separately. An endpoint owns the h2c verdict and the connection pools, so a
+// second one for the same URL probes the hub again and pools separately — the
+// per-poll version of the same waste is what the comment in
+// tryExchangeDeviceCode already describes one level down. A CLI process holds
+// one hub URL, so the map never grows past a handful of entries.
 func cliHTTPClient(hubURL string) (*http.Client, string, error) {
-	endpoint, err := hubtransport.New(hubURL)
+	endpoint, err := cliEndpoint(hubURL)
 	if err != nil {
 		return nil, "", err
 	}
-	return endpoint.UnaryClient(cliRESTTimeout), endpoint.BaseURL(), nil
+	return endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout), endpoint.BaseURL(), nil
+}
+
+var (
+	cliEndpointMu    sync.Mutex
+	cliEndpointCache = map[string]*hubtransport.Endpoint{}
+)
+
+// cliEndpoint returns the process's endpoint for hubURL, building it once.
+func cliEndpoint(hubURL string) (*hubtransport.Endpoint, error) {
+	cliEndpointMu.Lock()
+	defer cliEndpointMu.Unlock()
+	if endpoint, ok := cliEndpointCache[hubURL]; ok {
+		return endpoint, nil
+	}
+	endpoint, err := hubtransport.New(hubURL)
+	if err != nil {
+		return nil, err
+	}
+	cliEndpointCache[hubURL] = endpoint
+	return endpoint, nil
 }
 
 // callbackHandler serves the local-redirect login's /callback. Its channel

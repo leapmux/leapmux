@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -639,4 +641,51 @@ func TestResetTunnelsRejectedDuringShutdown(t *testing.T) {
 	err := app.ResetTunnels()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shutting down")
+}
+
+// TestShutdownClosesIdleConnectionsOfARealProxy is the half the fake could not
+// carry.
+//
+// TestShutdownClosesIdleProxyConnectionsBeforeStoppingSolo builds a HubProxy
+// literal over idleClosingTransport, which implements CloseIdleConnections
+// itself — so it proves the ORDER and nothing about the transport a production
+// proxy actually holds. A lane client's transport is a wrapper chain, and
+// net/http reaches idle connections through an OPTIONAL interface, so a wrapper
+// that carries RoundTrip alone makes the whole teardown a silent no-op. This
+// builds the real thing and measures the connection.
+func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var conns atomic.Int64
+	hub := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	hub.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			conns.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			conns.Add(-1)
+		case http.StateActive, http.StateIdle:
+			// Both are transitions of a connection this already counted.
+		}
+	}
+
+	endpoint, err := hubtransport.New(hub.URL)
+	require.NoError(t, err)
+	proxy := newProxyForEndpoint(endpoint)
+	require.NotNil(t, proxy.endpoint, "a production proxy holds the endpoint that owns every transport")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, hub.URL+"/rpc", nil)
+	require.NoError(t, err)
+	resp, err := proxy.client.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Eventually(t, func() bool { return conns.Load() > 0 }, time.Second, 5*time.Millisecond,
+		"the request must leave a connection for the teardown to close")
+
+	proxy.closeIdleConnections()
+
+	assert.Eventually(t, func() bool { return conns.Load() == 0 }, time.Second, 5*time.Millisecond,
+		"the teardown must reach the transport behind the lane wrappers")
 }

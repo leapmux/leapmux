@@ -2,19 +2,15 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/cli/control"
-	"github.com/leapmux/leapmux/locallisten"
-	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // fakeCmdCtx is the minimal Ctx implementation the command runners need
@@ -259,21 +255,10 @@ func TestRunVersion_ReachesAHubOverASocket(t *testing.T) {
 // pipe, over both protocols, as the hub's own local listener does.
 func serveVersionOverSocket(t *testing.T) string {
 	t.Helper()
-	socketURL := locallistentest.UniqueListenURL(t, "cliversion")
-	ln, err := locallisten.Listen(socketURL)
-	require.NoError(t, err)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/version", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": "9.9.9", "formatted": "9.9.9"})
 	})
-	protocols := &http.Protocols{}
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
-	t.Cleanup(func() { _ = srv.Close() })
-	go func() { _ = srv.Serve(ln) }()
-	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
-	return socketURL
+	return hubtransporttest.NewSocketServer(t, "cliversion", mux)
 }

@@ -50,7 +50,7 @@
         "valid": { "type": "boolean" },
         "refusal": {
           "type": "string",
-          "enum": ["", "too_long", "not_absolute", "traversal", "leading_hyphen", "forbidden_character", "whitespace_at_edge"]
+          "enum": ["", "too_long", "not_absolute", "traversal", "leading_hyphen", "forbidden_character", "invisible_character", "whitespace_at_edge"]
         }
       }
     },

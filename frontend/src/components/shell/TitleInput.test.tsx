@@ -9,7 +9,7 @@ import { createTitleState } from '~/hooks/createTitleState'
 function renderTitleInput(generate: () => string = () => 'Agent Gabe') {
   const dispose = createRoot((d) => {
     const state = createTitleState(generate)
-    render(() => <TitleInput state={state} placeholder="New Agent" />)
+    render(() => <TitleInput state={state} />)
     return d
   })
   return { dispose }
@@ -28,9 +28,16 @@ describe('titleInput', () => {
     expect(screen.getByRole('textbox', { name: 'Title' })).toBeInTheDocument()
   })
 
-  it('shows the placeholder the caller passed', () => {
+  // A HINT, not a sample value. The field is empty only while submit is
+  // disabled, so a placeholder that reads like an acceptable title offered one
+  // the dialog refuses.
+  it('shows what to do rather than a title it would refuse', () => {
     renderTitleInput()
-    expect(screen.getByTestId('title-input')).toHaveAttribute('placeholder', 'New Agent')
+    const placeholder = screen.getByTestId('title-input').getAttribute('placeholder')
+    expect(placeholder).toBe('Type a name')
+    // The old placeholders were values, and the gate refuses none of them --
+    // which is what made them misleading when the field was empty.
+    expect(placeholder).not.toMatch(/^New /)
   })
 
   it('writes what the user types back into the field', () => {
@@ -82,5 +89,31 @@ describe('titleInput', () => {
     renderTitleInput(generate)
     fireEvent.input(screen.getByTestId('title-input'), { target: { value: 'x' } })
     expect(generate).toHaveBeenCalledOnce()
+  })
+})
+
+describe('titleInput error accessibility', () => {
+  // The error also DISABLES Create, so a user who cannot see the red text gets
+  // a dead button and no reason. The input must therefore report itself
+  // invalid and point at the message.
+  it('links the error to the input and announces it', () => {
+    renderTitleInput()
+    const input = screen.getByLabelText('Title')
+    fireEvent.input(input, { target: { value: '   ' } })
+
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    const describedBy = input.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const message = document.getElementById(describedBy!)
+    expect(message).toHaveTextContent('Name must not be empty')
+    expect(message).toHaveAttribute('role', 'alert')
+  })
+
+  it('marks the input valid and drops the link while the title is acceptable', () => {
+    renderTitleInput()
+    const input = screen.getByLabelText('Title')
+
+    expect(input).not.toHaveAttribute('aria-invalid')
+    expect(input).not.toHaveAttribute('aria-describedby')
   })
 })
