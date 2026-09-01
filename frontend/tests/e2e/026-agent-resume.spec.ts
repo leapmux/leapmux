@@ -1,5 +1,7 @@
+import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { listAgentsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
@@ -46,6 +48,47 @@ test.describe('Agent Session Resume', () => {
       // does not occur in the first answer "6912", so this waits for the new
       // (resumed) turn rather than matching the prior bubble.
       await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
+  test('should resume the agent process on worker restart without a message', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Eager Resume')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await expect(editor).toBeVisible()
+
+      // One exchange makes the agent "used", which is the filter the boot-time
+      // sweep applies: a tab nobody ever wrote to has no conversation to
+      // restore and is deliberately left cold.
+      await editor.click()
+      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await page.keyboard.press('Meta+Enter')
+      await expect(editor).toHaveText('')
+      await expectAssistantAnswer(page)
+
+      await stopWorker()
+      await restartWorker(separateHubWorker)
+
+      // The whole point: the process comes back on its own. Nothing below sends
+      // a message, so a worker that only spawns lazily leaves the agent
+      // INACTIVE for ever and this poll times out.
+      //
+      // Polled through ListAgents, a WORKER-backed RPC. The hub's tab list and
+      // the local tab state are optimistic CRDT state and would report a
+      // healthy tab for an agent whose process is gone.
+      await expect.poll(async () => {
+        const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+        return agents.map(a => a.status)
+      }).toEqual([AgentStatus.ACTIVE])
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

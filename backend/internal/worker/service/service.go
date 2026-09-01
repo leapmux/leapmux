@@ -167,10 +167,14 @@ type Service struct {
 	// missed message. The tab-opening handlers refuse once it is set.
 	shuttingDown atomic.Bool
 
-	// stopBackgroundLoops stops the service's background convergence loops (today
-	// the orphan reconciler) and blocks until an in-flight pass returns. Assigned
-	// by bootstrap after the loops start, read by Shutdown. See
-	// SetStopBackgroundLoops for why it cannot be part of Config.
+	// stopBackgroundLoops stops the service's background loops -- the orphan
+	// reconciler and the boot-time agent resume sweep -- and blocks until an
+	// in-flight pass returns. Assigned by bootstrap after the loops start, read
+	// by Shutdown. See SetStopBackgroundLoops for why it cannot be part of
+	// Config.
+	//
+	// One field for both, composed at the call site: bootstrap starts the loops
+	// and is therefore the only place that knows what order they must stop in.
 	stopBackgroundLoops func()
 
 	// agentCleanups / terminalCleanups hold per-tab cleanup callbacks
@@ -286,6 +290,36 @@ func (r *cleanupRegistry) register(id string, fn func()) {
 	}
 	r.m[id] = fn
 	r.mu.Unlock()
+}
+
+// replace retires the cleanup currently registered for id and claims id for the
+// incoming one, for a caller that is SWAPPING one live resource for another
+// rather than tearing the tab down. It returns after the old cleanup has run.
+//
+// It is not run()+claim(), and the difference is the closedWhileClaimed mark.
+// run() leaves that mark when it finds a claim and no cleanup -- the window in
+// which a spawn's row exists but its cleanup has not landed yet -- and the mark
+// means "the tab was closed". A re-mint is not a close, so re-adding a claim
+// after run() left one would make the re-mint's OWN register retire the socket
+// it just created, and the relaunched process would come up with no remote
+// control. Consuming the claim silently is the honest reading: nobody closed
+// anything, the earlier spawn's cleanup is simply obsolete.
+//
+// A mark that was ALREADY there is left alone: that one records a real close,
+// and the caller's register must still honour it.
+func (r *cleanupRegistry) replace(id string) {
+	r.mu.Lock()
+	fn := r.m[id]
+	delete(r.m, id)
+	delete(r.claimed, id)
+	if r.claimed == nil {
+		r.claimed = map[string]struct{}{}
+	}
+	r.claimed[id] = struct{}{}
+	r.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func (r *cleanupRegistry) run(id string) {
@@ -410,10 +444,16 @@ type Config struct {
 	// Hub writes; a promoted field of that name would compile while
 	// shadowing nothing and reading like the live value.
 	SeedRegisteredBy    string
-	AgentStartupTimeout time.Duration             // Timeout for agent startup handshake (default: 5m)
-	APITimeout          time.Duration             // Timeout for JSON-RPC requests (default: 10s)
-	UseLoginShell       bool                      // Wrap claude invocation in user's login shell
-	WakeLock            *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
+	AgentStartupTimeout time.Duration // Timeout for agent startup handshake (default: 5m)
+	APITimeout          time.Duration // Timeout for JSON-RPC requests (default: 10s)
+	// AgentStartupConcurrency is the configured startup-concurrency cap
+	// (0 = agent.ResolveStartupConcurrency's machine-derived default). The
+	// agent.Manager enforces it for every spawn; the Service reads the same
+	// value to size the boot-time resume sweep's own fan-out, so the sweep
+	// queues at most one generation of startups ahead of an interactive one.
+	AgentStartupConcurrency int
+	UseLoginShell           bool                      // Wrap claude invocation in user's login shell
+	WakeLock                *wakelock.ActivityTracker // Keep-awake tracker (nil = disabled)
 	// MaxMessageSize is the worker's configured application payload budget
 	// (0 = contracts.MaxMessageSize). Raises agent stdout scanner ceiling
 	// and ReadFile's maxReadLimit; other stream sends still reject at
@@ -917,8 +957,9 @@ func (svc *Service) SetRegisteredBy(userID userid.UserID) {
 }
 
 // SetStopBackgroundLoops registers a function that stops the service's background
-// convergence loops and blocks until an in-flight pass returns. Shutdown calls it
-// before any drain.
+// loops and blocks until an in-flight pass returns. Shutdown calls it before any
+// drain. One function for every loop: the caller starts them and is the only
+// place that knows what order they must stop in.
 //
 // Wired late, like Service.RemoteIPC: the loops need a fully-built Service, so
 // they cannot exist when New runs. Left unset -- every test that never starts

@@ -855,9 +855,12 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			MaxMessageSize:       int(settings.KeyMaxMessageSizeBytes.Of(snap)),
 			AgentStartupTimeout:  workerTimeouts.Of(snap).AgentStartupTimeout(),
 			APITimeout:           workerTimeouts.Of(snap).APITimeout(),
-			EncryptionMode:       workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
-			UseLoginShell:        parseBool(p.hubCfg.Extras["use_login_shell"], true),
-			RegisteredBy:         state.RegisteredBy,
+			// 0 (the default) lets the worker resolve the concurrency from this
+			// machine's core count.
+			AgentStartupConcurrency: parseInt(p.hubCfg.Extras["agent_startup_concurrency"], 0),
+			EncryptionMode:          workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
+			UseLoginShell:           parseBool(p.hubCfg.Extras["use_login_shell"], true),
+			RegisteredBy:            state.RegisteredBy,
 		}); wErr != nil {
 			slog.Error("worker error", "error", wErr)
 		}
@@ -1120,6 +1123,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 		{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
 		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
 		{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", Usage: "maximum in-flight chunked sequences per channel for the embedded worker (default 4)", StrDefault: "0", Category: "Timeout and limit options"},
+		{Name: "agent-startup-concurrency", KoanfKey: "agent_startup_concurrency", Usage: "maximum agent processes inside their startup handshake at once for the embedded worker (0 = 4, or the CPU core count when that is lower)", StrDefault: "0", Category: "Timeout and limit options"},
 	}
 }
 

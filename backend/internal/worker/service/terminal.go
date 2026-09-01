@@ -656,45 +656,26 @@ func (svc *Service) runTerminalRestart(
 	terminalID := opts.ID
 	defer svc.TerminalStartup.finish()
 
-	// Mint the fresh token BEFORE retiring the previous spawn's, parking the
-	// new cleanup in a local instead of registering it. Both are keyed by
-	// terminalID and register overwrites, so the swap has to be ordered, and
-	// minting first shortens the window a concurrent CloseTerminal can slip
-	// into: the slow factory call no longer sits inside it.
+	// Swap the previous spawn's LEAPMUX_CONTROL_* token for a fresh one.
+	// remintControlIPC owns the ORDER -- retire, then mint -- because both
+	// tokens are keyed by terminalID and both listen on the same per-tab socket
+	// path; see its doc for what minting first cost.
 	//
-	// The previous spawn's token is retired on EVERY exit from here, including
+	// The previous spawn's token is retired on every exit from here, including
 	// the fatal-identity path. The old PTY has already exited by the time this
 	// runs -- RestartTerminal refuses synchronously while IsRunning -- so there
 	// is no live shell whose remote control needs preserving, and leaving the
 	// old cleanup registered would strand a listening unix socket plus an
 	// unrevoked per-user delegation bearer for a process that is gone.
-	var newCleanup func()
-	remoteEnvs, ipcErr := svc.spawnControlIPC("terminal", terminalID, "restart", func(_ string, fn func()) {
-		newCleanup = fn
-	}, func() ([]string, func(), error) {
-		return svc.ControlIPC.TerminalSpawning(spawnInfo)
-	})
+	remoteEnvs, ownsIPCToken, ipcErr := svc.remintControlIPC(&svc.terminalCleanups, "terminal", terminalID, "restart",
+		func() ([]string, func(), error) {
+			return svc.ControlIPC.TerminalSpawning(spawnInfo)
+		})
 	if ipcErr != nil {
 		// See the open path: a spawn that cannot name its user fails the
 		// restart rather than silently relaunching without remote control.
-		// Retire the dead spawn's token on the way out -- the restart is not
-		// happening, so nothing will come along later to retire it.
-		svc.terminalCleanups.run(terminalID)
 		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr, h)
 		return
-	}
-	// The mint succeeded: retire the *old* token and take ownership of the
-	// *new* one under the same key. The deferred cleanup below retires the
-	// new token if the spawn never reaches READY.
-	svc.terminalCleanups.run(terminalID)
-	// Ownership is what was REGISTERED, not what the env vars imply. The two
-	// were derived from different values here -- register on `newCleanup != nil`,
-	// own on `remoteEnvs != nil` -- so any factory result with one and not the
-	// other registered a cleanup that the deferred retire would never run,
-	// leaking the socket and its delegation bearer for the tab's whole life.
-	ownsIPCToken := newCleanup != nil
-	if ownsIPCToken {
-		svc.terminalCleanups.register(terminalID, newCleanup)
 	}
 	opts.ExtraEnv = remoteEnvs
 	defer func() {

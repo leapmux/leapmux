@@ -278,9 +278,21 @@ func TestDefaultExtraFlagsCarryWorkerScopedKnobs(t *testing.T) {
 	for _, ef := range defaultExtraFlags() {
 		byName[ef.Name] = ef
 	}
-	for _, name := range []string{"encryption-mode", "use-login-shell", "max-incomplete-chunked"} {
+	for _, name := range []string{"encryption-mode", "use-login-shell", "max-incomplete-chunked", "agent-startup-concurrency"} {
 		require.Contains(t, byName, name, "solo must expose the worker-scoped %q flag", name)
 	}
+
+	// agent-startup-concurrency is worker-scoped for the same reason
+	// max-incomplete-chunked is: it caps the EMBEDDED worker's concurrent agent
+	// startups, and the hub has no such pool. Solo is therefore the only place
+	// the desktop app can tune it.
+	startupConcurrency := byName["agent-startup-concurrency"]
+	assert.Equal(t, "agent_startup_concurrency", startupConcurrency.KoanfKey,
+		"the koanf key is what bringUpLocalWorker reads out of Extras")
+	assert.Equal(t, "0", startupConcurrency.StrDefault,
+		"0 must be the default so the worker resolves the concurrency from this machine's core count")
+	assert.Equal(t, "Timeout and limit options", startupConcurrency.Category,
+		"it is a limit, not a server option -- the help output groups it accordingly")
 
 	chunked := byName["max-incomplete-chunked"]
 	assert.Equal(t, "max_incomplete_chunked", chunked.KoanfKey,

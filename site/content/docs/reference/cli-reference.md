@@ -175,6 +175,7 @@ leapmux worker -hub https://hub.example.com
 | `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
 | `-agent-startup-timeout` | `5m` | Agent startup timeout |
 | `-api-timeout` | `10s` | JSON-RPC request timeout |
+| `-agent-startup-concurrency` | `0` (= 4, or the CPU core count when lower) | Max agent processes inside their startup handshake at once; does not limit how many agents run |
 
 **SQLite database options**
 
@@ -311,6 +312,7 @@ The Worker reads:
 | `LEAPMUX_WORKER_DATA_DIR` | worker `data_dir` | `/var/lib/leapmux/worker` |
 | `LEAPMUX_WORKER_ENCRYPTION_MODE` | worker `encryption_mode` | `post-quantum` |
 | `LEAPMUX_WORKER_LOG_LEVEL` | worker `log_level` | `info` |
+| `LEAPMUX_WORKER_AGENT_STARTUP_CONCURRENCY` | worker `agent_startup_concurrency` | `4` |
 
 The prefix strip lowercases the remainder but does **not** translate `_` into `.`, so nested storage keys such as `storage.type` and `storage.postgres.dsn` cannot be set cleanly via env vars — use the YAML config file or the dedicated `-storage-*` flags instead. See [Configuration](/docs/admin/configuration/) for the full list and precedence rules (defaults < config file < env vars < explicitly-set CLI flags).
 

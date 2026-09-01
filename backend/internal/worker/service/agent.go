@@ -471,7 +471,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				svc.handleClearContext(agentID)
 			} else if !svc.Agents.HasAgent(agentID) {
 				// Agent is not running — try to auto-start it (e.g. after worker restart).
-				if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID); startErr != nil {
+				if startErr := svc.ensureAgentRunning(bgCtx(), agentID, &resumeSessionID); startErr != nil {
 					deliveryError = "agent is not running"
 				} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
 					slog.Error("failed to send input to agent after auto-start", "agent_id", agentID, "error", sendErr)
@@ -2455,9 +2455,23 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
+	// The relaunch is a new process, so it needs a new control socket -- see
+	// remintAgentControlIPC. A failed mint fails the restart, leaving the agent
+	// on its current settings rather than relaunching it without remote control.
+	remoteEnvs, err := svc.remintAgentControlIPC(agentID, dbAgent.WorkingDir, provider, "restart")
+	if err != nil {
+		slog.Error("failed to mint remote IPC for settings restart", "agent_id", agentID, "error", err)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  agent.NotificationTypeAgentError,
+			"error": "Failed to restart agent with new settings: " + err.Error(),
+		})
+		return newOptions
+	}
+
 	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
 	agentOpts.ResumeSessionID = resumeSessionID
 	agentOpts.Options = newOptions
+	agentOpts.ExtraEnv = remoteEnvs
 
 	sink := svc.Output.NewSink(agentID, provider)
 
@@ -2736,9 +2750,20 @@ func (svc *Service) handleClearContext(agentID string) {
 	// isWatchable. On success, handleSystemInit will overwrite it with the
 	// new session ID. On failure, clear it so ensureAgentRunning won't try
 	// to resume a stale session.
+	// A fresh process needs a fresh control socket -- see remintAgentControlIPC.
+	remoteEnvs, mintErr := svc.remintAgentControlIPC(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider, "clear")
+	if mintErr != nil {
+		// Fall into the shared failure branch below so the STARTING state this
+		// function entered is cleared exactly once, by one piece of code.
+		err = mintErr
+	}
 	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
+	launchOptions.ExtraEnv = remoteEnvs
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
+	var confirmedSettings map[string]string
+	if err == nil {
+		confirmedSettings, err = svc.startAgent(bgCtx(), launchOptions, sink)
+	}
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
@@ -2814,7 +2839,14 @@ func (svc *Service) resolveResumeSessionID(agentID, currentSessionID string, res
 // persisting a user message that would skew the HasUserMessages check),
 // pass it via preResolvedResumeSessionID. Pass nil to let this function
 // resolve it from the DB.
-func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionID *string) error {
+//
+// ctx bounds the spawn: it reaches the manager's startup-slot wait and the
+// agent process itself, so cancelling it abandons a start that has not
+// finished. Every request-driven caller passes bgCtx(), because a cold start
+// triggered by a message must outlive the RPC that triggered it. The boot-time
+// resume sweep passes a cancellable one, which is what lets a CloseAgent -- or
+// the shutdown drain -- reach a resume that is still handshaking.
+func (svc *Service) ensureAgentRunning(ctx context.Context, agentID string, preResolvedResumeSessionID *string) error {
 	if svc.Agents.HasAgent(agentID) {
 		return nil
 	}
@@ -2858,10 +2890,22 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// silent — the bubble pulses but no progress affordance is shown.
 	svc.broadcastAgentStarting(&dbAgent, agentStartupLabel("Starting", dbAgent.AgentProvider), nil)
 
+	// A cold start is a fresh process, so it needs its own control socket: the
+	// open path's env vars belonged to a process that is gone (or to a previous
+	// worker process, after a restart). Without this the auto-started agent
+	// comes up with no `leapmux control` at all.
+	remoteEnvs, err := svc.remintAgentControlIPC(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider, "resume")
+	if err != nil {
+		slog.Error("ensureAgentRunning: remote IPC mint failed", "agent_id", agentID, "error", err)
+		svc.broadcastAgentInactive(&dbAgent)
+		return err
+	}
+
 	launchOptions := applyDBSettingsToAgentOptions(svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	launchOptions.ResumeSessionID = resumeSessionID
+	launchOptions.ExtraEnv = remoteEnvs
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
+	confirmedSettings, err := svc.startAgent(ctx, launchOptions, sink)
 	if err != nil {
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
 		// Revert the STARTING broadcast so the spinner clears. Caller
@@ -2913,7 +2957,7 @@ func (svc *Service) handleControlRequestMessage(agentID string, provider leapmux
 			return
 		}
 		// Other control requests need the agent running.
-		if err := svc.ensureAgentRunning(agentID, nil); err != nil {
+		if err := svc.ensureAgentRunning(bgCtx(), agentID, nil); err != nil {
 			slog.Error("failed to start agent for control request", "agent_id", agentID, "error", err)
 			return
 		}
@@ -3120,7 +3164,7 @@ func (svc *Service) sendSyntheticUserMessage(agentID, content string, markType l
 
 	deliveryError := ""
 	if !svc.Agents.HasAgent(agentID) {
-		if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID); startErr != nil {
+		if startErr := svc.ensureAgentRunning(bgCtx(), agentID, &resumeSessionID); startErr != nil {
 			deliveryError = "agent is not running"
 		} else if sendErr := svc.Agents.SendInput(agentID, content, nil); sendErr != nil {
 			slog.Error("synthetic user message: failed to send after auto-start", "agent_id", agentID, "error", sendErr)
@@ -3283,8 +3327,16 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 	// applyDBSettingsToAgentOptions populated a fresh Options map, so writing the
 	// key here is safe (no shared aliasing).
 	launchOptions.Options[agent.OptionIDPermissionMode] = targetMode
+	// A fresh process needs a fresh control socket -- see remintAgentControlIPC.
+	// A failed mint falls into the shared failure branch below, so the notice
+	// and the session-id reset are written by one piece of code.
+	remoteEnvs, err := svc.remintAgentControlIPC(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider, "restart")
+	launchOptions.ExtraEnv = remoteEnvs
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
-	confirmedSettings, err := svc.startAgent(bgCtx(), launchOptions, sink)
+	var confirmedSettings map[string]string
+	if err == nil {
+		confirmedSettings, err = svc.startAgent(bgCtx(), launchOptions, sink)
+	}
 	if err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{

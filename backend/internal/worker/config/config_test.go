@@ -235,12 +235,17 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 	// specific lead flag would make adding a new option in front of it
 	// (e.g. `--allow-cross-worker-filesystem` ahead of `--data-dir`) a
 	// noisy churn. Assert that the section header is followed by *some*
-	// flag instead.
+	// flag instead. The two sections that used to pin a lead flag are here
+	// too now: `-agent-startup-concurrency` sorts ahead of
+	// `-agent-startup-timeout`, which is exactly the churn this comment
+	// describes, so both are asserted the same way as the rest.
 	assert.Contains(t, output, "\nWorker options:\n\n  -")
-	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout duration")
-	assert.Contains(t, output, "\nSQLite database options:\n\n  -db-cache-size int")
+	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -")
+	assert.Contains(t, output, "\nSQLite database options:\n\n  -")
 	assert.Contains(t, output, "  -data-dir string")
 	assert.Contains(t, output, "  -hub string")
+	assert.Contains(t, output, "  -agent-startup-timeout duration")
+	assert.Contains(t, output, "  -agent-startup-concurrency int")
 	assert.Contains(t, output, "  -api-timeout duration")
 	assert.Contains(t, output, "  -db-cache-size int")
 }
@@ -283,4 +288,56 @@ func TestPaths(t *testing.T) {
 	cfg := &Config{DataDir: "/test/dir"}
 	assert.Equal(t, filepath.Join("/test/dir", "worker.db"), cfg.DBPath())
 	assert.Equal(t, filepath.Join("/test/dir", "state.json"), cfg.StatePath())
+}
+
+// TestAgentStartupConcurrency covers the knob that caps concurrent agent
+// startups, from every source the loader supports.
+//
+// Zero is load-bearing and is asserted here rather than resolved: the default
+// follows this machine's core count, so it is resolved by
+// agent.ResolveStartupConcurrency at the point of use. A Load that "helpfully"
+// substituted a number would freeze that decision into the config and break the
+// entry points that pass the value straight through.
+func TestAgentStartupConcurrency(t *testing.T) {
+	t.Run("unset stays zero so the consumer resolves the default", func(t *testing.T) {
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, 0, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("flag", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-agent-startup-concurrency", "7"})
+		require.NoError(t, err)
+		assert.Equal(t, 7, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("config file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("agent_startup_concurrency: 3\n"), 0o644))
+		cfg, _, err := Load([]string{"-config", path})
+		require.NoError(t, err)
+		assert.Equal(t, 3, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("LEAPMUX_WORKER_AGENT_STARTUP_CONCURRENCY", "5")
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, 5, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("flag beats config file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("agent_startup_concurrency: 3\n"), 0o644))
+		cfg, _, err := Load([]string{"-config", path, "-agent-startup-concurrency", "9"})
+		require.NoError(t, err)
+		assert.Equal(t, 9, cfg.AgentStartupConcurrency)
+	})
+
+	t.Run("a negative value loads and is resolved downstream", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-agent-startup-concurrency", "-2"})
+		require.NoError(t, err)
+		assert.Equal(t, -2, cfg.AgentStartupConcurrency,
+			"Load does not clamp; agent.ResolveStartupConcurrency turns any non-positive value into the default")
+	})
 }

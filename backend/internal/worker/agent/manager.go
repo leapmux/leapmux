@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"runtime"
 	"slices"
 	"sync"
 
@@ -30,6 +31,44 @@ type Manager struct {
 	// until the old process's onExit has run. See stopAndWait and startAgentWith.
 	exitDone map[Agent]chan struct{}
 	onExit   ExitHandler
+
+	// startupSlots caps how many agent processes are inside their STARTUP at
+	// once: one token is held from just before the provider's start func spawns
+	// the process until that func returns, which is the point the provider has
+	// completed its handshake (the initialize control_response, thread/start,
+	// session/new, get_state -- one per provider). It never covers a running
+	// agent, so it does not limit how many agents this machine hosts.
+	//
+	// Buffered and never nil: NewManager fills it, because a nil channel blocks
+	// for ever and this manager is constructed (in hub.New) before any
+	// configuration is read. SetStartupConcurrency replaces it.
+	startupSlots chan struct{}
+}
+
+// DefaultMaxStartupConcurrency caps the DEFAULT startup concurrency. Agent
+// startup is CPU-bound on this side (a login shell, the CLI's own boot, JSON
+// parsing), so four concurrent handshakes already saturate a laptop while it
+// serves the user's own tab. A machine with more cores gets no more by default,
+// because the extra parallelism buys a boot-time sweep little and competes with
+// interactive work; an operator who wants more asks for it by name.
+const DefaultMaxStartupConcurrency = 4
+
+// ResolveStartupConcurrency answers how many agent processes may be inside
+// their startup handshake at once. n <= 0 selects the default.
+//
+// The default is DefaultMaxStartupConcurrency, lowered to this machine's core
+// count when that is smaller: a two-core container must not run four
+// handshakes at once.
+//
+// It lives here, not in the worker config package, because that package cannot
+// import this one -- agent/factory.go already imports config, and the reverse
+// edge would be an import cycle. Both the manager's own semaphore and the
+// service's resume sweep call this, so the number has one definition.
+func ResolveStartupConcurrency(n int) int {
+	if n > 0 {
+		return n
+	}
+	return min(runtime.NumCPU(), DefaultMaxStartupConcurrency)
 }
 
 // cachedCatalog is the last-known option-group set for a not-running agent, stamped
@@ -58,6 +97,64 @@ func NewManager(onExit ExitHandler) *Manager {
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
 		exitDone:           make(map[Agent]chan struct{}),
 		onExit:             onExit,
+		startupSlots:       newStartupSlots(ResolveStartupConcurrency(0)),
+	}
+}
+
+// newStartupSlots builds a permit channel of capacity n. n is already resolved
+// by ResolveStartupConcurrency, so a non-positive value here would be a caller
+// bug; the max keeps it from producing an unbuffered channel, which admits
+// nobody and would wedge every spawn.
+func newStartupSlots(n int) chan struct{} {
+	return make(chan struct{}, max(n, 1))
+}
+
+// SetStartupConcurrency replaces the startup permit pool. n <= 0 restores the
+// default (see ResolveStartupConcurrency).
+//
+// Call it before the manager is reachable by anything that spawns. Wire does,
+// beside SetOnExit and well before SetChannelMgr publishes the manager to the
+// connect loop, so no in-flight startup can be holding a permit from the pool
+// this discards -- a swap under load would let the two pools admit
+// old+new callers at once, briefly doubling the configured concurrency.
+func (m *Manager) SetStartupConcurrency(n int) {
+	slots := newStartupSlots(ResolveStartupConcurrency(n))
+	m.mu.Lock()
+	m.startupSlots = slots
+	m.mu.Unlock()
+}
+
+// StartupConcurrencyForTest reports the permit pool's current capacity, so a
+// wiring test can prove the configured value reached the manager. The
+// production type deliberately offers no getter: the pool is a property the
+// spawn path enforces, not one any caller should branch on.
+func (m *Manager) StartupConcurrencyForTest() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return cap(m.startupSlots)
+}
+
+// acquireStartupSlot takes one startup permit, blocking while the configured
+// number of startups are already in flight. The returned function releases it
+// and must be called as soon as the start func returns, on the failure branch
+// as well -- a permit leaked by an errored start shrinks the pool for the life
+// of the process.
+//
+// It selects on ctx.Done() so a startup whose tab is closed while it waits
+// gives its place up instead of spawning a process nobody wants. The permit is
+// read once under the lock rather than through m.startupSlots at both ends, so
+// a concurrent SetStartupConcurrency cannot make the release land in a
+// different pool than the acquire.
+func (m *Manager) acquireStartupSlot(ctx context.Context) (release func(), err error) {
+	m.mu.RLock()
+	slots := m.startupSlots
+	m.mu.RUnlock()
+
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -155,7 +252,24 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 	}
 	m.mu.Unlock()
 
+	// Throttle the SPAWN, not the agent. start blocks from the exec through the
+	// provider's startup handshake, so the permit is held for exactly the window
+	// this cap is about and is given back before the agent is registered.
+	//
+	// Every spawn path draws on the one pool -- an interactive open, a restart,
+	// an auto-start and the boot-time resume sweep alike -- which is what makes
+	// the configured number a property of the machine rather than of one caller.
+	// The cost is stated rather than hidden: an interactive open can wait behind
+	// startups it did not ask for, and a CLI whose handshake hangs holds its
+	// permit for the whole StartupTimeout. The resume sweep limits its own
+	// fan-out to the same number so that wait is one generation of startups deep,
+	// not the whole backlog.
+	release, err := m.acquireStartupSlot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("wait for an agent startup slot: %w", err)
+	}
 	provider, err := start(ctx, opts, sink)
+	release()
 	if err != nil {
 		return nil, err
 	}

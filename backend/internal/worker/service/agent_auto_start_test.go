@@ -45,11 +45,11 @@ func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 	}
 
 	firstDone := make(chan struct{})
-	go func() { defer close(firstDone); _ = svc.ensureAgentRunning("agent-1", nil) }()
+	go func() { defer close(firstDone); _ = svc.ensureAgentRunning(t.Context(), "agent-1", nil) }()
 	<-entered // the first cold-start is in flight, holding LockAgent
 
 	secondDone := make(chan struct{})
-	go func() { defer close(secondDone); _ = svc.ensureAgentRunning("agent-1", nil) }()
+	go func() { defer close(secondDone); _ = svc.ensureAgentRunning(t.Context(), "agent-1", nil) }()
 
 	// The second cold-start must block on the per-agent lifecycle lock; its startAgent must
 	// NOT run concurrently with the first's -- that concurrency is the duplicate-spawn race.

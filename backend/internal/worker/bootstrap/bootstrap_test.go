@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -254,6 +255,13 @@ func TestBuildTabSync_ReadFailureIsAnErrorNotAnEmptyReport(t *testing.T) {
 // and starts background loops but never dials.
 func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Client) {
 	t.Helper()
+	return wireForTestWith(t, mode, func(*Params) {})
+}
+
+// wireForTestWith is wireForTest with a hook that adjusts the Params before
+// Wire runs, for the tests that care about one specific field.
+func wireForTestWith(t *testing.T, mode leapmuxv1.EncryptionMode, adjust func(*Params)) (*Wiring, *hub.Client) {
+	t.Helper()
 
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -269,7 +277,7 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	w := Wire(Params{
+	params := Params{
 		Ctx:            ctx,
 		Client:         client,
 		DB:             sqlDB,
@@ -279,7 +287,9 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 		Name:           "test",
 		HomeDir:        t.TempDir(),
 		DataDir:        t.TempDir(),
-	})
+	}
+	adjust(&params)
+	w := Wire(params)
 	t.Cleanup(w.Shutdown)
 	return w, client
 }
@@ -477,4 +487,53 @@ func TestLiveTabForMint_SkipsChildAgents(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "root-1", id, "mint must target a root agent, never a child")
 	assert.Equal(t, int32(leapmuxv1.TabType_TAB_TYPE_AGENT), tabType)
+}
+
+// TestWire_AppliesTheConfiguredStartupConcurrency pins the hop from the loaded
+// config to the two places that enforce it: the agent manager's permit pool,
+// which caps every spawn path, and the service, which sizes the boot-time
+// resume sweep's own fan-out from the same number. A value that reached only
+// one of them would cap startups while letting the sweep queue every open tab
+// in front of an interactive open, or the reverse.
+func TestWire_AppliesTheConfiguredStartupConcurrency(t *testing.T) {
+	w, client := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		func(p *Params) { p.AgentStartupConcurrency = 3 })
+
+	assert.Equal(t, 3, client.AgentManager().StartupConcurrencyForTest(),
+		"the manager enforces the cap for every spawn path")
+	assert.Equal(t, 3, w.Service.AgentStartupConcurrency,
+		"the service sizes the resume sweep's fan-out from the same number")
+}
+
+// TestWire_UnsetStartupConcurrencyResolvesTheDefault pins the "0 means auto"
+// convention at the boundary the entry points actually cross: they pass the
+// loaded value through unchanged, and an unset worker.yaml key arrives as 0.
+func TestWire_UnsetStartupConcurrencyResolvesTheDefault(t *testing.T) {
+	_, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	assert.Equal(t, agent.ResolveStartupConcurrency(0),
+		client.AgentManager().StartupConcurrencyForTest())
+}
+
+// TestWiring_ShutdownStopsTheResumeSweep pins that the resume sweep is covered
+// by the single stopBackgroundLoops slot the reconciler already used.
+//
+// Both loops share that one field, so wiring a second one is exactly the shape
+// in which the first gets overwritten and silently stops being stopped: a sweep
+// left running past Shutdown keeps spawning agent processes and registering
+// remote-IPC cleanups while the caller closes the database underneath it.
+func TestWiring_ShutdownStopsTheResumeSweep(t *testing.T) {
+	w, _ := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	// Shutdown is idempotent and the fixture's cleanup runs it again; what this
+	// asserts is that it RETURNS -- a stopper that dropped either loop would
+	// leave the other's goroutine unjoined, and one that waited on a loop it
+	// never started would block here for ever.
+	done := make(chan struct{})
+	go func() { defer close(done); w.Shutdown() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown blocked; the composed background-loop stopper did not return")
+	}
 }

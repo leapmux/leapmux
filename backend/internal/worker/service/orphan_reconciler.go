@@ -53,6 +53,8 @@ type OrphanReconciler struct {
 	// (closeTabForConvergence), and splitting it here meant every caller restated
 	// which policy each type gets.
 	closeTab func(tabType leapmuxv1.TabType, userID, tabID string)
+	// onPass reports each pass's outcome to the caller. Nil disables the report.
+	onPass func(converged bool)
 	// prevOrphanWorktrees maps a worktree id to when it FIRST looked orphaned. A
 	// worktree must stay orphaned for orphanWorktreeGrace before
 	// reconcileWorktrees removes it, so a transient zero-live window during
@@ -104,6 +106,16 @@ type OrphanReconcilerOptions struct {
 	// manager entry per reap. A tier that exists only for test convenience is
 	// exactly the divergent close path this change set out to remove.
 	CloseTab func(tabType leapmuxv1.TabType, userID, tabID string)
+	// OnPass, when set, is called after every pass with what that pass reported
+	// (see reconcileOnce). It is the ONE place a caller learns that this worker's
+	// local rows now agree with the hub, which is the precondition the boot-time
+	// agent resume waits on: resuming before convergence spawns CLIs for tabs the
+	// CRDT deleted while the worker was down, and a converged pass is the only
+	// statement that no reap is still pending.
+	//
+	// Called on the reconciler's own goroutine, so it must not block: a slow hook
+	// delays the next pass. Wire it to something that hands the work off.
+	OnPass func(converged bool)
 }
 
 // NewOrphanReconciler binds a reconciler to the worker's local DB
@@ -148,6 +160,7 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 		logger:              opts.Logger,
 		reapWorktree:        opts.ReapWorktree,
 		closeTab:            opts.CloseTab,
+		onPass:              opts.OnPass,
 		prevOrphanWorktrees: make(map[string]time.Time),
 		prevOrphanTabs:      make(map[ownedTabKey]time.Time),
 		tabGrace:            opts.TabGrace,
@@ -219,7 +232,15 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 	// Re-arm (or disarm) the retry from a pass's outcome. Always stops the
 	// previous timer first so a tick or Trigger that lands mid-backoff cannot
 	// leave two pending retries behind.
+	// One helper for "the pass finished": it re-arms the retry AND reports the
+	// outcome, so a wake-up source can never re-arm without reporting. Splitting
+	// the two is how the report would come to be missing from the retry arm --
+	// the arm that fires after a hub failure, and so the one that carries the
+	// eventual convergence.
 	rearm := func(converged bool) {
+		if r.onPass != nil {
+			r.onPass(converged)
+		}
 		if retryTimer != nil {
 			retryTimer.Stop()
 			retryTimer, retryC = nil, nil
