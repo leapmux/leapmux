@@ -119,6 +119,20 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 
 	go func() {
 		exitCode := t.Wait()
+		// The handler persists the terminal's FINAL screen, so it must not run
+		// until the reader applied the shell's last output. t.Wait returns when
+		// the child is reaped, and that says nothing about readOutput: the bytes
+		// the shell wrote just before it exited can still sit unread in the PTY
+		// buffer. A snapshot taken here loses them, and because this is the only
+		// persist a natural exit performs, the row keeps that truncated screen
+		// for its whole life -- the user reopens an exited tab and the last
+		// thing the shell printed is missing.
+		//
+		// The wait is bounded. waitForExit terminates the job object, which
+		// reaps the whole process group, BEFORE it closes exitCh -- so by the
+		// time t.Wait returns nothing holds the PTY slave open and readOutput's
+		// next read ends it.
+		t.WaitForReadDrained()
 		if exitFn != nil {
 			exitFn(id, exitCode)
 		}

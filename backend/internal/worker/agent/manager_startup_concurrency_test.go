@@ -38,6 +38,27 @@ func (idleAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup { return nil }
 func (idleAgent) UpdateSettings(optionmap.Map) bool               { return true }
 func (idleAgent) Interrupt() error                                { return nil }
 
+// livingAgent is an idleAgent that stays registered: its Wait parks until Stop.
+//
+// A test that asserts the manager REGISTERED an agent needs one. startAgentWith
+// registers the provider and then waits on it in a goroutine that deregisters
+// it the moment Wait returns, so idleAgent -- whose Wait returns at once -- is
+// reaped while the assertion is still being written. That race resolved the
+// friendly way on every developer's machine and the other way on the Windows
+// runner.
+type livingAgent struct {
+	idleAgent
+	stop chan struct{}
+	once sync.Once
+}
+
+func newLivingAgent() *livingAgent {
+	return &livingAgent{stop: make(chan struct{})}
+}
+
+func (a *livingAgent) Stop()       { a.once.Do(func() { close(a.stop) }) }
+func (a *livingAgent) Wait() error { <-a.stop; return nil }
+
 // blockingStart is a startFunc that parks inside the "startup handshake" until
 // the test releases it, so a test can observe how many spawns are in that
 // window at once. It reports the high-water mark of concurrent entries, which
@@ -318,12 +339,19 @@ func TestResolveStartupConcurrency_FollowsTheCPUBudgetNotTheCoreCount(t *testing
 func TestNewManager_HasAUsablePoolBeforeConfiguration(t *testing.T) {
 	t.Parallel()
 
+	// livingAgent, so HasAgent asks about an agent that is still running. An
+	// agent whose Wait returns at once is deregistered correctly and at once,
+	// and the assertion would be racing that cleanup rather than reading the
+	// registration.
+	agent := newLivingAgent()
+	t.Cleanup(agent.Stop)
+
 	m := NewManager(nil)
 	_, err := m.startAgentWith(context.Background(), Options{
 		AgentID:    "unconfigured",
 		WorkingDir: t.TempDir(),
 	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) {
-		return idleAgent{}, nil
+		return agent, nil
 	}, true)
 	require.NoError(t, err)
 	assert.True(t, m.HasAgent("unconfigured"))
