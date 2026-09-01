@@ -66,15 +66,21 @@ func (f *agentIPCRecorder) mintLocked(tabID string) ([]string, func(), error) {
 	f.delegationRefs++
 	token := fmt.Sprintf("token-%d", f.mints)
 	f.events = append(f.events, "mint:"+token)
-	return []string{
+	// Both values are named rather than returned inline. gofmt indents a
+	// multi-line composite literal inside a return LIST by one extra level up
+	// to Go 1.26 and by none from Go 1.27, so the inline form is formatted two
+	// ways and fails the linter on whichever toolchain did not write it.
+	env := []string{
 		"LEAPMUX_CONTROL_TAB_ID=" + tabID,
 		"LEAPMUX_CONTROL_TOKEN=" + token,
-	}, func() {
+	}
+	cleanup := func() {
 		f.mu.Lock()
 		f.events = append(f.events, "cleanup:"+token)
 		f.mu.Unlock()
 		f.releaseDelegation()
-	}, nil
+	}
+	return env, cleanup, nil
 }
 
 // HoldDelegation models the per-user delegation reference. delegationRefs is the
