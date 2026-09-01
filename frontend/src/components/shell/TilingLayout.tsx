@@ -177,6 +177,7 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
       const onRatioChange = props.onRatioChange
       if (!onRatioChange)
         return null
+      // eslint-disable-next-line solid/reactivity -- the split id identifies this tile for the drag that is starting; it is fixed for the component instance
       const splitId = s().id
       return final => onRatioChange(splitId, final)
     },
@@ -268,6 +269,7 @@ function GridRenderer(props: GridRendererProps): JSX.Element {
       const onGridRatiosChange = props.onGridRatiosChange
       if (!onGridRatiosChange)
         return null
+      // eslint-disable-next-line solid/reactivity -- the grid id identifies this tile for the drag that is starting; it is fixed for the component instance
       const gridId = g().id
       return final => onGridRatiosChange(gridId, which, final)
     },

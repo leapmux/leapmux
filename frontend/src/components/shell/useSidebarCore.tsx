@@ -122,6 +122,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
   const [filesSectionHandle, setFilesSectionHandle] = createSignal<FilesSectionHandle | undefined>()
 
   createEffect(() => {
+    // eslint-disable-next-line solid/reactivity -- the effect re-runs on the handle and unregister tears down the previous registration
     const handle = filesSectionHandle()
     if (!handle)
       return

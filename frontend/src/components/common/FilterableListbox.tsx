@@ -73,6 +73,7 @@ export function FilterableListbox(props: {
   let inputRef: HTMLInputElement | undefined
 
   const filtered = createMemo(() => {
+    // eslint-disable-next-line solid/reactivity -- `f` is read by the props.items.filter callback below, in this same memo evaluation
     const f = filter().toLowerCase()
     if (!f)
       return props.items
@@ -90,6 +91,7 @@ export function FilterableListbox(props: {
   }
 
   createEffect(() => {
+    // eslint-disable-next-line solid/reactivity -- `len` is read by the setHighlightedIndex updater, which runs synchronously in this effect
     const len = filtered().length
     setHighlightedIndex(i => (i > len - 1 ? Math.max(len - 1, 0) : i))
   })
@@ -134,6 +136,7 @@ export function FilterableListbox(props: {
   })
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    // eslint-disable-next-line solid/reactivity -- keydown handler: reads at invocation time
     const items = filtered()
     switch (e.key) {
       case 'ArrowDown':

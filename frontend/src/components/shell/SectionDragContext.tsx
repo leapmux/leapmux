@@ -290,6 +290,7 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
 
     if (dragId.startsWith(SECTION_DRAG_PREFIX)) {
       // Section drag handling
+      // eslint-disable-next-line solid/reactivity -- drag-end handler: reads at invocation time
       const sectionId = draggedSectionId()
       setDraggedSectionId(null)
 

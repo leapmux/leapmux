@@ -30,6 +30,7 @@ defineCodexRenderer({
     })
     const output = createMemo(() => {
       const context = props.context
+      // eslint-disable-next-line solid/reactivity -- cachedRenderValue runs its factory synchronously, so this is read in this same memo evaluation
       const sourceOutput = baseSource()?.output ?? ''
       return cachedRenderValue(context, 'codex.commandExecution.strippedOutput', () => stripToolUseHeaderFromOutput(sourceOutput))
     })

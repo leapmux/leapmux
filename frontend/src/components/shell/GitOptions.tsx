@@ -253,6 +253,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // Handles both a direct local match and a remote ref (e.g.
   // `origin/main` while on `main`) whose strip-to-local equals current.
   const checkoutBranchNoopNotice = createMemo(() => {
+    // eslint-disable-next-line solid/reactivity -- `selected` is read in this same memo body, not in a deferred callback
     const selected = selectedCheckoutBranch()
     if (!selected)
       return null
@@ -272,6 +273,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // The "current" overlap is surfaced by checkoutBranchNoopNotice with
   // submit disabled — this warning is for the still-actionable case.
   const checkoutBranchWarning = createMemo(() => {
+    // eslint-disable-next-line solid/reactivity -- `selected` is read in this same memo body, not in a deferred callback
     const selected = selectedCheckoutBranch()
     if (!selected)
       return null

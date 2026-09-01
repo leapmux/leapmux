@@ -600,6 +600,11 @@ func RunUserEventsReadLoop(ctx context.Context, ws *websocket.Conn, stripPrefix 
 // RunUserEventsReadLoop, but preserves the terminal WebSocket close error. Relay
 // adapters use it when they must forward the peer's exact close code and
 // reason rather than collapsing a clean close to nil.
+//
+// It NEVER returns nil. The loop ends only at a read error or an onFrame
+// error, so a caller that guards its error handling with `if err != nil`
+// writes a condition that is always true. Use RunUserEventsReadLoop when a
+// clean close should read as success.
 func ReadUserEventsFrames(ctx context.Context, ws *websocket.Conn, stripPrefix bool, onFrame func(payload []byte) error) error {
 	for {
 		var payload []byte

@@ -303,6 +303,7 @@ export function Tooltip(props: TooltipProps) {
    * `attributeFilter` costs nothing while those attributes do not change.
    */
   createEffect(() => {
+    // eslint-disable-next-line solid/reactivity -- the effect re-runs on targetEl and its cleanup detaches the old target
     const target = targetEl()
     // NOTHING TO SHOW, so nothing to observe. This is per INSTANCE, and the
     // instance count is not limited by the call sites: `ClippedText`,
@@ -491,6 +492,7 @@ export function Tooltip(props: TooltipProps) {
   })
 
   createEffect(() => {
+    // eslint-disable-next-line solid/reactivity -- the effect re-runs on targetEl and its cleanup detaches the old target
     const target = targetEl()
     if (!target)
       return
@@ -525,6 +527,7 @@ export function Tooltip(props: TooltipProps) {
   })
 
   createEffect(() => {
+    // eslint-disable-next-line solid/reactivity -- the effect re-runs on targetEl and its cleanup detaches the old target
     const target = targetEl()
     if (!target)
       return

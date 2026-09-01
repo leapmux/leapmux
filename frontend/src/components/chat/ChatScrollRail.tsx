@@ -392,6 +392,7 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     // The hold invokes its thunk synchronously anyway, so this changes no ordering the reader can
     // see -- and it keeps the reactive `props.onJumpToSeq` read out of a deferred callback, where
     // it would be a stale-closure hazard rather than the release-time read this needs.
+    // eslint-disable-next-line solid/reactivity -- the eager seek above is deliberate: the hold invokes its thunk synchronously
     const jumped = seekTo(seq)
     dragHold.release(fraction, () => jumped)
   }

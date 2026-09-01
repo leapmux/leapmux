@@ -174,9 +174,10 @@ func (r *UserEventsRelay) readLoop() {
 	if r.ctx.Err() != nil {
 		return
 	}
-	if err != nil && r.ctx.Err() == nil {
-		slog.Debug("userevents relay read error", "error", err)
-	}
+	// ReadUserEventsFrames never returns nil -- it preserves the terminal close
+	// error rather than collapsing a clean close -- so the error is always
+	// present here and needs no `err != nil` guard.
+	slog.Debug("userevents relay read error", "error", err)
 	// emitClose cancels before emitting, the shared terminal sequence both read
 	// loops route through (see wsRelay.emitClose). No userevents adopt path gates
 	// on ctx.Err()==nil today (OpenUserEventsRelay supersedes by owner id, not by

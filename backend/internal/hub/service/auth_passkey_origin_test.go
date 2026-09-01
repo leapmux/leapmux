@@ -39,10 +39,15 @@ func TestGetSystemInfo_PasskeyEnabledFollowsTheRequestOrigin(t *testing.T) {
 	assert.True(t, systemInfoFromOrigin(t, env, passkeyTestOrigin).GetPasskeyEnabled(),
 		"the published origin runs ceremonies")
 
-	// A hub bound on loopback answers to every loopback spelling, and the
-	// browser -- not the server -- picks which one the ceremony runs on.
-	assert.True(t, systemInfoFromOrigin(t, env, "https://127.0.0.1").GetPasskeyEnabled(),
-		"a loopback spelling of the published origin runs ceremonies")
+	// A hub bound on loopback answers to every loopback spelling, but only
+	// the NAMED one can run a ceremony. WebAuthn §5.1.3 excludes an address
+	// literal from a valid RP ID, and "localhost" is not a registrable-domain
+	// suffix of the effective domain "127.0.0.1" either -- so no RP ID exists
+	// that a browser on this page would accept. The flag says so, which is
+	// the whole point of it: the alternative is an Add passkey button that
+	// raises SecurityError at create().
+	assert.False(t, systemInfoFromOrigin(t, env, "https://127.0.0.1").GetPasskeyEnabled(),
+		"an IP-literal spelling can run no ceremony under any RP ID")
 
 	// The state this flag exists for: a hub published at one address and
 	// reached at another. Every Begin answers ErrOriginNotAllowed there, so

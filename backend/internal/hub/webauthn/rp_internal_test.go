@@ -37,6 +37,14 @@ func TestNewGoWebAuthnValidatesTheRPID(t *testing.T) {
 		"localhost:8080",
 		"not a domain",
 		"https://example.com/path",
+		// Address literals. §5.1.3 names these as the case a valid domain
+		// string excludes, so a ceremony under one could never complete --
+		// the browser refused it even while go-webauthn still accepted it.
+		// rpIDForHost maps every loopback spelling to "localhost" so this
+		// value cannot reach the library from a hub configuration.
+		"127.0.0.1",
+		"::1",
+		"192.168.1.5",
 	} {
 		badRP := rp
 		badRP.RPID = bad
@@ -51,9 +59,9 @@ func TestCeremonyWebAuthnRebuildsRatherThanCopies(t *testing.T) {
 	t.Parallel()
 
 	rp := RPConfig{
-		RPID:          "localhost",
+		RPID:          "hub.example.com",
 		RPDisplayName: "LeapMux",
-		RPOrigins:     []string{"http://localhost", "http://127.0.0.1"},
+		RPOrigins:     []string{"https://hub.example.com", "https://alt.example.com"},
 	}
 	w, err := newGoWebAuthn(rp)
 	require.NoError(t, err)
@@ -64,12 +72,19 @@ func TestCeremonyWebAuthnRebuildsRatherThanCopies(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, w, same)
 
-	// A different allowed origin's RP ID builds a distinct instance that
-	// carries the substituted value.
-	other, err := s.ceremonyWebAuthn("127.0.0.1")
+	// A substituted RP ID builds a distinct instance that carries the new
+	// value and keeps every other relying-party parameter.
+	other, err := s.ceremonyWebAuthn("alt.example.com")
 	require.NoError(t, err)
 	require.NotSame(t, w, other)
-	assert.Equal(t, "127.0.0.1", other.Config.RPID)
+	assert.Equal(t, "alt.example.com", other.Config.RPID)
 	assert.Equal(t, rp.RPOrigins, other.Config.RPOrigins,
 		"the rebuilt instance must keep every relying-party parameter")
+
+	// The rebuild is what makes the library VALIDATE the substituted value.
+	// A copied config carries gowebauthn's `validated` flag and would accept
+	// this silently, and the ceremony would then run under an RP ID no
+	// browser will hash.
+	_, err = s.ceremonyWebAuthn("127.0.0.1")
+	require.Error(t, err, "an address literal is not a valid RP ID")
 }

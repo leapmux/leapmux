@@ -64,6 +64,7 @@ export const AccountEmail: Component = () => {
   })
 
   const requestChange = async () => {
+    // eslint-disable-next-line solid/reactivity -- user-invoked action: reads at invocation time
     const email = newEmail().trim()
     if (!email) {
       action.reject('Email must not be empty.')

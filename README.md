@@ -77,9 +77,9 @@ The rest of this README is for people building LeapMux from source or hacking on
 
 Before you begin, ensure you have the following installed:
 
-- **Go** 1.26.5 or later
+- **Go** 1.27.0 or later
 - **Node.js** 24 or later
-- **Bun** 1.3.14 or later - JavaScript runtime and package manager
+- **Bun** 1.4.0 or later - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
 - **buf** CLI - Protocol Buffer code generation ([authentication](https://buf.build/docs/bsr/authentication/) recommended to avoid rate-limit errors)
 - **protobuf** (`protoc`) - Protocol Buffer compiler (required by Tauri's `prost-build`)

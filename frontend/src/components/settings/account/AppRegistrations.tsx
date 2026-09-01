@@ -431,6 +431,7 @@ export const AppRegistrations: Component<AppRegistrationsProps> = (props) => {
       // The reach rides the request, read ONCE before the pagination: the
       // variant is fixed for the panel's life, and a reactive read inside
       // the untracked page callback would re-evaluate per page for nothing.
+      // eslint-disable-next-line solid/reactivity -- read once before the pagination on purpose, as the comment above states
       const reach = hubWide() ? AppVisibility.HUB_WIDE : undefined
       const collected = await fetchAllPages(
         async (cursor) => {

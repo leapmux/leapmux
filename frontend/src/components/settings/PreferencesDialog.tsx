@@ -141,6 +141,7 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
    * result jumped to a panel that does not show it.
    */
   const searchEntries = createMemo<SearchEntry[]>(() => {
+    // eslint-disable-next-line solid/reactivity -- `byGroup` is read by the flatMap callback below, in this same memo evaluation
     const byGroup = rowsByGroup()
     return NAV_GROUPS.flatMap(group =>
       (byGroup.get(group.id) ?? []).map(({ descriptor }) => ({

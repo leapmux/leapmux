@@ -53,11 +53,13 @@ export const AccountProfile: Component = () => {
   })
 
   const save = async () => {
+    // eslint-disable-next-line solid/reactivity -- user-invoked action: reads at invocation time
     const [slug, slugErr] = sanitizeSlug('Username', username())
     if (slugErr) {
       action.reject(slugErr)
       return
     }
+    // eslint-disable-next-line solid/reactivity -- user-invoked action: reads at invocation time
     const { value: sanitizedDisplayName, error: dnErr } = sanitizeDisplayName(displayName(), slug)
     if (dnErr) {
       action.reject(dnErr)

@@ -240,10 +240,12 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
             // ancestor (reorder position logic lives in SectionDragProvider).
             // Only created when inside a DragDropProvider and section is draggable.
 
+            // eslint-disable-next-line solid/reactivity -- a DnD primitive cannot be created conditionally on a later re-render, so this decision is made once per row
             const draggable = hasDndContext && section().draggable
               ? createDraggable(`${SECTION_DRAG_PREFIX}${id}`)
               : null
 
+            // eslint-disable-next-line solid/reactivity -- a DnD primitive cannot be created conditionally on a later re-render, so this decision is made once per row
             const droppable = hasDndContext && section().draggable
               ? createDroppable(`${SECTION_DRAG_PREFIX}${id}`)
               : null
