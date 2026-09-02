@@ -1,22 +1,25 @@
+import type { DesktopBehavior } from '~/api/platformBridge'
 import { createEffect, onCleanup } from 'solid-js'
-import { parseDesktopBehaviorRefusal, setDesktopBehavior } from '~/api/platformBridge'
+import { parseDesktopBehaviorRefusals, setDesktopBehavior } from '~/api/platformBridge'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { trailingDebounce } from '~/lib/debounce'
-import { reportDesktopShellRefusal } from '~/lib/desktopShellStatus'
+import { reportDesktopShellRefusals } from '~/lib/desktopShellStatus'
 import { createLogger } from '~/lib/logger'
 import { isDesktopApp } from '~/lib/systemInfo'
 
 const log = createLogger('desktopWindowBehavior')
 
 /**
- * How long to wait before pushing, so one settings load is one invoke.
+ * How long to wait before pushing, so a burst of edits is one invoke.
  *
- * `reload()` applies the account values one key at a time and un-batched, so a
- * single load wakes this effect once per Desktop key with a partly-updated
- * payload in between. Collapsing them also keeps a transient
- * `startOnLogin: false` from reaching the operating system between the
- * descriptors landing and the values landing.
+ * `reload()` applies one settings load inside a `batch`, so that route already
+ * wakes this effect once. What remains is a person: a user who moves two
+ * Desktop controls in the same second should not register the login item and
+ * rebuild the tray twice.
+ *
+ * The window is also what makes the `pending` rule below load-bearing, because
+ * it is the interval in which a change can be undone before it is sent.
  */
 const PUSH_DEBOUNCE_MS = 50
 
@@ -48,11 +51,24 @@ export function useDesktopWindowBehavior(): void {
 
   const auth = useAuth()
   const preferences = usePreferences()
+
+  // The key of the payload the SHELL HOLDS. It moves only once an invoke
+  // settles in a way that proves the command RAN: a resolve, or a refusal,
+  // which the shell reports after it applied and cached everything else. A
+  // transport failure leaves it where it was, so the next run of the effect
+  // pushes again -- the shell's own cache mirror is written on the same rule,
+  // and the two converge only when both obey it.
   let lastPushed: string | undefined
-  // The newest payload the effect produced. `trailingDebounce` takes no
-  // arguments, and a trailing debounce should send the LAST value anyway, so
-  // the pending payload lives here rather than being captured per call.
-  let pending: string | undefined
+  // The newest payload the effect produced, and the key that identifies it.
+  // `trailingDebounce` takes no arguments, and a trailing debounce should send
+  // the LAST value anyway, so the pending payload lives here rather than being
+  // captured per call.
+  //
+  // The payload is the TYPED object, and the key is a separate string. Passing
+  // a parsed JSON string to the invoke instead would type as `any`, which is
+  // the one place a field renamed in `DesktopBehavior` still compiles.
+  let pending: DesktopBehavior | undefined
+  let pendingKey: string | undefined
 
   // The newest push this hook issued. The debounce collapses a burst, but two
   // pushes further apart than it can still overlap, and a SUPERSEDED answer
@@ -61,28 +77,36 @@ export function useDesktopWindowBehavior(): void {
   let pushSeq = 0
 
   const push = trailingDebounce(() => {
-    const payload = pending
-    if (payload === undefined || payload === lastPushed)
+    const behavior = pending
+    const key = pendingKey
+    if (behavior === undefined || key === undefined || key === lastPushed)
       return
-    lastPushed = payload
     const seq = ++pushSeq
     const isNewest = () => seq === pushSeq
-    setDesktopBehavior(JSON.parse(payload) as Parameters<typeof setDesktopBehavior>[0])
+    setDesktopBehavior(behavior)
       .then(() => {
+        lastPushed = key
         if (isNewest())
-          reportDesktopShellRefusal(null)
+          reportDesktopShellRefusals([])
       })
       .catch((err: unknown) => {
         // The shell reports what the operating system refused. The preference
         // is stored either way, so this is a notice and not a rollback -- but
         // it must be a notice the user READS. A tray that could not be created
         // and a login item the system declined both leave a toggle reading
-        // "on" with nothing behind it, so the message goes to the row that
-        // owns the choice. Anything else (the IPC layer itself failing)
+        // "on" with nothing behind it, so each message goes to the row that
+        // owns its choice. Anything else (the IPC layer itself failing)
         // belongs to no row and stays in the log.
+        const refusals = parseDesktopBehaviorRefusals(err)
+        // A REFUSAL means the command ran: it applies every step and caches
+        // the set whatever the operating system declined, so the shell holds
+        // this payload. Anything else may never have reached the command, so
+        // the key stays put and the next run of the effect tries again.
+        if (refusals.length > 0)
+          lastPushed = key
         log.warn('the desktop shell refused the window behaviour', err)
         if (isNewest())
-          reportDesktopShellRefusal(parseDesktopBehaviorRefusal(err))
+          reportDesktopShellRefusals(refusals)
       })
   }, PUSH_DEBOUNCE_MS)
   onCleanup(() => push.cancel())
@@ -94,16 +118,21 @@ export function useDesktopWindowBehavior(): void {
     if (auth.loading() || auth.user() === null || preferences.accountDescriptors().length === 0)
       return
 
-    const payload = JSON.stringify({
+    const behavior: DesktopBehavior = {
       trayEnabled: preferences.trayEnabled(),
       trayOnClose: preferences.trayOnClose(),
       trayOnMinimize: preferences.trayOnMinimize(),
       startOnLogin: preferences.startOnLogin(),
       startMinimized: preferences.startMinimized(),
-    })
-    if (payload === lastPushed)
-      return
-    pending = payload
+    }
+    // BOTH are written on every run, including one whose key matches
+    // `lastPushed`. Returning early here instead would leave an already-armed
+    // timer holding the payload the user moved away from, and it would fire
+    // with that superseded value: turn the tray on and off again inside the
+    // debounce window, and the shell receives "on". `push` makes the
+    // no-change decision instead, where the timer cannot outrun it.
+    pending = behavior
+    pendingKey = JSON.stringify(behavior)
     push()
   })
 }

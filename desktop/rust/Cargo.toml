@@ -51,13 +51,14 @@ gdk = "0.18"
 # tracks the state without reporting it, so the AppKit notification is the only
 # signal that catches every way a window can be miniaturized.
 #
-# Tauri re-exports objc2 only under `target_os = "ios"`, so these must be named
-# here. All four are already in Cargo.lock at these versions through
-# tao/muda/tray-icon, so naming them adds direct edges and no new packages.
+# Tauri re-exports objc2 only under `target_os = "ios"`, so this file must list
+# these four itself. All four are already in Cargo.lock at these versions
+# through tao/muda/tray-icon, so the entries add direct edges and no new
+# packages.
 #
-# The objc2-foundation feature list is what gates
-# `addObserverForName:object:queue:usingBlock:`. Drop one and the method simply
-# does not exist, with no hint as to which is missing.
+# The objc2-foundation feature list is what makes
+# `addObserverForName:object:queue:usingBlock:` available. Drop one and the
+# method simply does not exist, with no hint as to which is missing.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow"] }
 objc2-foundation = { version = "0.3", default-features = false, features = [

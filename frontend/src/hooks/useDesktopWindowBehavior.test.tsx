@@ -3,12 +3,12 @@ import type { SettingDescriptor } from '~/generated/proto/leapmux/v1/settings_pb
 import { cleanup, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopShellRefusal, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
+import { desktopShellRefusals, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
 
 const setDesktopBehavior = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const isDesktopApp = vi.hoisted(() => vi.fn(() => true))
 
-// Only the invoke is replaced. `parseDesktopBehaviorRefusal` stays REAL,
+// Only the invoke is replaced. `parseDesktopBehaviorRefusals` stays REAL,
 // because narrowing the rejection is part of what this hook is being tested
 // for -- a stubbed narrowing would assert the mock's own answer.
 vi.mock('~/api/platformBridge', async importOriginal => ({
@@ -214,26 +214,42 @@ describe('useDesktopWindowBehavior', () => {
   // while no icon exists, and the login item is simply not registered. The
   // message has to reach the row the user just moved.
   it('reports a refusal to the row that owns it', async () => {
-    setDesktopBehavior.mockRejectedValue({ setting: 'trayEnabled', message: 'no status-icon library' })
+    setDesktopBehavior.mockRejectedValue([{ setting: 'trayEnabled', message: 'no status-icon library' }])
     mount()
     await settle()
 
-    expect(desktopShellRefusal()).toEqual({
+    expect(desktopShellRefusals()).toEqual([{
       key: 'desktop.trayEnabled',
       message: 'no status-icon library',
-    })
+    }])
+  })
+
+  // The two choices fail independently, so a push can be refused twice and
+  // each message belongs on its own row.
+  it('reports every refusal of one push', async () => {
+    setDesktopBehavior.mockRejectedValue([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+      { setting: 'startOnLogin', message: 'the system declined' },
+    ])
+    mount()
+    await settle()
+
+    expect(desktopShellRefusals()).toEqual([
+      { key: 'desktop.trayEnabled', message: 'no status-icon library' },
+      { key: 'desktop.startOnLogin', message: 'the system declined' },
+    ])
   })
 
   it('clears the reported refusal once a push succeeds', async () => {
-    setDesktopBehavior.mockRejectedValue({ setting: 'startOnLogin', message: 'the system declined' })
+    setDesktopBehavior.mockRejectedValue([{ setting: 'startOnLogin', message: 'the system declined' }])
     mount()
     await settle()
-    expect(desktopShellRefusal()).not.toBeNull()
+    expect(desktopShellRefusals()).toHaveLength(1)
 
     setDesktopBehavior.mockResolvedValue(undefined)
     setTrayEnabled(true)
     await settle()
-    expect(desktopShellRefusal()).toBeNull()
+    expect(desktopShellRefusals()).toEqual([])
   })
 
   // The debounce collapses a burst, but two pushes further apart can still
@@ -254,18 +270,18 @@ describe('useDesktopWindowBehavior', () => {
     await settle()
     expect(setDesktopBehavior).toHaveBeenCalledTimes(2)
 
-    rejectFirst?.({ setting: 'trayEnabled', message: 'no status-icon library' })
+    rejectFirst?.([{ setting: 'trayEnabled', message: 'no status-icon library' }])
     await settle()
-    expect(desktopShellRefusal()).toBeNull()
+    expect(desktopShellRefusals()).toEqual([])
   })
 
   // A transport failure belongs to no row. Showing it beside a toggle would
   // blame the setting for something that has nothing to do with it.
-  it('reports nothing for a failure that names no setting', async () => {
+  it('reports nothing for a failure that identifies no setting', async () => {
     setDesktopBehavior.mockRejectedValue(new Error('ipc closed'))
     mount()
     await settle()
-    expect(desktopShellRefusal()).toBeNull()
+    expect(desktopShellRefusals()).toEqual([])
   })
 
   it('drops a pending push when the component goes away', async () => {
@@ -274,5 +290,86 @@ describe('useDesktopWindowBehavior', () => {
     cleanup()
     await settle()
     expect(setDesktopBehavior).not.toHaveBeenCalled()
+  })
+
+  // A TRANSPORT failure may never have reached the command, so nothing was
+  // applied or cached. Recording the payload as delivered would make the hook
+  // skip every later run that recomputes it, and the shell would keep the
+  // previous behaviour for the rest of the session with no message anywhere.
+  it('retries a payload the transport never delivered', async () => {
+    setDesktopBehavior.mockRejectedValue(new Error('ipc closed'))
+    mount()
+    await settle()
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+
+    // The same payload, recomputed. Something else woke the effect -- another
+    // tab wrote a device override, or the account settings reloaded.
+    setDesktopBehavior.mockResolvedValue(undefined)
+    setTrayEnabled(true)
+    setTrayEnabled(false)
+    await settle()
+
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(2)
+    expect(setDesktopBehavior).toHaveBeenLastCalledWith({
+      trayEnabled: false,
+      trayOnClose: 'tray',
+      trayOnMinimize: 'taskbar',
+      startOnLogin: false,
+      startMinimized: 'window',
+    })
+  })
+
+  // A REFUSAL is the opposite case: the command ran, applied every step it
+  // could and cached the set, so the shell holds this payload. Pushing it
+  // again would re-register the login item and rebuild the tray for nothing.
+  it('does not retry a payload the shell refused', async () => {
+    setDesktopBehavior.mockRejectedValue([{ setting: 'trayEnabled', message: 'no status-icon library' }])
+    mount()
+    await settle()
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+
+    setTrayEnabled(true)
+    setTrayEnabled(false)
+    await settle()
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+  })
+
+  // The effect must record the newest payload even when it matches the last
+  // one delivered. Returning early there leaves an ARMED timer holding the
+  // value the user moved away from, and it fires with that superseded value.
+  it('sends the current values when a change is undone inside the debounce', async () => {
+    mount()
+    await settle()
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+
+    // On, then off again, both inside one debounce window.
+    setTrayEnabled(true)
+    await vi.advanceTimersByTimeAsync(20)
+    setTrayEnabled(false)
+    await settle()
+
+    // The shell already holds `trayEnabled: false`, so the right answer is no
+    // second invoke at all -- and certainly not one carrying `true`.
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends the last value of a burst that ends somewhere new', async () => {
+    mount()
+    await settle()
+    setDesktopBehavior.mockClear()
+
+    setTrayEnabled(true)
+    await vi.advanceTimersByTimeAsync(20)
+    setTrayOnClose('quit')
+    await settle()
+
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+    expect(setDesktopBehavior).toHaveBeenCalledWith({
+      trayEnabled: true,
+      trayOnClose: 'quit',
+      trayOnMinimize: 'taskbar',
+      startOnLogin: false,
+      startMinimized: 'window',
+    })
   })
 })

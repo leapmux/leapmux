@@ -5,7 +5,15 @@
   "description": "Tauri event names (Rust emits, webview listens), the env vars Rust passes to the Go sidecar, and the enum tokens of the Desktop account settings. Event names are Tauri namespace:name tokens; env vars are UPPER_SNAKE; setting tokens are slugs.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "envVars", "tauriEvents", "windowBehavior", "maxFrameSizeBytes"],
+  "required": [
+    "_readme",
+    "envVars",
+    "tauriEvents",
+    "windowBehavior",
+    "launchVisibility",
+    "windowMode",
+    "maxFrameSizeBytes"
+  ],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
     "envVars": {
@@ -34,22 +42,58 @@
     "windowBehavior": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Enum tokens of the Desktop account settings, spelled by the hub (usersettings), the webview (device-tier parse) and the Rust shell (set_desktop_behavior payload). Two settings may share a token value; the generator checks uniqueness per setting, not across the block.",
-      "required": [
-        "trayOnCloseTray",
-        "trayOnCloseQuit",
-        "trayOnMinimizeTray",
-        "trayOnMinimizeTaskbar",
-        "startMinimizedWindow",
-        "startMinimizedMinimized"
-      ],
+      "description": "Enum tokens of the Desktop account settings, spelled by the hub (usersettings), the webview (device-tier parse) and the Rust shell (set_desktop_behavior payload). One object per SETTING, so the grouping is data this schema enforces rather than a table the generator has to keep in step. Two settings may share a token value; the generator checks uniqueness inside each object, never across the block.",
+      "required": ["trayOnClose", "trayOnMinimize", "startMinimized"],
       "properties": {
-        "trayOnCloseTray": { "$ref": "#/$defs/settingToken" },
-        "trayOnCloseQuit": { "$ref": "#/$defs/settingToken" },
-        "trayOnMinimizeTray": { "$ref": "#/$defs/settingToken" },
-        "trayOnMinimizeTaskbar": { "$ref": "#/$defs/settingToken" },
-        "startMinimizedWindow": { "$ref": "#/$defs/settingToken" },
-        "startMinimizedMinimized": { "$ref": "#/$defs/settingToken" }
+        "trayOnClose": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tray", "quit"],
+          "properties": {
+            "tray": { "$ref": "#/$defs/settingToken" },
+            "quit": { "$ref": "#/$defs/settingToken" }
+          }
+        },
+        "trayOnMinimize": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tray", "taskbar"],
+          "properties": {
+            "tray": { "$ref": "#/$defs/settingToken" },
+            "taskbar": { "$ref": "#/$defs/settingToken" }
+          }
+        },
+        "startMinimized": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["window", "minimized"],
+          "properties": {
+            "window": { "$ref": "#/$defs/settingToken" },
+            "minimized": { "$ref": "#/$defs/settingToken" }
+          }
+        }
+      }
+    },
+    "launchVisibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The window state the shell reports at launch. Rust writes these through get_startup_info and the webview reads them in parseLaunchVisibility; unlike windowBehavior they are one setting, so all three must differ.",
+      "required": ["normal", "minimized", "hidden"],
+      "properties": {
+        "normal": { "$ref": "#/$defs/settingToken" },
+        "minimized": { "$ref": "#/$defs/settingToken" },
+        "hidden": { "$ref": "#/$defs/settingToken" }
+      }
+    },
+    "windowMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The saved display state of the main window. All three languages spell these: Go persists the token, the Rust shell matches it at launch, and the webview reads and writes it through save_window_geometry. One setting, so all three must differ.",
+      "required": ["normal", "maximized", "fullscreen"],
+      "properties": {
+        "normal": { "$ref": "#/$defs/settingToken" },
+        "maximized": { "$ref": "#/$defs/settingToken" },
+        "fullscreen": { "$ref": "#/$defs/settingToken" }
       }
     },
     "maxFrameSizeBytes": {

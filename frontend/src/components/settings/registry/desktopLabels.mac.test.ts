@@ -25,7 +25,7 @@ function row(id: string) {
 }
 
 describe('desktop row labels on macOS', () => {
-  it('names the surface a menu bar', () => {
+  it('calls the surface a menu bar', () => {
     expect(row('desktop.trayEnabled').label).toBe('Menu bar icon')
     expect(row('desktop.trayEnabled').help).toContain('menu bar')
   })

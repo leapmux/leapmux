@@ -1,14 +1,16 @@
 <!--
-  The tray / menu-bar icon source: the chevron and the spark of
-  leapmux-icon.svg in solid black on a transparent square, with no background
-  plate.
+  The macOS menu-bar icon source: the chevron and the spark of leapmux-icon.svg
+  in solid black on a transparent square, with no background plate.
+
+  macOS ONLY. TRAY_ICON_FILES in desktop/rust/scripts/icon-set.mjs gives this
+  file to tray-template.png alone; the Linux panel and the Windows notification
+  area draw tray.png, which renders from the colour leapmux-icon.svg. An edit
+  here changes the menu bar and nothing else.
 
   Black is not a colour choice. macOS renders a status item as a TEMPLATE
   image, which takes the alpha channel alone and recolours it to match the menu
   bar (white on a dark bar, black on a light one), so any other fill produces
-  the same picture. The Linux panel and the Windows notification area draw the
-  pixels as authored, and a solid silhouette is what stays legible at 16 to 24
-  pixels on either.
+  the same picture.
 
   The two paths are copied from leapmux-icon.svg UNCHANGED, and the group
   transform only recentres them. Both are already centred on y=32 there, so

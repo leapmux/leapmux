@@ -20,9 +20,12 @@ use super::TrayState;
 
 /// Answer a `Resized` event on the main window.
 ///
-/// Re-entrancy terminates on its own: the `hide()` inside `handle_minimize`
-/// can emit further resize events, and the second pass reads
-/// `is_minimized() == false`.
+/// Re-entrancy terminates on its own, but NOT because the state clears.
+/// `is_minimized()` is `IsIconic`, and `SW_HIDE` leaves `WS_MINIMIZE` set, so a
+/// window that is both hidden and minimized still answers true. It stops one
+/// level down: `hide()` only clears tao's own `VISIBLE` flag, and
+/// `WindowFlags::apply_diff` returns without a Win32 call when the diff is
+/// empty, so a second `hide()` does nothing and raises no further `WM_SIZE`.
 pub(crate) fn on_resized(window: &Window) {
     let app = window.app_handle();
     let Some(state) = app.try_state::<Arc<TrayState>>() else {

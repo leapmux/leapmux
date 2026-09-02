@@ -195,7 +195,7 @@ var omittedWhileUnused = map[string]string{
 	"Field.Placeholder": "no account key declares a free-text string field, which is the only kind a " +
 		"placeholder hints at. Every account field is an enum, a bool, an integer, a string list, or a custom editor",
 	"Field.DependsOn": "no account key declares a visibility condition. The frontend registry's hiddenWhen owns " +
-		"the account rows that hide, because both of them (the font stacks and the turn-end volume) read a " +
+		"the account rows that hide, because each of them reads a " +
 		"browser-tier value the wire cannot carry",
 	"UIMeta.HiddenInSolo": "solo hiding is instance scope only. A solo hub has one user, whose account settings " +
 		"all stay editable",

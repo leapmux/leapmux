@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import { render, waitFor } from '@solidjs/testing-library'
+import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
@@ -690,6 +691,47 @@ describe('preferencesContext — an undeclared account key', () => {
     expect(ctx.get().customKeybindings()).toEqual([])
   })
 
+  // One reply carries EVERY account key, so an un-batched apply flushed the
+  // effect queue once per key and every consumer of a resolved preference ran
+  // that often, each time over a partly-updated set. That is what made a hook
+  // with a side effect outside the app -- `useDesktopWindowBehavior`, which
+  // registers the OS login item -- need a debounce to be correct rather than
+  // only to be economical.
+  it('applies one reload as a single update', async () => {
+    listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
+    const ctx = captureContext()
+    await waitFor(() => expect(listUserSettings).toHaveBeenCalled())
+
+    let runs = 0
+    createRoot(() => {
+      createEffect(() => {
+        ctx.get().trayEnabled()
+        ctx.get().trayOnClose()
+        ctx.get().startOnLogin()
+        ctx.get().diffView()
+        runs++
+      })
+    })
+    await flushMicrotasks()
+    const base = runs
+
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [
+        settingValue('tray_enabled', 'true'),
+        settingValue('tray_on_close', '"quit"'),
+        settingValue('start_on_login', 'true'),
+        settingValue('diff_view', '"split"'),
+      ],
+    })
+    await ctx.get().reload()
+    await flushMicrotasks()
+
+    expect(ctx.get().trayEnabled()).toBe(true)
+    expect(ctx.get().startOnLogin()).toBe(true)
+    expect(runs - base).toBe(1)
+  })
+
   it('leaves every declared key at its value', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
@@ -1362,7 +1404,7 @@ describe('preferencesContext — cross-tab sync', () => {
     expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
   })
 
-  // EVERY device-tier signal follows, not only the nine that have an account
+  // EVERY device-tier signal follows, not only the ones that have an account
   // half. The browser-only fields share the same document and the same event,
   // so a set they were missing from meant a diff view or an Enter-key mode
   // changed next door stayed stale here until the tab was reloaded.

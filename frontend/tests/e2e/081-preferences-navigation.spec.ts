@@ -153,7 +153,15 @@ test.describe('Preferences navigation', () => {
 
     // The search index is built from the same filtered rows, so a row that
     // leaked into search but not the panel would surface here.
+    //
+    // Read the RESULT BUTTONS, not `data-setting-id`. A non-empty query
+    // unmounts the whole `SettingsPanel` -- the only place that attribute is
+    // rendered -- so a locator for it answers zero for every query, in every
+    // environment, and would stay green with the `hidden` rules deleted. Each
+    // result carries `Group › Label` as its accessible name instead.
     await dialog.getByTestId('preferences-search').fill('tray')
-    await expect(dialog.locator('[data-setting-id^="desktop."]')).toHaveCount(0)
+    const results = dialog.getByTestId('preferences-search-results')
+    await expect(results).toBeVisible()
+    await expect(results.getByRole('button', { name: /^Desktop ›/ })).toHaveCount(0)
   })
 })

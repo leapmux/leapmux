@@ -1294,21 +1294,59 @@ export const DESKTOP_TS_BEHAVIOR_NAMES = {
 }
 
 /**
- * Which windowBehavior keys are the two values of ONE account setting.
+ * Flatten `windowBehavior` to the `<setting><Value>` keys the name tables use.
  *
- * CHECKER-ONLY, never emitted: each language groups the tokens in its own
- * declaration (Go's enum catalogue, the webview's `oneOf`, Rust's match), so
- * emitting the grouping a fourth time would be the drift this file exists to
- * prevent. It is here because the uniqueness rule cannot be stated without it.
- * `tray` is deliberately the token of BOTH tray_on_close and tray_on_minimize,
- * so a check across the whole block would refuse the shipped contract -- while
- * a setting whose two values are one string offers no choice at all. The keys
- * are the Go setting names, so a reader can find each one.
+ * The contract NESTS one object per setting, so the grouping is data the schema
+ * enforces and the per-setting uniqueness rule reads straight off it. The
+ * emitted constant names stay flat, which is the same split `flattenWire` makes
+ * for wire.json's nested blocks.
  */
-const DESKTOP_BEHAVIOR_SETTINGS = {
-  tray_on_close: ['trayOnCloseTray', 'trayOnCloseQuit'],
-  tray_on_minimize: ['trayOnMinimizeTray', 'trayOnMinimizeTaskbar'],
-  start_minimized: ['startMinimizedWindow', 'startMinimizedMinimized'],
+function flattenBehavior(b) {
+  // DERIVED, not a fixed list of the six keys: a setting added to the contract
+  // must reach the coverage check below as an unknown key, so the generator
+  // refuses it until the three name tables carry it. A hardcoded list would
+  // drop the new setting here and emit nothing for it, in silence.
+  return Object.fromEntries(
+    Object.entries(b).flatMap(([setting, tokens]) =>
+      Object.entries(tokens).map(([value, token]) =>
+        [`${setting}${value[0].toUpperCase()}${value.slice(1)}`, token])),
+  )
+}
+
+// The launch-visibility tokens. Rust and TS only, like the Tauri events: the
+// shell reports one through get_startup_info and the webview parses it. Unlike
+// windowBehavior this block is ONE setting, so all three tokens must differ.
+export const DESKTOP_RS_LAUNCH_NAMES = {
+  normal: 'LAUNCH_VISIBILITY_NORMAL',
+  minimized: 'LAUNCH_VISIBILITY_MINIMIZED',
+  hidden: 'LAUNCH_VISIBILITY_HIDDEN',
+}
+
+export const DESKTOP_TS_LAUNCH_NAMES = {
+  normal: 'LAUNCH_VISIBILITY_NORMAL',
+  minimized: 'LAUNCH_VISIBILITY_MINIMIZED',
+  hidden: 'LAUNCH_VISIBILITY_HIDDEN',
+}
+
+// The saved window-mode tokens, in all THREE languages: the Go config persists
+// one, the Rust shell matches it at launch, and the webview reads and writes it
+// through save_window_geometry.
+export const DESKTOP_GO_WINDOW_MODE_NAMES = {
+  normal: 'WindowModeNormal',
+  maximized: 'WindowModeMaximized',
+  fullscreen: 'WindowModeFullscreen',
+}
+
+export const DESKTOP_RS_WINDOW_MODE_NAMES = {
+  normal: 'WINDOW_MODE_NORMAL',
+  maximized: 'WINDOW_MODE_MAXIMIZED',
+  fullscreen: 'WINDOW_MODE_FULLSCREEN',
+}
+
+export const DESKTOP_TS_WINDOW_MODE_NAMES = {
+  normal: 'WINDOW_MODE_NORMAL',
+  maximized: 'WINDOW_MODE_MAXIMIZED',
+  fullscreen: 'WINDOW_MODE_FULLSCREEN',
 }
 
 export function checkDesktop(d) {
@@ -1328,35 +1366,37 @@ export function checkDesktop(d) {
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
     ['DESKTOP_TS_EVENT_NAMES', DESKTOP_TS_EVENT_NAMES],
   ])
-  checkTableCoverage('desktop.json', 'windowBehavior', Object.keys(d.windowBehavior), [
+  // One rule, applied to each block of tokens that is ONE choice: a setting
+  // whose two values are the same string offers no choice at all. Never across
+  // `windowBehavior` as a whole, because `tray` is deliberately the token of
+  // both close-to-tray and minimize-to-tray.
+  //
+  // Before the coverage check below, so a setting the name tables do not know
+  // yet is still checked -- which is the order a real change arrives in.
+  const checkTokenBlock = (name, tokens) => mustBe(
+    new Set(Object.values(tokens)).size === Object.keys(tokens).length,
+    'desktop.json',
+    `${name} declares one token twice, so it offers one choice`,
+  )
+  for (const [setting, tokens] of Object.entries(d.windowBehavior))
+    checkTokenBlock(`windowBehavior.${setting}`, tokens)
+  checkTokenBlock('launchVisibility', d.launchVisibility)
+  checkTokenBlock('windowMode', d.windowMode)
+
+  checkTableCoverage('desktop.json', 'windowBehavior', Object.keys(flattenBehavior(d.windowBehavior)), [
     ['DESKTOP_GO_BEHAVIOR_NAMES', DESKTOP_GO_BEHAVIOR_NAMES],
     ['DESKTOP_RS_BEHAVIOR_NAMES', DESKTOP_RS_BEHAVIOR_NAMES],
     ['DESKTOP_TS_BEHAVIOR_NAMES', DESKTOP_TS_BEHAVIOR_NAMES],
   ])
-  // The grouping must partition the block exactly, or the per-setting
-  // uniqueness rule below silently skips a token.
-  const grouped = Object.values(DESKTOP_BEHAVIOR_SETTINGS).flat()
-  mustBe(
-    new Set(grouped).size === grouped.length,
-    'desktop.json',
-    'DESKTOP_BEHAVIOR_SETTINGS lists one windowBehavior key under two settings',
-  )
-  const behaviorKeys = Object.keys(d.windowBehavior).filter(k => !k.startsWith('_'))
-  mustBe(
-    grouped.length === behaviorKeys.length && grouped.every(k => behaviorKeys.includes(k)),
-    'desktop.json',
-    'DESKTOP_BEHAVIOR_SETTINGS and windowBehavior name different key sets',
-  )
-  // Per SETTING, never across the block: two settings sharing a token is the
-  // shipped state (`tray` names both close-to-tray and minimize-to-tray).
-  for (const [setting, keys] of Object.entries(DESKTOP_BEHAVIOR_SETTINGS)) {
-    const tokens = keys.map(k => d.windowBehavior[k])
-    mustBe(
-      new Set(tokens).size === tokens.length,
-      'desktop.json',
-      `windowBehavior: ${setting} declares one token twice, so it offers one choice`,
-    )
-  }
+  checkTableCoverage('desktop.json', 'launchVisibility', Object.keys(d.launchVisibility), [
+    ['DESKTOP_RS_LAUNCH_NAMES', DESKTOP_RS_LAUNCH_NAMES],
+    ['DESKTOP_TS_LAUNCH_NAMES', DESKTOP_TS_LAUNCH_NAMES],
+  ])
+  checkTableCoverage('desktop.json', 'windowMode', Object.keys(d.windowMode), [
+    ['DESKTOP_GO_WINDOW_MODE_NAMES', DESKTOP_GO_WINDOW_MODE_NAMES],
+    ['DESKTOP_RS_WINDOW_MODE_NAMES', DESKTOP_RS_WINDOW_MODE_NAMES],
+    ['DESKTOP_TS_WINDOW_MODE_NAMES', DESKTOP_TS_WINDOW_MODE_NAMES],
+  ])
   return {}
 }
 
@@ -1383,7 +1423,14 @@ const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}
 // rule from that same catalogue, so a token is stated once for the hub, the
 // webview and the Rust shell together.
 const (
-${goConstBlock(Object.keys(DESKTOP_GO_BEHAVIOR_NAMES).map(k => ({ name: DESKTOP_GO_BEHAVIOR_NAMES[k], value: jsonString(d.windowBehavior[k]) })))}
+${goConstBlock(Object.entries(flattenBehavior(d.windowBehavior)).map(([k, v]) => ({ name: DESKTOP_GO_BEHAVIOR_NAMES[k], value: jsonString(v) })))}
+)
+
+// The saved display state of the main window. DesktopConfig persists one of
+// these tokens verbatim, and the Rust shell and the webview match the same
+// three, so the wire carries no second spelling of them.
+const (
+${goConstBlock(Object.keys(DESKTOP_GO_WINDOW_MODE_NAMES).map(k => ({ name: DESKTOP_GO_WINDOW_MODE_NAMES[k], value: jsonString(d.windowMode[k]) })))}
 )
 `
 }
@@ -1392,8 +1439,14 @@ export function emitTsDesktop(d) {
   const lines = Object.keys(DESKTOP_TS_EVENT_NAMES)
     .map(k => `export const ${DESKTOP_TS_EVENT_NAMES[k]} = ${jsonString(d.tauriEvents[k])} as const\n`)
     .join('')
-  const behavior = Object.keys(DESKTOP_TS_BEHAVIOR_NAMES)
-    .map(k => `export const ${DESKTOP_TS_BEHAVIOR_NAMES[k]} = ${jsonString(d.windowBehavior[k])} as const\n`)
+  const behavior = Object.entries(flattenBehavior(d.windowBehavior))
+    .map(([k, v]) => `export const ${DESKTOP_TS_BEHAVIOR_NAMES[k]} = ${jsonString(v)} as const\n`)
+    .join('')
+  const launch = Object.keys(DESKTOP_TS_LAUNCH_NAMES)
+    .map(k => `export const ${DESKTOP_TS_LAUNCH_NAMES[k]} = ${jsonString(d.launchVisibility[k])} as const\n`)
+    .join('')
+  const windowMode = Object.keys(DESKTOP_TS_WINDOW_MODE_NAMES)
+    .map(k => `export const ${DESKTOP_TS_WINDOW_MODE_NAMES[k]} = ${jsonString(d.windowMode[k])} as const\n`)
     .join('')
   return `${TS_HEADER('desktop.json')}
 // Tauri events the desktop shell emits and the webview listens for,
@@ -1406,7 +1459,16 @@ ${lines}
 // TRAY_ON_CLOSE_QUIT\`) rather than restate the union, so a token renamed in
 // the contract fails the type check instead of narrowing to a value the hub
 // never sends.
-${behavior}`
+${behavior}
+// The window state the shell reports at launch, which \`parseLaunchVisibility\`
+// narrows. That parse answers the first token for anything it does not know, so
+// without the contract a renamed token would show a window on every login
+// launch that asked to start in the tray, and nothing would fail.
+${launch}
+// The saved display state of the main window. \`WindowMode\` derives from these,
+// so the union cannot drift from the token the Go config persists and the Rust
+// shell matches.
+${windowMode}`
 }
 
 export function emitRsDesktop(d) {
@@ -1421,8 +1483,14 @@ export function emitRsDesktop(d) {
       return `${attr}pub const ${DESKTOP_RS_EVENT_NAMES[k]}: &str = ${rustString(d.tauriEvents[k])};`
     })
     .join('\n')
-  const behavior = Object.keys(DESKTOP_RS_BEHAVIOR_NAMES)
-    .map(k => `pub const ${DESKTOP_RS_BEHAVIOR_NAMES[k]}: &str = ${rustString(d.windowBehavior[k])};`)
+  const behavior = Object.entries(flattenBehavior(d.windowBehavior))
+    .map(([k, v]) => `pub const ${DESKTOP_RS_BEHAVIOR_NAMES[k]}: &str = ${rustString(v)};`)
+    .join('\n')
+  const launch = Object.keys(DESKTOP_RS_LAUNCH_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_LAUNCH_NAMES[k]}: &str = ${rustString(d.launchVisibility[k])};`)
+    .join('\n')
+  const windowMode = Object.keys(DESKTOP_RS_WINDOW_MODE_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_WINDOW_MODE_NAMES[k]}: &str = ${rustString(d.windowMode[k])};`)
     .join('\n')
   return `// Code generated by scripts/generate-contracts.mjs from contracts/desktop.json. DO NOT EDIT.
 
@@ -1444,6 +1512,15 @@ pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};
 /// the \`set_desktop_behavior\` payload (the Go twin is the
 /// contracts.TrayOnClose*/TrayOnMinimize*/StartMinimized* family).
 ${behavior}
+
+/// The window state this shell reports through \`get_startup_info\`, which the
+/// webview narrows in \`parseLaunchVisibility\`.
+${launch}
+
+/// The saved display state of the main window (the Go twin is the
+/// contracts.WindowMode* family). The sidecar persists one of these tokens
+/// verbatim, so the wire carries no second spelling of them.
+${windowMode}
 `
 }
 

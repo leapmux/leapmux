@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopFetch, observeWindowMode, parseDesktopBehaviorRefusal, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { desktopFetch, observeWindowMode, parseDesktopBehaviorRefusals, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -339,6 +339,9 @@ describe('restoreWindowGeometry', () => {
 
   // Record every IPC call and answer the window-state queries with `state`,
   // so the mode the save handler computes is controllable per test.
+  // Returns the live state, so a test can move the window's mode part-way
+  // through: the saver reads it on every resize, which is how "the user took
+  // the mode back" is expressed.
   function installIPC(state: { fullscreen: boolean, maximized: boolean }) {
     mockIPC((cmd, args) => {
       calls.push({ cmd, args: (args ?? {}) as Record<string, unknown> })
@@ -351,6 +354,7 @@ describe('restoreWindowGeometry', () => {
           return null
       }
     })
+    return state
   }
 
   const cmds = () => calls.map(c => c.cmd)
@@ -471,17 +475,59 @@ describe('restoreWindowGeometry', () => {
   // The three launch states the Rust shell decides. Every test above is the
   // `normal` one; these two are what a login launch produces when the user
   // asked LeapMux to start out of the way.
-  it('applies the saved size but shows nothing for a hidden launch', async () => {
+  it('applies the saved size and mode but shows nothing for a hidden launch', async () => {
     installIPC({ fullscreen: false, maximized: true })
     await restoreWindowGeometry(1280, 800, 'maximized', 'hidden')
 
-    // The size still lands, so the first "Show LeapMux" from the tray
-    // produces a correctly sized window instead of a default one.
+    // The size AND the maximized flag both land, so the first "Show LeapMux"
+    // from the tray produces the window the user left behind. `maximize()`
+    // sets a window-state flag an unmapped window keeps, and skipping it lost
+    // the mode for every login launch, permanently -- the saver below then
+    // overwrote the stored `maximized` with the `normal` it observed.
     expect(cmds()).toContain('plugin:window|set_size')
+    expect(cmds()).toContain('plugin:window|maximize')
     expect(cmds()).not.toContain('plugin:window|show')
-    expect(cmds()).not.toContain('plugin:window|maximize')
     expect(cmds()).not.toContain('plugin:window|set_fullscreen')
     expect(cmds()).not.toContain('plugin:window|minimize')
+  })
+
+  // Fullscreen is the one mode a launch that starts out of the way cannot
+  // restore, because macOS performs the transition on a visible window only.
+  // The saved preference must SURVIVE that, or the first resize after the user
+  // reveals the window destroys it.
+  it('keeps the saved fullscreen mode that a hidden launch could not apply', async () => {
+    vi.useFakeTimers()
+    installIPC({ fullscreen: false, maximized: false })
+    await restoreWindowGeometry(1280, 800, 'fullscreen', 'hidden')
+    expect(cmds()).not.toContain('plugin:window|set_fullscreen')
+
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+
+    // The window reads as `normal` because the launch left it that way, not
+    // because the user chose it, so the saved mode is what gets stored.
+    expect(saved()).toMatchObject({ mode: 'fullscreen' })
+  })
+
+  it('lets the user take the mode back after a hidden launch', async () => {
+    vi.useFakeTimers()
+    const live = installIPC({ fullscreen: false, maximized: false })
+    await restoreWindowGeometry(1280, 800, 'fullscreen', 'hidden')
+
+    // The user reveals the window from the tray and maximizes it. From that
+    // observation on, what the window reports is the truth.
+    live.maximized = true
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+    expect(saved()).toMatchObject({ mode: 'maximized' })
+
+    live.maximized = false
+    calls.length = 0
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(600)
+    expect(saved()).toMatchObject({ mode: 'normal' })
   })
 
   it('shows before it minimizes for a minimized launch', async () => {
@@ -531,31 +577,58 @@ describe('parseLaunchVisibility', () => {
   })
 })
 
-describe('parseDesktopBehaviorRefusal', () => {
+describe('parseDesktopBehaviorRefusals', () => {
   it('narrows the two choices the operating system can refuse', () => {
-    expect(parseDesktopBehaviorRefusal({ setting: 'trayEnabled', message: 'no library' }))
-      .toEqual({ setting: 'trayEnabled', message: 'no library' })
-    expect(parseDesktopBehaviorRefusal({ setting: 'startOnLogin', message: 'declined' }))
-      .toEqual({ setting: 'startOnLogin', message: 'declined' })
+    expect(parseDesktopBehaviorRefusals([{ setting: 'trayEnabled', message: 'no library' }]))
+      .toEqual([{ setting: 'trayEnabled', message: 'no library' }])
+    expect(parseDesktopBehaviorRefusals([{ setting: 'startOnLogin', message: 'declined' }]))
+      .toEqual([{ setting: 'startOnLogin', message: 'declined' }])
+  })
+
+  // Both at once is the case the list exists for: a Linux desktop with no
+  // status-icon library can also be one whose system declines a login item.
+  it('keeps every refusal of one push', () => {
+    expect(parseDesktopBehaviorRefusals([
+      { setting: 'trayEnabled', message: 'no library' },
+      { setting: 'startOnLogin', message: 'declined' },
+    ])).toEqual([
+      { setting: 'trayEnabled', message: 'no library' },
+      { setting: 'startOnLogin', message: 'declined' },
+    ])
+  })
+
+  // An entry the shape check refuses is DROPPED, not fatal to the list: one
+  // unrecognized `setting` must not hide a real refusal reported beside it.
+  it('drops an unrecognizable entry and keeps the rest', () => {
+    expect(parseDesktopBehaviorRefusals([
+      { setting: 'trayOnClose', message: 'not refusable' },
+      { setting: 'startOnLogin', message: 'declined' },
+    ])).toEqual([{ setting: 'startOnLogin', message: 'declined' }])
   })
 
   // Anything else belongs to no row. Printing a transport error beside a
-  // toggle explains nothing, and a `setting` naming a row that does not exist
-  // would put the message nowhere while the caller believed it had reported.
-  it('rejects anything that is not one of them', () => {
+  // toggle explains nothing, and a `setting` that points at a row which does
+  // not exist would put the message nowhere while the caller believed it
+  // reported one.
+  it('reports nothing for anything that is not a refusal list', () => {
     for (const err of [
       undefined,
       null,
       'no library',
       new Error('ipc closed'),
-      { message: 'no setting' },
-      { setting: 'trayEnabled' },
-      { setting: 'trayEnabled', message: '' },
-      { setting: 'trayEnabled', message: 42 },
-      { setting: 'trayOnClose', message: 'not refusable' },
-      { setting: 'desktop.trayEnabled', message: 'a row id, not a field' },
+      // The old single-object shape is not a list, so it reports nothing.
+      { setting: 'trayEnabled', message: 'no library' },
+      [undefined],
+      [null],
+      ['no library'],
+      [{ message: 'no setting' }],
+      [{ setting: 'trayEnabled' }],
+      [{ setting: 'trayEnabled', message: '' }],
+      [{ setting: 'trayEnabled', message: 42 }],
+      [{ setting: 'trayOnClose', message: 'not refusable' }],
+      [{ setting: 'desktop.trayEnabled', message: 'a row id, not a field' }],
     ])
-      expect(parseDesktopBehaviorRefusal(err), JSON.stringify(err ?? null)).toBeNull()
+      expect(parseDesktopBehaviorRefusals(err), JSON.stringify(err ?? null)).toEqual([])
   })
 })
 

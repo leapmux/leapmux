@@ -25,6 +25,8 @@ use crate::contracts_generated as contracts;
 use crate::proto;
 
 #[cfg(target_os = "linux")]
+pub(crate) mod appindicator_linux;
+#[cfg(target_os = "linux")]
 pub(crate) mod minimize_linux;
 #[cfg(target_os = "macos")]
 pub(crate) mod minimize_macos;
@@ -51,11 +53,64 @@ pub(crate) enum TrayOnClose {
     Quit,
 }
 
+impl TrayOnClose {
+    /// The `AtomicU8` stand-in for each variant, so `TrayState` can read the
+    /// live policy without a lock. Beside the type, so a new variant is one
+    /// edit rather than a hunt through four module constants.
+    ///
+    /// The codes of the two tray enums do NOT agree: `Tray` is 0 here and 1 in
+    /// `TrayOnMinimize`. That is exactly why each table belongs to its own
+    /// type -- as free constants in one namespace, `CLOSE_TRAY` and
+    /// `MINIMIZE_TRAY` were two similarly named `u8`s with different values.
+    const TRAY: u8 = 0;
+    const QUIT: u8 = 1;
+
+    /// An exhaustive match, NOT `#[repr(u8)]` plus `self as u8`: a new variant
+    /// must be a compile error here, not an automatic discriminant that
+    /// `from_code` then silently maps to `Tray`.
+    fn code(self) -> u8 {
+        match self {
+            Self::Tray => Self::TRAY,
+            Self::Quit => Self::QUIT,
+        }
+    }
+
+    /// `code` is the only writer of the atomic and it writes one of the two
+    /// values above, so the fallback arm is unreachable. It cannot be removed:
+    /// no match over `u8` is exhaustive.
+    fn from_code(code: u8) -> Self {
+        match code {
+            Self::QUIT => Self::Quit,
+            _ => Self::Tray,
+        }
+    }
+}
+
 /// What the user asked LeapMux to do when a window is minimized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayOnMinimize {
     Tray,
     Taskbar,
+}
+
+impl TrayOnMinimize {
+    /// See `TrayOnClose::TRAY` for why each enum owns its own table.
+    const TASKBAR: u8 = 0;
+    const TRAY: u8 = 1;
+
+    fn code(self) -> u8 {
+        match self {
+            Self::Tray => Self::TRAY,
+            Self::Taskbar => Self::TASKBAR,
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            Self::TRAY => Self::Tray,
+            _ => Self::Taskbar,
+        }
+    }
 }
 
 /// Whether a login launch shows a window.
@@ -112,7 +167,7 @@ deserialize_from_contract_tokens!(
     contracts::START_MINIMIZED_MINIMIZED => StartMinimized::Minimized,
 );
 
-/// Which window event the policy is answering for.
+/// Which window event the policy answers for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowIntent {
     CloseRequested,
@@ -141,11 +196,18 @@ pub(crate) enum LaunchVisibility {
 impl LaunchVisibility {
     /// The wire spelling `get_startup_info` reports to the webview, which uses
     /// it to decide whether to show the window after sizing it.
+    ///
+    /// The tokens come from contracts/desktop.json, like the window-behaviour
+    /// ones: this shell writes them and `parseLaunchVisibility` in the webview
+    /// reads them, so they are a vocabulary two languages spell. A hand-written
+    /// pair would drift in silence, because that parse answers `normal` for
+    /// anything it does not recognize -- so a renamed token would show a window
+    /// every hidden login launch asked to keep in the tray.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Normal => "normal",
-            Self::Minimized => "minimized",
-            Self::Hidden => "hidden",
+            Self::Normal => contracts::LAUNCH_VISIBILITY_NORMAL,
+            Self::Minimized => contracts::LAUNCH_VISIBILITY_MINIMIZED,
+            Self::Hidden => contracts::LAUNCH_VISIBILITY_HIDDEN,
         }
     }
 }
@@ -162,7 +224,7 @@ pub(crate) struct DesktopBehavior {
 }
 
 impl Default for DesktopBehavior {
-    /// The built-in defaults, which are also what a fresh config decodes to.
+    /// The built-in defaults.
     fn default() -> Self {
         Self {
             tray_enabled: false,
@@ -171,6 +233,41 @@ impl Default for DesktopBehavior {
             start_on_login: false,
             start_minimized: StartMinimized::Window,
         }
+    }
+}
+
+impl DesktopBehavior {
+    /// The four values a launch reads, without the one it must not.
+    pub(crate) fn window(&self) -> WindowBehavior {
+        WindowBehavior {
+            tray_enabled: self.tray_enabled,
+            tray_on_close: self.tray_on_close,
+            tray_on_minimize: self.tray_on_minimize,
+            start_minimized: self.start_minimized,
+        }
+    }
+}
+
+/// The four values that decide the tray and the initial window.
+///
+/// `start_on_login` is NOT among them, and this type is how that exclusion
+/// becomes structural rather than a rule somebody has to remember. The
+/// operating system's login-item registration is that setting's state, so a
+/// launch has nothing to read; the previous single type had to invent
+/// `start_on_login: false` for every config it decoded, and a comment claiming
+/// the field was "absent" while it held a plausible-looking lie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowBehavior {
+    pub tray_enabled: bool,
+    pub tray_on_close: TrayOnClose,
+    pub tray_on_minimize: TrayOnMinimize,
+    pub start_minimized: StartMinimized,
+}
+
+impl Default for WindowBehavior {
+    /// The built-in defaults, which are also what a fresh config decodes to.
+    fn default() -> Self {
+        DesktopBehavior::default().window()
     }
 }
 
@@ -251,8 +348,39 @@ pub(crate) fn window_action(
 /// tray that failed to build after a successful hide, a window left hidden by
 /// a mode switch, and a first push that disables a tray the cached config had
 /// enabled at launch. A transition test would miss all three.
-pub(crate) fn must_reveal_window(tray_enabled: bool, window_visible: bool) -> bool {
-    !tray_enabled && !window_visible
+///
+/// `launch_was_wrong` covers the other way the shell can strand a window. The
+/// launch decides from a DEVICE CACHE, and the first push is the moment the
+/// account's real values arrive; when they say a window and the launch left
+/// none, the cache was stale and the window comes back. Without it a machine
+/// whose cached `start_minimized` disagrees with the account keeps no window
+/// for the whole session, and only the next launch repairs it.
+pub(crate) fn must_reveal_window(
+    tray_enabled: bool,
+    window_visible: bool,
+    launch_was_wrong: bool,
+) -> bool {
+    if window_visible {
+        return false;
+    }
+    !tray_enabled || launch_was_wrong
+}
+
+/// Downgrade a launch the user could not undo into one they can.
+///
+/// `Hidden` needs a tray icon, because that icon is the only way back. Without
+/// one, "no window anywhere" is the state to prevent, so the window is shown.
+/// `launch_visibility` already applies this rule when it decides; the startup
+/// safety net applies it again, because the tray can fail to build between the
+/// decision and the deadline.
+pub(crate) fn reachable_visibility(
+    visibility: LaunchVisibility,
+    tray_enabled: bool,
+) -> LaunchVisibility {
+    match visibility {
+        LaunchVisibility::Hidden if !tray_enabled => LaunchVisibility::Normal,
+        other => other,
+    }
 }
 
 /// The state the main window starts in.
@@ -287,75 +415,67 @@ pub(crate) fn is_autostart_launch<I: IntoIterator<Item = String>>(args: I) -> bo
 
 // --- Token and proto bridges ---
 
-impl TrayOnClose {
-    pub(crate) fn from_proto(v: proto::TrayOnClose) -> Self {
-        match v {
-            proto::TrayOnClose::Quit => Self::Quit,
-            // UNSPECIFIED is a fresh config, which means the built-in default.
-            _ => Self::Tray,
-        }
-    }
+/// Bridge one behaviour enum to and from its CONTRACT TOKEN.
+///
+/// The token is what the sidecar stores and what crosses the wire, so this is
+/// the one normalization in the system: an empty token is a fresh config, and
+/// an unrecognized one can only come from a file a person edited. Both mean the
+/// setting's documented default.
+///
+/// The rule lives HERE, beside the policy that reads the value, and nowhere
+/// else. The Go sidecar used to re-apply it while translating to a proto enum,
+/// which made two authorities over one rule and hid a new contract token behind
+/// a silent default on both sides.
+macro_rules! token_bridge {
+    ($ty:ident, default $default:ident, $( $token:path => $variant:ident ),+ $(,)?) => {
+        impl $ty {
+            pub(crate) fn from_token(token: &str) -> Self {
+                match token {
+                    $( $token => Self::$variant, )+
+                    _ => Self::$default,
+                }
+            }
 
-    pub(crate) fn to_proto(self) -> proto::TrayOnClose {
-        match self {
-            Self::Quit => proto::TrayOnClose::Quit,
-            Self::Tray => proto::TrayOnClose::Tray,
+            /// An exhaustive match, so a new variant is a compile error here
+            /// rather than a value that reaches the wire as an empty string.
+            pub(crate) fn to_token(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $token, )+
+                }
+            }
         }
-    }
+    };
 }
 
-impl TrayOnMinimize {
-    pub(crate) fn from_proto(v: proto::TrayOnMinimize) -> Self {
-        match v {
-            proto::TrayOnMinimize::Tray => Self::Tray,
-            _ => Self::Taskbar,
-        }
-    }
+token_bridge!(
+    TrayOnClose,
+    default Tray,
+    contracts::TRAY_ON_CLOSE_TRAY => Tray,
+    contracts::TRAY_ON_CLOSE_QUIT => Quit,
+);
+token_bridge!(
+    TrayOnMinimize,
+    default Taskbar,
+    contracts::TRAY_ON_MINIMIZE_TRAY => Tray,
+    contracts::TRAY_ON_MINIMIZE_TASKBAR => Taskbar,
+);
+token_bridge!(
+    StartMinimized,
+    default Window,
+    contracts::START_MINIMIZED_WINDOW => Window,
+    contracts::START_MINIMIZED_MINIMIZED => Minimized,
+);
 
-    pub(crate) fn to_proto(self) -> proto::TrayOnMinimize {
-        match self {
-            Self::Tray => proto::TrayOnMinimize::Tray,
-            Self::Taskbar => proto::TrayOnMinimize::Taskbar,
-        }
-    }
-}
-
-impl StartMinimized {
-    pub(crate) fn from_proto(v: proto::StartMinimized) -> Self {
-        match v {
-            proto::StartMinimized::Minimized => Self::Minimized,
-            _ => Self::Window,
-        }
-    }
-
-    pub(crate) fn to_proto(self) -> proto::StartMinimized {
-        match self {
-            Self::Minimized => proto::StartMinimized::Minimized,
-            Self::Window => proto::StartMinimized::Window,
-        }
-    }
-}
-
-impl DesktopBehavior {
-    /// The four values the sidecar caches. `start_on_login` is absent because
-    /// the operating system's registration is that setting's state.
+impl WindowBehavior {
+    /// The four values the sidecar caches. There is no `start_on_login` to
+    /// decode, because this type does not carry one.
     pub(crate) fn from_config(cfg: &proto::DesktopConfig) -> Self {
         Self {
             tray_enabled: cfg.tray_enabled,
-            tray_on_close: TrayOnClose::from_proto(cfg.tray_on_close()),
-            tray_on_minimize: TrayOnMinimize::from_proto(cfg.tray_on_minimize()),
-            start_on_login: false,
-            start_minimized: StartMinimized::from_proto(cfg.start_minimized()),
+            tray_on_close: TrayOnClose::from_token(&cfg.tray_on_close),
+            tray_on_minimize: TrayOnMinimize::from_token(&cfg.tray_on_minimize),
+            start_minimized: StartMinimized::from_token(&cfg.start_minimized),
         }
-    }
-
-    /// Whether the two behaviours differ in anything the sidecar stores, so an
-    /// unchanged push skips the write.
-    pub(crate) fn cache_differs(&self, other: &Self) -> bool {
-        self.tray_enabled != other.tray_enabled
-            || self.tray_on_close != other.tray_on_close
-            || self.tray_on_minimize != other.tray_on_minimize
-            || self.start_minimized != other.start_minimized
     }
 }
 
@@ -364,20 +484,52 @@ impl DesktopBehavior {
 /// The launch decision, readable once by the webview and thereafter inert.
 pub(crate) struct LaunchState {
     visibility: LaunchVisibility,
+    /// Whether the operating system started this process from the login item.
+    /// Kept so the first push can decide the launch again against the account's
+    /// real values; see `launch_was_wrong`.
+    autostart_launch: bool,
     consumed: AtomicBool,
+    reconciled: AtomicBool,
 }
 
 impl LaunchState {
-    pub(crate) fn new(visibility: LaunchVisibility) -> Self {
+    pub(crate) fn new(visibility: LaunchVisibility, autostart_launch: bool) -> Self {
         Self {
             visibility,
+            autostart_launch,
             consumed: AtomicBool::new(false),
+            reconciled: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the launch left the window out of the way on a decision that the
+    /// account's real values contradict.
+    ///
+    /// The launch reads a DEVICE CACHE, which the account can have moved past
+    /// on another machine. This decides the launch again from the values the
+    /// first push carries, and reports that the cache was stale.
+    ///
+    /// It answers true at most ONCE. After the first push the user owns the
+    /// window, and a later push that happens to resolve to `Normal` must not
+    /// drag a window they deliberately hid to the tray back on screen.
+    pub(crate) fn launch_was_wrong(
+        &self,
+        start_minimized: StartMinimized,
+        tray_enabled: bool,
+    ) -> bool {
+        if self.visibility == LaunchVisibility::Normal {
+            return false;
+        }
+        if self.reconciled.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        launch_visibility(self.autostart_launch, start_minimized, tray_enabled)
+            == LaunchVisibility::Normal
     }
 
     /// The decision, ONCE. `switch_mode` navigates back to the launcher, which
     /// remounts and asks again; without the latch that second answer would
-    /// re-hide the window the user is looking at.
+    /// re-hide the window the user now sees.
     pub(crate) fn take(&self) -> LaunchVisibility {
         if self.consumed.swap(true, Ordering::SeqCst) {
             LaunchVisibility::Normal
@@ -419,28 +571,26 @@ pub(crate) struct TrayState {
     on_minimize: AtomicU8,
     /// Built at most once and never dropped; visibility is toggled instead.
     icon: Mutex<Option<TrayIcon<tauri::Wry>>>,
-    /// What the sidecar was last told, so an unchanged push writes nothing.
-    cached: Mutex<Option<DesktopBehavior>>,
+    /// Serializes `set_desktop_behavior`. Tauri gives each invocation its own
+    /// task, and two that overlap can otherwise reach the sidecar in the
+    /// opposite order to the one the user chose, which leaves the device cache
+    /// holding the older set -- and the next launch decides the tray and the
+    /// window state from it, before the webview exists to correct it.
+    ///
+    /// A TOKIO mutex, because the command holds it across the `await` on the
+    /// sidecar. It never guards the policy reads, which stay lock-free.
+    pub(crate) push_lock: tokio::sync::Mutex<()>,
 }
-
-/// `AtomicU8` stand-ins for the two policy enums, so the live policy can be
-/// read without a lock. Private to this module: `close_code` / `minimize_code`
-/// and the two accessors on `TrayState` are the only conversions, so the codes
-/// never escape into a signature.
-const CLOSE_TRAY: u8 = 0;
-const CLOSE_QUIT: u8 = 1;
-const MINIMIZE_TASKBAR: u8 = 0;
-const MINIMIZE_TRAY: u8 = 1;
 
 impl TrayState {
     pub(crate) fn new() -> Self {
-        let defaults = DesktopBehavior::default();
+        let defaults = WindowBehavior::default();
         Self {
             enabled: AtomicBool::new(false),
-            on_close: AtomicU8::new(close_code(defaults.tray_on_close)),
-            on_minimize: AtomicU8::new(minimize_code(defaults.tray_on_minimize)),
+            on_close: AtomicU8::new(defaults.tray_on_close.code()),
+            on_minimize: AtomicU8::new(defaults.tray_on_minimize.code()),
             icon: Mutex::new(None),
-            cached: Mutex::new(None),
+            push_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -450,19 +600,11 @@ impl TrayState {
     }
 
     fn on_close(&self) -> TrayOnClose {
-        if self.on_close.load(Ordering::SeqCst) == CLOSE_QUIT {
-            TrayOnClose::Quit
-        } else {
-            TrayOnClose::Tray
-        }
+        TrayOnClose::from_code(self.on_close.load(Ordering::SeqCst))
     }
 
     fn on_minimize(&self) -> TrayOnMinimize {
-        if self.on_minimize.load(Ordering::SeqCst) == MINIMIZE_TRAY {
-            TrayOnMinimize::Tray
-        } else {
-            TrayOnMinimize::Taskbar
-        }
+        TrayOnMinimize::from_code(self.on_minimize.load(Ordering::SeqCst))
     }
 
     /// The policy answer for `intent`, read from the live state.
@@ -475,11 +617,11 @@ impl TrayState {
         )
     }
 
-    fn store_policy(&self, behavior: &DesktopBehavior) {
+    fn store_policy(&self, behavior: &WindowBehavior) {
         self.on_close
-            .store(close_code(behavior.tray_on_close), Ordering::SeqCst);
+            .store(behavior.tray_on_close.code(), Ordering::SeqCst);
         self.on_minimize
-            .store(minimize_code(behavior.tray_on_minimize), Ordering::SeqCst);
+            .store(behavior.tray_on_minimize.code(), Ordering::SeqCst);
     }
 
     /// Bring the tray into the requested state, and record what was achieved.
@@ -487,14 +629,10 @@ impl TrayState {
     /// Returns the error the caller reports to the webview. `enabled` records
     /// the EFFECTIVE result either way, so a failure downgrades the policy
     /// rather than leaving it lying.
-    pub(crate) fn apply(&self, app: &AppHandle, behavior: &DesktopBehavior) -> Result<(), String> {
+    pub(crate) fn apply(&self, app: &AppHandle, behavior: &WindowBehavior) -> Result<(), String> {
         self.store_policy(behavior);
         if !behavior.tray_enabled {
-            self.enabled.store(false, Ordering::SeqCst);
-            if let Some(icon) = self.icon.lock().ok().and_then(|guard| guard.clone()) {
-                let _ = icon.set_visible(false);
-            }
-            return Ok(());
+            return self.hide_icon();
         }
         match self.ensure_icon(app) {
             Ok(()) => {
@@ -506,6 +644,30 @@ impl TrayState {
                 Err(err)
             }
         }
+    }
+
+    /// Take the icon off screen, and record whether it went.
+    ///
+    /// The mirror of `ensure_icon`, and it reports the same two failures: a
+    /// poisoned lock and a call the platform refused. `enabled` follows what
+    /// ACTUALLY happened, so an icon that is still on screen still reads as
+    /// enabled -- it is still a way back to the window. Claiming it is gone
+    /// would let `must_reveal_window` yank a window the user hid on purpose,
+    /// and would leave the failure with no message on any row.
+    fn hide_icon(&self) -> Result<(), String> {
+        let guard = self
+            .icon
+            .lock()
+            .map_err(|_| "tray icon state is poisoned".to_string())?;
+        let Some(icon) = guard.as_ref() else {
+            // No icon was ever built, so there is nothing to take off screen.
+            self.enabled.store(false, Ordering::SeqCst);
+            return Ok(());
+        };
+        icon.set_visible(false)
+            .map_err(|err| format!("hide the tray icon: {err}"))?;
+        self.enabled.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Build the icon on first use, then show it.
@@ -520,57 +682,20 @@ impl TrayState {
             .icon
             .lock()
             .map_err(|_| "tray icon state is poisoned".to_string())?;
-        if let Some(icon) = guard.as_ref() {
-            icon.set_visible(true)
-                .map_err(|err| format!("show the tray icon: {err}"))?;
-            return Ok(());
+        if guard.is_none() {
+            // RECORDED before it is shown, and this order is load-bearing. A
+            // `set_visible` that fails after a successful build must not drop
+            // the icon: the guard would stay `None`, the next enable would
+            // build a SECOND icon under the same id, and each build appends
+            // another app-wide menu listener that nothing prunes -- so one
+            // "Show LeapMux" click would run the handler once per build.
+            *guard = Some(build_tray(app)?);
         }
-        let icon = build_tray(app)?;
+        let icon = guard.as_ref().expect("the icon is recorded above");
         icon.set_visible(true)
-            .map_err(|err| format!("show the tray icon: {err}"))?;
-        *guard = Some(icon);
-        Ok(())
+            .map_err(|err| format!("show the tray icon: {err}"))
     }
 
-    /// Whether the sidecar needs a fresh cache write.
-    ///
-    /// A pure question. Recording is `record_cache`, and the two are separate
-    /// so that only a write that SUCCEEDED moves the mirror.
-    pub(crate) fn cache_needs_write(&self, behavior: &DesktopBehavior) -> bool {
-        let Ok(guard) = self.cached.lock() else {
-            // A poisoned lock must not silently stop the cache from
-            // converging; write, and let the next push try again.
-            return true;
-        };
-        guard.as_ref().is_none_or(|prev| prev.cache_differs(behavior))
-    }
-
-    /// Record what the sidecar now holds.
-    ///
-    /// Two callers. At launch it seeds the mirror from the config the shell
-    /// just read, so the first push does not rewrite values already on disk.
-    /// After a push it runs only once the write SUCCEEDED -- recording before
-    /// the write would let one failed RPC leave the cache stale for as long as
-    /// the user does not change the values again.
-    pub(crate) fn record_cache(&self, behavior: &DesktopBehavior) {
-        if let Ok(mut guard) = self.cached.lock() {
-            *guard = Some(*behavior);
-        }
-    }
-}
-
-fn close_code(v: TrayOnClose) -> u8 {
-    match v {
-        TrayOnClose::Quit => CLOSE_QUIT,
-        TrayOnClose::Tray => CLOSE_TRAY,
-    }
-}
-
-fn minimize_code(v: TrayOnMinimize) -> u8 {
-    match v {
-        TrayOnMinimize::Tray => MINIMIZE_TRAY,
-        TrayOnMinimize::Taskbar => MINIMIZE_TASKBAR,
-    }
 }
 
 // --- The icon ---
@@ -592,7 +717,7 @@ fn build_tray(app: &AppHandle) -> Result<TrayIcon<tauri::Wry>, String> {
     // missing, inside a GTK callback. Check first, so an absent library is an
     // error the user reads instead of an abort.
     #[cfg(target_os = "linux")]
-    if !minimize_linux::appindicator_available() {
+    if !appindicator_linux::available() {
         return Err(
             "LeapMux could not create a tray icon on this desktop. \
              Install libayatana-appindicator3 (or an equivalent status-icon \
@@ -675,24 +800,58 @@ pub(crate) fn show_main_window(app: &AppHandle) {
     });
 }
 
-/// Apply `visibility` to the main window at launch.
+/// Bring the main window up at launch: the saved size and mode, then
+/// `visibility`.
 ///
 /// The shell owns this rather than the webview, because the webview does not
 /// exist on the distributed-reattach route: the shell navigates straight to the
-/// hub and `LauncherView` never mounts.
-pub(crate) fn apply_launch_visibility(app: &AppHandle, visibility: LaunchVisibility) {
+/// hub and `LauncherView` -- the only caller of `restoreWindowGeometry` -- never
+/// mounts. `geometry` is the persisted config on that route, and `None` from
+/// the startup safety net, which repairs the visibility alone.
+///
+/// The order matches the webview's: size first, so a Wayland compositor sees
+/// the final size at the first map, then the mode, then the reveal. Fullscreen
+/// is the exception and comes last, because macOS performs that transition on a
+/// visible window only.
+pub(crate) fn apply_launch_visibility(
+    app: &AppHandle,
+    visibility: LaunchVisibility,
+    geometry: Option<&proto::DesktopConfig>,
+) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    // No geometry means the safety net, which repairs the visibility alone and
+    // has no saved mode to apply -- so it takes the ordinary windowed one.
+    let mode = geometry.map_or(contracts::WINDOW_MODE_NORMAL, |cfg| {
+        cfg.window_mode.as_str()
+    });
+    if let Some(cfg) = geometry {
+        if cfg.window_width > 0 && cfg.window_height > 0 {
+            let _ = window.set_size(tauri::LogicalSize::new(
+                f64::from(cfg.window_width),
+                f64::from(cfg.window_height),
+            ));
+        }
+    }
+    // Maximized applies to a hidden window too: the flag survives an unmapped
+    // window, so the first "Show LeapMux" produces the window the user left.
+    if mode == contracts::WINDOW_MODE_MAXIMIZED {
+        let _ = window.maximize();
+    }
     match visibility {
-        LaunchVisibility::Hidden => {}
+        LaunchVisibility::Hidden => return,
         LaunchVisibility::Minimized => {
             let _ = window.show();
             let _ = window.minimize();
+            return;
         }
         LaunchVisibility::Normal => {
             let _ = window.show();
         }
+    }
+    if mode == contracts::WINDOW_MODE_FULLSCREEN {
+        let _ = window.set_fullscreen(true);
     }
 }
 
@@ -708,6 +867,90 @@ pub(crate) fn handle_minimize(state: &TrayState, window: &tauri::WebviewWindow) 
     #[cfg(target_os = "macos")]
     minimize_macos::prepare_hide(window);
     let _ = window.hide();
+}
+
+/// Build the tray from the device cache, decide the launch, and register both
+/// with the application.
+///
+/// Everything `setup` needs to bootstrap this module, in one call. The config
+/// LOAD stays with the caller: reading it needs the sidecar transport, which
+/// this module deliberately knows nothing about.
+pub(crate) fn install(
+    app: &AppHandle,
+    cached: &proto::DesktopConfig,
+    autostart_launch: bool,
+) -> Arc<LaunchState> {
+    let behavior = WindowBehavior::from_config(cached);
+
+    let state = Arc::new(TrayState::new());
+    if let Err(err) = state.apply(app, &behavior) {
+        // A tray that cannot be created is not a launch failure. The policy
+        // records the effective state, so nothing will hide a window the user
+        // could not get back.
+        eprintln!("leapmux-desktop: {err}");
+    }
+
+    let visibility = launch_visibility(autostart_launch, behavior.start_minimized, state.is_enabled());
+    if let Some(window) = app.get_webview_window("main") {
+        install_minimize_hook(&window, state.clone());
+    }
+    app.manage(state);
+
+    let launch = Arc::new(LaunchState::new(visibility, autostart_launch));
+    app.manage(launch.clone());
+    launch
+}
+
+/// How long the shell waits for the webview to show the window before it does
+/// so itself. The deadline runs from the START of `setup`, so it limits the
+/// blocking calls inside it as well as the frontend.
+pub(crate) const STARTUP_REVEAL_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+/// Show the main window if nothing else did within `STARTUP_REVEAL_DEADLINE`.
+///
+/// The net exists for a frontend that never runs -- a JS error, a webview that
+/// fails to load -- which would otherwise leave a process with no window and no
+/// way to reach it.
+///
+/// It routes through the launch decision rather than testing one visibility
+/// value, so every launch the shell can decide is honoured here too. A
+/// `Minimized` launch is mapped and minimized, which is where the launch asked
+/// for it and a place the taskbar can reach; without that rule the net raised a
+/// full window in front of the user five seconds into a login they asked to
+/// start out of the way.
+///
+/// `peek`, not `take`: the net asks what THIS launch decided, and the webview
+/// consumes the decision within milliseconds of starting, so a consuming read
+/// would answer `Normal` and reveal the window that a hidden launch left in the
+/// tray on purpose.
+pub(crate) fn spawn_startup_safety_net(handle: AppHandle, autostart_launch: bool) {
+    std::thread::spawn(move || {
+        std::thread::sleep(STARTUP_REVEAL_DEADLINE);
+        let Some(window) = handle.get_webview_window("main") else {
+            return;
+        };
+        // The frontend did its job, so the net has nothing to repair. A probe
+        // that fails reads as NOT visible, which reveals: that direction costs
+        // a raised window, and the other one costs an app the user cannot see.
+        if window.is_visible().unwrap_or(false) {
+            return;
+        }
+        let visibility = match handle.try_state::<Arc<LaunchState>>() {
+            Some(launch) => launch.peek(),
+            // `setup` has not decided yet, so this fires while a blocking call
+            // inside it is still running. A hand launch always ends with a
+            // visible window, so reveal. A LOGIN launch may legitimately end
+            // hidden, and `setup` reveals it a moment later on whichever route
+            // it takes, so leave it alone.
+            None if autostart_launch => return,
+            None => LaunchVisibility::Normal,
+        };
+        let tray_enabled = handle
+            .try_state::<Arc<TrayState>>()
+            .is_some_and(|tray| tray.is_enabled());
+        apply_launch_visibility(&handle, reachable_visibility(visibility, tray_enabled), None);
+    });
 }
 
 /// Install the platform's minimize hook on the main window.
@@ -781,18 +1024,80 @@ mod tests {
 
     #[test]
     fn disabling_the_tray_reveals_a_hidden_window() {
-        assert!(must_reveal_window(false, false));
+        assert!(must_reveal_window(false, false, false));
     }
 
     #[test]
     fn disabling_the_tray_leaves_a_visible_window_alone() {
-        assert!(!must_reveal_window(false, true));
+        assert!(!must_reveal_window(false, true, false));
     }
 
     #[test]
     fn an_enabled_tray_never_forces_the_window_open() {
-        assert!(!must_reveal_window(true, true));
-        assert!(!must_reveal_window(true, false));
+        assert!(!must_reveal_window(true, true, false));
+        assert!(!must_reveal_window(true, false, false));
+    }
+
+    // The other way the shell can strand a window: the launch decided from a
+    // device cache the account has since moved past.
+    #[test]
+    fn a_wrong_launch_reveals_a_window_even_with_a_tray() {
+        assert!(must_reveal_window(true, false, true));
+    }
+
+    #[test]
+    fn a_wrong_launch_never_raises_a_window_that_is_already_up() {
+        assert!(!must_reveal_window(true, true, true));
+    }
+
+    // A hidden launch needs an icon to come back from. The net applies the
+    // rule again, because the tray can fail to build after the decision.
+    #[test]
+    fn a_hidden_launch_without_a_tray_becomes_a_visible_one() {
+        assert_eq!(
+            reachable_visibility(LaunchVisibility::Hidden, false),
+            LaunchVisibility::Normal
+        );
+    }
+
+    #[test]
+    fn reachable_visibility_leaves_every_other_launch_alone() {
+        assert_eq!(
+            reachable_visibility(LaunchVisibility::Hidden, true),
+            LaunchVisibility::Hidden
+        );
+        for tray in [true, false] {
+            for launch in [LaunchVisibility::Normal, LaunchVisibility::Minimized] {
+                assert_eq!(reachable_visibility(launch, tray), launch);
+            }
+        }
+    }
+
+    // The stale-cache repair, which `must_reveal_window` consumes. The launch
+    // hid the window because the CACHED `start_minimized` said so; the first
+    // push carries the account's real value, and it says a window.
+    #[test]
+    fn a_launch_the_account_contradicts_reports_itself_wrong_once() {
+        let state = LaunchState::new(LaunchVisibility::Hidden, true);
+        assert!(state.launch_was_wrong(StartMinimized::Window, true));
+        // ONCE. After the first push the user owns the window, and a later
+        // push must not drag one they hid to the tray back on screen.
+        assert!(!state.launch_was_wrong(StartMinimized::Window, true));
+    }
+
+    #[test]
+    fn a_launch_the_account_agrees_with_reports_nothing() {
+        let state = LaunchState::new(LaunchVisibility::Hidden, true);
+        assert!(!state.launch_was_wrong(StartMinimized::Minimized, true));
+    }
+
+    // A hand launch already shows a window, so there is nothing to repair --
+    // and the latch must stay unspent for the case that does need it.
+    #[test]
+    fn a_normal_launch_is_never_wrong() {
+        let state = LaunchState::new(LaunchVisibility::Normal, false);
+        assert!(!state.launch_was_wrong(StartMinimized::Window, true));
+        assert!(!state.launch_was_wrong(StartMinimized::Window, false));
     }
 
     #[test]
@@ -840,17 +1145,54 @@ mod tests {
         assert!(!is_autostart_launch(vec!["leapmux-desktop".to_string()]));
     }
 
+    // The live policy crosses two `AtomicU8`s whose tables both spell "TRAY"
+    // with DIFFERENT values (0 for a close, 1 for a minimize). A swapped pair
+    // would invert one setting and pass every other test in this file, and
+    // nothing covered `store_policy` or the two decoders before this.
     #[test]
-    fn behavior_tokens_round_trip_through_the_proto_enums() {
+    fn the_live_policy_round_trips_every_stored_variant() {
+        let state = TrayState::new();
+        assert_eq!(state.on_close(), TrayOnClose::Tray, "a fresh state is the default");
+        assert_eq!(state.on_minimize(), TrayOnMinimize::Taskbar);
+
+        for on_close in [TrayOnClose::Tray, TrayOnClose::Quit] {
+            for on_minimize in [TrayOnMinimize::Tray, TrayOnMinimize::Taskbar] {
+                state.store_policy(&WindowBehavior {
+                    tray_on_close: on_close,
+                    tray_on_minimize: on_minimize,
+                    ..WindowBehavior::default()
+                });
+                assert_eq!(state.on_close(), on_close);
+                assert_eq!(state.on_minimize(), on_minimize);
+            }
+        }
+    }
+
+    // The token is what the sidecar stores, so a variant that does not survive
+    // the trip out and back is a preference the next launch reads as something
+    // else. `to_token` must also emit the CONTRACT token, not a literal that
+    // happens to match: the hub validates writes against the same strings.
+    #[test]
+    fn behavior_variants_round_trip_through_their_contract_tokens() {
         for v in [TrayOnClose::Tray, TrayOnClose::Quit] {
-            assert_eq!(TrayOnClose::from_proto(v.to_proto()), v);
+            assert_eq!(TrayOnClose::from_token(v.to_token()), v);
         }
         for v in [TrayOnMinimize::Tray, TrayOnMinimize::Taskbar] {
-            assert_eq!(TrayOnMinimize::from_proto(v.to_proto()), v);
+            assert_eq!(TrayOnMinimize::from_token(v.to_token()), v);
         }
         for v in [StartMinimized::Window, StartMinimized::Minimized] {
-            assert_eq!(StartMinimized::from_proto(v.to_proto()), v);
+            assert_eq!(StartMinimized::from_token(v.to_token()), v);
         }
+
+        assert_eq!(TrayOnClose::Quit.to_token(), contracts::TRAY_ON_CLOSE_QUIT);
+        assert_eq!(
+            TrayOnMinimize::Tray.to_token(),
+            contracts::TRAY_ON_MINIMIZE_TRAY
+        );
+        assert_eq!(
+            StartMinimized::Minimized.to_token(),
+            contracts::START_MINIMIZED_MINIMIZED
+        );
     }
 
     // Every token the contract declares must reach its variant through the
@@ -896,20 +1238,17 @@ mod tests {
         );
     }
 
+    // The one normalization in the system, and it lives here rather than in
+    // the sidecar. An EMPTY token is a fresh config or one written before the
+    // field existed; an unrecognized one can only come from a hand-edited file.
+    // Both mean the setting's documented default.
     #[test]
-    fn unknown_behavior_tokens_fall_back_to_the_documented_default() {
-        assert_eq!(
-            TrayOnClose::from_proto(proto::TrayOnClose::Unspecified),
-            TrayOnClose::Tray
-        );
-        assert_eq!(
-            TrayOnMinimize::from_proto(proto::TrayOnMinimize::Unspecified),
-            TrayOnMinimize::Taskbar
-        );
-        assert_eq!(
-            StartMinimized::from_proto(proto::StartMinimized::Unspecified),
-            StartMinimized::Window
-        );
+    fn an_empty_or_unknown_token_falls_back_to_the_documented_default() {
+        for token in ["", "bogus"] {
+            assert_eq!(TrayOnClose::from_token(token), TrayOnClose::Tray);
+            assert_eq!(TrayOnMinimize::from_token(token), TrayOnMinimize::Taskbar);
+            assert_eq!(StartMinimized::from_token(token), StartMinimized::Window);
+        }
     }
 
     // A fresh config must decode to the built-in defaults, or a first launch
@@ -917,7 +1256,7 @@ mod tests {
     #[test]
     fn a_fresh_config_reads_as_the_built_in_defaults() {
         let cfg = proto::DesktopConfig::default();
-        let behavior = DesktopBehavior::from_config(&cfg);
+        let behavior = WindowBehavior::from_config(&cfg);
         assert!(!behavior.tray_enabled);
         assert_eq!(behavior.tray_on_close, TrayOnClose::Tray);
         assert_eq!(behavior.tray_on_minimize, TrayOnMinimize::Taskbar);
@@ -929,32 +1268,12 @@ mod tests {
     }
 
     #[test]
-    fn cache_comparison_ignores_the_login_item_and_sees_every_stored_field() {
-        let base = DesktopBehavior::default();
-        // start_on_login is not cached: the OS registration is its state.
-        let mut login = base;
-        login.start_on_login = true;
-        assert!(!base.cache_differs(&login));
-
-        for mutate in [
-            (|b: &mut DesktopBehavior| b.tray_enabled = true) as fn(&mut DesktopBehavior),
-            |b: &mut DesktopBehavior| b.tray_on_close = TrayOnClose::Quit,
-            |b: &mut DesktopBehavior| b.tray_on_minimize = TrayOnMinimize::Tray,
-            |b: &mut DesktopBehavior| b.start_minimized = StartMinimized::Minimized,
-        ] {
-            let mut changed = base;
-            mutate(&mut changed);
-            assert!(base.cache_differs(&changed), "a stored field must be seen");
-        }
-    }
-
-    #[test]
     fn the_launch_decision_is_reported_once() {
-        let state = LaunchState::new(LaunchVisibility::Hidden);
+        let state = LaunchState::new(LaunchVisibility::Hidden, true);
         assert_eq!(state.peek(), LaunchVisibility::Hidden);
         assert_eq!(state.take(), LaunchVisibility::Hidden);
         // A mode switch remounts the launcher, which asks again. The second
-        // answer must not re-hide the window the user is looking at.
+        // answer must not re-hide the window the user now sees.
         assert_eq!(state.take(), LaunchVisibility::Normal);
     }
 
@@ -964,58 +1283,74 @@ mod tests {
     // window that a hidden login launch deliberately left in the tray.
     #[test]
     fn peeking_still_reports_a_consumed_decision() {
-        let state = LaunchState::new(LaunchVisibility::Hidden);
+        let state = LaunchState::new(LaunchVisibility::Hidden, true);
         assert_eq!(state.take(), LaunchVisibility::Hidden);
         assert_eq!(state.peek(), LaunchVisibility::Hidden);
     }
 
-    // A cache write that FAILED must be retried, not skipped for as long as
-    // the user leaves the values alone -- the next launch reads that cache
-    // before the webview exists, so a stale copy decides the tray and the
-    // window state for a whole session.
+    // The four fields the sidecar caches, decoded from the tokens it stores.
     #[test]
-    fn the_cache_mirror_moves_only_when_a_write_is_recorded() {
-        let state = TrayState::new();
-        let behavior = DesktopBehavior::default();
+    fn the_cached_config_decodes_every_field() {
+        let cfg = proto::DesktopConfig {
+            tray_enabled: true,
+            tray_on_close: contracts::TRAY_ON_CLOSE_QUIT.to_string(),
+            tray_on_minimize: contracts::TRAY_ON_MINIMIZE_TRAY.to_string(),
+            start_minimized: contracts::START_MINIMIZED_MINIMIZED.to_string(),
+            ..Default::default()
+        };
 
-        assert!(state.cache_needs_write(&behavior), "nothing is recorded yet");
-        assert!(
-            state.cache_needs_write(&behavior),
-            "asking must not record: an unrecorded write is a failed one"
+        let behavior = WindowBehavior::from_config(&cfg);
+        assert!(behavior.tray_enabled);
+        assert_eq!(behavior.tray_on_close, TrayOnClose::Quit);
+        assert_eq!(behavior.tray_on_minimize, TrayOnMinimize::Tray);
+        assert_eq!(behavior.start_minimized, StartMinimized::Minimized);
+    }
+
+    // The login item is not a field of the cached type AT ALL, which is how
+    // the exclusion stays true without anybody remembering it. The pushed
+    // payload carries it; the projection the sidecar receives does not, so no
+    // write can leak it into a file the operating system already owns.
+    #[test]
+    fn the_cached_projection_drops_the_login_item() {
+        let pushed = DesktopBehavior {
+            tray_enabled: true,
+            tray_on_close: TrayOnClose::Quit,
+            tray_on_minimize: TrayOnMinimize::Tray,
+            start_on_login: true,
+            start_minimized: StartMinimized::Minimized,
+        };
+        // Every field the cache keeps survives the projection...
+        let cached = pushed.window();
+        assert_eq!(cached.tray_enabled, pushed.tray_enabled);
+        assert_eq!(cached.tray_on_close, pushed.tray_on_close);
+        assert_eq!(cached.tray_on_minimize, pushed.tray_on_minimize);
+        assert_eq!(cached.start_minimized, pushed.start_minimized);
+        // ...and `start_on_login` cannot: two payloads that differ only there
+        // project to the same cached value, so the file cannot record it.
+        let mut without = pushed;
+        without.start_on_login = false;
+        assert_eq!(without.window(), cached);
+    }
+
+    // Each variant must report the CONTRACT token, not a literal that happens
+    // to match today. `parseLaunchVisibility` in the webview answers `normal`
+    // for every token it does not recognize, so a rename on one side alone
+    // would show a window on each hidden login launch and fail nowhere.
+    #[test]
+    fn launch_visibility_reports_the_contract_tokens() {
+        assert_eq!(
+            LaunchVisibility::Normal.as_str(),
+            contracts::LAUNCH_VISIBILITY_NORMAL
+        );
+        assert_eq!(
+            LaunchVisibility::Minimized.as_str(),
+            contracts::LAUNCH_VISIBILITY_MINIMIZED
+        );
+        assert_eq!(
+            LaunchVisibility::Hidden.as_str(),
+            contracts::LAUNCH_VISIBILITY_HIDDEN
         );
 
-        state.record_cache(&behavior);
-        assert!(!state.cache_needs_write(&behavior));
-
-        let mut changed = behavior;
-        changed.tray_enabled = true;
-        assert!(state.cache_needs_write(&changed));
-    }
-
-    // A poisoned mirror must make the cache CONVERGE, not stall. The failing
-    // direction here is one extra RPC per push; the other direction leaves the
-    // next launch deciding the tray and the window state from a stale copy,
-    // with nothing to repair it for the rest of the install's life.
-    #[test]
-    fn a_poisoned_cache_mirror_still_writes() {
-        let state = Arc::new(TrayState::new());
-        let behavior = DesktopBehavior::default();
-        state.record_cache(&behavior);
-        assert!(!state.cache_needs_write(&behavior));
-
-        let poisoner = state.clone();
-        let _ = std::thread::spawn(move || {
-            let _guard = poisoner.cached.lock().expect("a fresh mutex is not poisoned");
-            panic!("poison the mirror");
-        })
-        .join();
-
-        assert!(state.cached.is_poisoned());
-        assert!(state.cache_needs_write(&behavior));
-    }
-
-    #[test]
-    fn launch_visibility_wire_tokens_are_distinct() {
         let tokens = [
             LaunchVisibility::Normal.as_str(),
             LaunchVisibility::Minimized.as_str(),

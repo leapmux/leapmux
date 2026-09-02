@@ -905,17 +905,27 @@ describe('checkSessionInfo', () => {
 
 describe('checkWorkerVocab / checkDesktop', () => {
   // A valid windowBehavior block, spread into every negative desktop fixture
-  // below so each one fails for the reason it names. Without it a fixture
+  // below so each one fails for the reason it states. Without it a fixture
   // reaches `Object.keys(undefined)` the moment a check is reordered, and the
   // test would then pass on a TypeError rather than on the ContractError it
   // asserts.
   const behavior = () => ({
-    trayOnCloseTray: 'tray',
-    trayOnCloseQuit: 'quit',
-    trayOnMinimizeTray: 'tray',
-    trayOnMinimizeTaskbar: 'taskbar',
-    startMinimizedWindow: 'window',
-    startMinimizedMinimized: 'minimized',
+    trayOnClose: { tray: 'tray', quit: 'quit' },
+    trayOnMinimize: { tray: 'tray', taskbar: 'taskbar' },
+    startMinimized: { window: 'window', minimized: 'minimized' },
+  })
+
+  // Valid launchVisibility and windowMode blocks, for the same reason as
+  // `behavior()`: the checks below them must be reachable without a TypeError.
+  const launch = () => ({
+    normal: 'normal',
+    minimized: 'minimized',
+    hidden: 'hidden',
+  })
+  const windowMode = () => ({
+    normal: 'normal',
+    maximized: 'maximized',
+    fullscreen: 'fullscreen',
   })
 
   // A COMPLETE event set, for a fixture whose asserted failure lies past the
@@ -987,6 +997,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: { channelMessage: 'same:event', channelClose: 'same:event', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
     }), 'share one name')
   })
 
@@ -995,16 +1007,22 @@ describe('checkWorkerVocab / checkDesktop', () => {
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', extra: 'C_Z' },
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
     }), 'has no DESKTOP_GO_ENV_NAMES entry')
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
       windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: events(),
-      windowBehavior: { ...behavior(), extra: 'x' },
+      windowBehavior: { ...behavior(), extra: { one: 'x', two: 'y' } },
+      launchVisibility: launch(),
+      windowMode: windowMode(),
     }), 'has no DESKTOP_GO_BEHAVIOR_NAMES entry')
   })
 
@@ -1030,17 +1048,87 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: events(),
-      windowBehavior: { ...behavior(), trayOnCloseQuit: 'tray' },
-    }), 'tray_on_close declares one token twice')
+      windowBehavior: { ...behavior(), trayOnClose: { tray: 'tray', quit: 'tray' } },
+      launchVisibility: launch(),
+      windowMode: windowMode(),
+    }), 'windowBehavior.trayOnClose declares one token twice')
+  })
+
+  // The grouping is DATA now, so a setting the name tables have never heard of
+  // is still checked -- which is the order a real change arrives in. The old
+  // checker-only table made the uniqueness rule skip such a setting entirely.
+  it('checks token uniqueness for a setting no name table knows yet', () => {
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+      tauriEvents: events(),
+      windowBehavior: { ...behavior(), closeToDock: { dock: 'dock', tray: 'dock' } },
+      launchVisibility: launch(),
+      windowMode: windowMode(),
+    }), 'windowBehavior.closeToDock declares one token twice')
   })
 
   it('accepts one token shared by two DIFFERENT settings', () => {
-    // `tray` names both close-to-tray and minimize-to-tray in the shipped
+    // `tray` is the token of both close-to-tray and minimize-to-tray in the shipped
     // contract. A uniqueness check across the whole block -- the obvious
     // reading of the rule above -- would refuse it.
     const d = readContract('desktop')
-    expect(d.windowBehavior.trayOnCloseTray).toBe(d.windowBehavior.trayOnMinimizeTray)
+    expect(Object.keys(d.windowBehavior)).toEqual(['trayOnClose', 'trayOnMinimize', 'startMinimized'])
+    expect(d.windowBehavior.trayOnClose.tray).toBe(d.windowBehavior.trayOnMinimize.tray)
     expect(() => checkDesktop(d)).not.toThrow()
+  })
+
+  // launchVisibility is ONE choice, unlike windowBehavior, so its rule is the
+  // opposite: every token must differ. Two launch states that read alike on
+  // the wire would make `parseLaunchVisibility` answer the wrong one.
+  it('rejects two launch-visibility states sharing one token', () => {
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: { ...launch(), hidden: 'normal' },
+      windowMode: windowMode(),
+    }), 'launchVisibility declares one token twice')
+  })
+
+  it('rejects a launch-visibility key with no name-table entry', () => {
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: { ...launch(), extra: 'x' },
+      windowMode: windowMode(),
+    }), 'has no DESKTOP_RS_LAUNCH_NAMES entry')
+  })
+
+  // windowMode is ONE choice like launchVisibility, but all THREE languages
+  // spell it: the Go config persists the token, the Rust shell matches it at
+  // launch, and the webview reads and writes it. It was three hand-written
+  // mirrors before, and no proto enum restates it now.
+  it('rejects two window modes sharing one token', () => {
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: { ...windowMode(), fullscreen: 'maximized' },
+    }), 'windowMode declares one token twice')
+  })
+
+  it('emits the window-mode tokens to all three languages', () => {
+    const d = readContract('desktop')
+    expect(emitGoDesktop(d)).toMatch(/WindowModeMaximized += "maximized"/)
+    expect(emitRsDesktop(d)).toContain('pub const WINDOW_MODE_FULLSCREEN: &str = "fullscreen"')
+    expect(emitTsDesktop(d)).toContain('export const WINDOW_MODE_NORMAL = "normal" as const')
+  })
+
+  // The pair the contract exists to hold together: `LaunchVisibility::as_str`
+  // in Rust writes these, `parseLaunchVisibility` in the webview reads them,
+  // and that parse falls back to `normal` for anything it does not know -- so
+  // a one-sided rename hides a window with nothing failing.
+  it('emits the launch-visibility tokens for both Rust and TS', () => {
+    const d = readContract('desktop')
+    expect(emitRsDesktop(d)).toContain('pub const LAUNCH_VISIBILITY_HIDDEN: &str = "hidden"')
+    expect(emitTsDesktop(d)).toContain('export const LAUNCH_VISIBILITY_HIDDEN = "hidden" as const')
   })
 
   it('emits the Rust module without inner doc comments (include! cannot take them)', () => {
@@ -1068,7 +1156,17 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const go = emitGoDesktop(d)
     const ts = emitTsDesktop(d)
     const rs = emitRsDesktop(d)
-    for (const [key, token] of Object.entries(d.windowBehavior)) {
+    // The FLAT `<setting><Value>` keys the name tables use; the contract nests
+    // one object per setting, and only the emitted names stay flat.
+    const flat = {
+      trayOnCloseTray: d.windowBehavior.trayOnClose.tray,
+      trayOnCloseQuit: d.windowBehavior.trayOnClose.quit,
+      trayOnMinimizeTray: d.windowBehavior.trayOnMinimize.tray,
+      trayOnMinimizeTaskbar: d.windowBehavior.trayOnMinimize.taskbar,
+      startMinimizedWindow: d.windowBehavior.startMinimized.window,
+      startMinimizedMinimized: d.windowBehavior.startMinimized.minimized,
+    }
+    for (const [key, token] of Object.entries(flat)) {
       // goConstBlock pads the names into a column, so match the separator
       // loosely rather than pinning the alignment.
       expect(go).toMatch(new RegExp(`${DESKTOP_GO_BEHAVIOR_NAMES[key]} += "${token}"`))

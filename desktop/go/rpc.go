@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
-	"github.com/leapmux/leapmux/generated/contracts"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 
 	"github.com/leapmux/leapmux/util/drain"
@@ -418,7 +417,7 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 		})
 
 	case *desktoppb.Request_SetWindowSize:
-		err := s.app.SetWindowSize(int(m.SetWindowSize.Width), int(m.SetWindowSize.Height), windowModeFromProto(m.SetWindowSize.Mode))
+		err := s.app.SetWindowSize(int(m.SetWindowSize.Width), int(m.SetWindowSize.Height), m.SetWindowSize.Mode)
 		if err != nil {
 			s.writeError(id, err)
 			return
@@ -429,12 +428,12 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 		})
 
 	case *desktoppb.Request_SetDesktopBehavior:
-		err := s.app.SetDesktopBehavior(
-			m.SetDesktopBehavior.TrayEnabled,
-			trayOnCloseFromProto(m.SetDesktopBehavior.TrayOnClose),
-			trayOnMinimizeFromProto(m.SetDesktopBehavior.TrayOnMinimize),
-			startMinimizedFromProto(m.SetDesktopBehavior.StartMinimized),
-		)
+		err := s.app.SetDesktopBehavior(DesktopBehavior{
+			TrayEnabled:    m.SetDesktopBehavior.TrayEnabled,
+			TrayOnClose:    TrayOnClose(m.SetDesktopBehavior.TrayOnClose),
+			TrayOnMinimize: TrayOnMinimize(m.SetDesktopBehavior.TrayOnMinimize),
+			StartMinimized: StartMinimized(m.SetDesktopBehavior.StartMinimized),
+		})
 		if err != nil {
 			s.writeError(id, err)
 			return
@@ -661,92 +660,23 @@ func (s *RPCSession) writeLifecycleResult(id uint64, outcome lifecycleOutcome) {
 	})
 }
 
+// configToProto copies the config onto the wire.
+//
+// The four token fields go across VERBATIM. They are contract tokens on both
+// sides, so there is nothing to translate: the sidecar stores this vocabulary
+// and never branches on it, and the Rust shell normalizes an empty or
+// unrecognized token once, where the policy that reads it lives.
 func configToProto(cfg *DesktopConfig) *desktoppb.DesktopConfig {
 	return &desktoppb.DesktopConfig{
 		Mode:           cfg.Mode,
 		HubUrl:         cfg.HubURL,
 		WindowWidth:    int32(cfg.WindowWidth),
 		WindowHeight:   int32(cfg.WindowHeight),
-		WindowMode:     windowModeToProto(cfg.WindowMode),
+		WindowMode:     cfg.WindowMode,
 		TrayEnabled:    cfg.TrayEnabled,
-		TrayOnClose:    trayOnCloseToProto(cfg.TrayOnClose),
-		TrayOnMinimize: trayOnMinimizeToProto(cfg.TrayOnMinimize),
-		StartMinimized: startMinimizedToProto(cfg.StartMinimized),
-	}
-}
-
-// The window-behaviour bridges between the config's string tokens (which the
-// account setting and the webview also use, from contracts/desktop.json) and
-// the wire enums. Each pair follows windowMode{To,From}Proto above: an empty or
-// unknown value becomes that setting's documented default, so a config written
-// before these fields existed reads as the built-in defaults rather than as a
-// third state.
-
-func trayOnCloseToProto(v string) desktoppb.TrayOnClose {
-	if v == contracts.TrayOnCloseQuit {
-		return desktoppb.TrayOnClose_TRAY_ON_CLOSE_QUIT
-	}
-	return desktoppb.TrayOnClose_TRAY_ON_CLOSE_TRAY
-}
-
-func trayOnCloseFromProto(v desktoppb.TrayOnClose) string {
-	if v == desktoppb.TrayOnClose_TRAY_ON_CLOSE_QUIT {
-		return contracts.TrayOnCloseQuit
-	}
-	return contracts.TrayOnCloseTray
-}
-
-func trayOnMinimizeToProto(v string) desktoppb.TrayOnMinimize {
-	if v == contracts.TrayOnMinimizeTray {
-		return desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TRAY
-	}
-	return desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TASKBAR
-}
-
-func trayOnMinimizeFromProto(v desktoppb.TrayOnMinimize) string {
-	if v == desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TRAY {
-		return contracts.TrayOnMinimizeTray
-	}
-	return contracts.TrayOnMinimizeTaskbar
-}
-
-func startMinimizedToProto(v string) desktoppb.StartMinimized {
-	if v == contracts.StartMinimizedMinimized {
-		return desktoppb.StartMinimized_START_MINIMIZED_MINIMIZED
-	}
-	return desktoppb.StartMinimized_START_MINIMIZED_WINDOW
-}
-
-func startMinimizedFromProto(v desktoppb.StartMinimized) string {
-	if v == desktoppb.StartMinimized_START_MINIMIZED_MINIMIZED {
-		return contracts.StartMinimizedMinimized
-	}
-	return contracts.StartMinimizedWindow
-}
-
-// windowModeToProto maps the config's string window mode onto the wire enum.
-// Empty/unknown becomes NORMAL (the fresh-config default).
-func windowModeToProto(mode string) desktoppb.WindowMode {
-	switch mode {
-	case WindowModeMaximized:
-		return desktoppb.WindowMode_WINDOW_MODE_MAXIMIZED
-	case WindowModeFullscreen:
-		return desktoppb.WindowMode_WINDOW_MODE_FULLSCREEN
-	default:
-		return desktoppb.WindowMode_WINDOW_MODE_NORMAL
-	}
-}
-
-// windowModeFromProto maps the wire enum back to the config's string mode.
-// UNSPECIFIED/unknown becomes "normal".
-func windowModeFromProto(mode desktoppb.WindowMode) string {
-	switch mode {
-	case desktoppb.WindowMode_WINDOW_MODE_MAXIMIZED:
-		return WindowModeMaximized
-	case desktoppb.WindowMode_WINDOW_MODE_FULLSCREEN:
-		return WindowModeFullscreen
-	default:
-		return WindowModeNormal
+		TrayOnClose:    string(cfg.TrayOnClose),
+		TrayOnMinimize: string(cfg.TrayOnMinimize),
+		StartMinimized: string(cfg.StartMinimized),
 	}
 }
 

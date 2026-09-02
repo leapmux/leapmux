@@ -503,12 +503,12 @@ func TestApplyPartialRefusesAnUnlistedDesktopToken(t *testing.T) {
 		{"tray_on_minimize", `"quit"`},
 		{"start_minimized", `"hidden"`},
 	} {
-		_, err := Default.ApplyPartial(blob, tc.key, json.RawMessage(tc.value))
+		// The RETURNED document is what the caller stores, so it is what the
+		// test must read. Re-parsing `blob` would assert only that a Go string
+		// is immutable, and would stay green if ApplyPartial wrote the rejected
+		// value before validating it.
+		out, err := Default.ApplyPartial(blob, tc.key, json.RawMessage(tc.value))
 		require.Errorf(t, err, "%s must refuse %s", tc.key, tc.value)
+		assert.Emptyf(t, out, "%s must return no document to store", tc.key)
 	}
-
-	// The stored document is untouched by a refused write.
-	doc := map[string]json.RawMessage{}
-	require.NoError(t, json.Unmarshal([]byte(blob), &doc))
-	assert.JSONEq(t, `"tray"`, string(doc["tray_on_close"]))
 }

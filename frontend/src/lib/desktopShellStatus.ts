@@ -2,8 +2,8 @@ import type { DesktopBehaviorRefusal } from '~/api/platformBridge'
 import { createSignal } from 'solid-js'
 
 /**
- * The desktop shell's most recent refusal of a Desktop preference, in the
- * shape the Preferences panel already places errors with.
+ * What the desktop shell refused of the last Desktop push, in the shape the
+ * Preferences panel already places errors with.
  *
  * A MODULE-LEVEL signal rather than a context value, for the same reason
  * `~/lib/themeStore` is one: the writer (`useDesktopWindowBehavior`, mounted
@@ -28,23 +28,30 @@ const ROW_BY_SETTING: Record<DesktopBehaviorRefusal['setting'], string> = {
   startOnLogin: 'desktop.startOnLogin',
 }
 
-const [refusal, setRefusal] = createSignal<DesktopShellRefusal | null>(null)
-
-/** The refusal to show, or null while the shell applied everything asked. */
-export const desktopShellRefusal = refusal
+const [refusals, setRefusals] = createSignal<readonly DesktopShellRefusal[]>([])
 
 /**
- * Record what the shell refused, addressed to the row that owns it.
+ * Every refusal to show, empty while the shell applied everything asked.
  *
- * Pass `null` after a push the shell accepted: a stale message beside a
+ * A LIST, because the two refusable choices fail independently and each
+ * message belongs on its own row: a Linux desktop with no status-icon library
+ * can also be one whose operating system declines a login item, and reporting
+ * one of those would leave the other toggle reading "on" with no explanation.
+ */
+export const desktopShellRefusals = refusals
+
+/**
+ * Record what the shell refused, each addressed to the row that owns it.
+ *
+ * Pass an empty list after a push the shell accepted: a stale message beside a
  * control the user has since repaired is worse than none, because it reads as
  * the repair having failed too.
  */
-export function reportDesktopShellRefusal(next: DesktopBehaviorRefusal | null): void {
-  setRefusal(next === null ? null : { key: ROW_BY_SETTING[next.setting], message: next.message })
+export function reportDesktopShellRefusals(next: readonly DesktopBehaviorRefusal[]): void {
+  setRefusals(next.map(r => ({ key: ROW_BY_SETTING[r.setting], message: r.message })))
 }
 
 /** Return the store to its empty state. Tests only. */
 export function resetDesktopShellStatusForTests(): void {
-  setRefusal(null)
+  setRefusals([])
 }

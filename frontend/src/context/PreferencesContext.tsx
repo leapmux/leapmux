@@ -3,7 +3,7 @@ import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/
 import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
-import { createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
+import { batch, createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import {
   START_MINIMIZED_MINIMIZED,
@@ -259,6 +259,11 @@ function oneOf<T extends string>(...allowed: T[]): (raw: unknown) => T | undefin
   return raw => (allowed.includes(raw as T) ? raw as T : undefined)
 }
 
+/** Accept a stored boolean, and refuse anything else. */
+function parseBoolean(raw: unknown): boolean | undefined {
+  return typeof raw === 'boolean' ? raw : undefined
+}
+
 /**
  * Accept one font tier, normalized to exactly its two fields, so a stored
  * document cannot carry an extra key into the signal. Anything else is
@@ -479,8 +484,10 @@ export const PreferencesProvider: ParentComponent = (props) => {
   /** Re-read every device-tier signal from the account now in force. */
   const reseedBrowserTier = () => {
     const prefs = loadBrowserPrefs()
-    for (const entry of deviceTier)
-      entry.seed(prefs)
+    batch(() => {
+      for (const entry of deviceTier)
+        entry.seed(prefs)
+    })
   }
 
   /**
@@ -496,15 +503,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
     if (!hasStorageAccount())
       return
     const prefs = loadBrowserPrefs()
-    for (const entry of deviceTier) {
-      if (stored !== null && storedKeyFor(entry.storageName) !== stored)
-        continue
-      entry.seed(prefs)
-      // The applier, WITHOUT the write that a `set` performs. Echoing the value
-      // back to storage would raise a `storage` event in the tab that wrote it,
-      // and the two tabs would write to each other for as long as both are open.
-      entry.apply?.()
-    }
+    batch(() => {
+      for (const entry of deviceTier) {
+        if (stored !== null && storedKeyFor(entry.storageName) !== stored)
+          continue
+        entry.seed(prefs)
+        // The applier, WITHOUT the write that a `set` performs. Echoing the
+        // value back to storage would raise a `storage` event in the tab that
+        // wrote it, and the two tabs would write to each other for as long as
+        // both are open.
+        entry.apply?.()
+      }
+    })
   }
 
   /**
@@ -711,20 +721,27 @@ export const PreferencesProvider: ParentComponent = (props) => {
     }
     if (!loadSeq.isNewest(undefined, mySeq))
       return
-    setAccountLoadError(null)
-    // The SCHEMA, kept beside the values it describes. The settings
-    // registry joins its presentation onto these descriptors instead of
-    // restating each key's category, control kind, enum values and bounds,
-    // so discarding them here left the dialog with nothing to render an
-    // account row from.
-    setAccountDescriptors(resp.descriptors)
-    for (const value of resp.values) {
-      if (!writeSeq.isNewest(value.key, issuedAt.get(value.key) ?? 0))
-        continue
-      // applyAccountValue records the customized flag for the key it
-      // applies, so a skipped key keeps the flag its own newer reply set.
-      applyAccountValue(value.key, value)
-    }
+    // ONE update, not one per key. A reply carries every account key, so an
+    // un-batched apply flushed the effect queue 15+ times and every consumer of
+    // a resolved preference re-ran that often, each time over a partly-updated
+    // set. `batch` defers only the flush: it keeps the write order, and a
+    // functional updater still sees the accumulated value.
+    batch(() => {
+      setAccountLoadError(null)
+      // The SCHEMA, kept beside the values it describes. The settings
+      // registry joins its presentation onto these descriptors instead of
+      // restating each key's category, control kind, enum values and bounds,
+      // so discarding them here left the dialog with nothing to render an
+      // account row from.
+      setAccountDescriptors(resp.descriptors)
+      for (const value of resp.values) {
+        if (!writeSeq.isNewest(value.key, issuedAt.get(value.key) ?? 0))
+          continue
+        // applyAccountValue records the customized flag for the key it
+        // applies, so a skipped key keeps the flag its own newer reply set.
+        applyAccountValue(value.key, value)
+      }
+    })
   }
 
   /**
@@ -941,7 +958,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       protoKey: 'debug_logging',
       browserPrefKey: 'debugLogging',
       fallback: false,
-      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+      parse: parseBoolean,
     }),
     // The Desktop tier. Each `parse` is at least as strict as the hub's
     // validator (usersettings/keys.go), and both sides read the SAME generated
@@ -956,7 +973,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       protoKey: 'tray_enabled',
       browserPrefKey: 'trayEnabled',
       fallback: false,
-      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+      parse: parseBoolean,
     }),
     trayOnClose: createDualSetting<TrayOnClosePreference>({
       protoKey: 'tray_on_close',
@@ -974,7 +991,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       protoKey: 'start_on_login',
       browserPrefKey: 'startOnLogin',
       fallback: false,
-      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+      parse: parseBoolean,
     }),
     startMinimized: createDualSetting<StartMinimizedPreference>({
       protoKey: 'start_minimized',
@@ -1065,13 +1082,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * same.
    */
   const resetForSignOut = () => {
-    for (const setting of settingsByProtoKey.values())
-      setting.clear()
-    setAccountCustomized({})
-    for (const entry of deviceTier) {
-      entry.seed(null)
-      entry.apply?.()
-    }
+    // Batched, so the intermediate state the paragraph above describes never
+    // reaches a consumer at all: the account tier and the device tier land as
+    // one update, and there is no flush in between to paint the wrong palette.
+    batch(() => {
+      for (const setting of settingsByProtoKey.values())
+        setting.clear()
+      setAccountCustomized({})
+      for (const entry of deviceTier) {
+        entry.seed(null)
+        entry.apply?.()
+      }
+    })
   }
   // `accountLoadError` and `accountDescriptors` deliberately survive. Neither
   // is a VALUE of the account that left: the error is the record of the load
@@ -1116,8 +1138,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
   // identity resolves `storedKeyFor` answers null, which matches no event -- the
   // right answer, and the reason it does not throw here.
   //
-  // A null `event.key` is a whole-store `clear()` next door, and it names no
-  // key, so every entry answers for it. Dropping it left the signals showing
+  // A null `event.key` is a whole-store `clear()` next door, and it identifies
+  // no key, so every entry answers for it. Dropping it left the signals showing
   // values whose document was gone, and the next write in this tab merged onto
   // an empty one and silently discarded them.
   onMount(() => {

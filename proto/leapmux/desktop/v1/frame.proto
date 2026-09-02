@@ -143,7 +143,8 @@ message ListEditorsRequest {
 message SetWindowSizeRequest {
   int32 width = 1;
   int32 height = 2;
-  WindowMode mode = 3;
+  // "normal" | "maximized" | "fullscreen"; see DesktopConfig.window_mode.
+  string mode = 3;
 }
 
 // SetDesktopBehavior caches the resolved Desktop account preferences on this
@@ -159,9 +160,11 @@ message SetWindowSizeRequest {
 // read it back, and a copy would be a second authority over a fact the OS owns.
 message SetDesktopBehaviorRequest {
   bool tray_enabled = 1;
-  TrayOnClose tray_on_close = 2;
-  TrayOnMinimize tray_on_minimize = 3;
-  StartMinimized start_minimized = 4;
+  // The CONTRACT TOKENS, as strings; see DesktopConfig for why no enum
+  // restates them.
+  string tray_on_close = 2;
+  string tray_on_minimize = 3;
+  string start_minimized = 4;
 }
 
 message ConnectDistributedRequest {
@@ -373,49 +376,32 @@ message SidecarLogEvent {
 
 // --- Shared types ---
 
-// WindowMode is the top-level display state of the desktop window. The three
-// states are mutually exclusive: a window is windowed, macOS-zoomed, or in
-// native fullscreen -- never a combination. window_width/height on
-// DesktopConfig always hold the last *windowed* geometry so exiting
-// maximized/fullscreen returns to a sensible size.
-enum WindowMode {
-  WINDOW_MODE_UNSPECIFIED = 0; // treated as NORMAL (fresh config default)
-  WINDOW_MODE_NORMAL = 1;
-  WINDOW_MODE_MAXIMIZED = 2;
-  WINDOW_MODE_FULLSCREEN = 3;
-}
-
-// The three Desktop window-behaviour choices, as the device cache stores them.
-// Each UNSPECIFIED maps to that setting's documented default, exactly the way
-// WINDOW_MODE_UNSPECIFIED maps to NORMAL, so a config written before this
-// change -- or by a shell that never pushed -- reads as the built-in default
-// rather than as a third state. The string tokens the account setting and the
-// webview use live in contracts/desktop.json; these enums are the Rust<->Go
-// spelling and the two are bridged in rpc.go and in the shell.
-enum TrayOnClose {
-  TRAY_ON_CLOSE_UNSPECIFIED = 0; // treated as TRAY
-  TRAY_ON_CLOSE_TRAY = 1;
-  TRAY_ON_CLOSE_QUIT = 2;
-}
-
-enum TrayOnMinimize {
-  TRAY_ON_MINIMIZE_UNSPECIFIED = 0; // treated as TASKBAR
-  TRAY_ON_MINIMIZE_TRAY = 1;
-  TRAY_ON_MINIMIZE_TASKBAR = 2;
-}
-
-enum StartMinimized {
-  START_MINIMIZED_UNSPECIFIED = 0; // treated as WINDOW
-  START_MINIMIZED_WINDOW = 1;
-  START_MINIMIZED_MINIMIZED = 2;
-}
-
+// The desktop config's four token fields -- window_mode, tray_on_close,
+// tray_on_minimize and start_minimized -- carry the CONTRACT TOKEN as a string,
+// and no enum on this wire restates one. contracts/desktop.json is the single
+// source of those tokens, and Go, Rust and the webview all read them from the
+// generated constants.
+//
+// A proto enum here would be a fourth spelling of a vocabulary the sidecar only
+// STORES: nothing in Go branches on these values. It also bought no safety,
+// because both bridges mapped an unrecognized token to the setting's default,
+// so a token added to the contract degraded silently instead of failing to
+// compile. The normalization now happens once, in the Rust shell, where the
+// policy that reads the value lives.
+//
+// An EMPTY string is a fresh config, or one written before the field existed,
+// and every reader maps it to that setting's documented default: normal window
+// mode, close to the tray, minimize to the taskbar, start with a window.
 message DesktopConfig {
   string mode = 1;
   string hub_url = 2;
   int32 window_width = 3;
   int32 window_height = 4;
-  WindowMode window_mode = 5;
+  // "normal" | "maximized" | "fullscreen". The three states are mutually
+  // exclusive: a window is windowed, macOS-zoomed, or in native fullscreen --
+  // never a combination. window_width/height always hold the last *windowed*
+  // geometry so exiting maximized/fullscreen returns to a sensible size.
+  string window_mode = 5;
   // The device-local cache of the Desktop preferences. See
   // SetDesktopBehaviorRequest for the direction of flow and for why
   // start_on_login is not among them.
@@ -427,9 +413,12 @@ message DesktopConfig {
   // before it knows who will sign in, which is the whole reason the cache
   // exists.
   bool tray_enabled = 6;
-  TrayOnClose tray_on_close = 7;
-  TrayOnMinimize tray_on_minimize = 8;
-  StartMinimized start_minimized = 9;
+  // "tray" | "quit"
+  string tray_on_close = 7;
+  // "tray" | "taskbar"
+  string tray_on_minimize = 8;
+  // "window" | "minimized"
+  string start_minimized = 9;
 }
 
 message BuildInfo {

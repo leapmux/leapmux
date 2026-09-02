@@ -1,4 +1,4 @@
-//! Linux: catch a minimize through GTK, and answer two questions tao cannot.
+//! Linux: catch a minimize through GTK, and restore the window after one.
 //!
 //! Tauri 2 has no `WindowEvent::Minimized` and tao emits none, but GTK reports
 //! the transition on the window's own `window-state-event`. That is the same
@@ -62,31 +62,4 @@ pub(crate) fn present(window: &WebviewWindow) {
     if let Ok(gtk_window) = window.gtk_window() {
         gtk_window.present();
     }
-}
-
-/// Whether a status-icon library is present, checked BEFORE any tray call.
-///
-/// The .deb only recommends `libayatana-appindicator3-1`, because Linux desktop
-/// environments differ too much to force an indicator library on a user whose
-/// desktop has no tray at all. That makes an absent library an ordinary case
-/// rather than an edge one, and it must not be the case that reaches
-/// `libappindicator-sys`: that crate resolves its library through a `Lazy` that
-/// PANICS when both sonames are missing, and the panic would unwind through
-/// GTK's C frames.
-///
-/// The handle is leaked deliberately. Loading the library here is what makes it
-/// already resident when the lazy resolve runs, so the two cannot disagree.
-pub(crate) fn appindicator_available() -> bool {
-    for soname in [
-        c"libayatana-appindicator3.so.1",
-        c"libappindicator3.so.1",
-    ] {
-        // SAFETY: a fixed soname that no user input reaches, opened lazily and
-        // never closed.
-        let handle = unsafe { libc::dlopen(soname.as_ptr(), libc::RTLD_LAZY) };
-        if !handle.is_null() {
-            return true;
-        }
-    }
-    false
 }

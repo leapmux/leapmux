@@ -3,6 +3,7 @@ import type { PreferencesState } from '~/context/PreferencesContext'
 import type { SettingDescriptor as ProtoSettingDescriptor } from '~/generated/proto/leapmux/v1/settings_pb'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { desktopShellRefusals, reportDesktopShellRefusals } from '~/lib/desktopShellStatus'
 import { accountWireDescriptors, goldenAccountSchema } from '~/test-support/accountSchema'
 import { makeFakePrefs } from '~/test-support/preferencesFake'
 import { CUSTOM_EDITORS } from '../controls/customEditors'
@@ -85,7 +86,7 @@ describe('browserSettings registry', () => {
   })
 
   // A row whose CUSTOM EDITOR owns its value has no scalar to bind, and its
-  // `value`/`set` pair is never called. Seven rows are in that shape, and each
+  // `value`/`set` pair is never called. Eight rows are in that shape, and each
   // used to re-type the same two no-op closures.
   //
   // The assertion is IDENTITY, not behavior: two hand-written no-op literals
@@ -489,9 +490,25 @@ describe('buildBrowserReset', () => {
     expect(controlOf('advanced.resetBrowserOverrides'))
       .toEqual({ kind: 'action', label: 'Reset overrides', danger: true })
   })
+
+  // `desktopShellStatus` maps each refusable payload field onto a row id, and
+  // that map is the ONE unpinned link in a chain the types check end to end:
+  // the field name is `Extract<keyof DesktopBehavior, ...>` in the bridge, and
+  // a Rust test ties the refusal to a field of the payload. The row id is a
+  // bare string, so renaming a Desktop row leaves the map pointing at a row
+  // that does not exist -- and the shell's message then renders nowhere, which
+  // is the exact silence the refusal channel exists to remove.
+  it('addresses every desktop shell refusal to a row that exists', () => {
+    const ids = descriptorsOf(makeFakePrefs() as unknown as PreferencesState).map(d => d.id)
+    for (const setting of ['trayEnabled', 'startOnLogin'] as const) {
+      reportDesktopShellRefusals([{ setting, message: 'refused' }])
+      expect(ids).toContain(desktopShellRefusals()[0]!.key)
+    }
+    reportDesktopShellRefusals([])
+  })
 })
 
-// The nine account settings used to be declared TWICE -- in Go
+// The account settings used to be declared TWICE -- in Go
 // (backend/internal/hub/usersettings/keys.go) and again here -- and the two
 // copies had already drifted ("Side by side" against "Side-by-Side", "Ding
 // dong" against "Ding Dong"). The registry no longer states any of the

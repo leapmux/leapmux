@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-li
 import { createSignal, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { reportDesktopShellRefusal, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
+import { reportDesktopShellRefusals, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
 import { accountWireDescriptors } from '~/test-support/accountSchema'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
@@ -83,10 +83,10 @@ afterEach(() => {
 describe('preferencesDialog desktop shell refusal', () => {
   it('shows the refusal on the row that owns it', async () => {
     desktop.mockReturnValue(true)
-    reportDesktopShellRefusal({
+    reportDesktopShellRefusals([{
       setting: 'trayEnabled',
       message: 'LeapMux could not create a tray icon on this desktop',
-    })
+    }])
     renderDialog('desktop')
 
     expect((await screen.findByTestId('setting-error-desktop.trayEnabled')).textContent)
@@ -103,7 +103,33 @@ describe('preferencesDialog desktop shell refusal', () => {
     await screen.findByText('Tray icon')
     expect(screen.queryByTestId('setting-error-desktop.trayEnabled')).toBeNull()
   })
+
+  // The two refusable choices fail INDEPENDENTLY, so one push can be refused
+  // twice and the dialog must route each message to its own row. `startOnLogin`
+  // is visible here because the tray refusal does not hide it.
+  it('shows every refusal of one push, each on its own row', async () => {
+    desktop.mockReturnValue(true)
+    reportDesktopShellRefusals([
+      { setting: 'trayEnabled', message: 'no status-icon library' },
+      { setting: 'startOnLogin', message: 'the system declined the login item' },
+    ])
+    renderDialog('desktop')
+
+    expect((await screen.findByTestId('setting-error-desktop.trayEnabled')).textContent)
+      .toContain('no status-icon library')
+    expect((await screen.findByTestId('setting-error-desktop.startOnLogin')).textContent)
+      .toContain('the system declined the login item')
+  })
 })
+
+// The ADMIN side of the same prop is covered one level down, in
+// SettingsPanel.test.tsx: `writeErrors` carrying a bare snake_case hub key
+// places its message on that row. The dialog's own share of it is the wrapper
+// `adminStore.state.writeError ? [adminStore.state.writeError] : []`, and
+// driving a real hub write to a rejection from here needs scaffolding no case
+// in this file has -- an int row does not commit on blur, and a failed write
+// also surfaces through SettingRow's own error signal, so a test here would
+// pass without proving which channel carried it.
 
 describe('preferencesDialog admin restriction', () => {
   // The hub-wide register row reaches the ADMINISTRATION side alone (see

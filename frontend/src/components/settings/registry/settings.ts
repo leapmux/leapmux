@@ -1,5 +1,5 @@
 import type { CategoryId, SentinelShape, SettingBinding, SettingControl, SettingScope } from '../types'
-import type { PreferencesState } from '~/context/PreferencesContext'
+import type { DualPreference, PreferencesState } from '~/context/PreferencesContext'
 import {
   START_MINIMIZED_MINIMIZED,
   START_MINIMIZED_WINDOW,
@@ -18,13 +18,14 @@ import { requestTerminalOsNotifications } from './terminalNotifications'
 const log = createLogger('settingsRegistry')
 
 /**
- * The operating system's own word for each surface the Desktop rows name.
+ * The operating system's own word for each surface that the Desktop rows
+ * identify.
  *
  * macOS has a MENU BAR and a DOCK; Linux and Windows have a TRAY and a
- * TASKBAR. "Tray icon" on macOS names something the platform does not have, so
- * one wording cannot serve both -- that is the "one term per concept" rule
- * failing at the platform boundary, not a nicety. Findability is preserved by
- * putting both words in each row's `keywords`, unconditionally.
+ * TASKBAR. "Tray icon" on macOS identifies something the platform does not
+ * have, so one wording cannot serve both -- that is the "one term per concept"
+ * rule failing at the platform boundary, not a nicety. Each row keeps both
+ * words in its `keywords`, unconditionally, so search still finds it.
  *
  * Resolved at MODULE scope, not per render: `getPlatform` caches a user-agent
  * read on first call and the answer cannot change while the page is open, so a
@@ -36,6 +37,19 @@ const TRAY_ICON_LABEL = isMac() ? 'Menu bar icon' : 'Tray icon'
 const TRAY_SURFACE = isMac() ? 'menu bar' : 'tray'
 const TRAY_HIDE_OPTION = isMac() ? 'Hide to the menu bar' : 'Hide to the tray'
 const TRAY_KEEP_OPTION = isMac() ? 'Keep in the Dock' : 'Keep in the taskbar'
+
+/**
+ * Whether NEITHER tier of a dual boolean turns its feature on.
+ *
+ * The rule a dependent row hides by, written once. A rule on the RESOLVED value
+ * alone takes the ACCOUNT default away from a user who turned the feature off
+ * on this device, and that default is what their other devices obey -- the
+ * mistake the turn-end volume row records as already made once. Three Desktop
+ * rows depend on this, so the next one must not have to copy it correctly.
+ */
+function neitherTierEnables(pref: DualPreference<boolean>): boolean {
+  return !pref.resolved() && !pref.account()
+}
 
 /**
  * What EVERY registry entry declares, whichever tier stores its value: the
@@ -422,11 +436,11 @@ export const browserSettings: BrowserSettingDecl[] = [
 
   // --- Desktop ---
   //
-  // Every row here is hidden outside the desktop app, so the whole section
-  // disappears in a browser (`occupiedNavGroups` drops a group with no visible
-  // rows). The dependent rows use `hiddenWhen` rather than a disabled control:
-  // without it a user turns the tray off, still sees "when you close the
-  // window", picks Quit, and nothing changes.
+  // Every row here declares `hidden` outside the desktop app, so the whole
+  // section disappears in a browser (`occupiedNavGroups` drops a group with no
+  // visible rows). The dependent rows use `hiddenWhen` rather than a disabled
+  // control: without it a user turns the tray off, still sees "when you close
+  // the window", picks Quit, and nothing changes.
   {
     id: 'desktop.trayEnabled',
     protoKey: 'tray_enabled',
@@ -450,12 +464,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     optionLabels: { [TRAY_ON_CLOSE_TRAY]: TRAY_HIDE_OPTION, [TRAY_ON_CLOSE_QUIT]: 'Quit LeapMux' },
     sentinel: 'nullable',
     hidden: () => !isDesktopApp(),
-    // BOTH tiers, for the reason the turn-end volume row states: a rule on the
-    // resolved value alone takes the ACCOUNT default away from a user who
-    // turned the tray off on this device, and that default is what their other
-    // devices obey.
-    hiddenWhen: prefs => !prefs.dual.trayEnabled.resolved()
-      && !prefs.dual.trayEnabled.account(),
+    hiddenWhen: prefs => neitherTierEnables(prefs.dual.trayEnabled),
     bind: prefs => dualScalar(prefs.dual.trayOnClose),
   },
   {
@@ -468,8 +477,7 @@ export const browserSettings: BrowserSettingDecl[] = [
     optionLabels: { [TRAY_ON_MINIMIZE_TRAY]: TRAY_HIDE_OPTION, [TRAY_ON_MINIMIZE_TASKBAR]: TRAY_KEEP_OPTION },
     sentinel: 'nullable',
     hidden: () => !isDesktopApp(),
-    hiddenWhen: prefs => !prefs.dual.trayEnabled.resolved()
-      && !prefs.dual.trayEnabled.account(),
+    hiddenWhen: prefs => neitherTierEnables(prefs.dual.trayEnabled),
     bind: prefs => dualScalar(prefs.dual.trayOnMinimize),
   },
   {
@@ -493,11 +501,9 @@ export const browserSettings: BrowserSettingDecl[] = [
     optionLabels: { [START_MINIMIZED_WINDOW]: 'Show the window', [START_MINIMIZED_MINIMIZED]: 'Hide the window' },
     sentinel: 'nullable',
     hidden: () => !isDesktopApp(),
-    // The same both-tiers rule as the two rows above, over `start_on_login`:
-    // this row governs the login launch alone, so it means nothing while
-    // neither tier starts LeapMux at login.
-    hiddenWhen: prefs => !prefs.dual.startOnLogin.resolved()
-      && !prefs.dual.startOnLogin.account(),
+    // Over `start_on_login`, not the tray: this row governs the login launch
+    // alone, so it means nothing while neither tier starts LeapMux at login.
+    hiddenWhen: prefs => neitherTierEnables(prefs.dual.startOnLogin),
     bind: prefs => dualScalar(prefs.dual.startMinimized),
   },
 
