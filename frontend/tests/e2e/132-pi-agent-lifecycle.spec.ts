@@ -44,7 +44,13 @@ piTest.describe('Pi Agent Lifecycle', () => {
 
     // Pi emits agent_settled after agent_end. The worker drops it, so it must
     // never surface as a raw-JSON bubble.
-    const allText = (await messageContents(page).allTextContents()).join(' ')
+    //
+    // Count the rows first. An absence assertion over an empty locator passes
+    // for the wrong reason, so this fails loudly if the message list is ever
+    // renamed out from under the helper.
+    const contents = messageContents(page)
+    expect(await contents.count()).toBeGreaterThan(0)
+    const allText = (await contents.allTextContents()).join(' ')
     expect(allText).not.toContain('agent_settled')
   })
 
