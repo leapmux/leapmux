@@ -547,7 +547,9 @@ globalStyle('[role^="menuitem"]', {
 //
 // `:not(:disabled, [aria-disabled="true"])` mirrors Oat's own
 // `&:hover:not(:disabled)` on buttons. Menus here really do render disabled
-// items -- BranchContextMenu's "Change branch…"/"Delete branch…",
+// items -- BranchContextMenu's change and delete entries (the delete one is
+// named after what it destroys, so its label reads "Delete worktree…" on a
+// worktree row and "Delete branch…" on a main-repo row),
 // FileActionsMenu's download entries while busy, OpenInEditorButton's Refresh
 // -- and Oat's `:disabled` rule sets only `cursor`/`opacity`, never
 // `pointer-events: none`, so without the guard hovering one paints the accent

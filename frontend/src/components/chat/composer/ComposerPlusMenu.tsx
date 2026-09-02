@@ -196,6 +196,11 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const actions = () => structure().actions
   const branchName = () => structure().branchName
   const agentInfo = () => structure().agentInfo
+  // One spelling of the default for the three places that render the kind: the
+  // menu that names the delete item, the tooltip rows and the trigger's glyph.
+  // A tab whose git status has not landed reports nothing, and "branch" is the
+  // safe reading -- it claims nothing about a directory that a delete removes.
+  const isWorktree = () => props.isWorktree ?? false
 
   // Whether anything renders BETWEEN the attach item and the view toggles. Both
   // rules that fence that region are drawn only when it is non-empty: a fresh
@@ -284,7 +289,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       <Show when={branchName()}>
         {branch => (
           <BranchContextMenu
-            isWorktree={props.isWorktree ?? false}
+            isWorktree={isWorktree()}
             onChangeBranch={props.onChangeBranch ?? (() => {})}
             onDeleteBranch={props.onDeleteBranch ?? (() => {})}
             disabledReason={props.branchDisabledReason}
@@ -302,7 +307,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
                   ? undefined
                   : (
                       <WorkingTreeRows
-                        isWorktree={props.isWorktree ?? false}
+                        isWorktree={isWorktree()}
                         name={branch()}
                         directory={props.directory ?? ''}
                         homeDir={props.homeDir}
@@ -317,7 +322,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
                   {...triggerProps}
                 >
                   <span class={styles.subTriggerLabel}>
-                    <WorkingTreeIcon isWorktree={props.isWorktree ?? false} size="xs" />
+                    <WorkingTreeIcon isWorktree={isWorktree()} size="xs" />
                     {branch()}
                   </span>
                   <Icon icon={ChevronRight} size="xs" />

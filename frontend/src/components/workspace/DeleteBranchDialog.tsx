@@ -419,14 +419,19 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       <Show when={info()}>
         {i => (
           <>
+            {/* `isWorktree()` throughout, not `i().isWorktree`. Inside this
+                `Show` the two are equal, so the difference is invisible today
+                -- and that is the hazard: a block moved out from under the
+                guard would silently drop the seed and paint the wrong kind
+                until the RPC lands. One accessor answers everywhere. */}
             <BranchStatusInfo
               branch={{
-                isWorktree: i().isWorktree,
+                isWorktree: isWorktree(),
                 branchName: i().branchName,
                 // The worktree dir for a worktree, and the repo root this
                 // dialog is locked to otherwise. `worktreePath` is populated
                 // only on the worktree path, so it cannot serve both.
-                directory: i().isWorktree ? i().worktreePath : props.gitToplevel,
+                directory: isWorktree() ? i().worktreePath : props.gitToplevel,
                 homeDir: homeDir(),
                 gitState: i().gitState,
               }}
@@ -434,7 +439,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 agents: isOnlyBranch() ? 0 : tabCounts.agents,
                 terminals: isOnlyBranch() ? 0 : tabCounts.terminals,
                 files: isOnlyBranch() ? 0 : tabCounts.files,
-                willStop: i().isWorktree,
+                willStop: isWorktree(),
               }}
             />
             {/* What Delete actually does, which is the one fact that separates
@@ -445,7 +450,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
             <Show when={!isOnlyBranch()}>
               <div data-testid="branch-delete-consequence">
                 <Show
-                  when={i().isWorktree}
+                  when={isWorktree()}
                   fallback="Deleting removes the branch. This working directory switches to the branch you pick below."
                 >
                   Deleting removes this directory and the branch.

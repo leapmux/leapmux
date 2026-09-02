@@ -71,6 +71,11 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   const sessionInfo = createMemo(() => props.agentSessionInfo)
   const gitView = createMemo(() => props.gitView)
   const branchLabel = createMemo(() => props.branchName)
+  // One spelling of the kind for the whole card, read by the row's label and by
+  // its glyph. A branch stamped onto a tab before its first status push has no
+  // git view at all; "Branch" is the safe reading there, because it claims
+  // nothing about a directory that a delete would remove.
+  const isWorktree = () => gitView()?.isWorktree ?? false
 
   const hasContextInfo = () => {
     const info = sessionInfo()
@@ -165,14 +170,14 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
                 checks which one the agent runs in. The icon repeats the label
                 because it is the same glyph the sidebar row and the composer
                 chip carry -- this is where a reader connects the three. */}
-            <span class={styles.infoLabel}>{workingTreeKindLabel(gitView()?.isWorktree ?? false)}</span>
+            <span class={styles.infoLabel}>{workingTreeKindLabel(isWorktree())}</span>
             {/* The glyph belongs to the VALUE, beside the name it describes,
                 the same way the Agent row above carries its provider glyph.
                 `infoValueWithIcon` supplies the centring and the tighter gap;
                 as a direct child of the row it would take the row's own wider
                 gap and read as a third item. */}
             <span class={`${styles.infoValue} ${styles.infoValueWithIcon}`}>
-              <WorkingTreeIcon isWorktree={gitView()?.isWorktree ?? false} size="xs" />
+              <WorkingTreeIcon isWorktree={isWorktree()} size="xs" />
               {name}
               {(() => {
                 const git = gitView()
