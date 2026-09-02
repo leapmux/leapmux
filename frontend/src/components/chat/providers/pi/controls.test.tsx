@@ -1,20 +1,13 @@
-import type { AskQuestionState } from '../../controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createAskQuestionState } from '~/test-support/askQuestionState'
+import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
 import { PiControlActions, PiControlContent } from './controls'
+import './plugin'
 
-function makeAskState(overrides: {
-  selections?: Record<number, string[]>
-  customTexts?: Record<number, string>
-  currentPage?: number
-} = {}): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>(overrides.selections ?? {})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>(overrides.customTexts ?? {})
-  const [currentPage, setCurrentPage] = createSignal(overrides.currentPage ?? 0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-}
+const makeAskState = createAskQuestionState
 
 function makeSelectRequest(): ControlRequest {
   return {
@@ -33,7 +26,7 @@ function makeSelectRequest(): ControlRequest {
 describe('pi select control requests', () => {
   it('renders select options through the shared AskUserQuestion content', () => {
     const { container, getByTestId } = render(() => (
-      <PiControlContent request={makeSelectRequest()} askState={makeAskState()} />
+      <ControlRequestContent request={makeSelectRequest()} askState={makeAskState()} agentProvider={AgentProvider.PI} />
     ))
 
     expect(container.textContent ?? '').toContain('Agent Question')
@@ -54,7 +47,7 @@ describe('pi select control requests', () => {
       },
     }
     const { container } = render(() => (
-      <PiControlContent request={req} askState={makeAskState()} />
+      <ControlRequestContent request={req} askState={makeAskState()} agentProvider={AgentProvider.PI} />
     ))
     expect(container.textContent ?? '').toContain('Choose an option')
   })
@@ -72,7 +65,7 @@ describe('pi select control requests', () => {
       },
     }
     const { queryByTestId } = render(() => (
-      <PiControlContent request={req} askState={makeAskState()} />
+      <ControlRequestContent request={req} askState={makeAskState()} agentProvider={AgentProvider.PI} />
     ))
     expect(queryByTestId('question-option-Real')).toBeInTheDocument()
     expect(queryByTestId('question-option-Other')).toBeInTheDocument()
@@ -82,12 +75,13 @@ describe('pi select control requests', () => {
   it('submits the selected option as a Pi extension_ui_response value', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const { getByTestId } = render(() => (
-      <PiControlActions
+      <ControlRequestActions
         request={makeSelectRequest()}
         askState={makeAskState({ selections: { 0: ['Block'] } })}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
+        agentProvider={AgentProvider.PI}
       />
     ))
 
@@ -105,12 +99,13 @@ describe('pi select control requests', () => {
   it('cancels via the Stop button as a Pi cancellation envelope', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const { getByTestId } = render(() => (
-      <PiControlActions
+      <ControlRequestActions
         request={makeSelectRequest()}
         askState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
+        agentProvider={AgentProvider.PI}
       />
     ))
 

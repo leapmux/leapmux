@@ -176,7 +176,7 @@ func TestUpdateSettings_IgnoresUnknownExtraKey(t *testing.T) {
 		"thoughtLevel":         "high",
 	})
 
-	require.True(t, ok)
+	require.True(t, ok.AppliedLive)
 	recorded := requests()
 	require.Len(t, recorded, 2, "model + mode RPCs fire; the unknown extra key sends nothing")
 	assert.Equal(t, acpMethodSessionSetConfigOption, recorded[0].Method)
@@ -257,7 +257,7 @@ func TestCopilotUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 		OptionIDModel:          "gpt-5.4-mini",
 		OptionIDPermissionMode: CopilotCLIModePlan,
 	})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 	assert.Equal(t, "gpt-5.4-mini", agent.model)
 	assert.Equal(t, CopilotCLIModePlan, agent.permissionMode)
 
@@ -422,7 +422,7 @@ func TestACPConfigOption_MutableUpdateRoundTrips(t *testing.T) {
 
 	// Changing it routes through session/set_config_option and adopts the response value.
 	ok := agent.UpdateSettings(map[string]string{"reasoning_effort": "high"})
-	assert.True(t, ok)
+	assert.True(t, ok.AppliedLive)
 
 	var setReq *recordedRequest
 	for _, r := range requests() {
@@ -460,7 +460,7 @@ func TestACPConfigOption_SkipsUnofferedValue(t *testing.T) {
 
 	// A change to "xhigh" -- a tier the current list does not offer.
 	ok := agent.UpdateSettings(map[string]string{"reasoning_effort": "xhigh"})
-	assert.True(t, ok, "skipping an unoffered value is a no-op success, not a failure")
+	assert.True(t, ok.AppliedLive, "skipping an unoffered value is a no-op success, not a failure")
 
 	for _, r := range requests() {
 		if r.Method == acpMethodSessionSetConfigOption && r.Params["configId"] == "reasoning_effort" {
@@ -498,7 +498,7 @@ func TestCopilotModelChangeSurfacesReasoningEffort(t *testing.T) {
 		"the prior model surfaced no reasoning_effort group")
 
 	// Switch to the reasoning-capable model.
-	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "gpt-5.4"}))
+	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "gpt-5.4"}).AppliedLive)
 
 	// The model write went through session/set_config_option (configId "model"), not set_model.
 	var setReq *recordedRequest
@@ -540,7 +540,9 @@ func TestACPConfigOption_EmptyResponseAdoptsWrittenValue(t *testing.T) {
 	seedReasoningEffort(agent, "medium")
 
 	ok := agent.UpdateSettings(map[string]string{"reasoning_effort": "high"})
-	assert.True(t, ok)
+	assert.True(t, ok.AppliedLive)
+	assert.Equal(t, OptionSettlementUnresolved, ok.Settlements["reasoning_effort"].State,
+		"an empty response cannot confirm a clamp or removal")
 	assert.Equal(t, "high", optionids.GroupByID(agent.OptionGroups(), "reasoning_effort").GetCurrentValue(),
 		"the written value is adopted even when the response carries no configOptions")
 }
@@ -757,7 +759,7 @@ func TestACPConfigOption_NoopWhenUnchanged(t *testing.T) {
 	})
 	seedReasoningEffort(agent, "medium")
 
-	require.True(t, agent.UpdateSettings(map[string]string{"reasoning_effort": "medium"}))
+	require.True(t, agent.UpdateSettings(map[string]string{"reasoning_effort": "medium"}).AppliedLive)
 	for _, r := range requests() {
 		assert.NotEqual(t, acpMethodSessionSetConfigOption, r.Method, "no write when the value is unchanged")
 	}
@@ -930,7 +932,7 @@ func TestACPConfigOption_LiveUpdateAppliesKnownButUnsurfacedOption(t *testing.T)
 	agent.options.markKnown(acpConfigOption{ID: "reasoning_effort"})
 	agent.mu.Unlock()
 
-	require.True(t, agent.UpdateSettings(map[string]string{"reasoning_effort": "high"}),
+	require.True(t, agent.UpdateSettings(map[string]string{"reasoning_effort": "high"}).AppliedLive,
 		"a known config option is applied live")
 
 	var setReq *recordedRequest

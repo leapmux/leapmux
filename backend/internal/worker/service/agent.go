@@ -994,8 +994,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			oldOptions := loadOptions(dbAgent.Options, provider)
 			newOptions := svc.sanitizeIncomingOptions(agentID, provider, oldOptions, r.GetSettings().GetOptions())
 
-			// Optimistic DB write of the requested options; corrected below to the values
-			// the session actually confirms (settledOptions). Persist only the axes this edit
+			// Persist the requested options first. A later correction contains only values
+			// that the provider confirms. Persist only the axes that this edit
 			// changes, via compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh
 			// (no shared lock) can't be clobbered by a stale full-map blob and vice versa.
 			optimistic, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options,
@@ -1011,36 +1011,23 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// and burns an extra re-read before converging.
 			dbAgent.Options = optimistic
 
-			// settledOptions is the option map the session actually settled on -- the
-			// requested newOptions overlaid with whatever the running provider confirmed,
-			// then filled with provider defaults (confirmedOptions). The provider's
-			// confirmation can differ from the request on ANY axis:
-			//   - effort: selecting ultracode without the workflows entitlement lands on
-			//     xhigh; selecting Auto (or a model switch, which resets effort to Auto)
-			//     relaunches without --effort and the CLI resolves Auto to a concrete level.
-			//   - model: the account-default sentinel ("default") resolves to a concrete
-			//     model the session reports back.
-			//   - options: an ACP reasoning_effort the server downgraded, a Codex
-			//     sandbox/service_tier it adjusted.
-			// Reporting the settled (not requested) values is INTENTIONAL -- the
-			// notification, the persisted row, and the RPC reply all state what the session
-			// is actually running. settledOptions drives all three so they can't disagree.
-			// For an offline edit or a failed restart no agent confirms anything, so it
-			// stays equal to the requested newOptions.
+			// Apply each confirmed correction to the requested options. Keep a requested
+			// value when the agent is offline or the provider cannot confirm its readback.
 			settledOptions := newOptions
+			applyResult := unresolvedSettingsResult(newOptions)
 			if svc.Agents.HasAgent(agentID) {
 				// Try a live update first; fall back to a full restart for changes the
 				// provider can't apply in place (e.g. Claude Code switching effort to auto).
-				if settled, applied := svc.applySettingsLive(dbAgent, newOptions); applied {
+				if settled, result := svc.applySettingsLive(dbAgent, newOptions); result.AppliedLive {
 					settledOptions = settled
+					applyResult = result
 				} else {
-					settledOptions = svc.applySettingsViaRestart(dbAgent, newOptions)
+					settledOptions, applyResult = svc.applySettingsViaRestart(dbAgent, newOptions)
 				}
 			}
 
-			// Broadcast settings_changed notification for the chat view, diffing the
-			// stored options against the settled ones (every axis corrected to the value
-			// the session actually confirmed).
+			// Broadcast the effective stored change. An unresolved axis keeps its
+			// requested value until a later provider status corrects it.
 			changes := svc.buildSettingsChanges(&dbAgent, oldOptions, settledOptions, sortedOptionKeys(oldOptions, settledOptions), true)
 			if len(changes) > 0 {
 				svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
@@ -1049,11 +1036,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				})
 			}
 
-			// Return the settled options so the client reconciles its optimistic state
-			// against the values this RPC confirmed -- not a separately-broadcast catalog,
-			// which would depend on cross-channel ordering (the broadcast arriving before
-			// this reply).
-			sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{ConfirmedOptions: settledOptions})
+			// Return each requested or indirectly changed axis. The client applies only
+			// confirmed settlements and keeps its optimistic value for unresolved axes.
+			sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{
+				OptionSettlements: protoOptionSettlements(settingsResponseSettlements(
+					r.GetSettings().GetOptions(), newOptions, settledOptions, applyResult,
+				)),
+			})
 		})
 
 	// SendControlResponse forwards the user's allow/deny on a tool-use
@@ -1927,7 +1916,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// effect rather than being silently dropped.
 	relaunch := false
 	if !maps.Equal(initialOpts.Options, latestOpts.Options) {
-		if !svc.Agents.UpdateSettings(agentID, latestOpts.Options) {
+		if !svc.Agents.UpdateSettings(agentID, latestOpts.Options).AppliedLive {
 			relaunch = true
 		}
 	}
@@ -2246,6 +2235,112 @@ func settleConfirmedOptions(provider leapmuxv1.AgentProvider, requested OptionMa
 	return reconcileOrphanedOptions(provider, confirmedOptions(provider, requested, OptionMap(confirmed)), confirmed)
 }
 
+func unresolvedSettingsResult(options OptionMap) agent.SettingsApplyResult {
+	settlements := make(agent.OptionSettlements, len(options))
+	for id := range options {
+		settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
+	}
+	return agent.SettingsApplyResult{Settlements: settlements}
+}
+
+// settleAppliedSettings applies only values that the provider confirmed. It
+// keeps requested values for unresolved axes and removes confirmed omissions.
+func settleAppliedSettings(
+	provider leapmuxv1.AgentProvider,
+	requested OptionMap,
+	result agent.SettingsApplyResult,
+) OptionMap {
+	settled := requested.Clone()
+	for id, settlement := range result.Settlements {
+		if settlement.State != agent.OptionSettlementConfirmed {
+			continue
+		}
+		if settlement.Value == nil || *settlement.Value == "" {
+			delete(settled, id)
+			continue
+		}
+		settled[id] = *settlement.Value
+	}
+	settled = resolveProviderDefaults(settled, provider)
+	persistedOnly := agent.PersistedOnlyOptionIDs(provider)
+	for id := range settled {
+		if id == agent.OptionIDModel || persistedOnly[id] {
+			continue
+		}
+		if _, surfaced := result.SurfacedOptions[id]; surfaced {
+			continue
+		}
+		if settlement, ok := result.Settlements[id]; ok && settlement.State == agent.OptionSettlementUnresolved {
+			continue
+		}
+		delete(settled, id)
+	}
+	return settled
+}
+
+func applyConfirmedSettlements(options OptionMap, result agent.SettingsApplyResult) OptionMap {
+	settled := options.Clone()
+	for id, settlement := range result.Settlements {
+		if settlement.State != agent.OptionSettlementConfirmed {
+			continue
+		}
+		if settlement.Value == nil || *settlement.Value == "" {
+			delete(settled, id)
+		} else {
+			settled[id] = *settlement.Value
+		}
+	}
+	return settled
+}
+
+// settingsResponseSettlements returns each requested axis and each axis that
+// changed as a result of the request.
+func settingsResponseSettlements(
+	requested map[string]string,
+	optimistic, settled OptionMap,
+	result agent.SettingsApplyResult,
+) agent.OptionSettlements {
+	ids := make(map[string]struct{}, len(requested))
+	for id := range requested {
+		ids[id] = struct{}{}
+	}
+	for id := range optionsChangeDelta(optimistic, settled) {
+		ids[id] = struct{}{}
+	}
+
+	response := make(agent.OptionSettlements, len(ids))
+	for id := range ids {
+		if providerSettlement, ok := result.Settlements[id]; ok && providerSettlement.State == agent.OptionSettlementUnresolved {
+			response[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
+			continue
+		}
+		if result.SurfacedOptions == nil {
+			response[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
+			continue
+		}
+		value, present := settled[id]
+		if !present || value == "" {
+			response[id] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed}
+			continue
+		}
+		confirmedValue := value
+		response[id] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &confirmedValue}
+	}
+	return response
+}
+
+func protoOptionSettlements(settlements agent.OptionSettlements) map[string]*leapmuxv1.AgentOptionSettlement {
+	out := make(map[string]*leapmuxv1.AgentOptionSettlement, len(settlements))
+	for id, settlement := range settlements {
+		state := leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_UNRESOLVED
+		if settlement.State == agent.OptionSettlementConfirmed {
+			state = leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_CONFIRMED
+		}
+		out[id] = &leapmuxv1.AgentOptionSettlement{State: state, Value: settlement.Value}
+	}
+	return out
+}
+
 // reportModelChange decides whether the settings_changed notification should carry
 // a model change: true when the prior stored model (oldModel) and the model the
 // session settled on (settledModel) differ after normalizing into the provider's
@@ -2393,7 +2488,7 @@ func (svc *Service) sanitizeIncomingOptions(agentID string, provider leapmuxv1.A
 	// Stamp the provider's default permission mode only when it actually has one.
 	// Providers with no permission-mode axis (OpenCode/Kilo primary-agent, Reasonix
 	// model-only) return "" here, and writing an empty key would surface it in the RPC
-	// reply's ConfirmedOptions even though marshalOptions drops it from the row.
+	// response as a confirmed value even though marshalOptions drops it from the row.
 	if newOptions[agent.OptionIDPermissionMode] == "" {
 		if def := agent.PermissionModeOrDefault(provider, ""); def != "" {
 			newOptions[agent.OptionIDPermissionMode] = def
@@ -2423,26 +2518,12 @@ func optionsChangeDelta(from, to OptionMap) OptionMap {
 	return delta
 }
 
-// pushAndReadConfirmed applies `applied` to the running agent and reads back its COMPLETE
-// confirmed option snapshot, holding the per-agent lifecycle lock across BOTH so a concurrent
-// UpdateAgentSettings for the same agent can't land between them and make the caller read ITS
-// confirmation instead. It returns:
-//   - confirmed: the running session's CurrentOptions, or nil when the process exited between the
-//     in-memory accept and the readback -- the exit-cleanup goroutine deletes the manager entry
-//     under the manager mutex, NOT this lifecycle lock, so CurrentOptions returns nil. A running
-//     agent always returns a non-nil map (empty at most), so nil unambiguously means "gone"; a
-//     caller must NOT treat it as confirmation (the dead session settled nothing).
-//   - appliedLive: what UpdateSettings reported -- false means the provider can't apply this change
-//     live (e.g. Claude effort->auto) and the caller should relaunch.
-//
-// Shared by applySettingsLive (which tests appliedLive and relaunches) and applyOptionChanges
-// (which only overlays when confirmed != nil), so the hold-lock-across-push-and-readback contract
-// lives in one place.
-func (svc *Service) pushAndReadConfirmed(agentID string, applied OptionMap) (confirmed OptionMap, appliedLive bool) {
+// applySettingsToRunningAgent holds the lifecycle lock while the provider
+// applies the options and captures its settlement snapshot.
+func (svc *Service) applySettingsToRunningAgent(agentID string, applied OptionMap) agent.SettingsApplyResult {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
-	appliedLive = svc.Agents.UpdateSettings(agentID, applied)
-	return svc.Agents.CurrentOptions(agentID), appliedLive
+	return svc.Agents.UpdateSettings(agentID, applied)
 }
 
 // applySettingsLive attempts to apply newOptions to a running agent without a restart.
@@ -2452,25 +2533,15 @@ func (svc *Service) pushAndReadConfirmed(agentID string, applied OptionMap) (con
 // effort back to auto, which needs a relaunch without --effort -- and the caller then
 // restarts. Returns the settled options (the request overlaid with what the provider
 // confirmed) and whether the change was applied live.
-func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (OptionMap, bool) {
+func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
-	confirmed, appliedLive := svc.pushAndReadConfirmed(agentID, newOptions)
-	// Not applied live (provider needs a relaunch), or the process exited mid-apply (nil
-	// snapshot -- see pushAndReadConfirmed): either way, overlaying nothing would persist/broadcast
-	// the un-clamped optimistic REQUEST as if the session had confirmed it, so report not-applied
-	// and let the caller restart and confirm against a fresh session instead.
-	if !appliedLive || confirmed == nil {
-		return newOptions, false
+	result := svc.applySettingsToRunningAgent(agentID, newOptions)
+	// Restart when the provider cannot apply the change or cannot capture a live snapshot.
+	if !result.AppliedLive || result.SurfacedOptions == nil {
+		return newOptions, result
 	}
-	// `confirmed` is the running session's COMPLETE CurrentOptions snapshot, so settle the
-	// request against it -- overlay the confirmed values + provider defaults, THEN reconcile away
-	// any axis it no longer surfaces (the same [E12] guard the restart path applies). Without the
-	// reconcile, an ACP option the server accepted the write for but then dropped from its
-	// configOptions (it no longer applies) would stay persisted/broadcast as a value the live
-	// session isn't running. settleConfirmedOptions runs the reconcile LAST so a provider default
-	// the overlay re-fills for a now-unsurfaced axis is dropped rather than resurrected; it keeps
-	// the always-live model axis and the provider's persisted-only axes.
-	settledOptions := settleConfirmedOptions(provider, newOptions, surfacedOptions(confirmed))
+	// Apply confirmed values and removals. Keep each unresolved requested value.
+	settledOptions := settleAppliedSettings(provider, newOptions, result)
 
 	// Persist EVERY axis the provider confirmed, not just model/effort: the optimistic
 	// write stored the REQUESTED values, so a clamp the provider applied to any axis (a
@@ -2488,14 +2559,14 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 			slog.Warn("failed to persist settled options after live update", "agent_id", agentID, "error", err)
 		}
 	}
-	return settledOptions, true
+	return settledOptions, result
 }
 
 // applySettingsViaRestart stops and restarts the agent on newOptions (for a change the
 // provider couldn't apply live), persists the confirmed settings, and returns the settled
 // options -- the request overlaid with what the relaunched session confirmed, or the
 // unchanged request when the restart fails.
-func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) OptionMap {
+func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 
@@ -2519,7 +2590,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	// and its register would leave the fresh socket registered for a tab that
 	// is already gone. The other three relaunch paths already mint inside this
 	// lock; this one is the odd path out.
-	confirmedOpts, err := func() (map[string]string, error) {
+	_, err := func() (map[string]string, error) {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
 		return svc.mintAndLaunch(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
@@ -2533,15 +2604,15 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 			"type":  agent.NotificationTypeAgentError,
 			"error": "Failed to restart agent with new settings: " + err.Error(),
 		})
-		return newOptions
+		return newOptions, unresolvedSettingsResult(newOptions)
 	}
-	// confirmedOpts is the relaunched agent's COMPLETE surfaced snapshot (CurrentOptions), so
-	// settle the request against it -- overlay the confirmed values + provider defaults, THEN
-	// reconcile away any axis the new session no longer surfaces (an option the new model dropped,
-	// or one applyStartupOptions re-pushed and the server rejected), instead of leaving the row
-	// advertising a value the session isn't running ([E12]). The reconcile runs LAST so a provider
-	// default the overlay re-fills for a now-unsurfaced axis is dropped rather than resurrected.
-	settled := settleConfirmedOptions(provider, newOptions, surfacedOptions(confirmedOpts))
+	// Read the typed snapshot from the relaunched provider. A startup readback
+	// failure keeps its requested axes unresolved instead of confirming fallbacks.
+	result := svc.Agents.CurrentSettings(agentID)
+	if result.SurfacedOptions == nil {
+		return newOptions, unresolvedSettingsResult(newOptions)
+	}
+	settled := settleAppliedSettings(provider, newOptions, result)
 	// Pass the pre-settle newOptions as `stored` (what the optimistic write left on the row,
 	// carrying the orphaned axes) so the persisted delta DELETES the axes the relaunched session
 	// no longer surfaces, while `settled` is the option set we want to keep.
@@ -2557,7 +2628,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	}
 	slog.Info("agent restarted with new settings",
 		"agent_id", agentID, "model", settled[agent.OptionIDModel], "effort", settled[agent.OptionIDEffort])
-	return settled
+	return settled, result
 }
 
 // buildSettingsChanges assembles the settings_changed "changes" map for the chat view: one
@@ -3198,15 +3269,14 @@ func (svc *Service) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec 
 	// CONFIRMED values rather than the optimistic request. The push + readback stay under the
 	// lifecycle lock so a concurrent UpdateAgentSettings for the same agent can't interleave and
 	// make us read its confirmation instead of ours.
-	provider := dbAgent.AgentProvider
 	if spec.live && svc.Agents.HasAgent(agentID) {
 		// Push the change and read back the confirmed snapshot under the lifecycle lock (see
-		// pushAndReadConfirmed). Overlay the provider's confirmed values only while the session is
+		// applySettingsToRunningAgent). Overlay confirmed values only while the session is
 		// still live; when it's gone (nil snapshot), keep the REQUESTED values -- the next launch
 		// confirms/clamps them -- rather than treating a nil snapshot as confirmation and
 		// persisting/broadcasting the optimistic values as if the dead session had settled them.
-		if confirmed, _ := svc.pushAndReadConfirmed(agentID, applied); confirmed != nil {
-			opts = confirmedOptions(provider, opts, confirmed)
+		if result := svc.applySettingsToRunningAgent(agentID, applied); result.AppliedLive && result.SurfacedOptions != nil {
+			opts = applyConfirmedSettlements(opts, result)
 		}
 	}
 

@@ -31,11 +31,7 @@ describe('pi plugin metadata', () => {
   })
 
   it('does not advertise a permission mode for Pi', () => {
-    expect(plugin.bypassPermissionMode).toBeUndefined()
-  })
-
-  it('builds a Pi abort RPC for interrupt', () => {
-    expect(plugin.buildInterruptContent?.('any-session', 'turn-1')).toBe(JSON.stringify({ type: 'abort' }))
+    expect(plugin.bypassSettings).toBeUndefined()
   })
 })
 
@@ -458,17 +454,17 @@ describe('pi extension UI integration', () => {
   const plugin = providerFor(AgentProvider.PI)!
 
   it('treats Pi input/select extension UI requests as ask-user-question', () => {
-    expect(plugin.isAskUserQuestion!({ type: 'extension_ui_request', method: 'input' })).toBe(true)
-    expect(plugin.isAskUserQuestion!({ type: 'extension_ui_request', method: 'select' })).toBe(true)
+    expect(plugin.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'input' })).toBe(true)
+    expect(plugin.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'select' })).toBe(true)
   })
 
   it('rejects non-question dialog methods from the ask-user-question shortcut', () => {
-    expect(plugin.isAskUserQuestion!({ type: 'extension_ui_request', method: 'confirm' })).toBe(false)
-    expect(plugin.isAskUserQuestion!({ type: 'extension_ui_request', method: 'editor' })).toBe(false)
+    expect(plugin.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'confirm' })).toBe(false)
+    expect(plugin.askUserQuestion!.isRequest({ type: 'extension_ui_request', method: 'editor' })).toBe(false)
   })
 
   it('maps Pi select options into shared AskUserQuestion options', () => {
-    expect(plugin.extractAskUserQuestions!({
+    expect(plugin.askUserQuestion!.extractQuestions({
       type: 'extension_ui_request',
       id: 'req-1',
       method: 'select',
@@ -479,7 +475,7 @@ describe('pi extension UI integration', () => {
 
   it('sends Pi select AskUserQuestion responses as extension_ui_response values', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    await plugin.sendAskUserQuestionResponse!(
+    await plugin.askUserQuestion!.sendAnswer(
       'agent-1',
       onRespond,
       'req-1',

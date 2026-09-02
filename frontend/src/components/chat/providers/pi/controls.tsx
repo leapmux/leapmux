@@ -3,15 +3,10 @@ import type { ActionsProps, ContentProps } from '../../controls/types'
 import { createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { PI_DIALOG_METHOD } from '~/generated/contracts/pi-protocol'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickNumber, pickString } from '~/lib/jsonPick'
-import { decodeControlResponseBehavior } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { ControlActionRow } from '../../controls/ControlActionRow'
-import { piQuestionsFromPayload } from './askUserQuestion'
 import {
-  piAskAnswerValue,
   piCancelResponse,
   piConfirmResponse,
   piValueResponse,
@@ -41,49 +36,32 @@ export const PiControlContent: Component<ContentProps> = (props) => {
   const placeholder = createMemo(() => pickString(payload(), 'placeholder'))
   const prefill = createMemo(() => pickString(payload(), 'prefill'))
   const hint = createMemo(() => timeoutHint(payload()))
-  const questions = createMemo(() => piQuestionsFromPayload(payload()))
   return (
-    <Show
-      when={method() === PI_DIALOG_METHOD.Select}
-      fallback={(
-        <>
-          <div class={styles.controlBannerTitle}>{title()}</div>
-          <Switch>
-            <Match when={method() === PI_DIALOG_METHOD.Confirm}>
-              <Show when={message()}>
-                <div class={styles.bannerReason}>{message()}</div>
-              </Show>
-            </Match>
-            <Match when={method() === PI_DIALOG_METHOD.Input}>
-              <Show when={placeholder()}>
-                <div class={styles.bannerHint}>
-                  {`hint: ${placeholder()}`}
-                </div>
-              </Show>
-            </Match>
-            <Match when={method() === PI_DIALOG_METHOD.Editor}>
-              <Show when={prefill()}>
-                <pre class={styles.bannerCodeBlock}>{prefill()}</pre>
-              </Show>
-            </Match>
-          </Switch>
-          <Show when={hint()}>
-            <div class={styles.bannerHint}>{hint()}</div>
+    <>
+      <div class={styles.controlBannerTitle}>{title()}</div>
+      <Switch>
+        <Match when={method() === PI_DIALOG_METHOD.Confirm}>
+          <Show when={message()}>
+            <div class={styles.bannerReason}>{message()}</div>
           </Show>
-        </>
-      )}
-    >
-      <AskUserQuestionContent
-        request={props.request}
-        askState={props.askState}
-        optionsDisabled={props.optionsDisabled}
-        agentProvider={AgentProvider.PI}
-        questions={questions()}
-      />
+        </Match>
+        <Match when={method() === PI_DIALOG_METHOD.Input}>
+          <Show when={placeholder()}>
+            <div class={styles.bannerHint}>
+              {`hint: ${placeholder()}`}
+            </div>
+          </Show>
+        </Match>
+        <Match when={method() === PI_DIALOG_METHOD.Editor}>
+          <Show when={prefill()}>
+            <pre class={styles.bannerCodeBlock}>{prefill()}</pre>
+          </Show>
+        </Match>
+      </Switch>
       <Show when={hint()}>
         <div class={styles.bannerHint}>{hint()}</div>
       </Show>
-    </Show>
+    </>
   )
 }
 
@@ -94,7 +72,6 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
   const placeholder = createMemo(() => pickString(payload(), 'placeholder'))
   const requestId = () => props.request.requestId
   const agentId = () => props.request.agentId
-  const questions = createMemo(() => piQuestionsFromPayload(payload()))
 
   const handleConfirm = (confirmed: boolean) => {
     sendPiExtensionResponse(agentId(), props.onRespond, piConfirmResponse(requestId(), confirmed))
@@ -104,25 +81,6 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
   }
   const sendValue = (value: string) => {
     sendPiExtensionResponse(agentId(), props.onRespond, piValueResponse(requestId(), value))
-  }
-
-  // Intercepts AskUserQuestionActions' default `buildAllowResponse` /
-  // `buildDenyResponse` envelopes (the wire format Claude / Codex use)
-  // and translates them into Pi's extension_ui_response shape. We
-  // inspect the synthesized response to detect the deny path; otherwise
-  // we pull the answer from askState and ship it as a Pi value response.
-  const selectOnRespond = async (_agentId: string, content: Uint8Array) => {
-    if (decodeControlResponseBehavior(content) === 'deny') {
-      await sendPiExtensionResponse(agentId(), props.onRespond, piCancelResponse(requestId()))
-      return
-    }
-
-    const value = piAskAnswerValue(props.askState)
-    await sendPiExtensionResponse(
-      agentId(),
-      props.onRespond,
-      value.trim() ? piValueResponse(requestId(), value) : piCancelResponse(requestId()),
-    )
   }
 
   // Local input state for `input` and `editor` dialogs. The initial value is
@@ -164,54 +122,42 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
   })
 
   return (
-    <Show
-      when={method() === PI_DIALOG_METHOD.Select}
-      fallback={(
-        <ControlActionRow
-          primary={(
-            <>
-              <Switch>
-                <Match when={method() === PI_DIALOG_METHOD.Input}>
-                  <input
-                    type="text"
-                    placeholder={placeholder()}
-                    value={localText()}
-                    onInput={e => setLocalText((e.currentTarget as HTMLInputElement).value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        sendValue(localText())
-                      }
-                    }}
-                    data-testid="pi-input"
-                    style={{ 'flex': '1 1 auto', 'min-width': '200px' }}
-                  />
-                </Match>
-                <Match when={method() === PI_DIALOG_METHOD.Editor}>
-                  <textarea
-                    value={localText()}
-                    onInput={e => setLocalText((e.currentTarget as HTMLTextAreaElement).value)}
-                    data-testid="pi-editor"
-                    rows={4}
-                    style={{ 'flex': '1 1 auto', 'min-width': '300px', 'resize': 'vertical' }}
-                  />
-                </Match>
-              </Switch>
-              <ButtonGroup>
-                <button class="outline" onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
-                <button onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
-              </ButtonGroup>
-            </>
-          )}
-        />
+    <ControlActionRow
+      primary={(
+        <>
+          <Switch>
+            <Match when={method() === PI_DIALOG_METHOD.Input}>
+              <input
+                type="text"
+                placeholder={placeholder()}
+                value={localText()}
+                onInput={e => setLocalText((e.currentTarget as HTMLInputElement).value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    sendValue(localText())
+                  }
+                }}
+                data-testid="pi-input"
+                style={{ 'flex': '1 1 auto', 'min-width': '200px' }}
+              />
+            </Match>
+            <Match when={method() === PI_DIALOG_METHOD.Editor}>
+              <textarea
+                value={localText()}
+                onInput={e => setLocalText((e.currentTarget as HTMLTextAreaElement).value)}
+                data-testid="pi-editor"
+                rows={4}
+                style={{ 'flex': '1 1 auto', 'min-width': '300px', 'resize': 'vertical' }}
+              />
+            </Match>
+          </Switch>
+          <ButtonGroup>
+            <button class="outline" onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
+            <button onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
+          </ButtonGroup>
+        </>
       )}
-    >
-      <AskUserQuestionActions
-        {...props}
-        onRespond={selectOnRespond}
-        agentProvider={AgentProvider.PI}
-        questions={questions()}
-      />
-    </Show>
+    />
   )
 }

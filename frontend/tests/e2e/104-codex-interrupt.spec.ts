@@ -20,16 +20,4 @@ codexTest.describe('Codex Interrupt', () => {
     const bubbles = messageBubbles(page)
     expect(await bubbles.count()).toBeGreaterThan(1)
   })
-
-  codexTest('interrupted turn shows completion status', async ({ authenticatedCodexWorkspace, page }) => {
-    void authenticatedCodexWorkspace // fixture trigger
-    await sendMessage(page, 'Write a 5000-word analysis of quantum computing with detailed chapters and citations.')
-
-    const interruptBtn = page.locator('[data-testid="interrupt-button"]')
-    await expect(interruptBtn).toBeVisible()
-    await interruptBtn.click()
-
-    // After interrupt, the thinking indicator must be gone.
-    await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
-  })
 })

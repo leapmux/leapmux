@@ -46,9 +46,8 @@ func (zcodeProvider) Merge(_ NotificationClassification, _, next json.RawMessage
 
 // IsInterrupt recognizes ZCode's own stop frame.
 //
-// The frontend never sends one -- LeapMux interrupts ZCode through the
-// InterruptAgent RPC, which reaches zcodeAgent.Interrupt -- but the parser is the
-// counterpart of the plugin's buildInterruptContent and stays in step with it.
+// The frontend uses the InterruptAgent RPC. This parser supports raw provider
+// input from other callers.
 func (zcodeProvider) IsInterrupt(content string) bool {
 	var msg struct {
 		Method string `json:"method"`

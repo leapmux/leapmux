@@ -1,15 +1,7 @@
-import type { AskQuestionState } from '../../controls/types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { createAskQuestionState } from '~/test-support/askQuestionState'
 import { ACPControlActions, sendACPPermissionResponse } from './ACPControlRequest'
-
-function makeAskState(): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-}
 
 describe('sendACPPermissionResponse', () => {
   it('sends an ACP permission response with the selected option', async () => {
@@ -34,7 +26,7 @@ describe('sendACPPermissionResponse', () => {
 
   it('bypass button sends the allow option and flips permission mode', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    const onPermissionModeChange = vi.fn()
+    const applyBypass = vi.fn()
 
     render(() => ACPControlActions({
       request: {
@@ -50,11 +42,10 @@ describe('sendACPPermissionResponse', () => {
         },
       },
       onRespond,
-      askState: makeAskState(),
+      askState: createAskQuestionState(),
       hasEditorContent: false,
       onTriggerSend: vi.fn(),
-      bypassPermissionMode: 'yolo',
-      onPermissionModeChange,
+      bypass: { settings: { sets: { permissionMode: 'yolo' } }, apply: applyBypass },
     }))
 
     await fireEvent.click(screen.getByTestId('control-bypass-btn'))
@@ -63,6 +54,6 @@ describe('sendACPPermissionResponse', () => {
     const [, content] = onRespond.mock.calls[0]
     const parsed = JSON.parse(new TextDecoder().decode(content))
     expect(parsed.result.outcome.optionId).toBe('proceed_once')
-    expect(onPermissionModeChange).toHaveBeenCalledWith('yolo')
+    expect(applyBypass).toHaveBeenCalledWith({ sets: { permissionMode: 'yolo' } })
   })
 })

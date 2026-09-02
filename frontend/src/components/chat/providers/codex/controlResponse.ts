@@ -3,11 +3,43 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 import { feedback, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 
-/** A Codex approval decision: a bare string (`accept`, `decline`, ...) or an amendment object. */
-export type CodexDecision = string | Record<string, unknown>
+export type CodexDecision
+  = | 'accept'
+    | 'acceptForSession'
+    | 'decline'
+    | 'cancel'
+    | { acceptWithExecpolicyAmendment: { execpolicy_amendment: string[] } }
+    | { applyNetworkPolicyAmendment: { network_policy_amendment: { host: string, action: 'allow' | 'deny' } } }
+
+/** Parses one exact decision variant from provider data. */
+export function parseCodexDecision(value: unknown): CodexDecision | null {
+  if (value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel')
+    return value
+  if (!isObject(value) || Object.keys(value).length !== 1)
+    return null
+  if ('acceptWithExecpolicyAmendment' in value) {
+    const body = value.acceptWithExecpolicyAmendment
+    if (isObject(body) && Array.isArray(body.execpolicy_amendment) && body.execpolicy_amendment.every(part => typeof part === 'string'))
+      return value as CodexDecision
+    return null
+  }
+  if ('applyNetworkPolicyAmendment' in value) {
+    const body = value.applyNetworkPolicyAmendment
+    const amendment = isObject(body) ? body.network_policy_amendment : undefined
+    if (isObject(amendment)
+      && typeof amendment.host === 'string'
+      && (amendment.action === 'allow' || amendment.action === 'deny')) {
+      return value as CodexDecision
+    }
+  }
+  return null
+}
 
 /** Gives the shared live-action and persisted-response label for a Codex decision. */
-export function codexDecisionLabel(decision: CodexDecision): string {
+export function codexDecisionLabel(value: unknown): string {
+  const decision = parseCodexDecision(value)
+  if (!decision)
+    return 'Unknown decision'
   if (typeof decision === 'string') {
     switch (decision) {
       case 'accept': return 'Allow'
@@ -17,23 +49,21 @@ export function codexDecisionLabel(decision: CodexDecision): string {
       default: return decision
     }
   }
-  // Persisted provider data can be malformed. Check the object before each `in` operation.
-  if (isObject(decision)) {
-    if ('acceptWithExecpolicyAmendment' in decision)
-      return 'Allow & Remember'
-    if ('applyNetworkPolicyAmendment' in decision)
-      return 'Apply Network Policy'
-  }
-  return 'Allow'
+  if ('acceptWithExecpolicyAmendment' in decision)
+    return 'Allow & Remember'
+  return decision.applyNetworkPolicyAmendment.network_policy_amendment.action === 'allow'
+    ? 'Allow Host & Remember'
+    : 'Block Host & Remember'
 }
 
 /** Gives a stable test key for a Codex decision button. */
-export function codexDecisionKey(decision: CodexDecision): string {
+export function codexDecisionKey(value: unknown): string {
+  const decision = parseCodexDecision(value)
+  if (!decision)
+    return 'unknown'
   if (typeof decision === 'string')
     return decision
-  if (isObject(decision))
-    return Object.keys(decision)[0] ?? 'unknown'
-  return 'unknown'
+  return Object.keys(decision)[0]
 }
 
 /**
@@ -101,11 +131,11 @@ function codexDecisionText(request: Record<string, unknown> | undefined, respons
     const trimmed = decision.trim()
     if (trimmed === 'decline' && pickString(request, 'method', '').endsWith('/requestApproval'))
       return 'Deny'
-    return trimmed ? codexDecisionLabel(trimmed) : null
+    const parsed = parseCodexDecision(trimmed)
+    return parsed ? codexDecisionLabel(parsed) : null
   }
-  if (isObject(decision))
-    return Object.keys(decision).length > 0 ? codexDecisionLabel(decision) : null
-  return null
+  const parsed = parseCodexDecision(decision)
+  return parsed ? codexDecisionLabel(parsed) : null
 }
 
 /**

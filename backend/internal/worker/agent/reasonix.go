@@ -78,17 +78,24 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 // change returns false to make the service fall back to a stop+restart, which
 // relaunches the process with the new --model. Every other change (Reasonix has
 // none) is a no-op that needs no restart.
-func (a *ReasonixAgent) UpdateSettings(options optionmap.Map) bool {
+func (a *ReasonixAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	requested := options[OptionIDModel]
 	if requested == "" {
-		return true
+		return a.SettingsSnapshot()
 	}
 	a.mu.Lock()
 	current := a.model
 	a.mu.Unlock()
 	// Returning false signals "can't apply live" -> the service relaunches with
 	// the new model option.
-	return requested == current
+	if requested != current {
+		return restartRequiredSettings(options)
+	}
+	return a.SettingsSnapshot()
+}
+
+func (a *ReasonixAgent) SettingsSnapshot() SettingsApplyResult {
+	return confirmedSettings(CurrentOptions(a.OptionGroups()))
 }
 
 // reasonixAvailableModels is the static catalog of Reasonix's built-in provider

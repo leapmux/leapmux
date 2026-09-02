@@ -150,11 +150,11 @@ func TestReasonixUpdateSettingsRelaunchesOnModelChange(t *testing.T) {
 	agent := &ReasonixAgent{}
 	agent.model = "deepseek-flash"
 
-	assert.False(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-pro"}),
+	assert.False(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-pro"}).AppliedLive,
 		"a model change must signal a relaunch")
-	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-flash"}),
+	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "deepseek-flash"}).AppliedLive,
 		"the same model needs no restart")
-	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: ""}),
+	assert.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: ""}).AppliedLive,
 		"an empty model is a no-op")
 	// UpdateSettings must not mutate the stored model (the relaunch carries it).
 	assert.Equal(t, "deepseek-flash", agent.model)

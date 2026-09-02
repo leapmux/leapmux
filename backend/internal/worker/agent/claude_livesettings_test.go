@@ -381,7 +381,7 @@ func TestUpdateSettings_NothingChanged(t *testing.T) {
 		ClaudeOptionFastMode:       a.fastMode,
 		ClaudeOptionAlwaysThinking: a.alwaysThinking,
 	})
-	assert.True(t, result, "should return true when nothing changed")
+	assert.True(t, result.AppliedLive, "should return true when nothing changed")
 }
 
 func TestUpdateSettings_OutputStyleInvalid(t *testing.T) {
@@ -398,7 +398,7 @@ func TestUpdateSettings_OutputStyleInvalid(t *testing.T) {
 		OptionIDEffort:          a.effort,
 		ClaudeOptionOutputStyle: "NonExistent",
 	})
-	assert.False(t, result, "should return false for invalid output style")
+	assert.False(t, result.AppliedLive, "should return false for invalid output style")
 	assert.Equal(t, "default", a.outputStyle, "output style should not change")
 }
 
@@ -412,8 +412,31 @@ func TestUpdateSettings_ModelChange(t *testing.T) {
 		OptionIDModel:  "sonnet",
 		OptionIDEffort: a.effort,
 	})
-	assert.True(t, result, "should return true for model change via apply_flag_settings")
+	assert.True(t, result.AppliedLive, "should return true for model change via apply_flag_settings")
 	assert.Equal(t, "sonnet", a.model, "model should be updated from get_settings response")
+}
+
+func TestUpdateSettings_FlagReadbackFailureIsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_INVALID_GET_SETTINGS=1")
+	defer stopTestAgent(a)
+
+	result := a.UpdateSettings(map[string]string{ClaudeOptionOutputStyle: "Explanatory"})
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, OptionSettlementUnresolved, result.Settlements[ClaudeOptionOutputStyle].State)
+}
+
+func TestUpdateSettings_MissingReadbackFieldIsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_PARTIAL_GET_SETTINGS=1")
+	defer stopTestAgent(a)
+
+	result := a.UpdateSettings(map[string]string{ClaudeOptionOutputStyle: "Explanatory"})
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, OptionSettlementUnresolved, result.Settlements[ClaudeOptionOutputStyle].State)
+	assert.Equal(t, OptionSettlementConfirmed, result.Settlements[OptionIDModel].State)
 }
 
 // TestUpdateSettings_RespelledModelSendsNoModelFlag is the regression guard for C4.1: a model
@@ -431,7 +454,7 @@ func TestUpdateSettings_RespelledModelSendsNoModelFlag(t *testing.T) {
 		OptionIDModel:        "OPUS[1M]", // normalizes to the running "opus[1m]" -- not a real change
 		ClaudeOptionFastMode: FastModeOn, // a real change, so an apply_flag_settings is sent
 	})
-	require.True(t, result)
+	require.True(t, result.AppliedLive)
 
 	sent := readRecordedFlagSettings(t, recordPath)
 	require.NotEmpty(t, sent, "the fast-mode change must trigger an apply_flag_settings")
@@ -473,7 +496,7 @@ func TestUpdateSettings_EffortChange(t *testing.T) {
 		OptionIDModel:  a.model,
 		OptionIDEffort: "low",
 	})
-	assert.True(t, result, "should return true for effort change")
+	assert.True(t, result.AppliedLive, "should return true for effort change")
 	assert.Equal(t, "low", a.effort, "effort should be updated from get_settings response")
 }
 
@@ -488,8 +511,23 @@ func TestUpdateSettings_PermissionModeChange(t *testing.T) {
 	result := a.UpdateSettings(map[string]string{
 		OptionIDPermissionMode: PermissionModePlan,
 	})
-	assert.True(t, result, "should return true for permission mode change")
+	assert.True(t, result.AppliedLive, "should return true for permission mode change")
 	assert.Equal(t, PermissionModePlan, a.confirmedPermissionMode)
+}
+
+func TestUpdateSettings_ConfirmedPermissionSupersedesDeferredRequest(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgentWithControlProtocol(t)
+	defer stopTestAgent(a)
+	a.confirmedPermissionMode = PermissionModeDefault
+	a.deferredPermissionModeReqID = "older-request"
+
+	result := a.UpdateSettings(map[string]string{OptionIDPermissionMode: PermissionModePlan})
+
+	require.True(t, result.AppliedLive)
+	assert.Empty(t, a.deferredPermissionModeReqID)
+	assert.Equal(t, OptionSettlementConfirmed, result.Settlements[OptionIDPermissionMode].State)
 }
 
 // TestUpdateSettings_AutoSwitchClearsStaleAutoModeAvailable guards the [C8] state-accuracy fix on
@@ -506,7 +544,7 @@ func TestUpdateSettings_AutoSwitchClearsStaleAutoModeAvailable(t *testing.T) {
 	a.confirmedPermissionMode = PermissionModeDefault
 
 	result := a.UpdateSettings(map[string]string{OptionIDPermissionMode: PermissionModeAuto})
-	require.True(t, result, "a live permission-mode switch should not request a restart")
+	require.True(t, result.AppliedLive, "a live permission-mode switch should not request a restart")
 	assert.Equal(t, PermissionModeAuto, a.confirmedPermissionMode)
 	assert.True(t, a.autoModeAvailable,
 		"a successful live switch to auto clears the stale autoModeAvailable=false so the picker offers auto again")
@@ -545,7 +583,9 @@ func TestUpdateSettings_PermissionModeDeferredAck(t *testing.T) {
 	defer stopTestAgent(a)
 
 	result := a.UpdateSettings(map[string]string{OptionIDPermissionMode: PermissionModePlan})
-	assert.True(t, result, "a deferred set_permission_mode ack must not request a restart")
+	assert.True(t, result.AppliedLive, "a deferred set_permission_mode ack must not request a restart")
+	assert.Equal(t, OptionSettlementUnresolved, result.Settlements[OptionIDPermissionMode].State,
+		"a deferred acknowledgement must not claim that the provider confirmed the mode")
 	assert.Equal(t, PermissionModePlan, a.confirmedPermissionMode,
 		"the requested mode is recorded optimistically while the ack is pending")
 }
@@ -642,7 +682,7 @@ func TestUpdateSettings_PermissionModeGenuineError(t *testing.T) {
 	a.confirmedPermissionMode = PermissionModeDefault
 
 	result := a.UpdateSettings(map[string]string{OptionIDPermissionMode: PermissionModePlan})
-	assert.False(t, result, "a genuine set_permission_mode error must request a restart")
+	assert.False(t, result.AppliedLive, "a genuine set_permission_mode error must request a restart")
 	assert.Equal(t, PermissionModeDefault, a.confirmedPermissionMode,
 		"the confirmed mode is unchanged when the change was rejected")
 }
@@ -675,7 +715,7 @@ func TestUpdateSettings_CombinedChangePermissionFailureDefersBroadcast(t *testin
 		OptionIDModel:          "sonnet",
 		OptionIDPermissionMode: PermissionModePlan,
 	})
-	assert.False(t, result, "a combined change whose permission-mode apply fails must request a restart")
+	assert.False(t, result.AppliedLive, "a combined change whose permission-mode apply fails must request a restart")
 	assert.Equal(t, 0, sink.SettingsRefreshCount(),
 		"the half-applied model must NOT be read back/broadcast when a later axis fails")
 	assert.Equal(t, "opus[1m]", a.model,
@@ -698,7 +738,7 @@ func TestUpdateSettings_AutoRequiresRestart(t *testing.T) {
 	require.Equal(t, "high", a.effort, "precondition")
 
 	result := a.UpdateSettings(map[string]string{OptionIDEffort: "auto"})
-	assert.False(t, result, "switching to \"auto\" should request a restart")
+	assert.False(t, result.AppliedLive, "switching to \"auto\" should request a restart")
 	assert.Equal(t, "high", a.effort, "live effort must stay untouched until restart")
 }
 
@@ -713,7 +753,7 @@ func TestUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 	a.effort = "auto"
 
 	result := a.UpdateSettings(map[string]string{OptionIDEffort: "auto"})
-	assert.True(t, result, "a no-op \"auto\"→\"auto\" should not request a restart")
+	assert.True(t, result.AppliedLive, "a no-op \"auto\"→\"auto\" should not request a restart")
 	assert.Equal(t, "auto", a.effort)
 }
 
@@ -730,7 +770,7 @@ func TestUpdateSettings_OutputStyleChange(t *testing.T) {
 		OptionIDEffort:          a.effort,
 		ClaudeOptionOutputStyle: "Explanatory",
 	})
-	assert.True(t, result, "should return true for output style change")
+	assert.True(t, result.AppliedLive, "should return true for output style change")
 	assert.Equal(t, "Explanatory", a.outputStyle, "output style should be updated")
 }
 
@@ -747,7 +787,7 @@ func TestUpdateSettings_FastModeOn(t *testing.T) {
 		OptionIDEffort:       a.effort,
 		ClaudeOptionFastMode: "on",
 	})
-	assert.True(t, result)
+	assert.True(t, result.AppliedLive)
 	assert.Equal(t, "on", a.fastMode)
 }
 
@@ -762,7 +802,7 @@ func TestUpdateSettings_AlwaysThinkingOff(t *testing.T) {
 		OptionIDEffort:             a.effort,
 		ClaudeOptionAlwaysThinking: "off",
 	})
-	assert.True(t, result)
+	assert.True(t, result.AppliedLive)
 	assert.Equal(t, "off", a.alwaysThinking)
 }
 
@@ -779,7 +819,7 @@ func TestUpdateSettings_FastModeOff(t *testing.T) {
 		OptionIDEffort:       a.effort,
 		ClaudeOptionFastMode: "off",
 	})
-	assert.True(t, result)
+	assert.True(t, result.AppliedLive)
 	assert.Equal(t, "off", a.fastMode)
 }
 
@@ -796,7 +836,7 @@ func TestUpdateSettings_AlwaysThinkingOn(t *testing.T) {
 		OptionIDEffort:             a.effort,
 		ClaudeOptionAlwaysThinking: AlwaysThinkingOn,
 	})
-	assert.True(t, result)
+	assert.True(t, result.AppliedLive)
 	assert.Equal(t, AlwaysThinkingOn, a.alwaysThinking)
 }
 
@@ -821,7 +861,7 @@ func TestUpdateSettings_ToggleRoundTripTracksConfirmedValue(t *testing.T) {
 			{AlwaysThinkingOff, AlwaysThinkingOff}, // must register as a real change again
 			{AlwaysThinkingOn, AlwaysThinkingOn},
 		} {
-			require.True(t, a.UpdateSettings(map[string]string{ClaudeOptionAlwaysThinking: step.set}))
+			require.True(t, a.UpdateSettings(map[string]string{ClaudeOptionAlwaysThinking: step.set}).AppliedLive)
 			assert.Equal(t, step.want, a.alwaysThinking, "after setting thinking=%s", step.set)
 		}
 	})
@@ -837,7 +877,7 @@ func TestUpdateSettings_ToggleRoundTripTracksConfirmedValue(t *testing.T) {
 			{FastModeOn, FastModeOn},   // must register as a real change again
 			{FastModeOff, FastModeOff},
 		} {
-			require.True(t, a.UpdateSettings(map[string]string{ClaudeOptionFastMode: step.set}))
+			require.True(t, a.UpdateSettings(map[string]string{ClaudeOptionFastMode: step.set}).AppliedLive)
 			assert.Equal(t, step.want, a.fastMode, "after setting fastMode=%s", step.set)
 		}
 	})
@@ -863,7 +903,7 @@ func TestUpdateSettings_ApplyFlagSettingsFails(t *testing.T) {
 		OptionIDModel:  "sonnet",
 		OptionIDEffort: a.effort,
 	})
-	assert.False(t, result, "should return false when apply_flag_settings fails")
+	assert.False(t, result.AppliedLive, "should return false when apply_flag_settings fails")
 	assert.Equal(t, originalModel, a.model, "model should not change on failure")
 }
 
@@ -882,7 +922,7 @@ func TestUpdateSettings_MultipleChanges(t *testing.T) {
 		ClaudeOptionOutputStyle: "Learning",
 		ClaudeOptionFastMode:    "on",
 	})
-	assert.True(t, result, "should return true for multiple changes")
+	assert.True(t, result.AppliedLive, "should return true for multiple changes")
 	assert.Equal(t, "sonnet", a.model)
 	assert.Equal(t, "low", a.effort)
 	assert.Equal(t, "Learning", a.outputStyle)
@@ -1117,6 +1157,16 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 			}
 			responseBody = map[string]interface{}{}
 		case "get_settings":
+			if os.Getenv("GO_HELPER_INVALID_GET_SETTINGS") == "1" {
+				responseBody = "invalid settings"
+				break
+			}
+			if os.Getenv("GO_HELPER_PARTIAL_GET_SETTINGS") == "1" {
+				responseBody = map[string]interface{}{
+					"applied": map[string]interface{}{"model": "opus[1m]", "effort": "high"},
+				}
+				break
+			}
 			// Mirror the real CLI (verified by disassembling the 2.1.170 binary):
 			// `effective` is the merged settings map (getSettings spreads
 			// PU().settings), so a flag CLEARED via apply_flag_settings -- sent null,

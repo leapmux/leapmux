@@ -40,42 +40,43 @@ func RunAgentSet(rawCtx any, args []string) error {
 			}, resp); err != nil {
 				return err
 			}
-			applied, notApplied := appliedFromConfirmed(settings.GetOptions(), resp.GetConfirmedOptions())
+			applied, notApplied, unresolved := appliedFromSettlements(settings.GetOptions(), resp.GetOptionSettlements())
 			data := map[string]any{"agent_id": agentID, "applied": applied}
 			// Only surface not_applied when something didn't take, so the common all-applied case
 			// stays uncluttered.
 			if len(notApplied) > 0 {
 				data["not_applied"] = notApplied
 			}
+			if len(unresolved) > 0 {
+				data["unresolved"] = unresolved
+			}
 			return control.EmitData(data)
 		},
 	})
 }
 
-// appliedFromConfirmed splits the axes the user requested into those the worker SETTLED to a
-// concrete value (`applied`, id->settled value) and those that did NOT take (`notApplied`, sorted
-// ids). confirmed is the worker's FULL option map (every inherited axis -- model, permission mode,
-// provider defaults), so echoing it whole would read as if `agent set --model X` had changed them
-// all; restricting to the requested keys reports only what the command touched, and the settled
-// value reflects the worker's strips/clamps.
-//
-// A requested axis ABSENT from confirmed did not take -- the provider rejected it (e.g. an effort
-// baked into the model id), OR accepted it then dropped it once it no longer applied (an ACP
-// option a model switch removed). The worker's reply can't tell these two apart, and to the user
-// both mean the same thing: the axis is not in effect. Reporting them under `notApplied` -- rather
-// than as `applied` entries carrying a cryptic "" -- says that plainly instead of reading like the
-// axis was set to an empty value.
-func appliedFromConfirmed(requested, confirmed map[string]string) (applied map[string]string, notApplied []string) {
+// appliedFromSettlements classifies each requested axis. A confirmed
+// settlement without a value means that the provider removed the axis.
+func appliedFromSettlements(
+	requested map[string]string,
+	settlements map[string]*leapmuxv1.AgentOptionSettlement,
+) (applied map[string]string, notApplied, unresolved []string) {
 	applied = make(map[string]string, len(requested))
 	for k := range requested {
-		if v := confirmed[k]; v != "" {
-			applied[k] = v
-		} else {
-			notApplied = append(notApplied, k)
+		settlement := settlements[k]
+		if settlement == nil || settlement.GetState() != leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_CONFIRMED {
+			unresolved = append(unresolved, k)
+			continue
 		}
+		if settlement.Value == nil || settlement.GetValue() == "" {
+			notApplied = append(notApplied, k)
+			continue
+		}
+		applied[k] = settlement.GetValue()
 	}
 	sort.Strings(notApplied)
-	return applied, notApplied
+	sort.Strings(unresolved)
+	return applied, notApplied, unresolved
 }
 
 // buildAgentSetOptions merges the dedicated --model / --effort / --permission-mode flags and

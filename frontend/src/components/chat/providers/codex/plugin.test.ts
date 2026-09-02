@@ -446,32 +446,6 @@ describe('codex classify', () => {
       .toEqual({ kind: 'notification', messages: [contextCleared] })
   })
 
-  it('hides assistant interrupt echo messages with top-level string content', () => {
-    const parent = {
-      role: 'assistant',
-      content: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
-  it('hides assistant interrupt echo messages with assistant text blocks', () => {
-    const parent = {
-      role: 'assistant',
-      type: 'assistant',
-      message: {
-        content: [
-          {
-            type: 'text',
-            text: '{"jsonrpc":"2.0","id":1001,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}',
-          },
-        ],
-      },
-    }
-    const result = plugin.classify(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
-  })
-
   it('hides plain JSON-RPC response envelopes', () => {
     const parent = {
       id: 1001,
@@ -558,17 +532,17 @@ describe('codex isAskUserQuestion', () => {
       method: 'item/tool/requestUserInput',
       params: { questions: [] },
     }
-    expect(plugin.isAskUserQuestion!(payload)).toBe(true)
+    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(true)
   })
 
   it('returns false for approval methods', () => {
-    expect(plugin.isAskUserQuestion!({
+    expect(plugin.askUserQuestion!.isRequest({
       method: 'item/commandExecution/requestApproval',
     })).toBe(false)
   })
 
   it('returns false for payloads without method', () => {
-    expect(plugin.isAskUserQuestion!({
+    expect(plugin.askUserQuestion!.isRequest({
       request: { tool_name: 'AskUserQuestion' },
     })).toBe(false)
   })
@@ -867,8 +841,8 @@ describe('codex settings config', () => {
     expect(plugin.planMode!.currentMode({})).toBe(DEFAULT_CODEX_COLLABORATION_MODE)
   })
 
-  it('exposes "never" as the bypass permission mode', () => {
-    expect(plugin.bypassPermissionMode).toBe('never')
+  it('declares the complete bypass settings', () => {
+    expect(plugin.bypassSettings?.sets.permissionMode).toBe('never')
   })
 
   it('declares a "Bypass permissions" settings action that sets network/sandbox/approval together', () => {
@@ -881,6 +855,32 @@ describe('codex settings config', () => {
         permissionMode: 'never',
       },
     }])
+  })
+})
+
+describe('codex control response builder', () => {
+  const plugin = providerFor(AgentProvider.CODEX)!
+
+  it('uses an offered cancel decision for typed feedback', () => {
+    expect(plugin.buildControlResponse!({
+      method: 'item/commandExecution/requestApproval',
+      params: { availableDecisions: ['accept', 'cancel'] },
+    }, 'do something else', '7')).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      result: { decision: 'cancel' },
+    })
+  })
+
+  it('uses an empty grant to reject a permission request', () => {
+    expect(plugin.buildControlResponse!({
+      method: 'item/permissions/requestApproval',
+      params: { permissions: { network: { enabled: true } } },
+    }, 'do something else', '7')).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      result: { permissions: {}, scope: 'turn' },
+    })
   })
 })
 

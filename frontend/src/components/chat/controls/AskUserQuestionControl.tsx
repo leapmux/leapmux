@@ -8,12 +8,11 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { pluralize } from '~/lib/plural'
-import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
+import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { pluginFor } from '../providers/registry'
 import { CollapsibleList } from './CollapsibleList'
 import { ControlActionRow } from './ControlActionRow'
-import { sendResponse } from './types'
 
 // ---------------------------------------------------------------------------
 // Selection helpers
@@ -101,15 +100,12 @@ export function buildAskAnswers(
  */
 export function trySubmitAskUserQuestion(
   state: AskQuestionState,
-  request: ControlRequest,
+  questions: Question[],
   currentContent: string,
   onSubmit: () => void,
   editorContentRef?: EditorContentRef,
   preserveSelectionNotes = false,
 ): boolean {
-  const input = getToolInput(request.payload)
-  const questions = (input.questions as Question[] | undefined) ?? []
-
   // Save current editor text to the current page.
   const page = state.currentPage()
   state.setCustomTexts(prev => ({ ...prev, [page]: currentContent }))
@@ -254,7 +250,10 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
   )
 }
 
-export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
+export const AskUserQuestionActions: Component<ActionsProps & {
+  onSubmitAnswers: () => Promise<void>
+  onReject: (message: string) => Promise<void>
+}> = (props) => {
   const input = () => getToolInput(props.request.payload)
   const questions = () => props.questions ?? (input().questions as Question[] | undefined) ?? []
 
@@ -323,7 +322,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
     startSubmitting()
     saveEditorToCurrentPage()
     try {
-      await sendResponse(props.request.agentId, props.onRespond, buildAskAnswers(props.askState, questions(), input(), props.request.requestId))
+      await props.onSubmitAnswers()
     }
     catch {
       stopSubmitting()
@@ -333,7 +332,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
   const handleStop = async () => {
     startStopping()
     try {
-      await sendResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, 'User stopped'))
+      await props.onReject('User stopped')
     }
     catch {
       stopStopping()
@@ -350,8 +349,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
     // Auto-submit after filling unanswered questions
     // Need to use setTimeout to let the state settle before reading it
     setTimeout(() => {
-      const response = buildAskAnswers(props.askState, questions(), input(), props.request.requestId)
-      sendResponse(props.request.agentId, props.onRespond, response)
+      void handleSubmit()
     }, 0)
   }
 

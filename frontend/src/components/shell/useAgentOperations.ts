@@ -12,16 +12,14 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 
-import type { PermissionMode } from '~/utils/controlResponse'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
-import { OPTION_ID_EFFORT, OPTION_ID_MODEL, OPTION_ID_PERMISSION_MODE, optionGroupLabel } from '~/components/chat/settingsGroups'
+import { optionGroupLabel } from '~/components/chat/settingsGroups'
 import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
-import { ACCOUNT_DEFAULT_MODEL } from '~/generated/contracts/worker-vocab'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentOptionSettlementState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { base64ToUint8Array } from '~/lib/base64'
@@ -67,7 +65,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    *
    * The RETRY is not here. An incomplete provider scan answers Unavailable,
    * which the worker declares as "ask again", and `callWorker` retries
-   * every such reply with a bounded backoff — so this hook sees only the
+   * every such reply with a capped backoff — so this hook sees only the
    * settled outcome. The cancellation guard IS here, because it is about
    * this hook's own state: a reply for the previous worker must not
    * overwrite the list for the one the user moved to.
@@ -265,14 +263,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // per-instance token captured from the ACTIVE control request at the answer site (AgentEditorPanel /
   // controlResponseHandling), threaded through so it is always the answered instance's token -- even
   // once the request has left the store (a double-submit / answer-after-cancel race).
-  const handleControlResponse = async (agentId: string, content: Uint8Array, answeredClaimToken?: string) => {
+  const handleControlResponse = async (agentId: string, requestId: string, content: Uint8Array, answeredClaimToken?: string) => {
     props.forceScrollToBottom?.()
     try {
       const workerId = getAgentWorkerId(agentId)
-      const parsed = JSON.parse(new TextDecoder().decode(content))
-      const requestId = parsed?.response?.request_id
-        ?? (parsed?.id != null ? String(parsed.id) : undefined)
-
       // Echo the per-instance claimToken the worker minted for THIS request so its idempotency claim
       // dedups per instance -- a reused request_id gets a fresh token (see AgentControlRequest.claim_token).
       // Prefer the token threaded from the answer site (authoritative even after the request left the
@@ -293,6 +287,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
     catch (err) {
       showWarnToast('Failed to send response', err)
+      throw err
     }
   }
 
@@ -304,65 +299,61 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const workerId = getAgentWorkerId(agentId)
       await workerRpc.interruptAgent(workerId, { agentId })
-      props.agentSessionStore.clearThinkingTokens(agentId)
-      props.chatStore.streamingText.clear(agentId)
-      props.chatStore.clearToolProgress(agentId)
-      if (props.view.getAgentTab(agentId)?.agentProvider === AgentProvider.CODEX)
-        props.agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)
     }
   }
 
-  /**
-   * After a MODEL change settles, snap the optimistic model/effort onto what the
-   * session actually resolved to, read from the RPC reply's confirmed options. A
-   * model switch RELAUNCHES the agent, and the relaunch can land on different values
-   * than the optimistic click: the account-default sentinel ("default") resolves to a
-   * concrete model, and the relaunch resets effort to the new model's default. Reading
-   * the settled values from the reply (rather than a separately-broadcast catalog)
-   * removes the cross-channel ordering assumption -- the reply IS the confirmation.
-   * Without this, a switch to "default" would freeze the trigger on
-   * "Default (recommended)" until an unrelated status push arrived.
-   *
-   * Scoped to MODEL changes by its sole caller -- the model->effort dependency is
-   * legitimate domain knowledge, not a stored-value special-case.
-   *
-   * Each axis snaps ONLY when it still holds the value this change left it at
-   * (`curValues[axis] === expected`). A rapid re-click on the same axis -- or a
-   * concurrent effort edit while this model RPC was in flight -- writes a newer
-   * optimistic value with its own pending RPC; snapping this reply's (now stale)
-   * value over it would revert the user's newer selection out from under that
-   * request. This mirrors the per-axis guard the failure-rollback path applies.
-   */
-  const reconcileSettledModelChange = (
-    agentId: string,
-    value: string,
-    confirmed: Record<string, string>,
-    expectedEffort: string | undefined,
-  ) => {
-    const curValues = props.view.getAgentTab(agentId)?.optionValues || {}
-    const settled: Record<string, string> = {}
-    // Snap the MODEL only when the optimistic click was the account-default sentinel:
-    // a relaunch resolves it to a concrete model. A concrete model the user explicitly
-    // picked KEEPS its optimistic value -- an ACP provider (Cursor) applies a model
-    // switch LIVE, and snapping it to the confirmed echo is unnecessary churn. The
-    // `=== value` guard skips the snap when a newer model re-click already overwrote it.
-    if (value === ACCOUNT_DEFAULT_MODEL && confirmed[OPTION_ID_MODEL] && curValues[OPTION_ID_MODEL] === value)
-      settled[OPTION_ID_MODEL] = confirmed[OPTION_ID_MODEL]
-    // Snap effort to the confirmed (relaunch-reset) value when the agent reports one.
-    // Absent for a provider with no effort axis (Cursor) or an effort-less model
-    // (Haiku), and the confirmed value already reflects any clamp the CLI applied. The
-    // `=== expectedEffort` guard skips the snap when a concurrent effort edit's
-    // in-flight RPC already wrote a newer value, which must win over this stale reply.
-    if (confirmed[OPTION_ID_EFFORT] && curValues[OPTION_ID_EFFORT] === expectedEffort)
-      settled[OPTION_ID_EFFORT] = confirmed[OPTION_ID_EFFORT]
-    if (Object.keys(settled).length === 0)
+  const settingVersions = new Map<string, Map<string, number>>()
+  const pendingSettingRequests = new Map<string, number>()
+
+  const beginSettingRequest = (agentId: string, keys: readonly string[]) => {
+    const versions = settingVersions.get(agentId) ?? new Map<string, number>()
+    settingVersions.set(agentId, versions)
+    for (const key of keys)
+      versions.set(key, (versions.get(key) ?? 0) + 1)
+    pendingSettingRequests.set(agentId, (pendingSettingRequests.get(agentId) ?? 0) + 1)
+    return new Map(versions)
+  }
+
+  const finishSettingRequest = (agentId: string) => {
+    const pending = (pendingSettingRequests.get(agentId) ?? 1) - 1
+    if (pending > 0) {
+      pendingSettingRequests.set(agentId, pending)
       return
-    props.metadata.patch(agentId, {
-      optionValues: { ...curValues, ...settled },
-    })
+    }
+    pendingSettingRequests.delete(agentId)
+    settingVersions.delete(agentId)
+  }
+
+  const requestStillOwnsAxis = (agentId: string, versions: Map<string, number>, axis: string) =>
+    (settingVersions.get(agentId)?.get(axis) ?? 0) === (versions.get(axis) ?? 0)
+
+  const reconcileSettingSettlements = (
+    agentId: string,
+    requestVersions: Map<string, number>,
+    settlements: Awaited<ReturnType<typeof workerRpc.updateAgentSettings>>['optionSettlements'],
+  ) => {
+    const current = props.view.getAgentTab(agentId)?.optionValues || {}
+    const reconciled = { ...current }
+    let changed = false
+    for (const [axis, settlement] of Object.entries(settlements)) {
+      if (settlement.state !== AgentOptionSettlementState.CONFIRMED || !requestStillOwnsAxis(agentId, requestVersions, axis))
+        continue
+      if (settlement.value === undefined) {
+        if (axis in reconciled) {
+          delete reconciled[axis]
+          changed = true
+        }
+      }
+      else if (reconciled[axis] !== settlement.value) {
+        reconciled[axis] = settlement.value
+        changed = true
+      }
+    }
+    if (changed)
+      props.metadata.patch(agentId, { optionValues: reconciled })
   }
 
   /**
@@ -371,11 +362,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    * option pick, several for an action button like Codex "Bypass permissions"). We
    * optimistically write every axis into the tab's one generic `optionValues` map
    * (model/effort/permissionMode and every provider extra alike, keyed by group id) and
-   * send ONE updateAgentSettings RPC carrying `{ options: sets }`, so a multi-axis change
-   * is applied ATOMICALLY -- the worker can't accept one axis and reject another, leaving
-   * the agent half-applied while the optimistic UI shows the full state. The worker
-   * decides how to apply it (live vs restart), so the frontend no longer special-cases
-   * permission mode or any other axis.
+   * send one updateAgentSettings RPC carrying `{ options: sets }`. The worker owns
+   * live application, restart fallback, and settlement for the complete change.
    */
   const handleAgentSettingChange = async (agentId: string, change: ProviderSettingChange) => {
     const { sets } = change
@@ -390,7 +378,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // RPC would target an axis the running session may not validate. The pre-unification model/effort
     // handler refused the same way on an empty availableModels list; programmatic callers (the
     // control-request bypass switch, the plan-mode toggle) can otherwise reach here
-    // with an empty catalog because their visibility is gated on a static provider constant, not the
+    // with an empty catalog because a static provider constant controls their visibility, not the
     // live catalog.
     if (!agent.optionGroups || agent.optionGroups.length === 0)
       return
@@ -405,14 +393,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       previous: agent.optionValues?.[key],
     }))
 
-    // The effort value this change leaves in the store, snapshotted NOW -- before the optimistic
-    // write and the in-flight RPC. agent.optionValues is a live store proxy, so reading it after
-    // the await would see a concurrent edit's value. A change that also sets effort leaves its
-    // requested value; a model-only change leaves effort untouched at its pre-change value.
-    // reconcileSettledModelChange snaps effort only while the store still holds this value, so a
-    // concurrent effort edit (its own in-flight RPC) wins instead of being clobbered.
-    const expectedEffort = OPTION_ID_EFFORT in sets ? sets[OPTION_ID_EFFORT] : agent.optionValues?.[OPTION_ID_EFFORT]
-
     // Optimistic update -- apply EVERY axis in one patch so a multi-axis change shows its
     // combined state atomically. setOptionValue preserves the other axes' optimistic values and
     // enforces the "never store empty" invariant (an empty value deletes the key rather than
@@ -421,6 +401,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     for (const key of keys)
       optimistic = setOptionValue(optimistic, key, sets[key])
     props.metadata.patch(agentId, { optionValues: optimistic })
+
+    const requestVersions = beginSettingRequest(agentId, keys)
 
     // Scope the in-flight marker to THIS agent AND to the axes this change touches, so the
     // statusChange handler suppresses optimistic-value overwrites only for these axes on this
@@ -440,15 +422,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // so the group falls back to the catalog's confirmed currentValue instead of a spurious
       // empty override.
       //
-      // Roll back an axis only when THIS change's optimistic value is still the current one. A
-      // newer change to the same key (a rapid re-click) may have overwritten it while this RPC
-      // was in flight; restoring this change's stale `previous` would revert the user's newer
-      // selection out from under its own in-flight request.
+      // Roll back an axis only when this request still owns its version. A newer
+      // request can select the same value, so value equality cannot detect this race.
       const current = props.view.getAgentTab(agentId)
       const rolledBack = { ...(current?.optionValues || {}) }
       let didRollback = false
       for (const { key, hadPrevious, previous } of priors) {
-        if (rolledBack[key] !== sets[key])
+        if (!requestStillOwnsAxis(agentId, requestVersions, key))
           continue
         didRollback = true
         if (hadPrevious)
@@ -459,6 +439,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       if (didRollback)
         props.metadata.patch(agentId, { optionValues: rolledBack })
       props.settingsLoading.stop(agentId, keys)
+      finishSettingRequest(agentId)
       showWarnToast(`Failed to change ${keys.map(key => optionGroupLabel(agent.optionGroups, key)).join(', ')}`, err)
       return
     }
@@ -468,25 +449,14 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // toast. Stop FIRST so a (theoretical) reconcile fault can't strand the spinner until
     // the safety-net timeout; reconcile runs synchronously right after, so no status push
     // can interleave and overwrite the optimistic value before it snaps.
-    //
-    // A non-model live-apply change is NOT reply-reconciled: an ACP server's
-    // set_config_option response may omit the refreshed configOptions, so the reply's
-    // confirmed value can lag the just-applied selection, and snapping to it would
-    // revert a correct optimistic value. A genuinely unapplied change is instead
-    // corrected provider-side -- Pi/Codex/Claude restart when they can't apply a change
-    // live (see PiAgent.UpdateSettings) -- and via the next status push.
     props.settingsLoading.stop(agentId, keys)
-    if (OPTION_ID_MODEL in sets)
-      reconcileSettledModelChange(agentId, sets[OPTION_ID_MODEL], resp.confirmedOptions ?? {}, expectedEffort)
+    try {
+      reconcileSettingSettlements(agentId, requestVersions, resp.optionSettlements ?? {})
+    }
+    finally {
+      finishSettingRequest(agentId)
+    }
   }
-
-  /**
-   * Permission-mode change shim for a generic approval-control bypass switch.
-   * The switch calls onPermissionModeChange directly. This method routes through the
-   * unified dispatcher.
-   */
-  const handlePermissionModeChange = (agentId: string, mode: PermissionMode) =>
-    handleAgentSettingChange(agentId, { sets: { [OPTION_ID_PERMISSION_MODE]: mode } })
 
   // Retry a failed message delivery.
   // Always re-sends via sendAgentMessage (which auto-starts the agent
@@ -661,7 +631,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleOpenAgent,
     handleControlResponse,
     handleInterrupt,
-    handlePermissionModeChange,
     handleAgentSettingChange,
     handleRetryMessage,
     handleDeleteMessage,

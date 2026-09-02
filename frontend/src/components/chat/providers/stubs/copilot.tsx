@@ -9,5 +9,5 @@ registerACPProvider({
   provider: AgentProvider.GITHUB_COPILOT,
   defaultPermissionMode: COPILOT_MODE_AGENT,
   planValue: COPILOT_MODE_PLAN,
-  bypassPermissionMode: COPILOT_MODE_AUTOPILOT,
+  bypassSettings: { sets: { permissionMode: COPILOT_MODE_AUTOPILOT } },
 })

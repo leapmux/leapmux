@@ -178,6 +178,10 @@ type codexInterruptRig struct {
 }
 
 func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
+	return newCodexInterruptRigWithAutoResponse(t, true)
+}
+
+func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codexInterruptRig {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -222,7 +226,7 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 				"params":  frame.Params,
 			})
 			mu.Unlock()
-			if frame.ID != 0 {
+			if frame.ID != 0 && autoRespond {
 				body := json.RawMessage(`{}`)
 				select {
 				case body = <-responseBodies:
@@ -250,6 +254,44 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 			return out
 		},
 	}
+}
+
+func TestCodexAgent_Interrupt_TimesOutWhenCodexDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRigWithAutoResponse(t, false)
+	rig.agent.threadID = "thread-A"
+	rig.agent.turnID = "turn-42"
+	rig.agent.apiTimeout = 20 * time.Millisecond
+
+	err := rig.agent.Interrupt()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout waiting for turn/interrupt response")
+	require.Len(t, rig.captured(), 1)
+}
+
+func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRigWithAutoResponse(t, false)
+	rig.agent.threadID = "thread-A"
+	rig.agent.turnID = "turn-42"
+	rig.agent.apiTimeout = time.Second
+
+	results := make(chan error, 2)
+	go func() { results <- rig.agent.Interrupt() }()
+	go func() { results <- rig.agent.Interrupt() }()
+
+	require.Eventually(t, func() bool { return len(rig.captured()) == 1 }, time.Second, 5*time.Millisecond)
+	frames := rig.captured()
+	require.Len(t, frames, 1, "concurrent calls must share one request")
+	requestID, ok := frames[0]["id"].(int64)
+	require.True(t, ok)
+	require.True(t, rig.agent.deliver(requestID, json.RawMessage(`{}`)))
+	require.NoError(t, <-results)
+	require.NoError(t, <-results)
+	assert.Len(t, rig.captured(), 1)
 }
 
 func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
@@ -330,6 +372,17 @@ func TestCodexAgent_InterruptChild_SendsTurnInterruptRequest(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "child-thread", params["threadId"])
 	assert.Equal(t, "child-turn", params["turnId"])
+}
+
+func TestCodexAgent_InterruptChild_NoActiveTurnIsNoop(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRig(t)
+	rig.agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+
+	require.NoError(t, rig.agent.InterruptChild("child-thread"))
+	time.Sleep(50 * time.Millisecond)
+	assert.Empty(t, rig.captured(), "an idle child must not send turn/interrupt without a turn ID")
 }
 
 func TestCodexAgent_Interrupt_UsesMainTurnAfterChildTurnStarted(t *testing.T) {

@@ -1,9 +1,8 @@
-import type { AskQuestionState } from '~/components/chat/controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { ExitPlanModeActions } from '~/components/chat/controls/ExitPlanModeControl'
+import { createAskQuestionState } from '~/test-support/askQuestionState'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
@@ -15,23 +14,16 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   }
 }
 
-function makeAskState(): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-}
-
 describe('exitPlanModeActions', () => {
   it('shows Reject, Approve, and the plan switches when no editor content', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
         contextUsage={{ inputTokens: 300, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }}
         modelContextWindow={1000}
       />
@@ -47,11 +39,11 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -68,11 +60,11 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest('req-clear', 'agent-clear')}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -93,11 +85,11 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={request}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -122,11 +114,11 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={request}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -141,11 +133,11 @@ describe('exitPlanModeActions', () => {
     expect(decoded.permissionMode).toBeUndefined()
   })
 
-  it('does not show the bypass switch when bypassPermissionMode is not set', () => {
+  it('does not show the bypass switch when bypass settings are absent', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}

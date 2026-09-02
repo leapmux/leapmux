@@ -563,7 +563,7 @@ func TestPi_UpdateSettings_AppliesModelAndThinking(t *testing.T) {
 		OptionIDModel:  "gpt-5.5",
 		OptionIDEffort: "high",
 	})
-	assert.True(t, ok)
+	assert.True(t, ok.AppliedLive)
 
 	// Wait briefly for the goroutine writes — UpdateSettings is synchronous
 	// so the requests must be observable immediately.
@@ -593,7 +593,7 @@ func TestPi_UpdateSettings_EffortAutoRequiresRestart(t *testing.T) {
 		thinkingLevel: "medium",
 	}
 	ok := a.UpdateSettings(map[string]string{OptionIDEffort: EffortAuto})
-	assert.False(t, ok, "switching to auto should signal a restart")
+	assert.False(t, ok.AppliedLive, "switching to auto should signal a restart")
 }
 
 // A live apply that fails must signal a restart (return false) rather than silently
@@ -616,7 +616,7 @@ func TestPi_UpdateSettings_FailedApplyRequestsRestart(t *testing.T) {
 	})
 
 	ok := rig.agent.UpdateSettings(map[string]string{OptionIDEffort: "high"})
-	assert.False(t, ok, "a failed live apply must signal a restart, not report success")
+	assert.False(t, ok.AppliedLive, "a failed live apply must signal a restart, not report success")
 }
 
 // TestPi_UpdateSettings_PartialApplyRollsBack guards S5: when a combined model+effort change applies
@@ -644,7 +644,7 @@ func TestPi_UpdateSettings_PartialApplyRollsBack(t *testing.T) {
 		OptionIDModel:  "gpt-5.5",
 		OptionIDEffort: "high",
 	})
-	assert.False(t, ok, "a partial live apply must signal a restart")
+	assert.False(t, ok.AppliedLive, "a partial live apply must signal a restart")
 
 	rig.agent.mu.Lock()
 	defer rig.agent.mu.Unlock()
@@ -795,7 +795,7 @@ func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {
 		OptionIDEffort:   "high",
 		PiOptionProvider: "openai-codex",
 	})
-	require.True(t, ok)
+	require.True(t, ok.AppliedLive)
 
 	require.Equal(t, 1, sink.SettingsRefreshCount(), "settings refresh should be broadcast once")
 	last := sink.LastSettingsRefresh()

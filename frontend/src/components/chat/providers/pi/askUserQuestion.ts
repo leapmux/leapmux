@@ -28,7 +28,7 @@ export function piSelectOptions(payload: Record<string, unknown>): Array<{ label
 
 /**
  * Build the canonical Question[] for a Pi `extension_ui_request`. Used
- * by both `piPlugin.extractAskUserQuestions` (registry surface) and
+ * by both `piPlugin.askUserQuestion.extractQuestions` (registry surface) and
  * `PiControlContent` / `PiControlActions` (controls bubble), so a single
  * source of truth defines the question id, prompt, and options for any
  * given Pi payload.

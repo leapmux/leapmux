@@ -268,7 +268,6 @@ export function piValidateResumeHandle(value: string): string | null {
 }
 
 const piPlugin: Provider = {
-  bypassPermissionMode: undefined,
   spanRole: piSpanRole,
   contextUsageFromMessage: piContextUsageFromMessage,
   // Pi's agentSessionId is a .jsonl session-file path, so the UI shortens it for
@@ -417,29 +416,23 @@ const piPlugin: Provider = {
   previewText: defaultMarkPreview,
   controlResponseDisplay: piControlResponseDisplay,
 
-  buildInterruptContent(): string | null {
-    return JSON.stringify({ type: 'abort' })
-  },
-
-  isAskUserQuestion(payload) {
-    return payload.type === PI_EVENT.ExtensionUIRequest
-      && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select)
-  },
-
-  extractAskUserQuestions(payload) {
-    return piQuestionsFromPayload(payload)
-  },
-
-  async sendAskUserQuestionResponse(agentId, sendControlResponse, requestId, _questions, askState, payload) {
-    const method = pickString(payload, 'method')
-    if (method === PI_DIALOG_METHOD.Select) {
-      const value = piAskAnswerValue(askState)
-      const response = value.trim() ? piValueResponse(requestId, value) : piCancelResponse(requestId)
-      await sendPiExtensionResponse(agentId, sendControlResponse, response)
-      return
-    }
-    const text = askState.customTexts()[0] ?? ''
-    await sendPiExtensionResponse(agentId, sendControlResponse, piValueResponse(requestId, text))
+  askUserQuestion: {
+    isRequest: payload => payload.type === PI_EVENT.ExtensionUIRequest
+      && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select),
+    extractQuestions: piQuestionsFromPayload,
+    async sendAnswer(agentId, sendControlResponse, requestId, _questions, askState, payload) {
+      const method = pickString(payload, 'method')
+      if (method === PI_DIALOG_METHOD.Select) {
+        const value = piAskAnswerValue(askState)
+        const response = value.trim() ? piValueResponse(requestId, value) : piCancelResponse(requestId)
+        await sendPiExtensionResponse(agentId, sendControlResponse, response)
+        return
+      }
+      const text = askState.customTexts()[0] ?? ''
+      await sendPiExtensionResponse(agentId, sendControlResponse, piValueResponse(requestId, text))
+    },
+    sendReject: (agentId, sendControlResponse, requestId) =>
+      sendPiExtensionResponse(agentId, sendControlResponse, piCancelResponse(requestId)),
   },
 
   buildControlResponse(payload, content, requestId) {

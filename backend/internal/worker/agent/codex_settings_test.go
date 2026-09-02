@@ -83,187 +83,10 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) json.RawMessa
 	}
 }
 
-func TestCodexRefreshSettingsFromAgent(t *testing.T) {
+func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 	t.Parallel()
 
-	agent, sink, requests := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{
-				"config": {
-					"model": "gpt-5.2",
-					"model_reasoning_effort": "medium",
-					"approval_policy": "never",
-					"sandbox_mode": "danger-full-access",
-					"service_tier": "fast"
-				},
-				"origins": {}
-			}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-
-	agent.refreshSettingsFromAgent()
-
-	assert.Equal(t, "gpt-5.4", agent.model)
-	assert.Equal(t, "medium", agent.effort)
-	assert.Equal(t, "never", agent.approvalPolicy)
-	assert.Equal(t, "danger-full-access", agent.sandboxPolicy)
-	assert.Equal(t, "fast", agent.serviceTier)
-
-	recorded := requests()
-	require.Len(t, recorded, 1)
-	assert.Equal(t, "config/read", recorded[0].Method)
-
-	// Verify settings were broadcast.
-	require.Equal(t, 1, sink.SettingsRefreshCount())
-	refresh := sink.LastSettingsRefresh()
-	assert.Equal(t, "gpt-5.4", refresh.Model)
-	assert.Equal(t, "medium", refresh.Effort)
-	assert.Equal(t, "never", refresh.PermissionMode)
-	assert.Equal(t, "danger-full-access", refresh.Options[CodexOptionSandboxPolicy])
-	assert.Equal(t, "fast", refresh.Options[CodexOptionServiceTier])
-}
-
-func TestCodexRefreshSettingsFromAgent_PreservesResumeModelOverride(t *testing.T) {
-	t.Parallel()
-
-	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			// config/read returns the global configuration. It does not include the
-			// model override that thread/resume applied to this session.
-			return json.RawMessage(`{"config":{"model":"gpt-5.6-luna"},"origins":{}}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-	agent.model = "gpt-5.6-sol"
-
-	agent.refreshSettingsFromAgent()
-
-	assert.Equal(t, "gpt-5.6-sol", agent.model)
-}
-
-func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
-	t.Parallel()
-
-	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{
-				"config": {
-					"model": null,
-					"model_reasoning_effort": null,
-					"approval_policy": null,
-					"sandbox_mode": null,
-					"network_access": null,
-					"collaboration_mode": null,
-					"service_tier": null
-				},
-				"origins": {}
-			}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-
-	// Set initial values.
-	agent.model = "gpt-5.4"
-	agent.effort = "high"
-	agent.approvalPolicy = "on-request"
-	agent.sandboxPolicy = "workspace-write"
-	agent.networkAccess = "enabled"
-	agent.collaborationMode = "plan"
-	agent.serviceTier = "default"
-
-	agent.refreshSettingsFromAgent()
-
-	// Null fields should not overwrite existing values.
-	assert.Equal(t, "gpt-5.4", agent.model)
-	assert.Equal(t, "high", agent.effort)
-	assert.Equal(t, "on-request", agent.approvalPolicy)
-	assert.Equal(t, "workspace-write", agent.sandboxPolicy)
-	assert.Equal(t, "enabled", agent.networkAccess)
-	assert.Equal(t, "plan", agent.collaborationMode)
-	assert.Equal(t, "default", agent.serviceTier)
-}
-
-// TestCodexRefreshSettingsFromAgent_PreservesNetworkAndCollaboration documents that Codex's
-// config/read does NOT carry network_access or collaboration_mode: network access is a boolean
-// nested under sandbox_workspace_write (not a top-level key), and collaboration_mode is a
-// per-turn parameter, not a config key at all (verified against the codex-rs app-server v2
-// Config struct). The readback therefore omits both, the table loop keeps their prior
-// (optimistically-pushed) values, and a live edit to either axis is never clobbered by
-// config/read -- while a real top-level config key (sandbox_mode) IS reconciled by the same loop.
-func TestCodexRefreshSettingsFromAgent_PreservesNetworkAndCollaboration(t *testing.T) {
-	t.Parallel()
-
-	agent, sink, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			// A realistic Codex response: sandbox_mode is reported (a real top-level config key),
-			// but network_access and collaboration_mode are absent -- they are not config keys.
-			return json.RawMessage(`{
-				"config": {
-					"model": "gpt-5.2",
-					"sandbox_mode": "read-only"
-				},
-				"origins": {}
-			}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-
-	// The user optimistically set network on + plan collaboration via UpdateSettings.
-	agent.networkAccess = "enabled"
-	agent.collaborationMode = "plan"
-
-	agent.refreshSettingsFromAgent()
-
-	// config/read doesn't report these axes, so the pushed values survive unchanged -- no flip.
-	assert.Equal(t, "enabled", agent.networkAccess)
-	assert.Equal(t, "plan", agent.collaborationMode)
-	// A real top-level config key IS reconciled by the same table loop.
-	assert.Equal(t, "read-only", agent.sandboxPolicy)
-	refresh := sink.LastSettingsRefresh()
-	assert.Equal(t, "enabled", refresh.Options[CodexOptionNetworkAccess])
-	assert.Equal(t, "plan", refresh.Options[CodexOptionCollaborationMode])
-}
-
-func TestCodexRefreshSettingsFromAgent_GranularApprovalPolicy(t *testing.T) {
-	t.Parallel()
-
-	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{
-				"config": {
-					"model": "gpt-5.4",
-					"approval_policy": {"granular": {"sandbox_approval": true, "rules": true}}
-				},
-				"origins": {}
-			}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-
-	agent.approvalPolicy = "on-request"
-	agent.refreshSettingsFromAgent()
-
-	// Granular object should not overwrite the simple string.
-	assert.Equal(t, "on-request", agent.approvalPolicy)
-}
-
-func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
-	t.Parallel()
-
-	agent, sink, requests := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{
-				"config": {
-					"model": "gpt-5.2",
-					"model_reasoning_effort": "low",
-					"approval_policy": "never",
-					"sandbox_mode": "read-only",
-					"service_tier": "fast"
-				},
-				"origins": {}
-			}`)
-		}
+	agent, sink, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	})
 
@@ -274,21 +97,15 @@ func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
 		CodexOptionSandboxPolicy: "read-only",
 		CodexOptionServiceTier:   "fast",
 	})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 
-	// After UpdateSettings, refreshSettingsFromAgent should have been called.
-	recorded := requests()
-	require.Len(t, recorded, 1)
-	assert.Equal(t, "config/read", recorded[0].Method)
-
-	// Values should reflect the config/read response.
+	assert.Empty(t, requests(), "active settings must not read thread-agnostic global config")
 	assert.Equal(t, "gpt-5.2", agent.model)
 	assert.Equal(t, "low", agent.effort)
 	assert.Equal(t, "never", agent.approvalPolicy)
 	assert.Equal(t, "read-only", agent.sandboxPolicy)
 	assert.Equal(t, "fast", agent.serviceTier)
 
-	// Verify settings were broadcast.
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.2", refresh.Model)
@@ -296,25 +113,34 @@ func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
 	assert.Equal(t, "never", refresh.PermissionMode)
 }
 
-// TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault verifies
-// that when config/read returns null for model_reasoning_effort and the
-// agent is in "auto" mode, the refresh falls back to the current model's
-// preset default from the model catalog. This mirrors Codex's own
-// inference-time behavior, where the CLI uses ModelInfo.default_reasoning_level
-// when nothing is explicitly set in config.
-func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T) {
+func TestCodexUpdateSettingsPreservesRequestedThreadSettings(t *testing.T) {
 	t.Parallel()
 
-	agent, sink, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{
-				"config": {
-					"model": null,
-					"model_reasoning_effort": null
-				},
-				"origins": {}
-			}`)
-		}
+	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+		return json.RawMessage(`{}`)
+	})
+
+	updated := agent.UpdateSettings(map[string]string{
+		OptionIDEffort:           "low",
+		OptionIDPermissionMode:   "never",
+		CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
+		CodexOptionNetworkAccess: CodexNetworkEnabled,
+		CodexOptionServiceTier:   CodexServiceTierFast,
+	})
+
+	require.True(t, updated.AppliedLive)
+	assert.Equal(t, "low", agent.effort)
+	assert.Equal(t, "never", agent.approvalPolicy)
+	assert.Equal(t, CodexSandboxDangerFullAccess, agent.sandboxPolicy)
+	assert.Equal(t, CodexNetworkEnabled, agent.networkAccess)
+	assert.Equal(t, CodexServiceTierFast, agent.serviceTier)
+	assert.Empty(t, requests())
+}
+
+func TestCodexPublishSettings_AutoFallsBackToModelDefault(t *testing.T) {
+	t.Parallel()
+
+	agent, sink, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	})
 
@@ -325,7 +151,7 @@ func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T)
 		{Id: "gpt-5.2", DefaultEffort: "medium"},
 	}
 
-	agent.refreshSettingsFromAgent()
+	agent.publishSettings()
 
 	assert.Equal(t, "high", agent.effort,
 		"auto should fall back to the current model's default from the catalog")
@@ -335,17 +161,10 @@ func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T)
 		"broadcast should carry the resolved effort so the UI updates")
 }
 
-// TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto verifies
-// the safe fallback: if the model catalog hasn't been populated yet (e.g.
-// queryAvailableModels failed), the refresh leaves effort at "auto" rather
-// than clobbering it with an empty string.
-func TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto(t *testing.T) {
+func TestCodexPublishSettings_AutoNoModelCatalogStaysAuto(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{"config": {"model_reasoning_effort": null}, "origins": {}}`)
-		}
+	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	})
 
@@ -353,7 +172,7 @@ func TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto(t *testing.T)
 	agent.model = "gpt-5.4"
 	agent.availableModels = nil
 
-	agent.refreshSettingsFromAgent()
+	agent.publishSettings()
 
 	assert.Equal(t, "auto", agent.effort, "with no catalog, auto stays auto")
 }
@@ -412,10 +231,10 @@ func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
 	require.Equal(t, "high", agent.effort, "precondition")
 
 	updated := agent.UpdateSettings(map[string]string{OptionIDEffort: "auto"})
-	require.False(t, updated, "switching to \"auto\" should request a restart")
+	require.False(t, updated.AppliedLive, "switching to \"auto\" should request a restart")
 
 	assert.Equal(t, "high", agent.effort, "live effort must stay untouched until restart")
-	assert.Empty(t, requests(), "no config/read should be issued when restart is requested")
+	assert.Empty(t, requests(), "a rejected update must not publish an RPC")
 }
 
 // TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto verifies that when the
@@ -424,17 +243,14 @@ func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
 func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 	t.Parallel()
 
-	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
-		if method == "config/read" {
-			return json.RawMessage(`{"config": {}, "origins": {}}`)
-		}
+	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	})
 
 	agent.effort = "auto"
 
 	updated := agent.UpdateSettings(map[string]string{OptionIDEffort: "auto"})
-	require.True(t, updated, "a no-op \"auto\"→\"auto\" should not request a restart")
+	require.True(t, updated.AppliedLive, "a no-op \"auto\"→\"auto\" should not request a restart")
 	assert.Equal(t, "auto", agent.effort)
 }
 

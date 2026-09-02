@@ -449,11 +449,6 @@ func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, ok
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return "", nil, false
 	}
-	if err := jsonRPCResultError(resp); err != nil {
-		slog.Error("acp ClearContext: RPC error", "provider", b.providerName, "agent_id", b.agentID, "error", err)
-		return "", nil, false
-	}
-
 	var session struct {
 		SessionID string `json:"sessionId"`
 	}
@@ -723,7 +718,7 @@ func (b *acpBase) setSecondary(value string) error {
 // body for every ACP family. The secondary channel, model setter, and model normalizer
 // are derived from the provider (secondaryChannel / effectiveSetModel / modelIDNormalizer),
 // so Cursor -- whose model writes map to a wire id -- no longer needs its own override.
-func (b *acpBase) UpdateSettings(options optionmap.Map) bool {
+func (b *acpBase) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	sc := b.secondaryChannel()
 	model := options[OptionIDModel]
 	if b.modelIDNormalizer != nil {
@@ -778,7 +773,21 @@ func (b *acpBase) UpdateSettings(options optionmap.Map) bool {
 	if optionGroupsChanged && b.sink != nil {
 		b.sink.BroadcastStatusActive(sessionID)
 	}
-	return ok
+	if !ok {
+		return restartRequiredSettings(options)
+	}
+	return b.SettingsSnapshot()
+}
+
+func (b *acpBase) SettingsSnapshot() SettingsApplyResult {
+	result := confirmedSettings(CurrentOptions(b.OptionGroups()))
+	b.mu.Lock()
+	unresolved := b.options.unresolved.keys()
+	b.mu.Unlock()
+	for _, id := range unresolved {
+		result.Settlements[id] = OptionSettlement{State: OptionSettlementUnresolved}
+	}
+	return result
 }
 
 // applySessionRefresh parses the session response once, refreshes availableModels from
@@ -1110,7 +1119,14 @@ func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	return b.awaitResponse(ch, method, timeout)
+	resp, err := b.awaitResponse(ch, method, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := jsonRPCResultError(resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
@@ -2013,22 +2029,14 @@ func (b *acpBase) startACPHandshake(
 	timeout := opts.startupTimeout()
 
 	// 1. Send "initialize" request.
-	initResp, err := b.sendRequest(acpMethodInitialize, initParams, timeout)
+	_, err := b.sendRequest(acpMethodInitialize, initParams, timeout)
 	if err != nil {
 		cleanup()
 		return nil, b.formatStartupError("initialize", err)
 	}
-	if err := jsonRPCResultError(initResp); err != nil {
-		cleanup()
-		return nil, b.formatStartupError("initialize", err)
-	}
-
 	// 2. Send session request (resume or new).
 	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
 	sessionResp, err := b.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
-	if err == nil {
-		err = jsonRPCResultError(sessionResp)
-	}
 	if err != nil {
 		cleanup()
 		if opts.ResumeSessionID != "" {
@@ -2705,6 +2713,7 @@ func (b *acpBase) handleACPConfigOptionUpdate(update json.RawMessage) {
 	}
 
 	b.mu.Lock()
+	b.options.clearUnresolved()
 	oldMode := b.permissionMode
 	// A launch-fixed-model provider (e.g. Reasonix) cannot switch model over ACP;
 	// ignore any model select so the stored model stays in sync with the running
@@ -3006,9 +3015,6 @@ func (b *acpBase) sendSessionRPC(method string, extraParams map[string]interface
 		if err != nil {
 			return err
 		}
-		if err := jsonRPCResultError(resp); err != nil {
-			return err
-		}
 		out = resp
 		return nil
 	})
@@ -3051,7 +3057,12 @@ func (b *acpBase) setModelViaConfigOption(wireModel string) error {
 	options := parseACPConfigOptions(resp)
 	if len(options) > 0 {
 		b.mu.Lock()
+		b.options.clearUnresolved()
 		b.applyOptionGroupsLocked(options)
+		b.mu.Unlock()
+	} else {
+		b.mu.Lock()
+		b.options.markKnownUnresolved()
 		b.mu.Unlock()
 	}
 	// A model that newly surfaces a reasoning-effort axis often defaults it to "none" --
@@ -3153,8 +3164,10 @@ func (b *acpBase) setConfigOptionGuarded(configID, value string, stillWanted fun
 	// would persist the stale value and revert the user's choice.
 	b.mu.Lock()
 	if options := parseACPConfigOptions(resp); len(options) > 0 {
+		b.options.clearUnresolved()
 		b.applyOptionGroupsLocked(options)
 	} else {
+		b.options.markUnresolved(configID)
 		b.options.recordOptimistic(configID, value)
 	}
 	b.mu.Unlock()

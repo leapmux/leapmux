@@ -1,9 +1,8 @@
 import type { Accessor, Setter } from 'solid-js'
-import type { ProviderSettingChangeHandler } from '../providerSettings'
+import type { BypassController } from '../providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
-import type { PermissionMode } from '~/utils/controlResponse'
 
 interface QuestionOption {
   id?: string
@@ -51,7 +50,7 @@ export interface ActionsProps {
   /**
    * The live editor handle, as an ACCESSOR rather than a value.
    *
-   * The handle only exists once the editor's `contentRef` callback has run, which
+   * The handle exists after the editor's `contentRef` callback runs, which
    * is AFTER the owner's JSX is created. A plain-valued prop is therefore unusable
    * here in practice: every caller has it in a `let` that is still `undefined` at
    * creation time, and Solid's JSX transform treats a bare identifier prop as
@@ -62,12 +61,8 @@ export interface ActionsProps {
    */
   editorContentRef?: () => EditorContentRef | undefined
   agentProvider?: AgentProvider
-  /** The permission mode value that disables all approval prompts for this provider. */
-  bypassPermissionMode?: PermissionMode
-  /** Optional callback to change the agent's permission mode. */
-  onPermissionModeChange?: (mode: PermissionMode) => void | Promise<void>
-  /** Applies one or more agent settings as one atomic change. */
-  onSettingChange?: ProviderSettingChangeHandler
+  /** Applies the provider's complete bypass settings change. */
+  bypass?: BypassController
   contextUsage?: ContextUsageInfo
   modelContextWindow?: number
   /**
@@ -87,6 +82,21 @@ export function sendResponse(
 ): Promise<void> {
   const bytes = new TextEncoder().encode(JSON.stringify(response))
   return onRespond(agentId, bytes)
+}
+
+/** Builds a JSON-RPC result with the request ID converted to its wire type. */
+export function buildJsonRpcResult(requestId: string, result: unknown): Record<string, unknown> {
+  return { jsonrpc: '2.0', id: toRpcId(requestId), result }
+}
+
+/** Sends a JSON-RPC result with the request ID converted to its wire type. */
+export function sendJsonRpcResult(
+  agentId: string,
+  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  requestId: string,
+  result: unknown,
+): Promise<void> {
+  return sendResponse(agentId, onRespond, buildJsonRpcResult(requestId, result))
 }
 
 /** Convert a string request ID to a numeric JSON-RPC id when possible. */

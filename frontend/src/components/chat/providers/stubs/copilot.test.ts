@@ -20,7 +20,7 @@ describe('copilot provider', () => {
   })
 
   it('uses autopilot as bypass permission mode', () => {
-    expect(plugin.bypassPermissionMode).toBe(MODE_AUTOPILOT)
+    expect(plugin.bypassSettings?.sets.permissionMode).toBe(MODE_AUTOPILOT)
   })
 
   it('declares plan mode on the permissionMode group and defaults to agent', () => {

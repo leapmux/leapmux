@@ -33,10 +33,10 @@ test.describe('Markdown Editor', () => {
     await editor.click()
     await page.keyboard.type('some code')
 
-    // Select all text, then apply inline code. The formatting toolbar is gone,
-    // so this drives the markdown input rule that replaced it.
+    // Select all text, then type the supported mark-toggle character. Typing a
+    // complete Markdown string arrives as one input event and does not invoke it.
     await page.keyboard.press('Meta+a')
-    await page.keyboard.type('`some code`')
+    await page.keyboard.type('`')
 
     // Check that the code element's computed font-family includes the fallback
     const fontFamily = await editor.locator('code').evaluate(

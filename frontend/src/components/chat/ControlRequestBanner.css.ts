@@ -164,7 +164,7 @@ export const controlFooter = style({
 })
 
 // All three zones pin their own column. Auto-placement would put a zone's column
-// at the mercy of which OTHER zones the caller passed: with `secondary` omitted,
+// dependent on which OTHER zones the caller passed: with `secondary` omitted,
 // an auto-placed centre becomes the first item and lands in column 1, so the
 // pagination would sit inside the left half rather than in the middle.
 export const controlFooterLeft = style({

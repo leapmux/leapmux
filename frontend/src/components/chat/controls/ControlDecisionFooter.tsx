@@ -1,10 +1,18 @@
 import type { Accessor, Component } from 'solid-js'
-import type { ControlRequestSwitch } from './ControlRequestSwitches'
 
-import { For, Show } from 'solid-js'
+import { For, Index, Show } from 'solid-js'
+import { CompactSwitch } from '~/components/common/CompactSwitch'
 import { keepFocusOnPress } from '~/lib/focusRetention'
+import * as styles from '../ControlRequestBanner.css'
 import { ControlActionRow } from './ControlActionRow'
-import { ControlRequestSwitches } from './ControlRequestSwitches'
+
+export interface ControlRequestSwitch {
+  id: string
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+  suffix?: string
+}
 
 export interface ControlDecisionAction {
   label: string
@@ -30,7 +38,21 @@ export const ControlDecisionFooter: Component<{
       primary={(
         <>
           <Show when={!props.hasEditorContent && switches().length > 0}>
-            <ControlRequestSwitches items={switches()} />
+            <div class={styles.controlRequestSwitches}>
+              <Index each={switches()}>
+                {item => (
+                  <CompactSwitch
+                    checked={item().checked}
+                    onChange={item().onChange}
+                    data-testid={item().id}
+                    fontSize="var(--text-8)"
+                  >
+                    {item().label}
+                    {item().suffix}
+                  </CompactSwitch>
+                )}
+              </Index>
+            </div>
           </Show>
           <button
             class="outline"

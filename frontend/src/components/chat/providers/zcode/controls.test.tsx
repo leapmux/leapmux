@@ -4,8 +4,11 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
 import { ZCodeControlActions, ZCodeControlContent } from './controls'
 import { ZCODE_METHOD } from './protocol'
+import './plugin'
 
 function makeAskState(selections: Record<number, string[]> = {}): AskQuestionState {
   const [sel, setSelections] = createSignal<Record<number, string[]>>(selections)
@@ -111,9 +114,10 @@ describe('zcode question control', () => {
 
   it('renders the question and its options through the shared control', () => {
     const { container, getByTestId } = render(() => (
-      <ZCodeControlContent
+      <ControlRequestContent
         request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
         askState={makeAskState()}
+        agentProvider={AgentProvider.ZCODE}
       />
     ))
     expect(container.textContent ?? '').toContain('Which database?')
@@ -124,12 +128,13 @@ describe('zcode question control', () => {
   it('ships the picked option in the shared allow envelope', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const { getByTestId } = render(() => (
-      <ZCodeControlActions
+      <ControlRequestActions
         request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
         askState={makeAskState({ 0: ['MySQL'] })}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
+        agentProvider={AgentProvider.ZCODE}
       />
     ))
     fireEvent.click(getByTestId('control-submit-btn'))
@@ -187,9 +192,7 @@ describe('zcode permission control', () => {
     })
   })
 
-  // Reject hands the turn to the composer send path, so the user can type a reason
-  // before the deny envelope goes out.
-  it('rejects by handing the turn to the composer send path', () => {
+  it('rejects immediately when the editor is empty', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const onTriggerSend = vi.fn()
     const { getByTestId } = render(() => (
@@ -202,8 +205,10 @@ describe('zcode permission control', () => {
       />
     ))
     fireEvent.click(getByTestId('control-deny-btn'))
-    expect(onTriggerSend).toHaveBeenCalledOnce()
-    expect(onRespond).not.toHaveBeenCalled()
+    expect(onTriggerSend).not.toHaveBeenCalled()
+    expect(decode(onRespond.mock.calls[0][1])).toMatchObject({
+      response: { response: { behavior: 'deny' } },
+    })
   })
 
   // ZCode declares `yolo` as its bypass mode, so the banner offers a bypass switch.
@@ -223,9 +228,11 @@ describe('zcode permission control', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
-        bypassPermissionMode={ZCODE_MODE.Yolo}
-        onPermissionModeChange={(mode) => {
-          order.push(`mode:${mode}`)
+        bypass={{
+          settings: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+          apply: (change) => {
+            order.push(`mode:${change.sets.permissionMode}`)
+          },
         }}
       />
     ))

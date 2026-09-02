@@ -1019,7 +1019,7 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 }
 
 // TestSendControlResponse_DuplicateAnswerDeletesRequestOnce pins the delete-gating half of the
-// idempotency claim: deleteControlRequest is gated on firstAnswer, so ONLY the claim winner deletes
+// idempotency claim: firstAnswer controls deleteControlRequest, so ONLY the claim winner deletes
 // the pending request and broadcasts its cancel. A duplicate answer (an RPC retry / a second window)
 // therefore draws exactly ONE ControlCancel and one row -- never a second delete. Gating the delete
 // on the winner is also what keeps the winner's request read while-present, so a concurrent duplicate
@@ -1627,7 +1627,7 @@ func TestNeedsStructuredRow(t *testing.T) {
 func TestExitPlanClearingContext(t *testing.T) {
 	t.Parallel()
 
-	// The single triple that needsStructuredRow keys the mark-carrying row off (and that gates the
+	// The single triple that needsStructuredRow keys the mark-carrying row off (and that controls the
 	// once-only initiatePlanExecution): an APPROVED ExitPlanMode that ALSO clears context (the
 	// transcript row is wiped, so the structured row carries the mark and the approval is not
 	// forwarded). It is the loaded-answer equivalent of the request-independent withholdsForward.

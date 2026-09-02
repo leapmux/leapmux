@@ -436,7 +436,7 @@ describe('useAgentOperations', () => {
   })
 
   describe('handleInterrupt', () => {
-    it('calls the worker-side InterruptAgent RPC', async () => {
+    it('leaves live state to the authoritative completion event', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, add, agentSessionStore, chatStore } = setup()
@@ -455,10 +455,10 @@ describe('useAgentOperations', () => {
           expect(mockInterruptAgent).toHaveBeenCalledWith('w-1', {
             agentId: 'codex-1',
           })
-          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('')
-          expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBeUndefined()
-          expect(chatStore.streamingText.clear).toHaveBeenCalledWith('codex-1')
-          expect(chatStore.clearToolProgress).toHaveBeenCalledWith('codex-1')
+          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
+          expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
+          expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
+          expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
         }
         finally {
           dispose()
@@ -1029,7 +1029,7 @@ describe('useAgentOperations', () => {
           vi.mocked(workerRpc.sendControlResponse).mockClear()
           controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'instance-token-1' })
 
-          await ops.handleControlResponse('a1', answer('r1'))
+          await ops.handleControlResponse('a1', 'r1', answer('r1'))
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
@@ -1049,7 +1049,7 @@ describe('useAgentOperations', () => {
           vi.mocked(workerRpc.sendControlResponse).mockClear()
 
           // No control request in the store for r-missing and no threaded token -> the echoed token is ''.
-          await ops.handleControlResponse('a1', answer('r-missing'))
+          await ops.handleControlResponse('a1', 'r-missing', answer('r-missing'))
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
@@ -1072,7 +1072,7 @@ describe('useAgentOperations', () => {
           // lookup would miss and fall back to ''. The token captured at the answer site is threaded in
           // and is authoritative, so the worker still claims on the answered INSTANCE rather than dropping
           // to an empty-token key (which could double-win or drop the answer).
-          await ops.handleControlResponse('a1', answer('r-gone'), 'threaded-token-9')
+          await ops.handleControlResponse('a1', 'r-gone', answer('r-gone'), 'threaded-token-9')
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
@@ -1092,12 +1092,28 @@ describe('useAgentOperations', () => {
           vi.mocked(workerRpc.sendControlResponse).mockClear()
           controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'stale-store-token' })
 
-          await ops.handleControlResponse('a1', answer('r1'), 'fresh-answer-token')
+          await ops.handleControlResponse('a1', 'r1', answer('r1'), 'fresh-answer-token')
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ agentId: 'a1', claimToken: 'fresh-answer-token' }),
           )
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('rejects after reporting a transport failure', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          const failure = new Error('send failed')
+          vi.mocked(workerRpc.sendControlResponse).mockRejectedValueOnce(failure)
+
+          await expect(ops.handleControlResponse('a1', 'r1', answer('r1'))).rejects.toBe(failure)
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to send response', failure)
         }
         finally {
           dispose()

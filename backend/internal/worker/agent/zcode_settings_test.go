@@ -659,7 +659,7 @@ func TestZCodeUpdateSettings_EffortToAutoAsksForARestart(t *testing.T) {
 	a.thoughtLevel = "high"
 	a.mu.Unlock()
 
-	assert.False(t, a.UpdateSettings(map[string]string{OptionIDEffort: EffortAuto}))
+	assert.False(t, a.UpdateSettings(map[string]string{OptionIDEffort: EffortAuto}).AppliedLive)
 	assert.Empty(t, stdin.Frames(), "nothing is attempted when a restart is the only route")
 }
 
@@ -673,13 +673,17 @@ func TestZCodeUpdateSettings_NoChangeSendsNothingAndSucceeds(t *testing.T) {
 	a := newZCodeTestAgentWithStdin(t, sink, stdin)
 	a.mu.Lock()
 	a.model, a.thoughtLevel, a.mode = "p/m", "high", contracts.ZCodeModeBuild
+	a.unresolvedSettings = map[string]struct{}{OptionIDEffort: {}}
 	a.mu.Unlock()
 
-	assert.True(t, a.UpdateSettings(map[string]string{
+	result := a.UpdateSettings(map[string]string{
 		OptionIDModel:          "p/m",
 		OptionIDEffort:         "high",
 		OptionIDPermissionMode: contracts.ZCodeModeBuild,
-	}))
+	})
+	assert.True(t, result.AppliedLive)
+	assert.Equal(t, OptionSettlementUnresolved, result.Settlements[OptionIDEffort].State,
+		"an axis stays unresolved until a provider snapshot reports it")
 	assert.Empty(t, stdin.Frames())
 
 	require.Equal(t, 1, sink.SettingsRefreshCount())
@@ -700,7 +704,7 @@ func TestZCodeUpdateSettings_ARespelledModelIsNotASwitch(t *testing.T) {
 	a.model = "p/m"
 	a.mu.Unlock()
 
-	assert.True(t, a.UpdateSettings(map[string]string{OptionIDModel: `p\m`}))
+	assert.True(t, a.UpdateSettings(map[string]string{OptionIDModel: `p\m`}).AppliedLive)
 	assert.Empty(t, stdin.Frames())
 }
 
@@ -721,7 +725,7 @@ func TestZCodeUpdateSettings_AFailedApplyRestoresTheCapturedTrio(t *testing.T) {
 	assert.False(t, a.UpdateSettings(map[string]string{
 		OptionIDModel:          "builtin:zai/GLM-5.3-Flash",
 		OptionIDPermissionMode: contracts.ZCodeModeYolo,
-	}))
+	}).AppliedLive)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()

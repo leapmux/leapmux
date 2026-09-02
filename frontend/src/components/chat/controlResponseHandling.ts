@@ -17,7 +17,7 @@ export interface ControlResponseHandlingProps {
   agentId: string
   agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
-  onControlResponse?: (agentId: string, content: Uint8Array, claimToken?: string) => Promise<void>
+  onControlResponse?: (agentId: string, requestId: string, content: Uint8Array, claimToken?: string) => Promise<void>
   onSettingChange?: ProviderSettingChangeHandler
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   settingsLoading?: boolean
@@ -87,8 +87,8 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return false
-    const plugin = pluginFor(props.agent?.agentProvider)
-    return plugin?.isAskUserQuestion?.(req.payload) ?? false
+    const capability = pluginFor(props.agent?.agentProvider)?.askUserQuestion
+    return capability?.isRequest(req.payload) ?? false
   }
 
   // Whether the Interrupt button should be shown.
@@ -145,7 +145,8 @@ export function useControlResponseHandling(
   // after the request leaves the store -- the typed-feedback / ask-question sibling of the footer
   // action path in AgentEditorPanel.
   const sendControlResponse = (agentId: string, bytes: Uint8Array): Promise<void> => {
-    return props.onControlResponse?.(agentId, bytes, activeControlRequest()?.claimToken) ?? Promise.resolve()
+    const request = activeControlRequest()
+    return props.onControlResponse?.(agentId, request?.requestId ?? '', bytes, request?.claimToken) ?? Promise.resolve()
   }
 
   const cleanupControlRequestDrafts = (requestId: string) => {
@@ -176,23 +177,18 @@ export function useControlResponseHandling(
       return false
     }
     if (isAskUserQuestion()) {
-      const normalizedQuestions = plugin.extractAskUserQuestions?.(req.payload) ?? []
-      const normalizedRequest: ControlRequest = {
-        ...req,
-        payload: {
-          ...req.payload,
-          request: {
-            tool_name: 'AskUserQuestion',
-            input: { questions: normalizedQuestions },
-          },
-        },
+      const capability = plugin.askUserQuestion
+      if (!capability) {
+        showWarnToast('Cannot send response: provider question support is incomplete')
+        return false
       }
+      const questions = capability.extractQuestions(req.payload)
       const sendAskResponse = () => {
-        void plugin.sendAskUserQuestionResponse?.(req.agentId, sendControlResponse, req.requestId, normalizedQuestions, askState, req.payload)
+        void capability.sendAnswer(req.agentId, sendControlResponse, req.requestId, questions, askState, req.payload)
       }
       const submitted = trySubmitAskUserQuestion(
         askState,
-        normalizedRequest,
+        questions,
         content,
         sendAskResponse,
         editorContentRefAccessor(),
@@ -207,7 +203,13 @@ export function useControlResponseHandling(
     const response = plugin.buildControlResponse?.(req.payload, content, req.requestId)
     if (response) {
       const bytes = new TextEncoder().encode(JSON.stringify(response))
-      void sendControlResponse(req.agentId, bytes)
+      const sent = sendControlResponse(req.agentId, bytes)
+      if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload)) {
+        void sent.then(() => props.onSendMessage(content)).catch(() => {})
+      }
+      else {
+        void sent.catch(() => {})
+      }
     }
     cleanupControlRequestDrafts(req.requestId)
     resetEditorHeightFn()

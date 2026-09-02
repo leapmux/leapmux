@@ -32,7 +32,8 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 		thread, requests, err := resume(t, `{"thread":{"id":"thread-old"},"model":"gpt-5.6-sol"}`)
 		require.NoError(t, err)
 		assert.Equal(t, "thread-old", thread.ID)
-		assert.Equal(t, "gpt-5.6-sol", thread.Model)
+		require.NotNil(t, thread.settings[OptionIDModel])
+		assert.Equal(t, "gpt-5.6-sol", *thread.settings[OptionIDModel])
 		sent := requests()
 		require.Len(t, sent, 1, "a resume that holds must not also start a thread")
 		assert.Equal(t, "thread/resume", sent[0].Method)
@@ -40,7 +41,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	// An RPC error arrives as a delivered body rather than as a transport error,
 	// so the agent's own message is only in the response. The failure must carry
-	// it: "carried no thread ID" names the symptom and hides the reason.
+	// it: "carried no thread ID" identifies the symptom and hides the reason.
 	t.Run("fails with the agent's own reason when the resume is refused", func(t *testing.T) {
 		t.Parallel()
 		_, requests, err := resume(t, `{"code":-32000,"message":"thread not found"}`)
@@ -82,6 +83,19 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 		sent := requests()
 		require.Len(t, sent, 1)
 		assert.Equal(t, "thread/start", sent[0].Method)
+	})
+
+	t.Run("keeps the server reason when thread start fails", func(t *testing.T) {
+		t.Parallel()
+		a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+			return json.RawMessage(`{"code":-32000,"message":"model unavailable"}`)
+		})
+
+		_, err := a.startOrResumeThread(map[string]interface{}{}, "", timeout)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "model unavailable")
+		require.Len(t, requests(), 1)
 	})
 }
 
@@ -134,22 +148,34 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.Equal(t, CodexServiceTierFast, sent[0].Params["serviceTier"])
 }
 
+func testCodexThreadResponse(id, model string, effort, serviceTier, approvalPolicy, sandbox json.RawMessage) codexThreadResponse {
+	response := codexThreadResponse{
+		Model:          model,
+		Effort:         effort,
+		ServiceTier:    serviceTier,
+		ApprovalPolicy: approvalPolicy,
+		Sandbox:        sandbox,
+	}
+	response.Thread.ID = id
+	return response
+}
+
 func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 	t.Parallel()
 
-	result, err := newCodexThreadResult(
+	result, err := newCodexThreadResult(testCodexThreadResponse(
 		"thread-1",
 		"gpt-5.6-sol",
 		json.RawMessage(`"medium"`),
 		json.RawMessage(`"fast"`),
 		json.RawMessage(`"on-request"`),
 		json.RawMessage(`"workspace-write"`),
-	)
+	))
 	require.NoError(t, err)
 
 	a := &CodexAgent{
 		model:          "gpt-5.6-luna",
-		effort:         EffortHigh,
+		effort:         EffortAuto,
 		serviceTier:    CodexDefaultServiceTier,
 		approvalPolicy: "never",
 		sandboxPolicy:  CodexSandboxReadOnly,
@@ -166,14 +192,14 @@ func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 func TestCodexThreadResultAppliesCurrentSandboxObject(t *testing.T) {
 	t.Parallel()
 
-	result, err := newCodexThreadResult(
+	result, err := newCodexThreadResult(testCodexThreadResponse(
 		"thread-1",
 		"gpt-5.6-sol",
 		nil,
 		nil,
 		nil,
 		json.RawMessage(`{"type":"workspaceWrite","networkAccess":true}`),
-	)
+	))
 	require.NoError(t, err)
 
 	a := &CodexAgent{
@@ -183,16 +209,16 @@ func TestCodexThreadResultAppliesCurrentSandboxObject(t *testing.T) {
 	a.applyThreadResult(result)
 
 	assert.Equal(t, CodexSandboxWorkspaceWrite, a.sandboxPolicy)
-	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
+	assert.Equal(t, CodexNetworkRestricted, a.networkAccess)
 
-	fullAccess, err := newCodexThreadResult(
+	fullAccess, err := newCodexThreadResult(testCodexThreadResponse(
 		"thread-2",
 		"gpt-5.6-sol",
 		nil,
 		nil,
 		nil,
 		json.RawMessage(`{"type":"dangerFullAccess"}`),
-	)
+	))
 	require.NoError(t, err)
 	a.sandboxPolicy = CodexSandboxReadOnly
 	a.networkAccess = CodexNetworkRestricted
@@ -201,17 +227,42 @@ func TestCodexThreadResultAppliesCurrentSandboxObject(t *testing.T) {
 	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
 }
 
+func TestCodexThreadResultPreservesTurnOnlySettings(t *testing.T) {
+	t.Parallel()
+
+	result, err := newCodexThreadResult(testCodexThreadResponse(
+		"thread-1",
+		"gpt-5.6-sol",
+		json.RawMessage(`"high"`),
+		nil,
+		nil,
+		json.RawMessage(`{"type":"workspaceWrite","networkAccess":false}`),
+	))
+	require.NoError(t, err)
+
+	a := &CodexAgent{
+		effort:        "low",
+		networkAccess: CodexNetworkEnabled,
+	}
+	a.applyThreadResult(result)
+
+	assert.Equal(t, "low", a.effort,
+		"thread/start does not accept effort, so its response must not replace an explicit turn setting")
+	assert.Equal(t, CodexNetworkEnabled, a.networkAccess,
+		"thread/start accepts only the sandbox mode, so its response must not replace turn network access")
+}
+
 func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 	t.Parallel()
 
-	result, err := newCodexThreadResult(
+	result, err := newCodexThreadResult(testCodexThreadResponse(
 		"thread-1",
 		"gpt-5.6-sol",
 		json.RawMessage(`null`),
 		json.RawMessage(`null`),
 		nil,
 		nil,
-	)
+	))
 	require.NoError(t, err)
 
 	a := &CodexAgent{
@@ -220,7 +271,7 @@ func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 	}
 	a.applyThreadResult(result)
 
-	assert.Equal(t, EffortAuto, a.effort)
+	assert.Equal(t, EffortHigh, a.effort)
 	assert.Equal(t, CodexDefaultServiceTier, a.serviceTier)
 	assert.Equal(t, "", a.approvalPolicy)
 	assert.Equal(t, "", a.sandboxPolicy)
@@ -229,14 +280,14 @@ func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 func TestCodexThreadResultPreservesGranularApprovalPolicy(t *testing.T) {
 	t.Parallel()
 
-	result, err := newCodexThreadResult(
+	result, err := newCodexThreadResult(testCodexThreadResponse(
 		"thread-1",
 		"gpt-5.6-sol",
 		nil,
 		nil,
 		json.RawMessage(`{"granular":{"sandboxApproval":true}}`),
 		nil,
-	)
+	))
 	require.NoError(t, err)
 
 	a := &CodexAgent{approvalPolicy: CodexDefaultApprovalPolicy}

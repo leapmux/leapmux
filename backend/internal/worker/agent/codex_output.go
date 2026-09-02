@@ -119,6 +119,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		} `json:"turn"`
 	}
 	if json.Unmarshal(params, &notif) == nil && notif.Turn.ID != "" {
+		a.clearInterruptCallsForThread(notif.ThreadID)
 		// A collab subagent's turn/started carries a child threadId. It must not
 		// replace the primary turn ID used for turn/interrupt and turn/steer, and
 		// the frontend has no counter clear for child turns. This mirrors
@@ -648,6 +649,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	a.mu.Unlock()
+	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Clear the turn ID in session info.
 	a.sink.BroadcastSessionInfo(map[string]interface{}{

@@ -662,18 +662,24 @@ message UpdateAgentSettingsRequest {
   AgentSettings settings = 2;
 }
 
+enum AgentOptionSettlementState {
+  AGENT_OPTION_SETTLEMENT_STATE_UNSPECIFIED = 0;
+  AGENT_OPTION_SETTLEMENT_STATE_CONFIRMED = 1;
+  AGENT_OPTION_SETTLEMENT_STATE_UNRESOLVED = 2;
+}
+
+// AgentOptionSettlement states whether the running provider confirmed an
+// option. A confirmed settlement without a value removes the option.
+message AgentOptionSettlement {
+  AgentOptionSettlementState state = 1;
+  optional string value = 2;
+}
+
 message UpdateAgentSettingsResponse {
-  // The option values the agent settled on after applying the change -- e.g. the
-  // concrete model an account-default sentinel resolved to, and the effort a model
-  // switch reset to. The client reconciles its optimistic state against these rather
-  // than a separately-broadcast catalog, removing a cross-channel ordering dependency.
-  // ALWAYS populated: for an offline edit or a failed restart where no running agent
-  // confirms anything, this echoes the requested values filled with provider defaults
-  // (it is never empty). Reconcile only the model/effort axes against it -- a non-model
-  // axis applied live (ACP set_config_option) may not echo its refreshed value here, so
-  // the reply can lag the optimistic selection; that axis is corrected by the next
-  // status push instead.
-  map<string, string> confirmed_options = 1;
+  // The settlement for each requested option and each option that changed as a
+  // result. The client applies only confirmed settlements. An offline edit, a
+  // failed restart, or an unavailable readback produces an unresolved settlement.
+  map<string, AgentOptionSettlement> option_settlements = 1;
 }
 
 message ListAvailableProvidersRequest {}

@@ -1,10 +1,9 @@
-import type { AskQuestionState } from '../../controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
+import { createAskQuestionState } from '~/test-support/askQuestionState'
 import { CodexControlActions } from './CodexControlRequest'
-import { CODEX_BYPASS_PERMISSION_SETTINGS } from './constants'
 
 function makeRequest(params: Record<string, unknown> = {}): ControlRequest {
   return {
@@ -22,60 +21,115 @@ function makePlanRequest(): ControlRequest {
   }
 }
 
-function makeAskState(): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-}
-
 function renderActions(request: ControlRequest, hasEditorContent = false) {
   const onRespond = vi.fn().mockResolvedValue(undefined)
-  const onPermissionModeChange = vi.fn()
   const onSettingChange = vi.fn()
   render(() => (
     <CodexControlActions
       request={request}
-      askState={makeAskState()}
+      askState={createAskQuestionState()}
       onRespond={onRespond}
       hasEditorContent={hasEditorContent}
       onTriggerSend={vi.fn()}
-      bypassPermissionMode="never"
-      onPermissionModeChange={onPermissionModeChange}
-      onSettingChange={onSettingChange}
+      bypass={{ settings: CODEX_BYPASS_SETTINGS, apply: onSettingChange }}
     />
   ))
-  return { onRespond, onPermissionModeChange, onSettingChange }
+  return { onRespond, onSettingChange }
 }
 
 describe('codex control request actions', () => {
   it('renders Deny and Allow with Remember and Bypass Permissions switches', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { match: 'rm' } }] }))
+    renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
 
-    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
     expect(screen.getByTestId('control-remember-checkbox')).toHaveTextContent('Remember')
     expect(screen.getByTestId('control-bypass-permissions-checkbox')).toHaveTextContent('Bypass Permissions')
   })
 
   it('uses the remembered Codex decision only when Remember is checked', async () => {
-    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { match: 'rm' } }] }))
+    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
 
     fireEvent.click(screen.getByTestId('control-remember-checkbox').querySelector('input')!)
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [, bytes] = onRespond.mock.calls[0]
-    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({ acceptWithExecpolicyAmendment: { match: 'rm' } })
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } })
   })
 
   it('appends decisions that the fixed controls do not cover', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'decline', 'cancel', 'acceptForSession', { applyNetworkPolicyAmendment: true }] }))
+    renderActions(makeRequest({ availableDecisions: ['accept', 'decline', 'cancel', 'acceptForSession', { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }] }))
 
-    expect(screen.getByTestId('control-decision-applyNetworkPolicyAmendment')).toHaveTextContent('Apply Network Policy')
+    expect(screen.getByTestId('control-remember-checkbox')).toBeInTheDocument()
     expect(screen.getByTestId('control-decision-cancel')).toHaveTextContent('Cancel')
+    expect(screen.getByTestId('control-decision-acceptForSession')).toHaveTextContent('Allow for Session')
     expect(screen.queryByTestId('control-decision-accept')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-decline')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('control-decision-acceptForSession')).not.toBeInTheDocument()
+  })
+
+  it('uses only the negative decision that Codex offers', async () => {
+    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'cancel'] }))
+
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
+    await fireEvent.click(screen.getByTestId('control-deny-btn'))
+
+    const [, bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('cancel')
+  })
+
+  it('sends the native permission grant response', async () => {
+    const request = makeRequest()
+    request.payload = {
+      method: 'item/permissions/requestApproval',
+      params: {
+        permissions: {
+          network: { enabled: true },
+          fileSystem: null,
+        },
+      },
+    }
+    const { onRespond } = renderActions(request)
+
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [, bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
+      jsonrpc: '2.0',
+      id: 'request-1',
+      result: {
+        permissions: { network: { enabled: true } },
+        scope: 'turn',
+      },
+    })
+  })
+
+  it('can grant requested permissions for the session', async () => {
+    const request = makeRequest()
+    request.payload = {
+      method: 'item/permissions/requestApproval',
+      params: { permissions: { network: { enabled: true } } },
+    }
+    const { onRespond } = renderActions(request)
+
+    fireEvent.click(screen.getByTestId('control-remember-checkbox').querySelector('input')!)
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [, bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
+  })
+
+  it('denies a permission request with an empty grant', async () => {
+    const request = makeRequest()
+    request.payload = {
+      method: 'item/permissions/requestApproval',
+      params: { permissions: { network: { enabled: true } } },
+    }
+    const { onRespond } = renderActions(request)
+
+    await fireEvent.click(screen.getByTestId('control-deny-btn'))
+
+    const [, bytes] = onRespond.mock.calls[0]
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result).toEqual({ permissions: {}, scope: 'turn' })
   })
 
   it('appends a second persistent allow decision that Remember does not select', () => {
@@ -84,7 +138,7 @@ describe('codex control request actions', () => {
         'accept',
         'decline',
         'acceptForSession',
-        { acceptWithExecpolicyAmendment: { match: 'rm' } },
+        { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } },
       ],
     }))
 
@@ -99,7 +153,7 @@ describe('codex control request actions', () => {
   })
 
   it('sends the request before it applies all Codex bypass settings', async () => {
-    const { onRespond, onPermissionModeChange, onSettingChange } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline'] }))
+    const { onRespond, onSettingChange } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline'] }))
 
     let finishResponse!: () => void
     onRespond.mockReturnValue(new Promise<void>((resolve) => {
@@ -113,13 +167,12 @@ describe('codex control request actions', () => {
     expect(onSettingChange).not.toHaveBeenCalled()
     finishResponse()
     await vi.waitFor(() => expect(onSettingChange).toHaveBeenCalledOnce())
-    expect(onSettingChange).toHaveBeenCalledWith({ sets: CODEX_BYPASS_PERMISSION_SETTINGS })
-    expect(onPermissionModeChange).not.toHaveBeenCalled()
+    expect(onSettingChange).toHaveBeenCalledWith(CODEX_BYPASS_SETTINGS)
   })
 
   it('shows only Send feedback when the editor has content', () => {
     renderActions(makeRequest({
-      availableDecisions: ['accept', 'decline', 'cancel', { acceptWithExecpolicyAmendment: { match: 'rm' } }],
+      availableDecisions: ['accept', 'decline', 'cancel', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }],
     }), true)
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send feedback')

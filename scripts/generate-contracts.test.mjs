@@ -18,6 +18,7 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   bufDescriptor,
+  checkCodexBypass,
   checkDesktop,
   checkHeaders,
   checkListen,
@@ -418,6 +419,36 @@ describe('checkProviderProtocol', () => {
   })
 })
 
+describe('checkCodexBypass', () => {
+  const valid = () => ({
+    settings: [
+      { id: 'permissionMode', value: 'never', planOption: false },
+      { id: 'network_access', value: 'enabled', planOption: true },
+    ],
+  })
+
+  it('accepts one permission mode and at least one plan option', () => {
+    expect(checkCodexBypass(valid())).toBeUndefined()
+  })
+
+  it('rejects duplicate option ids', () => {
+    const contract = valid()
+    contract.settings.push({ id: 'network_access', value: 'restricted', planOption: true })
+    expectContractError(() => checkCodexBypass(contract), 'two settings share one option id')
+  })
+
+  it('requires the permission mode and a plan option', () => {
+    expectContractError(
+      () => checkCodexBypass({ settings: [{ id: 'other', value: 'x', planOption: false }] }),
+      'permissionMode is required',
+    )
+    expectContractError(
+      () => checkCodexBypass({ settings: [{ id: 'permissionMode', value: 'never', planOption: false }] }),
+      'at least one plan option is required',
+    )
+  })
+})
+
 // The pool the worker and the browser dialogs both name tabs from. The schema
 // holds the per-name shape; these are the two relations it cannot express.
 describe('checkTabNames', () => {
@@ -544,6 +575,7 @@ describe('generate', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
     expect(Object.keys(files).sort()).toEqual([
       'backend/generated/contracts/captcha.go',
+      'backend/generated/contracts/codex-bypass.go',
       'backend/generated/contracts/desktop.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/listen.go',
@@ -560,6 +592,7 @@ describe('generate', () => {
       'backend/generated/contracts/zcode-protocol.go',
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/captcha.ts',
+      'frontend/src/generated/contracts/codex-bypass.ts',
       'frontend/src/generated/contracts/desktop.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/listen.ts',

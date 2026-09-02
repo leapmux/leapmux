@@ -7,23 +7,31 @@ import type { ClassificationContext, ClassificationInput, Provider } from '../re
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
+import { buildJsonRpcResult } from '~/components/chat/controls/types'
 import { buildPlanMode } from '~/components/chat/settingsGroups'
+import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
 import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { CODEX_RATE_LIMITS_METHOD, codexRateLimitReachedType, iterCodexRateLimitTiers } from '~/lib/rateLimitUtils'
 import { CODEX_INTERNAL_TOOL, CODEX_ITEM, CODEX_METHOD, CODEX_STATUS } from '~/types/toolMessages'
-import { getToolName } from '~/utils/controlResponse'
+import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
-import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classification'
+import { isJsonRpcResponseObject } from '../acp/classification'
 import { registerProvider } from '../registry'
-import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from './CodexControlRequest'
 import {
-  CODEX_BYPASS_PERMISSION_SETTINGS,
+  CodexControlActions,
+  CodexControlContent,
+  codexRequestedPermissions,
+  markCodexPlanPromptResponse,
+  resolveCodexDecisions,
+  sendCodexUserInputRejectResponse,
+  sendCodexUserInputResponse,
+} from './CodexControlRequest'
+import {
   CODEX_OPTION_COLLABORATION_MODE,
   DEFAULT_CODEX_COLLABORATION_MODE,
 } from './constants'
@@ -48,50 +56,6 @@ import { codexToolResultMeta } from './toolResult'
 import './renderers/registerAll'
 
 const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
-
-let codexReqIdCounter = 1000
-
-/**
- * Builds a JSON-RPC request for interrupting a Codex turn.
- */
-function buildCodexInterruptRequest(threadId: string, turnId: string): string {
-  return JSON.stringify({
-    jsonrpc: '2.0',
-    id: ++codexReqIdCounter,
-    method: 'turn/interrupt',
-    params: { threadId, turnId },
-  })
-}
-
-function isCodexInterruptRequestText(content: string): boolean {
-  // Cheap discriminator first — `JSON.parse` runs on every assistant message
-  // during classify, but only Codex interrupt echoes carry this method name.
-  if (!content.includes('"turn/interrupt"'))
-    return false
-  try {
-    const parsed: unknown = JSON.parse(content)
-    return isObject(parsed) && parsed.method === 'turn/interrupt'
-  }
-  catch {
-    return false
-  }
-}
-
-function codexAssistantInterruptEcho(parent: Record<string, unknown>): boolean {
-  if (parent.role !== 'assistant')
-    return false
-
-  if (typeof parent.content === 'string')
-    return isCodexInterruptRequestText(parent.content)
-
-  if (parent.type !== 'assistant')
-    return false
-
-  // Substring match only — skip image blocks rather than embedding them
-  // so the matched needle is text-only.
-  const text = joinContentParagraphs(getMessageContent(parent), { text: 'text' }, () => null)
-  return text.length > 0 && isCodexInterruptRequestText(text)
-}
 
 function isCodexJsonRpcResponse(parent: Record<string, unknown>): boolean {
   if ('item' in parent || 'turn' in parent)
@@ -206,7 +170,7 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
  * consolidated-thread filter so a notification that is hidden on its own stays
  * hidden once Hub threads it into a `notification_thread` wrapper -- mirroring
  * Claude's isHiddenClaudeNotification. Without this the two paths drift: the
- * standalone classifier hides lifecycle methods and terminal statuses while the
+ * standalone classifier hides lifecycle methods and final statuses while the
  * thread filter kept them, so a thread of only-hidden entries surfaced as a
  * `notification` that renders nothing and falls back to a raw-JSON bubble.
  *
@@ -370,7 +334,7 @@ const CODEX_METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']>
 }
 
 const codexPlugin: Provider = {
-  bypassPermissionMode: 'never',
+  bypassSettings: CODEX_BYPASS_SETTINGS,
   // Seed a new Codex agent with its default collaboration mode.
   defaultProviderOptions: { [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },
   // Codex accepts an option selection AND a free-text note together, so the
@@ -411,7 +375,7 @@ const codexPlugin: Provider = {
   settingsActions: [{
     label: 'Bypass permissions',
     testId: 'codex-bypass-permissions',
-    sets: { ...CODEX_BYPASS_PERMISSION_SETTINGS },
+    sets: { ...CODEX_BYPASS_SETTINGS.sets },
   }],
   classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
     const parent = input.parentObject
@@ -435,7 +399,7 @@ const codexPlugin: Provider = {
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
     // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape.)
 
-    if (isCodexJsonRpcResponse(parent) || codexAssistantInterruptEcho(parent))
+    if (isCodexJsonRpcResponse(parent))
       return { kind: 'hidden' }
 
     const type = parent.type as string | undefined
@@ -578,34 +542,33 @@ const codexPlugin: Provider = {
 
   notificationThreadEntry: codexNotificationThreadEntry,
 
-  buildInterruptContent(agentSessionId: string, codexTurnId?: string): string | null {
-    if (!agentSessionId || !codexTurnId)
-      return null
-    return buildCodexInterruptRequest(agentSessionId, codexTurnId)
-  },
-
-  isAskUserQuestion(payload) {
-    return (payload as Record<string, unknown>).method === 'item/tool/requestUserInput'
-  },
-
-  extractAskUserQuestions(payload) {
-    const params = pickObject(payload, 'params')
-    return Array.isArray(params?.questions) ? params!.questions as Question[] : []
-  },
-
-  async sendAskUserQuestionResponse(agentId, sendControlResponse, requestId, questions, askState, _payload) {
-    await sendCodexUserInputResponse(agentId, sendControlResponse, requestId, questions, askState)
+  askUserQuestion: {
+    isRequest: payload => payload.method === 'item/tool/requestUserInput',
+    extractQuestions(payload) {
+      const params = pickObject(payload, 'params')
+      return Array.isArray(params?.questions) ? params.questions as Question[] : []
+    },
+    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState) =>
+      sendCodexUserInputResponse(agentId, sendControlResponse, requestId, questions, askState),
+    sendReject: (agentId, sendControlResponse, requestId) =>
+      sendCodexUserInputRejectResponse(agentId, sendControlResponse, requestId),
   },
 
   buildControlResponse(payload, content, requestId) {
-    const response = acpBuildControlResponse(payload, content, requestId)
-    // Codex's plan-mode prompt response carries an extra marker so the worker
-    // can route it back into the plan-mode handshake instead of the regular
-    // tool-approval flow.
+    const method = pickString(payload, 'method', '')
     if (getToolName(payload) === 'CodexPlanModePrompt')
-      response.codexPlanModePrompt = true
-    return response
+      return markCodexPlanPromptResponse(content ? buildDenyResponse(requestId, content) : buildAllowResponse(requestId, getToolInput(payload)))
+    if (method === 'item/permissions/requestApproval') {
+      return buildJsonRpcResult(requestId, {
+        permissions: content ? {} : codexRequestedPermissions(payload),
+        scope: 'turn',
+      })
+    }
+    const decisions = resolveCodexDecisions(pickObject(payload, 'params')?.availableDecisions)
+    return buildJsonRpcResult(requestId, { decision: content ? decisions.negative : decisions.positive })
   },
+  // The worker already forwards synthetic plan feedback as a user message.
+  controlFeedbackAsFollowUpMessage: payload => getToolName(payload) !== 'CodexPlanModePrompt',
 
   ControlContent: CodexControlContent,
   ControlActions: CodexControlActions,

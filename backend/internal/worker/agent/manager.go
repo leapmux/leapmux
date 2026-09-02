@@ -281,7 +281,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 	}
 
 	groups := provider.OptionGroups()
-	confirmedOptions := CurrentOptions(groups)
+	confirmedOptions := provider.SettingsSnapshot().ConfirmedOptions()
 
 	// done is closed once the exit goroutine below has fully finished (past onExit), so
 	// stopAndWait can block on it before returning -- guaranteeing a restart's new provider is
@@ -580,6 +580,9 @@ func (m *Manager) stopAndWait(agentID string, discardOutput bool) bool {
 // starting a new Codex thread). Returns the new session ID and true if
 // successful, or ("", false) if the provider doesn't support it.
 func (m *Manager) ClearContext(agentID string) (string, bool) {
+	unlock := m.LockAgent(agentID)
+	defer unlock()
+
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
@@ -1015,33 +1018,27 @@ func (m *Manager) PreloadCache(agentID string, groups []*leapmuxv1.AvailableOpti
 	}
 }
 
-// UpdateSettings applies the agent's FULL current option map (id->value, NOT a sparse delta)
-// to a running agent so the next turn picks the change up without a restart. Returns true if the
-// provider accepted the update, false if it requires a restart. See Agent.UpdateSettings for the
-// empty-value semantics (ignored here, not a delete).
-func (m *Manager) UpdateSettings(agentID string, options optionmap.Map) bool {
+// UpdateSettings applies the included options to a running agent. The result
+// identifies live confirmations and values that still need a restart.
+func (m *Manager) UpdateSettings(agentID string, options optionmap.Map) SettingsApplyResult {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 	if !ok {
-		return false
+		return restartRequiredSettings(options)
 	}
 	return p.UpdateSettings(options)
 }
 
-// CurrentOptions returns a snapshot of the running agent's confirmed option
-// values (id->value), or nil if no agent is running with that ID. The snapshot
-// reflects the in-memory state that the live-update (refreshSettingsFromAgent)
-// and restart paths write synchronously, so callers can read back the
-// model/effort the agent actually confirmed without a DB round-trip.
-func (m *Manager) CurrentOptions(agentID string) map[string]string {
+// CurrentSettings returns the running provider's typed settings snapshot.
+func (m *Manager) CurrentSettings(agentID string) SettingsApplyResult {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
 	m.mu.RUnlock()
 	if !ok {
-		return nil
+		return SettingsApplyResult{}
 	}
-	return CurrentOptions(p.OptionGroups())
+	return p.SettingsSnapshot()
 }
 
 // HasAgent returns true if an agent is running with the given agent ID.

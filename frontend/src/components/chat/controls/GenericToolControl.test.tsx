@@ -1,9 +1,8 @@
-import type { AskQuestionState } from '~/components/chat/controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { GenericToolActions } from '~/components/chat/controls/GenericToolControl'
+import { createAskQuestionState } from '~/test-support/askQuestionState'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
@@ -13,13 +12,6 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
       request: { tool_name: 'Bash', input: { command: 'ls' } },
     },
   }
-}
-
-function makeAskState(): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
 }
 
 describe('genericToolActions', () => {
@@ -37,12 +29,11 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={vi.fn()}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -56,12 +47,11 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={vi.fn()}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -78,12 +68,11 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={request}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={vi.fn()}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -98,20 +87,41 @@ describe('genericToolActions', () => {
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
   })
 
+  it('sends deny response when deny is clicked with an empty editor', () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <GenericToolActions
+        request={makeRequest('req-deny', 'agent-deny')}
+        askState={createAskQuestionState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+
+    fireEvent.click(screen.getByTestId('control-deny-btn'))
+
+    expect(onRespond).toHaveBeenCalledOnce()
+    const [agentId, bytes] = onRespond.mock.calls[0]
+    expect(agentId).toBe('agent-deny')
+    expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
+      response: { request_id: 'req-deny', response: { behavior: 'deny' } },
+    })
+  })
+
   it('sends allow response and changes permission mode when bypass is clicked', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    const onPermissionModeChange = vi.fn()
+    const applyBypass = vi.fn()
     const request = makeRequest('req-42', 'agent-7')
 
     render(() => (
       <GenericToolActions
         request={request}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={onPermissionModeChange}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: applyBypass }}
       />
     ))
 
@@ -130,19 +140,17 @@ describe('genericToolActions', () => {
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
 
     // Verify permission mode change
-    expect(onPermissionModeChange).toHaveBeenCalledOnce()
-    expect(onPermissionModeChange).toHaveBeenCalledWith('bypassPermissions')
+    expect(applyBypass).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
   })
 
   it('does not show the bypass switch without a bypass mode', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        onPermissionModeChange={vi.fn()}
       />
     ))
 

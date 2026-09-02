@@ -35,8 +35,11 @@ func (idleAgent) Wait() error                                     { return nil }
 func (idleAgent) Stderr() string                                  { return "" }
 func (idleAgent) HandleOutput([]byte)                             {}
 func (idleAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup { return nil }
-func (idleAgent) UpdateSettings(optionmap.Map) bool               { return true }
-func (idleAgent) Interrupt() error                                { return nil }
+func (idleAgent) SettingsSnapshot() SettingsApplyResult           { return confirmedSettings(nil) }
+func (idleAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
+	return confirmedSettings(options)
+}
+func (idleAgent) Interrupt() error { return nil }
 
 // livingAgent is an idleAgent that stays registered: its Wait parks until Stop.
 //

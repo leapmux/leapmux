@@ -6,7 +6,6 @@ import { buildDenyResponse } from '~/utils/controlResponse'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { ZCODE_METHOD } from './protocol'
 
 // Side-effect import to register the ZCode plugin.
 import './plugin'
@@ -46,7 +45,7 @@ describe('zcode plugin metadata', () => {
 
   it('carries its mode axis on the permission-mode channel', () => {
     expect(plugin.triggerModeGroupKey).toBe('permissionMode')
-    expect(plugin.bypassPermissionMode).toBe(ZCODE_MODE.Yolo)
+    expect(plugin.bypassSettings?.sets.permissionMode).toBe(ZCODE_MODE.Yolo)
   })
 
   it('configures plan mode against the same axis, defaulting to build', () => {
@@ -73,11 +72,6 @@ describe('zcode plugin metadata', () => {
   // path -- so the UI must not try to render it as a file.
   it('does not treat the session id as a file path', () => {
     expect(plugin.sessionIdIsFilePath).toBeFalsy()
-  })
-
-  it('builds the session/stop frame the backend plugin parses', () => {
-    expect(plugin.buildInterruptContent!('s-1', 'turn-1'))
-      .toBe(JSON.stringify({ method: ZCODE_METHOD.SessionStop }))
   })
 
   // Composer send is the reject path (the placeholder says so). Allow lives on its
@@ -587,16 +581,16 @@ describe('zcode toolResultMeta', () => {
 
 describe('zcode isAskUserQuestion', () => {
   it('recognizes the AskUserQuestion prompt by its recorded tool name', () => {
-    expect(plugin.isAskUserQuestion!({ request: { tool_name: ZCODE_TOOL.AskUserQuestion } })).toBe(true)
+    expect(plugin.askUserQuestion!.isRequest({ request: { tool_name: ZCODE_TOOL.AskUserQuestion } })).toBe(true)
   })
 
   it('rejects the plan approval, which travels over the same method', () => {
-    expect(plugin.isAskUserQuestion!({ request: { tool_name: ZCODE_TOOL.ExitPlanMode } })).toBe(false)
+    expect(plugin.askUserQuestion!.isRequest({ request: { tool_name: ZCODE_TOOL.ExitPlanMode } })).toBe(false)
   })
 
   it('rejects a permission request and an empty payload', () => {
-    expect(plugin.isAskUserQuestion!({ request: { tool_name: ZCODE_TOOL.Bash } })).toBe(false)
-    expect(plugin.isAskUserQuestion!({})).toBe(false)
+    expect(plugin.askUserQuestion!.isRequest({ request: { tool_name: ZCODE_TOOL.Bash } })).toBe(false)
+    expect(plugin.askUserQuestion!.isRequest({})).toBe(false)
   })
 })
 

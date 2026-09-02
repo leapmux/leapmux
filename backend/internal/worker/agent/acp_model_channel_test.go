@@ -1439,7 +1439,7 @@ func TestPrimaryAgentUpdateSettings_IgnoresUnknownExtraKey(t *testing.T) {
 		"thoughtLevel": "high",
 	})
 
-	require.True(t, ok)
+	require.True(t, ok.AppliedLive)
 	recorded := requests()
 	require.Len(t, recorded, 1, "only the model RPC fires; the unsurfaced extra key sends nothing")
 	assert.Equal(t, acpMethodSessionSetConfigOption, recorded[0].Method)
