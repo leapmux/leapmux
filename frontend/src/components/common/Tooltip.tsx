@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import { createEffect, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
 import { srOnly } from '~/styles/shared.css'
 import { holdIsOverMenu, touchReleaseOpensMenu } from './contextMenuGesture'
@@ -294,8 +294,22 @@ export function Tooltip(props: TooltipProps) {
   let hideTimer: ReturnType<typeof setTimeout> | undefined
   let warnedInvalidChild = false
 
+  /**
+   * The body, built ONCE per change rather than once per read.
+   *
+   * `content` is JSX passed as a prop, which Solid compiles to a lazy getter:
+   * every read re-runs it and rebuilds the whole subtree. This component reads
+   * it five times across one hover -- the observer effect below, `show`, the
+   * `aria-describedby` effect, the `Show` condition and the portal -- so four
+   * subtrees were built and thrown away. Worse, the ones built inside `show`
+   * are parented to this component's owner, so they lived until the tooltip
+   * unmounted and grew with every `mouseenter`. The memo makes each read free
+   * and holds one instance.
+   */
+  const contentEl = createMemo(() => props.content)
+
   /** Whether this tooltip has anything to show. */
-  const hasTooltipContent = () => Boolean(props.text || props.content)
+  const hasTooltipContent = () => Boolean(props.text || contentEl())
 
   /**
    * Whether the wrapper takes a real box instead of `display: contents`.
@@ -449,7 +463,7 @@ export function Tooltip(props: TooltipProps) {
   }
 
   const show = () => {
-    if (!props.text && !props.content)
+    if (!hasTooltipContent())
       return
     clearTimers()
     showTimer = setTimeout(present, SHOW_DELAY_MS)
@@ -554,7 +568,7 @@ export function Tooltip(props: TooltipProps) {
       // for the tooltip to open -- nothing can open it without a pointer.
       if (describedAsDisabled() && props.text)
         nextIds.push(descriptionId())
-      if (visible() && (props.text || props.content))
+      if (visible() && hasTooltipContent())
         nextIds.push(`tooltip-${tooltipId}`)
       if (nextIds.length > 0)
         target.setAttribute('aria-describedby', nextIds.join(' '))
@@ -620,7 +634,7 @@ export function Tooltip(props: TooltipProps) {
       <Show when={describedAsDisabled() && props.text && ownsDescription()}>
         <span id={ownDescriptionId} class={srOnly}>{props.text}</span>
       </Show>
-      <Show when={visible() && (props.text || props.content)}>
+      <Show when={visible() && hasTooltipContent()}>
         <Portal>
           <div
             id={`tooltip-${tooltipId}`}
@@ -642,7 +656,7 @@ export function Tooltip(props: TooltipProps) {
               transform: 'translate(-50%, -100%)',
             }}
           >
-            {props.content ?? props.text}
+            {contentEl() ?? props.text}
           </div>
         </Portal>
       </Show>

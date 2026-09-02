@@ -380,7 +380,7 @@ test.describe('Tab close timing', () => {
 
       await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible()
       const tDialogClickMs = await page.evaluate(() => performance.now())
-      await page.getByRole('button', { name: 'Delete' }).click()
+      await page.getByRole('button', { name: 'Delete worktree' }).click()
       await page.getByRole('button', { name: 'Confirm?' }).click()
 
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(0)

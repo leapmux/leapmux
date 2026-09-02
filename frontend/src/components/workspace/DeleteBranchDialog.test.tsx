@@ -75,6 +75,10 @@ function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> =
     workerId: 'w1',
     gitToplevel: '/repo',
     branchName: 'doomed',
+    // The row's seed. Every test here resolves the inspect RPC, and its
+    // `isWorktree` overrules this the moment it lands -- see `seeds the title`
+    // below, which is the one case that reads the seed on its own.
+    isWorktree: false,
     tabs,
     closeWorktreeTabs: makeCloseWorktreeTabs(),
     onClose: vi.fn(),
@@ -84,9 +88,20 @@ function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> =
   return merged
 }
 
+/**
+ * The submit button, whichever noun it carries.
+ *
+ * It is named after what it destroys -- "Delete worktree" removes a directory,
+ * "Delete branch" does not -- so a locator pinned to one spelling would fail on
+ * half these tests. The tests that assert WHICH noun do so explicitly.
+ */
+function deleteButton(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /^Delete (?:branch|worktree)$/ }) as HTMLButtonElement
+}
+
 async function clickDelete() {
   // ConfirmButton arms on first click, fires on the second.
-  fireEvent.click(screen.getByRole('button', { name: 'Delete branch' }))
+  fireEvent.click(deleteButton())
   await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm?' })).toBeInTheDocument())
   fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 }
@@ -115,6 +130,87 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectWorktreeRemoval).mockResolvedValue(makeWorktreeRemovalResp())
   })
 
+  // The dialog names what it destroys. A worktree delete removes a whole
+  // directory; announcing that as "Delete branch" is how a user destroys a
+  // directory they meant to keep.
+  describe('naming the target', () => {
+    it('says worktree in the title, the button and the status rows', async () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+        makeInspectResp({ isWorktree: true, worktreePath: '/home/dev/repos/lm-worktrees/wt' }),
+      )
+      renderDialog({ isWorktree: true })
+
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument())
+      expect(screen.getByRole('button', { name: 'Delete worktree' })).toBeInTheDocument()
+      expect(screen.getByText('Worktree branch')).toBeInTheDocument()
+      expect(screen.getByTestId('working-tree-directory').textContent)
+        .toBe('/home/dev/repos/lm-worktrees/wt')
+    })
+
+    it('says branch in the title, the button and the status rows', async () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp({ isWorktree: false }))
+      renderDialog({ isWorktree: false })
+
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete branch' })).toBeInTheDocument())
+      expect(screen.getByRole('button', { name: 'Delete branch' })).toBeInTheDocument()
+      expect(screen.getByText('Branch')).toBeInTheDocument()
+      // The directory the dialog is locked to. A branch response carries no
+      // worktree path, so `gitToplevel` is the only source for this row.
+      expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo')
+    })
+
+    // Before the inspect RPC lands there is nothing else to go on, and a title
+    // that flips from "branch" to "worktree" a beat later is worse than one
+    // that was right from the start.
+    it('seeds the title from the row while the inspect RPC is in flight', () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockReturnValue(new Promise<InspectBranchDeletionResponse>(() => {}))
+      renderDialog({ isWorktree: true })
+
+      expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument()
+    })
+
+    // The seed is the sidebar bucket's view of the path, and the bucket keeps
+    // the first tab's answer. The worker's own answer wins over it.
+    it('lets the inspect response overrule a wrong seed', async () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+        makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+      )
+      renderDialog({ isWorktree: false })
+
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument())
+    })
+
+    it('states what a worktree delete destroys', async () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+        makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+      )
+      renderDialog({ isWorktree: true })
+
+      await waitFor(() => expect(screen.getByTestId('branch-delete-consequence').textContent)
+        .toBe('Deleting removes this directory and the branch.'))
+    })
+
+    it('states what a branch delete does to the working directory', async () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp({ isWorktree: false }))
+      renderDialog({ isWorktree: false })
+
+      await waitFor(() => expect(screen.getByTestId('branch-delete-consequence').textContent)
+        .toBe('Deleting removes the branch. This working directory switches to the branch you pick below.'))
+    })
+
+    // The "only branch" case offers no delete at all, so promising a switch
+    // target the dialog cannot give would be a lie.
+    it('states no consequence when there is no other branch to switch to', async () => {
+      vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+        makeInspectResp({ isWorktree: false, branches: [] }),
+      )
+      renderDialog({ isWorktree: false })
+
+      await waitFor(() => expect(screen.getByText(/Cannot delete the only branch/)).toBeInTheDocument())
+      expect(screen.queryByTestId('branch-delete-consequence')).toBeNull()
+    })
+  })
+
   it('shows a loader while inspecting branch state', async () => {
     let resolve: (r: InspectBranchDeletionResponse) => void = () => {}
     vi.mocked(workerRpc.inspectBranchDeletion).mockReturnValue(
@@ -138,7 +234,7 @@ describe('deleteBranchDialog', () => {
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const tabs = [makeAgentTab('a1'), makeAgentTab('a2'), makeTerminalTab('t1')]
     const props = renderDialog({ tabs, closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -156,7 +252,7 @@ describe('deleteBranchDialog', () => {
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     renderDialog({ closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -177,7 +273,7 @@ describe('deleteBranchDialog', () => {
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const props = renderDialog({ closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -208,7 +304,7 @@ describe('deleteBranchDialog', () => {
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const props = renderDialog({ closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -232,7 +328,7 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectWorktreeRemoval).mockRejectedValue(new Error('git worktree list: exit status 128'))
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const props = renderDialog({ closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -258,9 +354,9 @@ describe('deleteBranchDialog', () => {
     )
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     renderDialog({ closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
-    const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
+    const del = deleteButton()
     expect(del.disabled).toBe(true)
     expect(reasonOf(del)).toContain('held for review')
     // Visible text, not the tooltip alone: a greyed-out destructive option
@@ -285,7 +381,7 @@ describe('deleteBranchDialog', () => {
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const tabs = [makeAgentTab('a1')]
     const props = renderDialog({ tabs, closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     fireEvent.click(screen.getByRole('button', { name: 'Close tabs, keep worktree' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
@@ -302,9 +398,9 @@ describe('deleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog()
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
-    const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
+    const del = deleteButton()
     expect(del.disabled).toBe(false)
     expect(del.title).toBe('')
     expect(screen.queryByRole('button', { name: 'Close tabs, keep worktree' })).not.toBeInTheDocument()
@@ -321,11 +417,11 @@ describe('deleteBranchDialog', () => {
       }),
     )
     renderDialog()
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     expect(screen.getByText(/could not check whether git will remove this worktree/)).toBeInTheDocument()
     // A skipped check is not a refusal: the removal stays on offer.
-    expect((screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((deleteButton()).disabled).toBe(false)
   })
 
   it('non-worktree variant: a stray blocked reason cannot disable the in-place delete', async () => {
@@ -340,7 +436,7 @@ describe('deleteBranchDialog', () => {
     pickMenuValue('branch-select-menu', 'main')
 
     expect(screen.queryByText(/This worktree is locked/)).not.toBeInTheDocument()
-    expect((screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((deleteButton()).disabled).toBe(false)
   })
 
   it('worktree variant: the confirm button spins while the preflight runs', async () => {
@@ -355,7 +451,7 @@ describe('deleteBranchDialog', () => {
       release = r
     }))
     renderDialog()
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -388,7 +484,7 @@ describe('deleteBranchDialog', () => {
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const tabs = [makeFileTab('f1'), makeFileTab('f2')]
     const props = renderDialog({ tabs, closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
 
     await clickDelete()
 
@@ -401,7 +497,7 @@ describe('deleteBranchDialog', () => {
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
-    const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
+    const del = deleteButton()
     expect(del.disabled).toBe(true)
 
     pickMenuValue('branch-select-menu', 'main')
@@ -587,7 +683,7 @@ describe('deleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog()
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
     // No <select> rendered for the worktree variant.
     expect(screen.queryByText(/Switch this working directory to:/)).toBeNull()
   })
@@ -599,7 +695,7 @@ describe('deleteBranchDialog', () => {
     const onBranchChanged = vi.fn()
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     renderDialog({ onBranchChanged, closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
     await clickDelete()
     await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalled())
     expect(onBranchChanged).not.toHaveBeenCalled()
@@ -644,7 +740,7 @@ describe('deleteBranchDialog', () => {
     await waitFor(() =>
       expect(screen.getByText(/Cannot delete the only branch/)).toBeInTheDocument(),
     )
-    const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
+    const del = deleteButton()
     expect(del.disabled).toBe(true)
   })
 
@@ -794,7 +890,7 @@ describe('deleteBranchDialog', () => {
     const closeWorktreeTabs = makeCloseWorktreeTabs()
     const tabs = [makeAgentTab('a1'), makeFileTab('f1'), makeTerminalTab('t1')]
     renderDialog({ tabs, closeWorktreeTabs })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
     await clickDelete()
     await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledTimes(1))
     // Specifically: the FILE tab is NOT skipped by the dialog.
@@ -890,7 +986,7 @@ describe('deleteBranchDialog', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     renderDialog({ tabs: [] })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
     expect(screen.queryByText(/will be stopped/)).toBeNull()
   })
 
@@ -898,7 +994,7 @@ describe('deleteBranchDialog', () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockRejectedValue(new Error('worker offline'))
     renderDialog()
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
-    const del = screen.getByRole('button', { name: 'Delete branch' }) as HTMLButtonElement
+    const del = deleteButton()
     expect(del.disabled).toBe(true)
   })
 
@@ -927,13 +1023,14 @@ describe('deleteBranchDialog', () => {
     expect(screen.getByText('1 agent and 1 terminal will keep running.')).toBeInTheDocument()
   })
 
-  it('hides the worktree path when the branch is non-worktree', async () => {
+  it('calls a non-worktree checkout a branch, not a worktree', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: false, worktreePath: '' }),
     )
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    expect(screen.queryByText(/Worktree:/)).toBeNull()
+    expect(screen.queryByText('Worktree branch')).toBeNull()
+    expect(screen.getByText('Branch')).toBeInTheDocument()
   })
 
   it('non-worktree variant: a deleteBranch failure surfaces inline and keeps the dialog open', async () => {
@@ -1061,7 +1158,7 @@ describe('deleteBranchDialog', () => {
       }),
     )
     renderDialog({ tabs: [] })
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /Commit and Push|^Push$/ })).toBeNull()
   })
 
@@ -1083,7 +1180,7 @@ describe('deleteBranchDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(screen.getByTestId('delete-branch-refresh-indicator')).toBeInTheDocument())
     // Body stays visible; the indicator is additive, not a replacement.
-    expect(screen.getByText(/Branch:/)).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument()
     // Unblock the refresh so the test doesn't leak the promise.
     resolveSecond(makeInspectResp({ canPush: false, unpushedCommitCount: 0 }))
   })
@@ -1104,14 +1201,14 @@ describe('deleteBranchDialog', () => {
 
     renderDialog({ tabs: [makeTerminalTab('t1')] })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    // Body rendered: "Branch:" line and the switch-to picker visible.
-    expect(screen.getByText(/Branch:/)).toBeInTheDocument()
+    // Body rendered: the branch/directory rows and the switch-to picker.
+    expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument()
 
     // Push triggers handlePushed → refreshInspect → reject.
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
     // The body must still be visible — error never replaces it.
-    expect(screen.getByText(/Branch:/)).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument()
     expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument()
   })
 })

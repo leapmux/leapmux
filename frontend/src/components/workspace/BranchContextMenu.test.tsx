@@ -14,11 +14,16 @@ beforeAll(() => {
   HTMLElement.prototype.togglePopover = vi.fn()
 })
 
-function renderMenu(disabledReason?: string) {
+function renderMenu(disabledReason?: string, isWorktree = false) {
   const onChange = vi.fn()
   const onDelete = vi.fn()
   const result = render(() => (
-    <BranchContextMenu onChangeBranch={onChange} onDeleteBranch={onDelete} disabledReason={disabledReason} />
+    <BranchContextMenu
+      isWorktree={isWorktree}
+      onChangeBranch={onChange}
+      onDeleteBranch={onDelete}
+      disabledReason={disabledReason}
+    />
   ))
   // Before the menu opens, the only button rendered is the trigger.
   const trigger = screen.getByRole('button')
@@ -40,6 +45,38 @@ describe('branchContextMenu', () => {
     await fireEvent.click(screen.getByText('Delete branch...'))
     expect(onDelete).toHaveBeenCalledTimes(1)
     expect(onChange).not.toHaveBeenCalled()
+  })
+
+  // The DELETE item names what it destroys. On a worktree row it removes a
+  // whole directory, and "Delete branch..." there is how a user destroys a
+  // directory they meant to keep. CHANGE keeps its name on both, because a
+  // worktree has a branch checked out and the dialog still changes that branch.
+  describe('on a worktree row', () => {
+    it('names the delete item after the worktree', async () => {
+      const { trigger } = renderMenu(undefined, true)
+      await fireEvent.click(trigger)
+
+      expect(screen.getByText('Delete worktree...')).toBeInTheDocument()
+      expect(screen.queryByText('Delete branch...')).toBeNull()
+      expect(screen.getByText('Change branch...')).toBeInTheDocument()
+    })
+
+    it('fires onDeleteBranch from the renamed item', async () => {
+      const { onChange, onDelete, trigger } = renderMenu(undefined, true)
+      await fireEvent.click(trigger)
+      await fireEvent.click(screen.getByText('Delete worktree...'))
+
+      expect(onDelete).toHaveBeenCalledTimes(1)
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
+    it('still disables both items when the worker is offline', async () => {
+      const { trigger } = renderMenu('Worker "mac-mini" is offline', true)
+      await fireEvent.click(trigger)
+
+      for (const label of ['Change branch...', 'Delete worktree...'])
+        expect(screen.getByText(label)).toBeDisabled()
+    })
   })
 
   // The offline restriction. Both items stay VISIBLE and disabled rather than
@@ -93,6 +130,7 @@ describe('branchContextMenu', () => {
       const onDelete = vi.fn()
       render(() => (
         <BranchContextMenu
+          isWorktree={false}
           onChangeBranch={onChange}
           onDeleteBranch={onDelete}
           trigger={triggerProps => (
@@ -113,6 +151,7 @@ describe('branchContextMenu', () => {
       const onDelete = vi.fn()
       render(() => (
         <BranchContextMenu
+          isWorktree={false}
           onChangeBranch={onChange}
           onDeleteBranch={onDelete}
           trigger={triggerProps => (

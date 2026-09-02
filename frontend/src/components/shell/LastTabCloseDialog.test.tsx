@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -18,6 +19,15 @@ vi.mock('~/components/common/Toast', () => ({
   showInfoToast: vi.fn(),
   showWarnToast: vi.fn(),
   showErrorToast: vi.fn(),
+}))
+
+vi.mock('~/stores/workerInfo.store', () => ({
+  workerInfoStore: {
+    fetchWorkerInfo: vi.fn().mockResolvedValue(undefined),
+    workerInfo: () => null,
+    getHomeDir: () => '/home/u',
+    getOs: () => undefined,
+  },
 }))
 
 type GitStateFlat = Partial<{
@@ -108,58 +118,59 @@ function reasonOf(el: Element): string {
 }
 
 describe('lastTabCloseDialog', () => {
-  it('renders the worktree variant with worktree path and Delete button', () => {
+  it('renders the worktree variant with its directory and a Delete worktree button', () => {
     renderDialog(makeState({
       target: LastTabCloseTarget.WORKTREE,
       worktreePath: '/tmp/wt',
       branchName: 'wt-branch',
     }))
-    expect(screen.getByText(/closes the last tab for worktree/)).toBeInTheDocument()
-    // The path appears twice: once in the header sentence and once in
-    // BranchStatusInfo's "Worktree:" line.
-    expect(screen.getAllByText('/tmp/wt').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(screen.getByText('This closes the last tab for this worktree.')).toBeInTheDocument()
+    // The kind and the directory come from the shared status rows now. The
+    // intro sentence used to print the path too, raw and unabbreviated, so the
+    // same string reached the reader twice in two different spellings.
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('/tmp/wt')
+    expect(screen.getByRole('button', { name: 'Delete worktree' })).toBeInTheDocument()
   })
 
-  it('worktree variant intro paragraph wraps the path in <code> and omits the branch sentence', () => {
-    // Pin the Show/fallback split: rendering the worktree intro must not
-    // also render the branch intro, and the path must live inside a
-    // <code> element so it picks up monospace styling.
+  it('worktree variant states the kind once and omits the branch sentence', () => {
+    // Pin the Show/fallback split: rendering the worktree intro must not also
+    // render the branch intro.
     renderDialog(makeState({
       target: LastTabCloseTarget.WORKTREE,
       worktreePath: '/tmp/wt',
       branchName: 'wt-branch',
     }))
-    const intro = screen.getByText(/closes the last tab for worktree/).closest('p')
-    expect(intro).not.toBeNull()
-    const code = intro!.querySelector('code')
-    expect(code?.textContent).toBe('/tmp/wt')
-    // The branch-variant copy must be absent — the Show fallback only
-    // renders for the non-worktree target.
-    expect(screen.queryByText(/closes the last non-worktree tab for branch/)).toBeNull()
+    // `.tagName`, not `.closest('p')`: `getByText` returns the paragraph itself
+    // (the sentence is its whole text), so `closest('p')` returns that same
+    // node and can never be null -- an assertion that states nothing.
+    expect(screen.getByText('This closes the last tab for this worktree.').tagName).toBe('P')
+    expect(screen.queryByText(/last non-worktree tab/)).toBeNull()
   })
 
-  it('renders the branch variant without a Delete button', () => {
+  it('renders the branch variant with its directory and no Delete button', () => {
     renderDialog(makeState({
       target: LastTabCloseTarget.BRANCH,
       hasUncommittedChanges: true,
       diffAdded: 3,
     }))
-    expect(screen.getByText(/closes the last non-worktree tab for branch/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+    expect(screen.getByText('This closes the last non-worktree tab for this branch.')).toBeInTheDocument()
+    // A branch close acts on the main repo root, so THAT is the directory the
+    // rows name -- `worktreePath` is empty on this target.
+    expect(screen.getByText('Branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo')
+    expect(screen.queryByRole('button', { name: /^Delete/ })).not.toBeInTheDocument()
   })
 
-  it('branch variant intro paragraph wraps the branch name in <code> and omits the worktree sentence', () => {
+  it('branch variant states the kind once and omits the worktree sentence', () => {
     renderDialog(makeState({
       target: LastTabCloseTarget.BRANCH,
       branchName: 'release/v1',
       worktreePath: '',
     }))
-    const intro = screen.getByText(/closes the last non-worktree tab for branch/).closest('p')
-    expect(intro).not.toBeNull()
-    const code = intro!.querySelector('code')
-    expect(code?.textContent).toBe('release/v1')
-    expect(screen.queryByText(/closes the last tab for worktree/)).toBeNull()
+    expect(screen.getByText('This closes the last non-worktree tab for this branch.').tagName).toBe('P')
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('release/v1')
+    expect(screen.queryByText(/closes the last tab for this worktree/)).toBeNull()
   })
 
   it('renders BranchStatusInfo with agentCount=1 when tabType is AGENT', () => {
@@ -191,7 +202,7 @@ describe('lastTabCloseDialog', () => {
       tabType: TabType.FILE,
     }))
     expect(screen.getByText('1 file will be closed.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete worktree' })).toBeInTheDocument()
     // FILE closes stop no running process, so the agent/terminal verb
     // must not appear at all.
     expect(screen.queryByText(/will be stopped/)).toBeNull()
@@ -222,7 +233,7 @@ describe('lastTabCloseDialog', () => {
       worktreePath: '/tmp/wt',
       resolve,
     }))
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete worktree' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
     expect(resolve).toHaveBeenCalledWith('schedule-delete')
     expect(onDismiss).toHaveBeenCalled()
@@ -237,7 +248,7 @@ describe('lastTabCloseDialog', () => {
       worktreePath: '/tmp/wt',
       worktreeRemovalBlockedReason: 'This worktree is locked (held for review). Unlock it with `git worktree unlock` first.',
     }))
-    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
+    const del = screen.getByRole('button', { name: 'Delete worktree' }) as HTMLButtonElement
     expect(del.disabled).toBe(true)
     // Visible, not in the tooltip alone: a greyed-out destructive option with
     // no stated reason looks like a defect.
@@ -267,7 +278,7 @@ describe('lastTabCloseDialog', () => {
       worktreeRemovalBlockedReason: 'This worktree is locked. Unlock it with `git worktree unlock` first.',
       resolve,
     }))
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete worktree' }))
     expect(screen.queryByRole('button', { name: 'Confirm?' })).not.toBeInTheDocument()
     expect(resolve).not.toHaveBeenCalled()
     expect(onDismiss).not.toHaveBeenCalled()
@@ -281,7 +292,7 @@ describe('lastTabCloseDialog', () => {
       worktreePath: '/tmp/wt',
       worktreeRemovalBlockedReason: '',
     }))
-    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
+    const del = screen.getByRole('button', { name: 'Delete worktree' }) as HTMLButtonElement
     expect(del.disabled).toBe(false)
     expect(del).not.toHaveAttribute('aria-describedby')
   })
@@ -296,7 +307,7 @@ describe('lastTabCloseDialog', () => {
       worktreeRemovalBlockedReason: 'This worktree is locked. Unlock it with `git worktree unlock` first.',
     }))
     expect(screen.queryByText(/worktree is locked/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Delete/ })).not.toBeInTheDocument()
   })
 
   it('disarms an armed Delete when the removal becomes blocked', () => {
@@ -312,7 +323,7 @@ describe('lastTabCloseDialog', () => {
     }))
     render(() => <LastTabCloseDialog state={state()} onDismiss={vi.fn()} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete worktree' }))
     expect(screen.getByRole('button', { name: 'Confirm?' })).toBeInTheDocument()
 
     setState(makeState({
@@ -321,7 +332,7 @@ describe('lastTabCloseDialog', () => {
       worktreeRemovalBlockedReason: 'This worktree is locked. Unlock it with `git worktree unlock` first.',
     }))
 
-    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
+    const del = screen.getByRole('button', { name: 'Delete worktree' }) as HTMLButtonElement
     expect(del.disabled).toBe(true)
     expect(screen.queryByRole('button', { name: 'Confirm?' })).not.toBeInTheDocument()
   })
@@ -336,7 +347,7 @@ describe('lastTabCloseDialog', () => {
       errorHint: 'could not check whether git will remove this worktree',
     }))
     expect(screen.getByText(/could not check whether git will remove this worktree/)).toBeInTheDocument()
-    expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Delete worktree' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('push button is "Commit and Push" when uncommitted changes exist', () => {
@@ -520,5 +531,36 @@ describe('lastTabCloseDialog', () => {
   it('shows the "no changes" line when the branch is clean', () => {
     renderDialog(makeState())
     expect(screen.getByText('No uncommitted changes or unpushed commits.')).toBeInTheDocument()
+  })
+
+  /**
+   * The home-dir fetch is keyed to the WORKER ID, not to the mount.
+   *
+   * `AppShellDialogs` renders this dialog under a deliberately NON-keyed
+   * `<Show>`, so a second `open()` re-points the same component instance
+   * without remounting it. Two tab groups closing in sequence on different
+   * workers reach exactly that: an `onMount` fetch warms the first worker and
+   * never the second, and the second prompt then prints a raw absolute path
+   * while every other surface shortens it.
+   */
+  it('fetches the home dir again when the payload swaps to another worker', async () => {
+    const [state, setState] = createSignal(makeState({ workerId: 'w1' }))
+    render(() => <LastTabCloseDialog state={state()} onDismiss={vi.fn()} />)
+
+    await waitFor(() => expect(workerInfoStore.fetchWorkerInfo).toHaveBeenCalledWith('w1'))
+
+    setState(makeState({ workerId: 'w2' }))
+
+    await waitFor(() => expect(workerInfoStore.fetchWorkerInfo).toHaveBeenCalledWith('w2'))
+  })
+
+  it('shortens the directory against the worker home dir', () => {
+    renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/home/u/w/feature',
+      branchName: 'feature',
+    }))
+
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('~/w/feature')
   })
 })

@@ -69,8 +69,9 @@ export const LabelWithDiffStats: Component<{ label: string, stats: DiffStats | n
 
 /**
  * Visible row pattern: a label + diff-stats badge wrapped as a single
- * Tooltip target. The tooltip appears only when the row is clipped
- * (`showWhen='clipped'`) and reuses {@link LabelWithDiffStats} for content.
+ * Tooltip target. By default the tooltip appears only when the row is clipped
+ * and reuses {@link LabelWithDiffStats} for content. `tooltipContent` replaces
+ * that body and `showWhen` decides when it opens; the two are independent.
  *
  * `label` may be plain text or JSX (e.g. a styled inner span). `tooltipLabel`
  * is the text shown in the tooltip body — defaults to `label` when it's a
@@ -80,13 +81,36 @@ export const LabelWithDiffStats: Component<{ label: string, stats: DiffStats | n
 export const RowLabelWithStats: Component<{
   label: JSX.Element
   tooltipLabel?: string
+  /**
+   * Replaces the default label+stats tooltip body.
+   *
+   * Pass no interactive element and no nested `Tooltip`: a tooltip's portal is
+   * `pointer-events: none`, so nothing inside it can be reached.
+   */
+  tooltipContent?: JSX.Element
+  /**
+   * When the tooltip opens. Defaults to `'clipped'`, which repeats a label the
+   * row had to truncate.
+   *
+   * A caller that passes `tooltipContent` normally wants `'always'`, because a
+   * custom body states facts that are nowhere else on the row — the sidebar's
+   * branch row names the kind of checkout and its directory, and a
+   * clipped-only tooltip would hide both whenever the label happens to fit.
+   *
+   * It is a PROP and never derived from `tooltipContent`. JSX passed as a prop
+   * compiles to a lazy getter, so a `props.tooltipContent ? … : …` test builds
+   * the whole body just to read its truthiness — and `Tooltip` reads `showWhen`
+   * from a bare `setTimeout`, outside any owner, where those computations are
+   * never disposed.
+   */
+  showWhen?: 'always' | 'clipped'
   stats: DiffStats | null | undefined
 }> = (props) => {
   const tooltipText = () => props.tooltipLabel ?? (typeof props.label === 'string' ? props.label : '')
   return (
     <Tooltip
-      content={<LabelWithDiffStats label={tooltipText()} stats={props.stats} />}
-      showWhen="clipped"
+      content={props.tooltipContent ?? <LabelWithDiffStats label={tooltipText()} stats={props.stats} />}
+      showWhen={props.showWhen ?? 'clipped'}
     >
       <span class={labelWithStats}>
         {props.label}

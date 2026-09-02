@@ -37,7 +37,7 @@ Repo group   (Repo label)
 ```
 
 - The **repo group** header shows the repository, with the origin URL (or the toplevel path for a local repo with no origin) in its tooltip.
-- Each **branch group** header shows the branch name and a diff-stats badge summarizing changes in that working directory.
+- Each **branch group** header shows the branch name and a diff-stats badge summarizing changes in that working directory. Its icon states which kind of checkout the row is: a branch glyph for a branch in the main checkout, a folder-with-arrow glyph for a linked worktree. Hover the name for both facts in words — **Worktree branch** or **Branch** with the branch name, and **Directory** with the path it lives in. When the same branch name sits on more than one Worker, a **Worker** row names the machine, so two rows that otherwise read alike stay distinguishable before you delete one of them.
 - LeapMux groups tabs by branch name, Worker, and repository path together, so two clones of the same repo on the same branch stay in separate groups.
 
 A working directory with no current branch carries a state label instead. **`(no branch)`** means a repository with no commits yet, or a tab LeapMux has not yet stamped with its git state — a new tab shows it for a moment, then picks up its real branch. A detached HEAD carries the **short commit SHA** (e.g. `a1b2c3d`). **Create new branch** moves either one onto a real branch.
@@ -49,17 +49,19 @@ Each branch row has a **`...`** context menu with exactly two items:
 | Item | What it does |
 |---|---|
 | **Change branch...** | Opens the [Change branch dialog](#changing-the-branch-on-a-tab). |
-| **Delete branch...** | Opens the [Delete branch dialog](#deleting-a-branch) (styled in red). |
+| **Delete worktree...** / **Delete branch...** | Opens the [delete dialog](#deleting-a-branch-or-a-worktree) (styled in red). |
+
+The change item keeps one name on both kinds, because a worktree has a branch checked out and the dialog changes that branch either way. The delete item is named after what it removes: **Delete worktree...** on a linked worktree, which removes a directory, and **Delete branch...** on a branch in the main checkout, which does not.
 
 Both items act through the Worker that hosts the repository. LeapMux greys them out, with the reason on hover, while that Worker is offline. The `(no branch)` row carries no menu at all, because it has no branch to change or delete.
 
 {{< callout type="info" >}}
-A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there — the row identifies a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
+A detached-HEAD row keeps its menu, because its short-SHA label is a real label. The branch delete fails there — the row identifies a commit, not a branch — and only after LeapMux switches the working directory to the branch you picked. Use **Create new branch** first to get onto a real branch.
 {{< /callout >}}
 
 ### The branch chip in the composer
 
-The composer's status bar carries the same two items behind a branch-name chip, so you can change or delete the branch without opening the sidebar. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the sidebar's branch row keeps both actions.
+The composer's status bar carries the same two items behind a branch-name chip, so you can change or delete the branch without opening the sidebar. The chip carries the same kind icon as the sidebar row, and hovering it gives the same **Worktree branch** / **Branch** and **Directory** rows. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the **[+]** menu's own branch row keeps the icon, the hover rows and both actions.
 
 ## Choosing a branch or worktree when you open a tab
 
@@ -154,15 +156,15 @@ The sidebar labels update as soon as the change completes. The file browser's gi
 Switching branches with uncommitted changes can fail or discard work. If the dialog reports uncommitted changes, commit or push them first (see [Pushing a branch](#pushing-a-branch)).
 {{< /callout >}}
 
-## Deleting a branch
+## Deleting a branch or a worktree
 
-Open the branch row's **`...`** menu and choose **Delete branch...** to open the **Delete branch** dialog. It shows a [branch status block](#branch-status-indicators) and a sentence describing which tabs are affected. The primary action is the red **Delete branch** button; there is also a **Cancel** button and, when there is pushable work, a [Push](#pushing-a-branch) button.
+Open the branch row's **`...`** menu and choose the delete item. The dialog it opens is titled after what it removes — **Delete worktree** for a linked worktree, **Delete branch** for a branch in the main checkout — and its red primary button carries the same words. Alongside it are a **Cancel** button and, when there is pushable work, a [Push](#pushing-a-branch) button.
 
-Deletion behaves differently depending on whether the branch is a linked worktree.
+The dialog shows a [branch status block](#branch-status-indicators), a sentence describing which tabs are affected, and a sentence stating what the delete does: a worktree delete removes the directory and the branch, while a branch delete removes the branch and switches the working directory to the branch you pick.
 
 ### Deleting a linked worktree
 
-There is no "switch to" picker, and the status block notes that the group's tabs *will be stopped*. **Delete branch** closes every tab in the group and removes the worktree. Once the last tab that points at that worktree is gone, the Worker runs `git worktree remove`, deletes the branch, and drops its record. It skips the branch delete when another worktree still has that branch checked out, so a branch you added to two worktrees survives the first removal.
+There is no "switch to" picker, and the status block notes that the group's tabs *will be stopped*. **Delete worktree** closes every tab in the group and removes the worktree. Once the last tab that points at that worktree is gone, the Worker runs `git worktree remove`, deletes the branch, and drops its record. It skips the branch delete when another worktree still has that branch checked out, so a branch you added to two worktrees survives the first removal.
 
 The dialog checks that git accepts the removal, then closes and leaves the work running on the Worker. The Worker needs a moment to stop an agent and delete a large working copy, so the directory disappears shortly after the tabs do. A worktree that another tab still uses, or one LeapMux does not track (a directory you created yourself with `git worktree add`), stays on disk.
 
@@ -180,7 +182,7 @@ Branch deletion is a force-delete (`git branch -D`). Unmerged commits on the del
 
 ## Pushing a branch
 
-The Delete branch dialog and the Close last tab dialog both offer a push button when the branch has work to push. The Delete branch dialog also needs a tab in the group that carries a working directory, which is the directory it pushes from. The label adapts:
+The delete dialog and the Close last tab dialog both offer a push button when the branch has work to push. The delete dialog also needs a tab in the group that carries a working directory, which is the directory it pushes from. The label adapts:
 
 | Branch state | Button label |
 |---|---|
@@ -197,10 +199,10 @@ Use **Commit and Push** as a quick "save my work before I switch or delete" befo
 
 ## Branch status indicators
 
-The Delete branch and Close last tab dialogs share a status block that summarizes the branch's git state. Depending on the state, it shows some of:
+The delete and Close last tab dialogs share a status block that summarizes the branch's git state. It opens with two labelled rows, then shows some of the lines below depending on the state:
 
-- **Worktree:** `path` — only for a linked worktree.
-- **Branch:** `name`.
+- **Worktree branch** or **Branch**, with the branch name — the same labels and the same glyph the sidebar row carries. A linked worktree has a branch checked out like any other checkout, so the label names the branch and the kind at once.
+- **Directory**, with the path that checkout lives in, shortened to `~` under your home directory on the Worker.
 - **Uncommitted changes:** with a diff-stats badge — when the working copy is dirty.
 - ***N* commit(s) not pushed.** — when there are unpushed commits.
 - **Branch not pushed to remote.** — when the branch has no remote counterpart.
@@ -213,18 +215,18 @@ The sidebar branch-group header also carries a diff-stats badge (`+N -M *U`) so 
 
 Closing tabs is where you are most likely to lose work, so LeapMux guards the last tab of a worktree or branch. When you close the **last** tab of a worktree, or the last non-worktree tab on a branch that has uncommitted changes, unpushed commits, or a missing remote, the **Close last tab** dialog appears.
 
-It identifies what you are about to close — the worktree path, or the branch — and shows the same [branch status block](#branch-status-indicators). Its buttons:
+Its opening sentence states which kind of checkout you are about to close, and the [branch status block](#branch-status-indicators) below names it and gives its directory. Its buttons:
 
 | Button | Effect |
 |---|---|
 | **Cancel** | Aborts the close — nothing happens. |
 | **Push** / **Commit and Push** | Pushes your work first (shown only when there is pushable work). |
-| **Delete** (worktree targets only) | Closes the tabs and schedules the worktree for removal. |
+| **Delete worktree** (worktree targets only) | Closes the tabs and schedules the worktree for removal. |
 | **Close anyway** | Closes the tab(s) but keeps the worktree on disk. |
 
-If git refuses the removal — the worktree is locked, for example — **Delete** is unavailable and the reason appears above the buttons. **Close anyway** still closes the tab.
+If git refuses the removal — the worktree is locked, for example — **Delete worktree** is unavailable and the reason appears above the buttons. **Close anyway** still closes the tab.
 
-LeapMux removes a worktree only as part of closing the tabs that point at it, so a removal never deletes a worktree that a live tab still uses. **Delete** here covers the last tab on that worktree. [**Delete branch...**](#deleting-a-linked-worktree) on the branch row covers the whole group at once.
+LeapMux removes a worktree only as part of closing the tabs that point at it, so a removal never deletes a worktree that a live tab still uses. **Delete worktree** here covers the last tab on that worktree. [**Delete worktree...**](#deleting-a-linked-worktree) on the branch row covers the whole group at once.
 
 {{< callout type="warning" >}}
 **Close anyway** does not push and does not delete. It closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab that points at it. Use **Push** / **Commit and Push** first if the status block shows work you want to keep.

@@ -143,7 +143,7 @@ Key behaviors:
 - The dropdown lists **only online Workers**. If none are online, it shows a single, unselectable option: **No workers online**.
 - Each option is labeled `name (version, os, arch)` — for example `build-box (1.4.0, linux, arm64)` — falling back to the raw Worker ID if the Worker's details haven't been fetched yet.
 - When something is online and nothing is selected, the dialog preselects a sensible default (the current tab's Worker if it's online, otherwise the first online Worker).
-- Some dialogs are locked to a single Worker and show no dropdown at all — for example *Change branch* / *Delete branch*, which must act on the Worker that already hosts the worktree.
+- Some dialogs are locked to a single Worker and show no dropdown at all — for example *Change branch*, *Delete worktree* and *Delete branch*, which must act on the Worker that already hosts the checkout.
 
 Worker details are cached for about a minute, so reopening a dialog doesn't re-fetch worker details; click **Refresh workers** to force a re-list (for example, right after a new Worker comes online).
 

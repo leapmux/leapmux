@@ -23,8 +23,9 @@ function gitState(overrides: Partial<BranchGitState> = {}): BranchGitState {
 function branch(overrides: Partial<BranchSnapshot> = {}): BranchSnapshot {
   return {
     isWorktree: false,
-    worktreePath: '',
     branchName: 'feature',
+    directory: '/Users/dev/repos/leapmux',
+    homeDir: '/Users/dev',
     gitState: gitState(),
     ...overrides,
   }
@@ -41,20 +42,44 @@ function affectedTabs(overrides: Partial<AffectedTabs> = {}): AffectedTabs {
 }
 
 describe('branchStatusInfo', () => {
-  it('hides the worktree line when isWorktree is false', () => {
+  it('names the main working tree a branch and gives its directory', () => {
     render(() => <BranchStatusInfo branch={branch()} affectedTabs={affectedTabs()} />)
-    expect(screen.queryByText(/Worktree:/)).toBeNull()
+
+    expect(screen.getByText('Branch')).toBeInTheDocument()
+    expect(screen.queryByText('Worktree branch')).toBeNull()
+    // The directory shows for a plain branch too. Without it a user with two
+    // clones of the same repo cannot tell which one the dialog acts on.
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('~/repos/leapmux')
   })
 
-  it('shows worktree path when isWorktree is true', () => {
+  it('names a linked worktree and gives its directory', () => {
     render(() => (
       <BranchStatusInfo
-        branch={branch({ isWorktree: true, worktreePath: '/tmp/wt' })}
+        branch={branch({ isWorktree: true, directory: '/Users/dev/repos/leapmux-worktrees/wt' })}
         affectedTabs={affectedTabs()}
       />
     ))
-    expect(screen.getByText(/Worktree:/)).toBeInTheDocument()
-    expect(screen.getByText('/tmp/wt')).toBeInTheDocument()
+
+    // "Worktree branch", not "Worktree": the value beside it is the branch
+    // name, and a bare kind read as though it were the directory.
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
+    expect(screen.queryByText('Branch')).toBeNull()
+    expect(screen.getByTestId('working-tree-directory').textContent)
+      .toBe('~/repos/leapmux-worktrees/wt')
+  })
+
+  // The path used to render raw here while every other surface tilde-compressed
+  // it, so the same directory read two ways in two places.
+  it('leaves the directory absolute when the worker home dir is unknown', () => {
+    render(() => (
+      <BranchStatusInfo
+        branch={branch({ homeDir: undefined })}
+        affectedTabs={affectedTabs()}
+      />
+    ))
+
+    expect(screen.getByTestId('working-tree-directory').textContent)
+      .toBe('/Users/dev/repos/leapmux')
   })
 
   it('shows clean message when nothing to lose', () => {

@@ -4,7 +4,7 @@ import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { createMemo, createSignal, onMount } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
-import { buildInfo, EMPTY_INFO } from '~/hooks/useGitPathInfo'
+import { buildInfo } from '~/hooks/useGitPathInfo'
 import { createLogger } from '~/lib/logger'
 import { basename } from '~/lib/paths'
 
@@ -155,11 +155,22 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
       // path is no longer a git repo (rm -rf .git, mount loss, worker
       // permission flip), keeping the seed would stack branch radios on
       // top of an error banner for a destination the worker rejected.
-      // Routing through EMPTY_INFO (the single source of truth from
-      // useGitPathInfo) means a new GitInfoFields field added later
-      // automatically lands here at its zero value — no parallel edit
-      // to keep in sync with applySuccess.
-      setInfo(EMPTY_INFO)
+      // buildInfo() overlays EMPTY_INFO (the single source of truth from
+      // useGitPathInfo), so a new GitInfoFields field added later lands
+      // here at its zero value — no parallel edit to keep in sync with
+      // applySuccess.
+      //
+      // The KIND and the BRANCH LABEL survive the reset. They come from the
+      // row that opened the dialog, not from the worker, so a failed RPC
+      // disproves neither — and the dialog's header renders ABOVE
+      // GitOptionsLoader, so zeroing them relabelled a worktree "Branch" with
+      // a blank name beside the error banner. `isGitRepo` still defaults to
+      // false, which is what hides GitOptions.
+      setInfo(buildInfo({
+        isRepoRoot: !seedIsWorktree,
+        isWorktreeRoot: seedIsWorktree,
+        currentBranch: args.branchName ?? '',
+      }))
       args.onError?.(err)
       setBranchesLoading(false)
     },

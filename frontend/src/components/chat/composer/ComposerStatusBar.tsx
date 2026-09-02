@@ -1,12 +1,13 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { groupHasOptions, OPTION_ID_EFFORT, OPTION_ID_MODEL } from '~/components/chat/settingsGroups'
 import * as styles from './composer.css'
-import { GitBranchChip } from './GitBranchChip'
 import { OptionAxisChip } from './OptionAxisChip'
+import { WorkingTreeChip } from './WorkingTreeChip'
 
 /**
  * Props for the composer status bar.
@@ -18,8 +19,17 @@ export interface ComposerStatusBarProps {
   optionValues: Record<string, string>
   /** Dispatch a settings change for the model/effort/mode chips. Optional to match the panel's `onChange?`. */
   onSettingChange?: (change: ProviderSettingChange) => void
-  /** Branch label from {@link repoGitView}. */
-  branchName?: string
+  /**
+   * The checkout the branch chip names, resolved from {@link repoGitView}.
+   *
+   * REQUIRED, and passed whole. The bar owns no git state and applies no
+   * default: the panel above it resolves the whole value once, so the chip here
+   * and the `[+]` menu's branch row — the two surfaces one preference toggles
+   * between — cannot read two different answers. An optional prop with a
+   * `?? false` repair here would let a new host omit the kind and paint a
+   * worktree as a branch, with no compile error.
+   */
+  workingTree: WorkingTreeInfo
   /** Branch chip callbacks. */
   onChangeBranch: () => void
   onDeleteBranch: () => void
@@ -53,8 +63,8 @@ function hasGroup(agent: AgentInfo | undefined, id: string): boolean {
 }
 
 /**
- * The slim status bar beneath the composer box: left cluster = GitBranch chip
- * + Model/Effort/Mode chips; right cluster = the session info trigger
+ * The slim status bar beneath the composer box: left cluster = working-tree
+ * chip + Model/Effort/Mode chips; right cluster = the session info trigger
  * (ContextUsage + RateLimit). Each chip is hidden when its underlying group is
  * absent (pre-handshake model, a provider without effort, etc.), mirroring the
  * fused trigger label's `hasGroup` test.
@@ -68,8 +78,8 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
   return (
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
-        <GitBranchChip
-          branchName={props.branchName}
+        <WorkingTreeChip
+          workingTree={props.workingTree}
           disabledReason={props.branchDisabledReason}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}

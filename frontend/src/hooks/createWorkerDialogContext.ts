@@ -1,6 +1,7 @@
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
-import { createEffect, createSignal, getOwner, on, onCleanup, onMount } from 'solid-js'
+import { createSignal, getOwner, onCleanup, onMount } from 'solid-js'
 import { workerClient } from '~/api/clients'
+import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
 import { formatErrorMessage } from '~/lib/errors'
 import { createIdentityCache } from '~/lib/identityCache'
 import { resetOnlinePrefetch, shouldPrefetchOnline, workerInfoStore } from '~/stores/workerInfo.store'
@@ -11,9 +12,10 @@ export interface WorkerDialogContextOptions {
   /**
    * When set, the dialog is locked to this worker — `listWorkers` is
    * skipped (no fleet round-trip, no per-worker system-info fan-out) and
-   * only this worker's system info is fetched on demand. Use for
-   * dialogs that don't render a worker selector (e.g. ChangeBranchDialog,
-   * DeleteBranchDialog).
+   * only this worker's system info is fetched on demand. Use for a dialog
+   * that renders no worker selector but still needs the rest of this context
+   * (`ChangeBranchDialog`). A dialog that wants the home directory ALONE calls
+   * `useWorkerHomeDir` instead — see `DeleteBranchDialog`.
    */
   singleWorkerId?: string
   /**
@@ -133,23 +135,19 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
     }
   }
 
-  // Fetch only the selected worker's system info eagerly — that's what
-  // DirectorySelector / GitOptions need for `homeDir` on the first paint.
-  // Info for the rest of the online fleet is prefetched lazily by
+  // Only the SELECTED worker's system info is fetched eagerly — that's what
+  // DirectorySelector / GitOptions need for `homeDir` on the first paint. Info
+  // for the rest of the online fleet is prefetched lazily by
   // `prefetchOnlineWorkerInfos` (wired to the WorkerSelector menu's `onOpen`)
   // so a 10-worker fleet doesn't pay 10 E2EE handshakes at dialog open just to
   // populate menu labels the user may never see.
   //
-  // Gate on `disposed` so a dialog closed during the E2EE handshake
-  // doesn't keep the round-trip alive past dispose. fetchWorkerInfo is
-  // module-scoped (writes into workerInfoStore) so a stray response
-  // wouldn't crash anything, but the wasted handshake + the resulting
-  // store write could roll back a fresher value cached by a parallel
-  // dialog.
-  createEffect(on(workerId, (id) => {
-    if (id && !disposed)
-      workerInfoStore.fetchWorkerInfo(id)
-  }))
+  // `useWorkerHomeDir` owns that fetch and its dispose guard, so a dialog that
+  // needs the home directory alone (the delete dialog, the last-tab prompt)
+  // calls the hook without dragging in the worker list. It tracks `workerId`
+  // reactively, so a worker swap updates every consumer when the new worker's
+  // info lands.
+  const getHomeDir = useWorkerHomeDir(workerId)
 
   // Idempotent guard for the lazy fleet prefetch. The "already fanned
   // out for this id" set lives at module scope in `workerInfo.store`,
@@ -215,12 +213,6 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
         setWorkersRefreshing(false)
     }
   }
-
-  // Bound convenience: callers that pass the home dir to `homeDir` props
-  // (DirectorySelector, GitOptions) read this without threading workerId
-  // alongside. Tracks workerId reactively so a worker swap updates
-  // downstream consumers when the new worker's info lands in the cache.
-  const getHomeDir = () => workerInfoStore.getHomeDir(workerId())
 
   return {
     // Worker selection

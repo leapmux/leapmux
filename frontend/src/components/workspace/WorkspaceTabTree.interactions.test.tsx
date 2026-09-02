@@ -1,12 +1,15 @@
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
+import { label as workingTreeLabel } from '../common/WorkingTree.css'
+import { labelWithStats } from '../tree/sharedTree.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
 
 const repoGitStore = createRepoGitStore()
@@ -606,6 +609,245 @@ describe('workspaceTabTree interactions', () => {
     expect(deleteRef.isWorktree).toBe(false)
   })
 
+  // The reason this whole change exists: two rows that looked identical while
+  // one of them deletes as a directory and the other does not.
+  describe('telling a branch row from a worktree row', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      HTMLElement.prototype.showPopover = vi.fn()
+      HTMLElement.prototype.hidePopover = vi.fn()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    const workerInfo = () => ({
+      name: 'worker-a',
+      os: 'linux',
+      arch: 'arm64',
+      homeDir: '/home/user',
+      version: '0',
+      commitHash: '',
+      buildTime: '',
+      updatedAt: 0,
+    })
+
+    function renderRow(opts: { isWorktree: boolean, toplevel: string, noWorkerInfo?: boolean }) {
+      seedRepo('w1', opts.toplevel, {
+        branch: 'feature',
+        originUrl: 'https://github.com/o/r.git',
+        isWorktree: opts.isWorktree,
+        diffAdded: 38,
+        diffDeleted: 12,
+      })
+      render(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={[{
+            type: TabType.AGENT,
+            workspaceId: 'ws-1',
+            id: 'a1',
+            title: 'a1',
+            tileId: 'tile-1',
+            position: '0',
+            workerId: 'w1',
+            gitToplevel: opts.toplevel,
+          } as Tab]}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          workerInfoFn={opts.noWorkerInfo ? undefined : workerInfo}
+        />
+      ))
+      return screen.getByTestId('tab-tree-branch-group')
+    }
+
+    it('marks a worktree row with the worktree glyph', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      expect(within(row).getByTestId('worktree-icon')).toBeInTheDocument()
+      expect(within(row).queryByTestId('branch-icon')).toBeNull()
+    })
+
+    it('marks a main-repo row with the branch glyph', () => {
+      const row = renderRow({ isWorktree: false, toplevel: '/home/user/Workspaces/r' })
+
+      expect(within(row).getByTestId('branch-icon')).toBeInTheDocument()
+      expect(within(row).queryByTestId('worktree-icon')).toBeNull()
+    })
+
+    // The row is a plain div with no tabindex, so its tooltip opens under a
+    // pointer alone. The glyph is the ONLY thing on the row that states the
+    // kind, so it carries the word too -- otherwise a screen-reader user cannot
+    // tell the row that deletes a directory from the row that does not.
+    it('names a worktree for a screen reader, which the tooltip cannot reach', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      expect(within(row).getByRole('img', { name: 'Worktree' })).toBeInTheDocument()
+    })
+
+    it('names a branch for a screen reader too', () => {
+      const row = renderRow({ isWorktree: false, toplevel: '/home/user/Workspaces/r' })
+
+      expect(within(row).getByRole('img', { name: 'Branch' })).toBeInTheDocument()
+    })
+
+    // On EVERY hover, not only when the label clips: the kind and the directory
+    // are nowhere else on the row, so a clipped-only tooltip would hide both
+    // whenever the branch name happened to fit.
+    it('states the kind, the directory and the diff stats on hover', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip).not.toBeNull()
+      // The ROW label, which states the kind AND that the value is a branch.
+      // `toContain` would pass on the bare kind too, so this is exact.
+      expect(tooltip!.querySelector(`.${workingTreeLabel}`)!.textContent).toBe('Worktree branch')
+      expect(tooltip!.textContent).toContain('~/Workspaces/r-worktrees/feature')
+      // The badge the old tooltip already carried must survive the rewrite.
+      expect(tooltip!.textContent).toContain('+38')
+      expect(tooltip!.textContent).toContain('-12')
+    })
+
+    it('names the main working tree a branch on hover', () => {
+      const row = renderRow({ isWorktree: false, toplevel: '/home/user/Workspaces/r' })
+
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip!.querySelector(`.${workingTreeLabel}`)!.textContent).toBe('Branch')
+      expect(tooltip!.textContent).toContain('~/Workspaces/r')
+    })
+
+    // The row label and the GLYPH's accessible name are two different strings
+    // on the same row: the label says what the value is ("Worktree branch"),
+    // the glyph names the kind alone ("Worktree"). A later edit that collapses
+    // the two functions would make a screen reader announce "Worktree branch"
+    // for an icon that stands for the kind.
+    it('keeps the glyph name and the row label distinct', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      expect(within(row).getByRole('img', { name: 'Worktree' })).toBeInTheDocument()
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip!.querySelector(`.${workingTreeLabel}`)!.textContent).toBe('Worktree branch')
+    })
+
+    // A worker whose system info has not arrived reports no home dir. The row
+    // must still name its directory, absolute rather than wrong.
+    it('shows an absolute directory when no worker info is available', () => {
+      const row = renderRow({
+        isWorktree: true,
+        toplevel: '/home/user/Workspaces/r-worktrees/feature',
+        noWorkerInfo: true,
+      })
+
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip!.textContent).toContain('/home/user/Workspaces/r-worktrees/feature')
+      expect(tooltip!.textContent).not.toContain('~/')
+    })
+
+    /**
+     * Two workers, one branch, the same path under each home directory.
+     *
+     * The visible label disambiguates with `(worker-a)`, but it ellipsizes, and
+     * the tooltip states the branch NAME rather than that label -- so without a
+     * Worker row both rows read `Worktree feature` / `Directory ~/w/r` and the
+     * user cannot tell which machine's directory Delete removes.
+     */
+    it('names the worker when two of them hold the same branch at the same path', () => {
+      const toplevel = '/home/user/w/r'
+      const lookup = (id: string) => ({
+        name: id === 'w1' ? 'build-box' : 'mac-mini',
+        os: 'linux',
+        arch: 'arm64',
+        homeDir: '/home/user',
+        version: '0',
+        commitHash: '',
+        buildTime: '',
+        updatedAt: 0,
+      })
+      for (const id of ['w1', 'w2'])
+        seedRepo(id, toplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git', isWorktree: true })
+      render(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={(['w1', 'w2'] as const).map(id => ({
+            type: TabType.AGENT,
+            workspaceId: 'ws-1',
+            id: `a-${id}`,
+            title: `a-${id}`,
+            tileId: 'tile-1',
+            position: '0',
+            workerId: id,
+            gitToplevel: toplevel,
+          } as Tab))}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          workerInfoFn={lookup}
+        />
+      ))
+
+      const rows = screen.getAllByTestId('tab-tree-branch-group')
+      expect(rows).toHaveLength(2)
+      const workers = rows.map((row) => {
+        const tip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+        const name = tip!.querySelector('[data-testid="working-tree-worker"]')!.textContent
+        unhoverTooltip(row.querySelector(`.${labelWithStats}`)!)
+        return name
+      })
+
+      expect(workers.toSorted()).toEqual(['build-box', 'mac-mini'])
+    })
+
+    // ...and it stays out of the way when one worker owns everything on screen,
+    // where it would be noise on every hover.
+    it('states no worker when a single worker owns the branch', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip!.querySelector('[data-testid="working-tree-worker"]')).toBeNull()
+    })
+
+    // ...and it must SHORTEN once that answer lands. The home dir arrives on
+    // the worker's own system-info RPC, which resolves after the first paint,
+    // so the tree's `workerInfoFn` projection has to depend on `homeDir`. It
+    // tracked the worker NAME alone, which is enough for the collision label
+    // (that needs two workers) and not enough for this row (every row reads
+    // the home dir, and one worker is the common case).
+    it('shortens the directory when the worker system info arrives later', () => {
+      const toplevel = '/home/user/Workspaces/r-worktrees/feature'
+      const [info, setInfo] = createSignal<ReturnType<typeof workerInfo> | null>(null)
+      seedRepo('w1', toplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git', isWorktree: true })
+      render(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={[{
+            type: TabType.AGENT,
+            workspaceId: 'ws-1',
+            id: 'a1',
+            title: 'a1',
+            tileId: 'tile-1',
+            position: '0',
+            workerId: 'w1',
+            gitToplevel: toplevel,
+          } as Tab]}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          workerInfoFn={() => info()}
+        />
+      ))
+
+      const label = () => screen.getByTestId('tab-tree-branch-group').querySelector(`.${labelWithStats}`)!
+      expect(hoverForTooltip(label())!.textContent).toContain(toplevel)
+
+      unhoverTooltip(label())
+      setInfo(workerInfo())
+
+      expect(hoverForTooltip(label())!.textContent).toContain('~/Workspaces/r-worktrees/feature')
+    })
+  })
+
   it('propagates gitIsWorktree from the repo store onto the BranchRef', async () => {
     const toplevel = '/home/user/Workspaces/r'
     seedRepo('w1', toplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git', isWorktree: true })
@@ -633,7 +875,9 @@ describe('workspaceTabTree interactions', () => {
     ))
     const branchRow = screen.getByTestId('tab-tree-branch-group')
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
-    await fireEvent.click(screen.getByText('Delete branch...'))
+    // The menu names what it destroys, so a worktree row offers "Delete
+    // worktree..." -- see BranchContextMenu.isWorktree.
+    await fireEvent.click(screen.getByText('Delete worktree...'))
     expect(onDeleteBranch.mock.calls[0][0].isWorktree).toBe(true)
   })
 

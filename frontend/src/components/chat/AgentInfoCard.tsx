@@ -7,6 +7,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { workingTreeBranchRowLabel, WorkingTreeIcon } from '~/components/common/WorkingTree'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
@@ -23,6 +24,15 @@ export interface AgentInfoCardProps {
   branchName?: string
   /** Git flags and ahead/behind from {@link repoGitView}. */
   gitView?: RepoGitView
+  /**
+   * The agent's worker home directory, for the tilde-compressed paths below.
+   *
+   * A PROP, not `agent.homeDir`. `agentTabToInfo` builds the `AgentInfo` from a
+   * Tab row, which carries no home directory, so that field is always the empty
+   * string here and every path on the card rendered absolute. The panel above
+   * reads the worker store instead and passes the answer down.
+   */
+  homeDir?: string
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
@@ -70,6 +80,12 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   const sessionInfo = createMemo(() => props.agentSessionInfo)
   const gitView = createMemo(() => props.gitView)
   const branchLabel = createMemo(() => props.branchName)
+  const homeDir = createMemo(() => props.homeDir)
+  // One spelling of the kind for the whole card, read by the row's label and by
+  // its glyph. A branch stamped onto a tab before its first status push has no
+  // git view at all; "Branch" is the safe reading there, because it claims
+  // nothing about a directory that a delete would remove.
+  const isWorktree = () => gitView()?.isWorktree ?? false
 
   const hasContextInfo = () => {
     const info = sessionInfo()
@@ -130,7 +146,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
         {row => (
           <div class={styles.infoRow} data-testid="info-row-agent-type">
             <span class={styles.infoLabel}>Agent</span>
-            <span class={styles.infoValueText} style={{ 'display': 'inline-flex', 'align-items': 'center', 'gap': 'var(--space-1)' }}>
+            <span class={`${styles.infoValueText} ${styles.infoValueWithIcon}`}>
               <AgentProviderIcon provider={row.provider} size={12} />
               {agentProviderLabel(row.provider)}
             </span>
@@ -158,9 +174,27 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       </Show>
       <Show when={branchLabel()} keyed>
         {name => (
-          <div class={styles.infoRow}>
-            <span class={styles.infoLabel}>Branch</span>
-            <span class={styles.infoValue}>
+          <div class={styles.infoRow} data-testid="info-row-working-tree">
+            {/* Named for what it IS: a linked worktree deletes as a directory,
+                a main-repo branch does not, and this card is where a user
+                checks which one the agent runs in. The icon repeats the label
+                because it is the same glyph the sidebar row and the composer
+                chip carry -- this is where a reader connects the three.
+
+                The label states the VALUE too ("Worktree branch"), because
+                this card carries no Directory row for the checkout: the
+                `Working dir` row below is the AGENT's own directory, which
+                sits under the checkout root and often differs from it. Without
+                that word the row reads as though the branch name were the
+                worktree's directory, with nothing on the card to correct it. */}
+            <span class={styles.infoLabel}>{workingTreeBranchRowLabel(isWorktree())}</span>
+            {/* The glyph belongs to the VALUE, beside the name it describes,
+                the same way the Agent row above carries its provider glyph.
+                `infoValueWithIcon` supplies the centring and the tighter gap;
+                as a direct child of the row it would take the row's own wider
+                gap and read as a third item. */}
+            <span class={`${styles.infoValue} ${styles.infoValueWithIcon}`}>
+              <WorkingTreeIcon isWorktree={isWorktree()} size="xs" />
               {name}
               {(() => {
                 const git = gitView()
@@ -210,8 +244,13 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={agent()?.workingDir} keyed>
         {workingDir => (
           <div class={styles.infoRow} data-testid="info-row-directory">
-            <span class={styles.infoLabel}>Directory</span>
-            <span class={styles.infoValue}>{tildify(workingDir, agent()?.homeDir)}</span>
+            {/* The AGENT's own working directory, which is not the working-tree
+                root: an agent opened in a subdirectory runs below it. The
+                `Directory` row that `WorkingTreeRows` prints IS that root, and
+                the `[+]` menu shows both one click apart -- so the two words
+                must differ. */}
+            <span class={styles.infoLabel}>Working dir</span>
+            <span class={styles.infoValue}>{tildify(workingDir, homeDir())}</span>
             <CopyButton
               getText={() => workingDir}
               title="Copy directory path"
@@ -224,7 +263,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           <div class={styles.infoRow} data-testid="info-row-plan-file">
             <span class={styles.infoLabel}>Plan File</span>
             <span class={styles.infoValue}>
-              {tildify(planFilePath, agent()?.homeDir)}
+              {tildify(planFilePath, homeDir())}
             </span>
             <CopyButton
               getText={() => planFilePath}

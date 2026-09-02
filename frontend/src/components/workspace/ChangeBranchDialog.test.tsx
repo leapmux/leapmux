@@ -543,6 +543,85 @@ describe('changeBranchDialog', () => {
   })
 })
 
+// WHICH checkout the dialog acts on. Nothing stated it before: the mode block
+// names the current branch for the switch picker alone, so a user with the same
+// branch name in a worktree and in the main repo could not tell two open
+// dialogs apart.
+describe('changeBranchDialog header', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupRpcMocks()
+  })
+
+  it('names the checkout and its directory', async () => {
+    renderDialog({ gitToplevel: '/repo' })
+    await awaitFormReady()
+
+    expect(screen.getByText('Branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo')
+  })
+
+  it('calls a worktree a worktree once the inspect RPC lands', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue({
+      $typeName: 'leapmux.v1.InspectBranchChangeResponse',
+      repoRoot: '/repo',
+      toplevel: '/repo-worktrees/feature',
+      isWorktree: true,
+      currentBranch: 'feature',
+      isDirty: false,
+      branches,
+    })
+    renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true })
+    await awaitFormReady()
+
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo-worktrees/feature')
+  })
+
+  // The row is seeded from the sidebar, so it is right before the RPC answers.
+  it('seeds the kind from the row that opened it', () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(new Promise(() => {}))
+    renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
+
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
+  })
+
+  // Pins `homeDir={worker.getHomeDir()}`. The two cases above use a directory
+  // OUTSIDE the mocked home, where `tildify` answers the same with or without a
+  // home dir -- so only a path under it can tell a wired prop from a dropped
+  // one, and every sibling surface already has this test.
+  it('shortens a directory under the worker home dir', async () => {
+    renderDialog({ gitToplevel: '/home/u/repo' })
+    await awaitFormReady()
+
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('~/repo')
+  })
+
+  // A failed inspect disproves neither the kind nor the branch: both come from
+  // the row that opened the dialog. Resetting them left a worktree relabelled
+  // "Branch" with a blank name, beside the error banner -- on the one surface
+  // that exists to state which checkout the dialog acts on.
+  it('keeps naming a worktree a worktree when the inspect RPC fails', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
+
+    await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
+  })
+
+  // The mirror case, so the reset is not simply pinned to `true`.
+  it('keeps naming a branch a branch when the inspect RPC fails', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    renderDialog({ gitToplevel: '/repo', isWorktree: false, branchName: 'main' })
+
+    await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
+    expect(screen.getByText('Branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('main')
+  })
+})
+
 // The Title field belongs to create-worktree only, the one mode that opens a
 // tab. Its generator reads the Open-as toggle, which is what makes this more
 // than a copy of the other dialogs' field.

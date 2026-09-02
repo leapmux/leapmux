@@ -1,11 +1,13 @@
+import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { tildify } from '~/lib/paths'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { repoKeyForLocal } from './branchKeys'
-import { buildTree, formatGitOriginUrl, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey } from './WorkspaceTabTree'
+import { buildTree, formatGitOriginUrl, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey, workerProjectionsEqual } from './WorkspaceTabTree'
 
 interface RepoGitSeed {
   workerId?: string
@@ -632,6 +634,187 @@ describe('buildTree', () => {
     // Both worker AND path vary across the two groups → both appear.
     expect(labels.every(l => l.includes('w1') || l.includes('w2'))).toBe(true)
     expect(labels.every(l => l.includes('/home/u/'))).toBe(true)
+  })
+})
+
+function posixLookup() {
+  return {
+    name: 'worker-a',
+    os: 'linux',
+    arch: 'arm64',
+    homeDir: '/home/u',
+    version: '0',
+    commitHash: '',
+    buildTime: '',
+    updatedAt: 0,
+  }
+}
+
+// The row's tooltip states the directory on EVERY hover, but the row itself has
+// no route to a worker's home dir — only `buildTree` holds `workerInfoFn`. So
+// buildTree hands the row the RAW inputs (`homeDir`, `flavor`) and
+// `WorkingTreeRows` applies the one compression rule every surface shares. A
+// pre-shortened path here would be a second copy of that rule, and the two
+// could then read `~/repos/foo` and `/home/u/repos/foo` for one directory.
+describe('buildTree branch tilde inputs', () => {
+  it('hands the row the worker home dir and its posix flavor', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: posixLookup, repoSeeds })
+    const branch = tree.groups[0].branches[0]
+
+    expect(branch.gitToplevel).toBe('/home/u/Workspaces/r')
+    expect(branch.homeDir).toBe('/home/u')
+    expect(branch.flavor).toBe('posix')
+    // End to end, through the same call the row makes.
+    expect(tildify(branch.gitToplevel, branch.homeDir, branch.flavor)).toBe('~/Workspaces/r')
+  })
+
+  it('hands the row the win32 flavor, so a windows home strips with backslashes', () => {
+    const lookup = () => ({
+      name: 'w-win',
+      os: 'windows',
+      arch: 'x86_64',
+      homeDir: 'C:\\Users\\u',
+      version: '0',
+      commitHash: '',
+      buildTime: '',
+      updatedAt: 0,
+    })
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: 'C:\\Users\\u\\Workspaces\\r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: lookup, repoSeeds })
+    const branch = tree.groups[0].branches[0]
+
+    expect(branch.flavor).toBe('win32')
+    expect(tildify(branch.gitToplevel, branch.homeDir, branch.flavor)).toBe('~\\Workspaces\\r')
+  })
+
+  // An absent worker lookup leaves BOTH empty. `tildify` then returns the
+  // absolute path, and `flavor: undefined` lets it sniff the flavor rather
+  // than being forced to posix.
+  it('leaves the home dir empty and the flavor unset when no worker info exists', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { repoSeeds })
+    const branch = tree.groups[0].branches[0]
+
+    expect(branch.homeDir).toBe('')
+    expect(branch.flavor).toBeUndefined()
+    expect(tildify(branch.gitToplevel, branch.homeDir, branch.flavor)).toBe('/home/u/Workspaces/r')
+  })
+
+  // The collision suffix shortens through the same pair, so a row's visible
+  // label and its own tooltip cannot spell one directory two ways.
+  it('shortens the collision suffix by the same rule', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+      { id: '2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r2' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: posixLookup, repoSeeds })
+
+    expect(tree.groups[0].branches.map(b => b.displayLabel))
+      .toEqual(['main (~/Workspaces/r)', 'main (~/Workspaces/r2)'])
+  })
+})
+
+// Two workers holding the same branch at the same path under each home
+// directory render two rows whose name, kind and shortened directory are all
+// identical — and Delete on one of them removes the other machine's directory.
+// The row's tooltip names the worker exactly when that can happen.
+describe('buildTree branch workerLabel', () => {
+  const twoWorkers = (id: string) => (id === 'w1' ? posixLookup() : { ...posixLookup(), name: 'worker-b' })
+
+  it('names the worker when the branch appears on more than one', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+      { id: '2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: twoWorkers, repoSeeds })
+
+    expect(tree.groups[0].branches.map(b => b.workerLabel).toSorted())
+      .toEqual(['worker-a', 'worker-b'])
+  })
+
+  it('falls back to the worker id when the lookup has no name', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+      { id: '2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: () => null, repoSeeds })
+
+    expect(tree.groups[0].branches.map(b => b.workerLabel).toSorted()).toEqual(['w1', 'w2'])
+  })
+
+  // One worker owns everything on screen, so the row would be noise. The same
+  // test the visible `displayLabel` suffix applies.
+  it('states no worker when a single worker owns the branch', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+      { id: '2', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r2' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: posixLookup, repoSeeds })
+
+    expect(tree.groups[0].branches.map(b => b.workerLabel)).toEqual(['', ''])
+  })
+})
+
+// The memo's equality. It replaced an enumerated `id, name, homeDir, os`
+// projection, which was a hand-maintained mirror of what `buildTree` reads --
+// and the reason the tree froze at its pre-RPC value when `homeDir` became a
+// fourth reader.
+describe('workerProjectionsEqual', () => {
+  const info = (over: Partial<WorkerInfo> = {}): WorkerInfo => ({
+    name: 'build-box',
+    os: 'linux',
+    arch: 'arm64',
+    homeDir: '/home/u',
+    version: '1',
+    commitHash: 'abc',
+    buildTime: 't',
+    updatedAt: 0,
+    ...over,
+  })
+
+  // The one that pins the fix: the old field list compared these EQUAL, so a
+  // tree that started reading one of them kept its stale build.
+  it('reports a change in a field the tree does not read today', () => {
+    for (const over of [{ arch: 'amd64' }, { version: '2' }, { commitHash: 'def' }, { buildTime: 'u' }]) {
+      expect(workerProjectionsEqual(
+        [{ id: 'w1', info: info() }],
+        [{ id: 'w1', info: info(over) }],
+      ), JSON.stringify(over)).toBe(false)
+    }
+  })
+
+  // The store stamps a fresh `updatedAt` on every TTL probe, so tracking it
+  // would rebuild the whole tree on a no-op refetch.
+  it('ignores a bare updatedAt refresh', () => {
+    expect(workerProjectionsEqual(
+      [{ id: 'w1', info: info() }],
+      [{ id: 'w1', info: info({ updatedAt: 999 }) }],
+    )).toBe(true)
+  })
+
+  // `workerInfoFn` is an arbitrary prop, and every lookup in these tests
+  // allocates a fresh record, so an identity comparison would never settle.
+  it('settles across freshly allocated records', () => {
+    expect(workerProjectionsEqual([{ id: 'w1', info: info() }], [{ id: 'w1', info: info() }])).toBe(true)
+  })
+
+  it('separates an absent record from an all-empty one', () => {
+    expect(workerProjectionsEqual(
+      [{ id: 'w1', info: null }],
+      [{ id: 'w1', info: info({ name: '', os: '', homeDir: '' }) }],
+    )).toBe(false)
+  })
+
+  it('reports a changed id set', () => {
+    expect(workerProjectionsEqual([{ id: 'w1', info: null }], [{ id: 'w2', info: null }])).toBe(false)
+    expect(workerProjectionsEqual([{ id: 'w1', info: null }], [])).toBe(false)
   })
 })
 

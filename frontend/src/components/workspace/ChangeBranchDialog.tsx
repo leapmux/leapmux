@@ -5,6 +5,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
 import { PillGroup } from '~/components/common/PillGroup'
+import { WorkingTreeRows } from '~/components/common/WorkingTree'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isChangeBranchSubmitDisabled } from '~/components/shell/dialogValidation'
@@ -24,8 +25,10 @@ import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { fieldsForCreateWorktree, GitMode, isChangeBranchMode, useGitModeState } from '~/hooks/useGitModeState'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
+import { flavorFromOs } from '~/lib/paths'
 import { randomAgentTitle, randomTerminalTitle } from '~/lib/tabTitles'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { errorText, warningText } from '~/styles/shared.css'
 
 type WorktreeTabType = TabType.AGENT | TabType.TERMINAL
@@ -91,6 +94,13 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     defaultWorkingDir: props.gitToplevel,
     onError: setError,
   })
+  // The worker's path flavor for the header row's tilde path. Undefined while
+  // the OS is unknown, so `tildify` sniffs it from the path rather than being
+  // forced to posix — `flavorFromOs(undefined)` answers 'posix'.
+  const workerFlavor = () => {
+    const os = workerInfoStore.getOs(worker.workerId())
+    return os ? flavorFromOs(os) : undefined
+  }
   // The dialog renders SwitchBranch / CreateBranch / CreateWorktree
   // (Current is intentionally excluded). Seed the parent intent so
   // GitOptions paints SwitchBranch selected on first render.
@@ -305,6 +315,21 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
       )}
     >
       <BlockedReasonNotice reason={worktreeBlockedReason()} />
+      {/* WHICH checkout this dialog acts on. The mode block below states the
+          current branch for the switch picker alone; nothing stated the kind
+          or the directory, so a user with the same branch name in a worktree
+          and in the main repo could not tell the two dialogs apart.
+          `useChangeBranchInspect` seeds both fields from the row that opened
+          the dialog and replaces them when the inspect RPC lands, so this row
+          is correct from the first paint -- and it KEEPS the seed when that
+          RPC fails, because a failed call disproves neither fact. */}
+      <WorkingTreeRows
+        isWorktree={pathInfo.info().isWorktreeRoot}
+        name={pathInfo.info().currentBranch}
+        directory={props.gitToplevel}
+        homeDir={worker.getHomeDir()}
+        flavor={workerFlavor()}
+      />
       <GitOptionsLoader gitInfo={pathInfo}>
         {() => (
           <>

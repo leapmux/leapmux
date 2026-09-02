@@ -1,7 +1,9 @@
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { hoverForTooltip } from '~/test-support/clipStub'
 import { ComposerStatusBar } from './ComposerStatusBar'
 import '~/components/chat/providers'
 
@@ -27,18 +29,36 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
 
 function renderBar(
   a: AgentInfo | undefined,
-  extra: { disabledReason?: string, branchDisabledReason?: string, branchName?: string } = {},
+  extra: {
+    disabledReason?: string
+    branchDisabledReason?: string
+    branchName?: string
+    isWorktree?: boolean
+    directory?: string
+    homeDir?: string
+    branchStats?: DiffStats | null
+  } = {},
 ) {
+  // The bar takes ONE value now, so the helper assembles it from the flat
+  // options each case reads better in.
+  const workingTree = {
+    isWorktree: extra.isWorktree ?? false,
+    name: extra.branchName ?? '',
+    directory: extra.directory ?? '',
+    homeDir: extra.homeDir,
+    stats: extra.branchStats,
+  }
   return render(() => (
     <ComposerStatusBar
       agent={a}
-      branchName={extra.branchName}
+      workingTree={workingTree}
       optionValues={{}}
       onSettingChange={() => {}}
       onChangeBranch={() => {}}
       onDeleteBranch={() => {}}
       infoTrigger={() => <span data-testid="info" />}
-      {...extra}
+      disabledReason={extra.disabledReason}
+      branchDisabledReason={extra.branchDisabledReason}
     />
   ))
 }
@@ -148,5 +168,60 @@ describe('composerStatusBar', () => {
     renderBar(agent(), { branchName: '' })
     expect(screen.queryByTestId('composer-branch-trigger')).toBeNull()
     expect(screen.queryByText('main')).toBeNull()
+  })
+
+  // The bar owns no git state of its own: it forwards what the panel resolved
+  // from the repo store, so the chip can name the kind of checkout. Dropping
+  // one of these silently repaints every worktree chip as a branch.
+  it('forwards the checkout kind to the chip', () => {
+    renderBar(agent(), { branchName: 'feature', isWorktree: true, directory: '/home/dev/wt' })
+
+    const chip = screen.getByTestId('composer-branch-trigger')
+    expect(chip.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
+  })
+
+  it('defaults the chip to a branch when the kind is not known yet', () => {
+    renderBar(agent(), { branchName: 'feature' })
+
+    const chip = screen.getByTestId('composer-branch-trigger')
+    expect(chip.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
+  })
+
+  // The chip renders the other three git props only inside its tooltip, so the
+  // hover is the only place the wiring shows. A swap between `directory` and
+  // `homeDir` leaves the path absolute, and a dropped `branchStats` leaves the
+  // badge out -- neither one changes anything the tests above look at.
+  describe('forwarding the git props the tooltip renders', () => {
+    beforeAll(() => {
+      // The tooltip enters the top layer when it opens.
+      HTMLElement.prototype.showPopover = vi.fn()
+      HTMLElement.prototype.hidePopover = vi.fn()
+    })
+
+    // Scoped to this block: `hoverForTooltip` runs out the show delay on a fake
+    // clock, and the tests above drive real user events.
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('hands the chip the directory, the home dir and the diff stats', () => {
+      renderBar(agent(), {
+        branchName: 'feature',
+        isWorktree: true,
+        directory: '/home/dev/repos/leapmux-worktrees/feature',
+        homeDir: '/home/dev',
+        branchStats: { added: 38, deleted: 12, untracked: 0 },
+      })
+
+      const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))
+      expect(tooltip).not.toBeNull()
+      expect(tooltip!.querySelector('[data-testid="working-tree-directory"]'))
+        .toHaveTextContent('~/repos/leapmux-worktrees/feature')
+      expect(tooltip!.querySelector('[data-testid="git-diff-stats"]')).toHaveTextContent('+38')
+    })
   })
 })

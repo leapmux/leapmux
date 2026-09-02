@@ -15,9 +15,16 @@ import {
   waitForAgentStartupViaAPI,
 } from './helpers/worktree'
 
-/** ConfirmButton arms on the first click and fires on the second. */
-async function confirmDeleteBranch(page: Page) {
-  await page.getByRole('button', { name: 'Delete branch' }).click()
+/**
+ * ConfirmButton arms on the first click and fires on the second.
+ *
+ * The button is named after what it destroys -- "Delete worktree" removes a
+ * directory, "Delete branch" does not -- so `kind` picks the spelling. Every
+ * caller states it, because a helper that matched either one would let a
+ * worktree dialog pass a test written for a branch.
+ */
+async function confirmDelete(page: Page, kind: 'branch' | 'worktree') {
+  await page.getByRole('button', { name: `Delete ${kind}` }).click()
   await page.getByRole('button', { name: 'Confirm?' }).click()
 }
 
@@ -45,8 +52,11 @@ test.describe('Branch context menu', () => {
     await expect(branchRow).toBeVisible()
     await openBranchMenu(page, branchRow)
 
+    // A worktree workspace, so the delete item names the worktree. Change
+    // keeps its name: a worktree has a branch checked out either way.
     await expect(page.getByRole('menuitem', { name: 'Change branch...' })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: 'Delete branch...' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Delete worktree...' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Delete branch...' })).toHaveCount(0)
   })
 
   test('delete branch (worktree variant) removes worktree and branch', async ({
@@ -78,20 +88,20 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete branch...')
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete worktree...')
 
-    await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Delete worktree' })).toBeVisible()
 
     // Worktree variant: dialog shows the worktree path.
     await expect(page.getByRole('dialog').getByText(/branch-delete-repo-worktrees\/delete-branch/)).toBeVisible()
 
-    await confirmDeleteBranch(page)
+    await confirmDelete(page, 'worktree')
 
     // The dialog holds open for its removal PREFLIGHT only. Then it hands
     // the coupled tab closes off and dismisses. It does not wait for the
     // removal, because that stops the agent and deletes the directory, which
     // takes seconds and asks the user nothing.
-    await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Delete worktree' })).not.toBeVisible()
 
     // Removal is coupled to the tab closes (WorktreeAction.REMOVE), so the
     // worker tears down the worktree dir + branch in the background once
@@ -135,8 +145,8 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete branch...')
-    await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete worktree...')
+    await expect(page.getByRole('heading', { name: 'Delete worktree' })).toBeVisible()
 
     // Delete is unavailable, and git's own reason says why. Visible text, not
     // the button's tooltip alone: a greyed-out destructive option with no
@@ -151,8 +161,8 @@ test.describe('Branch context menu', () => {
     // By role+name, which is what the button carries again now that no control
     // here takes a `title`. It used to be located by TEXT, because a `title`
     // long enough to state a reason BECAME the accessible name and stopped
-    // `{ name: 'Delete branch' }` from matching in exactly this state.
-    await expect(page.getByRole('button', { name: 'Delete branch' })).toBeDisabled()
+    // `{ name: 'Delete worktree' }` from matching in exactly this state.
+    await expect(page.getByRole('button', { name: 'Delete worktree' })).toBeDisabled()
 
     // The escape hatch is offered instead, so the dialog is not a dead end.
     await expect(page.getByRole('button', { name: 'Close tabs, keep worktree' })).toBeEnabled()
@@ -202,13 +212,13 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete branch...')
-    await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete worktree...')
+    await expect(page.getByRole('heading', { name: 'Delete worktree' })).toBeVisible()
     // ConfirmButton arms on the first click and fires on the second.
     await page.getByRole('button', { name: 'Close tabs, keep worktree' }).click()
     await page.getByRole('button', { name: 'Confirm?' }).click()
 
-    await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Delete worktree' })).not.toBeVisible()
 
     // The tabs go, and the worktree stays — which is the whole point of the
     // hatch. Poll the worker for the tab count; the directory check follows it,
@@ -259,7 +269,7 @@ test.describe('Branch context menu', () => {
     await expect(dialog.getByText('Switch this working directory to:')).toBeVisible()
     await pickMenuOption(dialog, 'branch-select-menu', 'main')
 
-    await confirmDeleteBranch(page)
+    await confirmDelete(page, 'branch')
     await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()
 
     // The worker did the work.

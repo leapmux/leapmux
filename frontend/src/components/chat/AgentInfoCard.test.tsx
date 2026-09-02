@@ -1,7 +1,7 @@
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { RepoGitView } from '~/stores/repoGit'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCard'
@@ -11,7 +11,7 @@ import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCar
 import './providers/claude/plugin'
 import './providers/pi/plugin'
 
-function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView }) {
+function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView, homeDir?: string }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>
 }
@@ -88,9 +88,13 @@ describe('agent info card path rows', () => {
     })
   })
 
+  // The home directory arrives as a PROP, not on the agent. `agentTabToInfo`
+  // builds the AgentInfo from a Tab row, which carries none, so `agent.homeDir`
+  // is always the empty string in the app -- a test that seeded it there proved
+  // the abbreviation and hid the fact that no path on this card ever shortened.
   it('abbreviates the working directory but copies the absolute path', () => {
     const workingDir = `${HOME}/projects/app`
-    render(() => <InfoCardContent agent={withPaths({ workingDir, homeDir: HOME })} />)
+    render(() => <InfoCardContent agent={withPaths({ workingDir })} homeDir={HOME} />)
 
     expect(screen.getByTestId('info-row-directory')).toHaveTextContent('~/projects/app')
     expect(screen.getByTestId('info-row-directory')).not.toHaveTextContent(HOME)
@@ -99,11 +103,22 @@ describe('agent info card path rows', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(workingDir)
   })
 
+  // The label states WHOSE directory it is. `WorkingTreeRows` prints a
+  // `Directory` row for the working-tree ROOT, and the `[+]` menu puts the two
+  // one click apart -- an agent opened in a subdirectory makes them differ.
+  it('names the row after the agent working directory, not the checkout root', () => {
+    render(() => <InfoCardContent agent={withPaths({ workingDir: `${HOME}/projects/app` })} homeDir={HOME} />)
+
+    expect(screen.getByTestId('info-row-directory')).toHaveTextContent('Working dir')
+    expect(screen.queryByText('Directory')).toBeNull()
+  })
+
   it('abbreviates the plan file path but copies the absolute path', () => {
     const planFilePath = `${HOME}/projects/app/PLAN.md`
     render(() => (
       <InfoCardContent
-        agent={withPaths({ workingDir: `${HOME}/projects/app`, homeDir: HOME })}
+        agent={withPaths({ workingDir: `${HOME}/projects/app` })}
+        homeDir={HOME}
         agentSessionInfo={{ planFilePath }}
       />
     ))
@@ -118,7 +133,8 @@ describe('agent info card path rows', () => {
   // Not a repeat of tildify's own cases (paths.test.ts covers the abbreviation
   // itself). This is the wiring: the card must hand the worker's home directory
   // to tildify rather than call it with nothing, and a worker that reported no
-  // home directory must still show a usable path.
+  // home directory must still show a usable path. Omitting the prop is exactly
+  // the "worker system info not fetched yet" case.
   it('shows the absolute path when the worker reported no home directory', () => {
     const workingDir = `${HOME}/projects/app`
     render(() => <InfoCardContent agent={withPaths({ workingDir })} />)
@@ -217,6 +233,61 @@ describe('agent info card branch row', () => {
     ))
 
     expect(screen.getByText('main')).toBeInTheDocument()
+  })
+
+  // The card is where a user checks which checkout the agent runs in, and a
+  // worktree deletes as a whole directory while a main-repo branch does not.
+  //
+  // "Worktree branch", not "Worktree". The value is a branch name, and this
+  // card carries no Directory row for the checkout to settle the question --
+  // its `Working dir` row is the agent's own directory, under the root.
+  it('labels the row Worktree branch and marks it with the worktree glyph', () => {
+    const { container } = render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="feature"
+        gitView={{ isWorktree: true } as RepoGitView}
+      />
+    ))
+
+    const row = screen.getByTestId('info-row-working-tree')
+    expect(within(row).getByText('Worktree branch')).toBeInTheDocument()
+    expect(within(row).queryByText('Worktree')).toBeNull()
+    expect(container.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
+  })
+
+  it('labels the row Branch and marks it with the branch glyph', () => {
+    const { container } = render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="main"
+        gitView={{ isWorktree: false } as RepoGitView}
+      />
+    ))
+
+    const row = screen.getByTestId('info-row-working-tree')
+    expect(within(row).getByText('Branch')).toBeInTheDocument()
+    expect(container.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
+  })
+
+  // A branch stamped onto a tab before its first status push has no git view.
+  // "Branch" is the safe reading: it claims nothing about a directory.
+  it('falls back to Branch when the checkout kind is not known yet', () => {
+    render(() => <InfoCardContent agent={withGit({})} branchName="main" />)
+
+    expect(within(screen.getByTestId('info-row-working-tree')).getByText('Branch')).toBeInTheDocument()
+  })
+
+  it('still copies the branch name from the renamed row', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="feature"
+        gitView={{ isWorktree: true } as RepoGitView}
+      />
+    ))
+
+    expect(screen.getByRole('button', { name: 'Copy branch name' })).toBeInTheDocument()
   })
 })
 

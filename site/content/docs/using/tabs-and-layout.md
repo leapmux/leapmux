@@ -81,7 +81,7 @@ If the tab's Worker cannot be reached — it is offline, asleep, or deregistered
 
 #### The "Close last tab" dialog
 
-This dialog (titled **Close last tab**) protects you from accidentally abandoning a worktree or losing local git state. Its body explains the situation — either "This closes the last tab for worktree `<path>`." or "This closes the last non-worktree tab for branch `<name>`." — and names the affected tab: an agent or terminal "will be stopped", a file "will be closed".
+This dialog (titled **Close last tab**) protects you from accidentally abandoning a worktree or losing local git state. Its body explains the situation — either "This closes the last tab for this worktree." or "This closes the last non-worktree tab for this branch." — then names the checkout and its directory in a [status block](/docs/using/worktrees-and-branches/#branch-status-indicators), and states the affected tab: an agent or terminal "will be stopped", a file "will be closed".
 
 Footer buttons:
 

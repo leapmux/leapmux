@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
 import type { ProviderSettingChange } from './providers/registry'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -21,12 +22,14 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
+import { flavorFromOs } from '~/lib/paths'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
 import { repoGitView } from '~/stores/repoGit'
 import { optionValuesFromGroups } from '~/stores/tab.helpers'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AttachmentStrip } from './AttachmentStrip'
@@ -285,12 +288,47 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     const tab = props.gitTab ?? {}
     return repoGitView(tab, props.repoGitStore, tab)
   })
-  const branchName = () => branchGitView()?.branchLabel
+  /**
+   * The agent's worker home directory, for every tilde-compressed path this
+   * panel shows: the branch chip's tooltip, the `[+]` menu's branch row, and
+   * the info card's Directory and plan-file rows.
+   *
+   * From the WORKER STORE, not from `props.agent.homeDir`. `agentTabToInfo`
+   * builds the `AgentInfo` from a Tab row, which carries no home directory, so
+   * that field is the empty string on every path that renders this panel --
+   * `tildify` then returns the absolute path and the sidebar row beside the
+   * chip shortens the SAME directory while the chip does not. `TileRenderer`
+   * already reads this route for `ChatView`.
+   */
+  const workerHomeDir = () => workerInfoStore.getHomeDir(props.agent?.workerId ?? '')
+  /**
+   * The checkout that the branch chip and the `[+]` menu's branch row name.
+   *
+   * ONE value for both, because a user switches between the two surfaces with
+   * one preference toggle and must not read two different answers. It is
+   * required whole at each boundary, so neither surface repairs a missing kind
+   * and no third layer applies a second default.
+   */
+  const workingTree = createMemo<WorkingTreeInfo>(() => {
+    const git = branchGitView()
+    const os = workerInfoStore.getOs(props.agent?.workerId ?? '')
+    return {
+      isWorktree: git?.isWorktree ?? false,
+      name: git?.branchLabel ?? '',
+      directory: git?.toplevel ?? '',
+      homeDir: workerHomeDir(),
+      // Undefined rather than `flavorFromOs(undefined)`, which answers 'posix'
+      // and would stop a Windows path compressing while the OS is unknown.
+      flavor: os ? flavorFromOs(os) : undefined,
+      stats: git?.diffStats,
+    }
+  })
   const info = useAgentInfoCard({
     get agent() { return props.agent },
     get agentSessionInfo() { return props.agentSessionInfo },
     get branchName() { return branchGitView()?.branchLabel },
     get gitView() { return branchGitView() },
+    get homeDir() { return workerHomeDir() },
   })
   const modelContextWindow = createMemo(() =>
     selectedModelContextWindow(props.agent?.optionGroups, currentModel()) || undefined,
@@ -467,7 +505,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               canAttach={!ctrl.activeControlRequest()}
               disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
-              branchName={branchName()}
+              workingTree={workingTree()}
               onChangeBranch={() => props.onChangeBranch?.()}
               onDeleteBranch={() => props.onDeleteBranch?.()}
               branchDisabledReason={props.branchDisabledReason}
@@ -567,7 +605,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       <Show when={preferences.showComposerStatusBar()}>
         <ComposerStatusBar
           agent={props.agent}
-          branchName={branchName()}
+          workingTree={workingTree()}
           optionValues={currentOptionValues()}
           onSettingChange={props.onSettingChange}
           onChangeBranch={() => props.onChangeBranch?.()}

@@ -4,6 +4,7 @@ import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
+import { hoverForTooltip } from '~/test-support/clipStub'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import '~/components/chat/providers'
 
@@ -29,6 +30,10 @@ function renderMenu(opts: {
   settingsLoading?: boolean
   branchName?: string
   branchDisabledReason?: string
+  isWorktree?: boolean
+  directory?: string
+  homeDir?: string
+  branchStats?: { added: number, deleted: number, untracked: number }
 } = {}) {
   const onSettingChange = vi.fn()
   const onAttachFile = vi.fn()
@@ -46,7 +51,13 @@ function renderMenu(opts: {
       canAttach={opts.canAttach ?? true}
       disabledReason={opts.disabledReason}
       settingsLoading={opts.settingsLoading}
-      branchName={opts.branchName}
+      workingTree={{
+        isWorktree: opts.isWorktree ?? false,
+        name: opts.branchName ?? '',
+        directory: opts.directory ?? '',
+        homeDir: opts.homeDir,
+        stats: opts.branchStats,
+      }}
       onChangeBranch={onChangeBranch}
       onDeleteBranch={onDeleteBranch}
       branchDisabledReason={opts.branchDisabledReason}
@@ -68,6 +79,7 @@ describe('composerPlusMenu structure freeze', () => {
   function renderLive(sources: {
     groups: () => AvailableOptionGroup[]
     branch?: () => string | undefined
+    isWorktree?: () => boolean
   }) {
     render(() => (
       <ComposerPlusMenu
@@ -76,7 +88,11 @@ describe('composerPlusMenu structure freeze', () => {
         onSettingChange={vi.fn()}
         onAttachFile={vi.fn()}
         canAttach
-        branchName={sources.branch?.()}
+        workingTree={{
+          isWorktree: sources.isWorktree?.() ?? false,
+          name: sources.branch?.() ?? '',
+          directory: '/repo',
+        }}
         enterKeyMode={() => 'cmd-enter-sends'}
         onToggleEnterMode={vi.fn()}
         showStatusBar={() => true}
@@ -109,6 +125,53 @@ describe('composerPlusMenu structure freeze', () => {
     await Promise.resolve()
 
     expect(rowIds(), 'the open menu keeps the shape the user aimed at').toEqual(before)
+  })
+
+  /**
+   * The kind is frozen WITH the name, because it NAMES the destructive item
+   * rather than merely labelling it.
+   *
+   * A push that flips `isWorktree` on a key that already carries a branch --
+   * `stampBranchOnTabs` upserts a branch without one, and the git view defaults
+   * it to false -- would otherwise rename "Delete branch..." to "Delete
+   * worktree..." under a pointer already aimed at it. The user then clicks an
+   * action that removes a whole directory after reading one that does not,
+   * which is the same hazard as a row sliding into that place.
+   */
+  it('does not rename the delete item under the pointer when a push lands mid-open', async () => {
+    const [groups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [isWorktree, setIsWorktree] = createSignal(false)
+    renderLive({ groups, branch: () => 'feature', isWorktree })
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeInTheDocument()
+
+    setIsWorktree(true)
+    await Promise.resolve()
+
+    expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /Delete worktree/, hidden: true })).toBeNull()
+    // The glyph is part of the same identity, so it holds still too.
+    expect(screen.getByTestId('composer-plus-branch').querySelector('[data-testid="branch-icon"]'))
+      .not
+      .toBeNull()
+  })
+
+  // ...and the corrected kind is there the next time the menu opens.
+  it('names the new kind the next time it opens', async () => {
+    const [groups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [isWorktree, setIsWorktree] = createSignal(false)
+    renderLive({ groups, branch: () => 'feature', isWorktree })
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    setIsWorktree(true)
+    await Promise.resolve()
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    await Promise.resolve()
+
+    expect(screen.getByRole('menuitem', { name: /Delete worktree/, hidden: true })).toBeInTheDocument()
   })
 
   // ...and the freeze is released on close, so the next open is current.
@@ -447,5 +510,67 @@ describe('composerPlusMenu', () => {
 
     expect(screen.getByRole('menuitemcheckbox', { name: /Show status bar/, hidden: true }))
       .toHaveAttribute('aria-checked', 'true')
+  })
+
+  // This menu exists because the status bar is a preference the user can switch
+  // off, so it has to name the checkout exactly as the status-bar chip does.
+  describe('naming the checkout', () => {
+    it('marks a worktree with the worktree glyph and renames the delete item', () => {
+      renderMenu({ branchName: 'feature', isWorktree: true })
+
+      const trigger = screen.getByTestId('composer-plus-branch')
+      expect(trigger.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
+      expect(screen.getByRole('menuitem', { name: /Delete worktree/, hidden: true })).toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeNull()
+    })
+
+    it('marks a main-repo checkout with the branch glyph', () => {
+      renderMenu({ branchName: 'main', isWorktree: false })
+
+      const trigger = screen.getByTestId('composer-plus-branch')
+      expect(trigger.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
+      expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeInTheDocument()
+    })
+
+    it('states the kind, the directory and the diff stats on hover', () => {
+      vi.useFakeTimers()
+      try {
+        renderMenu({
+          branchName: 'feature',
+          isWorktree: true,
+          directory: '/home/dev/repos/leapmux-worktrees/feature',
+          homeDir: '/home/dev',
+          branchStats: { added: 38, deleted: 12, untracked: 0 },
+        })
+
+        const tooltip = hoverForTooltip(screen.getByTestId('composer-plus-branch'))
+        expect(tooltip).not.toBeNull()
+        expect(tooltip!.textContent).toContain('Worktree')
+        expect(tooltip!.textContent).toContain('~/repos/leapmux-worktrees/feature')
+        expect(tooltip!.textContent).toContain('+38')
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('replaces the rows with the reason when the actions are unusable', () => {
+      vi.useFakeTimers()
+      try {
+        renderMenu({
+          branchName: 'feature',
+          isWorktree: true,
+          directory: '/home/dev/repos/leapmux-worktrees/feature',
+          branchDisabledReason: 'This Worker is offline.',
+        })
+
+        const tooltip = hoverForTooltip(screen.getByTestId('composer-plus-branch'))
+        expect(tooltip!.textContent).toBe('This Worker is offline.')
+        expect(tooltip!.querySelector('[data-testid="working-tree-rows"]')).toBeNull()
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })
