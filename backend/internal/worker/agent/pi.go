@@ -442,10 +442,10 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	a.applyStateResponse(stateRaw)
 	a.mu.Lock()
 	a.currentTurnActive = false
-	// Drop the turn's start mark with the session. agent_start only takes a mark
-	// when none is held (so a retried run keeps the turn's original start), so a
-	// mark left behind by a turn this clear replaced would make the NEXT turn's
-	// divider report the time since the old turn began.
+	// Drop the turn's start mark with the session. agent_start takes a mark only
+	// when the agent holds none, so that a retried run keeps the turn's original
+	// start. A mark that survived the turn this clear replaced would then make
+	// the NEXT turn's divider report the time since the old turn began.
 	a.turnStartedAt = time.Time{}
 	a.sessionCostUsd = 0
 	a.sessionCostKnown = false

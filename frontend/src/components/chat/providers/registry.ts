@@ -142,9 +142,9 @@ export interface ResultDividerModel {
   detail?: string
   /**
    * The run failed but the provider restarts it on its own, so the turn is NOT
-   * over. `isAgentWorking` reads this, which is why the thinking indicator
-   * stays up for the length of an auto-retry backoff instead of going dark on
-   * a divider the turn continues past.
+   * over. `isAgentWorking` reads this. The thinking indicator therefore stays
+   * visible for the whole auto-retry backoff, instead of clearing on a divider
+   * that the turn continues past.
    */
   turnContinues?: boolean
 }

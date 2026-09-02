@@ -328,11 +328,12 @@ func (a *PiAgent) augmentPiMessageEnd(raw []byte) []byte {
 	return augmented
 }
 
-// persistPiAgentEnd writes the agent_end divider. A run that Pi will retry is
-// NOT a turn end: it persists as a plain agent message, so the divider still
-// draws while the turn-end event -- the completion sound and the off-screen
-// tab's notification dot -- and the git-status refresh wait for the run that
-// really ends the turn.
+// persistPiAgentEnd writes the agent_end divider.
+//
+// A run that Pi will retry is NOT a turn end. It persists as a plain agent
+// message, so the divider still draws. The turn-end event and the git-status
+// refresh then wait for the run that really ends the turn. That event drives
+// the completion sound and the off-screen tab's notification dot.
 func (a *PiAgent) persistPiAgentEnd(raw []byte, snap piUsageSnapshot, durationMs *int64, willRetry bool) {
 	augmented := piAugmentAgentEnd(raw, snap, durationMs)
 	var err error

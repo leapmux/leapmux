@@ -48,9 +48,9 @@ import {
  * Pi event types that carry no UI surface (lifecycle markers / fan-out).
  *
  * `agent_settled` is one of them: it says only that Pi will not continue on its
- * own after the `agent_end` that already drew the divider. The worker drops it
- * before persisting, so this rule is what hides the rows a build before that
- * change already wrote.
+ * own after the `agent_end` that already drew the divider. The worker now drops
+ * it before it persists anything, so this rule hides only the rows an earlier
+ * build already wrote.
  */
 const PI_HIDDEN_EVENT_TYPES = new Set<string>([
   PI_EVENT.AgentStart,

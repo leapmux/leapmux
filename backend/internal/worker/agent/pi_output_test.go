@@ -95,7 +95,7 @@ func piPersistedAgentEnd(t *testing.T, sink *recordingControlSink, index int) ma
 
 // agent_settled reports only that Pi will not continue on its own after the
 // agent_end that already drew the divider. It must leave no trace at all,
-// because the default arm of the dispatch would persist it as a raw-JSON row.
+// because the dispatch's default case would persist it as a raw-JSON row.
 func TestHandlePiOutput_AgentSettled_PersistsNothing(t *testing.T) {
 	t.Parallel()
 

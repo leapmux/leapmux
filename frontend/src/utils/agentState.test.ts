@@ -253,8 +253,8 @@ describe('isAgentWorking', () => {
 
   it('does NOT skip a visible system subtype (real progress)', () => {
     // A system subtype that is neither hidden nor status/api_retry renders as a
-    // notification and counts as progress. Sanity check that the subtype filter
-    // is not too broad.
+    // notification and counts as progress. This confirms that the subtype
+    // filter is not too broad.
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'compact_boundary' })),
     ])).toBe(true)
@@ -397,9 +397,9 @@ describe('shouldShowThinkingIndicator', () => {
     )).toBe(true)
   })
 
-  // The user-visible end of the Pi auto-retry rule: during the backoff nothing
-  // streams and the registry knows nothing, so the divider's own `turnContinues`
-  // is the only thing keeping the indicator lit.
+  // The user-visible end of the Pi auto-retry rule. During the backoff nothing
+  // streams and the registry knows nothing about the tab. The divider's own
+  // `turnContinues` is therefore the only thing that keeps the indicator up.
   it('keeps the indicator lit for a Pi divider Pi will retry past', () => {
     const retrying = makeMessage({
       source: MessageSource.AGENT,

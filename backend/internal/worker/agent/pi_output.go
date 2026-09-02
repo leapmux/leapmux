@@ -82,10 +82,10 @@ type piQueueUpdateEnvelope struct {
 // auto-continue.
 //
 // WillRetry is Pi's own statement that it restarts this run itself. Pi's
-// session layer stamps it on every agent_end, and sets it true only while
-// retries are enabled, the retry budget is unspent, and the last assistant
-// message failed with a transient error. An older Pi omits the field, which
-// decodes to false -- the behavior LeapMux had before it read the field.
+// session layer stamps it on every agent_end. It is true only for three
+// conditions together: retries are enabled, the retry budget is unspent, and
+// the last assistant message failed with a transient error. An older Pi omits
+// the field, which decodes to false -- how LeapMux behaved before it read it.
 type piAgentEndEnvelope struct {
 	Messages []struct {
 		Role         string `json:"role"`
@@ -221,10 +221,12 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 }
 
 // piTurnDurationMs measures one Pi turn in milliseconds. Pi's agent_end carries
-// no duration of its own, so the worker brackets the turn instead. It returns
-// nil when this worker never saw the turn start, or when the clock moved
-// backwards, so the persisted envelope carries no duration at all rather than a
-// false 0 -- the frontend tells those two apart.
+// no duration of its own, so the worker brackets the turn instead.
+//
+// It returns nil for a turn whose start this worker never saw, and for a clock
+// that moved backwards. The envelope then carries no duration at all, rather
+// than a false 0. The frontend tells those two apart: it draws no time for an
+// absent field, and "(0ms)" for a real zero.
 func piTurnDurationMs(startedAt, endedAt time.Time) *int64 {
 	if startedAt.IsZero() || endedAt.Before(startedAt) {
 		return nil
