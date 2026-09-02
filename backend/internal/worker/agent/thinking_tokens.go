@@ -4,6 +4,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -61,7 +62,7 @@ type thinkingTokenEstimator struct {
 
 // observe folds a streamed model-text delta into the running per-phase estimate
 // and broadcasts the updated running total over the ephemeral agent_session_info
-// channel under the shared SessionInfoKeyThinkingTokens key. Accumulation (under
+// channel under the shared contracts.SessionInfoKeyThinkingTokens key. Accumulation (under
 // the lock) is split from the broadcast (a blocking network write, done unlocked)
 // so the estimator lock is never held across I/O.
 func (e *thinkingTokenEstimator) observe(sink OutputSink, text string) {
@@ -108,7 +109,7 @@ func (e *thinkingTokenEstimator) ship(sink OutputSink, est int64, gen uint64) {
 		return
 	}
 	sink.BroadcastSessionInfo(map[string]interface{}{
-		SessionInfoKeyThinkingTokens: est,
+		contracts.SessionInfoKeyThinkingTokens: est,
 	})
 }
 

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // ZCode reports usage from two places, and they answer different questions.
@@ -92,7 +94,7 @@ func zcodeContextUsageMap(usage zcodeUsage, contextWindow int64) map[string]any 
 		Output:     usage.OutputTokens,
 	}.into(out)
 	if contextWindow > 0 {
-		out["context_window"] = contextWindow
+		out[contracts.ContextUsageFieldContextWindow] = contextWindow
 	}
 	return out
 }
@@ -114,10 +116,10 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 		counts.CacheRead = c.CacheReadTokens
 		counts.CacheWrite = c.CacheWriteTokens
 	}
-	out := map[string]any{"context_tokens": usage.Used}
+	out := map[string]any{contracts.ContextUsageFieldContextTokens: usage.Used}
 	counts.into(out)
 	if usage.Size > 0 {
-		out["context_window"] = usage.Size
+		out[contracts.ContextUsageFieldContextWindow] = usage.Size
 	}
 	return out
 }
@@ -137,10 +139,10 @@ type zcodeTokenCounts struct {
 
 // into writes the counts under their broadcast key names.
 func (t zcodeTokenCounts) into(out map[string]any) {
-	out["input_tokens"] = t.Input
-	out["cache_creation_input_tokens"] = t.CacheWrite
-	out["cache_read_input_tokens"] = t.CacheRead
-	out["output_tokens"] = t.Output
+	out[contracts.ContextUsageFieldInputTokens] = t.Input
+	out[contracts.ContextUsageFieldCacheCreationInputTokens] = t.CacheWrite
+	out[contracts.ContextUsageFieldCacheReadInputTokens] = t.CacheRead
+	out[contracts.ContextUsageFieldOutputTokens] = t.Output
 }
 
 // tokenCountsFrom reads the four counts back out of a projected map. Paired with
@@ -151,10 +153,10 @@ func tokenCountsFrom(m map[string]any) zcodeTokenCounts {
 		return v
 	}
 	return zcodeTokenCounts{
-		Input:      pick("input_tokens"),
-		CacheWrite: pick("cache_creation_input_tokens"),
-		CacheRead:  pick("cache_read_input_tokens"),
-		Output:     pick("output_tokens"),
+		Input:      pick(contracts.ContextUsageFieldInputTokens),
+		CacheWrite: pick(contracts.ContextUsageFieldCacheCreationInputTokens),
+		CacheRead:  pick(contracts.ContextUsageFieldCacheReadInputTokens),
+		Output:     pick(contracts.ContextUsageFieldOutputTokens),
 	}
 }
 
@@ -172,7 +174,7 @@ func (a *zcodeAgent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
 			a.contextWindow = runtime.ContextUsage.Size
 		}
 		a.mu.Unlock()
-		info["context_usage"] = maps.Clone(usage)
+		info[contracts.SessionInfoKeyContextUsage] = maps.Clone(usage)
 	}
 	// A cost in another currency is omitted, not converted. `total_cost_usd` states
 	// its unit, and filling it from a non-dollar amount would be a wrong number.
@@ -181,8 +183,13 @@ func (a *zcodeAgent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
 		a.sessionCostUsd = c.Amount
 		a.sessionCostKnown = true
 		a.mu.Unlock()
-		info["total_cost_usd"] = c.Amount
+		info[contracts.SessionInfoKeyTotalCostUsd] = c.Amount
 	}
+	// No browser code reads this key, so it stays out of
+	// contracts/session-info.json and a backing-off ZCode turn currently reads as
+	// idle. Surfacing it means an agent-level retry indicator (it is
+	// session-scoped, so it does not fit the span-keyed running_tool key):
+	// https://github.com/leapmux/leapmux/issues/434
 	if r := runtime.APIRetry; r != nil {
 		info["zcode_api_retry"] = map[string]any{
 			"attempt":        r.Attempt,
@@ -229,7 +236,7 @@ func (a *zcodeAgent) recordZCodeUsage(usage zcodeUsage) {
 		return
 	}
 	a.mu.Lock()
-	if _, authoritative := a.latestContextUsage["context_tokens"]; authoritative {
+	if _, authoritative := a.latestContextUsage[contracts.ContextUsageFieldContextTokens]; authoritative {
 		// Keep the authoritative window and total; refresh only the per-request
 		// counts, which are what this event actually knows.
 		tokenCountsFrom(contextUsage).into(a.latestContextUsage)
@@ -238,7 +245,7 @@ func (a *zcodeAgent) recordZCodeUsage(usage zcodeUsage) {
 	}
 	broadcast := maps.Clone(a.latestContextUsage)
 	a.mu.Unlock()
-	a.sink.BroadcastSessionInfo(map[string]any{"context_usage": broadcast})
+	a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: broadcast})
 }
 
 // refreshZCodeUsageFromSession re-reads the session's own state after a turn ends,
@@ -309,10 +316,10 @@ func zcodeAugmentWithUsage(raw []byte, snap zcodeUsageSnapshot) []byte {
 		return raw
 	}
 	if len(snap.ContextUsage) > 0 {
-		obj["context_usage"] = snap.ContextUsage
+		obj[contracts.SessionInfoKeyContextUsage] = snap.ContextUsage
 	}
 	if snap.HasCost {
-		obj["total_cost_usd"] = snap.CostUSD
+		obj[contracts.SessionInfoKeyTotalCostUsd] = snap.CostUSD
 	}
 	augmented, err := json.Marshal(obj)
 	if err != nil {

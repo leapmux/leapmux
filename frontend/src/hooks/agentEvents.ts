@@ -12,6 +12,7 @@ import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
 import type { createControlStore } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab } from '~/stores/tab.types'
@@ -22,6 +23,7 @@ import { sendAgentMessage } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
+import { RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -55,22 +57,33 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
       continue
     const tier = raw as Record<string, unknown>
     const info: RateLimitInfo = {}
-    if (typeof tier.rate_limit_type === 'string')
-      info.rateLimitType = tier.rate_limit_type
-    if (typeof tier.status === 'string')
-      info.status = tier.status
-    if (typeof tier.utilization === 'number')
-      info.utilization = tier.utilization
-    if (typeof tier.resets_at === 'number')
-      info.resetsAt = tier.resets_at
-    if (typeof tier.surpassed_threshold === 'number')
-      info.surpassedThreshold = tier.surpassed_threshold
-    if (typeof tier.overage_status === 'string')
-      info.overageStatus = tier.overage_status
-    if (typeof tier.overage_resets_at === 'number')
-      info.overageResetsAt = tier.overage_resets_at
-    if (typeof tier.is_using_overage === 'boolean')
-      info.isUsingOverage = tier.is_using_overage
+    // Each value is bound to a local before the typeof guard: narrowing an index
+    // expression does not carry to a second read of it, so `tier[K]` after the
+    // guard would still be `unknown`.
+    const rateLimitType = tier[RATE_LIMIT_FIELD.RateLimitType]
+    if (typeof rateLimitType === 'string')
+      info.rateLimitType = rateLimitType
+    const status = tier[RATE_LIMIT_FIELD.Status]
+    if (typeof status === 'string')
+      info.status = status
+    const utilization = tier[RATE_LIMIT_FIELD.Utilization]
+    if (typeof utilization === 'number')
+      info.utilization = utilization
+    const resetsAt = tier[RATE_LIMIT_FIELD.ResetsAt]
+    if (typeof resetsAt === 'number')
+      info.resetsAt = resetsAt
+    const surpassedThreshold = tier[RATE_LIMIT_FIELD.SurpassedThreshold]
+    if (typeof surpassedThreshold === 'number')
+      info.surpassedThreshold = surpassedThreshold
+    const overageStatus = tier[RATE_LIMIT_FIELD.OverageStatus]
+    if (typeof overageStatus === 'string')
+      info.overageStatus = overageStatus
+    const overageResetsAt = tier[RATE_LIMIT_FIELD.OverageResetsAt]
+    if (typeof overageResetsAt === 'number')
+      info.overageResetsAt = overageResetsAt
+    const isUsingOverage = tier[RATE_LIMIT_FIELD.IsUsingOverage]
+    if (typeof isUsingOverage === 'boolean')
+      info.isUsingOverage = isUsingOverage
     out[key] = info
   }
   return out
@@ -90,24 +103,89 @@ export function wireSessionInfoToUpdates(
   const updates: Record<string, unknown> = {}
   if (!info)
     return updates
-  if (typeof info.total_cost_usd === 'number')
-    updates.totalCostUsd = info.total_cost_usd
-  const contextUsage = normalizeContextUsage(info.context_usage)
+  if (typeof info[SESSION_INFO_KEY.TotalCostUsd] === 'number')
+    updates.totalCostUsd = info[SESSION_INFO_KEY.TotalCostUsd]
+  const contextUsage = normalizeContextUsage(info[SESSION_INFO_KEY.ContextUsage])
   if (contextUsage)
     updates.contextUsage = contextUsage
-  if (info.rate_limits !== undefined)
-    updates.rateLimits = wireRateLimitsToCamel(info.rate_limits)
-  if (info.codex_turn_id !== undefined)
-    updates.codexTurnId = info.codex_turn_id as string
-  if (info.streaming_type !== undefined)
-    updates.streamingType = info.streaming_type as string
+  if (info[SESSION_INFO_KEY.RateLimits] !== undefined)
+    updates.rateLimits = wireRateLimitsToCamel(info[SESSION_INFO_KEY.RateLimits])
+  if (info[SESSION_INFO_KEY.CodexTurnId] !== undefined)
+    updates.codexTurnId = info[SESSION_INFO_KEY.CodexTurnId] as string
+  if (info[SESSION_INFO_KEY.StreamingType] !== undefined)
+    updates.streamingType = info[SESSION_INFO_KEY.StreamingType] as string
   // Only positive estimates: `> 0` rejects both the zero-estimate first delta
   // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
   // false), so the indicator never has to defend against "0 tokens" or a NaN
   // serialized to null in storage.
-  if (typeof info.thinking_tokens === 'number' && info.thinking_tokens > 0)
-    updates.thinkingTokens = info.thinking_tokens
+  const thinkingTokens = info[SESSION_INFO_KEY.ThinkingTokens]
+  if (typeof thinkingTokens === 'number' && thinkingTokens > 0)
+    updates.thinkingTokens = thinkingTokens
   return updates
+}
+
+/**
+ * Translate one `running_tool` broadcast into the span-keyed update the chat
+ * store merges. Pure and exported so the shape rules are unit-testable at the
+ * wire boundary, the role wireSessionInfoToUpdates plays for the scalar keys.
+ *
+ * It deliberately does NOT go through wireSessionInfoToUpdates: that function
+ * returns scalar `AgentSessionInfo` fields, and this is span-keyed accumulating
+ * state that lives in the chat store beside the command streams.
+ *
+ * Every field but `span_id` is optional, because the worker forwards two
+ * families that report disjoint facts (see chatToolProgress). `retry` keeps its
+ * three states: absent leaves the entry's retry alone, an object sets it, and an
+ * explicit null clears it -- the agent's only "the retry resolved" signal.
+ */
+export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | undefined {
+  if (typeof value !== 'object' || value === null)
+    return undefined
+  const raw = value as Record<string, unknown>
+  const spanId = raw[RUNNING_TOOL_FIELD.SpanId]
+  if (typeof spanId !== 'string' || spanId === '')
+    return undefined
+
+  const update: ToolProgressUpdate = { spanId }
+  const toolName = raw[RUNNING_TOOL_FIELD.ToolName]
+  if (typeof toolName === 'string')
+    update.toolName = toolName
+  // Finite guard, not just `typeof number`: a NaN or Infinity would reach
+  // formatDuration and render as "NaNs" on the card.
+  const elapsed = raw[RUNNING_TOOL_FIELD.ElapsedSeconds]
+  if (typeof elapsed === 'number' && Number.isFinite(elapsed) && elapsed >= 0)
+    update.elapsedSeconds = elapsed
+  const subagentType = raw[RUNNING_TOOL_FIELD.SubagentType]
+  if (typeof subagentType === 'string')
+    update.subagentType = subagentType
+  if (RUNNING_TOOL_FIELD.Retry in raw)
+    update.retry = wireRunningToolRetry(raw[RUNNING_TOOL_FIELD.Retry])
+  return update
+}
+
+/**
+ * The `retry` member of a running_tool update. Returns null for the resolved
+ * signal AND for a malformed object -- both mean "show no retry", and a partial
+ * badge reading "Retrying undefined/undefined" is worse than none.
+ */
+function wireRunningToolRetry(value: unknown): ToolProgressRetry | null {
+  if (typeof value !== 'object' || value === null)
+    return null
+  const raw = value as Record<string, unknown>
+  const attempt = raw[RUNNING_TOOL_RETRY_FIELD.Attempt]
+  const maxRetries = raw[RUNNING_TOOL_RETRY_FIELD.MaxRetries]
+  if (typeof attempt !== 'number' || typeof maxRetries !== 'number')
+    return null
+  const retryDelayMs = raw[RUNNING_TOOL_RETRY_FIELD.RetryDelayMs]
+  const errorStatus = raw[RUNNING_TOOL_RETRY_FIELD.ErrorStatus]
+  const errorCategory = raw[RUNNING_TOOL_RETRY_FIELD.ErrorCategory]
+  return {
+    attempt,
+    maxRetries,
+    retryDelayMs: typeof retryDelayMs === 'number' ? retryDelayMs : 0,
+    errorStatus: typeof errorStatus === 'number' ? errorStatus : null,
+    errorCategory: typeof errorCategory === 'string' ? errorCategory : '',
+  }
 }
 
 // shouldClearThinkingTokensForMessage decides whether a persisted message should
@@ -155,10 +233,11 @@ export interface AgentMessageStores {
 export function handleAgentSessionInfo(
   agentId: string,
   parsed: ParsedMessageContent,
-  agentSessionStore: AgentMessageStores['agentSessionStore'],
+  stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
 ): boolean {
   if (!(parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === NOTIFICATION_TYPE.AgentSessionInfo))
     return false
+  const { agentSessionStore, chatStore } = stores
   const info = parsed.topLevel.info as Record<string, unknown> | undefined
   const updates = wireSessionInfoToUpdates(info)
   // A zero (or, defensively, negative) thinking-token estimate is the backend's
@@ -166,8 +245,15 @@ export function handleAgentSessionInfo(
   // as a clear so a stale count from a prior phase/turn can't linger; the positive path
   // keeps streaming via `updates`. wireSessionInfoToUpdates only forwards positive
   // estimates, so a 0 never arrives as an update and must be handled here.
-  if (typeof info?.thinking_tokens === 'number' && info.thinking_tokens <= 0)
+  const thinkingTokens = info?.[SESSION_INFO_KEY.ThinkingTokens]
+  if (typeof thinkingTokens === 'number' && thinkingTokens <= 0)
     agentSessionStore.clearThinkingTokens(agentId)
+  // running_tool is span-keyed accumulating state, not an AgentSessionInfo field,
+  // so it goes to the chat store beside the command streams rather than through
+  // wireSessionInfoToUpdates.
+  const runningTool = wireRunningToolToUpdate(info?.[SESSION_INFO_KEY.RunningTool])
+  if (runningTool)
+    chatStore.applyToolProgress(agentId, runningTool)
   // Pi (and any future provider) may broadcast session_info payloads whose keys are all
   // dropped here -- skip the store write so reactive consumers aren't woken for nothing.
   if (Object.keys(updates).length > 0)
@@ -213,6 +299,9 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
     // only (no broadcast), so the counter would otherwise linger frozen on its last
     // value until the next turn produces a delta or a clear of its own.
     agentSessionStore.clearThinkingTokens(agentId)
+    // Same reasoning for the running-tool badges: the rows they were attached to are
+    // gone, and no provider sends an end message for a running tool.
+    chatStore.clearToolProgress(agentId)
   }
 
   // Rate limits and Codex token usage self-gate in the provider plugin (they return null for a
@@ -312,6 +401,10 @@ export function handleResultDivider(
   // envelope whose source is not AGENT, or a catch-up replay where the INACTIVE-driven
   // onTurnEnd is skipped -- leaving the counter frozen on its last value.
   agentSessionStore.clearThinkingTokens(agentId)
+  // The turn is over, so no tool of it is still running. This is the backstop for a
+  // tool whose result row never arrived (an interrupt, a crashed CLI): without it the
+  // badge would stay on that card for the rest of the session.
+  chatStore.clearToolProgress(agentId)
   // Resolve the context-window hint from the CONFIRMED catalog current value, not the
   // optimistic optionValues: a result divider is post-relaunch ground truth for a turn
   // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
@@ -377,6 +470,33 @@ export function clearCompletedSpanStream(
 }
 
 /**
+ * Drop a span's live tool progress once its RESULT row lands: the tool finished,
+ * so its card must stop showing an elapsed time.
+ *
+ * The frontend owns this because the worker cannot see it. Claude Code emits a
+ * heartbeat every 30 seconds while a tool runs and NOTHING when it stops -- the
+ * CLI just clears its own timer -- so a provider has no end message to forward.
+ *
+ * The result row is identified by the plugin's existing `spanRole` hook rather
+ * than by any provider's own envelope shape, so this stays provider-neutral.
+ * It runs for a row OUTSIDE the loaded window too: an entry whose row was
+ * trimmed still has to be reclaimed, and the badge it feeds is not rendered
+ * there anyway. Turn end / agent-inactive / context-cleared clear whatever this
+ * misses.
+ */
+export function dropFinishedToolProgress(
+  agentId: string,
+  msg: AgentChatMessage,
+  parsed: ParsedMessageContent,
+  chatStore: AgentMessageStores['chatStore'],
+): void {
+  if (!msg.spanId)
+    return
+  if (providerFor(msg.agentProvider)?.spanRole?.(parsed) === 'result')
+    chatStore.dropToolProgress(agentId, msg.spanId)
+}
+
+/**
  * Method-specific lifecycle handling for a persisted message. Gated on AGENT source rather than
  * category because some lifecycle items (e.g. Codex `thread/started`) classify as `hidden` -- a
  * category-only gate would silently skip them. Clears a stale Codex turn id on thread/started and
@@ -424,7 +544,7 @@ export function handleAgentMessage(
 
   // Ephemeral agent_session_info: translated + applied, then short-circuit (it is
   // never persisted, so none of the message processing below applies).
-  if (handleAgentSessionInfo(agentId, parsed, agentSessionStore))
+  if (handleAgentSessionInfo(agentId, parsed, stores))
     return
 
   // Notification metadata (context_cleared / rate_limit / token-usage / compaction
@@ -432,6 +552,8 @@ export function handleAgentMessage(
   applyNotificationMetadata(agentId, msg, parsed, stores, catchUpPhase)
 
   const messageInWindow = chatStore.addMessage(agentId, msg)
+  // A tool's result row means it stopped running, so its badge goes with it.
+  dropFinishedToolProgress(agentId, msg, parsed, chatStore)
   // Main-agent output means the current thinking phase produced something,
   // so drop the live thinking-token estimate — otherwise the counter lingers
   // beside the indicator (frozen on its last value) until turn end, and the
@@ -643,6 +765,7 @@ export function handleAgentInactive(
 ): void {
   stores.controlStore.clearAgent(agentId)
   stores.agentSessionStore.clearThinkingTokens(agentId)
+  stores.chatStore.clearToolProgress(agentId)
   if (catchUpPhase === 'live')
     stores.chatStore.sweepOrphanedBufferedSpans(agentId)
   if (catchUpPhase === 'live' && sc.agentSessionId && stores.view.getAgentTab(agentId))
@@ -700,7 +823,7 @@ export function handleControlRequest(
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
 ): void {
-  const { view, metadata, selection, getActiveWorkspaceId, controlStore, agentSessionStore } = stores
+  const { view, metadata, selection, getActiveWorkspaceId, controlStore, agentSessionStore, chatStore } = stores
   // During catch-up, the INACTIVE statusChange may have already been processed before
   // this replayed controlRequest arrives. Skip adding the request so the user isn't
   // stuck on an unanswerable prompt.
@@ -730,6 +853,9 @@ export function handleControlRequest(
     // pause may produce no agent message and no INACTIVE, so drop the per-turn estimate
     // here too -- otherwise the counter lingers frozen until the next turn.
     agentSessionStore.clearThinkingTokens(agentId)
+    // The tool that asked the question is blocked on the user, not running, and its
+    // heartbeats stop for as long as the prompt is open.
+    chatStore.clearToolProgress(agentId)
     onTurnEnd?.(agentId)
   }
 }

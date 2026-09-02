@@ -539,11 +539,13 @@ func TestHandleZCodeOutput_ToolStarted_ResetsTheProgressCounter(t *testing.T) {
 	require.Len(t, chunks, 2)
 	assert.Equal(t, "new", string(chunks[1].Content))
 
-	info := sink.LastSessionInfo()
-	running, ok := info["zcode_running_tool"].(map[string]any)
-	require.True(t, ok, "started must report which tool is running")
-	assert.Equal(t, "c1", running["tool_call_id"])
-	assert.Equal(t, "Bash", running["tool_name"])
+	// `started` broadcasts no session info AT ALL. It used to ship a
+	// zcode_running_tool key that no browser code read; recordZCodeToolStarted
+	// says what ZCode must report before it broadcasts the shared running_tool key
+	// instead. Asserting the whole payload is absent (not just the key) is the
+	// stronger statement, and it does not pass vacuously the way NotContains does
+	// against a nil map.
+	assert.Nil(t, sink.LastSessionInfo())
 }
 
 // --- tool completion ---
@@ -576,7 +578,11 @@ func TestHandleZCodeOutput_ToolResult_PersistsClosesAndCountsTheCall(t *testing.
 	assert.Equal(t, 0, names, "the side tables are released with the call")
 	assert.Equal(t, 0, inputs)
 
-	assert.Nil(t, sink.LastSessionInfo()["zcode_running_tool"], "the running-tool indicator is cleared")
+	// The close broadcasts no running-tool clear. The frontend drops a span's
+	// running_tool entry when the result row above lands, so a provider never
+	// sends an end message -- see closeZCodeToolCall.
+	assert.NotContains(t, sink.LastSessionInfo(), "zcode_running_tool")
+	assert.NotContains(t, sink.LastSessionInfo(), contracts.SessionInfoKeyRunningTool)
 }
 
 func TestHandleZCodeOutput_ToolError_ClosesTheCallToo(t *testing.T) {

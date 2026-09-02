@@ -1635,34 +1635,54 @@ describe('agentMessage sub-handlers', () => {
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
   }
 
+  /** The two stores handleAgentSessionInfo writes to. */
+  function sessionInfoStores() {
+    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore() }
+  }
+
   it('handleAgentSessionInfo consumes an agent_session_info message and applies its updates', () => {
     createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
+      const stores = sessionInfoStores()
       const msg = agentMessage({ type: 'agent_session_info', info: { total_cost_usd: 1.5 } })
-      const handled = handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)
+      const handled = handleAgentSessionInfo('a1', parseMessageContent(msg), stores)
       // Returning true is the early-break signal: the caller must NOT persist it.
       expect(handled).toBe(true)
-      expect(agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
+      expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
       dispose()
     })
   })
 
   it('handleAgentSessionInfo returns false for a persisted message (caller keeps processing it)', () => {
     createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
       const msg = agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })
-      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)).toBe(false)
+      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), sessionInfoStores())).toBe(false)
       dispose()
     })
   })
 
   it('handleAgentSessionInfo clears a stale thinking-token estimate on a 0 (per-phase reset)', () => {
     createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
+      const stores = sessionInfoStores()
+      stores.agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
       const msg = agentMessage({ type: 'agent_session_info', info: { thinking_tokens: 0 } })
-      handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)
-      expect(agentSessionStore.getInfo('a1').thinkingTokens).not.toBe(500)
+      handleAgentSessionInfo('a1', parseMessageContent(msg), stores)
+      expect(stores.agentSessionStore.getInfo('a1').thinkingTokens).not.toBe(500)
+      dispose()
+    })
+  })
+
+  it('handleAgentSessionInfo routes running_tool to the chat store, not the session store', () => {
+    createRoot((dispose) => {
+      const stores = sessionInfoStores()
+      const msg = agentMessage({
+        type: 'agent_session_info',
+        info: { running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 } },
+      })
+      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), stores)).toBe(true)
+      expect(stores.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ toolName: 'Bash', elapsedSeconds: 30 })
+      // It is span-keyed state, so it must not leak into AgentSessionInfo (which is
+      // persisted to localStorage minus its ephemeral keys).
+      expect(stores.agentSessionStore.getInfo('a1')).toEqual({})
       dispose()
     })
   })

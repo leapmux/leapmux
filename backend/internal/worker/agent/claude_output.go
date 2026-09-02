@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/pathutil"
@@ -30,6 +31,8 @@ const (
 	claudeMsgTypeControlRequest       = "control_request"
 	claudeMsgTypeControlCancelRequest = "control_cancel_request"
 	claudeMsgTypeControlResponse      = "control_response"
+	claudeMsgTypeStreamEvent          = "stream_event"
+	claudeMsgTypeToolProgress         = "tool_progress"
 )
 
 // claudeSystemSubtypeThinkingTokens is the `subtype` of the `system` telemetry
@@ -38,16 +41,13 @@ const (
 // thinking-text deltas, it is live progress rather than timeline content, so we
 // broadcast the latest estimate over the ephemeral agent_session_info channel
 // and never persist it.
+//
+// It happens to share the literal "thinking_tokens" with
+// contracts.SessionInfoKeyThinkingTokens, the agent_session_info key the
+// estimate is broadcast under, but the two are distinct concepts -- a Claude
+// wire `subtype` against a platform session-info key -- so they stay separate
+// and either can change without dragging the other.
 const claudeSystemSubtypeThinkingTokens = "thinking_tokens"
-
-// SessionInfoKeyThinkingTokens is the agent_session_info wire key under which the
-// running thinking-token estimate is broadcast. It happens to share the literal
-// "thinking_tokens" with the Claude `subtype` above but is a distinct concept (a
-// platform session-info key, not a Claude wire `subtype`); they are kept as
-// separate consts so one can change without silently dragging the other.
-// Exported so the service layer's dedup exemption keys off the exact same string
-// the broadcast uses rather than a hand-copied literal that could drift.
-const SessionInfoKeyThinkingTokens = "thinking_tokens"
 
 // contextUsageSnapshot tracks token usage for debounced broadcasting.
 type contextUsageSnapshot struct {
@@ -123,13 +123,13 @@ func (s *contextUsageSnapshot) buildBroadcast(msgType string, now time.Time) (ma
 	}
 	s.LastBroadcast = now
 	usageMap := map[string]interface{}{
-		"input_tokens":                s.InputTokens,
-		"output_tokens":               s.OutputTokens,
-		"cache_creation_input_tokens": s.CacheCreationInputTokens,
-		"cache_read_input_tokens":     s.CacheReadInputTokens,
+		contracts.ContextUsageFieldInputTokens:              s.InputTokens,
+		contracts.ContextUsageFieldOutputTokens:             s.OutputTokens,
+		contracts.ContextUsageFieldCacheCreationInputTokens: s.CacheCreationInputTokens,
+		contracts.ContextUsageFieldCacheReadInputTokens:     s.CacheReadInputTokens,
 	}
 	if s.ContextWindow > 0 {
-		usageMap["context_window"] = s.ContextWindow
+		usageMap[contracts.ContextUsageFieldContextWindow] = s.ContextWindow
 	}
 	return usageMap, true
 }
@@ -193,8 +193,21 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 	case NotificationTypeRateLimitEvent:
 		a.claudeCodeHandleRateLimitEvent(content)
 
-	default:
+	case claudeMsgTypeToolProgress:
+		a.claudeHandleToolProgress(content)
+
+	case claudeMsgTypeStreamEvent:
+		// The ONLY type this arm forwards. AgentStreamChunk.delta is defined as
+		// "verbatim NDJSON line (stream_event from Claude Code)", and the chunk
+		// carries no span id, so the frontend appends it to the free-form
+		// streaming text. Every other type reaching here would be printed into
+		// the chat tail as raw JSON -- which is exactly what tool_progress did
+		// before the arm above claimed it. A type this switch does not know is
+		// dropped instead, so a new CLI frame cannot corrupt the transcript.
 		a.sink.BroadcastStreamChunk(content, "", "")
+
+	default:
+		slog.Debug("unhandled claude output type", "agent_id", a.agentID, "type", msgType)
 	}
 }
 
@@ -610,9 +623,157 @@ func (a *ClaudeCodeAgent) handleThinkingTokens(content []byte) bool {
 		return false
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		SessionInfoKeyThinkingTokens: estimate,
+		contracts.SessionInfoKeyThinkingTokens: estimate,
 	})
 	return true
+}
+
+// claudeHandleToolProgress intercepts Claude Code's `tool_progress` frames and
+// broadcasts what a running tool's card can show over the ephemeral
+// agent_session_info channel (seq -1, never written to the messages table).
+//
+// The frame MUST be claimed here, in the type switch, before any envelope
+// parsing: it carries a parent_tool_use_id, and that field is what routes a
+// message into a subagent's child transcript (handlePersistableMessage). It
+// also used to fall through to the default arm, which broadcast the raw line as
+// a span-less stream chunk -- printing the JSON into the chat tail whenever no
+// span was open, which is exactly the case for a top-level Agent/Task call
+// (claudeToolSpawnsSubagent opens none).
+func (a *ClaudeCodeAgent) claudeHandleToolProgress(content []byte) {
+	update, ok := parseClaudeToolProgress(content)
+	if !ok {
+		return
+	}
+	a.sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRunningTool: update,
+	})
+}
+
+// claudeToolProgress is the subset of a `tool_progress` frame this worker reads.
+// Verified against claude 2.1.258, both in the CLI's own output schema and in a
+// live capture.
+type claudeToolProgress struct {
+	// ParentToolUseID is the tool_use id of the tool the frame describes. The
+	// frame's OWN tool_use_id is synthetic in every family that reaches us --
+	// `<realId>-heartbeat-<n>` for a heartbeat, `agent_<messageId>` for a
+	// subagent retry -- so it identifies nothing the transcript holds and is
+	// never read here.
+	ParentToolUseID string `json:"parent_tool_use_id"`
+	ToolName        string `json:"tool_name"`
+	// ElapsedSeconds is a RawMessage for the reason parseThinkingTokens gives
+	// for estimated_tokens: a typed field would make the whole frame fail to
+	// decode on a malformed count, and the frame would fall through to the
+	// stream-chunk leak this handler exists to close.
+	ElapsedSeconds json.RawMessage      `json:"elapsed_time_seconds"`
+	Heartbeat      bool                 `json:"heartbeat"`
+	SubagentType   string               `json:"subagent_type"`
+	SubagentRetry  *claudeSubagentRetry `json:"subagent_retry"`
+}
+
+// claudeSubagentRetry is the retry state an `agent_api_retry` frame carries
+// while a Task subagent retries an API call.
+type claudeSubagentRetry struct {
+	Attempt       int    `json:"attempt"`
+	MaxRetries    int    `json:"max_retries"`
+	RetryDelayMs  int64  `json:"retry_delay_ms"`
+	ErrorStatus   *int   `json:"error_status"`
+	ErrorCategory string `json:"error_category"`
+}
+
+// parseClaudeToolProgress turns a `tool_progress` frame into the running_tool
+// update to broadcast, or reports ok=false for a frame with nothing to show.
+// Pure (no sink, no I/O) so the family rules are unit-testable directly.
+//
+// The CLI emits five families under this one type. Two reach LeapMux:
+//
+//   - tool_heartbeat -- every 30 seconds, for every tool call of the MAIN agent
+//     (a tool running inside a subagent gets none). It carries the elapsed
+//     time, and no frame marks the end: the CLI clears its timer in the tool
+//     call's `finally`. The frontend drops the entry when the tool_result row
+//     lands, so no "ended" message is needed here.
+//   - agent_api_retry -- a Task call whose subagent hit an API error. Its
+//     elapsed_time_seconds is always 0, so it must NOT touch the elapsed value
+//     the heartbeats maintain; the update omits the key entirely. When the
+//     retry succeeds the CLI repeats the frame with subagent_retry ABSENT, and
+//     that is the only resolved signal, so an explicit nil retry is sent to
+//     clear the badge.
+//
+// The other three are unreachable: bash_progress and powershell_progress need
+// CLAUDE_CODE_REMOTE or a container id, and repl_tool_call needs the REPL tool.
+// They are dropped rather than guessed at.
+func parseClaudeToolProgress(content []byte) (map[string]interface{}, bool) {
+	var frame claudeToolProgress
+	if err := json.Unmarshal(content, &frame); err != nil {
+		slog.Warn("invalid claude tool_progress JSON", "error", err)
+		return nil, false
+	}
+	// A frame with no parent names no tool_use row, so nothing could carry its
+	// badge. The field is nullable on the wire, and a null decodes to "".
+	if frame.ParentToolUseID == "" {
+		return nil, false
+	}
+
+	update := map[string]interface{}{
+		contracts.RunningToolFieldSpanId:   frame.ParentToolUseID,
+		contracts.RunningToolFieldToolName: frame.ToolName,
+	}
+	switch {
+	case frame.Heartbeat:
+		update[contracts.RunningToolFieldElapsedSeconds] = claudeNonNegativeCount(frame.ElapsedSeconds)
+	case frame.SubagentType != "":
+		update[contracts.RunningToolFieldSubagentType] = frame.SubagentType
+		update[contracts.RunningToolFieldRetry] = claudeSubagentRetryMap(frame.SubagentRetry)
+	default:
+		return nil, false
+	}
+	return update, true
+}
+
+// claudeSubagentRetryMap renders the retry state for the wire. A nil retry
+// becomes an explicit nil (JSON null), which the frontend reads as "the retry
+// resolved" -- distinct from an absent key, which leaves the state alone.
+func claudeSubagentRetryMap(r *claudeSubagentRetry) interface{} {
+	if r == nil {
+		return nil
+	}
+	var errorStatus interface{}
+	if r.ErrorStatus != nil {
+		errorStatus = *r.ErrorStatus
+	}
+	return map[string]interface{}{
+		contracts.RunningToolRetryFieldAttempt:       r.Attempt,
+		contracts.RunningToolRetryFieldMaxRetries:    r.MaxRetries,
+		contracts.RunningToolRetryFieldRetryDelayMs:  r.RetryDelayMs,
+		contracts.RunningToolRetryFieldErrorStatus:   errorStatus,
+		contracts.RunningToolRetryFieldErrorCategory: r.ErrorCategory,
+	}
+}
+
+// claudeNonNegativeCount sanitizes a raw JSON number that Claude Code reports as
+// a count, into a non-negative int64 that is always a faithful, in-range value.
+// Shared by the thinking-token estimate and the tool_progress elapsed time, so
+// the rules below have one home rather than two copies that drift.
+//
+// The value is parsed leniently as float64 so a fractional or exponent form
+// (`230.0`, `1.5e4`) still reads, then:
+//   - a malformed, absent, or float64-overflowing value (1e400 -> +Inf -> parse
+//     error, leaving the zero value) yields 0;
+//   - a negative value clamps to 0 (both a count and an elapsed time are
+//     non-negative by definition; a truncated -0.5 and a genuinely negative wire
+//     value both become 0) so no consumer ever sees a negative number;
+//   - a finite value at or above 2^63 (e.g. 1e300, which parses cleanly yet
+//     saturates the int64 conversion to a garbage value) is out of range like
+//     the overflowing 1e400, so it also yields 0 rather than a nonsense
+//     9.2-quintillion count.
+func claudeNonNegativeCount(raw json.RawMessage) int64 {
+	var f float64
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &f)
+	}
+	if f < 0 || f >= float64(math.MaxInt64) {
+		return 0
+	}
+	return int64(f)
 }
 
 // parseThinkingTokens extracts the sanitized running thinking-token estimate
@@ -628,18 +789,8 @@ func (a *ClaudeCodeAgent) handleThinkingTokens(content []byte) bool {
 // bloat this interception exists to prevent. Matching the subtype first
 // decouples "is this a thinking_tokens line?" from "did the count parse?".
 //
-// The count is parsed leniently as float64 so a fractional or exponent form
-// (`230.0`, `1.5e4`) still reads, then sanitized to a non-negative int64 that is
-// always a faithful, in-range count:
-//   - a malformed, absent, or float64-overflowing count (1e400 -> +Inf ->
-//     parse error, leaving the zero value) broadcasts 0;
-//   - a negative count clamps to 0 (a running estimate is non-negative by
-//     definition; a truncated -0.5 or a genuinely negative wire value both
-//     become 0) so no consumer ever sees a negative count;
-//   - a finite count at or above 2^63 (e.g. 1e300, which parses cleanly yet
-//     saturates the int64 conversion to a garbage value) is out of range like
-//     the overflowing 1e400, so it also broadcasts 0 rather than a nonsense
-//     9.2-quintillion count.
+// claudeNonNegativeCount states what a malformed, negative, or out-of-range
+// count becomes.
 func parseThinkingTokens(content []byte) (estimate int64, ok bool) {
 	var msg struct {
 		Subtype         string          `json:"subtype"`
@@ -648,14 +799,7 @@ func parseThinkingTokens(content []byte) (estimate int64, ok bool) {
 	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != claudeSystemSubtypeThinkingTokens {
 		return 0, false
 	}
-	var f float64
-	if len(msg.EstimatedTokens) > 0 {
-		_ = json.Unmarshal(msg.EstimatedTokens, &f)
-	}
-	if f < 0 || f >= float64(math.MaxInt64) {
-		f = 0
-	}
-	return int64(f), true
+	return claudeNonNegativeCount(msg.EstimatedTokens), true
 }
 
 // claudeCodeHandleSystemInit extracts session_id from system init messages.
@@ -786,30 +930,30 @@ func (a *ClaudeCodeAgent) claudeCodeHandleRateLimitEvent(content []byte) {
 	}
 
 	tier := map[string]any{
-		"rate_limit_type": rlInfo.RateLimitType,
-		"status":          rlInfo.Status,
+		contracts.RateLimitFieldRateLimitType: rlInfo.RateLimitType,
+		contracts.RateLimitFieldStatus:        rlInfo.Status,
 	}
 	if rlInfo.Utilization != nil {
-		tier["utilization"] = *rlInfo.Utilization
+		tier[contracts.RateLimitFieldUtilization] = *rlInfo.Utilization
 	}
 	if rlInfo.ResetsAt != nil {
-		tier["resets_at"] = *rlInfo.ResetsAt
+		tier[contracts.RateLimitFieldResetsAt] = *rlInfo.ResetsAt
 	}
 	if rlInfo.SurpassedThreshold != nil {
-		tier["surpassed_threshold"] = *rlInfo.SurpassedThreshold
+		tier[contracts.RateLimitFieldSurpassedThreshold] = *rlInfo.SurpassedThreshold
 	}
 	if rlInfo.OverageStatus != "" {
-		tier["overage_status"] = rlInfo.OverageStatus
+		tier[contracts.RateLimitFieldOverageStatus] = rlInfo.OverageStatus
 	}
 	if rlInfo.OverageResetsAt != nil {
-		tier["overage_resets_at"] = *rlInfo.OverageResetsAt
+		tier[contracts.RateLimitFieldOverageResetsAt] = *rlInfo.OverageResetsAt
 	}
 	if rlInfo.IsUsingOverage != nil {
-		tier["is_using_overage"] = *rlInfo.IsUsingOverage
+		tier[contracts.RateLimitFieldIsUsingOverage] = *rlInfo.IsUsingOverage
 	}
 
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		"rate_limits": map[string]any{rlInfo.RateLimitType: tier},
+		contracts.SessionInfoKeyRateLimits: map[string]any{rlInfo.RateLimitType: tier},
 	})
 
 	// Persist the raw `rate_limit_event` envelope verbatim as an
@@ -881,7 +1025,7 @@ func claudeRateLimitResume(status string, resetsAt *int64, usingOverage bool, ov
 func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType string) {
 	info := map[string]interface{}{}
 	if env.CostUSD != nil {
-		info["total_cost_usd"] = *env.CostUSD
+		info[contracts.SessionInfoKeyTotalCostUsd] = *env.CostUSD
 	}
 
 	// Snapshot a.model and the effort resolver under a.mu in one acquisition: this
@@ -941,7 +1085,7 @@ func (a *ClaudeCodeAgent) extractAndBroadcastUsage(env *messageEnvelope, msgType
 	}
 
 	if usageMap, ok := snapshot.buildBroadcast(msgType, time.Now()); ok {
-		info["context_usage"] = usageMap
+		info[contracts.SessionInfoKeyContextUsage] = usageMap
 	}
 
 	if len(info) > 0 {

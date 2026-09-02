@@ -16,6 +16,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -1897,16 +1898,16 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 	}
 
 	info := map[string]interface{}{
-		"context_usage": map[string]interface{}{
-			"input_tokens":                usage.Used,
-			"cache_creation_input_tokens": int64(0),
-			"cache_read_input_tokens":     int64(0),
-			"output_tokens":               int64(0),
-			"context_window":              usage.Size,
+		contracts.SessionInfoKeyContextUsage: map[string]interface{}{
+			contracts.ContextUsageFieldInputTokens:              usage.Used,
+			contracts.ContextUsageFieldCacheCreationInputTokens: int64(0),
+			contracts.ContextUsageFieldCacheReadInputTokens:     int64(0),
+			contracts.ContextUsageFieldOutputTokens:             int64(0),
+			contracts.ContextUsageFieldContextWindow:            usage.Size,
 		},
 	}
 	if usage.Cost.Amount > 0 {
-		info["total_cost_usd"] = usage.Cost.Amount
+		info[contracts.SessionInfoKeyTotalCostUsd] = usage.Cost.Amount
 	}
 	b.sink.BroadcastSessionInfo(info)
 }

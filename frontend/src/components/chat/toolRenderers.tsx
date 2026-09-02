@@ -38,6 +38,7 @@ import {
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 import { spanColorKey } from './widgets/SpanLines'
 import { spanLineColors } from './widgets/SpanLines.css'
+import { ToolRunningBadge } from './widgets/ToolRunningBadge'
 
 /** Renders a "To-do list cleared" placeholder for empty todo/plan tool_use messages. */
 export function EmptyTodoLayout(props: { toolName: string, context?: RenderContext }): JSX.Element {
@@ -118,6 +119,15 @@ export function ToolUseLayout(props: {
         {typeof props.title === 'string'
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}
+        {/*
+          The thunk is passed on WITHOUT being called: reading the value here
+          would subscribe this layout to it, and re-rendering the card would drop
+          a text selection the user holds across it. Only the badge reads it.
+        */}
+        <ToolRunningBadge
+          progress={props.context?.toolProgress}
+          selectionActive={props.context?.textSelectionActive}
+        />
         <Show when={hasActions()}>
           <ToolHeaderActions
             caller={actions()}

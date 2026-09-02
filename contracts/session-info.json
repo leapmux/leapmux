@@ -1,0 +1,44 @@
+{
+  "_readme": "The agent_session_info wire vocabulary: the keys of the ephemeral `info` map the Worker broadcasts (seq -1, never persisted) and the browser reads in wireSessionInfoToUpdates. Every token here is written by Go and read by TS, so the two copies must not drift -- a one-character difference silently stops a counter updating instead of failing a build. Object-valued keys carry their nested field names too, because those cross the boundary exactly as the top-level keys do. Keys the browser does NOT read stay out, per the contracts rule's one-side-only exemption: the eight pi_* keys (pi_status, pi_widget, pi_terminal_title, pi_editor_text, pi_queue_depth, pi_steering_depth, pi_follow_up_depth, pi_turn_active) and zcode_api_retry are Go-side literals until something renders them. Pi's `tokens` alias for context_tokens is Pi's own protocol token, not a LeapMux-owned one, so it belongs in pi-protocol.json if anywhere.",
+  "keys": {
+    "TotalCostUsd": "total_cost_usd",
+    "ContextUsage": "context_usage",
+    "RateLimits": "rate_limits",
+    "CodexTurnId": "codex_turn_id",
+    "StreamingType": "streaming_type",
+    "ThinkingTokens": "thinking_tokens",
+    "RunningTool": "running_tool"
+  },
+  "contextUsageFields": {
+    "InputTokens": "input_tokens",
+    "OutputTokens": "output_tokens",
+    "CacheCreationInputTokens": "cache_creation_input_tokens",
+    "CacheReadInputTokens": "cache_read_input_tokens",
+    "ContextTokens": "context_tokens",
+    "ContextWindow": "context_window"
+  },
+  "rateLimitFields": {
+    "RateLimitType": "rate_limit_type",
+    "Status": "status",
+    "Utilization": "utilization",
+    "ResetsAt": "resets_at",
+    "SurpassedThreshold": "surpassed_threshold",
+    "OverageStatus": "overage_status",
+    "OverageResetsAt": "overage_resets_at",
+    "IsUsingOverage": "is_using_overage"
+  },
+  "runningToolFields": {
+    "SpanId": "span_id",
+    "ToolName": "tool_name",
+    "ElapsedSeconds": "elapsed_seconds",
+    "SubagentType": "subagent_type",
+    "Retry": "retry"
+  },
+  "runningToolRetryFields": {
+    "Attempt": "attempt",
+    "MaxRetries": "max_retries",
+    "RetryDelayMs": "retry_delay_ms",
+    "ErrorStatus": "error_status",
+    "ErrorCategory": "error_category"
+  }
+}

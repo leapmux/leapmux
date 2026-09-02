@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -266,6 +267,46 @@ func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
 	assert.Equal(t, float64(230), infos[3]["thinking_tokens"])
 	_, hasCost := infos[3]["total_cost_usd"]
 	assert.False(t, hasCost, "the unchanged cost is still deduped out of the mixed payload")
+}
+
+// TestBroadcastSessionInfo_RunningToolNeverDeduped: running_tool joins
+// thinking_tokens in the exemption, and for the same reason. The frontend drops
+// a span's entry when the tool's result row lands and at every turn/agent
+// boundary -- none of which the worker observes -- so an identical repeat must
+// still ship. A resolved-retry update is the case that bites: its payload can
+// equal the previous one byte for byte, and deduping it would leave the badge
+// stuck on the last attempt for as long as the tool runs.
+func TestBroadcastSessionInfo_RunningToolNeverDeduped(t *testing.T) {
+	t.Parallel()
+
+	sink, mock := newSessionInfoFixture(t)
+
+	running := func() map[string]interface{} {
+		return map[string]interface{}{
+			contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+				contracts.RunningToolFieldSpanId:         "toolu_A",
+				contracts.RunningToolFieldToolName:       "Bash",
+				contracts.RunningToolFieldElapsedSeconds: int64(30),
+			},
+		}
+	}
+	sink.BroadcastSessionInfo(running())
+	sink.BroadcastSessionInfo(running())
+	require.Len(t, mock.snapshot(), 2, "an equal running_tool repeat re-ships (exempt from dedup)")
+
+	// A nested value change ships the whole sub-map, as it does for every key.
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+			contracts.RunningToolFieldSpanId:         "toolu_A",
+			contracts.RunningToolFieldToolName:       "Bash",
+			contracts.RunningToolFieldElapsedSeconds: int64(60),
+		},
+	})
+	infos := mock.snapshot()
+	require.Len(t, infos, 3)
+	update, ok := infos[2][contracts.SessionInfoKeyRunningTool].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(60), update[contracts.RunningToolFieldElapsedSeconds])
 }
 
 // TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree drives many

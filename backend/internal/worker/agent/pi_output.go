@@ -431,6 +431,10 @@ func (a *PiAgent) handlePiQueueUpdate(raw []byte) {
 		slog.Warn("pi queue_update unmarshal failed", "agent_id", a.agentID, "error", err)
 		return
 	}
+	// No browser code reads these keys, nor any other pi_* session-info key, so
+	// they stay out of contracts/session-info.json (which holds only the tokens
+	// both sides read). Render them or delete the broadcasts:
+	// https://github.com/leapmux/leapmux/issues/433
 	a.sink.BroadcastSessionInfo(map[string]any{
 		"pi_queue_depth":     len(env.Steering) + len(env.FollowUp),
 		"pi_steering_depth":  len(env.Steering),
@@ -467,6 +471,9 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist notify", "agent_id", a.agentID, "error", err)
 		}
+	// No browser code reads pi_status, pi_widget, pi_terminal_title or
+	// pi_editor_text, so they stay out of contracts/session-info.json. Render them
+	// or delete the broadcasts: https://github.com/leapmux/leapmux/issues/433
 	case contracts.PiExtensionMethodSetStatus:
 		statusValue := any(nil)
 		if head.StatusText != nil {

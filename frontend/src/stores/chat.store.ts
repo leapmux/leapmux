@@ -1,5 +1,6 @@
 import type { ChatRailData } from './chatMessageMarks'
 import type { PendingOutboundMessage } from './chatPendingOutbound'
+import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { CommandStreamSegment, SavedViewportScroll, SpanMessageRevision } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -27,6 +28,7 @@ import { isOptimisticLocal, isOptimisticLocalSeq, isReconcilableLocal, priorServ
 import { createSpanIndex } from './chatSpanIndex'
 import { createStreamingTextStore } from './chatStreamingText'
 import { createTodoStore } from './chatTodoStore'
+import { createToolProgressStore } from './chatToolProgress'
 
 /** Max number of loaded messages to keep for the visible agent tab window. */
 export const MAX_LOADED_CHAT_MESSAGES = 150
@@ -133,6 +135,13 @@ export function createChatStore() {
   const streaming = createStreamingTextStore()
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
   const commandStreams = createCommandStreamStore({ onMutate: bumpMessageVersion })
+  // No onMutate: unlike a command-stream delta, a tool-progress update changes
+  // only a badge inside an already-laid-out header, so it must NOT bump the
+  // message version. That bump wakes the auto-scroll effect and the
+  // classified-entry cache, which would re-render the row -- the exact thing the
+  // badge is built to avoid, since replacing a row's nodes drops a text
+  // selection the user is holding.
+  const toolProgress = createToolProgressStore()
   const annotations = createMessageAnnotationStore()
   const pendingOutbound = createPendingOutboundStore()
   const todos = createTodoStore()
@@ -344,6 +353,7 @@ export function createChatStore() {
     const rows = state.messagesByAgent[agentId] ?? []
     reclaimDroppedRowState(rows.map(m => m.id))
     commandStreams.forgetAgent(agentId)
+    toolProgress.clearAgent(agentId)
     spanIdx.reindex(agentId, [])
     // Delete (not blank) every per-agent key in the window core's records so a
     // closed agent leaves no residue.
@@ -1232,6 +1242,34 @@ export function createChatStore() {
       // clear forgets any orphan record in lockstep (via the slice's dropSpan), so a
       // normal stream-end reclaims an orphaned-on-drop span without a separate call.
       commandStreams.clear(agentId, spanId)
+    },
+
+    /** Merge one `running_tool` broadcast into its span's live progress. */
+    applyToolProgress(agentId: string, update: ToolProgressUpdate) {
+      toolProgress.apply(agentId, update)
+    },
+
+    /**
+     * One span's live tool progress, or undefined when nothing is running there.
+     * Read through the row's render context, by a leaf component that subscribes
+     * on its own -- see ToolRunningBadge.
+     */
+    getToolProgress(agentId: string, spanId: string): ToolProgressEntry | undefined {
+      return toolProgress.get(agentId, spanId)
+    },
+
+    /** Drop one span's tool progress -- its result row landed. */
+    dropToolProgress(agentId: string, spanId: string) {
+      toolProgress.drop(agentId, spanId)
+    },
+
+    /**
+     * Drop every span's tool progress for an agent. Called at the boundaries the
+     * WORKER cannot observe (turn end, agent inactive, context cleared), which is
+     * why no provider sends an end message for a running tool.
+     */
+    clearToolProgress(agentId: string) {
+      toolProgress.clearAgent(agentId)
     },
 
     /**
