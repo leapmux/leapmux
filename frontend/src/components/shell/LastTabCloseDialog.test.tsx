@@ -128,7 +128,7 @@ describe('lastTabCloseDialog', () => {
     // The kind and the directory come from the shared status rows now. The
     // intro sentence used to print the path too, raw and unabbreviated, so the
     // same string reached the reader twice in two different spellings.
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
     expect(screen.getByTestId('working-tree-directory').textContent).toBe('/tmp/wt')
     expect(screen.getByRole('button', { name: 'Delete worktree' })).toBeInTheDocument()
   })

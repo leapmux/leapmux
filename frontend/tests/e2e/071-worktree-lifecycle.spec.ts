@@ -438,7 +438,7 @@ test.describe('Worktree Lifecycle', () => {
     ).toHaveText(/test-repo-dialog-worktrees\/dialog-branch$/)
     // ...and the dialog says WHICH KIND of checkout it is about, which is the
     // difference between closing a tab and destroying a directory.
-    await expect(page.getByRole('dialog').getByText('Worktree', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('Worktree branch', { exact: true })).toBeVisible()
 
     // Dialog should show the branch name
     await expect(page.getByRole('dialog').getByTestId('working-tree-name')).toHaveText('dialog-branch')

@@ -34,15 +34,36 @@ export interface WorkingTreeKind {
 }
 
 /**
- * The noun for a heading or a row label.
+ * The noun for the kind of checkout, on its own.
  *
- * Title case, because every call site starts a label or a row heading with it.
- * A mid-sentence noun is NOT a `.toLowerCase()` of this: ask the module for the
- * label you need, so one edit changes every surface. `workingTreeDeleteLabel`
- * is the only such label so far.
+ * The glyph's accessible name and the delete label are built from this. It is
+ * NOT the label of a row whose value is a branch name — see
+ * `workingTreeBranchRowLabel`.
+ *
+ * Title case, because every call site starts a label or a heading with it. A
+ * mid-sentence noun is NOT a `.toLowerCase()` of this: ask the module for the
+ * label you need, so one edit changes every surface.
  */
 export function workingTreeKindLabel(isWorktree: boolean): string {
   return isWorktree ? 'Worktree' : 'Branch'
+}
+
+/**
+ * The label for a row whose VALUE is the branch name.
+ *
+ * It states the kind AND what the value is, because those are two different
+ * facts and the bare kind stated only one. `Worktree` against `feature/auth`
+ * reads as though the value were the worktree — a directory name — and the
+ * agent info card is the one surface with no `Directory` row beneath it to
+ * settle the question.
+ *
+ * A worktree has a branch checked out like any other checkout, so the row is
+ * `Worktree branch` there and plain `Branch` in the main checkout. The
+ * asymmetry is the point: it still tells the two kinds apart at a glance,
+ * which is what the glyph beside it repeats.
+ */
+export function workingTreeBranchRowLabel(isWorktree: boolean): string {
+  return isWorktree ? 'Worktree branch' : 'Branch'
 }
 
 /**
@@ -152,11 +173,12 @@ export type WorkingTreeRowsProps = WorkingTreeInfo
  * The labelled rows that state which kind of checkout this is, which branch it
  * has checked out, and where it lives:
  *
- *     Worktree    feature/auth                    +38 -12
- *     Directory   ~/Workspaces/leapmux-worktrees/feature-auth
+ *     Worktree branch   feature/auth              +38 -12
+ *     Directory         ~/Workspaces/leapmux-worktrees/feature-auth
  *
- * The kind row's VALUE is the branch name, not a directory name: a linked
- * worktree has a branch checked out like any other. The directory it lives in
+ * The first row's VALUE is the branch name, not a directory name, and its
+ * label says so: a linked worktree has a branch checked out like any other
+ * checkout. In the main checkout the label is plain `Branch`. The directory
  * is the row below.
  *
  * It renders NO interactive child and NO nested `Tooltip`. Most callers pass it
@@ -167,7 +189,7 @@ export type WorkingTreeRowsProps = WorkingTreeInfo
  */
 export const WorkingTreeRows: Component<WorkingTreeRowsProps> = props => (
   <div class={styles.rows} data-testid="working-tree-rows">
-    <span class={styles.label}>{workingTreeKindLabel(props.isWorktree)}</span>
+    <span class={styles.label}>{workingTreeBranchRowLabel(props.isWorktree)}</span>
     <span class={styles.kindValue}>
       {/* The icon repeats what the label column already says, on purpose: this
           is where a reader learns which glyph the row it hovered uses. It

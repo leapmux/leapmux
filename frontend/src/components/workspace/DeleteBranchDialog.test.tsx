@@ -142,7 +142,7 @@ describe('deleteBranchDialog', () => {
 
       await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument())
       expect(screen.getByRole('button', { name: 'Delete worktree' })).toBeInTheDocument()
-      expect(screen.getByText('Worktree')).toBeInTheDocument()
+      expect(screen.getByText('Worktree branch')).toBeInTheDocument()
       expect(screen.getByTestId('working-tree-directory').textContent)
         .toBe('/home/dev/repos/lm-worktrees/wt')
     })
@@ -1029,7 +1029,7 @@ describe('deleteBranchDialog', () => {
     )
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
-    expect(screen.queryByText('Worktree')).toBeNull()
+    expect(screen.queryByText('Worktree branch')).toBeNull()
     expect(screen.getByText('Branch')).toBeInTheDocument()
   })
 

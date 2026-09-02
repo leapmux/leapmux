@@ -2,7 +2,7 @@ import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hoverForTooltip } from '~/test-support/clipStub'
-import { workingTreeDeleteLabel, WorkingTreeIcon, workingTreeKindLabel, WorkingTreeRows, WorkingTreeTooltip } from './WorkingTree'
+import { workingTreeBranchRowLabel, workingTreeDeleteLabel, WorkingTreeIcon, workingTreeKindLabel, WorkingTreeRows, WorkingTreeTooltip } from './WorkingTree'
 
 const HOME = '/Users/trustin'
 const WORKTREE_DIR = '/Users/trustin/Workspaces/leapmux-worktrees/blushing-slow-wolf'
@@ -29,6 +29,21 @@ describe('workingTreeKindLabel', () => {
   it('names a linked worktree and the main working tree apart', () => {
     expect(workingTreeKindLabel(true)).toBe('Worktree')
     expect(workingTreeKindLabel(false)).toBe('Branch')
+  })
+})
+
+// The label of a row whose VALUE is a branch name. The bare kind stated only
+// half of that, so `Worktree` against `feature/auth` read as though the value
+// were the worktree's directory.
+describe('workingTreeBranchRowLabel', () => {
+  it('states the kind and what the value is', () => {
+    expect(workingTreeBranchRowLabel(true)).toBe('Worktree branch')
+    expect(workingTreeBranchRowLabel(false)).toBe('Branch')
+  })
+
+  // It still tells the two kinds apart, which is the whole point of the row.
+  it('differs between the two kinds', () => {
+    expect(workingTreeBranchRowLabel(true)).not.toBe(workingTreeBranchRowLabel(false))
   })
 })
 
@@ -91,10 +106,14 @@ describe('workingTreeIcon (WorkingTreeIcon)', () => {
 })
 
 describe('workingTreeRows (WorkingTreeRows)', () => {
-  it('labels a linked worktree and shows its name', () => {
+  // The label says the value is a BRANCH, because it is: a linked worktree has
+  // one checked out like any other checkout, and `blushing-slow-wolf` here is
+  // a branch name that happens to match its directory's basename.
+  it('labels a linked worktree branch and shows its name', () => {
     renderRows({ isWorktree: true })
 
-    expect(screen.getByText('Worktree')).toBeTruthy()
+    expect(screen.getByText('Worktree branch')).toBeTruthy()
+    expect(screen.queryByText('Worktree')).toBeNull()
     expect(screen.getByTestId('working-tree-name').textContent).toBe('blushing-slow-wolf')
     expect(screen.getByTestId('worktree-icon')).toBeTruthy()
   })
@@ -154,7 +173,7 @@ describe('workingTreeRows (WorkingTreeRows)', () => {
   it('still states the kind for an unnamed checkout with no directory', () => {
     renderRows({ name: '', directory: '' })
 
-    expect(screen.getByText('Worktree')).toBeTruthy()
+    expect(screen.getByText('Worktree branch')).toBeTruthy()
     expect(screen.getByTestId('working-tree-name').textContent).toBe('')
     expect(directoryText()).toBe('')
   })

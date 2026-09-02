@@ -37,7 +37,7 @@ Repo group   (Repo label)
 ```
 
 - The **repo group** header shows the repository, with the origin URL (or the toplevel path for a local repo with no origin) in its tooltip.
-- Each **branch group** header shows the branch name and a diff-stats badge summarizing changes in that working directory. Its icon states which kind of checkout the row is: a branch glyph for a branch in the main checkout, a folder-with-arrow glyph for a linked worktree. Hover the name for both facts in words — **Worktree** or **Branch** with the name, and **Directory** with the path it lives in. When the same branch name sits on more than one Worker, a **Worker** row names the machine, so two rows that otherwise read alike stay distinguishable before you delete one of them.
+- Each **branch group** header shows the branch name and a diff-stats badge summarizing changes in that working directory. Its icon states which kind of checkout the row is: a branch glyph for a branch in the main checkout, a folder-with-arrow glyph for a linked worktree. Hover the name for both facts in words — **Worktree branch** or **Branch** with the branch name, and **Directory** with the path it lives in. When the same branch name sits on more than one Worker, a **Worker** row names the machine, so two rows that otherwise read alike stay distinguishable before you delete one of them.
 - LeapMux groups tabs by branch name, Worker, and repository path together, so two clones of the same repo on the same branch stay in separate groups.
 
 A working directory with no current branch carries a state label instead. **`(no branch)`** means a repository with no commits yet, or a tab LeapMux has not yet stamped with its git state — a new tab shows it for a moment, then picks up its real branch. A detached HEAD carries the **short commit SHA** (e.g. `a1b2c3d`). **Create new branch** moves either one onto a real branch.
@@ -61,7 +61,7 @@ A detached-HEAD row keeps its menu, because its short-SHA label is a real label.
 
 ### The branch chip in the composer
 
-The composer's status bar carries the same two items behind a branch-name chip, so you can change or delete the branch without opening the sidebar. The chip carries the same kind icon as the sidebar row, and hovering it gives the same **Worktree** / **Branch** and **Directory** rows. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the **[+]** menu's own branch row keeps the icon, the hover rows and both actions.
+The composer's status bar carries the same two items behind a branch-name chip, so you can change or delete the branch without opening the sidebar. The chip carries the same kind icon as the sidebar row, and hovering it gives the same **Worktree branch** / **Branch** and **Directory** rows. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the **[+]** menu's own branch row keeps the icon, the hover rows and both actions.
 
 ## Choosing a branch or worktree when you open a tab
 
@@ -201,7 +201,7 @@ Use **Commit and Push** as a quick "save my work before I switch or delete" befo
 
 The delete and Close last tab dialogs share a status block that summarizes the branch's git state. It opens with two labelled rows, then shows some of the lines below depending on the state:
 
-- **Worktree** or **Branch**, with the name — the same two words and the same glyph the sidebar row carries.
+- **Worktree branch** or **Branch**, with the branch name — the same labels and the same glyph the sidebar row carries. A linked worktree has a branch checked out like any other checkout, so the label names the branch and the kind at once.
 - **Directory**, with the path that checkout lives in, shortened to `~` under your home directory on the Worker.
 - **Uncommitted changes:** with a diff-stats badge — when the working copy is dirty.
 - ***N* commit(s) not pushed.** — when there are unpushed commits.

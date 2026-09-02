@@ -8,6 +8,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
+import { label as workingTreeLabel } from '../common/WorkingTree.css'
 import { labelWithStats } from '../tree/sharedTree.css'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
 
@@ -700,7 +701,9 @@ describe('workspaceTabTree interactions', () => {
 
       const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
       expect(tooltip).not.toBeNull()
-      expect(tooltip!.textContent).toContain('Worktree')
+      // The ROW label, which states the kind AND that the value is a branch.
+      // `toContain` would pass on the bare kind too, so this is exact.
+      expect(tooltip!.querySelector(`.${workingTreeLabel}`)!.textContent).toBe('Worktree branch')
       expect(tooltip!.textContent).toContain('~/Workspaces/r-worktrees/feature')
       // The badge the old tooltip already carried must survive the rewrite.
       expect(tooltip!.textContent).toContain('+38')
@@ -711,8 +714,21 @@ describe('workspaceTabTree interactions', () => {
       const row = renderRow({ isWorktree: false, toplevel: '/home/user/Workspaces/r' })
 
       const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
-      expect(tooltip!.textContent).toContain('Branch')
+      expect(tooltip!.querySelector(`.${workingTreeLabel}`)!.textContent).toBe('Branch')
       expect(tooltip!.textContent).toContain('~/Workspaces/r')
+    })
+
+    // The row label and the GLYPH's accessible name are two different strings
+    // on the same row: the label says what the value is ("Worktree branch"),
+    // the glyph names the kind alone ("Worktree"). A later edit that collapses
+    // the two functions would make a screen reader announce "Worktree branch"
+    // for an icon that stands for the kind.
+    it('keeps the glyph name and the row label distinct', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      expect(within(row).getByRole('img', { name: 'Worktree' })).toBeInTheDocument()
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip!.querySelector(`.${workingTreeLabel}`)!.textContent).toBe('Worktree branch')
     })
 
     // A worker whose system info has not arrived reports no home dir. The row

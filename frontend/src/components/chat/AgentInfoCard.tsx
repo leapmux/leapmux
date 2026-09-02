@@ -7,7 +7,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { WorkingTreeIcon, workingTreeKindLabel } from '~/components/common/WorkingTree'
+import { workingTreeBranchRowLabel, WorkingTreeIcon } from '~/components/common/WorkingTree'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
@@ -179,8 +179,15 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
                 a main-repo branch does not, and this card is where a user
                 checks which one the agent runs in. The icon repeats the label
                 because it is the same glyph the sidebar row and the composer
-                chip carry -- this is where a reader connects the three. */}
-            <span class={styles.infoLabel}>{workingTreeKindLabel(isWorktree())}</span>
+                chip carry -- this is where a reader connects the three.
+
+                The label states the VALUE too ("Worktree branch"), because
+                this card carries no Directory row for the checkout: the
+                `Working dir` row below is the AGENT's own directory, which
+                sits under the checkout root and often differs from it. Without
+                that word the row reads as though the branch name were the
+                worktree's directory, with nothing on the card to correct it. */}
+            <span class={styles.infoLabel}>{workingTreeBranchRowLabel(isWorktree())}</span>
             {/* The glyph belongs to the VALUE, beside the name it describes,
                 the same way the Agent row above carries its provider glyph.
                 `infoValueWithIcon` supplies the centring and the tighter gap;

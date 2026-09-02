@@ -574,7 +574,7 @@ describe('changeBranchDialog header', () => {
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true })
     await awaitFormReady()
 
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
     expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo-worktrees/feature')
   })
 
@@ -583,7 +583,7 @@ describe('changeBranchDialog header', () => {
     vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(new Promise(() => {}))
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
 
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
     expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
   })
 
@@ -607,7 +607,7 @@ describe('changeBranchDialog header', () => {
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
 
     await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
     expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
   })
 

@@ -237,7 +237,11 @@ describe('agent info card branch row', () => {
 
   // The card is where a user checks which checkout the agent runs in, and a
   // worktree deletes as a whole directory while a main-repo branch does not.
-  it('labels the row Worktree and marks it with the worktree glyph', () => {
+  //
+  // "Worktree branch", not "Worktree". The value is a branch name, and this
+  // card carries no Directory row for the checkout to settle the question --
+  // its `Working dir` row is the agent's own directory, under the root.
+  it('labels the row Worktree branch and marks it with the worktree glyph', () => {
     const { container } = render(() => (
       <InfoCardContent
         agent={withGit({})}
@@ -247,7 +251,8 @@ describe('agent info card branch row', () => {
     ))
 
     const row = screen.getByTestId('info-row-working-tree')
-    expect(within(row).getByText('Worktree')).toBeInTheDocument()
+    expect(within(row).getByText('Worktree branch')).toBeInTheDocument()
+    expect(within(row).queryByText('Worktree')).toBeNull()
     expect(container.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
   })
 

@@ -46,7 +46,7 @@ describe('branchStatusInfo', () => {
     render(() => <BranchStatusInfo branch={branch()} affectedTabs={affectedTabs()} />)
 
     expect(screen.getByText('Branch')).toBeInTheDocument()
-    expect(screen.queryByText('Worktree')).toBeNull()
+    expect(screen.queryByText('Worktree branch')).toBeNull()
     // The directory shows for a plain branch too. Without it a user with two
     // clones of the same repo cannot tell which one the dialog acts on.
     expect(screen.getByTestId('working-tree-directory').textContent).toBe('~/repos/leapmux')
@@ -60,7 +60,9 @@ describe('branchStatusInfo', () => {
       />
     ))
 
-    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    // "Worktree branch", not "Worktree": the value beside it is the branch
+    // name, and a bare kind read as though it were the directory.
+    expect(screen.getByText('Worktree branch')).toBeInTheDocument()
     expect(screen.queryByText('Branch')).toBeNull()
     expect(screen.getByTestId('working-tree-directory').textContent)
       .toBe('~/repos/leapmux-worktrees/wt')
