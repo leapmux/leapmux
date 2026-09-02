@@ -1,4 +1,4 @@
-import { isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
@@ -16,7 +16,9 @@ piTest.describe('Pi Agent Lifecycle', () => {
     const tabsBefore = await tabs.count()
     expect(tabsBefore).toBeGreaterThan(0)
 
-    const closeBtn = page.locator('[data-testid="tab"] [data-testid="close-tab"]').first()
+    // TabBar renders the close button as `tab-close`; this spec alone had the
+    // two words reversed, so it waited out the full timeout on every run.
+    const closeBtn = page.locator('[data-testid="tab"] [data-testid="tab-close"]').first()
     await expect(closeBtn).toBeVisible()
     await closeBtn.click()
     const confirmBtn = page.locator('button:has-text("Close")')
@@ -26,6 +28,30 @@ piTest.describe('Pi Agent Lifecycle', () => {
 
     // The close must take effect.
     await expect(tabs).toHaveCount(Math.max(tabsBefore - 1, 0))
+  })
+
+  piTest('turn-end divider reports the duration, and agent_settled stays hidden', async ({ authenticatedPiWorkspace, page }) => {
+    void authenticatedPiWorkspace // fixture trigger
+    await sendMessage(page, ARITHMETIC_PROMPT)
+    await waitForAgentIdle(page, 180_000)
+
+    // Pi's agent_end carries no duration; the worker measures the turn and
+    // injects duration_ms, so the divider always names a time.
+    // `:visible` scoping is required — ChatView renders every unmeasured row
+    // twice, so an unscoped locator can pick the offscreen copy.
+    const divider = page.locator('[data-testid="result-divider"]:visible').last()
+    await expect(divider).toHaveText(/^Turn ended \(.+\)$/)
+
+    // Pi emits agent_settled after agent_end. The worker drops it, so it must
+    // never surface as a raw-JSON bubble.
+    //
+    // Count the rows first. An absence assertion over an empty locator passes
+    // for the wrong reason, so this fails loudly if the message list is ever
+    // renamed out from under the helper.
+    const contents = messageContents(page)
+    expect(await contents.count()).toBeGreaterThan(0)
+    const allText = (await contents.allTextContents()).join(' ')
+    expect(allText).not.toContain('agent_settled')
   })
 
   piTest('clear context via /clear command resets Pi session', async ({ authenticatedPiWorkspace, page }) => {

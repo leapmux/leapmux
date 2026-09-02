@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 const piSessionStatsMaxWait = 2 * time.Second
@@ -46,7 +48,7 @@ type piSessionStats struct {
 
 // piUsageSnapshot captures the cost/context-usage state to ship to a
 // single broadcast call. The snapshot is single-use: callers consume it
-// once via sessionInfo() (broadcast payload) or piAugmentRawWithSnapshot
+// once via sessionInfo() (broadcast payload) or piAugmentAgentEnd
 // (persisted envelope) and drop it. The ContextUsage map is owned by
 // the snapshot — sessionInfo() and mutatePiUsageFields hand the map
 // directly to the consuming payload, so callers must not mutate it
@@ -67,7 +69,7 @@ func piSessionStatsTimeout(base time.Duration) time.Duration {
 
 // mutatePiUsageFields injects the broadcast-shaped usage fields into an
 // already-decoded Pi envelope. Both augmentPiMessageEnd and
-// piAugmentRawWithSnapshot funnel through this helper so the field set
+// piAugmentAgentEnd funnel through this helper so the field set
 // stays consistent across the message_end and agent_end persistence
 // paths. The injected keys are snake_case to match the rest of the
 // platform's session-info wire format (Claude/ACP/Pi all emit
@@ -137,12 +139,16 @@ func piSnapshotFromStats(stats piSessionStats) piUsageSnapshot {
 	return snap
 }
 
-// piAugmentRawWithSnapshot decodes raw, injects the broadcast-shaped
-// usage fields via mutatePiUsageFields, and re-marshals. Used by
-// persistPiAgentEnd; augmentPiMessageEnd inlines the same flow because
-// it needs to read `message.usage` from the same decoded map.
-func piAugmentRawWithSnapshot(raw []byte, snap piUsageSnapshot) []byte {
-	if !snap.HasTotalCost && len(snap.ContextUsage) == 0 {
+// piAugmentAgentEnd decodes an agent_end envelope, injects the
+// broadcast-shaped usage fields via mutatePiUsageFields plus the measured
+// turn duration, and re-marshals. augmentPiMessageEnd inlines the same
+// flow because it needs to read `message.usage` from the same decoded map.
+//
+// A nil durationMs injects nothing. Pi's agent_end carries no duration, so
+// an unmeasured turn must stay silent rather than claim a 0 ms turn -- the
+// frontend draws no time for an absent field and "(0ms)" for a real zero.
+func piAugmentAgentEnd(raw []byte, snap piUsageSnapshot, durationMs *int64) []byte {
+	if !snap.HasTotalCost && len(snap.ContextUsage) == 0 && durationMs == nil {
 		return raw
 	}
 	var obj map[string]any
@@ -150,6 +156,11 @@ func piAugmentRawWithSnapshot(raw []byte, snap piUsageSnapshot) []byte {
 		return raw
 	}
 	mutatePiUsageFields(obj, snap)
+	if durationMs != nil {
+		// The same field name Claude Code emits on its own `result` envelope,
+		// so one frontend read serves both providers.
+		obj["duration_ms"] = *durationMs
+	}
 	augmented, err := json.Marshal(obj)
 	if err != nil {
 		return raw
@@ -317,9 +328,21 @@ func (a *PiAgent) augmentPiMessageEnd(raw []byte) []byte {
 	return augmented
 }
 
-func (a *PiAgent) persistPiAgentEnd(raw []byte, snap piUsageSnapshot) {
-	augmented := piAugmentRawWithSnapshot(raw, snap)
-	if err := a.sink.PersistTurnEnd(augmented, SpanInfo{}); err != nil {
+// persistPiAgentEnd writes the agent_end divider.
+//
+// A run that Pi will retry is NOT a turn end. It persists as a plain agent
+// message, so the divider still draws. The turn-end event and the git-status
+// refresh then wait for the run that really ends the turn. That event drives
+// the completion sound and the off-screen tab's notification dot.
+func (a *PiAgent) persistPiAgentEnd(raw []byte, snap piUsageSnapshot, durationMs *int64, willRetry bool) {
+	augmented := piAugmentAgentEnd(raw, snap, durationMs)
+	var err error
+	if willRetry {
+		err = a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, augmented, SpanInfo{})
+	} else {
+		err = a.sink.PersistTurnEnd(augmented, SpanInfo{})
+	}
+	if err != nil {
 		slog.Error("pi persist agent_end", "agent_id", a.agentID, "error", err)
 	}
 }

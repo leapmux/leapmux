@@ -294,6 +294,11 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	b.mu.Lock()
 	assistantText := b.turnAssistantText.String()
 	b.turnAssistantText.Reset()
+	// BUG: this clear runs BEFORE enrichWithToolUses below reads the same
+	// field, so every ACP turn reports num_tool_uses:0 and the frontend
+	// suppresses the completion sound for all six ACP providers. The fix is to
+	// capture the count here and enrich from the captured value.
+	// https://github.com/leapmux/leapmux/issues/435
 	b.turnToolUses = 0
 	b.mu.Unlock()
 

@@ -110,6 +110,56 @@ describe('isAgentWorking', () => {
     ])).toBe(false)
   })
 
+  describe('a Pi transcript', () => {
+    const pi = (content: Uint8Array) =>
+      makeMessage({ source: MessageSource.AGENT, content, agentProvider: AgentProvider.PI })
+    const agentEnd = (extra: Record<string, unknown> = {}) =>
+      pi(rawContent({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }], ...extra }))
+
+    it('skips a trailing hidden row and stops at the divider before it', () => {
+      // A build before the worker dropped agent_settled persisted it as a row.
+      // It classifies `hidden`, draws nothing, and must not report "working".
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd(),
+        pi(rawContent({ type: 'agent_settled' })),
+      ])).toBe(false)
+    })
+
+    it('still reports working for a visible assistant reply', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        pi(rawContent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })),
+      ])).toBe(true)
+    })
+
+    // willRetry is the only difference between these two: a divider Pi will
+    // retry past must keep the thinking indicator up for the whole backoff,
+    // where nothing streams and no other row arrives.
+    const failed = [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }]
+
+    it('keeps working through a divider for a run Pi will retry', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd({ willRetry: true, messages: failed }),
+      ])).toBe(true)
+    })
+
+    it('stops at the divider once Pi will not retry', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd({ willRetry: false, messages: failed }),
+      ])).toBe(false)
+    })
+
+    it('stops at the divider when Pi omits willRetry (an older build)', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd({ messages: failed }),
+      ])).toBe(false)
+    })
+  })
+
   it('skips USER message with deliveryError (agent never received it)', () => {
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
@@ -201,13 +251,21 @@ describe('isAgentWorking', () => {
     ])).toBe(true)
   })
 
-  it('does NOT skip Claude system init (other system subtype is real progress)', () => {
-    // A bare assistant followed by a system init only — system init isn't a
-    // notification subtype, so it counts as progress and the agent appears
-    // to be working. Sanity check that the subtype filter isn't too broad.
+  it('does NOT skip a visible system subtype (real progress)', () => {
+    // A system subtype that is neither hidden nor status/api_retry renders as a
+    // notification and counts as progress. This confirms that the subtype
+    // filter is not too broad.
+    expect(isAgentWorking([
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'compact_boundary' })),
+    ])).toBe(true)
+  })
+
+  it('skips Claude system init, which the transcript hides', () => {
+    // `init` is in Claude's HIDDEN_SYSTEM_SUBTYPES, so the row draws nothing.
+    // A transcript holding only folded-away rows shows no work in progress.
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'init', cwd: '/x' })),
-    ])).toBe(true)
+    ])).toBe(false)
   })
 
   it('treats AGENT-source wrapper containing context_cleared as turn boundary', () => {
@@ -337,6 +395,45 @@ describe('shouldShowThinkingIndicator', () => {
       [makeMsg(MessageSource.USER)],
       '',
     )).toBe(true)
+  })
+
+  // The user-visible end of the Pi auto-retry rule. During the backoff nothing
+  // streams and the registry knows nothing about the tab. The divider's own
+  // `turnContinues` is therefore the only thing that keeps the indicator up.
+  it('keeps the indicator lit for a Pi divider Pi will retry past', () => {
+    const retrying = makeMessage({
+      source: MessageSource.AGENT,
+      content: rawContent({
+        type: 'agent_end',
+        willRetry: true,
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
+      }),
+      agentProvider: AgentProvider.PI,
+    })
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.PI }),
+      {},
+      [makeMsg(MessageSource.USER), retrying],
+      '',
+    )).toBe(true)
+  })
+
+  it('clears the indicator once a Pi turn really ends', () => {
+    const ended = makeMessage({
+      source: MessageSource.AGENT,
+      content: rawContent({
+        type: 'agent_end',
+        willRetry: false,
+        messages: [{ role: 'assistant', stopReason: 'stop' }],
+      }),
+      agentProvider: AgentProvider.PI,
+    })
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.PI }),
+      {},
+      [makeMsg(MessageSource.USER), ended],
+      '',
+    )).toBe(false)
   })
 
   it('forces visible when this tab has active work, even with no streaming text', () => {

@@ -2,7 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -61,9 +63,213 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 	assert.True(t, msg.TurnEnd, "agent_end must route through PersistTurnEnd")
 
 	assert.Equal(t, 1, sink.ResetSpanCount(), "agent_end should reset spans")
-	require.Equal(t, 1, sink.SessionInfoCount())
-	info := sink.LastSessionInfo()
-	assert.Equal(t, false, info["pi_turn_active"])
+	// agent_end broadcasts no session info of its own. The usage snapshot is
+	// empty here and the get_session_stats refresh needs a live stdin, so a
+	// count above zero would mean a key came back.
+	assert.Equal(t, 0, sink.SessionInfoCount())
+}
+
+// piFakeClock pins the agent's clock at start and returns the function that
+// moves it. The caller advances between events, so a test reads as the timeline
+// it means and stays correct however many times a handler reads the clock --
+// a step-per-read clock silently re-times every case the moment a handler
+// gains or loses one call.
+func piFakeClock(a *PiAgent, start time.Time) (advance func(time.Duration)) {
+	now := start
+	a.nowFn = func() time.Time { return now }
+	return func(d time.Duration) { now = now.Add(d) }
+}
+
+// piEpoch is an arbitrary fixed instant. Only the differences matter.
+var piEpoch = time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+
+// piPersistedAgentEnd decodes the nth persisted message as a JSON object.
+func piPersistedAgentEnd(t *testing.T, sink *recordingControlSink, index int) map[string]any {
+	t.Helper()
+	msgs := sink.Messages()
+	require.Greater(t, len(msgs), index)
+	var persisted map[string]any
+	require.NoError(t, json.Unmarshal(msgs[index].Content, &persisted))
+	return persisted
+}
+
+// agent_settled reports only that Pi will not continue on its own after the
+// agent_end that already drew the divider. It must leave no trace at all,
+// because the dispatch's default case would persist it as a raw-JSON row.
+func TestHandlePiOutput_AgentSettled_PersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_settled"}`)))
+
+	assert.Equal(t, 0, sink.MessageCount(), "agent_settled must not reach the transcript")
+	assert.Equal(t, 0, sink.NotificationCount())
+	assert.Equal(t, 0, len(sink.PersistedControls()))
+	assert.Equal(t, 0, sink.ResetSpanCount())
+	assert.Equal(t, 0, sink.SessionInfoCount())
+}
+
+func TestHandlePiOutput_AgentEnd_ReportsTurnDuration(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	advance := piFakeClock(a, piEpoch)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(2500 * time.Millisecond)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+
+	assert.Equal(t, float64(2500), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
+}
+
+// A zero-length turn is a real measurement, so it persists 0 rather than
+// dropping the field: the frontend draws "(0ms)" for it and nothing at all for
+// an absent field.
+func TestHandlePiOutput_AgentEnd_ZeroLengthTurnReportsZero(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	// The clock never advances, so the turn takes no measurable time at all.
+	piFakeClock(a, piEpoch)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+
+	persisted := piPersistedAgentEnd(t, sink, 0)
+	require.Contains(t, persisted, "duration_ms")
+	assert.Equal(t, float64(0), persisted["duration_ms"])
+}
+
+// An agent_end this worker did not see start (a process it adopted mid-turn)
+// has nothing to measure from, so it must omit the field rather than claim 0.
+func TestHandlePiOutput_AgentEnd_WithoutStartOmitsDuration(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+
+	assert.NotContains(t, piPersistedAgentEnd(t, sink, 0), "duration_ms")
+}
+
+// The mark is consumed by the agent_end that ends the turn, so a stray second
+// agent_end reports no duration instead of the time since the turn began.
+func TestHandlePiOutput_AgentEnd_SecondEndOmitsDuration(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	advance := piFakeClock(a, piEpoch)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(time.Second)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	advance(time.Second)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+
+	assert.Equal(t, float64(1000), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
+	assert.NotContains(t, piPersistedAgentEnd(t, sink, 1), "duration_ms")
+}
+
+// A retried run continues the same turn, so the final divider reports the whole
+// elapsed time rather than the last attempt alone.
+func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	advance := piFakeClock(a, piEpoch)
+
+	// One turn, two runs: the attempt takes 1s, the backoff 1s, the retry 1s.
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(time.Second)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[],"willRetry":true}`)))
+	advance(time.Second)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(time.Second)
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+
+	assert.Equal(t, float64(1000), piPersistedAgentEnd(t, sink, 0)["duration_ms"],
+		"the retried attempt reports the elapsed time so far")
+	assert.Equal(t, float64(3000), piPersistedAgentEnd(t, sink, 1)["duration_ms"],
+		"the final divider spans from the FIRST agent_start")
+}
+
+// A run Pi restarts itself is not a turn end: it must not fire the turn-end
+// event, which drives the completion sound and the off-screen tab's dot.
+func TestHandlePiOutput_AgentEnd_WillRetryDoesNotEndTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+	a.turnToolUses = 3
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"overloaded"}],"willRetry":true}`)))
+
+	require.Equal(t, 1, sink.MessageCount())
+	assert.False(t, sink.Messages()[0].TurnEnd, "a retried run must not route through PersistTurnEnd")
+
+	a.mu.Lock()
+	turnActive, toolUses := a.currentTurnActive, a.turnToolUses
+	a.mu.Unlock()
+	assert.True(t, turnActive, "the turn stays open so Interrupt and steering still work")
+	assert.Equal(t, 3, toolUses, "a retried run keeps the turn's tool-use count")
+}
+
+// Pi retries the WebSocket failure itself when it says willRetry, so LeapMux
+// must not schedule a second continuation for the same failure. willRetry is
+// the ONLY difference between these two envelopes: Pi reports false once its
+// own retry budget is spent, and that is where LeapMux's auto-continue takes
+// over as the last resort.
+func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoContinue(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		willRetry bool
+		schedules int
+		cancels   int
+	}{
+		{"Pi retries, so LeapMux stands down", true, 0, 1},
+		{"Pi is done retrying, so LeapMux continues", false, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &recordingControlSink{}
+			a := newPiAgentWithSink(sink)
+			raw := fmt.Appendf(nil,
+				`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"}],"willRetry":%t}`,
+				tc.willRetry)
+
+			handlePiOutput(a, parseLine(raw))
+
+			assert.Equal(t, tc.schedules, sink.AutoScheduleCount())
+			assert.Equal(t, tc.cancels, sink.AutoCancelCount())
+		})
+	}
+}
+
+func TestPiTurnDurationMs(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+
+	assert.Nil(t, piTurnDurationMs(time.Time{}, base), "an unobserved start has nothing to measure")
+	assert.Nil(t, piTurnDurationMs(base, base.Add(-time.Second)), "a backwards clock reports nothing")
+
+	require.NotNil(t, piTurnDurationMs(base, base))
+	assert.Equal(t, int64(0), *piTurnDurationMs(base, base))
+
+	require.NotNil(t, piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
+	assert.Equal(t, int64(1500), *piTurnDurationMs(base, base.Add(1500*time.Millisecond)))
 }
 
 func TestHandlePiOutput_MessageUpdate_TextDelta_StreamsChunk(t *testing.T) {
@@ -180,8 +386,11 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	a := newPiAgentWithSink(sink)
 	a.model = "gpt-5.5"
 	a.availableModels = []*ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
+	advance := piFakeClock(a, piEpoch)
 
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, parseLine([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cacheRead":20,"cacheWrite":5,"totalTokens":135,"cost":{"total":0.00033}}}}`)))
+	advance(750 * time.Millisecond)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
 
 	msgs := sink.Messages()
@@ -193,6 +402,8 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	require.NoError(t, json.Unmarshal(result.Content, &persisted))
 	assert.Equal(t, "agent_end", persisted["type"])
 	assert.Equal(t, 0.00033, persisted["total_cost_usd"])
+	assert.Equal(t, float64(750), persisted["duration_ms"],
+		"the duration rides the same envelope as the usage fields")
 	usage, ok := persisted["context_usage"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, float64(100), usage["input_tokens"])
@@ -252,8 +463,9 @@ func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeCancelsAutoContinue(t *t
 
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
-	// messages is a string instead of an array — the inner unmarshal in
-	// isRetryablePiAgentEndFailure fails, so we fall through to cancel.
+	// messages is a string instead of an array — the envelope unmarshal in
+	// handlePiAgentEnd fails, so isRetryableFailure sees no messages and we
+	// fall through to cancel.
 	raw := []byte(`{"type":"agent_end","messages":"unexpected"}`)
 
 	handlePiOutput(a, parseLine(raw))

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -79,12 +80,19 @@ type piQueueUpdateEnvelope struct {
 // piAgentEndEnvelope captures the per-message stop info on agent_end so we
 // can inspect the final assistant turn's outcome and decide whether to
 // auto-continue.
+//
+// WillRetry is Pi's own statement that it restarts this run itself. Pi's
+// session layer stamps it on every agent_end. It is true only for three
+// conditions together: retries are enabled, the retry budget is unspent, and
+// the last assistant message failed with a transient error. An older Pi omits
+// the field, which decodes to false -- how LeapMux behaved before it read it.
 type piAgentEndEnvelope struct {
 	Messages []struct {
 		Role         string `json:"role"`
 		StopReason   string `json:"stopReason"`
 		ErrorMessage string `json:"errorMessage"`
 	} `json:"messages"`
+	WillRetry bool `json:"willRetry"`
 }
 
 // piRetryableWebSocketError is the exact errorMessage Pi emits for transient
@@ -110,8 +118,11 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 		a.handlePiAgentStart()
 	case contracts.PiEventAgentEnd:
 		a.handlePiAgentEnd(line.Raw)
-	case contracts.PiEventTurnStart, contracts.PiEventTurnEnd, contracts.PiEventMessageStart:
-		// Lifecycle markers; no UI state change required.
+	case contracts.PiEventTurnStart, contracts.PiEventTurnEnd,
+		contracts.PiEventMessageStart, contracts.PiEventAgentSettled:
+		// Lifecycle markers; no UI state change required. `agent_settled` says
+		// only that Pi will not continue on its own after the agent_end that
+		// already drew the divider, so it adds nothing to the transcript.
 	case contracts.PiEventMessageUpdate:
 		a.handlePiMessageUpdate(line.Raw)
 	case contracts.PiEventMessageEnd:
@@ -147,17 +158,45 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 }
 
 func (a *PiAgent) handlePiAgentStart() {
+	// Read the clock before the lock, so an injected clock never runs under mu.
+	startedAt := a.now()
 	a.mu.Lock()
 	a.currentTurnActive = true
+	// A retried run continues the turn that the first agent_start began, so the
+	// mark survives it and the divider reports the whole elapsed time instead of
+	// the last attempt alone. handlePiAgentEnd clears it when the turn ends.
+	if a.turnStartedAt.IsZero() {
+		a.turnStartedAt = startedAt
+	}
 	a.mu.Unlock()
 	// A fresh turn begins: start the thinking-token estimate from zero.
 	a.thinkingTokens.reset()
 }
 
 func (a *PiAgent) handlePiAgentEnd(raw []byte) {
+	// Decode once. The retry decision, the willRetry routing, and the auto-
+	// continue decision all read this same envelope.
+	var env piAgentEndEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		slog.Warn("pi agent_end unmarshal failed", "agent_id", a.agentID, "error", err)
+	}
+
+	endedAt := a.now()
 	a.mu.Lock()
-	a.currentTurnActive = false
-	a.turnToolUses = 0
+	// A retry keeps the turn open: Pi restarts the run itself, so Interrupt must
+	// still send an abort and a user message must still steer the running turn.
+	a.currentTurnActive = env.WillRetry
+	// Read the mark BEFORE the clear below consumes it, or every turn that
+	// really ends measures from the zero time and reports no duration at all.
+	startedAt := a.turnStartedAt
+	if !env.WillRetry {
+		// turnToolUses is write-only state for Pi: nothing enriches agent_end
+		// with num_tool_uses, so the turn-end event leaves the count unset and
+		// the frontend rings even for a turn that used no tool.
+		// https://github.com/leapmux/leapmux/issues/435
+		a.turnToolUses = 0
+		a.turnStartedAt = time.Time{}
+	}
 	a.mu.Unlock()
 	// Recover from any tool calls that didn't get a matching
 	// tool_execution_end (e.g. aborted turn). Otherwise the map retains the
@@ -169,12 +208,15 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// away. Then refresh Pi's authoritative session stats asynchronously for the
 	// live popover; the stdout read loop must remain free to deliver that RPC
 	// response.
-	a.persistPiAgentEnd(raw, a.currentPiUsageSnapshot())
-	scheduleOrCancelAPIErrorAutoContinue(a.sink, isRetryablePiAgentEndFailure(raw), raw)
+	a.persistPiAgentEnd(raw, a.currentPiUsageSnapshot(), piTurnDurationMs(startedAt, endedAt), env.WillRetry)
+	// Pi retries the run itself when it says willRetry, so LeapMux must not send
+	// a second continuation for the same failure. Pi reports false once its own
+	// retry budget is spent, which is where LeapMux's auto-continue takes over
+	// as the last resort.
+	scheduleOrCancelAPIErrorAutoContinue(a.sink, !env.WillRetry && env.isRetryableFailure(), raw)
+	// The failed attempt's spans are dead either way: a retried run reopens its
+	// own, so the reset is unconditional.
 	a.sink.ResetSpans()
-	a.sink.BroadcastSessionInfo(map[string]any{
-		"pi_turn_active": false,
-	})
 	if a.canRequestPiSessionStats() {
 		go func() {
 			_, _ = a.refreshPiSessionStats(piSessionStatsTimeout(a.APITimeout()))
@@ -182,11 +224,24 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	}
 }
 
-func isRetryablePiAgentEndFailure(raw []byte) bool {
-	var env piAgentEndEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return false
+// piTurnDurationMs measures one Pi turn in milliseconds. Pi's agent_end carries
+// no duration of its own, so the worker brackets the turn instead.
+//
+// It returns nil for a turn whose start this worker never saw, and for a clock
+// that moved backwards. The envelope then carries no duration at all, rather
+// than a false 0. The frontend tells those two apart: it draws no time for an
+// absent field, and "(0ms)" for a real zero.
+func piTurnDurationMs(startedAt, endedAt time.Time) *int64 {
+	if startedAt.IsZero() || endedAt.Before(startedAt) {
+		return nil
 	}
+	ms := endedAt.Sub(startedAt).Milliseconds()
+	return &ms
+}
+
+// isRetryableFailure reports whether the turn ended on the one transient
+// failure LeapMux itself auto-continues past.
+func (env piAgentEndEnvelope) isRetryableFailure() bool {
 	// Walk from the end: only the final assistant message reflects the
 	// turn's final outcome; earlier assistant entries are intra-turn.
 	for i := len(env.Messages) - 1; i >= 0; i-- {

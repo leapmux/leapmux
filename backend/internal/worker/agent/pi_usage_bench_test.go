@@ -76,10 +76,11 @@ func BenchmarkPersistPiAgentEnd(b *testing.B) {
 			"context_window":              int64(200000),
 		},
 	}
+	durationMs := int64(1234)
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = piAugmentRawWithSnapshot(piAgentEndBenchPayload, snap)
+		_ = piAugmentAgentEnd(piAgentEndBenchPayload, snap, &durationMs)
 	}
 }
 

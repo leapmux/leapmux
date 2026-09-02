@@ -47,7 +47,9 @@ describe('pi classify', () => {
   })
 
   it('hides lifecycle markers without chat UI', () => {
-    for (const t of ['agent_start', 'turn_start', 'turn_end', 'message_start', 'tool_execution_update']) {
+    // agent_settled says only that Pi will not continue on its own after the
+    // agent_end that already drew the divider, so it has nothing to render.
+    for (const t of ['agent_start', 'agent_settled', 'turn_start', 'turn_end', 'message_start', 'tool_execution_update']) {
       expect(plugin.classify(input({ type: t }))).toEqual({ kind: 'hidden' })
     }
   })
@@ -58,21 +60,87 @@ describe('pi classify', () => {
 
   it('maps agent_end (stop) to a "Turn ended" divider model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] }))
-      .toEqual({ label: 'Turn ended' })
+      .toEqual({ label: 'Turn ended', turnContinues: false })
   })
 
   it('maps an aborted stopReason to a danger "Turn aborted" model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] }))
-      .toEqual({ label: 'Turn aborted', isError: true })
+      .toEqual({ label: 'Turn aborted', isError: true, turnContinues: false })
   })
 
   it('maps an error stopReason to a danger "Turn failed — <msg>" model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] }))
-      .toEqual({ label: 'Turn failed — rate limit', isError: true })
+      .toEqual({ label: 'Turn failed — rate limit', isError: true, turnContinues: false })
   })
 
   it('returns null when the message is not agent_end', () => {
     expect(plugin.resultDivider!({ type: 'message_end' })).toBeNull()
+  })
+
+  describe('turn duration on the divider', () => {
+    // Pi's own agent_end carries no duration; the worker measures the turn and
+    // injects duration_ms under the same name Claude Code emits.
+    const ended = (extra: Record<string, unknown>, stopReason = 'stop'): string =>
+      plugin.resultDivider!({
+        type: 'agent_end',
+        messages: [{ role: 'assistant', stopReason, errorMessage: 'WebSocket error' }],
+        ...extra,
+      })!.label
+
+    it('appends the formatted duration to a completed turn', () => {
+      expect(ended({ duration_ms: 3200 })).toBe('Turn ended (3.2s)')
+    })
+
+    it('keeps the plain label when the worker measured nothing', () => {
+      expect(ended({})).toBe('Turn ended')
+    })
+
+    it('shows a real zero rather than dropping the suffix', () => {
+      expect(ended({ duration_ms: 0 })).toBe('Turn ended (0ms)')
+    })
+
+    it('ignores a non-numeric duration_ms', () => {
+      expect(ended({ duration_ms: 'soon' })).toBe('Turn ended')
+    })
+
+    it('appends the duration to the length-limit label', () => {
+      expect(ended({ duration_ms: 3200 }, 'length')).toBe('Turn ended (length limit) (3.2s)')
+    })
+
+    it('appends the duration to an aborted turn', () => {
+      expect(ended({ duration_ms: 45_000 }, 'aborted')).toBe('Turn aborted (45s)')
+    })
+
+    it('appends the duration after the error message', () => {
+      expect(ended({ duration_ms: 1500 }, 'error')).toBe('Turn failed — WebSocket error (1.5s)')
+    })
+  })
+
+  describe('a run Pi will retry', () => {
+    const retrying = plugin.resultDivider!({
+      type: 'agent_end',
+      willRetry: true,
+      duration_ms: 2100,
+      messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
+    })!
+
+    it('marks the divider auto-retry after the duration', () => {
+      expect(retrying.label).toBe('Turn failed — overloaded (2.1s) · auto-retry')
+    })
+
+    it('reports that the turn continues, so the thinking indicator stays up', () => {
+      expect(retrying.turnContinues).toBe(true)
+    })
+
+    it('adds no meta part when Pi does not retry', () => {
+      const model = plugin.resultDivider!({
+        type: 'agent_end',
+        duration_ms: 2100,
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
+      })!
+      expect(model.label).toBe('Turn failed — overloaded (2.1s)')
+      expect(model.turnContinues).toBe(false)
+    })
   })
 
   it('renders a danger divider through the shared renderer end-to-end', () => {
