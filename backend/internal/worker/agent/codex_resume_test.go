@@ -18,20 +18,21 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 
 	const timeout = 5 * time.Second
 
-	resume := func(t *testing.T, body string) (string, func() []codexRecordedRequest, error) {
+	resume := func(t *testing.T, body string) (codexThreadResult, func() []codexRecordedRequest, error) {
 		t.Helper()
 		a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
 			return json.RawMessage(body)
 		})
-		threadID, err := a.startOrResumeThread(map[string]interface{}{}, "thread-old", timeout)
-		return threadID, requests, err
+		thread, err := a.startOrResumeThread(map[string]interface{}{}, "thread-old", timeout)
+		return thread, requests, err
 	}
 
 	t.Run("adopts the resumed thread and sends no thread/start", func(t *testing.T) {
 		t.Parallel()
-		threadID, requests, err := resume(t, `{"thread":{"id":"thread-old"}}`)
+		thread, requests, err := resume(t, `{"thread":{"id":"thread-old"},"model":"gpt-5.6-sol"}`)
 		require.NoError(t, err)
-		assert.Equal(t, "thread-old", threadID)
+		assert.Equal(t, "thread-old", thread.ID)
+		assert.Equal(t, "gpt-5.6-sol", thread.Model)
 		sent := requests()
 		require.Len(t, sent, 1, "a resume that holds must not also start a thread")
 		assert.Equal(t, "thread/resume", sent[0].Method)
@@ -73,13 +74,86 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 	t.Run("starts a thread when there is nothing to resume", func(t *testing.T) {
 		t.Parallel()
 		a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
-			return json.RawMessage(`{"thread":{"id":"thread-new"}}`)
+			return json.RawMessage(`{"thread":{"id":"thread-new"},"model":"gpt-5.4"}`)
 		})
-		threadID, err := a.startOrResumeThread(map[string]interface{}{}, "", timeout)
+		thread, err := a.startOrResumeThread(map[string]interface{}{}, "", timeout)
 		require.NoError(t, err)
-		assert.Equal(t, "thread-new", threadID)
+		assert.Equal(t, "thread-new", thread.ID)
 		sent := requests()
 		require.Len(t, sent, 1)
 		assert.Equal(t, "thread/start", sent[0].Method)
 	})
+}
+
+func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
+	t.Parallel()
+
+	result, err := newCodexThreadResult(
+		"thread-1",
+		"gpt-5.6-sol",
+		json.RawMessage(`"medium"`),
+		json.RawMessage(`"fast"`),
+		json.RawMessage(`"on-request"`),
+		json.RawMessage(`"workspace-write"`),
+	)
+	require.NoError(t, err)
+
+	a := &CodexAgent{
+		model:          "gpt-5.6-luna",
+		effort:         EffortHigh,
+		serviceTier:    CodexDefaultServiceTier,
+		approvalPolicy: "never",
+		sandboxPolicy:  CodexSandboxReadOnly,
+	}
+	a.applyThreadResult(result)
+
+	assert.Equal(t, "gpt-5.6-sol", a.model)
+	assert.Equal(t, "medium", a.effort)
+	assert.Equal(t, CodexServiceTierFast, a.serviceTier)
+	assert.Equal(t, CodexDefaultApprovalPolicy, a.approvalPolicy)
+	assert.Equal(t, CodexSandboxWorkspaceWrite, a.sandboxPolicy)
+}
+
+func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
+	t.Parallel()
+
+	result, err := newCodexThreadResult(
+		"thread-1",
+		"gpt-5.6-sol",
+		json.RawMessage(`null`),
+		json.RawMessage(`null`),
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+
+	a := &CodexAgent{
+		effort:      EffortHigh,
+		serviceTier: CodexServiceTierFast,
+	}
+	a.applyThreadResult(result)
+
+	assert.Equal(t, EffortAuto, a.effort)
+	assert.Equal(t, CodexDefaultServiceTier, a.serviceTier)
+	assert.Equal(t, "", a.approvalPolicy)
+	assert.Equal(t, "", a.sandboxPolicy)
+}
+
+func TestCodexThreadResultPreservesGranularApprovalPolicy(t *testing.T) {
+	t.Parallel()
+
+	result, err := newCodexThreadResult(
+		"thread-1",
+		"gpt-5.6-sol",
+		nil,
+		nil,
+		json.RawMessage(`{"granular":{"sandboxApproval":true}}`),
+		nil,
+	)
+	require.NoError(t, err)
+
+	a := &CodexAgent{approvalPolicy: CodexDefaultApprovalPolicy}
+	a.applyThreadResult(result)
+
+	assert.Equal(t, CodexDefaultApprovalPolicy, a.approvalPolicy)
 }

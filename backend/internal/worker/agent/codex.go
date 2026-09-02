@@ -230,12 +230,13 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		threadMethod = "thread/resume"
 	}
 
-	threadID, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
+	thread, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError(threadMethod, err)
 	}
-	a.threadID = threadID
+	a.applyThreadResult(thread)
+	a.threadID = thread.ID
 	sink.UpdateSessionID(a.threadID)
 	sink.BroadcastStatusActive(a.threadID)
 
@@ -253,34 +254,65 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
-// carries a stored thread ID. A resume that does not hold fails the whole
-// start; see resumeFailedError.
+// carries a stored thread ID. It returns the thread ID and effective model
+// reported by Codex. A resume that does not hold fails the whole start; see
+// resumeFailedError.
 func (a *CodexAgent) startOrResumeThread(
 	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
-) (string, error) {
+) (codexThreadResult, error) {
 	if resumeSessionID != "" {
 		threadParams["threadId"] = resumeSessionID
 		return a.resumeThread(threadParams, resumeSessionID, timeout)
 	}
-	threadID, err := a.startThread(threadParams, timeout)
+	thread, err := a.startThread(threadParams, timeout)
 	if err != nil {
-		return "", err
+		return codexThreadResult{}, err
 	}
-	if threadID == "" {
-		return "", fmt.Errorf("codex thread/start: response did not contain a thread ID")
+	if thread.ID == "" {
+		return codexThreadResult{}, fmt.Errorf("codex thread/start: response did not contain a thread ID")
 	}
-	return threadID, nil
+	return thread, nil
 }
 
-// resumeThread sends `thread/resume` and returns the thread ID that Codex
-// reopened. An RPC error, a response that does not parse, and a response that
-// carries no thread ID all fail: none of the three reopens the conversation.
+type codexThreadResult struct {
+	ID                    string
+	Model                 string
+	Effort                string
+	EffortPresent         bool
+	ServiceTier           string
+	ServiceTierPresent    bool
+	ApprovalPolicy        string
+	ApprovalPolicyPresent bool
+	SandboxPolicy         string
+	SandboxPolicyPresent  bool
+}
+
+func (a *CodexAgent) applyThreadResult(result codexThreadResult) {
+	a.model = result.Model
+	if result.EffortPresent {
+		a.effort = StringOrDefault(result.Effort, EffortAuto)
+	}
+	if result.ServiceTierPresent {
+		a.serviceTier = StringOrDefault(result.ServiceTier, CodexDefaultServiceTier)
+	}
+	if result.ApprovalPolicyPresent && result.ApprovalPolicy != "" {
+		a.approvalPolicy = result.ApprovalPolicy
+	}
+	if result.SandboxPolicyPresent && result.SandboxPolicy != "" {
+		a.sandboxPolicy = result.SandboxPolicy
+	}
+}
+
+// resumeThread sends `thread/resume` and returns the thread ID and effective
+// model that Codex reported. An RPC error, a response that does not parse, and
+// a response that carries no required field all fail: none of the three
+// reopens the conversation.
 func (a *CodexAgent) resumeThread(
 	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
-) (string, error) {
+) (codexThreadResult, error) {
 	paramsJSON, err := json.Marshal(threadParams)
 	if err != nil {
-		return "", resumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
+		return codexThreadResult{}, resumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
 	}
 	resp, err := a.sendRequest("thread/resume", paramsJSON, timeout)
 	if err == nil {
@@ -291,43 +323,100 @@ func (a *CodexAgent) resumeThread(
 		err = jsonRPCResultError(resp)
 	}
 	if err != nil {
-		return "", resumeFailedError(resumeSessionID, err)
+		return codexThreadResult{}, resumeFailedError(resumeSessionID, err)
 	}
 	var result struct {
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
+		Model          string          `json:"model"`
+		Effort         json.RawMessage `json:"reasoningEffort"`
+		ServiceTier    json.RawMessage `json:"serviceTier"`
+		ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
+		Sandbox        json.RawMessage `json:"sandbox"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
-		return "", resumeFailedError(resumeSessionID,
+		return codexThreadResult{}, resumeFailedError(resumeSessionID,
 			fmt.Errorf("failed to parse response %q: %w", string(resp), err))
 	}
 	if result.Thread.ID == "" {
-		return "", resumeFailedError(resumeSessionID,
+		return codexThreadResult{}, resumeFailedError(resumeSessionID,
 			fmt.Errorf("response %q carried no thread ID", string(resp)))
 	}
-	return result.Thread.ID, nil
+	if result.Model == "" {
+		return codexThreadResult{}, resumeFailedError(resumeSessionID,
+			fmt.Errorf("response %q carried no effective model", string(resp)))
+	}
+	threadResult, err := newCodexThreadResult(result.Thread.ID, result.Model, result.Effort, result.ServiceTier, result.ApprovalPolicy, result.Sandbox)
+	if err != nil {
+		return codexThreadResult{}, resumeFailedError(resumeSessionID, err)
+	}
+	return threadResult, nil
 }
 
-// startThread sends `thread/start` and returns the new thread id.
-func (a *CodexAgent) startThread(threadParams map[string]interface{}, timeout time.Duration) (string, error) {
+// startThread sends `thread/start` and returns the new thread's effective model.
+func (a *CodexAgent) startThread(threadParams map[string]interface{}, timeout time.Duration) (codexThreadResult, error) {
 	paramsJSON, err := json.Marshal(threadParams)
 	if err != nil {
-		return "", fmt.Errorf("marshal thread/start params: %w", err)
+		return codexThreadResult{}, fmt.Errorf("marshal thread/start params: %w", err)
 	}
 	resp, err := a.sendRequest("thread/start", paramsJSON, timeout)
 	if err != nil {
-		return "", err
+		return codexThreadResult{}, err
 	}
 	var result struct {
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
+		Model          string          `json:"model"`
+		Effort         json.RawMessage `json:"reasoningEffort"`
+		ServiceTier    json.RawMessage `json:"serviceTier"`
+		ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
+		Sandbox        json.RawMessage `json:"sandbox"`
 	}
 	if err := json.Unmarshal(resp, &result); err != nil {
-		return "", fmt.Errorf("codex thread/start: failed to parse response: %w", err)
+		return codexThreadResult{}, fmt.Errorf("codex thread/start: failed to parse response: %w", err)
 	}
-	return result.Thread.ID, nil
+	if result.Model == "" {
+		return codexThreadResult{}, fmt.Errorf("codex thread/start: response did not contain an effective model")
+	}
+	return newCodexThreadResult(result.Thread.ID, result.Model, result.Effort, result.ServiceTier, result.ApprovalPolicy, result.Sandbox)
+}
+
+func newCodexThreadResult(id, model string, effort, serviceTier, approvalPolicy, sandbox json.RawMessage) (codexThreadResult, error) {
+	if model == "" {
+		return codexThreadResult{}, fmt.Errorf("codex thread response did not contain an effective model")
+	}
+	result := codexThreadResult{ID: id, Model: model}
+	for _, target := range []struct {
+		raw   json.RawMessage
+		set   *string
+		seen  *bool
+		label string
+	}{
+		{effort, &result.Effort, &result.EffortPresent, "reasoningEffort"},
+		{serviceTier, &result.ServiceTier, &result.ServiceTierPresent, "serviceTier"},
+		{approvalPolicy, &result.ApprovalPolicy, &result.ApprovalPolicyPresent, "approvalPolicy"},
+		{sandbox, &result.SandboxPolicy, &result.SandboxPolicyPresent, "sandbox"},
+	} {
+		if len(target.raw) == 0 {
+			continue
+		}
+		*target.seen = true
+		if string(target.raw) == "null" {
+			continue
+		}
+		if err := json.Unmarshal(target.raw, target.set); err != nil {
+			// Codex can return granular approval policy as an object. LeapMux stores
+			// the simple policy string, so preserve the prior value for that form.
+			if target.label == "approvalPolicy" {
+				*target.seen = false
+				continue
+			}
+			return codexThreadResult{}, fmt.Errorf("codex thread response field %s was not a string: %w", target.label, err)
+		}
+	}
+	return result, nil
 }
 
 // Interrupt aborts the active Codex turn by sending a `turn/interrupt`
@@ -383,14 +472,15 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 
 	threadParams := codexThreadParams(model, workingDir, approvalPolicy, sandboxPolicy, serviceTier)
 
-	threadID, err := a.startThread(threadParams, a.APITimeout())
-	if err != nil || threadID == "" {
+	thread, err := a.startThread(threadParams, a.APITimeout())
+	if err != nil || thread.ID == "" {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
 
 	a.mu.Lock()
-	a.threadID = threadID
+	a.applyThreadResult(thread)
+	a.threadID = thread.ID
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
@@ -411,8 +501,8 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	// clear consistent rather than relying on that follow-up.
 	a.thinkingTokens.reset()
 
-	a.sink.UpdateSessionID(threadID)
-	return threadID, true
+	a.sink.UpdateSessionID(thread.ID)
+	return thread.ID, true
 }
 
 // SendInput writes a user message to the agent. If a turn is already in
@@ -696,8 +786,8 @@ func codexServiceTierValue(tier string) *string {
 // silently drift (a missed one drops the axis from persistence or the picker).
 type codexAxis struct {
 	id string
-	// configKey is the axis's key under the "config" object in a config/read response,
-	// so refreshSettingsFromAgent can reconcile every axis from one table loop.
+	// configKey is the axis's key under the "config" object in a config/read response.
+	// An empty key means that lifecycle responses, rather than config/read, own the axis.
 	configKey string
 	get       func(*CodexAgent) string // reads the live value from agent state; call under a.mu
 	// set writes a (non-empty) requested value into agent state; call under a.mu. Having
@@ -718,7 +808,9 @@ type codexAxis struct {
 }
 
 var codexAxes = []codexAxis{
-	{id: OptionIDModel, configKey: "model", get: func(a *CodexAgent) string { return a.model }, set: func(a *CodexAgent, v string) { a.model = v }},
+	// config/read reports the global model setting, not a thread/start or
+	// thread/resume model override. Lifecycle responses own this value.
+	{id: OptionIDModel, get: func(a *CodexAgent) string { return a.model }, set: func(a *CodexAgent, v string) { a.model = v }},
 	{id: OptionIDEffort, configKey: "model_reasoning_effort", get: func(a *CodexAgent) string { return a.effort }, set: func(a *CodexAgent, v string) { a.effort = v }, refreshFallback: codexEffortRefreshFallback},
 	{id: OptionIDPermissionMode, configKey: "approval_policy", get: func(a *CodexAgent) string { return a.approvalPolicy }, set: func(a *CodexAgent, v string) { a.approvalPolicy = v }},
 	{id: CodexOptionSandboxPolicy, configKey: "sandbox_mode", get: func(a *CodexAgent) string { return a.sandboxPolicy }, set: func(a *CodexAgent, v string) { a.sandboxPolicy = v }, defaultValue: CodexDefaultSandboxPolicy},
@@ -732,8 +824,8 @@ var codexAxes = []codexAxis{
 // it (config.toml, per-session override, ...); when unset, the CLI falls back to the
 // model preset's default_reasoning_level at inference time, which config/read does not
 // reflect. Applied only when the current effort is still EffortAuto, so a concrete prior
-// selection is never overwritten. Caller holds a.mu (model is reconciled before effort,
-// so a.model already reflects this refresh).
+// selection is never overwritten. Caller holds a.mu; a.model already reflects the
+// lifecycle response that selected the current thread model.
 func codexEffortRefreshFallback(a *CodexAgent) {
 	if a.effort != EffortAuto {
 		return
@@ -841,14 +933,17 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 	}
 
 	a.mu.Lock()
-	// Reconcile every axis from one table loop (the same table that drives the picker and
+	// Reconcile the config-owned axes from one table loop (the same table that drives the picker and
 	// the live-update writes, so an axis can't be reconciled here but dropped elsewhere).
 	// Each config field may be null or a string; jsonString returns "" for null/absent/
 	// non-string (e.g. approval_policy reported as a {"granular":...} object), so an
 	// unreported axis keeps its prior value -- except effort, whose refreshFallback then
-	// mirrors the CLI's implicit model-preset default. Model is reconciled before effort
-	// (table order), so effort's fallback sees this refresh's model.
+	// mirrors the CLI's implicit model-preset default. The model is owned by the lifecycle
+	// response, so effort's fallback sees the model selected during startup or resume.
 	for _, ax := range codexAxes {
+		if ax.configKey == "" {
+			continue
+		}
 		if s := jsonString(result.Config[ax.configKey]); s != "" {
 			ax.set(a, s)
 		} else if ax.refreshFallback != nil {

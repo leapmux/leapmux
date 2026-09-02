@@ -104,7 +104,7 @@ func TestCodexRefreshSettingsFromAgent(t *testing.T) {
 
 	agent.refreshSettingsFromAgent()
 
-	assert.Equal(t, "gpt-5.2", agent.model)
+	assert.Equal(t, "gpt-5.4", agent.model)
 	assert.Equal(t, "medium", agent.effort)
 	assert.Equal(t, "never", agent.approvalPolicy)
 	assert.Equal(t, "danger-full-access", agent.sandboxPolicy)
@@ -117,11 +117,29 @@ func TestCodexRefreshSettingsFromAgent(t *testing.T) {
 	// Verify settings were broadcast.
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
-	assert.Equal(t, "gpt-5.2", refresh.Model)
+	assert.Equal(t, "gpt-5.4", refresh.Model)
 	assert.Equal(t, "medium", refresh.Effort)
 	assert.Equal(t, "never", refresh.PermissionMode)
 	assert.Equal(t, "danger-full-access", refresh.Options[CodexOptionSandboxPolicy])
 	assert.Equal(t, "fast", refresh.Options[CodexOptionServiceTier])
+}
+
+func TestCodexRefreshSettingsFromAgent_PreservesResumeModelOverride(t *testing.T) {
+	t.Parallel()
+
+	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+		if method == "config/read" {
+			// config/read returns the global configuration. It does not include the
+			// model override that thread/resume applied to this session.
+			return json.RawMessage(`{"config":{"model":"gpt-5.6-luna"},"origins":{}}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.model = "gpt-5.6-sol"
+
+	agent.refreshSettingsFromAgent()
+
+	assert.Equal(t, "gpt-5.6-sol", agent.model)
 }
 
 func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
