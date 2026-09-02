@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
@@ -170,6 +170,44 @@ impl Default for DesktopBehavior {
             tray_on_minimize: TrayOnMinimize::Taskbar,
             start_on_login: false,
             start_minimized: StartMinimized::Window,
+        }
+    }
+}
+
+/// The payload field a refusal belongs to. See `BehaviorRefusal`.
+pub(crate) const REFUSAL_TRAY: &str = "trayEnabled";
+pub(crate) const REFUSAL_START_ON_LOGIN: &str = "startOnLogin";
+
+/// Something the operating system refused, and which choice it belongs to.
+///
+/// Two of the five settings can fail outside the application: a Linux desktop
+/// with no status-icon library cannot show a tray, and an operating system can
+/// refuse a login item. Both look like "LeapMux ignores my settings" when they
+/// stay in a log, so the command reports them and the Preferences row prints
+/// the message beside the control the user just moved.
+///
+/// `setting` is the PAYLOAD FIELD NAME of the choice that failed, so the
+/// webview can find that row without a second vocabulary for the same five
+/// things. `a_refusal_names_a_field_of_the_payload_it_answers` pins the two
+/// together.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct BehaviorRefusal {
+    pub setting: &'static str,
+    pub message: String,
+}
+
+impl BehaviorRefusal {
+    pub(crate) fn tray(message: String) -> Self {
+        Self {
+            setting: REFUSAL_TRAY,
+            message,
+        }
+    }
+
+    pub(crate) fn start_on_login(message: String) -> Self {
+        Self {
+            setting: REFUSAL_START_ON_LOGIN,
+            message,
         }
     }
 }
@@ -1010,6 +1048,40 @@ mod tests {
                 start_on_login: true,
                 start_minimized: StartMinimized::Minimized,
             }
+        );
+    }
+
+    // A refusal is placed on the Preferences row that owns the field it
+    // names, so a `setting` the payload does not carry would put the message
+    // nowhere and the toggle would read "on" with nothing behind it.
+    #[test]
+    fn a_refusal_names_a_field_of_the_payload_it_answers() {
+        let payload = serde_json::json!({
+            "trayEnabled": true,
+            "trayOnClose": "quit",
+            "trayOnMinimize": "tray",
+            "startOnLogin": true,
+            "startMinimized": "minimized",
+        });
+        // The payload really is the one the command takes, so the field names
+        // below are the live ones and not a copy that can drift.
+        serde_json::from_value::<DesktopBehavior>(payload.clone())
+            .expect("the webview payload must deserialize");
+        for refusal in [
+            BehaviorRefusal::tray("x".to_string()),
+            BehaviorRefusal::start_on_login("x".to_string()),
+        ] {
+            assert!(
+                payload.get(refusal.setting).is_some(),
+                "{} is not a field of the payload",
+                refusal.setting
+            );
+        }
+
+        assert_eq!(
+            serde_json::to_value(BehaviorRefusal::tray("no status-icon library".to_string()))
+                .expect("a refusal must serialize"),
+            serde_json::json!({ "setting": "trayEnabled", "message": "no status-icon library" }),
         );
     }
 

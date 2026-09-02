@@ -12,9 +12,13 @@ import { buildProtoRows } from './protoRegistry'
 import { CLAIMED_PROTO_KEYS, createBrowserRows } from './registry'
 import { SettingsPanel } from './SettingsPanel'
 
+// `isDesktopApp` is a controllable signal, defaulting to FALSE so every case
+// below sees the browser environment it was written for. Only the Desktop
+// group needs the other answer, and its rows exist nowhere else.
+const isDesktopApp = vi.hoisted(() => vi.fn(() => false))
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
-  isDesktopApp: () => false,
+  isDesktopApp: () => isDesktopApp(),
 }))
 
 // The panel renders the verified-session state at the top of an
@@ -233,6 +237,30 @@ describe('settingsPanel claimed proto keys', () => {
     ))
     expect(screen.getByTestId('setting-error-session_duration_seconds').textContent)
       .toContain('session duration must be at least 300s')
+  })
+
+  // The desktop shell's refusal is the one error a USER group carries, and a
+  // registry row is addressed by its dotted id rather than by a hub key. The
+  // tray toggle would otherwise read "on" beside no icon and no explanation,
+  // which is the failure the Linux `recommends` decision made ordinary.
+  it('shows the desktop shell refusal on its registry row only', () => {
+    isDesktopApp.mockReturnValue(true)
+    try {
+      render(withPreferences(() => (
+        <SettingsPanel
+          rows={registryFor('desktop')}
+          restartGroup={false}
+          elevationGroup={false}
+          writeError={{ key: 'desktop.trayEnabled', message: 'LeapMux could not create a tray icon on this desktop' }}
+        />
+      )))
+      expect(screen.getByTestId('setting-error-desktop.trayEnabled').textContent)
+        .toContain('LeapMux could not create a tray icon on this desktop')
+      expect(screen.queryByTestId('setting-error-desktop.startOnLogin')).toBeNull()
+    }
+    finally {
+      isDesktopApp.mockReturnValue(false)
+    }
   })
 })
 

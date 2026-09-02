@@ -1360,13 +1360,13 @@ async fn set_desktop_behavior(
     shell: State<'_, Arc<DesktopShell>>,
     state: State<'_, Arc<tray::TrayState>>,
     behavior: tray::DesktopBehavior,
-) -> Result<(), String> {
-    let mut failure: Option<String> = None;
+) -> Result<(), tray::BehaviorRefusal> {
+    let mut failure: Option<tray::BehaviorRefusal> = None;
 
     // 1. The tray itself. `apply` records what was ACHIEVED, so a build that
     //    fails downgrades the policy instead of leaving it lying.
     if let Err(err) = state.apply(&app, &behavior) {
-        failure = Some(err);
+        failure = Some(tray::BehaviorRefusal::tray(err));
     }
 
     // 2. Bring the window back if the user is now stranded. A PREDICATE over
@@ -1388,7 +1388,7 @@ async fn set_desktop_behavior(
     //    is on, because rewriting the entry is how a stale path is repaired
     //    after the application moves (an AppImage rename, an MSI reinstall).
     if let Err(err) = apply_login_item(&app, behavior.start_on_login) {
-        failure = Some(err);
+        failure = Some(tray::BehaviorRefusal::start_on_login(err));
     }
 
     // 4. The device cache, so the next launch can decide before the webview

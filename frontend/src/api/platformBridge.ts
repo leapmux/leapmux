@@ -85,6 +85,45 @@ export interface DesktopBehavior {
   startMinimized: string
 }
 
+/**
+ * Something the operating system refused, and which choice it belongs to.
+ *
+ * Two of the five can fail outside the app: a Linux desktop with no
+ * status-icon library cannot show a tray, and an operating system can refuse a
+ * login item. `setting` is the FIELD NAME of the choice that failed, from the
+ * payload above -- the shell reuses that vocabulary rather than inventing a
+ * second one for the same five things, so the caller can place the message on
+ * the row that owns the field.
+ */
+export interface DesktopBehaviorRefusal {
+  /**
+   * `Extract`, not a bare union: only these two choices can be refused, and
+   * the intersection with `keyof DesktopBehavior` is what keeps the name tied
+   * to the payload. Renaming the field there narrows this to `never`, and
+   * every consumer stops compiling rather than addressing a row that is gone.
+   */
+  setting: Extract<keyof DesktopBehavior, 'trayEnabled' | 'startOnLogin'>
+  message: string
+}
+
+/**
+ * Narrow a `setDesktopBehavior` rejection, or `null` when it is not one.
+ *
+ * A rejection that carries no recognizable shape (the IPC layer itself
+ * failing, say) is deliberately NOT a refusal: it belongs to no row, and
+ * printing a transport error beside a toggle explains nothing.
+ */
+export function parseDesktopBehaviorRefusal(err: unknown): DesktopBehaviorRefusal | null {
+  if (typeof err !== 'object' || err === null)
+    return null
+  const { setting, message } = err as { setting?: unknown, message?: unknown }
+  if (typeof message !== 'string' || message === '')
+    return null
+  if (setting !== 'trayEnabled' && setting !== 'startOnLogin')
+    return null
+  return { setting, message }
+}
+
 export interface DesktopRuntimeState {
   shellMode: 'launcher' | 'solo' | 'distributed'
   connected: boolean

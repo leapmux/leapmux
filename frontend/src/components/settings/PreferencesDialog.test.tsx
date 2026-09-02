@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-li
 import { createSignal, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { reportDesktopShellRefusal, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
 import { accountWireDescriptors } from '~/test-support/accountSchema'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
@@ -35,10 +36,13 @@ vi.mock('~/context/AuthContext', () => ({
   }),
 }))
 
+// `isDesktopApp` defaults to FALSE, the environment every case below was
+// written for. Only the Desktop group needs the other answer.
+const desktop = vi.hoisted(() => vi.fn(() => false))
 vi.mock('~/lib/systemInfo', async importOriginal => ({
   ...(await importOriginal<typeof import('~/lib/systemInfo')>()),
   isSoloMode: () => solo(),
-  isDesktopApp: () => false,
+  isDesktopApp: () => desktop(),
 }))
 
 function renderDialog(category = 'appearance') {
@@ -63,11 +67,42 @@ beforeEach(() => {
   listSettings.mockResolvedValue({ descriptors: [], values: [] })
   isAdmin.mockReturnValue(false)
   solo.mockReturnValue(false)
+  desktop.mockReturnValue(false)
   elevationExpiresAt.mockReturnValue(undefined)
+  resetDesktopShellStatusForTests()
 })
 
 afterEach(() => {
   cleanup()
+})
+
+// The desktop shell can refuse what the account already stored: a Linux
+// desktop with no status-icon library shows no tray, and an operating system
+// can decline a login item. The dialog is what routes that message to a USER
+// group, where until now only an admin group carried an inline error.
+describe('preferencesDialog desktop shell refusal', () => {
+  it('shows the refusal on the row that owns it', async () => {
+    desktop.mockReturnValue(true)
+    reportDesktopShellRefusal({
+      setting: 'trayEnabled',
+      message: 'LeapMux could not create a tray icon on this desktop',
+    })
+    renderDialog('desktop')
+
+    expect((await screen.findByTestId('setting-error-desktop.trayEnabled')).textContent)
+      .toContain('LeapMux could not create a tray icon on this desktop')
+  })
+
+  it('shows nothing while the shell refused nothing', async () => {
+    desktop.mockReturnValue(true)
+    renderDialog('desktop')
+
+    // The row itself must be there, or the assertion below passes for the
+    // wrong reason. The tray toggle, not one of the rows beneath it: those
+    // stay hidden while the tray is off, which is the built-in default.
+    await screen.findByText('Tray icon')
+    expect(screen.queryByTestId('setting-error-desktop.trayEnabled')).toBeNull()
+  })
 })
 
 describe('preferencesDialog admin restriction', () => {

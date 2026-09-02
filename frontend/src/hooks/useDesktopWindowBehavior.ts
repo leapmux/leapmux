@@ -1,8 +1,9 @@
 import { createEffect, onCleanup } from 'solid-js'
-import { setDesktopBehavior } from '~/api/platformBridge'
+import { parseDesktopBehaviorRefusal, setDesktopBehavior } from '~/api/platformBridge'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { trailingDebounce } from '~/lib/debounce'
+import { reportDesktopShellRefusal } from '~/lib/desktopShellStatus'
 import { createLogger } from '~/lib/logger'
 import { isDesktopApp } from '~/lib/systemInfo'
 
@@ -53,16 +54,35 @@ export function useDesktopWindowBehavior(): void {
   // the pending payload lives here rather than being captured per call.
   let pending: string | undefined
 
+  // The newest push this hook issued. The debounce collapses a burst, but two
+  // pushes further apart than it can still overlap, and a SUPERSEDED answer
+  // must not reach the row: the message would then sit beside a control the
+  // user already repaired and read as the repair having failed too.
+  let pushSeq = 0
+
   const push = trailingDebounce(() => {
     const payload = pending
     if (payload === undefined || payload === lastPushed)
       return
     lastPushed = payload
+    const seq = ++pushSeq
+    const isNewest = () => seq === pushSeq
     setDesktopBehavior(JSON.parse(payload) as Parameters<typeof setDesktopBehavior>[0])
+      .then(() => {
+        if (isNewest())
+          reportDesktopShellRefusal(null)
+      })
       .catch((err: unknown) => {
         // The shell reports what the operating system refused. The preference
-        // is stored either way, so this is a notice and not a rollback.
+        // is stored either way, so this is a notice and not a rollback -- but
+        // it must be a notice the user READS. A tray that could not be created
+        // and a login item the system declined both leave a toggle reading
+        // "on" with nothing behind it, so the message goes to the row that
+        // owns the choice. Anything else (the IPC layer itself failing)
+        // belongs to no row and stays in the log.
         log.warn('the desktop shell refused the window behaviour', err)
+        if (isNewest())
+          reportDesktopShellRefusal(parseDesktopBehaviorRefusal(err))
       })
   }, PUSH_DEBOUNCE_MS)
   onCleanup(() => push.cancel())

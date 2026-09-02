@@ -3,11 +3,18 @@ import type { SettingDescriptor } from '~/generated/proto/leapmux/v1/settings_pb
 import { cleanup, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { desktopShellRefusal, resetDesktopShellStatusForTests } from '~/lib/desktopShellStatus'
 
 const setDesktopBehavior = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const isDesktopApp = vi.hoisted(() => vi.fn(() => true))
 
-vi.mock('~/api/platformBridge', () => ({ setDesktopBehavior }))
+// Only the invoke is replaced. `parseDesktopBehaviorRefusal` stays REAL,
+// because narrowing the rejection is part of what this hook is being tested
+// for -- a stubbed narrowing would assert the mock's own answer.
+vi.mock('~/api/platformBridge', async importOriginal => ({
+  ...(await importOriginal<typeof import('~/api/platformBridge')>()),
+  setDesktopBehavior,
+}))
 vi.mock('~/lib/systemInfo', () => ({ isDesktopApp: () => isDesktopApp() }))
 
 // The two contexts are mocked rather than mounted: this hook's whole job is
@@ -69,6 +76,7 @@ beforeEach(() => {
   setStartOnLogin(false)
   setStartMinimized('window')
   setDiffView('unified')
+  resetDesktopShellStatusForTests()
 })
 
 afterEach(() => {
@@ -200,6 +208,64 @@ describe('useDesktopWindowBehavior', () => {
     setTrayEnabled(true)
     await settle()
     expect(setDesktopBehavior).toHaveBeenCalledTimes(2)
+  })
+
+  // Silence is the failure mode to avoid here: the tray toggle reads "on"
+  // while no icon exists, and the login item is simply not registered. The
+  // message has to reach the row the user just moved.
+  it('reports a refusal to the row that owns it', async () => {
+    setDesktopBehavior.mockRejectedValue({ setting: 'trayEnabled', message: 'no status-icon library' })
+    mount()
+    await settle()
+
+    expect(desktopShellRefusal()).toEqual({
+      key: 'desktop.trayEnabled',
+      message: 'no status-icon library',
+    })
+  })
+
+  it('clears the reported refusal once a push succeeds', async () => {
+    setDesktopBehavior.mockRejectedValue({ setting: 'startOnLogin', message: 'the system declined' })
+    mount()
+    await settle()
+    expect(desktopShellRefusal()).not.toBeNull()
+
+    setDesktopBehavior.mockResolvedValue(undefined)
+    setTrayEnabled(true)
+    await settle()
+    expect(desktopShellRefusal()).toBeNull()
+  })
+
+  // The debounce collapses a burst, but two pushes further apart can still
+  // overlap. A late answer about a payload two states old must not reach the
+  // row: it would sit beside a control the user already repaired.
+  it('ignores a superseded push', async () => {
+    let rejectFirst: ((err: unknown) => void) | undefined
+    setDesktopBehavior.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectFirst = reject }),
+    )
+    mount()
+    await settle()
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(1)
+
+    // A second push lands and is accepted while the first is still open.
+    setDesktopBehavior.mockResolvedValue(undefined)
+    setTrayEnabled(true)
+    await settle()
+    expect(setDesktopBehavior).toHaveBeenCalledTimes(2)
+
+    rejectFirst?.({ setting: 'trayEnabled', message: 'no status-icon library' })
+    await settle()
+    expect(desktopShellRefusal()).toBeNull()
+  })
+
+  // A transport failure belongs to no row. Showing it beside a toggle would
+  // blame the setting for something that has nothing to do with it.
+  it('reports nothing for a failure that names no setting', async () => {
+    setDesktopBehavior.mockRejectedValue(new Error('ipc closed'))
+    mount()
+    await settle()
+    expect(desktopShellRefusal()).toBeNull()
   })
 
   it('drops a pending push when the component goes away', async () => {

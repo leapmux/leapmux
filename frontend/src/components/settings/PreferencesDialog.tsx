@@ -6,6 +6,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { useAuth } from '~/context/AuthContext'
 import { usePreferences } from '~/context/PreferencesContext'
 import { useViewportBelow } from '~/hooks/useViewportBelow'
+import { desktopShellRefusal } from '~/lib/desktopShellStatus'
 import { createAdminSettingsStore } from '~/stores/adminSettings.store'
 import { breakpoints } from '~/styles/tokens'
 import { NAV_GROUPS } from './navGroups'
@@ -275,11 +276,20 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
               </div>
             )}
           >
+            {/*
+              `writeError` has two sources, and they cannot both apply: an
+              admin group's rows come from the hub store, a user group's from
+              the registry. The desktop shell's refusal is the one error a
+              USER group carries, because it is the one write whose failure
+              happens after the preference is already stored -- the tray icon
+              and the login item belong to the operating system, which can
+              decline what the account accepted.
+            */}
             <SettingsPanel
               rows={activeRows()}
               restartGroup={restartGroups().has(activeGroup()?.id ?? '')}
               elevationGroup={elevationGroups().has(activeGroup()?.id ?? '')}
-              writeError={activeGroup()?.admin ? adminStore.state.writeError : null}
+              writeError={activeGroup()?.admin ? adminStore.state.writeError : desktopShellRefusal()}
             />
           </Show>
         </div>

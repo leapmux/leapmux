@@ -177,7 +177,7 @@ On Linux and Windows this row is **Tray icon** and the icon sits in the system t
 The next two rows apply only while this one is on, so the dialog hides them while the tray is off on both tiers.
 
 {{< callout type="info" >}}
-On Linux the tray needs a status-icon library (`libayatana-appindicator3`). The `.deb` package recommends it rather than requiring it, because many desktop environments have no tray at all. Where the library is absent LeapMux reports that it could not create the icon, and no window is ever hidden — closing and minimizing keep their ordinary behaviour.
+On Linux the tray needs a status-icon library (`libayatana-appindicator3`). The `.deb` package recommends it rather than requiring it, because many desktop environments have no tray at all. Where the library is absent, the **Tray icon** row reports that LeapMux could not create the icon, and no window is ever hidden — closing and minimizing keep their ordinary behaviour.
 {{< /callout >}}
 
 ### When you close the window
@@ -192,7 +192,7 @@ On macOS the window plays its minimize animation into the Dock before the tile d
 
 ### Start at login
 
-Registers LeapMux with your operating system's login items, so it starts when you sign in to the computer. Off by default. Some systems ask you to approve the login item the first time.
+Registers LeapMux with your operating system's login items, so it starts when you sign in to the computer. Off by default. Some systems ask you to approve the login item the first time. A system that declines it reports so on this row.
 
 ### Window at login
 

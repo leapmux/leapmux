@@ -53,9 +53,12 @@ export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
     // marked worker_bytes and userevents_bytes). Object-field errors surface
     // from SettingRow's own catch of the failed set.
     //
-    // A registry row cannot collide with a hub key here: the dialog passes
-    // a `writeError` only while the active group is an admin one, and only
-    // the hub scope has a store that records one.
+    // A registry row cannot collide with a hub key here, although the dialog
+    // passes an error for a USER group too (the desktop shell's refusal, on
+    // `desktop.trayEnabled` or `desktop.startOnLogin`). A registry id is
+    // dotted and a hub key is a bare snake_case name, so the two id spaces do
+    // not meet -- and only one of the two sources can be in play at a time,
+    // because a group is either admin or not.
     return writeError !== null && id === writeError.key ? writeError.message : null
   }
 

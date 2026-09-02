@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopFetch, observeWindowMode, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { desktopFetch, observeWindowMode, parseDesktopBehaviorRefusal, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -528,6 +528,34 @@ describe('parseLaunchVisibility', () => {
   it('narrows anything else to normal', () => {
     for (const raw of [undefined, null, '', 'Hidden', 'invisible', 0, {}, ['hidden']])
       expect(parseLaunchVisibility(raw), JSON.stringify(raw ?? null)).toBe('normal')
+  })
+})
+
+describe('parseDesktopBehaviorRefusal', () => {
+  it('narrows the two choices the operating system can refuse', () => {
+    expect(parseDesktopBehaviorRefusal({ setting: 'trayEnabled', message: 'no library' }))
+      .toEqual({ setting: 'trayEnabled', message: 'no library' })
+    expect(parseDesktopBehaviorRefusal({ setting: 'startOnLogin', message: 'declined' }))
+      .toEqual({ setting: 'startOnLogin', message: 'declined' })
+  })
+
+  // Anything else belongs to no row. Printing a transport error beside a
+  // toggle explains nothing, and a `setting` naming a row that does not exist
+  // would put the message nowhere while the caller believed it had reported.
+  it('rejects anything that is not one of them', () => {
+    for (const err of [
+      undefined,
+      null,
+      'no library',
+      new Error('ipc closed'),
+      { message: 'no setting' },
+      { setting: 'trayEnabled' },
+      { setting: 'trayEnabled', message: '' },
+      { setting: 'trayEnabled', message: 42 },
+      { setting: 'trayOnClose', message: 'not refusable' },
+      { setting: 'desktop.trayEnabled', message: 'a row id, not a field' },
+    ])
+      expect(parseDesktopBehaviorRefusal(err), JSON.stringify(err ?? null)).toBeNull()
   })
 })
 
