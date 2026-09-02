@@ -92,6 +92,61 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
+  // The gate branch sits BEFORE the authenticated one, and that order is the
+  // whole point: the visitor this screen exists for IS authenticated -- the hub
+  // let them in with no credentials, which is the problem. Ordering the branch
+  // after `isAuthenticated()` would render the app to exactly that visitor, and
+  // PasswordSetupGate's own tests would all still pass, because the component
+  // is never the thing that breaks.
+  it('replaces the app with the password-setup gate for a credential-free visitor', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
+    mockPasswordSetupRequired.mockReturnValue(true)
+
+    const { navigations } = renderGuard()
+
+    expect(screen.getByTestId('password-setup-gate')).toBeInTheDocument()
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
+    // A blocking screen, not a redirect: there is nowhere to send them.
+    expect(navigations).toEqual([])
+  })
+
+  // BOTH conditions are required. A visitor who signed in reached this hub over
+  // a credentialed connection, so the exposure the gate exists for is already
+  // closed for them -- and the gate would demand a password that the account
+  // already has.
+  it('leaves a signed-in visitor alone even while the hub reports setup required', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(false)
+    mockPasswordSetupRequired.mockReturnValue(true)
+
+    renderGuard()
+
+    expect(screen.getByText('Protected Content')).toBeInTheDocument()
+    expect(screen.queryByTestId('password-setup-gate')).not.toBeInTheDocument()
+  })
+
+  // The other negative arm, and the one that runs most often: the desktop app
+  // reaches its hub over a local socket, so every launch is credential-free
+  // with nothing exposed. A gate keyed on that flag alone would block the
+  // desktop app on every start.
+  it('leaves a credential-free visitor alone when nothing is exposed', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
+    mockPasswordSetupRequired.mockReturnValue(false)
+
+    renderGuard()
+
+    expect(screen.getByText('Protected Content')).toBeInTheDocument()
+    expect(screen.queryByTestId('password-setup-gate')).not.toBeInTheDocument()
+  })
+
   it('shows the boot splash while auth loads', () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(true)
