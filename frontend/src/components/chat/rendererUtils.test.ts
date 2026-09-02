@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCompactNumber, formatTokenCount, joinMetaParts } from './rendererUtils'
+import { formatCompactNumber, formatDuration, formatTokenCount, joinMetaParts } from './rendererUtils'
 
 describe('formatCompactNumber', () => {
   it('numbers below 1000 are returned as-is', () => {
@@ -130,5 +130,35 @@ describe('joinMetaParts', () => {
   it('returns an empty string when nothing is truthy', () => {
     expect(joinMetaParts([])).toBe('')
     expect(joinMetaParts([false, null, undefined, ''])).toBe('')
+  })
+})
+
+describe('formatDuration', () => {
+  it('sub-second values are whole milliseconds', () => {
+    expect(formatDuration(0)).toBe('0ms')
+    expect(formatDuration(865)).toBe('865ms')
+    expect(formatDuration(999)).toBe('999ms')
+  })
+
+  it('under ten seconds carries one decimal', () => {
+    expect(formatDuration(1000)).toBe('1.0s')
+    expect(formatDuration(3200)).toBe('3.2s')
+    // toFixed rounds half away from zero, so 3.25s reads "3.3s".
+    expect(formatDuration(3250)).toBe('3.3s')
+    // 9.999s stays on the decimal branch and rounds up, so the boundary below
+    // ten seconds reads "10.0s" while a real 10000ms reads "10s".
+    expect(formatDuration(9999)).toBe('10.0s')
+  })
+
+  it('ten seconds and above compose whole units', () => {
+    expect(formatDuration(10_000)).toBe('10s')
+    expect(formatDuration(65_000)).toBe('1m 5s')
+    expect(formatDuration(3_600_000)).toBe('1h')
+    expect(formatDuration(90_061_000)).toBe('1d 1h 1m 1s')
+  })
+
+  it('rounds a fractional millisecond count', () => {
+    expect(formatDuration(0.4)).toBe('0ms')
+    expect(formatDuration(999.6)).toBe('1000ms')
   })
 })

@@ -138,13 +138,27 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
 
     const parsed = parseMessageContent(msg)
     const category = classifyAgentMessage(msg)
-    // A turn-end divider means the agent finished. An `unsupported_provider`
-    // message is one we cannot interpret at all (no registered plugin) -- it
-    // carries no signal that the agent is working, and treating it as progress
-    // would pin the thinking indicator on a misconfigured / version-skewed agent
-    // forever, so it likewise stops the scan as "not working".
-    if (category.kind === 'result_divider' || category.kind === 'unsupported_provider')
+    // An `unsupported_provider` message is one we cannot interpret at all (no
+    // registered plugin) -- it carries no signal that the agent is working, and
+    // treating it as progress would pin the thinking indicator on a
+    // misconfigured / version-skewed agent forever, so it stops the scan as
+    // "not working".
+    if (category.kind === 'unsupported_provider')
       return false
+    // A turn-end divider means the agent finished -- unless the provider says
+    // it restarts the run itself. Pi draws a divider for a failed attempt it is
+    // about to auto-retry, and the indicator must stay up for the whole
+    // backoff, where nothing streams and no other row arrives.
+    if (category.kind === 'result_divider') {
+      const model = pluginFor(msg.agentProvider)?.resultDivider?.(parsed.parentObject)
+      return model?.turnContinues === true
+    }
+    // A hidden row draws nothing, so it is no evidence either way. Keep
+    // scanning back for the last row that does draw. Stopping here reported
+    // "working" forever on a transcript whose last row the UI folds away --
+    // a Pi `agent_settled` persisted by a build before the worker dropped it.
+    if (category.kind === 'hidden')
+      continue
     // The subagent-end divider closes one subagent RUN: the worker writes one
     // each time that subagent's registry row reaches a final status.
     // `subagent_ended` is not a non-progress type, so without this guard the

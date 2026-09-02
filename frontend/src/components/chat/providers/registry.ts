@@ -140,6 +140,13 @@ export interface ResultDividerModel {
   isError?: boolean
   /** Optional multi-line detail block shown below the label. Omit (undefined), never empty. */
   detail?: string
+  /**
+   * The run failed but the provider restarts it on its own, so the turn is NOT
+   * over. `isAgentWorking` reads this, which is why the thinking indicator
+   * stays up for the length of an auto-retry backoff instead of going dark on
+   * a divider the turn continues past.
+   */
+  turnContinues?: boolean
 }
 
 /**

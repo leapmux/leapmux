@@ -18,6 +18,7 @@ func TestPiProtocolEventConstants(t *testing.T) {
 	cases := map[string]string{
 		"agent_start":           contracts.PiEventAgentStart,
 		"agent_end":             contracts.PiEventAgentEnd,
+		"agent_settled":         contracts.PiEventAgentSettled,
 		"turn_start":            contracts.PiEventTurnStart,
 		"turn_end":              contracts.PiEventTurnEnd,
 		"message_start":         contracts.PiEventMessageStart,

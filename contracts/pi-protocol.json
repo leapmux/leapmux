@@ -3,6 +3,7 @@
   "events": {
     "AgentStart": "agent_start",
     "AgentEnd": "agent_end",
+    "AgentSettled": "agent_settled",
     "TurnStart": "turn_start",
     "TurnEnd": "turn_end",
     "MessageStart": "message_start",

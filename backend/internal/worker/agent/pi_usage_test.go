@@ -79,21 +79,36 @@ func TestAugmentPiMessageEnd_TotalsAreCumulative(t *testing.T) {
 	assert.InDelta(t, 0.75, p2["total_cost_usd"], 1e-9, "total_cost_usd must be cumulative across message_ends")
 }
 
-// TestPiAugmentRawWithSnapshot_NoOpWhenSnapshotEmpty exercises the
-// fast-path: when the snapshot has no cost and no contextUsage, the
-// helper returns raw without re-marshalling.
-func TestPiAugmentRawWithSnapshot_NoOpWhenSnapshotEmpty(t *testing.T) {
+// TestPiAugmentAgentEnd_NoOpWhenNothingToInject exercises the fast-path:
+// with no cost, no contextUsage and no measured duration, the helper
+// returns raw without re-marshalling.
+func TestPiAugmentAgentEnd_NoOpWhenNothingToInject(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"type":"agent_end","messages":[]}`)
-	out := piAugmentRawWithSnapshot(raw, piUsageSnapshot{})
+	out := piAugmentAgentEnd(raw, piUsageSnapshot{}, nil)
 	assert.Equal(t, string(raw), string(out))
 }
 
-// TestPiAugmentRawWithSnapshot_InjectsBothFields covers the persist path
-// for agent_end. Persisted shape uses snake_case (`total_cost_usd`,
-// `context_usage`) to match the broadcast wire format.
-func TestPiAugmentRawWithSnapshot_InjectsBothFields(t *testing.T) {
+// A measured duration alone is enough to enter the injection path, even
+// when the usage snapshot is empty.
+func TestPiAugmentAgentEnd_InjectsDurationWithEmptySnapshot(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"agent_end","messages":[]}`)
+	durationMs := int64(0)
+	out := piAugmentAgentEnd(raw, piUsageSnapshot{}, &durationMs)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.Equal(t, float64(0), got["duration_ms"], "a real zero must survive as a zero")
+	assert.NotContains(t, got, "total_cost_usd")
+}
+
+// TestPiAugmentAgentEnd_InjectsEveryField covers the persist path for
+// agent_end. Persisted shape uses snake_case (`total_cost_usd`,
+// `context_usage`, `duration_ms`) to match the broadcast wire format.
+func TestPiAugmentAgentEnd_InjectsEveryField(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`{"type":"agent_end","messages":[]}`)
@@ -102,26 +117,28 @@ func TestPiAugmentRawWithSnapshot_InjectsBothFields(t *testing.T) {
 		TotalCostUsd: 0.42,
 		ContextUsage: map[string]any{"input_tokens": int64(100)},
 	}
-	out := piAugmentRawWithSnapshot(raw, snap)
+	durationMs := int64(2500)
+	out := piAugmentAgentEnd(raw, snap, &durationMs)
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(out, &got))
 	assert.Equal(t, "agent_end", got["type"])
 	assert.InDelta(t, 0.42, got["total_cost_usd"], 1e-9)
+	assert.Equal(t, float64(2500), got["duration_ms"])
 	usage, ok := got["context_usage"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, float64(100), usage["input_tokens"])
 }
 
-// TestPiAugmentRawWithSnapshot_MalformedJSONReturnsRawUnchanged: the
-// helper does not panic and returns raw unchanged when the input is not
-// valid JSON.
-func TestPiAugmentRawWithSnapshot_MalformedJSONReturnsRawUnchanged(t *testing.T) {
+// TestPiAugmentAgentEnd_MalformedJSONReturnsRawUnchanged: the helper does
+// not panic and returns raw unchanged when the input is not valid JSON.
+func TestPiAugmentAgentEnd_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`not json`)
 	snap := piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 1}
-	out := piAugmentRawWithSnapshot(raw, snap)
+	durationMs := int64(10)
+	out := piAugmentAgentEnd(raw, snap, &durationMs)
 	assert.Equal(t, string(raw), string(out))
 }
 

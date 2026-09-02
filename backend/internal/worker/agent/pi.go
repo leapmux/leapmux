@@ -38,9 +38,18 @@ type PiAgent struct {
 	workingDir    string
 	sink          OutputSink
 
-	sessionID         string // Pi's runtime sessionId (rotates on new_session)
-	sessionFile       string // Pi's persistent session file path (durable identifier)
-	currentTurnActive bool   // true between agent_start and agent_end
+	sessionID   string // Pi's runtime sessionId (rotates on new_session)
+	sessionFile string // Pi's persistent session file path (durable identifier)
+	// currentTurnActive is true while the turn is open. A run that Pi will
+	// auto-retry (agent_end with willRetry) keeps it true, because Pi restarts
+	// that run itself: Interrupt must still send an abort, and a user message
+	// must still steer rather than queue.
+	currentTurnActive bool
+	// turnStartedAt marks when the turn's FIRST agent_start arrived, so
+	// agent_end can report the turn's wall time. Pi's agent_end carries no
+	// duration of its own. Zero between turns, and zero for a turn whose start
+	// this worker never saw -- the divider then omits the duration.
+	turnStartedAt time.Time
 	// thinkingTokens is the per-phase generated-token estimate driving the
 	// thinking-indicator counter; see thinkingTokenEstimator and thinkingResetSink.
 	thinkingTokens thinkingTokenEstimator
@@ -76,6 +85,19 @@ type PiAgent struct {
 	// the instruction it was given. Dropped with the description on
 	// tool_execution_end, and cleared when the session is replaced.
 	toolCallPrompts pendingPrompts
+
+	// nowFn supplies the clock that times a turn. Production leaves it nil; a
+	// test installs a fixed clock so the reported duration is exact.
+	nowFn func() time.Time
+}
+
+// now reads the agent's clock. The zero value must work, because the tests
+// build a PiAgent as a struct literal and never reach NewPiAgent.
+func (a *PiAgent) now() time.Time {
+	if a.nowFn != nil {
+		return a.nowFn()
+	}
+	return time.Now()
 }
 
 // piResumeArgs builds the `--session` argument that reopens a prior Pi session,
@@ -420,6 +442,11 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	a.applyStateResponse(stateRaw)
 	a.mu.Lock()
 	a.currentTurnActive = false
+	// Drop the turn's start mark with the session. agent_start only takes a mark
+	// when none is held (so a retried run keeps the turn's original start), so a
+	// mark left behind by a turn this clear replaced would make the NEXT turn's
+	// divider report the time since the old turn began.
+	a.turnStartedAt = time.Time{}
 	a.sessionCostUsd = 0
 	a.sessionCostKnown = false
 	a.latestContextUsage = nil

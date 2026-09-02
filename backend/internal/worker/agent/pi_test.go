@@ -750,6 +750,7 @@ func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
 	})
 
 	rig.agent.currentTurnActive = true
+	rig.agent.turnStartedAt = time.Now().Add(-time.Hour)
 	rig.agent.sessionCostUsd = 1.23
 	rig.agent.sessionCostKnown = true
 	rig.agent.latestContextUsage = map[string]any{"input_tokens": int64(100)}
@@ -768,6 +769,9 @@ func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
 	defer rig.agent.mu.Unlock()
 	assert.Equal(t, "/tmp/pi-new.jsonl", rig.agent.sessionFile)
 	assert.False(t, rig.agent.currentTurnActive, "ClearContext clears the turn flag")
+	// agent_start only takes a mark when none is held, so a mark left behind by
+	// the replaced session would inflate the NEXT turn's reported duration.
+	assert.True(t, rig.agent.turnStartedAt.IsZero(), "ClearContext drops the turn's start mark")
 	assert.False(t, rig.agent.sessionCostKnown, "ClearContext resets Pi usage state")
 	assert.Equal(t, 0.0, rig.agent.sessionCostUsd)
 	assert.Nil(t, rig.agent.latestContextUsage)

@@ -110,6 +110,44 @@ describe('isAgentWorking', () => {
     ])).toBe(false)
   })
 
+  describe('a Pi transcript', () => {
+    const pi = (content: Uint8Array) =>
+      makeMessage({ source: MessageSource.AGENT, content, agentProvider: AgentProvider.PI })
+    const agentEnd = (extra: Record<string, unknown> = {}) =>
+      pi(rawContent({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }], ...extra }))
+
+    it('skips a trailing hidden row and stops at the divider before it', () => {
+      // A build before the worker dropped agent_settled persisted it as a row.
+      // It classifies `hidden`, draws nothing, and must not report "working".
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd(),
+        pi(rawContent({ type: 'agent_settled' })),
+      ])).toBe(false)
+    })
+
+    it('still reports working for a visible assistant reply', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        pi(rawContent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })),
+      ])).toBe(true)
+    })
+
+    it('keeps working through a divider for a run Pi will retry', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd({ willRetry: true, messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }] }),
+      ])).toBe(true)
+    })
+
+    it('stops at the divider once Pi will not retry', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd({ messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }] }),
+      ])).toBe(false)
+    })
+  })
+
   it('skips USER message with deliveryError (agent never received it)', () => {
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
@@ -201,13 +239,21 @@ describe('isAgentWorking', () => {
     ])).toBe(true)
   })
 
-  it('does NOT skip Claude system init (other system subtype is real progress)', () => {
-    // A bare assistant followed by a system init only — system init isn't a
-    // notification subtype, so it counts as progress and the agent appears
-    // to be working. Sanity check that the subtype filter isn't too broad.
+  it('does NOT skip a visible system subtype (real progress)', () => {
+    // A system subtype that is neither hidden nor status/api_retry renders as a
+    // notification and counts as progress. Sanity check that the subtype filter
+    // is not too broad.
+    expect(isAgentWorking([
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'compact_boundary' })),
+    ])).toBe(true)
+  })
+
+  it('skips Claude system init, which the transcript hides', () => {
+    // `init` is in Claude's HIDDEN_SYSTEM_SUBTYPES, so the row draws nothing.
+    // A transcript holding only folded-away rows shows no work in progress.
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'system', subtype: 'init', cwd: '/x' })),
-    ])).toBe(true)
+    ])).toBe(false)
   })
 
   it('treats AGENT-source wrapper containing context_cleared as turn boundary', () => {
