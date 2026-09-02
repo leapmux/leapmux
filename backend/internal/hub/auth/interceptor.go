@@ -337,8 +337,10 @@ type InterceptorOptions struct {
 	// the AuthContextRegistry that the constructor returns beside it -- a
 	// request that presents a cookie reaches the store and panics.
 	Store store.Store
-	// SoloUser enables solo mode, in which every request is automatically
-	// authenticated as that user. Nil gives normal multi-user auth.
+	// SoloUser enables solo mode. A request that SoloGate admits is
+	// authenticated as that user with nothing presented; every other request
+	// takes the ordinary bearer and cookie rungs. Nil gives normal
+	// multi-user auth.
 	SoloUser *UserInfo
 	// TokenValidator accepts Authorization: Bearer lmx_... credentials alongside
 	// the cookie path. Nil keeps cookie-only behavior.

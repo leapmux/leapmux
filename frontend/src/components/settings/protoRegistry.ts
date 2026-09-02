@@ -305,6 +305,12 @@ export function buildProtoRows(
       // the rest: a captcha key declares HiddenInSolo AND a per-field
       // dependsOn, so the solo branch alone left every inactive provider's
       // fields on screen. A third rule cannot silently cancel these two.
+      //
+      // There is no mirror for `hiddenInHub`, and none is needed. Both flags
+      // are enforced by the hub, which drops the descriptor from
+      // ListSettings, so neither ever reaches this loop in the deployment it
+      // hides from. This one is a second layer over the solo flag alone; a
+      // third flag does not owe one.
       const hideReasons: (() => boolean)[] = []
       if (desc.hiddenInSolo)
         hideReasons.push(() => isSoloMode())
