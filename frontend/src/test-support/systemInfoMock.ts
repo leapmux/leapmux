@@ -29,6 +29,18 @@ export interface SystemInfoMockState {
   /** Answers `isSystemInfoLoaded`; flip to false to test the fail-closed bootstrap window. */
   loaded: boolean
   soloMode: boolean
+  /**
+   * Answers `isAutoAuthenticated`: whether the hub authenticates THIS
+   * connection with no credentials. Driven directly rather than derived from
+   * `soloMode`, because the two genuinely differ -- a solo hub whose account
+   * holds a password asks its network callers to sign in -- and a test that
+   * states one must be able to state the other.
+   */
+  autoAuthenticated: boolean
+  /** Answers `passwordSetupRequired`: exposed, with no password to sign in with. */
+  passwordSetupRequired: boolean
+  /** Answers `soloPasswordSet`: the solo account holds a usable password. */
+  soloPasswordSet: boolean
   signupEnabled: boolean
   setupRequired: boolean
   emailEnabled: boolean
@@ -57,6 +69,9 @@ export interface SystemInfoMockState {
 const defaultState: SystemInfoMockState = {
   loaded: true,
   soloMode: false,
+  autoAuthenticated: false,
+  passwordSetupRequired: false,
+  soloPasswordSet: false,
   signupEnabled: false,
   setupRequired: false,
   emailEnabled: false,
@@ -78,6 +93,9 @@ export const mockLoadOAuthProviders = vi.fn((): Promise<unknown[]> => Promise.re
 
 export const systemInfoMock = {
   isSoloMode: () => state().soloMode,
+  isAutoAuthenticated: () => state().autoAuthenticated,
+  passwordSetupRequired: () => state().passwordSetupRequired,
+  soloPasswordSet: () => state().soloPasswordSet,
   isSignupEnabled: () => state().signupEnabled,
   isSetupRequired: () => state().setupRequired,
   isEmailEnabled: () => state().emailEnabled,

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
-import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isCaptchaEnabled, isCaptchaUnsolvableHere, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot } from './systemInfo'
+import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, passwordSetupRequired, refreshSnapshot, soloPasswordSet } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
@@ -21,6 +21,9 @@ vi.mock('~/api/platformBridge', () => ({
 function systemInfoResponse(overrides: Record<string, unknown> = {}) {
   return {
     soloMode: false,
+    autoAuthenticated: false,
+    passwordSetupRequired: false,
+    soloPasswordSet: false,
     signupEnabled: false,
     setupRequired: false,
     workerHubUrl: '',
@@ -378,5 +381,52 @@ describe('captchaProviderNeedsSecureContext', () => {
     expect(captchaProviderNeedsSecureContext(CaptchaProvider.TURNSTILE)).toBe(false)
     expect(captchaProviderNeedsSecureContext(CaptchaProvider.RECAPTCHA_V3)).toBe(false)
     expect(captchaProviderNeedsSecureContext(CaptchaProvider.UNSPECIFIED)).toBe(false)
+  })
+})
+
+describe('the solo connection facts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  // Every getter's PRE-LOAD answer is the safest guess, and for these three
+  // that is false: an unloaded app then sends its visitor to the login form
+  // rather than waiting for a session that never arrives, and never blocks
+  // itself with a setup screen it has no answer for.
+  it('reports the multi-user answer for a hub that says nothing', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse())
+    await loadSystemInfo(true)
+
+    expect(isAutoAuthenticated()).toBe(false)
+    expect(passwordSetupRequired()).toBe(false)
+    expect(soloPasswordSet()).toBe(false)
+  })
+
+  // auto_authenticated is per CONNECTION and solo_mode is per hub, so the two
+  // must not be read as synonyms: a solo hub whose account holds a password
+  // asks its network callers to sign in.
+  it('separates the hub fact from the connection fact', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      soloMode: true,
+      autoAuthenticated: false,
+      soloPasswordSet: true,
+    }))
+    await loadSystemInfo(true)
+
+    expect(isSoloMode()).toBe(true)
+    expect(isAutoAuthenticated()).toBe(false)
+    expect(soloPasswordSet()).toBe(true)
+  })
+
+  it('carries the password-setup demand through', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      soloMode: true,
+      autoAuthenticated: true,
+      passwordSetupRequired: true,
+    }))
+    await loadSystemInfo(true)
+
+    expect(passwordSetupRequired()).toBe(true)
+    expect(soloPasswordSet()).toBe(false)
   })
 })

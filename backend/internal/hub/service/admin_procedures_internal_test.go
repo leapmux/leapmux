@@ -69,6 +69,14 @@ var adminProcedureElevation = map[string]struct {
 	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        {adminNeedsElevatedCredential, "returns instance configuration to defaults, which can turn a control off"},
 	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       {adminNeedsElevatedCredential, "returns several settings to defaults in one transaction"},
 
+	// --- AdminNetworkService ---
+	//
+	// A read of derived state. The WRITE that changes which addresses the hub
+	// answers on is AdminSettingsService.UpdateSetting, which is elevated
+	// above; this only reports what that write produced, so demanding a fresh
+	// factor to LOOK would ask for a proof and grant nothing.
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: {adminNeedsNoElevation, "a read; it reports the host's interfaces and which addresses the hub serves on"},
+
 	// --- AdminUserService ---
 	//
 	// The strict session rule covers the verbs that create DURABLE NEW

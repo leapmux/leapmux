@@ -19,6 +19,9 @@ export type CaptchaProvider = GenCaptchaProvider
 // states.
 interface SystemInfoSnapshot {
   soloMode: boolean
+  autoAuthenticated: boolean
+  passwordSetupRequired: boolean
+  soloPasswordSet: boolean
   signupEnabled: boolean
   setupRequired: boolean
   workerHubUrl: string
@@ -36,6 +39,9 @@ interface SystemInfoSnapshot {
 // than flashing an affordance the hub may not support.
 const DEFAULTS: SystemInfoSnapshot = {
   soloMode: false,
+  autoAuthenticated: false,
+  passwordSetupRequired: false,
+  soloPasswordSet: false,
   signupEnabled: false,
   setupRequired: false,
   workerHubUrl: '',
@@ -83,6 +89,9 @@ export async function loadSystemInfo(force = false): Promise<void> {
   const resp = await authClient.getSystemInfo({})
   setSnapshot({
     soloMode: resp.soloMode,
+    autoAuthenticated: resp.autoAuthenticated,
+    passwordSetupRequired: resp.passwordSetupRequired,
+    soloPasswordSet: resp.soloPasswordSet,
     signupEnabled: resp.signupEnabled,
     setupRequired: resp.setupRequired,
     workerHubUrl: resp.workerHubUrl,
@@ -104,6 +113,47 @@ export async function loadSystemInfo(force = false): Promise<void> {
 
 export function isSoloMode(): boolean {
   return current().soloMode
+}
+
+/**
+ * Whether the hub authenticates THIS connection with no credentials.
+ *
+ * Not a synonym for `isSoloMode`, and the two must not be swapped. `isSoloMode`
+ * is a property of the HUB — one account, no sign-up — and decides which
+ * account settings exist at all. This is a property of the CONNECTION, and
+ * decides whether the app falls back to the login form: a solo hub reached over
+ * the desktop app's local socket needs no sign-in, and the same hub reached at
+ * a network address does, once its account holds a password.
+ *
+ * The fabricated default is `false`, which sends an unloaded app to the login
+ * form rather than leaving it waiting for a session that never arrives.
+ */
+export function isAutoAuthenticated(): boolean {
+  return current().autoAuthenticated
+}
+
+/**
+ * Whether the app must block itself with a password-setup screen.
+ *
+ * True only when the hub answers on an address another machine can reach AND
+ * its one account has no password. In that state every affordance the app
+ * offers is offered to whoever reaches the port, so the one useful thing left
+ * is to ask for a password.
+ */
+export function passwordSetupRequired(): boolean {
+  return current().passwordSetupRequired
+}
+
+/**
+ * Whether the solo hub's single account holds a password.
+ *
+ * The Account section's Password row appears on a solo hub only once it does;
+ * before that the Network access panel owns setting the first one, so the two
+ * surfaces never offer the same field at the same time. Always false on a
+ * multi-user hub, where each account answers for itself.
+ */
+export function soloPasswordSet(): boolean {
+  return current().soloPasswordSet
 }
 
 // refreshDedupeWindow limits how often refreshSnapshot may issue a fetch.

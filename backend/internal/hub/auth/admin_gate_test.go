@@ -274,9 +274,8 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	resp, err := client.ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
 	require.NoError(t, err)
 
-	// Solo mode also omits the HiddenInSolo descriptors (captcha,
-	// rate-limits, sign-up, SMTP, and the session and cookie keys carry
-	// no meaning in a single-user hub). The exact set is asserted in
+	// Solo mode also omits the HiddenInSolo descriptors: sign-up, SMTP,
+	// captcha, and the per-user rate limits. The exact set is asserted in
 	// admin_settings_service_test.go; here the point is only that the
 	// solo listing drops them rather than flagging them.
 	for _, d := range resp.Msg.GetDescriptors() {

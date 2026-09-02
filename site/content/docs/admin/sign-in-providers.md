@@ -13,7 +13,7 @@ This chapter is for administrators who run a LeapMux **Hub** and want to offer s
 If you only want to know what the sign-in experience looks like as an end user (the "Sign in with…" buttons, completing a first OAuth sign-up, linking and unlinking accounts), see [Accounts & Authentication](/docs/using/accounts/). This chapter stays on the administrator side: how providers are defined, how callback URLs are derived, and how to troubleshoot setup.
 
 {{< callout type="info" >}}
-OAuth providers only apply to **Hub** deployments (`leapmux hub`, and `leapmux dev`). In **solo mode** every request is auto-authenticated as the local admin, so there is no login screen and providers do nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
+OAuth providers only apply to **Hub** deployments (`leapmux hub`, and `leapmux dev`). **Solo mode** has one account and signs in with a password or with nothing at all, so providers do nothing there. See [Running LeapMux](/docs/admin/running-leapmux/) for the difference between run modes.
 {{< /callout >}}
 
 ## What you can configure

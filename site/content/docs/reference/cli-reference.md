@@ -35,7 +35,7 @@ Any command name can be shortened as far as it stays unambiguous.
 
 | Command | What it does | Reference |
 |---------|--------------|-----------|
-| `solo` | Hub + Worker in one process, loopback only, no login | [Running LeapMux](/docs/admin/running-leapmux/) |
+| `solo` | Hub + Worker in one process, loopback by default, no login until you set a password | [Running LeapMux](/docs/admin/running-leapmux/) |
 | `hub` | Hub service only; Workers connect separately | [Running LeapMux](/docs/admin/running-leapmux/) |
 | `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/admin/managing-workers/) |
 | `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/admin/running-leapmux/) |
@@ -59,7 +59,7 @@ Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are 
 
 ## solo
 
-Run a Hub and a Worker in one process on loopback, with no login (every request is auto-authenticated as the admin). See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) for details.
+Run a Hub and a Worker in one process on loopback. There is no login until the `solo` account has a password; setting one makes every network address ask for it. See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) for details, and [Network access](/docs/admin/configuration/#network-access) for serving more than loopback.
 
 ```bash
 leapmux solo [flags]
@@ -68,7 +68,7 @@ leapmux solo [flags]
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` | TCP listen address |
+| `-listen` | `127.0.0.1:4327` | TCP listen address. Additional addresses are a setting; see [Network access](/docs/admin/configuration/#network-access). |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
 | `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
@@ -82,7 +82,7 @@ leapmux solo [flags]
 | `-version` | — | Print version and exit |
 
 {{< callout type="info" >}}
-Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments.
+Binding solo to a non-loopback address logs a warning, because a fresh solo hub has no password on its one account. Set one (see [Network access](/docs/admin/configuration/#network-access)), or use `hub` or `dev` for a multi-user deployment.
 {{< /callout >}}
 
 {{< callout type="info" >}}

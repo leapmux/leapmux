@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -63,6 +64,17 @@ type AuthServiceDeps struct {
 	Mail      mail.Sender
 	Renderer  mail.Renderer
 	Captcha   CaptchaService // nil reports captcha as disabled
+	// Listen reports the hub's live listeners: the address a browser reaches
+	// it at, and whether any of them is reachable from another machine.
+	//
+	// Nil falls back to Config.Listen for the address and to "no" for the
+	// reach, which is exact everywhere the two cannot differ: extra listen
+	// addresses are hidden_in_hub, so only a solo hub has any.
+	Listen ListenReporter
+	// SoloGate answers whether THIS connection is authenticated without
+	// credentials, and whether the single account holds a password. Nil
+	// outside solo mode.
+	SoloGate *auth.SoloGate
 }
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
@@ -75,6 +87,8 @@ type AuthService struct {
 	mail       mail.Sender
 	renderer   mail.Renderer
 	captcha    CaptchaService
+	listen     ListenReporter
+	soloGate   *auth.SoloGate
 	hasAnyUser atomic.Bool // one-way latch: once true, never re-queried
 
 	// The clock GetCurrentUser reports the elevation deadline against. It
@@ -93,7 +107,18 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 	if captchaSvc == nil {
 		captchaSvc = disabledCaptcha{}
 	}
-	return &AuthService{store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc}
+	// A nil reporter is a hub with no listener set to ask, so it answers from
+	// the address -listen gave; see ConfiguredListen for why that default is
+	// stated once rather than at each read.
+	listen := deps.Listen
+	if listen == nil {
+		configured := ""
+		if deps.Config != nil {
+			configured = deps.Config.Listen
+		}
+		listen = ConfiguredListen{Listen: configured}
+	}
+	return &AuthService{store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
 }
 
 // snap resolves the current settings snapshot for the settings-backed
@@ -128,7 +153,47 @@ func (s *AuthService) emailVerificationRequired(ctx context.Context) bool {
 
 // baseURL derives the hub's public base URL for deep-links.
 func (s *AuthService) baseURL(ctx context.Context) string {
-	return settings.BaseURL(s.snap(ctx), s.cfg.Listen)
+	return settings.BaseURL(s.snap(ctx), s.listenAddr())
+}
+
+// soloPasswordSetupRequired reports whether the app must block itself with a
+// password-setup screen.
+//
+// The condition is EXPOSURE without a credential: the hub answers on an
+// address another machine can reach, and its one account has no password. In
+// that state everything the app offers is offered to whoever reaches the port,
+// and no sign-in stands between them -- so the one useful thing the app can do
+// is ask for a password.
+//
+// A loopback-only hub does NOT trigger it. `leapmux solo` with no -listen, and
+// `leapmux solo -listen 127.0.0.1:5000`, expose nothing, so demanding a
+// password there would be friction with nothing behind it.
+//
+// It takes the gate's two answers rather than reading them again: its one
+// caller reports three solo facts from the same row, and asking a second time
+// costs a second store read on every hub that has no password yet.
+//
+// credentialFree is what carries the MODE, and it must stay in the condition.
+// A gate that is not solo answers false to it, so a multi-user hub with a
+// non-loopback listener reports false here -- where testing `!passwordSet`
+// alone would report TRUE and replace the whole app with the password-setup
+// screen for every visitor to `leapmux hub`.
+func (s *AuthService) soloPasswordSetupRequired(credentialFree, passwordSet bool) bool {
+	if !credentialFree || passwordSet {
+		return false
+	}
+	return listenset.AnyNonLoopback(s.listen.Bound())
+}
+
+// listenAddr is the TCP address a browser reaches this hub at, in the form
+// -listen carries.
+//
+// The REPORTER owns the rule -- the live primary address, and the configured
+// one when nothing is bound -- so this is a plain read. Spelling the fallback
+// here as well is what let the mail links, the OAuth issuer URL, the banner
+// and GetSystemInfo disagree about which address this hub is at.
+func (s *AuthService) listenAddr() string {
+	return s.listen.PrimaryListenAddr()
 }
 
 // checkHasAnyUser returns true if at least one user exists. A one-way latch
@@ -511,40 +576,68 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	// Decide what URL workers should target. Precedence:
 	//   1. An explicit public_url setting wins (admin's canonical external URL,
 	//      typically used when the hub is behind a reverse proxy).
-	//   2. If TCP is disabled (desktop's NoTCP mode), the browser origin is
-	//      `tauri://localhost`, which is unusable; emit the local unix-socket
-	//      / named-pipe address so workers can dial the hub locally.
+	//   2. If -listen gave no TCP address (desktop's NoTCP mode), the browser
+	//      origin is `tauri://localhost`, which is unusable. Such a hub can
+	//      still hold a TCP address the extra_listen_addresses setting added,
+	//      so prefer that one and fall back to the local unix-socket /
+	//      named-pipe address, which workers can always dial locally.
 	//   3. Otherwise leave it empty — the frontend falls back to
 	//      window.location.origin, which already reflects whatever proxy or
 	//      hostname the user connects through.
+	//
+	// Case 2 tests cfg.Listen and NOT the live address. They differ on exactly
+	// the deployment this matters for: a desktop hub that gained an extra
+	// address has a live address, so testing that one dropped the case and
+	// answered "" -- and the frontend's window.location.origin fallback, which
+	// case 3 rests on, is `tauri://localhost` there.
 	var workerHubURL string
 	snap := s.snap(ctx)
 	switch {
 	case settings.KeyPublicURL.Of(snap) != "":
 		workerHubURL = settings.KeyPublicURL.Of(snap)
 	case s.cfg.Listen == "":
-		if u, err := s.cfg.LocalListenURL(); err == nil {
+		if addr := s.listenAddr(); addr != "" {
+			workerHubURL = settings.BaseURL(snap, addr)
+		} else if u, err := s.cfg.LocalListenURL(); err == nil {
 			workerHubURL = u
 		}
 	}
 
+	// ONE store read for the three solo facts, and NONE outside solo mode --
+	// the GATE answers both, so neither is a conjunct here.
+	//
+	// Each fact rests on the same row, and the latch that would make a second
+	// read free is set only once a password exists, so asking through
+	// CredentialFree and PasswordSet separately cost three round trips for one
+	// fact on every page load of a hub that has none. And a gate that is not
+	// solo refuses without reading anything, so a `leapmux hub` no longer looks
+	// up a `solo` row that can never exist.
+	credentialFree, soloPasswordSet := s.soloGate.CredentialFreeAndPasswordSet(ctx)
+
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled:   s.signupEnabled(ctx),
-		SoloMode:        s.cfg.SoloMode,
-		SetupRequired:   setupRequired,
-		Version:         version.Value,
-		CommitHash:      version.CommitHash,
-		CommitTime:      version.CommitTime,
-		BuildTime:       version.BuildTime,
-		Branch:          version.Branch,
-		OauthEnabled:    len(providers) > 0,
-		WorkerHubUrl:    workerHubURL,
-		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
-		PasskeyEnabled:  s.passkeysRunnableForOrigin(ctx, originFromRequest(req)),
-		CaptchaEnabled:  captchaEnabled,
-		AltchaAlgorithm: altchaAlgorithm,
-		CaptchaProvider: captchaProvider,
-		CaptchaSiteKey:  captchaSiteKey,
+		SignupEnabled:  s.signupEnabled(ctx),
+		SoloMode:       s.cfg.SoloMode,
+		SetupRequired:  setupRequired,
+		Version:        version.Value,
+		CommitHash:     version.CommitHash,
+		CommitTime:     version.CommitTime,
+		BuildTime:      version.BuildTime,
+		Branch:         version.Branch,
+		OauthEnabled:   len(providers) > 0,
+		WorkerHubUrl:   workerHubURL,
+		EmailEnabled:   settings.KeySMTP.Of(snap).Enabled(),
+		PasskeyEnabled: s.passkeysRunnableForOrigin(ctx, originFromRequest(req)),
+		CaptchaEnabled: captchaEnabled,
+		// The three solo facts. Each is FALSE outside solo mode, where a
+		// multi-user hub authenticates every caller and each account answers
+		// for its own password -- and the gate says so itself, so no mode test
+		// appears here.
+		AutoAuthenticated:     credentialFree,
+		PasswordSetupRequired: s.soloPasswordSetupRequired(credentialFree, soloPasswordSet),
+		SoloPasswordSet:       soloPasswordSet,
+		AltchaAlgorithm:       altchaAlgorithm,
+		CaptchaProvider:       captchaProvider,
+		CaptchaSiteKey:        captchaSiteKey,
 	}), nil
 }
 

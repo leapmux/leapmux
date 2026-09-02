@@ -95,12 +95,16 @@ The CLI refuses four mistakes:
 
 ## Rate limits
 
-The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys. Two operations are catalogued, and a typo answers with the known names before the CLI dials the hub:
+The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys. Four operations are catalogued, and a typo answers with the known names before the CLI dials the hub:
 
 | Operation | Limits | Keyed by |
 |---|---|---|
 | `elevation` | Failed attempts to verify your identity for a sensitive change. | The user. Hidden in solo mode, which has one. |
+| `email_change` | Requests to change an account email that reach the mail machinery. | The user. Hidden in solo mode, which refuses email changes. |
+| `login_anonymous` | Failed passwords at the sign-in form. | The client address. Enforced in solo mode too, which puts no captcha in front of sign-in. |
 | `oauth_anonymous` | The authorization server's anonymous endpoints — `/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons. | The client address. Enforced in solo mode too, because those endpoints are served there. |
+
+The two address-keyed budgets count the address the Hub itself sees, never a forwarded header, because a header is caller-controlled. A Hub behind a reverse proxy therefore sees the proxy for every client and shares one budget across all of them: ten failed sign-ins from anywhere pause sign-in for everybody behind that proxy. Raise `login_anonymous`, or limit sign-in at the proxy, which knows the real client address.
 
 ```bash
 leapmux control admin rate-limit list
@@ -112,7 +116,7 @@ leapmux control admin rate-limit reset   --operation elevation
 
 | Flag | Applies to | Meaning |
 | --- | --- | --- |
-| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known values: `elevation`, `oauth_anonymous`. |
+| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known values: `elevation`, `email_change`, `login_anonymous`, `oauth_anonymous`. |
 | `--max-attempts` | `set` | Failed attempts allowed per window (1–1000). |
 | `--window` | `set` | Window length in seconds (60–86400). |
 

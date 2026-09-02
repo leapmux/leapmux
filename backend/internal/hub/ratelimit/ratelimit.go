@@ -18,6 +18,7 @@ import (
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/windowed"
@@ -104,7 +105,7 @@ const (
 	// The budget is deliberately generous: a device-code client polls every
 	// five seconds for up to ten minutes, which is 120 requests for ONE
 	// authorization, and several clients legitimately share one address. What
-	// it stops is the unbounded case -- a script minting device grants or
+	// it stops is the runaway case -- a script minting device grants or
 	// registrations as fast as the hub answers.
 	//
 	// It counts ADMITTED REQUESTS in a fixed window (allowWindowed), not
@@ -119,6 +120,37 @@ const (
 	// like any other -- which is exactly why its settings key stays visible
 	// there.
 	OpOAuthAnonymous Operation = "oauth_anonymous"
+
+	// OpLoginAnonymous limits password guesses at AuthService.Login, keyed by
+	// CLIENT ADDRESS because a caller that has not signed in yet has no user
+	// to key on -- and the username it gives is the thing being guessed.
+	//
+	// Login is protected by CAPTCHA on a multi-user hub, and by nothing at all
+	// on a solo one: captcha is off there by construction. That was harmless
+	// while a solo hub answered only on loopback and asked nobody for a
+	// password. It stops being harmless the moment such a hub holds a password
+	// and publishes an address, which is exactly what the network-access
+	// setting exists to do.
+	//
+	// So it is ENFORCED IN EVERY MODE, and keyed by address in every mode. The
+	// per-user stand-down that exempts solo reasons about the thing counted
+	// ("one user, so no per-user abuse surface"); this counts addresses, and a
+	// hub that publishes an address serves anonymous ones like any other.
+	//
+	// It counts FAILURES, unlike OpOAuthAnonymous, and the difference is that
+	// a wrong password IS a guess at a secret: an attacker learns something
+	// from each attempt, so each attempt must cost. A success clears the
+	// window, so a person who mistypes twice and then signs in is not held
+	// against their next sign-in.
+	//
+	// The address is the one the hub itself sees, never a forwarded header;
+	// clientAddressKey states why. So a hub behind a reverse proxy shares ONE
+	// budget across every client behind it, and ten failures from anywhere
+	// pause sign-in for all of them. That is the cost of counting only what
+	// the hub can verify, and the operator's answer is the budget key an
+	// administrator can raise, or a sign-in limit in the proxy, which knows
+	// the real client address. The admin-cli chapter says so.
+	OpLoginAnonymous Operation = "login_anonymous"
 )
 
 // Limits is one operation's effective budget.
@@ -171,6 +203,18 @@ type opSpec struct {
 	// reached the thing the budget guards (nil always counts -- a success
 	// proceeded). It is required when countsProceededRequests is set.
 	proceedsToBudget func(error) bool
+	// keyByAddress budgets the caller's ADDRESS rather than its user.
+	//
+	// It is for the operations an UNAUTHENTICATED caller drives, where there
+	// is no user to key on. Such an operation also skips the two stand-downs
+	// budgetKeyFor applies below it: "no user in the context" is its normal
+	// state rather than a reason to admit, and the solo stand-down reasons
+	// about per-user abuse, which an address budget is not.
+	//
+	// It sits here rather than on the procedure because it describes the
+	// BUDGET's key space: two procedures routed to one operation that
+	// disagreed about it would pour user IDs and addresses into one window.
+	keyByAddress bool
 	// hiddenInSolo drops the operation's settings key from ListSettings on a
 	// solo hub, and it is a PER-OPERATION answer rather than a property of
 	// rate limiting.
@@ -235,6 +279,29 @@ var defaults = map[Operation]opSpec{
 		// A solo hub authorizes apps like any other -- the solo rung yields to
 		// a presented bearer -- and these endpoints are anonymous there too.
 		hiddenInSolo: false,
+	},
+	OpLoginAnonymous: {
+		// Ten failures in fifteen minutes. A person who has forgotten which
+		// password they chose gets several tries and a pause; a script gets
+		// forty guesses an hour against one address, which no password worth
+		// the name yields to.
+		limits: Limits{MaxAttempts: 10, WindowSeconds: 900},
+		// Login answers Unauthenticated for a wrong password and for nothing
+		// else -- an unknown user gets the same reply, deliberately, so the
+		// form cannot be used to learn which names exist. Every other failure
+		// it can produce (a captcha refusal, an unreachable store) carries a
+		// different code and must not consume the window.
+		isCredentialFailure: func(err error) bool {
+			return connect.CodeOf(err) == connect.CodeUnauthenticated
+		},
+		// Keyed by address, so it stays administrable on a solo hub -- which
+		// is the deployment that has no captcha in front of Login.
+		hiddenInSolo: false,
+		// The BUDGET is an address, not a person, and that is a property of
+		// this operation rather than of the one procedure routed to it: two
+		// procedures on one operation that disagreed about the key space would
+		// pour user IDs and addresses into the same window.
+		keyByAddress: true,
 	},
 }
 
@@ -363,6 +430,9 @@ var procedureOperations = map[string]procedureSpec{
 	// budget from OpEmailChange, which counts every admitted request. See
 	// that operation's catalogue entry for why failures would not do.
 	leapmuxv1connect.UserServiceRequestEmailChangeProcedure: {op: OpEmailChange},
+	// The one UNAUTHENTICATED procedure with a secret to guess. Keyed by
+	// address, counted on failure, cleared on success; see OpLoginAnonymous.
+	leapmuxv1connect.AuthServiceLoginProcedure: {op: OpLoginAnonymous, provesCredential: true},
 }
 
 // effectiveLimit is the resolved per-operation policy.
@@ -379,9 +449,8 @@ type effectiveLimit struct {
 // exposure both ways — an attacker cannot inherit a lockout, and a victim
 // is never locked out for longer than one window.
 type Manager struct {
-	set  *settings.Manager
-	solo bool
-	now  func() time.Time
+	set *settings.Manager
+	now func() time.Time
 
 	windowMu sync.Mutex // guards windows and inFlight
 	windows  windowed.Windows[windowKey]
@@ -403,14 +472,18 @@ type windowKey struct {
 var errHandlerPanicked = errors.New("handler panicked")
 
 // NewManager creates a rate-limit manager over the shared settings
-// snapshot (its TTL is the admin-CLI propagation limit). Solo mode stands
-// down every PER-USER budget: it is a local single-user deployment whose
-// only "attacker" is the local user. The one ADDRESS-keyed budget
-// (OpOAuthAnonymous) still enforces there; see its catalogue entry.
-func NewManager(set *settings.Manager, soloMode bool) *Manager {
+// snapshot (its TTL is the admin-CLI propagation limit).
+//
+// It takes no mode. The per-user stand-down reads the CALLER -- the identity
+// the solo rung admitted, which is one account reached with no credential to
+// guess -- and not the hub it runs on. A solo hub that holds a password signs
+// its network callers in with ordinary sessions, and those sessions guess a
+// password at ElevateSession like anybody else, so a stand-down keyed on the
+// mode left every per-user budget at nothing for exactly that deployment.
+// budgetKeyFor states the whole rule.
+func NewManager(set *settings.Manager) *Manager {
 	return &Manager{
 		set:      set,
-		solo:     soloMode,
 		now:      time.Now,
 		inFlight: make(map[windowKey]int64),
 	}
@@ -542,7 +615,7 @@ func (m *Manager) allowWindowed(ctx context.Context, op Operation, userID string
 		return false, w.ResetAt.Sub(now), nil
 	}
 	w := m.windows.Anchor(key, now, time.Duration(limit.limits.WindowSeconds)*time.Second)
-	// Count names no policy: for a windowed operation it counts admitted
+	// Count states no policy: for a windowed operation it counts admitted
 	// requests, which is the quantity this budget limits.
 	w.Count++
 	return true, 0, nil
@@ -632,16 +705,12 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			if !ok {
 				return next(ctx, req)
 			}
-			user := auth.GetUser(ctx)
-			if user == nil {
+			budgetKey, ok := budgetKeyFor(ctx, m, spec)
+			if !ok {
 				return next(ctx, req)
 			}
-			if m.solo {
-				return next(ctx, req)
-			}
-			userID := user.ID.String()
 
-			att, allowed, retryAfter, err := m.allow(ctx, spec, userID)
+			att, allowed, retryAfter, err := m.allow(ctx, spec, budgetKey)
 			if err != nil {
 				// Config unreachable: fail closed for safety, same as the
 				// captcha interceptor — but with an honest code, so
@@ -675,6 +744,40 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			return resp, handlerErr
 		}
 	}
+}
+
+// budgetKeyFor picks the budget an operation counts against, and reports
+// whether this request is counted at all.
+//
+// TWO shapes, and the branch is the operation's own declaration rather than a
+// property of the request, so a procedure cannot fall into the wrong one by
+// accident:
+//
+//   - An ADDRESS-keyed operation always counts. Its callers are
+//     unauthenticated by definition, so an absent user is its normal state,
+//     and its budget limits an address rather than a person -- which a solo
+//     hub needs exactly as much as any other, because it publishes addresses
+//     too.
+//   - A USER-keyed operation stands down for an unauthenticated call (auth
+//     produces the error) and for the CALLER the solo rung admitted, which is
+//     the one identity with no per-user abuse surface: one account, reached
+//     with no credential to guess.
+//
+// The solo stand-down reads the CALLER and not the hub's mode, which is the
+// same correction rejectSoloElevation carries. A solo hub that holds a
+// password signs its network callers in with an ordinary session, and those
+// callers can guess a password at ElevateSession like anybody else -- keying
+// on the mode left every user budget at nothing for exactly the deployment
+// this feature creates.
+func budgetKeyFor(ctx context.Context, m *Manager, spec procedureSpec) (string, bool) {
+	if defaults[spec.op].keyByAddress {
+		return AddressBudgetKey(peer.RemoteHost(ctx)), true
+	}
+	user := auth.GetUser(ctx)
+	if user == nil || user.SoloAuthenticated() {
+		return "", false
+	}
+	return user.ID.String(), true
 }
 
 // formatWindow renders a retry window in whole seconds, minimum one.

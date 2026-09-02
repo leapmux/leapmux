@@ -731,11 +731,21 @@ func storedElevationDeadline(ctx context.Context, st store.Store, sessionID, api
 	return auth.NewElevation(provenAt, expiresAt).Deadline(now)
 }
 
-// rejectSoloElevation refuses the elevation surface in solo mode, which
-// authenticates every request as the synthetic solo user and has no session
-// row to stamp.
-func rejectSoloElevation(solo bool) error {
-	return rejectSolo(solo, "session elevation")
+// rejectSoloElevation refuses the elevation surface for a caller the SOLO RUNG
+// authenticated: it carries the synthetic solo user, which holds no session
+// row to stamp and needs none, because requireElevation exempts it outright.
+//
+// It reads the CALLER and not the hub's mode, and the difference is the whole
+// point. A solo hub that holds a password authenticates a TCP caller with an
+// ordinary session, which has a row, must present a factor like any other, and
+// therefore must be able to prove one -- otherwise the person who set that
+// password could never write a hub setting from the browser they set it in.
+//
+// Keying on cfg.SoloMode instead refused exactly that caller, and the refusal
+// was invisible: the frontend prompts for a step-up, the hub answers "not
+// available in solo mode", and the prompt has nowhere to go.
+func rejectSoloElevation(userInfo *auth.UserInfo) error {
+	return rejectSolo(userInfo.SoloAuthenticated(), "session elevation")
 }
 
 // accountElevatesOnlyThroughAProvider reports whether the account holds
@@ -912,18 +922,20 @@ func (s *UserService) grantElevation(ctx context.Context, userInfo *auth.UserInf
 // elevationCaller runs the three checks every elevation RPC opens with, in
 // the one order that is correct, and returns the acting user and session.
 //
-// A helper rather than four copies, because the ORDER is the rule: it refuses
-// solo mode first (solo mode authenticates every request as the synthetic
-// solo user and has no session row to stamp), then resolves the credential,
-// then requires a credential that can carry an elevation. A fifth handler
-// that forgets the solo check would otherwise stamp an elevation against a
-// user with no row.
+// A helper rather than four copies, because the ORDER is the rule: it resolves
+// the caller, refuses one the solo rung authenticated (which holds no session
+// row to stamp), then requires a credential that can carry an elevation. A
+// fifth handler that forgets the solo check would otherwise stamp an elevation
+// against a user with no row.
+//
+// The solo test now needs the CALLER, so it runs second rather than first; see
+// rejectSoloElevation for why the hub's mode is the wrong question.
 func (s *UserService) elevationCaller(ctx context.Context) (*auth.UserInfo, string, error) {
-	if err := rejectSoloElevation(s.cfg.SoloMode); err != nil {
-		return nil, "", err
-	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
+		return nil, "", err
+	}
+	if err := rejectSoloElevation(userInfo); err != nil {
 		return nil, "", err
 	}
 	sessionID, err := requireElevatableSession(userInfo)
@@ -964,6 +976,16 @@ func (s *UserService) ElevateSession(ctx context.Context, req *connect.Request[l
 
 // BeginPasskeyElevation starts the step-up assertion.
 func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyElevationRequest]) (*connect.Response[leapmuxv1.BeginPasskeyElevationResponse], error) {
+	// The PASSKEY factor is refused by mode, unlike the elevation surface
+	// around it. rejectSoloElevation reads the caller, because a solo hub with
+	// a password has real sessions to elevate -- but no account there can ever
+	// hold a passkey, and GetSystemInfo reports passkey_enabled false for
+	// every origin. Without this a signed-in solo caller reached the WebAuthn
+	// engine and was answered "no passkeys registered", which reads as a
+	// missing credential rather than a feature the hub does not offer.
+	if err := rejectSoloPasskeyManagement(s.cfg.SoloMode); err != nil {
+		return nil, err
+	}
 	userInfo, _, err := s.elevationCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -990,6 +1012,10 @@ func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Re
 // window. It reports elevation_expires_at, the same field the password path
 // reports, so a client has one success path.
 func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyElevationRequest]) (*connect.Response[leapmuxv1.FinishPasskeyElevationResponse], error) {
+	// Refused by mode, for the reason BeginPasskeyElevation states.
+	if err := rejectSoloPasskeyManagement(s.cfg.SoloMode); err != nil {
+		return nil, err
+	}
 	userInfo, actingSessionID, err := s.elevationCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -1060,11 +1086,11 @@ func mapElevationAssertionError(ctx context.Context, userID string, err error) e
 // credential could not perform -- so a user whose laptop credential file was
 // exposed could end its authority only by revoking the whole credential.
 func (s *UserService) DropElevation(ctx context.Context, _ *connect.Request[leapmuxv1.DropElevationRequest]) (*connect.Response[leapmuxv1.DropElevationResponse], error) {
-	if err := rejectSoloElevation(s.cfg.SoloMode); err != nil {
-		return nil, err
-	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := rejectSoloElevation(userInfo); err != nil {
 		return nil, err
 	}
 	sessionID, apiTokenID, ok := userInfo.Credential.ElevatableRow()

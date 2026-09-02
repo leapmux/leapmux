@@ -84,6 +84,17 @@ message SettingDescriptor {
   repeated SettingField fields = 6;
   // True when the hub applies a change only after restart (hub scope only).
   bool restart = 7;
+  // The mirror of hidden_in_solo: omitted in every deployment that is NOT
+  // solo, which is `leapmux hub` and `leapmux dev` alike. It carries the
+  // keys only a single-user local hub administers -- the extra listen
+  // addresses, which a multi-user hub configures with -listen and a
+  // reverse proxy instead.
+  //
+  // Like hidden_in_solo, the hub OMITS the descriptor rather than sending
+  // it flagged, so a client never has to decide. The field exists on the
+  // wire for the same reason its sibling does: a reader of one descriptor
+  // can tell why a key is absent elsewhere.
+  bool hidden_in_hub = 8;
 }
 
 // SettingValue reports one setting's stored state. value_json is always

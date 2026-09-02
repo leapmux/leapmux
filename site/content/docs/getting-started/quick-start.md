@@ -8,7 +8,7 @@ weight: 4
 This chapter gets you from zero to a working coding agent in a few minutes. Pick one of two launch paths, then follow the walkthrough to open your first agent, send a message, and open a terminal beside it.
 
 {{< callout type="info" >}}
-Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
+Both paths run LeapMux in **solo mode** — a Hub and a Worker running together in a single local process, with no login at first and your data kept on your machine. This is the fastest way to try LeapMux. For multi-user or remote setups, see [Running LeapMux](/docs/admin/running-leapmux/) and [Managing Workers](/docs/admin/managing-workers/).
 {{< /callout >}}
 
 ## Before you begin
@@ -45,7 +45,7 @@ This runs a Hub and a Worker in one process, listening on loopback only at **`12
 http://127.0.0.1:4327
 ```
 
-No login is required — solo mode auto-authenticates every request as the admin.
+No login is required — solo mode's single account starts with no password, so the Hub authenticates every request as the admin. Give that account a password to reach the same Hub from another machine; see [Network access](/docs/admin/configuration/#network-access).
 
 A few useful flags (full reference in [Configuration](/docs/admin/configuration/) and [CLI Reference](/docs/reference/cli-reference/)):
 
@@ -57,7 +57,7 @@ A few useful flags (full reference in [Configuration](/docs/admin/configuration/
 | `-config` | Path to the config file | `~/.config/leapmux/solo/solo.yaml` |
 
 {{< callout type="warning" >}}
-Solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/admin/security/).
+While the `solo` account has no password, solo mode trusts every request as the admin. If you change `-listen` to a non-loopback address in that state, anyone who can reach that port has full admin access without credentials. For how to expose solo mode safely, see [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 {{< callout >}}

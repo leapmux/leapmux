@@ -155,11 +155,26 @@ Defaults differ by mode:
 | ------ | -------------------- | ------------------------------------------------------- |
 | `hub`  | `:4327`              | All interfaces; real authentication required.           |
 | `dev`  | `:4327`              | All interfaces.                                         |
-| `solo` | `127.0.0.1:4327`     | Loopback only; every request is auto-authenticated as admin. |
+| `solo` | `127.0.0.1:4327`     | Loopback only; no sign-in until the `solo` account has a password. |
+
+`listen` is a command-line option and nothing else — no setting changes it. Solo mode adds **more** addresses beside it through [Network access](#network-access) below.
 
 {{< callout type="warning" >}}
-In solo mode every request is auto-authenticated as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials, and the Hub logs a warning to that effect. Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication.
+While the `solo` account has no password, every request is authenticated as the administrator without credentials. If you bind solo mode to a non-loopback address in that state, anyone who can reach the port has full admin access, and the Hub logs a warning to that effect. Set a password — the app asks for one before anything else while such an address is served — and restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 {{< /callout >}}
+
+### Network access
+
+Solo mode serves additional addresses beside the one `-listen` gives it. Open **Preferences → Administration → Network access**, pick an interface and a port for each address you want, and apply. The Hub binds them straight away and binds them again on every later start; they are stored in the Hub's database as the `extra_listen_addresses` setting, so `leapmux control admin settings` reaches them too.
+
+Two things follow from adding one:
+
+- **Every network address then asks for a sign-in as `solo`**, `127.0.0.1` included. The panel asks you to set that password before it will publish an address. The desktop app's local socket is the only transport that never asks. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the rule in full.
+- **Overlapping addresses merge.** Ask for every interface on the port `-listen` already uses and the Hub serves one socket rather than two: `-listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. The panel says so, and lists what is serving with the reason for each entry.
+
+An address that cannot be bound — a VPN that is down, a port another program holds — does not stop the Hub. It stays configured, the rest are served, and the panel reports the operating system's own reason beside it.
+
+The section is solo-only. `leapmux hub` and `leapmux dev` already bind every interface by default and already authenticate every caller, so they configure their address with `-listen` and a reverse proxy instead.
 
 ### Local IPC listen (`local_listen`)
 
@@ -233,13 +248,14 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 | Omitted in solo | Because |
 | --- | --- |
 | `signup_enabled` | Solo has no sign-up. |
-| `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
 | `smtp` | Solo has no sign-up and no outbound mail. |
-| `captcha.*` | Solo has no sign-up, no sign-in, and no other captcha-protected surface. |
+| `captcha.*` | Solo runs no captcha. Its sign-in form is guarded by `rate_limit.login_anonymous`, which stays. |
 | `rate_limit.elevation`, `rate_limit.email_change` | Keyed by USER, and solo has one; solo also refuses email changes outright. |
 | `mail_limits` | Solo sends no mail: no relay, no recipient to cap. |
 
-`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.oauth_anonymous` stays too, and for the reason the omissions above give: it is keyed by client ADDRESS on endpoints a solo Hub also serves. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
+`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
+
+The rest stay because a solo Hub whose account holds a password serves a real sign-in. `session_duration_seconds` and `secure_cookies` govern the session and the cookie that sign-in issues, so a Hub published behind a TLS proxy sets `secure_cookies` there like any other. `rate_limit.login_anonymous` and `rate_limit.oauth_anonymous` are keyed by client ADDRESS on surfaces a solo Hub also serves, and because solo runs no captcha, `login_anonymous` is the only thing that limits guesses at the sign-in form.
 
 See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and account-recovery flows, and [Sign-in Providers](/docs/admin/sign-in-providers/) for OAuth/OIDC.
 
@@ -262,7 +278,7 @@ leapmux control admin rate-limit list
 
 With no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `elevation` — failed attempts to verify your identity for a sensitive account change, see [Session elevation](/docs/admin/security/#session-elevation) — is limited to 5 failed attempts per 15 minutes per user. Two more caps guard the relay: `email_change` limits the requests to change an account email that reach the mail machinery (6 per 15 minutes per user — each one drove a mint and an SMTP attempt, a loop otherwise pays no captcha and guesses no secret, while the elevation prompt and validation refusals that precede the work cost nothing), and `mail_limits` caps how often the Hub mails one recipient address (10 per hour by default) plus how long a **failed** send blocks the next verification or recovery mail (10 seconds by default, and never more than the 60-second resend cooldown — one failed send must not block longer than a successful one). The per-recipient budget counts delivered mail: a send the relay refuses spends nothing. It folds plus-tagged addresses (`victim+1@`, `victim+2@`) onto the one inbox they share on every provider that honors tags, so a provider that treats `+` as a literal local-part character shares one budget between mailboxes that differ only in the tag.
 
-A second limit, `oauth_anonymous`, caps the authorization server's anonymous endpoints (`/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons) per client address; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce `oauth_anonymous`. ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
+Two more limits are keyed by client address rather than by user. `login_anonymous` caps failed passwords at the sign-in form (10 per 15 minutes), and a success clears the window, so a person who mistypes twice and then signs in pays nothing. `oauth_anonymous` caps the authorization server's anonymous endpoints (`/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons) at 600 per 10 minutes; see [App Authorization](/docs/admin/app-authorization/). Solo mode enforces no captcha and no per-user limit, but it does enforce both of these. A Hub behind a reverse proxy sees the proxy's address for every client and shares one budget across all of them — see [Rate limits](/docs/admin/admin-cli/#rate-limits). ALTCHA runs only where a browser can solve it and somebody other than you can reach the Hub — see **When ALTCHA runs** below.
 
 Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an administrator fills a provider in, then switches to it.
 

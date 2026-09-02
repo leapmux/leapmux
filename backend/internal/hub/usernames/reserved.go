@@ -16,8 +16,9 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 )
 
-// Solo is the reserved username for the single passwordless user auto-created
-// and auto-authenticated in solo mode.
+// Solo is the reserved username for the single user solo mode auto-creates.
+// That account starts with no password and is authenticated with none until it
+// has one; auth.SoloGate states the whole rule.
 const Solo = contracts.UsernameSolo
 
 // Admin is the conventional username for the first administrator. Reserved in
@@ -31,9 +32,9 @@ func normalize(u string) string {
 
 // IsReservedSystem reports whether a username is reserved in every creation
 // path (public signup, setup signup, OAuth signup, CLI user-create). Covers
-// Solo: the hub would auto-authenticate a user by that name in a non-solo
-// database for every request, if an operator later opened the same data-dir in
-// solo mode (see auth/interceptor.go).
+// Solo: an operator who later opens the same data-dir in solo mode hands that
+// account the administrator, either with no credentials at all or against the
+// password its creator chose (see auth/solo_gate.go).
 func IsReservedSystem(u string) bool {
 	return contracts.UsernamesSystemReserved[normalize(u)]
 }
@@ -41,9 +42,9 @@ func IsReservedSystem(u string) bool {
 // IsReservedForSignup reports whether a sign-up may not claim a username.
 //
 // setupMode says whether this sign-up creates the hub's FIRST account. The hub
-// refuses Solo in every mode: it would auto-authenticate a user by that name in
-// a non-solo database for every request, if an operator later opened the same
-// data-dir in solo mode (see auth/interceptor.go). Admin is squat-protected in
+// refuses Solo in every mode, for the reason IsReservedSystem gives: an
+// operator who later opens the same data-dir in solo mode hands that account
+// the administrator. Admin is squat-protected in
 // anonymous public signup and claimable by the first administrator, so the
 // setup flows accept it.
 //

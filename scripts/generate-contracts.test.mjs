@@ -20,6 +20,7 @@ import {
   bufDescriptor,
   checkDesktop,
   checkHeaders,
+  checkListen,
   checkProviderProtocol,
   checkProviders,
   checkRetry,
@@ -38,6 +39,7 @@ import {
   DESKTOP_TS_BEHAVIOR_NAMES,
   emitGoDesktop,
   emitGoHeaders,
+  emitGoListen,
   emitGoRetry,
   emitGoSessionInfo,
   emitGoValidate,
@@ -45,6 +47,7 @@ import {
   emitRsDesktop,
   emitTsDesktop,
   emitTsHeaders,
+  emitTsListen,
   emitTsProviders,
   emitTsRetry,
   emitTsSessionInfo,
@@ -58,6 +61,7 @@ import {
   RETRY_GO_NAMES,
   RETRY_TS_NAMES,
   SESSION_INFO_TABLES,
+  usernameConstName,
   WIRE_GO_NAMES,
   WIRE_TS_NAMES,
 } from './generate-contracts.mjs'
@@ -458,6 +462,83 @@ describe('checkTabNames', () => {
   })
 })
 
+describe('checkListen', () => {
+  const ok = () => ({
+    _readme: 'x',
+    anyHost: '*',
+    maxExtraAddresses: 8,
+    addressSources: { listen: 'a', extra: 'b', merged: 'c' },
+  })
+
+  it('accepts the shipped shape', () => {
+    expect(checkListen(ok())).toEqual({})
+  })
+
+  // listenset.Parse compares the wildcard token BEFORE it tries netip or falls
+  // through to a host name, so a sentinel spelled like a host would shadow it.
+  it('rejects an anyHost spelled like a host', () => {
+    expectContractError(() => checkListen({ ...ok(), anyHost: '0.0.0.0' }), 'is spelled like a host')
+    expectContractError(() => checkListen({ ...ok(), anyHost: '::' }), 'is spelled like a host')
+    expectContractError(() => checkListen({ ...ok(), anyHost: 'any' }), 'is spelled like a host')
+    expectContractError(() => checkListen({ ...ok(), anyHost: 'fe80::1%en0' }), 'is spelled like a host')
+  })
+
+  it('rejects a cap that is not a positive integer', () => {
+    expectContractError(() => checkListen({ ...ok(), maxExtraAddresses: 0 }), 'integer >= 1')
+    expectContractError(() => checkListen({ ...ok(), maxExtraAddresses: 2.5 }), 'integer >= 1')
+  })
+
+  // A token with no name-table entry emits NOTHING, silently, so one side
+  // would compile against a constant the other never received.
+  it('rejects a source token no name table renders', () => {
+    expectContractError(
+      () => checkListen({ ...ok(), addressSources: { ...ok().addressSources, proxied: 'd' } }),
+      'has no LISTEN_SOURCE_GO_NAMES entry',
+    )
+  })
+
+  it('rejects a name-table entry with no token', () => {
+    expectContractError(
+      () => checkListen({ ...ok(), addressSources: { listen: 'a', extra: 'b' } }),
+      'matches no addressSources key',
+    )
+  })
+})
+
+describe('emitGoListen and emitTsListen', () => {
+  const l = {
+    _readme: 'x',
+    anyHost: '*',
+    maxExtraAddresses: 8,
+    addressSources: { listen: 'a', extra: 'b', merged: 'c' },
+  }
+
+  it('emits the cap and the wildcard on both sides', () => {
+    const go = emitGoListen(l)
+    expect(go).toContain('ListenAnyHost = "*"')
+    expect(go).toContain('MaxExtraListenAddresses = 8')
+    expect(go).toContain('AddressSourceMerged = "merged"')
+
+    const ts = emitTsListen(l)
+    expect(ts).toContain('export const LISTEN_ANY_HOST = "*" as const')
+    expect(ts).toContain('export const MAX_EXTRA_LISTEN_ADDRESSES = 8')
+    expect(ts).toContain('export const ADDRESS_SOURCE_MERGED = "merged" as const')
+  })
+
+  it('is deterministic', () => {
+    expect(emitGoListen(l)).toBe(emitGoListen(l))
+    expect(emitTsListen(l)).toBe(emitTsListen(l))
+  })
+})
+
+describe('usernameConstName', () => {
+  // The schema admits a hyphen and no language admits one in an identifier.
+  it('folds a hyphen the identifier cannot carry', () => {
+    expect(usernameConstName('solo')).toBe('USERNAME_SOLO')
+    expect(usernameConstName('read-only')).toBe('USERNAME_READ_ONLY')
+  })
+})
+
 describe('generate', () => {
   it('emits the shipped domains from the real contracts dir', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
@@ -465,6 +546,7 @@ describe('generate', () => {
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/desktop.go',
       'backend/generated/contracts/headers.go',
+      'backend/generated/contracts/listen.go',
       'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
       'backend/generated/contracts/retry.go',
@@ -480,6 +562,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/desktop.ts',
       'frontend/src/generated/contracts/headers.ts',
+      'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
       'frontend/src/generated/contracts/providers.ts',
       'frontend/src/generated/contracts/retry.ts',

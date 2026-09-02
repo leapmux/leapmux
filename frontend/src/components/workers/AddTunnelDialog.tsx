@@ -6,7 +6,7 @@ import { Dialog } from '~/components/common/Dialog'
 import { Spinner } from '~/components/common/Spinner'
 import { useTunnel } from '~/context/TunnelContext'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
-import { isLoopbackAddress, normalizeBindAddr } from '~/lib/ipAddress'
+import { isLoopbackAddress, isValidPort, normalizeBindAddr } from '~/lib/ipAddress'
 import { errorText } from '~/styles/shared.css'
 import * as styles from './AddTunnelDialog.css'
 
@@ -14,19 +14,6 @@ interface AddTunnelDialogProps {
   workerId: string
   onClose: () => void
   onCreated: (tunnel: TunnelInfo) => void
-}
-
-// Ports are typed as free text (`inputMode="numeric"` is a keyboard hint, not
-// validation), so this must reject every non-decimal spelling Number() would happily
-// convert: "0x50" -> 80, "1e3" -> 1000, "80.0" -> 80, "+80" -> 80. Accepting those
-// silently creates a tunnel on a port the user never typed, and the sidecar's range
-// check cannot catch it because the substituted port is in range.
-function isValidPort(value: string): boolean {
-  const s = value.trim()
-  if (!/^\d{1,5}$/.test(s))
-    return false
-  const n = Number(s)
-  return n >= 1 && n <= 65535
 }
 
 export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {

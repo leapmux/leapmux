@@ -9,6 +9,7 @@ import { AccountProfile } from '../account/AccountProfile'
 import { AppRegistrations } from '../account/AppRegistrations'
 import { KeybindingsControl } from './KeybindingsControl'
 import { KeyPinsControl } from './KeyPinsControl'
+import { NetworkAccessControl } from './NetworkAccessControl'
 import { SyntaxThemeControl } from './SyntaxThemeControl'
 import { TerminalThemeControl } from './TerminalThemeControl'
 import { ThemeControl } from './ThemeControl'
@@ -23,6 +24,15 @@ import { ThemeControl } from './ThemeControl'
  * is a second place a new editable field must reach.
  */
 const HubWideAppRegistrations: Component = () => <AppRegistrations variant="hub-wide" />
+
+/**
+ * The ACCOUNT-side registrations panel, wrapped for the same reason its
+ * hub-wide twin is: AppRegistrations states one optional prop, and a
+ * whole-setting editor is handed the row's binding, which that prop type has
+ * nothing in common with. The wrapper drops the binding this editor does not
+ * read, rather than widening the panel's own props to accept it.
+ */
+const AccountAppRegistrations: Component = () => <AppRegistrations />
 
 /**
  * The bespoke whole-setting editors a `{ kind: 'custom' }` control dispatches
@@ -62,7 +72,7 @@ export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
    * an in-flight authorization code, so this row DOES demand an elevated
    * session, unlike its neighbour above.
    */
-  accountAppRegistrations: AppRegistrations,
+  accountAppRegistrations: AccountAppRegistrations,
   /**
    * The ADMINISTRATION-side registrations panel — the hub's own catalogue,
    * registering HUB_WIDE. Reachable only through the row PreferencesDialog
@@ -70,6 +80,12 @@ export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
    */
   hubWideAppRegistrations: HubWideAppRegistrations,
   keyPins: KeyPinsControl,
+  /**
+   * Which addresses this hub answers on, and the password that guards them.
+   * Solo only -- the hub omits the descriptor elsewhere (hidden_in_hub), so
+   * this entry is unreachable on a multi-user hub.
+   */
+  networkAccess: NetworkAccessControl,
   /**
    * The palette drop-down and the light/dark tri-switch, as one control.
    * `theme` is one key holding `{name, mode}`, so one row carries one scope

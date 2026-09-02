@@ -86,10 +86,15 @@ function accountDescriptor(
     // `Map<string, SettingValue>`, which the typed account tier does not
     // keep, while the declaration's `hiddenWhen` reads the parsed signal
     // directly and is exact. `usersettings` declares no `DependsOn` today.
-    // `HiddenInSolo` IS honored, because it needs no value at all.
+    // BOTH deployment flags ARE honored, because neither needs a value. They
+    // are honored HERE and nowhere else: ListUserSettings sends every account
+    // descriptor unfiltered, unlike ListSettings, which drops a hub-scope
+    // descriptor its own deployment hides. So this join is the account scope's
+    // one enforcement point, and half of it would hide half the rows.
     hidden: hideWhenAny(
       decl.hidden,
       found.hiddenInSolo ? () => isSoloMode() : undefined,
+      found.hiddenInHub ? () => !isSoloMode() : undefined,
       preferenceRule(decl.hiddenWhen, prefs),
     ),
   }
@@ -157,6 +162,7 @@ interface WireField {
   field: SettingField
   category: string
   hiddenInSolo: boolean
+  hiddenInHub: boolean
   restart: boolean
 }
 
@@ -184,6 +190,7 @@ function indexWireFields(descriptors: readonly ProtoSettingDescriptor[]): WireFi
         field,
         category: desc.category,
         hiddenInSolo: desc.hiddenInSolo,
+        hiddenInHub: desc.hiddenInHub,
         restart: desc.restart,
       })
     }

@@ -21,7 +21,7 @@ export function normalizeBindAddr(value: string): string {
 }
 
 /** Parses a dotted-quad exactly as Go's net.ParseIP does, or null. */
-function parseIPv4(v: string): number[] | null {
+export function parseIPv4(v: string): number[] | null {
   const parts = v.split('.')
   if (parts.length !== 4)
     return null
@@ -43,8 +43,12 @@ function parseIPv4(v: string): number[] | null {
 /**
  * Parses an IPv6 literal to its 16 bytes, or null. Handles `::` compression and a
  * trailing embedded IPv4 (`::ffff:127.0.0.1`).
+ *
+ * A ZONE (`fe80::1%en0`) is not accepted here and must be stripped by the
+ * caller: it selects an interface rather than naming a different address, and
+ * Go's net.ParseIP rejects it too.
  */
-function parseIPv6(v: string): number[] | null {
+export function parseIPv6(v: string): number[] | null {
   if (!v.includes(':'))
     return null
   // A stray leading/trailing colon is only legal as part of "::". Without this the
@@ -114,6 +118,27 @@ function parseIPv6(v: string): number[] | null {
   if (fill < 1)
     return null
   return [...head, ...Array.from<number>({ length: fill }).fill(0), ...rest, ...tail]
+}
+
+/**
+ * Whether a port string is one a client can connect to.
+ *
+ * Ports are typed as free text (`inputMode="numeric"` is a keyboard hint, not
+ * validation), so this must reject every non-decimal spelling `Number()` would
+ * happily convert: "0x50" -> 80, "1e3" -> 1000, "80.0" -> 80, "+80" -> 80.
+ * Accepting those silently binds a port the user never typed, and a range
+ * check downstream cannot catch it because the substituted port is in range.
+ *
+ * It lives here because two surfaces ask -- the tunnel dialog and the network
+ * access panel -- and a second copy of the rule is a second place the
+ * documented edge cases can drift.
+ */
+export function isValidPort(value: string): boolean {
+  const s = value.trim()
+  if (!/^\d{1,5}$/.test(s))
+    return false
+  const n = Number(s)
+  return n >= 1 && n <= 65535
 }
 
 /**

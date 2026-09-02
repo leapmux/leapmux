@@ -18,7 +18,7 @@ import { themeStore } from '~/lib/themeStore'
  * the governed mode pills, and it seeds both halves when the user picks a
  * palette of their own instead.
  */
-export const TerminalThemeControl: Component<Record<string, never>> = () => {
+export const TerminalThemeControl: Component = () => {
   const preferences = usePreferences()
   const binding = useTerminalThemeChooser()
   return (

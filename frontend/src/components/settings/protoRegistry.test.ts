@@ -532,6 +532,7 @@ describe('buildProtoRows', () => {
       'captcha': true,
       'rate-limits': true,
       'limits': true,
+      'network': true,
     }
     for (const id of Object.keys(declared) as CategoryId[])
       expect(CATEGORY_IDS.has(id), `category "${id}" has no nav group`).toBe(true)

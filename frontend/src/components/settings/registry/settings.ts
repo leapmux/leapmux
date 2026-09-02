@@ -10,7 +10,7 @@ import {
 } from '~/generated/contracts/desktop'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
-import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
+import { isDesktopApp, isSoloMode, soloPasswordSet } from '~/lib/systemInfo'
 import { themeLabel, THEMES } from '~/styles/themes'
 import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar } from './bindings'
 import { requestTerminalOsNotifications } from './terminalNotifications'
@@ -663,7 +663,18 @@ export const browserSettings: BrowserSettingDecl[] = [
     control: { kind: 'custom', id: 'accountPassword' },
     sentinel: 'nullable',
     needsElevation: true,
-    hidden: () => isSoloMode(),
+    /*
+     * The ONE account row a solo hub keeps, and only once its account holds a
+     * password. Its four neighbours stay hidden either way, because solo
+     * refuses the RPCs behind them; ChangePassword is reachable there, because
+     * the password is what lets the hub answer on a network address at all.
+     *
+     * Before the first password, Administration → Network access owns setting
+     * it -- beside the addresses it guards, which is the decision it belongs
+     * to. Reading the same `soloPasswordSet()` that panel reads is what keeps
+     * the two from offering the field at the same time.
+     */
+    hidden: () => isSoloMode() && !soloPasswordSet(),
     bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {

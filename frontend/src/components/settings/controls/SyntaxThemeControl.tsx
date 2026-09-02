@@ -14,7 +14,7 @@ import { themeStore } from '~/lib/themeStore'
  * re-highlights, which is why it defaults to following the app and why the
  * empty state's single picker does not offer it.
  */
-export const SyntaxThemeControl: Component<Record<string, never>> = () => {
+export const SyntaxThemeControl: Component = () => {
   const preferences = usePreferences()
   const binding = useSyntaxThemeChooser()
   return (

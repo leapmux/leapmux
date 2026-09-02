@@ -435,49 +435,76 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 	sort.Strings(omitted)
 
 	assert.Equal(t, []string{
-		// No captcha to solve, and no second user to rate-limit. The
-		// mail-abuse limits are inert for the same reason: no mail.
+		// Solo runs no captcha, whatever it serves: the sign-in form a
+		// password-holding solo hub shows is guarded by the address-keyed
+		// rate_limit.login_anonymous instead, which stays listed. No second
+		// user means no per-user budget, and the mail-abuse limits are inert
+		// for the same reason as smtp: no mail.
 		"captcha.altcha", "captcha.enabled", "captcha.recaptcha_v3",
 		"captcha.selected", "captcha.turnstile", "mail_limits",
 		"rate_limit.elevation", "rate_limit.email_change",
-		// No cookie and no session exist on the synthetic-user path.
-		"secure_cookies", "session_duration_seconds",
 		"signup_enabled",
 		// Both senders are unreachable: solo refuses sign-up and email
 		// change, and the solo user can never hold a verified address.
 		"smtp",
 	}, omitted)
 
-	// Solo must list nothing that hub mode does not, so the filter can
-	// only ever subtract.
+	// The mirror. HiddenInHub is what makes this a second list rather than
+	// an empty one: the filter subtracts in BOTH directions now, so "solo
+	// lists nothing hub does not" stopped being true the moment a key existed
+	// that only a single-user local hub administers.
+	//
+	// Stated as an exact list for the same reason the one above is: a key
+	// that quietly stops appearing in one deployment is the failure this test
+	// exists to catch, and a subset assertion would not see it.
+	soloOnly := []string{}
 	for key := range solo {
-		assert.Truef(t, hub[key], "solo lists %s, which hub mode does not", key)
+		if !hub[key] {
+			soloOnly = append(soloOnly, key)
+		}
 	}
+	sort.Strings(soloOnly)
+
+	assert.Equal(t, []string{
+		// `leapmux hub` and `leapmux dev` already bind every interface and
+		// already authenticate every caller, so extra addresses would only
+		// offer them a way to break a working deployment. -listen and a
+		// reverse proxy are how a multi-user hub is published.
+		"extra_listen_addresses",
+	}, soloOnly)
 }
 
 // The section-level outcome the hiding exists to produce. Categories are
 // what the dialog renders as sections, and a section disappears only when
-// its every key hides -- so `general` is the case that proves hiding is
-// per key: public_url stays live in solo (the banner URL, and
-// worker_hub_url for a remote worker dialing a LAN or Tailscale address),
-// so that section survives although its two siblings hide.
+// its every key hides.
 //
-// `rate-limits` is the second such case, and it arrived when the answer stopped
-// being uniform. Elevation is keyed by USER and solo has one, so that key
-// hides; the anonymous authorization-server limit is keyed by client ADDRESS on
-// endpoints solo also serves, so it stays. A blanket rule for the section would
-// take it out of the preferences dialog AND out of `leapmux control admin
-// settings`, which is the whole reach an operator has.
+// `general` survives WHOLE in solo. public_url is the banner URL and the
+// worker_hub_url a remote worker dials; the other two are read by the sign-in
+// a solo hub serves once its account holds a password -- the session's
+// lifetime, and whether its cookie carries the __Host- prefix.
+//
+// `rate-limits` is the case that proves hiding is per KEY, and it arrived when
+// the answer stopped being uniform. Elevation is keyed by USER and solo has
+// one, so that key hides; the two anonymous limits are keyed by client ADDRESS
+// on surfaces solo also serves, so they stay. A blanket rule for the section
+// would take them out of the preferences dialog AND out of `leapmux control
+// admin settings`, which is the whole reach an operator has.
 func TestAdminSettingsService_SoloSectionsGeneralSurvivesWithPublicURL(t *testing.T) {
 	solo := listedKeysByCategory(t, &config.Config{SoloMode: true})
 
-	assert.Equal(t, []string{settings.KeyPublicURL.Name()}, solo["general"],
-		"public_url must stay administrable in solo")
+	assert.Equal(t, []string{
+		settings.KeyPublicURL.Name(),
+		settings.KeySecureCookies.Name(),
+		settings.KeySessionDurationSeconds.Name(),
+	}, solo["general"], "every general key must stay administrable in solo")
 	assert.Empty(t, solo["signup"], "the sign-up section must vanish in solo")
 	assert.Empty(t, solo["email"], "the email section must vanish in solo")
 	assert.Empty(t, solo["captcha"], "the bot-protection section must vanish in solo")
-	assert.Equal(t, []string{ratelimit.SettingKeyPrefix + string(ratelimit.OpOAuthAnonymous)}, solo["rate-limits"],
-		"solo keeps the address-keyed anonymous limit and drops the per-user one")
+	assert.Equal(t, []string{
+		ratelimit.SettingKeyPrefix + string(ratelimit.OpLoginAnonymous),
+		ratelimit.SettingKeyPrefix + string(ratelimit.OpOAuthAnonymous),
+	}, solo["rate-limits"],
+		"solo keeps the two address-keyed limits and drops the per-user ones")
 
 	// The sections that solo keeps whole. Without this, hiding every
 	// remaining key would still satisfy the assertions above.
@@ -661,6 +688,38 @@ func TestAdminSettingsService_SoloRefusesWritingAHiddenKey(t *testing.T) {
 	// A key solo DOES read stays writable.
 	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
 		Key: settings.KeyPublicURL.Name(), PartialJson: `"https://hub.example.com"`,
+	}, env.token))
+	require.NoError(t, err)
+}
+
+// A solo hub whose account holds a password signs its network callers in with
+// an ordinary session and an ordinary cookie: Login reads
+// session_duration_seconds for the lifetime, and every cookie it writes reads
+// secure_cookies for the __Host- prefix and the Secure attribute. Both keys
+// therefore have to be administrable there.
+//
+// Hiding them left a hub published behind a TLS proxy with no way to ask for a
+// secure cookie -- not from the dialog, and not from the admin CLI either,
+// because one predicate filters the listing and the write alike.
+func TestAdminSettingsService_SoloAdministersWhatItsSignInReads(t *testing.T) {
+	env := setupAdminSettingsTest(t, &config.Config{SoloMode: true})
+	ctx := context.Background()
+
+	listed := flattenKeys(listedKeysByCategory(t, &config.Config{SoloMode: true}))
+	for _, key := range []string{
+		settings.KeySecureCookies.Name(),
+		settings.KeySessionDurationSeconds.Name(),
+	} {
+		assert.True(t, listed[key], "a solo sign-in reads %s, so the operator must see it", key)
+	}
+
+	_, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+		Key: settings.KeySecureCookies.Name(), PartialJson: "true",
+	}, env.token))
+	require.NoError(t, err, "a hub published behind TLS must be able to ask for a secure cookie")
+
+	_, err = env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
+		Key: settings.KeySessionDurationSeconds.Name(), PartialJson: "3600",
 	}, env.token))
 	require.NoError(t, err)
 }

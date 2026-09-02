@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"time"
 
 	"connectrpc.com/connect"
@@ -30,7 +32,6 @@ type UserService struct {
 	mail      mail.Sender
 	renderer  mail.Renderer
 	keystore  *keystore.Keystore
-
 	// The clock every instant on the elevation path comes from: the grant,
 	// the predicate, the slide, and the first-credential freshness rule.
 	clockSeam
@@ -340,10 +341,14 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	}), nil
 }
 
+// ChangePassword sets or replaces the caller's password.
+//
+// It is REACHABLE IN SOLO MODE, unlike the account verbs around it, and that
+// is the feature: the solo account's password is what lets the hub answer on a
+// network address at all, so a hub that refused this could never be published.
+// The other solo refusals stay -- there is still no sign-up, no passkey, no
+// account recovery and no provider link.
 func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
-	if err := rejectSolo(s.cfg.SoloMode, "password changes"); err != nil {
-		return nil, err
-	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -402,7 +407,65 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
+	resp := connect.NewResponse(&leapmuxv1.ChangePasswordResponse{})
+	// A failure here is LOGGED, never returned. The password committed in the
+	// transaction above, and on a solo hub that write is what starts demanding
+	// one -- so answering with an error tells the caller to retry a change that
+	// already happened, and the retry meets the rule the change armed. The page
+	// would sit in a loop no attempt could leave. Without the cookie the caller
+	// signs in with the password it just chose, which is the ordinary route and
+	// not a trap.
+	if err := s.handOverSoloSession(ctx, userInfo, resp.Header()); err != nil {
+		slog.Error("the solo caller that set the first password could not be handed a session; it must sign in with that password",
+			"error", err)
+	}
+	return resp, nil
+}
+
+// handOverSoloSession gives a credential-free solo caller a real session,
+// because the write it just made is what ended its credential-free access.
+//
+// A solo hub authenticates a TCP caller with nothing while the account holds
+// no password. Storing the first password re-arms the rule against the very
+// browser that stored it: without this, the response returns 200 and the next
+// request from that page is Unauthenticated -- the user is signed out of the
+// form they are standing in, having done nothing wrong.
+//
+// It runs only for a caller the solo rung admitted (SoloAuthenticated), so an
+// ordinary session that changed its password is untouched, and it is a no-op
+// outside solo mode.
+//
+// The session is ELEVATED, deliberately. This caller held unauthenticated full
+// administrator access one request ago, so the grant cannot widen what it can
+// do; refusing it would only ask the user to present, as a step-up proof, the
+// secret they chose in the request before.
+//
+// Its error is a PLAIN one, not a connect error, because its caller logs it
+// rather than answering with it: this runs after the password committed.
+func (s *UserService) handOverSoloSession(ctx context.Context, userInfo *auth.UserInfo, h http.Header) error {
+	if !userInfo.SoloAuthenticated() {
+		return nil
+	}
+	// NOTHING tells the gate. The password committed above, and the gate reads
+	// the store while its latch is false, so the rule is armed for every caller
+	// from here on -- see SoloGate.passwordSet for why the store is its only
+	// source.
+
+	// ONE snapshot for the duration and the cookie attributes. Two reads can
+	// straddle the manager's TTL and see different generations, which would
+	// stamp a lifetime from one configuration and a Secure flag from another.
+	snap := s.set.Snapshot(ctx)
+
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, userInfo.ID, settings.SessionDuration(snap))
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	if _, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now()); err != nil {
+		return fmt.Errorf("elevate session: %w", err)
+	}
+	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt,
+		settings.KeySecureCookies.Of(snap)).String())
+	return nil
 }
 
 func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.UnlinkOAuthProviderRequest]) (*connect.Response[leapmuxv1.UnlinkOAuthProviderResponse], error) {

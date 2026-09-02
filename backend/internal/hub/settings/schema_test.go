@@ -23,6 +23,7 @@ var knownCustomEditors = map[string]bool{
 	"terminalTheme": true,
 	"syntaxTheme":   true,
 	"theme":         true,
+	"networkAccess": true,
 }
 
 // allDescriptors gathers BOTH descriptor sets the settings surface
@@ -116,6 +117,12 @@ func TestSchemaMatchesValueTypes(t *testing.T) {
 			require.NotEmpty(t, ui.Category, "category is required")
 			require.NotEmpty(t, ui.Title, "title is required")
 			require.NotEmpty(t, ui.Fields, "a descriptor with no fields cannot be edited")
+			// ListSettings drops a hidden key entirely, in the dialog AND in
+			// `leapmux control admin settings`. A key hidden in solo and in hub
+			// is therefore administrable nowhere, which no declaration can
+			// mean on purpose.
+			require.False(t, ui.HiddenInSolo && ui.HiddenInHub,
+				"hidden in solo AND in hub leaves the key administrable in no deployment")
 
 			typ := reflect.TypeOf(desc.Default())
 			if typ == nil {
@@ -336,6 +343,7 @@ func TestCategoriesAreKnown(t *testing.T) {
 		// instance scope
 		"general": true, "signup": true, "email": true, "captcha": true,
 		"rate-limits": true, "limits": true, "advanced": true, "apps": true,
+		"network": true,
 		// user scope
 		"appearance": true, "notifications": true, "shortcuts": true,
 		"desktop": true,

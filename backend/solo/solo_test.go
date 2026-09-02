@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -72,36 +73,37 @@ func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
 	assert.Empty(t, custom.ExtraFlags, "an explicit empty list is not 'unset'")
 }
 
-func TestListenIsNonLoopback(t *testing.T) {
+// The warning asks the HUB whether it is exposed, so it covers every address
+// the hub bound and not only the one -listen gave.
+//
+// Which addresses count as exposed is listenset.Addr.IsLoopback's rule, and
+// TestIsLoopback pins it there; what this pins is the decision built on top of
+// it. The NoTCP case is the one that changed: a desktop hub binds no TCP
+// address of its own and used to be exempt outright, but it can gain one from
+// the extra_listen_addresses setting, and that address exposes the hub exactly
+// as much as a -listen one would.
+func TestShouldWarnNonLoopback(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		listen string
-		want   bool
+	for _, tc := range []struct {
+		name    string
+		cfg     Config
+		exposed bool
+		want    bool
 	}{
-		// Empty / missing host → all interfaces → warn.
-		{"", true},
-		{":4327", true},
-		// Wildcard binds → warn.
-		{"0.0.0.0:4327", true},
-		{"[::]:4327", true},
-		// Loopback → no warn.
-		{"127.0.0.1:4327", false},
-		{"127.0.0.5:4327", false}, // entire 127.0.0.0/8 is loopback
-		{"[::1]:4327", false},
-		{"localhost:4327", false},
-		// Non-loopback IPs → warn.
-		{"192.168.1.10:4327", true},
-		{"100.64.1.2:4327", true}, // Tailscale CGNAT range
-		{"10.0.0.5:4327", true},
-		// Unparseable / hostname-only → warn (conservative).
-		{"garbage", true},
-		{"hostonly:4327", true},
-	}
-	for _, tc := range cases {
-		got := listenIsNonLoopback(tc.listen)
-		if got != tc.want {
-			t.Errorf("listenIsNonLoopback(%q) = %v, want %v", tc.listen, got, tc.want)
-		}
+		{"solo on loopback stays quiet", Config{}, false, false},
+		{"solo on an exposed address warns", Config{}, true, true},
+		// Dev mode authenticates with a real password from the start, so
+		// there is no credential-free state to warn about.
+		{"dev mode is exempt however it binds", Config{DevMode: true}, true, false},
+		// A desktop hub starts with no TCP address, and the setting can give
+		// it one. The warning follows the sockets, not the flag.
+		{"a desktop hub that gained an address warns", Config{NoTCP: true}, true, true},
+		{"a desktop hub with only its socket stays quiet", Config{NoTCP: true}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, shouldWarnNonLoopback(tc.cfg, tc.exposed))
+		})
 	}
 }
 
@@ -450,7 +452,7 @@ func serveUntilKilled(t *testing.T, d *testDeps, serveErr error) (kill func()) {
 		case <-killed:
 		default:
 			// ctx is hubCtx: once it is cancelled somebody legitimately asked the
-			// Hub to stop (Stop, or a failure arm's join), which ends Serve just as
+			// Hub to stop (Stop, or a failure path's join), which ends Serve just as
 			// kill() would. Only a Serve that returned while nobody had asked means
 			// the Hub was never really up.
 			//
@@ -483,9 +485,9 @@ func serveUntilKilled(t *testing.T, d *testDeps, serveErr error) (kill func()) {
 // and -- since none of these tests are parallel -- it can still be running when
 // the next test re-stubs them. Under -race that surfaces as a data race on the
 // globals, masking whatever regression was actually being diagnosed. So even the
-// two diagnostic arms below join before failing.
+// two diagnostic cases below join before failing.
 //
-// Those arms are diagnostics, not assertions: done closing first means Start ran
+// Those cases are diagnostics, not assertions: done closing first means Start ran
 // the REAL bring-up (the seam is not wired), and the budget expiring means Start
 // never got there at all. Both would otherwise present as a test that hangs until
 // the package deadline.
@@ -543,7 +545,7 @@ func startFailureEnv(t *testing.T) Config {
 }
 
 // soloStartEnv builds that environment for either mode. devMode is where the
-// deferral arm lives: dev uses real password auth rather than solo's injected
+// deferral case lives: dev uses real password auth rather than solo's injected
 // soloUser, so on a fresh install there is no admin for the Worker to register
 // under until somebody completes /setup.
 func soloStartEnv(t *testing.T, devMode bool) Config {
@@ -581,7 +583,7 @@ func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
 	assert.True(t, strings.HasPrefix(err.Error(), "hub serve exited "),
-		"the Serve arm must attribute the failure and name the stage that saw it, "+
+		"the Serve case must attribute the failure and state the stage that saw it, "+
 			"not merely mention it; got: "+err.Error())
 }
 
@@ -608,7 +610,7 @@ func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
 		"the failure Start returns must not also be logged; captured:\n"+out)
 }
 
-// The watcher's OTHER arm: a Hub that dies after Start has handed off. The
+// The watcher's OTHER case: a Hub that dies after Start has handed off. The
 // watcher must run the ordered teardown so the Worker is not left looping
 // against a dead endpoint -- and must still say nothing, because Wait and Stop
 // both hand the error to a caller that waitSolo documents as its single
@@ -682,13 +684,13 @@ func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
 // startupFailure is the ONE predicate Start asks at every stage boundary, so an
 // exited Hub outranks whatever that stage happened to observe. The property
 // under test is TOTALITY: once hubDone is closed it never returns nil. The
-// readiness select leans on that -- its hubDone arm carries no error of its own
+// readiness select leans on that -- its hubDone case carries no error of its own
 // -- so a hole here silently turns a dead Hub back into a healthy Instance.
 //
 // This is also where the readiness race is pinned. The race itself cannot be
 // forced end-to-end: nothing observable sits between the Hub goroutine's start
 // and the select, so no test can guarantee hubDone is closed AT the select
-// without a sleep. The fix does not win that race, it makes the arm choice
+// without a sleep. The fix does not win that race, it makes the case choice
 // irrelevant -- which is a local property, testable exactly here.
 func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 	t.Parallel()
@@ -738,8 +740,8 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 		},
 		{
 			// Totality: no error of its own, no cancelled caller, and it STILL must
-			// not return nil. This is the case the empty select arm depends on.
-			name: "an exited hub with no error of its own names the stage",
+			// not return nil. This is the case the empty select branch depends on.
+			name: "an exited hub with no error of its own states the stage",
 			inst: &Instance{hubDone: closedChan()},
 			ctx:  context.Background(),
 			want: "hub serve exited while the worker was starting",
@@ -944,7 +946,7 @@ func TestHubServe_ACancelDuringItsOwnStartupIsACleanExit(t *testing.T) {
 	}
 }
 
-// The deferral arm, which had no coverage at all before the bring-up seam
+// The deferral case, which had no coverage at all before the bring-up seam
 // existed: in dev mode a missing admin is what /setup is for, so the launch must
 // SUCCEED and leave a poller behind rather than fail.
 func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.T) {
@@ -955,7 +957,7 @@ func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.
 	// assertion below hold no matter what Stop did. It also keeps the Hub's own
 	// startup out of the result -- with bring-up stubbed, Start returns fast
 	// enough that Stop's cancel can land inside SeedCursor and surface as a SQLite
-	// "interrupted", a race that has nothing to do with the arm under test.
+	// "interrupted", a race that has nothing to do with the case under test.
 	wantStopErr := errors.New("lease release failed")
 	serveUntilKilled(t, d, wantStopErr)
 	// Re-entrant: the poller calls this again on every tick.
@@ -985,7 +987,7 @@ func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.
 	require.NoError(t, err, "a missing admin defers the Worker; it does not fail the launch; captured:\n"+out)
 	require.NotNil(t, inst)
 	assert.Contains(t, out, "deferring worker auto-registration",
-		"the deferral is the user-visible half of this arm; captured:\n"+out)
+		"the deferral is the user-visible half of this case; captured:\n"+out)
 	assert.Equal(t, int32(1), bringUps.Load(),
 		"the launch itself attempts bring-up exactly once; the retries are the poller's")
 
@@ -997,7 +999,7 @@ func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.
 		"Stop must hand back exactly the Hub's terminal error")
 }
 
-// The gate sits BEFORE the switch, so it covers the deferral arm too. Without
+// The gate sits BEFORE the switch, so it covers the deferral case too. Without
 // that placement a dev-mode launch whose Hub died during bring-up would return a
 // healthy Instance AND leave a poller ticking every 2s against a Hub that is
 // already gone.
@@ -1011,7 +1013,7 @@ func TestSoloStart_DoesNotDeferWorkerSetupOntoAHubThatDied(t *testing.T) {
 	d.stubWorkerBringUp(func(ctx context.Context) error {
 		close(entered)
 		<-ctx.Done()
-		// The arm that would defer, if the gate let it get that far.
+		// The case that would defer, if the gate let it get that far.
 		return errNoAdminYet
 	})
 
@@ -1199,7 +1201,7 @@ func TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied(t *testing.T
 }
 
 // The over-reach guard on the gate above, and the first coverage of the switch's
-// default arm: with the Hub still serving, a bring-up failure is still the
+// default case: with the Hub still serving, a bring-up failure is still the
 // Worker's, reported with the Worker's attribution.
 func TestSoloStart_AWorkerBringUpFailureIsStillTheWorkers(t *testing.T) {
 	d := newTestDeps()
@@ -1210,7 +1212,7 @@ func TestSoloStart_AWorkerBringUpFailureIsStillTheWorkers(t *testing.T) {
 		{"a generic failure", errors.New("generate composite keypair: no entropy")},
 		// Outside dev mode there is nothing to defer to: no /setup flow will ever
 		// create the admin this is waiting for, so it must fail the launch rather
-		// than fall into the deferral arm.
+		// than fall into the deferral case.
 		{"no admin user outside dev mode", store.ErrNotFound},
 	}
 	for _, tt := range tests {
@@ -1294,4 +1296,50 @@ func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.
 		"a worker that drained promptly must not be reported as failing to; "+
 			"WaitBounded only logs that line on timer.C, so its absence is the "+
 			"proof the hub stopped on the drain signal rather than the backstop")
+}
+
+// TestSoloStart_TheLocalWorkerDialsTheIPCSocket pins the property that keeps
+// the bundled Worker connected once the account holds a password.
+//
+// The solo hub authenticates a caller with no credentials only over the LOCAL
+// IPC socket, or while the account has no password (auth.SoloGate states the
+// rule). The Worker is a caller like any other, so if it dialled a TCP address
+// it would be signed out the moment an operator set that password -- and the
+// whole product would stop working in solo mode at exactly the step the
+// network-access feature asks the operator to take.
+//
+// It dials the IPC URL instead, which never asks. (It also presents an lmx_
+// bearer, which the solo rung yields to; this pins the transport, because that
+// is the half a listener change could break.)
+func TestSoloStart_TheLocalWorkerDialsTheIPCSocket(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	d := newTestDeps()
+	kill := serveUntilKilled(t, d, nil)
+	t.Cleanup(kill)
+
+	dialled := make(chan string, 1)
+	d.bringUpWorker = func(_ context.Context, p workerBringUp) error {
+		select {
+		case dialled <- p.listenURL:
+		default:
+		}
+		return nil
+	}
+
+	inst, err := start(context.Background(), cfg, d.deps)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = inst.Stop() })
+
+	var url string
+	select {
+	case url = <-dialled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the local worker never reported the address it dials")
+	}
+
+	require.NotEmpty(t, url)
+	assert.True(t, locallisten.IsLocal(url),
+		"the bundled Worker must dial the local IPC socket, not a TCP address: %q", url)
+	assert.Equal(t, inst.LocalListenURL(), url,
+		"and it must be the same socket the Hub reports, not a second one")
 }

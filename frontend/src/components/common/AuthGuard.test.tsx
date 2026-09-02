@@ -25,9 +25,13 @@ vi.mock('~/context/AuthContext', () => ({
 }))
 
 const mockIsSoloMode = vi.fn<() => boolean>(() => false)
+const mockIsAutoAuthenticated = vi.fn<() => boolean>(() => false)
+const mockPasswordSetupRequired = vi.fn<() => boolean>(() => false)
 
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
+  isAutoAuthenticated: () => mockIsAutoAuthenticated(),
+  passwordSetupRequired: () => mockPasswordSetupRequired(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
 }))
@@ -71,6 +75,8 @@ function renderGuard(options: { path?: string } = {}) {
 describe('authGuard', () => {
   beforeEach(() => {
     mockIsSoloMode.mockReturnValue(false)
+    mockIsAutoAuthenticated.mockReturnValue(false)
+    mockPasswordSetupRequired.mockReturnValue(false)
     mockBootstrapError.mockReturnValue(null)
     mockRetryBootstrap.mockClear()
   })
@@ -84,6 +90,61 @@ describe('authGuard', () => {
 
     expect(screen.getByText('Protected Content')).toBeInTheDocument()
     expect(navigations).toEqual([])
+  })
+
+  // The gate branch sits BEFORE the authenticated one, and that order is the
+  // whole point: the visitor this screen exists for IS authenticated -- the hub
+  // let them in with no credentials, which is the problem. Ordering the branch
+  // after `isAuthenticated()` would render the app to exactly that visitor, and
+  // PasswordSetupGate's own tests would all still pass, because the component
+  // is never the thing that breaks.
+  it('replaces the app with the password-setup gate for a credential-free visitor', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
+    mockPasswordSetupRequired.mockReturnValue(true)
+
+    const { navigations } = renderGuard()
+
+    expect(screen.getByTestId('password-setup-gate')).toBeInTheDocument()
+    expect(screen.queryByText('Protected Content')).not.toBeInTheDocument()
+    // A blocking screen, not a redirect: there is nowhere to send them.
+    expect(navigations).toEqual([])
+  })
+
+  // BOTH conditions are required. A visitor who signed in reached this hub over
+  // a credentialed connection, so the exposure the gate exists for is already
+  // closed for them -- and the gate would demand a password that the account
+  // already has.
+  it('leaves a signed-in visitor alone even while the hub reports setup required', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(false)
+    mockPasswordSetupRequired.mockReturnValue(true)
+
+    renderGuard()
+
+    expect(screen.getByText('Protected Content')).toBeInTheDocument()
+    expect(screen.queryByTestId('password-setup-gate')).not.toBeInTheDocument()
+  })
+
+  // The other negative case, and the one that runs most often: the desktop app
+  // reaches its hub over a local socket, so every launch is credential-free
+  // with nothing exposed. A gate keyed on that flag alone would block the
+  // desktop app on every start.
+  it('leaves a credential-free visitor alone when nothing is exposed', () => {
+    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+    mockLoading.mockReturnValue(false)
+    mockIsAuthenticated.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
+    mockPasswordSetupRequired.mockReturnValue(false)
+
+    renderGuard()
+
+    expect(screen.getByText('Protected Content')).toBeInTheDocument()
+    expect(screen.queryByTestId('password-setup-gate')).not.toBeInTheDocument()
   })
 
   it('shows the boot splash while auth loads', () => {
@@ -135,14 +196,15 @@ describe('authGuard', () => {
   // so was the loading fallback this used to land on. `restoreSession` records
   // NO bootstrapError for an Unauthenticated reply (it is the ordinary "no
   // session yet" answer everywhere else), so solo + unauthenticated fell
-  // through every branch and spun forever with nothing to click. In solo mode the
-  // hub authenticates every request, so that reply is a transport or config
-  // failure and has to be reported like any other.
-  it('reports rather than spins when a solo hub answers with no session', async () => {
+  // through every branch and spun forever with nothing to click. On a
+  // CREDENTIAL-FREE connection the hub authenticates the caller outright, so
+  // that reply is a transport or config failure and has to be reported like
+  // any other.
+  it('reports rather than spins when a credential-free connection answers with no session', async () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
-    mockIsSoloMode.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
 
     const { navigations } = renderGuard()
 
@@ -153,11 +215,11 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
-  it('offers the same retry for a solo hub with no session', async () => {
+  it('offers the same retry for a credential-free connection with no session', async () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
-    mockIsSoloMode.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
 
     renderGuard()
 

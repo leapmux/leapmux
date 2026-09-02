@@ -5,7 +5,7 @@ import { platformBridge } from '~/api/platformBridge'
 import { DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { useAuth } from '~/context/AuthContext'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
-import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
+import { isAutoAuthenticated, isDesktopApp } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 import { motion } from '~/styles/tokens'
 import { openPreferences, setShowAboutDialog } from './UserMenuState'
@@ -57,7 +57,17 @@ export const UserMenuItems: Component = () => {
         <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />
       </button>
 
-      <Show when={!isSoloMode()}>
+      {/*
+        * isAutoAuthenticated, not isSoloMode. Log out ends a SESSION, and a
+        * credential-free connection holds none: the desktop app's local socket,
+        * or a solo hub whose account has no password yet. Signing out there
+        * lands on /login, which sends the visitor straight back.
+        *
+        * A solo hub whose account HOLDS a password is the other case, and it
+        * needs the item: its network callers sign in with a real session, and
+        * without this they could never end one.
+        */}
+      <Show when={!isAutoAuthenticated()}>
         <hr />
         <button role="menuitem" class={dangerMenuItem} onClick={() => handleLogout()}>
           Log out

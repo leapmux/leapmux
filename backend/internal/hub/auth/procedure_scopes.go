@@ -283,6 +283,15 @@ var procedureScopes = map[string]ScopeRequirement{
 	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        Requires(leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS),
 	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       Requires(leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS),
 
+	// --- AdminNetworkService ------------------------------------------------
+	//
+	// A READ of derived state: the machine's interfaces, and what the hub's
+	// sockets hold. admin:read, like every other admin listing. Writing the
+	// address list is AdminSettingsService.UpdateSetting, which carries
+	// admin:settings, so the permission an operator needs to CHANGE what the
+	// hub answers on is the one that governs every other hub setting.
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: Requires(leapmuxv1.Scope_SCOPE_ADMIN_READ),
+
 	// --- AdminIdPService: the hub's sign-in providers -----------------------
 	//
 	// A provider row is a trust anchor for every account, so writing one is
@@ -404,7 +413,7 @@ func CeilingFor(kind BearerKind) authscope.ScopeSet {
 		return delegationCeiling
 	}
 	// An unknown kind reaches nothing. ParseBearer rejects one before this is
-	// called, so the arm is defence in depth.
+	// called, so the branch is defence in depth.
 	return authscope.ScopeSet{}
 }
 

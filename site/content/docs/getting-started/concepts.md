@@ -31,7 +31,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 ### Solo mode
 
-`leapmux solo` is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. There is **no login** — the UI opens straight into your workspace because every request is auto-authenticated as the admin.
+`leapmux solo` is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. There is **no login** at first — the UI opens straight into your workspace, because the single account starts with no password. Give it one and every network address asks for it.
 
 ```text
                  LeapMux (127.0.0.1:4327)
@@ -54,10 +54,10 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
    └───────────────┘
 ```
 
-Solo mode is ideal for one person on one machine. Because it auto-authenticates and binds loopback, the security model **reduces to local trust**: any local process that can reach the port can drive the Worker. The end-to-end encryption between Frontend and Worker still operates inside the process, but it offers no protection against an attacker who is already on your machine.
+Solo mode is ideal for one person on one machine. While its one account has no password it authenticates every request as the admin, and it binds loopback, so the security model **reduces to local trust**: any local process that can reach the port can drive the Worker. The end-to-end encryption between Frontend and Worker still operates inside the process, but it offers no protection against an attacker who is already on your machine. Give that account a password and every network address asks for it.
 
 {{< callout type="warning" >}}
-If you point solo mode at a non-loopback address, it logs a warning. The warning states that anyone who can reach the port gets full admin access without credentials. It recommends restricting access with a firewall, Tailscale/WireGuard, or an SSH tunnel, or running `leapmux hub` for real authentication. The desktop app avoids the issue entirely by listening on a Unix socket / named pipe instead of TCP.
+If solo mode answers on a non-loopback address, it logs a warning. The warning states that the hub is reachable from other machines, and that until the `solo` account has a password every request is authenticated as the administrator without credentials. Set that password — the app asks for one before anything else while such an address is served — and restrict access with a firewall, Tailscale/WireGuard, or an SSH tunnel if the network is not one you trust. The desktop app avoids the question entirely by listening on a Unix socket / named pipe instead of TCP.
 {{< /callout >}}
 
 ### Distributed mode

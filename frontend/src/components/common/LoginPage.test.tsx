@@ -90,6 +90,57 @@ describe('loginPage', () => {
     mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
   })
 
+  // A solo hub has exactly ONE account, named "solo". A free username field
+  // could only be filled in with a name that cannot sign in, and the person
+  // typing it has no way to discover the right one.
+  //
+  // `readOnly` and not `disabled`: a disabled input is dropped from the form
+  // and skipped by the keyboard, and this value is the one the request needs.
+  it('fixes the username to the single account on a solo hub', async () => {
+    setSystemInfoMock({ soloMode: true })
+    renderLoginPage()
+
+    const username = await screen.findByLabelText('Username')
+    expect(username).toHaveValue('solo')
+    expect(username).toHaveAttribute('readonly')
+  })
+
+  it('leaves the username free on a multi-user hub', async () => {
+    setSystemInfoMock({ soloMode: false })
+    renderLoginPage()
+
+    const username = await screen.findByLabelText('Username')
+    expect(username).toHaveValue('')
+    expect(username).not.toHaveAttribute('readonly')
+  })
+
+  // The BOOTSTRAP RACE, which the two tests above cannot see: they set the
+  // mock before rendering, and the real page renders while `loadSystemInfo` is
+  // still in flight. `SetupGate` and `SignedOutOnly` both say so, so a
+  // bookmarked or reloaded `/login` on a solo hub sampled the fabricated
+  // `soloMode = false`.
+  //
+  // A seeded signal kept that `''` for ever while the `readOnly` attribute
+  // flipped when the answer landed -- an empty field nobody could type in, on
+  // the one hub whose account name they could not guess.
+  it('fills the username in when the hub answers after the page renders', async () => {
+    setSystemInfoMock({ soloMode: false })
+    renderLoginPage()
+
+    const username = await screen.findByLabelText('Username')
+    expect(username).toHaveValue('')
+
+    setSystemInfoMock({ soloMode: true })
+
+    await vi.waitFor(() => expect(screen.getByLabelText('Username')).toHaveValue('solo'))
+    expect(screen.getByLabelText('Username')).toHaveAttribute('readonly')
+
+    // And the form can be submitted, which is what the empty field took away:
+    // canSubmit refuses on `!username()`.
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'correct-horse-battery-staple' } })
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+  })
+
   // This pins the bootstrap race. The system-info getters are plain module
   // reads whose pre-fetch values are fabrications (signupEnabled = false), so
   // sampling them before bootstrap resolves is sampling a guess. It used to

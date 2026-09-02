@@ -4,7 +4,7 @@ import { createEffect, createSignal, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isAutoAuthenticated } from '~/lib/systemInfo'
 import { centeredFull, pageCard } from '~/styles/shared.css'
 
 /**
@@ -103,10 +103,11 @@ export const SignedOutOnly: ParentComponent<{
       return
     const signedIn = auth.user() !== null
     setArrivedSignedIn(signedIn)
-    // The solo rule first: it holds whether or not somebody is signed in, and
-    // it outranks `whenSignedIn`, because a hub with no sign-out has nothing
-    // to explain.
-    if (isSoloMode()) {
+    // The credential-free rule first: it holds whether or not somebody is
+    // signed in, and it outranks `whenSignedIn`, because a connection with no
+    // sign-out has nothing to explain. A solo hub reached at a network address
+    // DOES have one, so it falls through to the ordinary branches.
+    if (isAutoAuthenticated()) {
       navigate('/', { replace: true })
       return
     }
@@ -145,7 +146,7 @@ export const SignedOutOnly: ParentComponent<{
         // this panel answers a visitor who ARRIVED signed in. A sign-in
         // performed on the page would otherwise show "your link is still
         // unused" after they finished with it.
-        <Show when={props.whenSignedIn === 'explain' && arrivedSignedIn() && !isSoloMode()}>
+        <Show when={props.whenSignedIn === 'explain' && arrivedSignedIn() && !isAutoAuthenticated()}>
           <div class={centeredFull}>
             <div class={pageCard} data-testid="signed-out-only-explain">
               <h1>You are already signed in</h1>

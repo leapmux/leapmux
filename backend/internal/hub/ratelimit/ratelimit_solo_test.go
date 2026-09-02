@@ -26,6 +26,11 @@ func TestHiddenInSoloIsADeliberatePerOperationAnswer(t *testing.T) {
 		OpElevation:      true,
 		OpEmailChange:    true, // solo refuses email changes outright (rejectSolo)
 		OpOAuthAnonymous: false,
+		// Keyed by address, and the ONE thing that limits password guesses on a
+		// solo hub: captcha is off there by construction, so hiding this key
+		// would leave a published solo hub with no throttle an operator could
+		// even see.
+		OpLoginAnonymous: false,
 	}
 	for _, op := range KnownOperations() {
 		want, recorded := expected[op]

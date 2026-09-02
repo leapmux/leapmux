@@ -18,6 +18,7 @@ func settingDescriptorToProto(d settings.Descriptor) *leapmuxv1.SettingDescripto
 		Title:        ui.Title,
 		Summary:      ui.Summary,
 		HiddenInSolo: ui.HiddenInSolo,
+		HiddenInHub:  ui.HiddenInHub,
 		Restart:      d.Propagation() == settings.PropagationRestart,
 	}
 	for _, f := range ui.Fields {

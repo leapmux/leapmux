@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "listen.schema.json",
+  "title": "listen-address vocabulary contract",
+  "description": "The three listen-address values the hub and the browser both spell. anyHost is the canonical wildcard token listenset renders and the panel's interface picker stores. maxExtraAddresses caps the stored extra_listen_addresses list: the hub refuses a longer one and the panel stops offering Add at the same number. addressSources is the closed vocabulary the hub sends for WHY an address is served, and the panel renders one label per token; the proto field carries it as a plain string, so nothing but this contract keeps the two sides on the same three words.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "anyHost", "maxExtraAddresses", "addressSources"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "anyHost": { "type": "string", "minLength": 1, "maxLength": 8 },
+    "maxExtraAddresses": { "type": "integer", "minimum": 1, "maximum": 64 },
+    "addressSources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["listen", "extra", "merged"],
+      "properties": {
+        "listen": { "$ref": "#/$defs/sourceDoc" },
+        "extra": { "$ref": "#/$defs/sourceDoc" },
+        "merged": { "$ref": "#/$defs/sourceDoc" }
+      }
+    }
+  },
+  "$defs": {
+    "sourceDoc": { "type": "string", "minLength": 1 }
+  }
+}

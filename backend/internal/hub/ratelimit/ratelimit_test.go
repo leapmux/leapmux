@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -28,14 +30,17 @@ import (
 // sleeping. Tests in this package run sequentially (no t.Parallel).
 var fakeNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-func newTestManager(t *testing.T, solo bool) *Manager {
+// newTestManager builds a manager over an in-memory store. It takes no mode:
+// the per-user stand-down reads the CALLER, so a test states solo by giving
+// its caller `Solo: true` rather than by building a different manager.
+func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	set := settings.NewManager(st, nil, SettingsDescriptors())
 	require.NoError(t, set.Load(context.Background()))
-	m := NewManager(set, solo)
+	m := NewManager(set)
 	m.now = func() time.Time { return fakeNow }
 	return m
 }
@@ -60,6 +65,13 @@ func wrongPasswordError() error {
 // the surrounding HTTP middleware (the auth interceptor's job in the real
 // chain). handlerCalled reports whether the protected handler ran.
 func elevateSessionClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
+	return elevateSessionClientAs(t, m, handlerErr, authenticated, false)
+}
+
+// elevateSessionClientAs is elevateSessionClient with the caller's identity
+// stated: `solo` marks the identity the solo rung admitted, which is the one
+// the per-user stand-down exempts.
+func elevateSessionClientAs(t *testing.T, m *Manager, handlerErr error, authenticated, solo bool) (leapmuxv1connect.UserServiceClient, *int) {
 	t.Helper()
 	handlerCalls := 0
 	handler := connect.NewUnaryHandler(
@@ -76,7 +88,7 @@ func elevateSessionClient(t *testing.T, m *Manager, handlerErr error, authentica
 	mux := http.NewServeMux()
 	mux.Handle(leapmuxv1connect.UserServiceElevateSessionProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticated {
-			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
+			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123"), Solo: solo}))
 		}
 		handler.ServeHTTP(w, r)
 	}))
@@ -136,7 +148,7 @@ func tryElevateSession(t *testing.T, client leapmuxv1connect.UserServiceClient) 
 }
 
 func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 3, 900)
 
 	client, calls := elevateSessionClient(t, m, wrongPasswordError(), true)
@@ -158,7 +170,7 @@ func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
 }
 
 func TestLimiterCountsOnlyCredentialFailures(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	// Weak-new-password validation errors must not count.
@@ -179,7 +191,7 @@ func TestLimiterCountsOnlyCredentialFailures(t *testing.T) {
 }
 
 func TestLimiterSuccessResetsWindow(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	wrongClient, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
@@ -196,7 +208,7 @@ func TestLimiterSuccessResetsWindow(t *testing.T) {
 }
 
 func TestLimiterWindowExpires(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	client, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
@@ -233,7 +245,7 @@ func recordCredentialFailure(t *testing.T, m *Manager, userID string) {
 // observes an expired window deletes the entry instead of leaving it inert
 // in the map for the life of the process.
 func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
@@ -254,7 +266,7 @@ func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 // the expiry-controlled sweep in allow() drops expired entries no same-key
 // lazy delete would ever reach.
 func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	recordCredentialFailure(t, m, "usr_gone")
@@ -277,7 +289,7 @@ func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 // counts in-flight attempts against the budget, so a burst of parallel
 // calls cannot all pass a failures-only check before any of them lands.
 func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 3, 900)
 
 	// Three concurrent in-flight attempts (allowed, not yet completed).
@@ -316,7 +328,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 // clear within one handler latency, so the caller owes no failure window —
 // only a failures-driven denial reports the window remainder.
 func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 3, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
@@ -347,7 +359,7 @@ func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
 // slot, so completing it must not release a slot a concurrent reserved
 // attempt still holds.
 func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	reserved, allowed, _, err := m.allow(context.Background(), elevateSpec, "usr_test123")
@@ -384,7 +396,7 @@ func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 // call Begin, guess again -- and the 5-per-window cap on the hub's only
 // credential-guess surface would be unlimited.
 func TestNonProvingSuccessKeepsTheFailureWindow(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
@@ -415,7 +427,7 @@ func TestNonProvingSuccessKeepsTheFailureWindow(t *testing.T) {
 // "never reset", and a user who mistypes twice and then answers correctly
 // would carry the failures for the rest of the window.
 func TestProvingSuccessResetsTheFailureWindow(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
@@ -437,7 +449,7 @@ func TestProvingSuccessResetsTheFailureWindow(t *testing.T) {
 // take an in-flight slot. A procedure routed with provesCredential unset
 // still reserves; only the RESET is restricted.
 func TestEveryRoutedProcedureReservesASlot(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	first, allowed, _, err := m.allow(context.Background(), beginElevationSpec, "usr_test123")
@@ -479,7 +491,8 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 		leapmuxv1connect.UserServiceDeletePasskeyProcedure:             false,
 		leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     false,
 	}
-	assert.Len(t, procedureOperations, len(proving)+1,
+	// +2: the mail RPC and Login, each asserted on its own below.
+	assert.Len(t, procedureOperations, len(proving)+2,
 		"a procedure added to or removed from the routing map must be reflected here")
 	for procedure, provesCredential := range proving {
 		spec, ok := procedureOperations[procedure]
@@ -500,6 +513,18 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 	require.NotNil(t, defaults[OpEmailChange].proceedsToBudget,
 		"a proceeded-counting operation must classify its outcomes")
 
+	// The one UNAUTHENTICATED procedure with a secret to guess. It is the
+	// only routed procedure keyed by address, and it must stay that way: keyed
+	// by user it would count nothing, because a caller that has not signed in
+	// has no user -- and Login is the request that decides whether it gets one.
+	loginSpec, routed := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
+	require.True(t, routed, "Login verifies a password with no captcha on a solo hub; it must take a budget")
+	assert.Equal(t, OpLoginAnonymous, loginSpec.op)
+	assert.True(t, loginSpec.provesCredential, "a wrong password is a guess and must consume the window")
+	assert.True(t, defaults[OpLoginAnonymous].keyByAddress, "an unauthenticated caller has no user to key on")
+	assert.False(t, defaults[OpLoginAnonymous].hiddenInSolo,
+		"a solo hub has no captcha in front of Login, so this budget is the only thing limiting it")
+
 	// The negative half, and it is the half OpElevation's doc has to keep
 	// true. UnlinkOAuthProvider is an elevation-admitted mutation, so a
 	// reader who took "every mutation an elevation admits" literally would
@@ -515,7 +540,7 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 // the reservation on the unwind — a leaked slot would deny the user's
 // every later attempt until hub restart, because nothing sweeps inFlight.
 func TestPanickingHandlerReleasesReservation(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	handler := connect.NewUnaryHandler(
@@ -550,10 +575,10 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpOAuthAnonymous}, KnownOperations())
+	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpLoginAnonymous, OpOAuthAnonymous}, KnownOperations())
 
 	// No row: defaults, enabled.
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	key, ok := LimitKey(OpElevation)
 	require.True(t, ok)
 	v := key.Of(m.set.Snapshot(context.Background()))
@@ -578,23 +603,43 @@ func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
 	assert.Equal(t, Limits{}, limits)
 }
 
+// A disabled key admits every attempt, and so does the identity the solo rung
+// admitted -- but a REAL session on a solo hub is budgeted like any other.
+//
+// The stand-down reads the CALLER, not the hub's mode, and this is the case
+// that difference exists for: a solo hub that holds a password signs its
+// network callers in with an ordinary session, and ElevateSession verifies
+// that password. Keyed on the mode, the budget was nothing there.
 func TestLimiterDisabledAndSoloBypass(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, false, 1, 900)
 	client, _ := elevateSessionClient(t, m, wrongPasswordError(), true)
 	for i := 0; i < 10; i++ {
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, client)))
 	}
 
-	solo := newTestManager(t, true)
-	soloClient, _ := elevateSessionClient(t, solo, wrongPasswordError(), true)
+	// The solo rung's own caller: one account, admitted with nothing
+	// presented, so there is no per-user surface to budget.
+	solo := newTestManager(t)
+	soloRung, _ := elevateSessionClientAs(t, solo, wrongPasswordError(), true, true)
 	for i := 0; i < 10; i++ {
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, soloClient)))
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, soloRung)))
 	}
+
+	// A session that SIGNED IN on the same hub. It spends the default budget
+	// of five and is refused after it.
+	signedIn := newTestManager(t)
+	upsertLimit(t, signedIn, OpElevation, true, 2, 900)
+	soloSession, _ := elevateSessionClientAs(t, signedIn, wrongPasswordError(), true, false)
+	for i := 0; i < 2; i++ {
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, soloSession)))
+	}
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(tryElevateSession(t, soloSession)),
+		"a real session on a solo hub guesses a password like anybody else, and must run out")
 }
 
 func TestLimiterDefaultsApplyWithoutRow(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	limits, ok := DefaultLimits(OpElevation)
 	require.True(t, ok)
 	assert.EqualValues(t, 5, limits.MaxAttempts)
@@ -608,7 +653,7 @@ func TestLimiterDefaultsApplyWithoutRow(t *testing.T) {
 }
 
 func TestLimiterUnauthenticatedCallsPassThrough(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	// No user in context: the limiter stands down (in the real chain the
@@ -668,7 +713,7 @@ func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 // take 2N guesses by alternating, which is the whole reason elevation is a
 // single operation rather than one per procedure.
 func TestElevationBudgetIsSharedByBothFactorPaths(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	passwordClient, passwordCalls := elevateSessionClient(t, m, wrongPasswordError(), true)
@@ -753,7 +798,7 @@ func TestValidateLimits(t *testing.T) {
 // window simply lapsed would lock themselves out of the very prompt that
 // would fix it.
 func TestElevationRefusalDoesNotSpendTheBudget(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
 	refusal := connect.NewError(connect.CodeFailedPrecondition, errors.New("this action needs a recent sign-in"))
@@ -789,7 +834,7 @@ func TestElevationRefusalDoesNotSpendTheBudget(t *testing.T) {
 // what keeps the step-up retry (the transport resends once on
 // FailedPrecondition) at one slot instead of two.
 func TestEmailChangeCountsProceededRequests(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpEmailChange, true, 6, 900)
 	spec, ok := procedureOperations[leapmuxv1connect.UserServiceRequestEmailChangeProcedure]
 	require.True(t, ok)
@@ -842,7 +887,7 @@ func TestEmailChangeCountsProceededRequests(t *testing.T) {
 }
 
 func TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 	recordCredentialFailure(t, m, "usr_test123")
 	recordCredentialFailure(t, m, "usr_test123")
@@ -885,7 +930,7 @@ func TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing(t *testing.
 // that cost is what the concurrent cap protects, whatever the procedure
 // proves.
 func TestSpentFailureWindowStillCapsConcurrency(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 	recordCredentialFailure(t, m, "usr_test123")
 	recordCredentialFailure(t, m, "usr_test123")
@@ -928,4 +973,150 @@ func TestLimitKeySummaryStatesTheCountedQuantity(t *testing.T) {
 		require.True(t, ok, "%s must have a settings key", op)
 		assert.Contains(t, key.UI().Summary, wantSubstring, string(op))
 	}
+}
+
+// TestBudgetKeyFor pins which budget an operation counts against, and which
+// requests it counts at all.
+//
+// The address branch is the one that matters for a published solo hub: keyed
+// by user it would count nothing, because Login is the request that decides
+// whether the caller gets a user.
+func TestBudgetKeyFor(t *testing.T) {
+	loginSpec := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
+	elevationSpec := procedureOperations[leapmuxv1connect.UserServiceElevateSessionProcedure]
+
+	remote := peer.WithRemoteAddr(context.Background(),
+		&net.TCPAddr{IP: net.ParseIP("192.168.1.24"), Port: 51234})
+
+	t.Run("an address-keyed operation counts an unauthenticated caller", func(t *testing.T) {
+		key, ok := budgetKeyFor(remote, newTestManager(t), loginSpec)
+		require.True(t, ok, "an absent user is this operation's normal state, not a reason to admit")
+		assert.Equal(t, "anonymous:192.168.1.24", key)
+	})
+
+	t.Run("an address-keyed operation counts on a solo hub too", func(t *testing.T) {
+		key, ok := budgetKeyFor(remote, newTestManager(t), loginSpec)
+		require.True(t, ok, "solo publishes addresses like any other hub, and has no captcha in front of Login")
+		assert.Equal(t, "anonymous:192.168.1.24", key)
+	})
+
+	t.Run("two ports of one caller share a budget", func(t *testing.T) {
+		second := peer.WithRemoteAddr(context.Background(),
+			&net.TCPAddr{IP: net.ParseIP("192.168.1.24"), Port: 51235})
+		first, _ := budgetKeyFor(remote, newTestManager(t), loginSpec)
+		other, _ := budgetKeyFor(second, newTestManager(t), loginSpec)
+		assert.Equal(t, first, other, "a fresh connection per guess must not mint a fresh budget")
+	})
+
+	t.Run("an unaddressed caller shares one named budget", func(t *testing.T) {
+		key, ok := budgetKeyFor(context.Background(), newTestManager(t), loginSpec)
+		require.True(t, ok)
+		assert.Equal(t, "anonymous:unknown", key, "an unknown address must not mean an unlimited one")
+	})
+
+	t.Run("a user-keyed operation stands down without a user", func(t *testing.T) {
+		_, ok := budgetKeyFor(remote, newTestManager(t), elevationSpec)
+		assert.False(t, ok, "auth produces the error for an unauthenticated call")
+	})
+
+	// The stand-down reads the CALLER, not the hub's mode. Only the identity
+	// the solo rung admitted has no per-user abuse surface: one account,
+	// reached with no credential to guess.
+	t.Run("a user-keyed operation stands down for the solo rung's caller", func(t *testing.T) {
+		ctx := auth.WithUser(remote, &auth.UserInfo{ID: userid.MustNew("usr_1"), Solo: true})
+		_, ok := budgetKeyFor(ctx, newTestManager(t), elevationSpec)
+		assert.False(t, ok, "one account, admitted with nothing presented, is nothing to budget")
+	})
+
+	// And a REAL session on that same solo hub is budgeted. A password-holding
+	// solo hub signs its network callers in with an ordinary session, and
+	// those callers can guess the password at ElevateSession like anybody
+	// else -- keying on the hub's mode left the budget at nothing for exactly
+	// the deployment the network-access feature creates.
+	t.Run("a user-keyed operation counts a real session on a solo hub", func(t *testing.T) {
+		ctx := auth.WithUser(remote, &auth.UserInfo{ID: userid.MustNew("usr_1")})
+		key, ok := budgetKeyFor(ctx, newTestManager(t), elevationSpec)
+		require.True(t, ok, "a session that signed in is a per-user abuse surface")
+		assert.Equal(t, "usr_1", key)
+	})
+
+	t.Run("a user-keyed operation counts the user elsewhere", func(t *testing.T) {
+		ctx := auth.WithUser(remote, &auth.UserInfo{ID: userid.MustNew("usr_1")})
+		key, ok := budgetKeyFor(ctx, newTestManager(t), elevationSpec)
+		require.True(t, ok)
+		assert.Equal(t, "usr_1", key)
+	})
+}
+
+// A wrong password must consume the window and a right one must clear it, or
+// a person who mistypes twice carries that against their next sign-in.
+//
+// The clearing half runs a SUCCESS through complete(), which is the only thing
+// that reaches the provesCredential branch. Without it, dropping
+// provesCredential from Login's routing left this test green while every
+// mistype an operator ever made counted against them for fifteen minutes.
+func TestLoginAnonymousCountsFailuresAndClearsOnSuccess(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 2, 900)
+	spec := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
+	const key = "anonymous:192.168.1.24"
+
+	wrongPassword := connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))
+
+	for range 2 {
+		att, allowed, _, err := m.allow(context.Background(), spec, key)
+		require.NoError(t, err)
+		require.True(t, allowed)
+		m.complete(att, wrongPassword)
+	}
+
+	_, allowed, retryAfter, err := m.allow(context.Background(), spec, key)
+	require.NoError(t, err)
+	assert.False(t, allowed, "the third guess must be refused")
+	assert.Positive(t, retryAfter)
+
+	// A different address keeps its own budget: one attacker must not lock
+	// the owner out of their own hub.
+	_, allowed, _, err = m.allow(context.Background(), spec, "anonymous:10.0.0.9")
+	require.NoError(t, err)
+	assert.True(t, allowed)
+
+	// And the SUCCESS half, on a window with room left so the reservation is
+	// real: one mistype, then a right password, then TWO more mistypes must
+	// still fit. Without the clearing they would not -- one plus two is over
+	// a budget of two.
+	fresh := "anonymous:10.0.0.30"
+	att, allowed, _, err := m.allow(context.Background(), spec, fresh)
+	require.NoError(t, err)
+	require.True(t, allowed)
+	m.complete(att, wrongPassword)
+
+	att, allowed, _, err = m.allow(context.Background(), spec, fresh)
+	require.NoError(t, err)
+	require.True(t, allowed)
+	m.complete(att, nil)
+
+	for i := range 2 {
+		att, allowed, _, err := m.allow(context.Background(), spec, fresh)
+		require.NoError(t, err)
+		require.Truef(t, allowed, "attempt %d must fit a window a successful sign-in cleared", i+1)
+		m.complete(att, wrongPassword)
+	}
+}
+
+// Only a wrong password counts. A captcha refusal or an unreachable store
+// carries a different code, and counting those would let an attacker exhaust
+// a shared address's budget without ever guessing.
+func TestLoginAnonymousCountsOnlyAWrongPassword(t *testing.T) {
+	spec := defaults[OpLoginAnonymous]
+	require.NotNil(t, spec.isCredentialFailure)
+
+	assert.True(t, spec.isCredentialFailure(
+		connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))))
+	assert.False(t, spec.isCredentialFailure(nil))
+	assert.False(t, spec.isCredentialFailure(
+		connect.NewError(connect.CodeResourceExhausted, errors.New("captcha required"))))
+	assert.False(t, spec.isCredentialFailure(
+		connect.NewError(connect.CodeUnavailable, errors.New("store down"))))
+	assert.False(t, spec.isCredentialFailure(errors.New("plain error")))
 }

@@ -15,14 +15,16 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 
 | Mode | Account needed? | What you see |
 | --- | --- | --- |
-| **Solo** (`leapmux solo`) | No | No login or signup screen. LeapMux creates a single passwordless user named `solo` and authenticates it automatically for every request. |
+| **Solo** (`leapmux solo`) | Not at first | No signup screen. LeapMux creates a single user called `solo` that starts with no password, and authenticates every request as it until that password exists. |
 | **Dev** (`leapmux dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
 | **Hub** (`leapmux hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
 
-In **solo mode** there is nothing to sign up for and nothing to sign out of. If you navigate to `/login` or `/signup`, LeapMux redirects you straight into the app. Solo mode intentionally disables account-related actions: it refuses a change to your profile, your email, or your password, and it refuses to unlink an OAuth provider. Each refusal identifies the action that solo mode does not support.
+In **solo mode** there is nothing to sign up for, and nothing to sign out of until the `solo` account has a password. While it has none, `/login` and `/signup` redirect you straight into the app. Solo mode disables most account actions: it refuses a change to your profile or your email, and it refuses to detach an OAuth provider. Each refusal identifies the action that solo mode does not support.
+
+**Password is the exception.** Setting one is what lets the Hub answer on a network address, so **Preferences → Administration → Network access** offers the first password beside the addresses it guards, and **Preferences → Account → Password** changes it afterwards. See [Network access](/docs/admin/configuration/#network-access).
 
 {{< callout type="info" >}}
-Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/admin/security/).
+While the `solo` account has no password, solo mode authenticates *every* request as the admin. If the Hub answers on a non-loopback address in that state, anyone who can reach the port has full admin access without credentials, and LeapMux warns you about it at startup. Set the password: every network address then asks for it, `127.0.0.1` included. For a multi-user deployment, run `leapmux hub` (or `leapmux dev`). See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 The rest of this chapter applies to **hub** and **dev** mode, where accounts are real.

@@ -256,7 +256,7 @@ export const SettingRow: Component<SettingRowProps> = (props) => {
         // visible area.
         return (
           <Show when={reveal.revealed()}>
-            <Editor />
+            <Editor binding={props.binding} />
           </Show>
         )
       }

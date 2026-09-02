@@ -93,3 +93,82 @@ export async function stopDevServer(handle: DevServerHandle | UnseededDevServerH
   for (const p of extraPaths)
     rmSync(p, { recursive: true, force: true })
 }
+
+export interface SoloServerHandle {
+  hubUrl: string
+  /** The address `-listen` was given, so a spec can assert what the panel shows. */
+  listen: string
+  proc: ChildProcess
+  dataDir: string
+}
+
+export interface StartSoloServerOptions extends StartDevServerOptions {
+  /**
+   * The host `-listen` binds. Defaults to `127.0.0.1`, which exposes nothing.
+   *
+   * A spec that needs the hub EXPOSED passes `0.0.0.0`. It reaches it over
+   * loopback all the same -- a wildcard bind answers there too -- so the spec
+   * needs no address of its own on this machine, which a CI runner may not
+   * have.
+   */
+  listenHost?: string
+}
+
+/**
+ * A `leapmux solo` instance of the spec's own.
+ *
+ * Solo is its own mode, not a flag on dev: it runs one account named `solo`
+ * with no password, and its sign-in rule is what the network-access feature
+ * changes. The shared fixture runs `leapmux dev`, which has real password
+ * authentication from the start and therefore cannot exercise any of it.
+ *
+ * No admin registration: `bootstrap.Run` creates the account, and until it has
+ * a password the hub authenticates every caller as it.
+ */
+export async function startSoloServer(opts: StartSoloServerOptions = {}): Promise<SoloServerHandle> {
+  const { binaryPath } = getGlobalState()
+  const dataDir = mkdtempSync(join(tmpdir(), `${opts.dataDirPrefix ?? 'leapmux-e2e-solo'}-`))
+  const port = await findFreePort()
+  const listen = `${opts.listenHost ?? '127.0.0.1'}:${port}`
+  const hubUrl = `http://127.0.0.1:${port}`
+
+  const proc = spawn(binaryPath, ['solo', '-listen', listen, '-data-dir', dataDir], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, ...opts.env },
+  })
+
+  if (opts.onStdio) {
+    proc.stdout?.on('data', c => opts.onStdio!(c, 'stdout'))
+    proc.stderr?.on('data', c => opts.onStdio!(c, 'stderr'))
+  }
+  else {
+    proc.stdout?.resume()
+    proc.stderr?.resume()
+  }
+
+  // A startup failure must not leak the child or its directory. waitForServer
+  // rejects after its own deadline -- a port race, a broken binary, a corrupt
+  // data dir -- and without this the `leapmux solo` process kept running for
+  // the rest of the session, holding the port that made it fail.
+  try {
+    await waitForServer(hubUrl)
+  }
+  catch (e) {
+    await stopProcess(proc)
+    rmSync(dataDir, { recursive: true, force: true })
+    throw e
+  }
+  return { hubUrl, listen, proc, dataDir }
+}
+
+/**
+ * Stops a solo instance. A missing handle is a no-op, because Playwright runs
+ * `afterEach` after a FAILED `beforeEach`: dereferencing an unassigned handle
+ * there reported a TypeError in place of the startup failure that caused it.
+ */
+export async function stopSoloServer(handle: SoloServerHandle | undefined): Promise<void> {
+  if (!handle)
+    return
+  await stopProcess(handle.proc)
+  rmSync(handle.dataDir, { recursive: true, force: true })
+}

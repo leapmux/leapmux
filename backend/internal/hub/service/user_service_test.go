@@ -3247,11 +3247,24 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "solo mode")
 
-	// The elevation surface refuses solo too: there is no session row to
-	// stamp, so admitting it would report an elevation nothing recorded.
-	_, err = client.ElevateSession(context.Background(), authedReq(&leapmuxv1.ElevateSessionRequest{
+	// The elevation surface reads the CALLER, not the hub's mode. This one
+	// holds a real session -- it signed in -- so it has a row to stamp and
+	// elevates like any other. A solo hub that holds a password authenticates
+	// its TCP callers exactly this way, and refusing them would leave the
+	// person who set that password unable to write a hub setting from the
+	// browser they set it in.
+	elevated, err := client.ElevateSession(context.Background(), authedReq(&leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
 	}, token))
+	require.NoError(t, err)
+	assert.NotNil(t, elevated.Msg.GetElevationExpiresAt(), "a real session on a solo hub elevates")
+
+	// The caller the SOLO RUNG admitted is the one with no row to stamp, and
+	// it is still refused. It needs no elevation either: requireElevation
+	// exempts it outright.
+	soloOnly := &auth.UserInfo{ID: userid.MustNew(userID), Username: "solouser", IsAdmin: true, Solo: true}
+	_, err = userSvc.ElevateSession(auth.WithUser(context.Background(), soloOnly),
+		connect.NewRequest(&leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "solo mode")

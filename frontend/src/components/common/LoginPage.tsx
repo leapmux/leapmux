@@ -10,11 +10,12 @@ import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
+import { USERNAME_SOLO } from '~/generated/contracts/validate'
 import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
-import { isEmailEnabled, isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
+import { isEmailEnabled, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -22,7 +23,19 @@ export const LoginPage: Component = () => {
   const auth = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [username, setUsername] = createSignal('')
+  const [typedUsername, setTypedUsername] = createSignal('')
+  /*
+   * DERIVED, never a seeded signal. `isSoloMode()` is a plain module read whose
+   * pre-bootstrap value is a fabrication, and both gates above render this page
+   * WHILE that load is in flight -- `SetupGate` says so ("On the four
+   * credential pages the unknown answer costs nothing, so they render") and so
+   * does `SignedOutOnly`. A signal seeded from it therefore held `''` on every
+   * bookmarked or reloaded `/login`, while the reactive `readOnly` below flipped
+   * true when the snapshot landed: an empty field nobody could type in, and a
+   * Sign in button `canSubmit` never enabled. Reading it here instead re-runs
+   * when the answer arrives.
+   */
+  const username = () => (isSoloMode() ? USERNAME_SOLO : typedUsername())
   const [password, setPassword] = createSignal('')
   const methodSelection = createAuthMethodSelection('login')
   const effectiveMethod = methodSelection.effectiveMethod
@@ -149,11 +162,22 @@ export const LoginPage: Component = () => {
         <form class="vstack gap-4" onSubmit={handleSubmit}>
           <label>
             Username
+            {/*
+              * READ-ONLY on a solo hub. It has exactly one account, named
+              * "solo", so a free field could only be filled in with a name
+              * that cannot sign in -- and the person typing it has no way to
+              * discover the right one.
+              *
+              * `readOnly` rather than `disabled`: a disabled input is dropped
+              * from the form and skipped by the keyboard, and this value is
+              * the one the request needs.
+              */}
             <input
               ref={usernameRef}
               type="text"
               value={username()}
-              onInput={e => setUsername(e.currentTarget.value)}
+              readOnly={isSoloMode()}
+              onInput={e => setTypedUsername(e.currentTarget.value)}
               autocomplete="username"
             />
           </label>

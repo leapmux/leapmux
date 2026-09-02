@@ -52,7 +52,7 @@ Administrators additionally see an **ADMINISTRATION** group in the navigation, b
 
 ## Account
 
-The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides every row here — a solo deployment has one local identity, so there is no password, address or provider to manage — and the category disappears from the dialog. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides all of them but **Password**, and hides that one too until the account has a password — before then, [Network access](#network-access) sets the first one, beside the addresses it guards. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
 - **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it requires verification when the Hub has a mail relay configured (see [Email (SMTP)](#email-smtp) below); a pending change shows a notice until confirmed.
@@ -234,7 +234,17 @@ Most rows apply without a restart. The Hub that serves the write applies the cha
 - **Session duration** — how long a session lives after your last activity. See [Sessions and signing out](/docs/using/accounts/#sessions-and-signing-out).
 - **Secure cookies** — serve the session cookie with the `__Host-` prefix behind TLS; changing it signs everybody out.
 
-In solo mode only **Public base URL** stays.
+Every row here stays in solo mode. A solo Hub whose account holds a password signs its network callers in with an ordinary session and an ordinary cookie, so both of the last two apply to it.
+
+### Network access
+
+Solo mode only. Which addresses this Hub answers on, beside the one `-listen` gives it, and the password that guards them.
+
+**Serving now** lists what the Hub answers on right now, with the reason for each entry — from `-listen`, an address you added, or one socket serving both. **Additional addresses** is the editable list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
+
+Applying an address asks every network address for a sign-in as `solo`, `127.0.0.1` included, so the panel asks you to set that password first and shows the same fields the sign-up page uses. Once the account has one, the panel points at **Account → Password** instead. The desktop app's local socket never asks.
+
+Overlapping addresses merge: ask for every interface on the port `-listen` already uses and one socket serves both, which the "Serving now" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 
 ### Sign-up & Access
 
@@ -264,9 +274,11 @@ See [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-lim
 One row per counted operation:
 
 - **Rate limit - elevation** — failed attempts to verify your identity for a sensitive change: 5 per 15 minutes, per user.
+- **Rate limit - email_change** — requests to change an account email that reach the mail machinery: 6 per 15 minutes, per user.
+- **Rate limit - login_anonymous** — failed passwords at the sign-in form: 10 per 15 minutes, per client address.
 - **Rate limit - oauth_anonymous** — the authorization server's anonymous endpoints: 600 per 10 minutes, per client address.
 
-In solo mode only the anonymous limit stays.
+In solo mode the two address-keyed limits stay, and the two user-keyed ones are hidden.
 
 ### Limits & Timeouts
 

@@ -182,7 +182,21 @@ type UIMeta struct {
 	// which also takes it out of `leapmux control admin settings`. Marking a key
 	// that solo still reads makes it unadministrable in BOTH surfaces.
 	HiddenInSolo bool
-	Fields       []Field
+	// HiddenInHub is the mirror of HiddenInSolo: it omits the key from every
+	// deployment that is NOT solo, which is `leapmux hub` and `leapmux dev`
+	// alike (dev carries SoloMode false).
+	//
+	// Everything HiddenInSolo says applies here with the modes exchanged --
+	// it is per KEY, it is the only hiding mechanism, and it removes the key
+	// from `leapmux control admin settings` as well as from the dialog.
+	//
+	// The two are separate flags rather than one three-valued field because a
+	// key may carry NEITHER, which is the common case, and an enum would make
+	// every ordinary declaration state a visibility it does not care about. A
+	// key carrying BOTH is a key no deployment can administer; the schema
+	// test refuses it.
+	HiddenInHub bool
+	Fields      []Field
 }
 
 // clone deep-copies the metadata so a reader can never reach the

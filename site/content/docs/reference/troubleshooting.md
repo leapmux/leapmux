@@ -169,13 +169,13 @@ See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/ad
 The browser can't connect to the Hub at all (connection refused / timeout) from a different host than the one running LeapMux.
 
 **Cause**
-Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreachable from other machines on purpose, because solo mode auto-authenticates every request as the admin with no credentials.
+Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreachable from other machines on purpose, because until the `solo` account has a password every request is authenticated as the admin with no credentials.
 
 **Fix**
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.
 - To serve other machines, do **not** simply rebind solo to all interfaces. Either:
   - Run `leapmux hub` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
-  - If you must expose solo mode, restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel). Solo mode emits a warning when it binds a non-loopback address. The warning states that every request is auto-authenticated as the admin, so anyone who can reach the port has full admin access without credentials. See [Security & Threat Model](/docs/admin/security/) for the full implications.
+  - To expose solo mode, set the `solo` account's password first and add the address in **Preferences → Administration → Network access**; every network address then asks for that password. Restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust. Solo mode emits a warning when it binds a non-loopback address, because until that password exists every request is authenticated as the admin without credentials. See [Security & Threat Model](/docs/admin/security/) for the full implications.
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for binding and listen-address options.
 
@@ -248,7 +248,7 @@ For security, the Hub returns the identical error for both an unknown username a
 **Fix**
 Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/admin/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/admin/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped.
 
-Either way, every session, token, **and passkey** the account holds is revoked. Solo mode has no login at all — it auto-authenticates every request.
+Either way, every session, token, **and passkey** the account holds is revoked. Solo mode has one account, `solo`, and it asks for a password only once you set one; change it in **Preferences → Account → Password**.
 
 ### Passkey sign-in fails or the authenticator never appears
 

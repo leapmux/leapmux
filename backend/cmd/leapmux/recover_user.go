@@ -48,11 +48,11 @@ func runBootstrapCreateAdmin(cmd cmdCtx, args []string) error {
 		}
 		// Every creation path refuses a reserved system username, and this
 		// one is offline, so nothing else stands behind it. A row named
-		// "solo" in a non-solo database is auto-authenticated for EVERY
-		// request if the same data dir is later opened with `leapmux solo`
-		// — the interceptor's solo short-circuit runs before the email gate
-		// and before the admin gate, so that row's identity is handed out
-		// with no credential at all.
+		// "solo" in a non-solo database BECOMES the administrator if the
+		// same data dir is later opened with `leapmux solo` — the solo rung
+		// runs before the email gate and before the admin gate, so that
+		// row's identity is handed out against the password this command
+		// set, and with no credential at all when it set none.
 		if usernames.IsReservedSystem(slug) {
 			return fmt.Errorf("%q is a reserved username", slug)
 		}

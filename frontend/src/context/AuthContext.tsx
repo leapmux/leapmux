@@ -16,7 +16,7 @@ import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
-import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
+import { isAutoAuthenticated, loadSystemInfo } from '~/lib/systemInfo'
 import { passkeyErrorMessage, startAuthentication } from '~/lib/webauthn'
 
 const log = createLogger('auth')
@@ -75,7 +75,7 @@ export interface AuthState {
    * Without this, a transport failure is indistinguishable from an expired
    * cookie: in solo mode (where there is no login to fall back to) the guard
    * would show its loading fallback forever. And a failed `loadSystemInfo`
-   * leaves `isSoloMode()` at its fabricated `false`, so the app shows a
+   * leaves `isAutoAuthenticated()` at its fabricated `false`, so the app shows a
    * "Log out" button to a solo user whose session restore then SUCCEEDS, and
    * that button strands them on a login form no credentials can satisfy. Both
    * are unrecoverable
@@ -383,7 +383,11 @@ export const AuthProvider: ParentComponent = (props) => {
 
   // Register auth error callback for auto-logout on 401.
   setOnAuthError(() => {
-    if (!isSoloMode())
+    // isAutoAuthenticated, not isSoloMode: the question is whether THIS
+    // connection holds a session to lose. A solo hub reached at a network
+    // address does -- it signed in -- so a 401 there must clear the user like
+    // anywhere else, or the app keeps rendering a session the hub refused.
+    if (!isAutoAuthenticated())
       clearAuthUser()
   })
 
@@ -524,7 +528,9 @@ export const AuthProvider: ParentComponent = (props) => {
     })
 
   const logout = async () => {
-    if (isSoloMode())
+    // A credential-free connection has no session to end; every other one,
+    // solo or not, signs out normally.
+    if (isAutoAuthenticated())
       return
     try {
       await authClient.logout({})

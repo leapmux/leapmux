@@ -107,6 +107,9 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		ReadCookie:    true,
 		SecureCookies: secureCookie,
 		Contexts:      a.authLease.registry,
+		// The hub's shared gate, so a WebSocket handshake and a Connect
+		// procedure admit exactly the same solo callers.
+		SoloGate: a.authLease.registry.SoloGate(),
 	})
 	if err != nil {
 		return nil, err
