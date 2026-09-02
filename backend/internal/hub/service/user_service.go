@@ -448,8 +448,10 @@ func (s *UserService) handOverSoloSession(ctx context.Context, userInfo *auth.Us
 	if !userInfo.SoloAuthenticated() {
 		return nil
 	}
-	// Before the session exists, so no window admits a credential-free caller
-	// between the commit and the gate learning about it.
+	// The password already committed above, and the gate reads the store while
+	// its latch is false -- so the rule is armed for every caller from here on
+	// whether or not this line runs. It saves those callers a store read; it is
+	// not what closes the door. See SoloGate.NotePasswordSet.
 	s.soloGate.NotePasswordSet()
 
 	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, userInfo.ID, settings.SessionDuration(s.set.Snapshot(ctx)))

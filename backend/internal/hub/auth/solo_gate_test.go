@@ -128,8 +128,9 @@ func TestSoloGate_SeesAPasswordWrittenAfterItRead(t *testing.T) {
 	assert.True(t, gate.PasswordSet(context.Background()))
 }
 
-// NotePasswordSet closes the window between the write committing and the next
-// store read. It must never widen access, only narrow it.
+// NotePasswordSet only saves the next callers a store read; the test above is
+// what proves the rule is enforced without it. What this pins is the direction:
+// the latch must never widen access, only narrow it.
 func TestSoloGate_NotePasswordSet(t *testing.T) {
 	t.Parallel()
 	st := soloStore(t)

@@ -121,11 +121,19 @@ func (g *SoloGate) PasswordSet(ctx context.Context) bool {
 
 // NotePasswordSet records that the account now holds a password.
 //
-// The gate would learn this from its next store read anyway. Calling it at the
-// write closes the window in between, which matters because the write that
-// sets the first password is also the moment every TCP caller starts needing
-// one: a request that slipped through that window would be authenticated as
-// the administrator with nothing presented.
+// It is an OPTIMIZATION and not the enforcement, and the difference matters to
+// anyone changing this file. What enforces the rule is the store read in
+// accountHasPassword: while the latch is false every request asks the database,
+// so a password committed by any path -- this process, the admin CLI, another
+// hub on the same database -- is honored on the very next request whether or
+// not anything called this. TestSoloGate_SeesAPasswordWrittenAfterItRead pins
+// exactly that, with no call to this method.
+//
+// So calling it here buys one thing: the requests between the write and the
+// first store read skip that read. Do NOT take the store fallback away in
+// favour of this latch. A gate seeded only at construction and updated only
+// here would never learn about a password set through any other path, and TCP
+// would stay credential-free until the hub restarted.
 func (g *SoloGate) NotePasswordSet() {
 	if g == nil {
 		return
