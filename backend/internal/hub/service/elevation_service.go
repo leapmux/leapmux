@@ -976,6 +976,16 @@ func (s *UserService) ElevateSession(ctx context.Context, req *connect.Request[l
 
 // BeginPasskeyElevation starts the step-up assertion.
 func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Request[leapmuxv1.BeginPasskeyElevationRequest]) (*connect.Response[leapmuxv1.BeginPasskeyElevationResponse], error) {
+	// The PASSKEY factor is refused by mode, unlike the elevation surface
+	// around it. rejectSoloElevation reads the caller, because a solo hub with
+	// a password has real sessions to elevate -- but no account there can ever
+	// hold a passkey, and GetSystemInfo reports passkey_enabled false for
+	// every origin. Without this a signed-in solo caller reached the WebAuthn
+	// engine and was answered "no passkeys registered", which reads as a
+	// missing credential rather than a feature the hub does not offer.
+	if err := rejectSoloPasskeyManagement(s.cfg.SoloMode); err != nil {
+		return nil, err
+	}
 	userInfo, _, err := s.elevationCaller(ctx)
 	if err != nil {
 		return nil, err
@@ -1002,6 +1012,10 @@ func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *connect.Re
 // window. It reports elevation_expires_at, the same field the password path
 // reports, so a client has one success path.
 func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyElevationRequest]) (*connect.Response[leapmuxv1.FinishPasskeyElevationResponse], error) {
+	// Refused by mode, for the reason BeginPasskeyElevation states.
+	if err := rejectSoloPasskeyManagement(s.cfg.SoloMode); err != nil {
+		return nil, err
+	}
 	userInfo, actingSessionID, err := s.elevationCaller(ctx)
 	if err != nil {
 		return nil, err

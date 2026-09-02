@@ -231,7 +231,7 @@ func exportedMembers(typ reflect.Type) []reflect.StructField {
 // So every exported member of every mirrored struct must have ONE home:
 // recorded in the golden struct, or listed with a reason in
 // omittedByPolicy or omittedWhileUnused. A new member has neither, and
-// this walk names it.
+// this walk reaches it.
 func TestGoldenRecordsEveryDeclaredMember(t *testing.T) {
 	for _, m := range goldenMirrors {
 		for _, member := range exportedMembers(m.source) {

@@ -95,3 +95,26 @@ func TestRemoteHost_IsStableAcrossPorts(t *testing.T) {
 
 	assert.Equal(t, first, second)
 }
+
+// The two entry points must reduce an address the same way, or one caller
+// holds two budgets and the sign-in limit counts neither of them properly.
+//
+// ratelimit.clientAddressKey reads r.RemoteAddr and RemoteHost reads the peer
+// the http.Server stamped; both go through HostOf, and this pins that the one
+// reduction handles every shape either of them can see.
+func TestHostOf(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"192.168.1.24:51234", "192.168.1.24"},
+		{"[2001:db8::1]:51234", "2001:db8::1"},
+		{"[fe80::1%en0]:51234", "fe80::1%en0"},
+		// No port at all: a unix socket path, or an address a transport
+		// rendered without one.
+		{"/tmp/hub.sock", "/tmp/hub.sock"},
+		{"192.168.1.24", "192.168.1.24"},
+		{"", ""},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			assert.Equal(t, tc.want, peer.HostOf(tc.in))
+		})
+	}
+}

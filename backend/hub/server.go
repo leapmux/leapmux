@@ -201,7 +201,7 @@ type Server struct {
 	settings   *settings.Manager
 	idpHandler *service.IdPHandler
 	server     *http.Server
-	// listeners owns every TCP socket, including the one -listen named, and
+	// listeners owns every TCP socket, including the one -listen gave, and
 	// rebinds them when the extra_listen_addresses setting changes.
 	listeners *listenerSet
 	// listenerErrs carries a TCP listener that stopped without being asked
@@ -262,26 +262,30 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 	acquired.tcpLn = tcpLn
 
-	// Declared here and assigned once the http.Server exists, because the
-	// consumers below capture listenAddr and call it per request.
-	var listeners *listenerSet
-	// listenAddr is the TCP address a browser reaches this hub at, in the form
-	// -listen carries. Every URL the hub derives for a browser or a remote
-	// worker reads it instead of cfg.Listen, because cfg.Listen is no longer
-	// the whole answer: a desktop hub binds NO TCP address and can still gain
-	// one from the extra_listen_addresses setting.
+	// The listener set takes over the base listener HERE, so the failure paths
+	// below release it through the set rather than twice, and so the reporter
+	// can hold it by value. It gets its http.Server later, once the mux and the
+	// CSP that server is built from exist; see setServer.
 	//
-	// It falls back to cfg.Listen, which is what makes it a no-op everywhere
-	// the two cannot differ. Extra addresses are hidden_in_hub, so only a solo
-	// hub has any, and in `leapmux hub` and `leapmux dev` this returns exactly
-	// what it always did.
-	listenReports := listenReporter{get: func() *listenerSet { return listeners }}
-	listenAddr := func() string {
-		if addr := listenReports.PrimaryListenAddr(); addr != "" {
-			return addr
-		}
-		return cfg.Listen
-	}
+	// listenerErrs is buffered by one: Serve reads the FIRST fault and tears
+	// the hub down, so a listener that fails while that teardown runs must not
+	// park its goroutine on an unread channel.
+	listenerErrs := make(chan error, 1)
+	listeners := newListenerSet(tcpLn, baseAddr, listenerErrs)
+	acquired.tcpLn = nil
+	acquired.listeners = listeners
+
+	// listenReports answers "which TCP address does a browser reach this hub
+	// at", and every URL the hub derives for a browser or a remote worker asks
+	// it instead of cfg.Listen -- because cfg.Listen is no longer the whole
+	// answer: a desktop hub binds NO TCP address and can still gain one from
+	// the extra_listen_addresses setting.
+	//
+	// The REPORTER owns the fallback to cfg.Listen, so the rule has one home
+	// and no consumer repeats it. Extra addresses are hidden_in_hub, so only a
+	// solo hub has any, and in `leapmux hub` and `leapmux dev` this returns
+	// exactly what it always did.
+	listenReports := listenReporter{set: listeners, configured: cfg.Listen}
 
 	listenURL, err := cfg.LocalListenURL()
 	if err != nil {
@@ -348,7 +352,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// Bot-protection managers, shared between the interceptor chain and the
 	// auth service so issuance and enforcement cannot disagree.
 	captchaMgr := captcha.NewManager(st, setMgr, cfg.SoloMode)
-	rateLimitMgr := ratelimit.NewManager(setMgr, cfg.SoloMode)
+	rateLimitMgr := ratelimit.NewManager(setMgr)
 
 	// Provision the default captcha row at startup so the request path
 	// never writes: a first Login on a fresh install must not depend on a
@@ -498,9 +502,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mailSender := mail.NewRecipientLimitedSender(mail.NewSettingsSender(setMgr), setMgr, time.Now)
 	// The renderer derives its base URL per render so a public_url change
 	// reaches the next email's links and footers without a restart.
-	mailRenderer := mail.Renderer{BaseURL: func() string {
-		return settings.BaseURL(setMgr.Snapshot(context.Background()), listenAddr())
-	}}
+	// ONE closure for the browser-facing base URL. The mail renderer and the
+	// OAuth issuer both need it, and two copies of the same two-call body are
+	// two places a later edit can change one of.
+	hubBaseURL := func() string {
+		return settings.BaseURL(setMgr.Snapshot(context.Background()), listenReports.PrimaryListenAddr())
+	}
+	mailRenderer := mail.Renderer{BaseURL: hubBaseURL}
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
 	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout)
@@ -624,9 +632,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Validator: tokenValidator,
 		Lifecycle: lifecycle,
 		Settings:  setMgr,
-		HubURL: func() string {
-			return settings.BaseURL(setMgr.Snapshot(context.Background()), listenAddr())
-		},
+		HubURL:    hubBaseURL,
 		// The three anonymous legs share the interceptor's budget table; see
 		// ratelimit.AllowHTTP.
 		Limiter:  rateLimitMgr,
@@ -645,11 +651,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// UserService drives credential-rotation paths (ChangePassword) through the
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
-	// WithSoloGate: ChangePassword is the write that ends a solo hub's
-	// credential-free access, so it needs the gate to re-arm the rule and to
-	// hand the browser that made the write a real session of its own.
-	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer, ks).
-		WithSoloGate(authContexts.SoloGate())
+	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer, ks)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -705,8 +707,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// next unauthenticated login does not write hub_settings from inside
 		// its own request handler.
 		settings.WithAfterReset(captcha.AltchaKey.Name(), captchaMgr.EnsureProvisioned),
+		// The one rule that spans a settings key and an ACCOUNT: a solo hub
+		// may not store an address other machines can reach while the account
+		// that would guard it has no password. It is attached here rather than
+		// in settingsregistry because it needs the gate, which the interceptor
+		// above owns.
+		settings.WithCrossValidation(refuseUnguardedExposure(cfg.SoloMode, authContexts.SoloGate())),
 	)
-	adminNetworkSvc := service.NewAdminNetworkService(cfg, setMgr, authContexts.SoloGate(), listenReports)
+	adminNetworkSvc := service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
+		Config: cfg, Settings: setMgr, SoloGate: authContexts.SoloGate(), Listen: listenReports,
+	})
 	adminNetworkPath, adminNetworkHandler := leapmuxv1connect.NewAdminNetworkServiceHandler(adminNetworkSvc, connectOpts)
 	mux.Handle(adminNetworkPath, adminNetworkHandler)
 
@@ -821,7 +831,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// this is where the hub records which one accepted the connection.
 		// Solo authenticates a local IPC caller with no credentials, and every
 		// TCP caller signs in once the account holds a password; see
-		// auth.authInterceptor.soloCredentialFree.
+		// auth.SoloGate.CredentialFree, which both ladders ask.
 		//
 		// Comparing the listener rather than the accepted connection's address
 		// is what makes the mark reliable. A named-pipe connection reports a
@@ -873,16 +883,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// safeguard.
 	revWatcher := revocationwatcher.New(st, lifecycle)
 
-	// The listener set takes over the base listener here, so the failure
-	// paths below release it through the set rather than twice.
-	//
-	// Buffered by one: Serve reads the FIRST fault and tears the hub down, so
-	// a listener that fails while that teardown runs must not park its
-	// goroutine on an unread channel.
-	listenerErrs := make(chan error, 1)
-	listeners = newListenerSet(server, tcpLn, baseAddr, listenerErrs)
-	acquired.tcpLn = nil
-	acquired.listeners = listeners
+	// The set serves through THIS server from here on; see setServer.
+	listeners.setServer(server)
 
 	// Bind the stored extra addresses, BEST EFFORT. A stored address stops
 	// existing whenever a VPN drops or a DHCP lease moves, and a hub that
@@ -892,12 +894,22 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	//
 	// This is also where a merge takes effect at startup: a stored `*:4327`
 	// closes the `127.0.0.1:4327` socket bound above and takes the port.
-	extraAddrs, extraErr := settings.ExtraListenAddresses(startupSnap)
-	if extraErr != nil {
-		slog.Warn("the stored extra listen addresses could not be read; serving only the -listen address",
-			"error", extraErr)
-	} else {
-		listeners.ApplyBestEffort(extraAddrs)
+	//
+	// SOLO ONLY, and the mode test is here rather than in the listener set
+	// because the key is HiddenInHub: `leapmux hub` and `leapmux dev` do not
+	// list it, do not let an operator write it, and refuse the write with
+	// "not administrable in hub mode". A data directory a `leapmux solo` run
+	// wrote `0.0.0.0:8080` into and a later `leapmux hub` opened would
+	// otherwise bind that address at every start, with no surface an operator
+	// could see it in and no verb that could clear it.
+	if cfg.SoloMode {
+		extraAddrs, extraErr := settings.ExtraListenAddresses(startupSnap)
+		if extraErr != nil {
+			slog.Warn("the stored extra listen addresses could not be read; serving only the -listen address",
+				"error", extraErr)
+		} else {
+			listeners.ApplyBestEffort(extraAddrs)
+		}
 	}
 
 	// Apply a later change to the same row, so an operator who adds an address
@@ -913,16 +925,25 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// Refusing to bind the rest of the list would leave the hub in a state its
 	// stored row does not describe, and would hide which entry is the problem;
 	// the administration surface reports each failure against its address.
-	// Apply is diff-based, so an unrelated settings write does nothing here.
-	setMgr.Subscribe(func(s *settings.Snapshot) {
-		addrs, err := settings.ExtraListenAddresses(s)
-		if err != nil {
-			slog.Warn("the stored extra listen addresses could not be read; the served addresses are unchanged",
-				"error", err)
-			return
-		}
-		listeners.ApplyBestEffort(addrs)
-	})
+	//
+	// The manager fires EVERY subscriber on every write -- a subscriber is
+	// registered for the snapshot, not for one key -- so this runs for a
+	// session duration or an SMTP change too. ApplyBestEffort returns at once
+	// when the address list did not change, which is what keeps an unrelated
+	// save off the sockets.
+	//
+	// SOLO ONLY, for the reason the startup apply gives.
+	if cfg.SoloMode {
+		setMgr.Subscribe(func(s *settings.Snapshot) {
+			addrs, err := settings.ExtraListenAddresses(s)
+			if err != nil {
+				slog.Warn("the stored extra listen addresses could not be read; the served addresses are unchanged",
+					"error", err)
+				return
+			}
+			listeners.ApplyBestEffort(addrs)
+		})
+	}
 
 	return &Server{
 		cfg:               cfg,
@@ -968,17 +989,27 @@ func (s *Server) PrimaryListenAddr() string {
 	return s.listeners.PrimaryListenAddr()
 }
 
-// ListenerStatus reports every address the hub serves on, plus every
-// configured address it could not bind and why. It is the administration
-// surface's read.
-func (s *Server) ListenerStatus() []BoundAddress {
-	return s.listeners.Bound()
+// PrintBannerURL prints the address an operator should open, to stderr.
+//
+// The two launchers gathered the same two arguments -- the public_url setting
+// and the primary listen address -- and both are facts this server owns, so a
+// third launcher would have copied the gather rather than called it. The RULE
+// that public_url wins still lives once, in logging.PrintBannerURL.
+func (s *Server) PrintBannerURL() {
+	logging.PrintBannerURL(
+		settings.KeyPublicURL.Of(s.settings.Snapshot(context.Background())),
+		s.PrimaryListenAddr())
 }
 
 // HasNonLoopbackAddress reports whether the hub answers on an address another
 // machine can reach.
+//
+// The solo launcher asks, AFTER NewServer returns, so its exposure warning
+// reads the sockets the hub actually bound rather than the -listen string. A
+// stored extra address is bound by then, and that is the whole difference:
+// -listen alone cannot see the address a settings row published.
 func (s *Server) HasNonLoopbackAddress() bool {
-	return s.listeners.HasNonLoopbackAddress()
+	return listenset.AnyNonLoopback(s.listeners.Bound())
 }
 
 // WorkerCredentials holds the credentials for a registered worker.
@@ -1258,6 +1289,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	// listener error and the watcher's separate Close() error -- not the lease-loss
 	// that is the most process-fatal cause. Close has now drained the watcher's
 	// goroutines, so any pending fatal is available; fold it in.
+	teardownErrs.foldPendingListenerError(s.listenerErrs)
 	teardownErrs.foldPendingWatcherError(s.revocationWatcher.Errors())
 	teardownErrs.storeClose = s.store.Close()
 	return teardownErrs.finalize()
@@ -1280,6 +1312,24 @@ func logShutdownCause(serveCtx context.Context) {
 		return
 	}
 	slog.Info("hub shutting down...")
+}
+
+// foldPendingListenerError folds a still-buffered TCP listener fault into
+// tcpListener. Serve's teardown select consumes exactly ONE of its cases, so a
+// listener that died on its own while another cause was also ready leaves its
+// error unread in the buffered channel -- and unlike the local listener, which
+// the drain below it reads, nothing else ever reads this one. The aggregate
+// then reports the winning cause and says nothing about the address the hub
+// stopped answering on. This is a non-blocking drain, and a no-op when the
+// select already consumed the fault or none occurred.
+func (e *serverTeardownErrors) foldPendingListenerError(listenerErrs <-chan error) {
+	select {
+	case listenerErr := <-listenerErrs:
+		if listenerErr != nil {
+			e.tcpListener = errors.Join(e.tcpListener, listenerErr)
+		}
+	default:
+	}
 }
 
 // foldPendingWatcherError folds a still-buffered fatal watcher error into

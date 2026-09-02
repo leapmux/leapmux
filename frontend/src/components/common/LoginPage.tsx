@@ -23,7 +23,19 @@ export const LoginPage: Component = () => {
   const auth = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [username, setUsername] = createSignal(isSoloMode() ? USERNAME_SOLO : '')
+  const [typedUsername, setTypedUsername] = createSignal('')
+  /*
+   * DERIVED, never a seeded signal. `isSoloMode()` is a plain module read whose
+   * pre-bootstrap value is a fabrication, and both gates above render this page
+   * WHILE that load is in flight -- `SetupGate` says so ("On the four
+   * credential pages the unknown answer costs nothing, so they render") and so
+   * does `SignedOutOnly`. A signal seeded from it therefore held `''` on every
+   * bookmarked or reloaded `/login`, while the reactive `readOnly` below flipped
+   * true when the snapshot landed: an empty field nobody could type in, and a
+   * Sign in button `canSubmit` never enabled. Reading it here instead re-runs
+   * when the answer arrives.
+   */
+  const username = () => (isSoloMode() ? USERNAME_SOLO : typedUsername())
   const [password, setPassword] = createSignal('')
   const methodSelection = createAuthMethodSelection('login')
   const effectiveMethod = methodSelection.effectiveMethod
@@ -165,7 +177,7 @@ export const LoginPage: Component = () => {
               type="text"
               value={username()}
               readOnly={isSoloMode()}
-              onInput={e => setUsername(e.currentTarget.value)}
+              onInput={e => setTypedUsername(e.currentTarget.value)}
               autocomplete="username"
             />
           </label>

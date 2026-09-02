@@ -412,19 +412,12 @@ func validateMaxMessageSize(v int64) error {
 	return channelwire.ValidateMaxMessageSize(int(v))
 }
 
-// MaxExtraListenAddresses caps how many addresses extra_listen_addresses may
-// hold. Every entry costs a listener, a serve goroutine and a file descriptor
-// for the life of the process, and the apply path binds them one at a time
-// while it holds the listener set's lock. A machine with more than eight
-// interfaces to publish on wants a wildcard, which is one entry.
-const MaxExtraListenAddresses = 8
-
 // ExtraListenValue is the extra_listen_addresses key's shape: the addresses an
 // administrator adds BESIDE the one -listen gives.
 //
 // The -listen address is not in here and cannot be. It is read before the
 // database opens, so a hub whose stored settings are unreadable still binds
-// the address its operator named on the command line.
+// the address its operator gave on the command line.
 type ExtraListenValue struct {
 	Addresses []string `json:"addresses,omitempty"`
 }
@@ -449,9 +442,9 @@ func ExtraListenAddresses(s *Snapshot) ([]listenset.Addr, error) {
 // admin CLI writes the same key and a name there would expose an address the
 // operator never saw.
 func validateExtraListen(v ExtraListenValue) error {
-	if len(v.Addresses) > MaxExtraListenAddresses {
+	if len(v.Addresses) > contracts.MaxExtraListenAddresses {
 		return fmt.Errorf("at most %d extra listen addresses (got %d); use a wildcard address to serve every interface",
-			MaxExtraListenAddresses, len(v.Addresses))
+			contracts.MaxExtraListenAddresses, len(v.Addresses))
 	}
 	seen := make(map[string]bool, len(v.Addresses))
 	for i, raw := range v.Addresses {

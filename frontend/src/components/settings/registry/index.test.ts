@@ -291,6 +291,21 @@ describe('createBrowserRows without a loaded account schema', () => {
     expect(row()?.hidden?.()).toBe(true)
   })
 
+  // The MIRROR of the rule above, and the reason it cannot be left half done:
+  // `ListUserSettings` filters NEITHER flag -- unlike `ListSettings`, which
+  // drops a hub-scope descriptor its own deployment hides -- so this join is
+  // the account scope's one enforcement point.
+  it('hides an account row the hub flags hiddenInHub outside solo mode', () => {
+    const marked = wire.map(d => (d.key === 'turn_end_sound_volume'
+      ? { ...d, hiddenInHub: true }
+      : d)) as ProtoSettingDescriptor[]
+    const row = () => descriptorsOf(prefs(), marked).find(d => d.id === 'notifications.turnEndSoundVolume')
+    expect(row()?.hidden?.()).toBe(true)
+
+    solo.mockReturnValue(true)
+    expect(row()?.hidden?.()).toBe(false)
+  })
+
   // The declaration's own rule is not lost when the hub adds one of its
   // own: the volume row hides while NEITHER tier can play a sound, and that
   // still holds outside solo mode.
@@ -589,7 +604,7 @@ describe('account schema parity with the Go declarations', () => {
   // The registry no longer states which values exist -- the wire does -- so
   // what it can still get wrong is failing to NAME one. An unnamed value
   // falls back to its own slug, which is legible but is not English, and
-  // this is what catches a value Go added before the dialog names it.
+  // this is what catches a value Go added before the dialog labels it.
   it('names every enum value the hub declares', () => {
     let checked = 0
     for (const key of golden) {
@@ -712,7 +727,7 @@ describe('account schema parity with the Go declarations', () => {
   // The custom-editor id picks a control too. `controlForField` refuses an
   // id this client does not carry rather than inventing a text box over an
   // opaque value, so the id decides whether the row exists at all.
-  it('builds the custom editor the hub names', () => {
+  it('builds the custom editor the hub identifies', () => {
     let checked = 0
     for (const key of golden) {
       for (const field of key.fields) {
@@ -720,7 +735,7 @@ describe('account schema parity with the Go declarations', () => {
           continue
         expect(
           field.customId,
-          `${key.key}.${field.name} is custom but the golden names no editor`,
+          `${key.key}.${field.name} is custom but the golden identifies no editor`,
         ).toBeTruthy()
         expect(rowFor(key.key, field.name)?.control)
           .toEqual({ kind: 'custom', id: field.customId })

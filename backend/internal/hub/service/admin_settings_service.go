@@ -133,8 +133,8 @@ func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, e
 	// one the operator could still write -- and eleven keys are hidden in
 	// solo.
 	//
-	// The message names THIS deployment rather than solo, because the
-	// predicate now has two arms and telling a `leapmux hub` operator that a
+	// The message states THIS deployment rather than solo, because the
+	// predicate now has two cases and telling a `leapmux hub` operator that a
 	// key is unavailable "in solo mode" describes a hub they are not running.
 	if s.hidden(desc) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,

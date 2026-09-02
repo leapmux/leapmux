@@ -130,7 +130,7 @@ describe('authGuard', () => {
     expect(screen.queryByTestId('password-setup-gate')).not.toBeInTheDocument()
   })
 
-  // The other negative arm, and the one that runs most often: the desktop app
+  // The other negative case, and the one that runs most often: the desktop app
   // reaches its hub over a local socket, so every launch is credential-free
   // with nothing exposed. A gate keyed on that flag alone would block the
   // desktop app on every start.

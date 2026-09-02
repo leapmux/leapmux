@@ -1,42 +1,36 @@
 package hub
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/listenset"
-	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 )
 
-// AddressSource says why the hub binds an address, for the administration
-// surface that reports what is serving.
-type AddressSource string
+// The hub's own spellings for the shared listener vocabulary, so this file
+// reads as it always did while `listenset` owns the type. A report crosses to
+// the service package unconverted now: the mirror it used to be converted into
+// stringified the address, which takes String() and DialAddr() away from every
+// consumer on the far side.
+type (
+	AddressSource = listenset.Source
+	BoundAddress  = listenset.Bound
+)
 
 const (
-	// SourceListen is the address -listen names, bound alone.
-	SourceListen AddressSource = "listen"
-	// SourceExtra is an address the extra_listen_addresses setting adds.
-	SourceExtra AddressSource = "extra"
-	// SourceMerged is an address that is BOTH: the operator asked for it and
-	// it also covers what -listen named, so one socket serves both. The panel
-	// says so, because "127.0.0.1:4327 is gone" and "127.0.0.1:4327 is served
-	// by *:4327" look identical in a list that only names what is bound.
-	SourceMerged AddressSource = "merged"
+	SourceListen = listenset.SourceListen
+	SourceExtra  = listenset.SourceExtra
+	SourceMerged = listenset.SourceMerged
 )
-
-// BoundAddress is one entry of the listener set's report.
-type BoundAddress struct {
-	Addr   listenset.Addr
-	Source AddressSource
-	// Err is why this address is NOT serving, and empty when it is. A stored
-	// address whose interface went away must not fail the hub, so the failure
-	// travels to the administration surface instead of to a startup error.
-	Err string
-}
 
 // removedListener is an address Apply closed, kept so a failure later in the
 // same call can bind it again.
@@ -44,6 +38,25 @@ type removedListener struct {
 	addr   listenset.Addr
 	source AddressSource
 }
+
+// failedAddress is one address the hub was asked to serve and could not bind,
+// with the operating system's reason and why the hub wanted it.
+type failedAddress struct {
+	addr   listenset.Addr
+	source AddressSource
+	err    string
+}
+
+// bindFailure is the one address Apply could not bind. ApplyBestEffort reads it
+// to withhold exactly that entry and ask again for everything else, so an
+// address that already serves is never closed for another address's failure.
+type bindFailure struct {
+	addr listenset.Addr
+	err  error
+}
+
+func (e *bindFailure) Error() string { return fmt.Sprintf("listen %s: %v", e.addr, e.err) }
+func (e *bindFailure) Unwrap() error { return e.err }
 
 // boundListener is one live socket and how it was opened.
 type boundListener struct {
@@ -69,7 +82,7 @@ type boundListener struct {
 // it out means no reconfiguration path can ever close it by mistake.
 type listenerSet struct {
 	server *http.Server
-	// base is the address -listen named, or nil under NoTCP. It is never
+	// base is the address -listen gave, or nil under NoTCP. It is never
 	// dropped from the wanted set: Apply merges it with the extras, so an
 	// operator can widen it but never take it away, and a settings row can
 	// never leave the hub with no socket its operator asked for.
@@ -87,7 +100,14 @@ type listenerSet struct {
 	// failed records the addresses the last Apply could not bind, so the
 	// administration surface can state the reason instead of showing the
 	// address as simply absent.
-	failed map[string]string
+	//
+	// It holds the ADDRESS and the SOURCE, not a string to parse back. Bound()
+	// used to re-parse the map key, with a silent `continue` on a parse error
+	// -- a branch that could only hide the failure the map exists to report --
+	// and it labelled every entry SourceExtra, so a -listen socket a rollback
+	// could not restore was reported to the operator as an "extra" they never
+	// configured and cannot remove.
+	failed map[string]failedAddress
 	// serving is false until Serve runs, and serveLocked spawns nothing while
 	// it is.
 	//
@@ -98,7 +118,12 @@ type listenerSet struct {
 	// listener and Serve starts every goroutine at once.
 	serving bool
 	closed  bool
-	wg      sync.WaitGroup
+	// lastExtras is the canonical spelling of the extras ApplyBestEffort last
+	// settled on, and applied says whether it settled at all; see
+	// sameAsLastRequest.
+	lastExtras string
+	applied    bool
+	wg         sync.WaitGroup
 }
 
 // newListenerSet builds the set around an already-bound base listener.
@@ -106,15 +131,19 @@ type listenerSet struct {
 // The base is bound by the caller, BEFORE the database opens, and that order
 // is deliberate: two hubs racing for the same port must fail fast, with no
 // window in which one of them has done database work. The extras cannot join
-// that early, because the row that names them is not readable until the store
+// that early, because the row that holds them is not readable until the store
 // is open.
-func newListenerSet(server *http.Server, baseLn net.Listener, base *listenset.Addr, serveErr chan<- error) *listenerSet {
+//
+// The http.Server arrives LATER, through setServer. It is built from the mux
+// and the CSP the whole service wiring produces, and the set is built before
+// any of that so the reporter can hold it by value: a set resolved through a
+// getter forced every read to carry a nil branch that nothing could reach.
+func newListenerSet(baseLn net.Listener, base *listenset.Addr, serveErr chan<- error) *listenerSet {
 	s := &listenerSet{
-		server:   server,
 		base:     base,
 		serveErr: serveErr,
 		active:   make(map[string]*boundListener),
-		failed:   make(map[string]string),
+		failed:   make(map[string]failedAddress),
 	}
 	if baseLn != nil && base != nil {
 		resolved := resolvePort(*base, baseLn)
@@ -122,6 +151,17 @@ func newListenerSet(server *http.Server, baseLn net.Listener, base *listenset.Ad
 		s.active[resolved.String()] = &boundListener{ln: baseLn, addr: resolved, source: SourceListen}
 	}
 	return s
+}
+
+// setServer attaches the http.Server the set serves its listeners with.
+//
+// It is called once, before Serve. A set with no server binds and reports
+// perfectly well: serveLocked spawns nothing while `serving` is false, and
+// Serve is what sets it -- which is strictly after this.
+func (s *listenerSet) setServer(server *http.Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.server = server
 }
 
 // resolvePort replaces a port the caller left to the operating system with the
@@ -141,6 +181,37 @@ func resolvePort(addr listenset.Addr, ln net.Listener) listenset.Addr {
 		return addr
 	}
 	return addr.WithPort(tcpAddr.Port)
+}
+
+// closeLocked closes one listener and takes it out of the live set, returning
+// the operating system's error unfiltered so each caller can decide what a
+// failure means. The caller holds the lock.
+//
+// The `closing` mark goes on FIRST and is what the three callers share: without
+// it the serve goroutine reads its own Serve return as a listener that died on
+// its own and tears the hub down, so a mark that one caller forgot would turn
+// every reconfiguration into a fatal fault.
+func (s *listenerSet) closeLocked(key string, bl *boundListener) error {
+	bl.closing = true
+	err := bl.ln.Close()
+	delete(s.active, key)
+	return err
+}
+
+// bindLocked opens one address, registers it and starts serving it. The caller
+// holds the lock.
+//
+// It returns the listener it registered, whose addr carries the port the
+// operating system chose when the caller asked for 0.
+func (s *listenerSet) bindLocked(addr listenset.Addr, source AddressSource) (*boundListener, error) {
+	ln, err := net.Listen("tcp", addr.DialAddr())
+	if err != nil {
+		return nil, err
+	}
+	bl := &boundListener{ln: ln, addr: resolvePort(addr, ln), source: source}
+	s.active[bl.addr.String()] = bl
+	s.serveLocked(bl)
+	return bl, nil
 }
 
 // Serve starts a goroutine for every listener the set already holds. It is
@@ -210,7 +281,7 @@ func (s *listenerSet) serveEnded(bl *boundListener, err error) bool {
 // A failure rolls the whole call back: everything opened here is closed, and
 // everything closed here is bound again. The base is what that protects -- a
 // merge that closes the -listen socket and then fails to bind its replacement
-// would otherwise leave the hub unreachable at the address its operator named.
+// would otherwise leave the hub unreachable at the address its operator gave.
 func (s *listenerSet) Apply(extras []listenset.Addr) error {
 	want := listenset.Merge(s.base, extras)
 
@@ -232,40 +303,75 @@ func (s *listenerSet) Apply(extras []listenset.Addr) error {
 		if _, keep := wanted[key]; keep {
 			continue
 		}
-		bl.closing = true
-		if err := bl.ln.Close(); err != nil {
+		if err := s.closeLocked(key, bl); err != nil {
 			slog.Warn("closing a listener the hub no longer serves failed",
 				"address", bl.addr.String(), "error", err)
 		}
 		closed = append(closed, removedListener{addr: bl.addr, source: bl.source})
-		delete(s.active, key)
 	}
 
 	var opened []string
 	for _, addr := range want {
-		key := addr.String()
-		if _, live := s.active[key]; live {
+		if _, live := s.active[addr.String()]; live {
 			continue
 		}
-		ln, err := net.Listen("tcp", addr.DialAddr())
-		if err != nil {
-			bindErr := fmt.Errorf("listen %s: %w", addr, err)
-			return errors.Join(bindErr, s.rollbackLocked(opened, closed))
-		}
 		// A stored extra address never carries port 0 (the settings validator
-		// refuses it), so this only ever resolves the base.
-		bound := resolvePort(addr, ln)
-		key = bound.String()
-		bl := &boundListener{ln: ln, addr: bound, source: s.sourceFor(bound)}
-		s.active[key] = bl
-		opened = append(opened, key)
-		s.serveLocked(bl)
+		// refuses it), so bindLocked only ever resolves a port for the base.
+		bl, err := s.bindLocked(addr, s.sourceFor(addr))
+		if err != nil {
+			return errors.Join(&bindFailure{addr: addr, err: err}, s.rollbackLocked(opened, closed))
+		}
+		opened = append(opened, bl.addr.String())
 	}
 
-	// A clean apply clears the previous failures: every address the caller
-	// asked for is serving.
-	clear(s.failed)
+	// A clean apply clears the failures that STOPPED being true, and only
+	// those: an address the set now answers on, and an address this call no
+	// longer asks for. What it must not clear is an address the operator still
+	// wants and the hub still cannot bind -- rollbackLocked records exactly
+	// that, the -listen socket among them, and clearing the whole map here let
+	// the next successful apply inside ApplyBestEffort erase it, so the panel
+	// reported no problems on a hub that had lost the address its operator
+	// gave on the command line.
+	for key, f := range s.failed {
+		if !s.requested(extras, f.addr) || s.servesLocked(f.addr) {
+			delete(s.failed, key)
+		}
+	}
 	return nil
+}
+
+// requested reports whether the caller still asks for this address: the base,
+// or one of the extras it passed. The caller holds the lock.
+//
+// It reads the list as WRITTEN rather than the merged result, because an
+// address the merge folded away is still one the operator asked for -- and an
+// address they deleted must stop being reported the moment they delete it.
+func (s *listenerSet) requested(extras []listenset.Addr, addr listenset.Addr) bool {
+	if s.base != nil && s.base.String() == addr.String() {
+		return true
+	}
+	for _, e := range extras {
+		if e.String() == addr.String() {
+			return true
+		}
+	}
+	return false
+}
+
+// servesLocked reports whether a live listener answers on addr. The caller
+// holds the lock.
+//
+// It asks Covers rather than the map keys, because an address the merge folded
+// into a wider one IS served -- an extra of 127.0.0.1:4327 beside a bound
+// *:4327 has no key of its own, and reading it as absent would blame a working
+// address for a failure elsewhere.
+func (s *listenerSet) servesLocked(addr listenset.Addr) bool {
+	for _, bl := range s.active {
+		if bl.addr.Covers(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // rollbackLocked undoes a partial Apply: it closes what this call opened and
@@ -282,24 +388,20 @@ func (s *listenerSet) rollbackLocked(opened []string, closed []removedListener) 
 		if !ok {
 			continue
 		}
-		bl.closing = true
-		if err := bl.ln.Close(); err != nil {
+		if err := s.closeLocked(key, bl); err != nil {
 			errs = append(errs, fmt.Errorf("roll back %s: %w", key, err))
 		}
-		delete(s.active, key)
 	}
 	for _, r := range closed {
-		ln, err := net.Listen("tcp", r.addr.DialAddr())
-		if err != nil {
+		if _, err := s.bindLocked(r.addr, r.source); err != nil {
 			slog.Error("the hub could not bind an address again after a failed reconfiguration; it is no longer served",
 				"address", r.addr.String(), "error", err)
 			errs = append(errs, fmt.Errorf("restore %s: %w", r.addr, err))
-			s.failed[r.addr.String()] = err.Error()
-			continue
+			// With its own source, not SourceExtra: this is the address the
+			// operator gave on the command line, and reporting it as an extra
+			// would point them at a settings row they cannot remove it from.
+			s.failed[r.addr.String()] = failedAddress{addr: r.addr, source: r.source, err: err.Error()}
 		}
-		bl := &boundListener{ln: ln, addr: r.addr, source: r.source}
-		s.active[r.addr.String()] = bl
-		s.serveLocked(bl)
 	}
 	return errors.Join(errs...)
 }
@@ -332,86 +434,127 @@ func (s *listenerSet) sourceFor(addr listenset.Addr) AddressSource {
 // The failures are kept for the administration surface to report, so the panel
 // prints the operating system's own reason beside the address.
 func (s *listenerSet) ApplyBestEffort(extras []listenset.Addr) {
-	if err := s.Apply(extras); err == nil {
+	if s.sameAsLastRequest(extras) {
 		return
 	}
-	// One address at a time, so a single bad entry cannot withhold the others.
-	// Apply is diff-based, so the addresses that already bound stay bound and
-	// this pass only adds what is missing.
-	usable := make([]listenset.Addr, 0, len(extras))
-	failures := make(map[string]string, len(extras))
-	for _, addr := range extras {
-		candidate := append(append([]listenset.Addr(nil), usable...), addr)
-		if err := s.Apply(candidate); err != nil {
-			slog.Warn("the hub could not bind a stored listen address; it stays configured and is not served",
-				"address", addr.String(), "error", err)
-			failures[addr.String()] = err.Error()
-			continue
-		}
-		usable = append(usable, addr)
-	}
-	// Settle on the addresses that bound, and do it whatever the loop ended on.
-	// A failed Apply rolls back to the set it STARTED from, so an attempt that
-	// fails last leaves the previous configuration standing -- including every
-	// address this write removes. Without this call, deleting a published
-	// address and adding an unbindable one in the same write would keep the
-	// deleted address serving until the next write or the next restart.
+	// Withhold the ONE address each attempt could not bind, and ask again for
+	// everything else. Apply is diff-based, so an address that already serves
+	// keeps the socket it holds: only the refused entry moves.
 	//
-	// It is a no-op diff when the loop already ended on a success, which is the
-	// ordinary case.
-	if err := s.Apply(usable); err != nil {
-		slog.Error("the hub could not bind again an address that bound a moment ago; it is no longer served",
+	// Rebuilding the list from EMPTY instead -- one address, then two -- asked
+	// Apply to close every other extra on the first attempt and to bind them
+	// again on the later ones. Each close/bind pair opened a window for another
+	// process to take the port, and a bind that lost that race was not rolled
+	// back, because the attempt had closed nothing of its own to restore. So
+	// one unbindable NEW address took a healthy published address away for
+	// good.
+	//
+	// The failed address comes from the error rather than from the loop
+	// counter, so Apply's own merge decides which entry is at fault.
+	remaining := extras
+	failures := make(map[string]failedAddress, len(extras))
+	var err error
+	// One attempt for each address that can fail, plus the one that settles.
+	for range len(extras) + 1 {
+		err = s.Apply(remaining)
+		if err == nil {
+			break
+		}
+		var bind *bindFailure
+		if !errors.As(err, &bind) {
+			break
+		}
+		slog.Warn("the hub could not bind a stored listen address; it stays configured and is not served",
+			"address", bind.addr.String(), "error", err)
+		failures[bind.addr.String()] = failedAddress{addr: bind.addr, source: SourceExtra, err: err.Error()}
+		next := make([]listenset.Addr, 0, len(remaining))
+		for _, a := range remaining {
+			if a.String() != bind.addr.String() {
+				next = append(next, a)
+			}
+		}
+		if len(next) == len(remaining) {
+			// The address that failed is not one of the extras: it is the
+			// -listen socket a rollback could not restore. There is no entry
+			// left to withhold, and withholding nothing would loop.
+			break
+		}
+		remaining = next
+	}
+	if err != nil {
+		slog.Error("the hub could not reach the stored listen configuration; some addresses are not served",
 			"error", err)
-		for _, addr := range s.unserved(usable) {
-			failures[addr.String()] = err.Error()
+		for _, addr := range s.unserved(remaining) {
+			failures[addr.String()] = failedAddress{addr: addr, source: SourceExtra, err: err.Error()}
 		}
 	}
-	// AFTER the loop, never inside it. A successful Apply clears the failure
-	// record -- it means every address the caller asked for is serving -- so
-	// recording as we went would let the last success erase the failures the
-	// earlier attempts found, and the panel would show a hub with no problems
-	// and a missing address.
+	// AFTER the loop, never inside it. A clean Apply prunes the failures that
+	// stopped being true, so recording as we went would let the last success
+	// erase what the earlier attempts found, and the panel would show a hub
+	// with no problems and a missing address.
 	s.recordFailures(failures)
 }
 
-// unserved reports which of addrs no live listener answers on.
+// sameAsLastRequest reports whether this is the extras list the previous call
+// already settled on, and remembers the list when it is not.
 //
-// It asks Covers rather than the map keys, because an address the merge folded
-// into a wider one IS served -- an extra of 127.0.0.1:4327 beside a bound
-// *:4327 has no key of its own, and reporting it as absent would blame a
-// working address for a failure elsewhere.
+// The settings manager fires EVERY subscriber on every write, because a
+// subscriber is registered for the whole snapshot rather than for one key. So
+// a hub with one permanently unbindable stored address -- a VPN that is down,
+// a port another program holds -- ran the per-address retry loop above on
+// every unrelated settings save, closing and re-binding every healthy socket
+// each time, inside the settings manager's own reload lock. An operator saving
+// a session duration waited on bind attempts for addresses they never touched,
+// and each close/bind pair opened a window for another process to take the
+// port.
+//
+// The failed addresses are NOT retried here. A write that changes the list
+// retries them, and so does a restart; an unrelated settings write is not a
+// retry policy anybody chose.
+func (s *listenerSet) sameAsLastRequest(extras []listenset.Addr) bool {
+	key := strings.Join(listenset.Strings(extras), ",")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applied && s.lastExtras == key {
+		return true
+	}
+	s.applied = true
+	s.lastExtras = key
+	return false
+}
+
+// unserved reports which of addrs no live listener answers on.
 func (s *listenerSet) unserved(addrs []listenset.Addr) []listenset.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []listenset.Addr
 	for _, addr := range addrs {
-		served := false
-		for _, bl := range s.active {
-			if bl.addr.Covers(addr) {
-				served = true
-				break
-			}
-		}
-		if !served {
+		if !s.servesLocked(addr) {
 			out = append(out, addr)
 		}
 	}
 	return out
 }
 
-// recordFailures replaces the report of addresses the hub could not bind.
-func (s *listenerSet) recordFailures(failures map[string]string) {
+// recordFailures adds to the report of addresses the hub could not bind.
+//
+// It ADDS rather than replaces, so it keeps what rollbackLocked recorded. That map holds one thing the loop
+// above can never produce: an address the hub was serving a moment ago and
+// could not bind again -- the -listen socket among them -- and clearing it
+// here reported a hub with no problems at the one address whose loss the
+// operator most needs to see. A key the loop also failed on wins, because its
+// reason is the newer one.
+func (s *listenerSet) recordFailures(failures map[string]failedAddress) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	clear(s.failed)
-	for addr, msg := range failures {
-		s.failed[addr] = msg
+	for key, f := range failures {
+		s.failed[key] = f
 	}
 }
 
 // Bound reports what the hub serves right now, plus every configured address
 // it could not bind. It is sorted, so two reads of an unchanged set are equal.
-func (s *listenerSet) Bound() []BoundAddress {
+func (s *listenerSet) Bound() []listenset.Bound {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -423,21 +566,17 @@ func (s *listenerSet) Bound() []BoundAddress {
 	}
 	// Merge with no extras sorts the live set without changing it: every
 	// address here is already bound, so none can cover another.
-	out := make([]BoundAddress, 0, len(s.active)+len(s.failed))
+	out := make([]listenset.Bound, 0, len(s.active)+len(s.failed))
 	for _, addr := range listenset.Merge(nil, live) {
-		out = append(out, BoundAddress{Addr: addr, Source: sources[addr.String()]})
+		out = append(out, listenset.Bound{Addr: addr, Source: sources[addr.String()]})
 	}
-	for key, msg := range s.failed {
-		addr, err := listenset.Parse(key)
-		if err != nil {
-			continue
-		}
-		out = append(out, BoundAddress{Addr: addr, Source: SourceExtra, Err: msg})
+	for _, f := range s.failed {
+		out = append(out, listenset.Bound{Addr: f.addr, Source: f.source, Err: f.err})
 	}
 	return out
 }
 
-// PrimaryListenAddr is the address a browser-facing URL should name: the
+// PrimaryListenAddr is the address a browser-facing URL should give: the
 // -listen address when it is still bound, else the first extra the hub bound.
 //
 // The fallback is what makes a desktop hub work. It runs with no TCP base at
@@ -448,7 +587,7 @@ func (s *listenerSet) Bound() []BoundAddress {
 // It returns the DIAL form, which is what -listen itself carries and what
 // every helper downstream reads. The canonical form must NOT be used here:
 // settings.browserHostForListen recognises the wildcard as an EMPTY host with
-// a port (":4327"), so the canonical "*:4327" would read as a machine named
+// a port (":4327"), so the canonical "*:4327" would read as a machine called
 // "*" and produce "http://*:4327" in a mail link.
 //
 // It returns "" when nothing is bound, which is still the desktop's ordinary
@@ -468,18 +607,6 @@ func (s *listenerSet) PrimaryListenAddr() string {
 		}
 	}
 	return ""
-}
-
-// HasNonLoopbackAddress reports whether the hub answers on an address another
-// machine can reach. The administration surface asks, so it can require a
-// password before an exposed hub has none.
-func (s *listenerSet) HasNonLoopbackAddress() bool {
-	for _, b := range s.Bound() {
-		if b.Err == "" && !b.Addr.IsLoopback() {
-			return true
-		}
-	}
-	return false
 }
 
 // Close shuts every listener down and waits for its serve goroutine.
@@ -524,48 +651,86 @@ func boundAddressesForLog(bound []BoundAddress) []string {
 
 // listenReporter adapts the listener set to service.ListenReporter.
 //
-// It resolves the set LAZILY, through a getter, because the services that ask
-// are constructed before the set exists: the base listener binds before the
-// database opens, and the http.Server the set wraps is built after every
-// handler. Each method answers as if the hub had no TCP address until then,
-// which is the desktop's ordinary state and which every caller already handles.
+// It holds the set BY VALUE. The set is built at the top of NewServer, before
+// the services that ask, and takes its http.Server later -- so there is no
+// window in which a consumer could reach a set that does not exist, and no
+// unreachable nil branch to write here for one.
 //
-// The adapter exists at all because the service package sits BELOW this one --
-// hub imports service -- so the two cannot share a struct without a third
-// package neither of them owns.
+// It owns the FALLBACK. "The live primary address, and the one -listen
+// gave when nothing is bound" is one rule, and every consumer used to carry
+// its own copy of it -- the auth service, the mail renderer and the OAuth
+// issuer URL each spelled it -- which is how the links in an email and the
+// address GetSystemInfo reports could disagree about the same hub.
+//
+// The adapter exists to hold that fallback and the lazy getter, and nothing
+// else: the REPORT itself crosses unconverted, because `listenset` owns the
+// type and both packages already import it.
 type listenReporter struct {
-	get func() *listenerSet
+	set *listenerSet
+	// configured is the address -listen gave, for a hub with nothing bound.
+	configured string
 }
 
-func (r listenReporter) Bound() []service.BoundListenAddress {
-	set := r.get()
-	if set == nil {
-		return nil
-	}
-	bound := set.Bound()
-	out := make([]service.BoundListenAddress, 0, len(bound))
-	for _, b := range bound {
-		out = append(out, service.BoundListenAddress{
-			Address: b.Addr.String(),
-			Source:  string(b.Source),
-			Err:     b.Err,
-		})
-	}
-	return out
-}
+func (r listenReporter) Bound() []listenset.Bound { return r.set.Bound() }
 
 func (r listenReporter) PrimaryListenAddr() string {
-	set := r.get()
-	if set == nil {
-		return ""
+	if addr := r.set.PrimaryListenAddr(); addr != "" {
+		return addr
 	}
-	return set.PrimaryListenAddr()
+	return r.configured
 }
 
-func (r listenReporter) HasNonLoopbackAddress() bool {
-	set := r.get()
-	if set == nil {
-		return false
+// refuseUnguardedExposure is the cross-key settings rule that keeps a solo hub
+// from publishing an address it cannot authenticate anybody on.
+//
+// The panel already asks for the password before it will apply such an
+// address, but a client-side rule is not enforcement: `leapmux control admin
+// settings set extra_listen_addresses '{"addresses":["0.0.0.0:4327"]}'` is a
+// write like any other, the key is HOT, and a credential-free solo caller is
+// admitted to write it -- so one command published an unauthenticated
+// administrator on the LAN, with no refusal and no warning. Before this
+// feature the same exposure needed `-listen 0.0.0.0:4327` on the command line,
+// which printed the startup warning.
+//
+// It runs on every settings write, which is what makes the panel and the CLI
+// obey one rule. The rule reads the ACCOUNT, so it clears the moment the
+// password lands: the panel writes the password first and the addresses
+// second, and that order is why its Apply succeeds.
+//
+// Outside solo mode it admits everything. The key is HiddenInHub, so no other
+// deployment can hold a value for it, and the `solo` account those hubs would
+// look for does not exist.
+func refuseUnguardedExposure(soloMode bool, gate *auth.SoloGate) func(*settings.Snapshot) error {
+	return func(s *settings.Snapshot) error {
+		if !soloMode {
+			return nil
+		}
+		addrs, err := settings.ExtraListenAddresses(s)
+		if err != nil {
+			// An unreadable document is the value validator's refusal to
+			// report, not this rule's; it states one thing only.
+			return nil
+		}
+		exposed := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			if !addr.IsLoopback() {
+				exposed = append(exposed, addr.String())
+			}
+		}
+		if len(exposed) == 0 {
+			return nil
+		}
+		// The account read happens ONLY here, after the candidate is known to
+		// hold an exposing address. A cross-key rule runs inside the settings
+		// write transaction, so this is a store read on another connection
+		// while that transaction is open -- safe under WAL, and rare because
+		// an ordinary settings save never reaches this line.
+		if gate.PasswordSet(context.Background()) {
+			return nil
+		}
+		return fmt.Errorf(
+			"extra_listen_addresses %v would answer other machines while the %q account has no password, "+
+				"so anyone who reached the port would hold the administrator; set the password first",
+			exposed, usernames.Solo)
 	}
-	return set.HasNonLoopbackAddress()
 }

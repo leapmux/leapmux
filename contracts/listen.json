@@ -1,0 +1,10 @@
+{
+  "_readme": "The listen-address vocabulary the hub and the browser both spell. The hub owns the address model (internal/hub/listenset) and the panel that edits it owns the rows, so three values crossed the language boundary by hand: the wildcard host token, the cap on how many extra addresses a hub may store, and the three words the hub uses to say WHY an address is served. Each was written twice, and the second copy had already drifted -- the panel offered a ninth row that only the hub refused. Codegen replaces the copies without creating an import edge: the generated constants depend on no internal package of either program.",
+  "anyHost": "*",
+  "maxExtraAddresses": 8,
+  "addressSources": {
+    "listen": "the address -listen gives, bound alone",
+    "extra": "an address the extra_listen_addresses setting adds",
+    "merged": "one socket serving both, because this address covers what -listen gives"
+  }
+}

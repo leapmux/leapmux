@@ -70,7 +70,7 @@ func writeExtraListeners(t *testing.T, srv *Server, addresses ...string) {
 // servingAddresses is what the hub answers on right now.
 func servingAddresses(srv *Server) []string {
 	out := []string{}
-	for _, b := range srv.ListenerStatus() {
+	for _, b := range srv.listeners.Bound() {
 		if b.Err == "" {
 			out = append(out, b.Addr.String())
 		}
@@ -115,20 +115,25 @@ func TestServer_AWildcardMergesTheListenAddress(t *testing.T) {
 	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
 	requireAnswers(t, base)
 
+	// A wildcard answers other machines, so the cross-key rule holds the write
+	// out for a password -- the same demand the panel makes before it applies
+	// such an address, enforced where the admin CLI meets it too.
+	setSoloPasswordDirect(t, srv.store)
+
 	writeExtraListeners(t, srv, "*:"+strconv.Itoa(port))
 
 	assert.Equal(t, []string{"*:" + strconv.Itoa(port)}, servingAddresses(srv))
 	// Still answering where -listen pointed, from the wider socket.
 	requireAnswers(t, base)
 
-	status := srv.ListenerStatus()
+	status := srv.listeners.Bound()
 	require.Len(t, status, 1)
 	assert.Equal(t, SourceMerged, status[0].Source,
 		"the panel must be able to say the -listen address is served by this one, not that it is gone")
 
 	// The hub reports the DIAL form of the merged address, because
 	// settings.browserHostForListen reads a wildcard as an empty host with a
-	// port; the canonical "*:4327" would produce a link to a machine named "*".
+	// port; the canonical "*:4327" would produce a link to a machine called "*".
 	assert.Equal(t, ":"+strconv.Itoa(port), srv.PrimaryListenAddr())
 	assert.True(t, srv.HasNonLoopbackAddress(),
 		"a wildcard answers on every interface, so the hub is reachable from another machine")
@@ -156,7 +161,7 @@ func TestServer_AStoredAddressThatCannotBindDoesNotStopTheHub(t *testing.T) {
 	// Reported against its own address, with the operating system's reason, so
 	// the panel can print it rather than showing the address as simply absent.
 	var failed *BoundAddress
-	status := srv.ListenerStatus()
+	status := srv.listeners.Bound()
 	for i := range status {
 		if status[i].Err != "" {
 			failed = &status[i]
@@ -243,4 +248,62 @@ func TestServer_StoredAddressesBindAgainOnTheNextStart(t *testing.T) {
 	requireAnswers(t, extra)
 	requireAnswers(t, base)
 	assert.ElementsMatch(t, []string{base, extra}, servingAddresses(second))
+}
+
+// The panel refuses to publish an exposing address before the account has a
+// password, and that refusal has to hold for every writer.
+//
+// `leapmux control admin settings set extra_listen_addresses` is a write like
+// any other, the key is HOT, and a credential-free solo caller is admitted to
+// make it -- so without a server-side rule one command published an
+// unauthenticated administrator on the LAN, with no refusal and no warning.
+func TestServer_RefusesAnExposingAddressWithNoPassword(t *testing.T) {
+	port := freePorts(t, 1)[0]
+	base := "127.0.0.1:" + strconv.Itoa(port)
+	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	requireAnswers(t, base)
+
+	err := srv.SettingsManager().Update(context.Background(), settings.KeyExtraListenAddresses,
+		json.RawMessage(`{"addresses":["0.0.0.0:`+strconv.Itoa(freePorts(t, 1)[0])+`"]}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no password")
+	assert.Equal(t, []string{base}, servingAddresses(srv), "the refused write must not reach the sockets")
+
+	// A LOOPBACK address exposes nothing, so the rule admits it with no
+	// password. The panel makes the same distinction, and a rule that refused
+	// both would demand a password for a change nobody outside the machine
+	// could reach.
+	loopback := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
+	writeExtraListeners(t, srv, loopback)
+	assert.ElementsMatch(t, []string{base, loopback}, servingAddresses(srv))
+
+	// And the password is what lifts it: the panel stores the password first
+	// and the addresses second, which is why its Apply succeeds.
+	setSoloPasswordDirect(t, srv.store)
+	exposed := "0.0.0.0:" + strconv.Itoa(freePorts(t, 1)[0])
+	writeExtraListeners(t, srv, loopback, exposed)
+	assert.Contains(t, servingAddresses(srv), exposed)
+}
+
+// A `leapmux hub` that opens a data directory a `leapmux solo` run left behind
+// must NOT bind that run's extra addresses.
+//
+// The key is HiddenInHub, so such a hub does not list it, cannot write it, and
+// refuses the write with "not administrable in hub mode" -- it would answer on
+// an address with no surface to see it in and no verb to clear it.
+func TestServer_AHubIgnoresASoloStoredAddress(t *testing.T) {
+	ports := freePorts(t, 2)
+	base := "127.0.0.1:" + strconv.Itoa(ports[0])
+	extra := "127.0.0.1:" + strconv.Itoa(ports[1])
+	dir := t.TempDir()
+	local := locallistentest.UniqueListenURL(t, "lmx-hub-solo-row")
+
+	solo, stopSolo := startTestServerIn(t, &config.Config{Listen: base, SoloMode: true}, dir, local)
+	writeExtraListeners(t, solo, extra)
+	require.ElementsMatch(t, []string{base, extra}, servingAddresses(solo))
+	stopSolo()
+
+	hub, _ := startTestServerIn(t, &config.Config{Listen: base, SoloMode: false}, dir, local)
+	assert.Equal(t, []string{base}, servingAddresses(hub),
+		"a hub must serve only what -listen gave it")
 }

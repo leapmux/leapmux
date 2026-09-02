@@ -1,7 +1,10 @@
 package listenset_test
 
 import (
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,6 +33,12 @@ func TestParse_Accepts(t *testing.T) {
 		{"192.168.1.24:8080", listenset.KindIP, "192.168.1.24:8080", "192.168.1.24:8080", 8080},
 		{"[::1]:4327", listenset.KindIP, "[::1]:4327", "[::1]:4327", 4327},
 		{"[fe80::1%en0]:4327", listenset.KindIP, "[fe80::1%en0]:4327", "[fe80::1%en0]:4327", 4327},
+		// An IPv6 ZONE keeps its case. It is an interface name, and net.Listen
+		// resolves it through net.InterfaceByName, which matches exactly -- so
+		// a folded "%Ethernet" is an interface Windows does not have, and the
+		// bind fails with "no such network interface". Only the hexadecimal
+		// digits fold.
+		{"[FE80::1%Ethernet]:4327", listenset.KindIP, "[fe80::1%Ethernet]:4327", "[fe80::1%Ethernet]:4327", 4327},
 		{"hub.example:4327", listenset.KindHost, "hub.example:4327", "hub.example:4327", 4327},
 		// Case folds, so two spellings of one host are one address.
 		{"HUB.EXAMPLE:4327", listenset.KindHost, "hub.example:4327", "hub.example:4327", 4327},
@@ -38,8 +47,15 @@ func TestParse_Accepts(t *testing.T) {
 		{"1.2.3.4:65535", listenset.KindIP, "1.2.3.4:65535", "1.2.3.4:65535", 65535},
 		// Port 0 asks the operating system to choose. -listen may do that, so
 		// Parse must accept it; the settings validator refuses it separately,
-		// because a STORED address of port 0 names a port nobody can be told.
+		// because a STORED address of port 0 specifies a port nobody can be told.
 		{"127.0.0.1:0", listenset.KindIP, "127.0.0.1:0", "127.0.0.1:0", 0},
+		// net.Listen reads the machine's services table, so these two bound
+		// before this package existed and must keep binding. The RESOLVED
+		// number is what the address carries, so a log line and a stored row
+		// state the port a client can dial.
+		{"127.0.0.1:http", listenset.KindIP, "127.0.0.1:80", "127.0.0.1:80", 80},
+		// An empty port is ":0" to net.Listen: let the operating system choose.
+		{"localhost:", listenset.KindHost, "localhost:0", "localhost:0", 0},
 	} {
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
@@ -65,8 +81,7 @@ func TestParse_Refuses(t *testing.T) {
 		{"unbracketed IPv6 with port is ambiguous", "::1:4327"},
 		{"port above the range", "127.0.0.1:65536"},
 		{"negative port", "127.0.0.1:-1"},
-		{"non-numeric port", "127.0.0.1:http"},
-		{"empty port", "127.0.0.1:"},
+		{"a service name the machine does not list", "127.0.0.1:not-a-service"},
 		{"two ports", "127.0.0.1:80:90"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,7 +142,7 @@ func TestIsLoopback(t *testing.T) {
 		{":4327", false},
 		{"0.0.0.0:4327", false},
 		{"[::]:4327", false},
-		// "localhost" is the ONE name that names this machine by convention,
+		// "localhost" is the ONE name that identifies this machine by convention,
 		// and httpsec.LoopbackHosts is where that convention lives.
 		{"localhost:4327", true},
 		{"LocalHost:4327", true}, // Parse folds the case
@@ -322,4 +337,33 @@ func TestParseAll_ReportsTheOffendingIndex(t *testing.T) {
 	_, err := listenset.ParseAll([]string{"127.0.0.1:4327", "nonsense"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "address 2:", "the message must name which entry failed")
+}
+
+// The merge rule is mirrored in the browser, so the panel can tell an operator
+// which address will fold into which BEFORE Apply. This package owns the rule;
+// the corpus is what keeps the copy from drifting, and both suites replay it.
+//
+// frontend/src/components/settings/controls/networkAddress.test.ts is the other
+// half. Editing one side without the other is the exact bug this prevents.
+func TestCovers_Conformance(t *testing.T) {
+	t.Parallel()
+	var corpus struct {
+		Cases []struct {
+			A      string `json:"a"`
+			B      string `json:"b"`
+			Covers bool   `json:"covers"`
+			Why    string `json:"why"`
+		} `json:"cases"`
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "testdata", "listen_merge_conformance.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &corpus))
+	require.NotEmpty(t, corpus.Cases)
+
+	for _, tc := range corpus.Cases {
+		t.Run(tc.A+" covers "+tc.B, func(t *testing.T) {
+			assert.Equal(t, tc.Covers,
+				listenset.MustParse(tc.A).Covers(listenset.MustParse(tc.B)), tc.Why)
+		})
+	}
 }

@@ -454,14 +454,17 @@ func TestValidateExtraListenRefuses(t *testing.T) {
 		// nobody made here could publish the hub on a public address.
 		{"a host name", []string{"hub.example:4327"}, "is a host name"},
 		{"localhost is still a name", []string{"localhost:4327"}, "is a host name"},
-		// The index names the offending entry, so an operator editing a list
+		// The index identifies the offending entry, so an operator editing a list
 		// through the CLI is told which one to fix.
 		{"the second entry is named", []string{"127.0.0.1:4327", "nonsense"}, "extra listen address 2"},
 		{"an exact repeat", []string{"192.168.1.24:8080", "192.168.1.24:8080"}, "repeats"},
 		// Two spellings of one socket are one address, so the repeat rule has
 		// to read the canonical form rather than the string as written.
 		{"a repeat in another spelling", []string{"[::0]:4327", "[0:0:0:0:0:0:0:0]:4327"}, "repeats"},
-		{"a case-folded repeat", []string{"[::1]:4327", "[::1]:4327"}, "repeats"},
+		{"a case-folded repeat", []string{"[::FFFF:1]:4327", "[::ffff:1]:4327"}, "repeats"},
+		// A port a service name gives is the same address as its number, so a
+		// list that states one of each way repeats.
+		{"a service name repeating its number", []string{"192.168.1.24:http", "192.168.1.24:80"}, "repeats"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateExtraListen(ExtraListenValue{Addresses: tc.in})
@@ -472,8 +475,8 @@ func TestValidateExtraListenRefuses(t *testing.T) {
 }
 
 func TestValidateExtraListenCapsTheCount(t *testing.T) {
-	atCap := make([]string, 0, MaxExtraListenAddresses)
-	for i := range MaxExtraListenAddresses {
+	atCap := make([]string, 0, contracts.MaxExtraListenAddresses)
+	for i := range contracts.MaxExtraListenAddresses {
 		atCap = append(atCap, "127.0.0.1:"+strconv.Itoa(9000+i))
 	}
 	require.NoError(t, validateExtraListen(ExtraListenValue{Addresses: atCap}), "the cap itself is allowed")

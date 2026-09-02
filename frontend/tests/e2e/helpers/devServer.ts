@@ -146,11 +146,29 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     proc.stderr?.resume()
   }
 
-  await waitForServer(hubUrl)
+  // A startup failure must not leak the child or its directory. waitForServer
+  // rejects after its own deadline -- a port race, a broken binary, a corrupt
+  // data dir -- and without this the `leapmux solo` process kept running for
+  // the rest of the session, holding the port that made it fail.
+  try {
+    await waitForServer(hubUrl)
+  }
+  catch (e) {
+    await stopProcess(proc)
+    rmSync(dataDir, { recursive: true, force: true })
+    throw e
+  }
   return { hubUrl, listen, proc, dataDir }
 }
 
-export async function stopSoloServer(handle: SoloServerHandle): Promise<void> {
+/**
+ * Stops a solo instance. A missing handle is a no-op, because Playwright runs
+ * `afterEach` after a FAILED `beforeEach`: dereferencing an unassigned handle
+ * there reported a TypeError in place of the startup failure that caused it.
+ */
+export async function stopSoloServer(handle: SoloServerHandle | undefined): Promise<void> {
+  if (!handle)
+    return
   await stopProcess(handle.proc)
   rmSync(handle.dataDir, { recursive: true, force: true })
 }

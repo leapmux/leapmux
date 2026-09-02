@@ -169,7 +169,7 @@ See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/ad
 The browser can't connect to the Hub at all (connection refused / timeout) from a different host than the one running LeapMux.
 
 **Cause**
-Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreachable from other machines on purpose, because solo mode auto-authenticates every request as the admin with no credentials.
+Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreachable from other machines on purpose, because until the `solo` account has a password every request is authenticated as the admin with no credentials.
 
 **Fix**
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.

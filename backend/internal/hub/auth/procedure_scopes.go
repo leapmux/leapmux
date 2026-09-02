@@ -413,7 +413,7 @@ func CeilingFor(kind BearerKind) authscope.ScopeSet {
 		return delegationCeiling
 	}
 	// An unknown kind reaches nothing. ParseBearer rejects one before this is
-	// called, so the arm is defence in depth.
+	// called, so the branch is defence in depth.
 	return authscope.ScopeSet{}
 }
 

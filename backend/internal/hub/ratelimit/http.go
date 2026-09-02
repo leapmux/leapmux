@@ -3,9 +3,9 @@ package ratelimit
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
-	"strings"
+
+	"github.com/leapmux/leapmux/internal/hub/peer"
 )
 
 // The plain-HTTP entry point.
@@ -65,10 +65,7 @@ func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) b
 // keying on it would give every request its own budget.
 func clientAddressKey(r *http.Request) string {
 	addr := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		addr = host
-	}
-	return AddressBudgetKey(strings.Trim(addr, "[]"))
+	return AddressBudgetKey(peer.HostOf(addr))
 }
 
 // AddressBudgetKey renders one anonymous caller's budget key from its host.
@@ -76,7 +73,8 @@ func clientAddressKey(r *http.Request) string {
 // It is exported because the two entry points reach the host differently: the
 // plain-HTTP door reads r.RemoteAddr, and the Connect interceptor reads the
 // peer the http.Server stamped on the context. Both must produce the SAME key,
-// or one caller would hold two budgets and neither would bound it.
+// or one caller would hold two budgets and neither would limit it. peer.HostOf
+// is the shared reduction that makes the two agree.
 func AddressBudgetKey(host string) string {
 	if host == "" {
 		// An unaddressed caller (a test transport, a unix socket) shares one

@@ -20,6 +20,27 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
+// noSoloAccountStore is a store that answers "no such user" for every lookup,
+// which is a solo hub before its account is created.
+//
+// A gate needs a STORE to admit anybody: one built over nil cannot read the
+// account, and a gate that cannot read the account refuses every transport but
+// the local IPC socket. So a test of the solo rung has to give the gate
+// something to read, even when the answer it wants is "no password".
+type noSoloAccountStore struct {
+	store.Store
+}
+
+func (noSoloAccountStore) Users() store.UserStore { return noSoloAccountUsers{} }
+
+type noSoloAccountUsers struct {
+	store.UserStore
+}
+
+func (noSoloAccountUsers) GetByUsername(context.Context, string) (*store.User, error) {
+	return nil, store.ErrNotFound
+}
+
 type validationErrorStore struct {
 	store.Store
 	err error
@@ -571,7 +592,7 @@ func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
 func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
 	solo := &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1}
 	state := &authState{}
-	a := &authInterceptor{soloUser: solo, state: state}
+	a := &authInterceptor{soloUser: solo, state: state, soloGate: NewSoloGate(true, noSoloAccountStore{})}
 	cache := &AuthContextRegistry{state: state}
 
 	cache.RevokeUserAuthContextAtGeneration("solo", 2)
@@ -650,6 +671,7 @@ func TestAuthenticateHTTPRefreshesSyntheticUserGeneration(t *testing.T) {
 	user, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{
 		SoloUser: &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1},
 		Contexts: contexts,
+		Store:    noSoloAccountStore{},
 	})
 
 	require.NoError(t, err)

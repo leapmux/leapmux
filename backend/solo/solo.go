@@ -18,7 +18,6 @@ import (
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/logging"
@@ -69,7 +68,7 @@ var workerDrainTimeout = 5 * time.Second
 //     so no fixture can induce a Serve-TIME failure by occupying an address or
 //     pointing at an unwritable path -- every such attempt fails earlier, in
 //     NewServer, on a path that never reaches the watcher. Without it, the "the
-//     Hub died while serving" arm and the gate that stops a startup failure being
+//     Hub died while serving" case and the gate that stops a startup failure being
 //     reported twice had no coverage, and two tests aimed at them were passing on
 //     a NewServer failure instead.
 //   - bringUpWorker: every real way to fail bring-up -- no admin user yet, an
@@ -77,7 +76,7 @@ var workerDrainTimeout = 5 * time.Second
 //     statement that touches the database or the disk, so nothing can hold Start
 //     inside the bring-up window long enough for the startup to end there.
 //
-// defaultDeps names the real implementations, and both stay directly callable,
+// defaultDeps gives the real implementations, and both stay directly callable,
 // which is what keeps the seams honest: several tests drive Start straight
 // through them, and TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied
 // WRAPS bringUpLocalWorker rather than replacing it, so the token accounting under
@@ -94,8 +93,8 @@ func defaultDeps() deps {
 	}
 }
 
-// nonLoopbackListenWarnMsg is the security warning emitted when solo mode
-// binds to a non-loopback address.
+// nonLoopbackListenWarnMsg is the security warning the solo launcher prints
+// when the hub answers on an address another machine can reach.
 //
 // Solo mode authenticates a caller with no credentials WHILE the account holds
 // no password (auth.SoloGate states the whole rule), so a non-loopback bind in
@@ -103,12 +102,12 @@ func defaultDeps() deps {
 // a password closes it: every TCP address then asks for one, 127.0.0.1
 // included.
 //
-// It is printed at STARTUP, before the store opens, so it cannot know whether
-// a password exists yet -- which is why it names the condition rather than
-// asserting the danger. The frontend makes the same demand where it can be
-// acted on: it blocks the whole app with a password-setup screen while the hub
-// is exposed and the account has none.
-const nonLoopbackListenWarnMsg = "solo mode is binding to a non-loopback address, so this hub is reachable from other machines. " +
+// It is printed at STARTUP, once the hub has bound its sockets but before any
+// request, so it cannot know whether a password exists yet -- which is why it
+// states the condition rather than asserting the danger. The frontend makes
+// the same demand where it can be acted on: it blocks the whole app with a
+// password-setup screen while the hub is exposed and the account has none.
+const nonLoopbackListenWarnMsg = "solo mode binds a non-loopback address, so this hub is reachable from other machines. " +
 	"Until the \"solo\" account has a password, every request is authenticated as the administrator without credentials. " +
 	"Open the app and set one: it asks for a password before anything else while this address is served. " +
 	"Restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust."
@@ -179,7 +178,7 @@ type Instance struct {
 	// Start and the dev-mode poller hold a token here too, for the window in which
 	// no Worker exists YET: bring-up can still Add (drain.Counter's
 	// no-add-after-sample contract), so cancelHub must not run until that window
-	// closes. The backstop warning therefore names bring-up as well as the drain --
+	// closes. The backstop warning therefore covers bring-up as well as the drain --
 	// it can fire with no Worker goroutine in existence.
 	workerDrained drain.Counter
 	listenURL     string
@@ -268,7 +267,7 @@ func (i *Instance) Stop() error {
 }
 
 // join runs the ordered teardown and waits out both halves. It is the ONE
-// spelling of the wait set: Stop uses it, and so does every Start failure arm,
+// spelling of the wait set: Stop uses it, and so does every Start failure path,
 // which used to hand-roll three different subsets of it and stay correct only
 // by accident of which goroutines happened to be running yet.
 //
@@ -290,14 +289,14 @@ func (i *Instance) join() {
 }
 
 // startupFailure reports the error to attribute to a startup that is already
-// over, or nil if it was still on its way up when asked. stage names the startup
+// over, or nil if it was still on its way up when asked. stage identifies the startup
 // window, for the cases where nothing carries an error of its own.
 //
 // It exists because "is this startup still going?" has to be asked at the STAGE
-// BOUNDARIES, not inside the arms of a select or a switch: hub.NewServer binds
+// BOUNDARIES, not inside the cases of a select or a switch: hub.NewServer binds
 // both listeners before Serve is ever called, so a bare connect-and-close
 // readiness probe succeeds against a Hub whose Serve has already returned an error,
-// and every arm that asked the question separately answered it differently.
+// and every case that asked the question separately answered it differently.
 //
 // It covers BOTH of the watcher's triggers, because both reach the caller the same
 // way -- through a workerCtx the watcher has already cancelled, which makes the
@@ -310,7 +309,7 @@ func (i *Instance) join() {
 //     about hubDone here left this half blaming the Worker.
 //
 // It is TOTAL once either has happened: it never returns nil for a startup that is
-// over. The readiness select relies on that, so its hubDone arm can decide only to
+// over. The readiness select relies on that, so its hubDone case can decide only to
 // stop waiting and carry no error of its own.
 //
 // Reading hubErr after observing hubDone needs no further synchronisation: the Hub
@@ -460,10 +459,6 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	}
 	hubCfg.DevMode = cfg.DevMode
 
-	if shouldWarnNonLoopback(cfg, hubCfg.Listen) {
-		slog.Warn(nonLoopbackListenWarnMsg, "listen", hubCfg.Listen)
-	}
-
 	level, err := logging.ParseLevel(hubCfg.LogLevel)
 	if err != nil {
 		return nil, fmt.Errorf("invalid log level: %w", err)
@@ -491,17 +486,28 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create hub server: %w", err)
 	}
+
+	// AFTER NewServer, and reading the SOCKETS rather than the flag.
+	//
+	// -listen is no longer the whole answer: NewServer binds the stored
+	// extra_listen_addresses too, so `leapmux solo` with the default loopback
+	// -listen and a stored `*:4327` is reachable from other machines and said
+	// nothing, and a desktop hub that gains its only TCP address from that
+	// setting was suppressed outright by the NoTCP test. This is the same
+	// predicate the password-setup screen reads, so the log line and the
+	// screen cannot disagree about one hub.
+	if shouldWarnNonLoopback(cfg, server.HasNonLoopbackAddress()) {
+		slog.Warn(nonLoopbackListenWarnMsg, "listen", server.PrimaryListenAddr())
+	}
+
 	if !cfg.SkipBanner {
-		// Printed after the server exists so the URL reflects the
-		// public_url setting, exactly like the hub binary's banner.
-		// server.PrimaryListenAddr(), not hubCfg.Listen: a stored extra
-		// address can widen what -listen asked for (127.0.0.1:4327 merged
-		// into *:4327), or supply the only TCP address there is on a desktop
-		// hub that starts with none. The banner must name an address the hub
-		// actually answers on.
-		logging.PrintBannerURL(
-			settings.KeyPublicURL.Of(server.SettingsManager().Snapshot(context.Background())),
-			server.PrimaryListenAddr())
+		// Printed after the server exists so the URL reflects the public_url
+		// setting and the address the hub ACTUALLY answers on -- a stored extra
+		// address can widen what -listen asked for (127.0.0.1:4327 merged into
+		// *:4327), or supply the only TCP address there is on a desktop hub
+		// that starts with none. The server owns both facts; see
+		// hub.Server.PrintBannerURL.
+		server.PrintBannerURL()
 	}
 
 	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
@@ -567,15 +573,15 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 		inst.shutdown()
 	}()
 
-	// Wait for Hub's local listener (unix socket or named pipe). The hubDone arm
+	// Wait for Hub's local listener (unix socket or named pipe). The hubDone case
 	// is what keeps a Hub that failed instantly from paying out WaitReady's whole
 	// 5s budget: hub.NewServer has already bound both listeners, so the probe
 	// CONNECTS to a Hub whose Serve has returned and the wait would otherwise
 	// succeed on a corpse.
 	//
-	// The select is a pure wait -- the same division waitSolo draws: both arms
+	// The select is a pure wait -- the same division waitSolo draws: both cases
 	// choose WHEN to stop, never WHAT to report. That matters because both can be
-	// ready at once for exactly the reason above, and Go picks between ready arms
+	// ready at once for exactly the reason above, and Go picks between ready cases
 	// arbitrarily; putting the verdict AFTER the select is what makes the pick
 	// irrelevant. readyCh is buffered so the abandoned probe cannot leak on its
 	// send, whichever way it ends: usually at once and on its own, because the
@@ -656,7 +662,7 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	// canceled" for something that is not its doing -- or, when bring-up happened
 	// to succeed anyway, the launch went unreported entirely.
 	//
-	// Before the switch, so it covers all three arms, the dev-mode deferral
+	// Before the switch, so it covers all three cases, the dev-mode deferral
 	// included: a poller must not be launched against a startup that is over.
 	// What remains after it is a go statement, a counter release and a log line --
 	// no wait -- so a Hub dying past this point is indistinguishable from one dying
@@ -978,7 +984,7 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// The ONE condition dev mode defers on. Tagged here, at the only lookup
-			// that can mean it, so the deferral arm does not have to key on a bare
+			// that can mean it, so the deferral case does not have to key on a bare
 			// store.ErrNotFound from anywhere under bring-up -- a not-found from the
 			// registration below would otherwise be misread as "waiting for /setup",
 			// and the launch would report success and poll forever instead of failing.
@@ -1093,28 +1099,19 @@ func decode64(field, s string) ([]byte, error) {
 }
 
 // shouldWarnNonLoopback reports whether solo.Start should emit the
-// non-loopback security warning. Dev mode uses real password auth so it is
-// exempt; NoTCP means there is no TCP listener to warn about.
-func shouldWarnNonLoopback(cfg Config, listen string) bool {
-	return !cfg.DevMode && !cfg.NoTCP && listenIsNonLoopback(listen)
-}
-
-// listenIsNonLoopback reports whether `listen` would expose the hub on
-// something other than a loopback address.
+// non-loopback security warning.
 //
-// It asks listenset, which is the ONE place that classifies a bind address --
-// the same predicate decides whether the frontend blocks the app with the
-// password-setup screen. A second heuristic here would let the warning and the
-// gate disagree about the same command line.
+// It takes the hub's own answer about its LIVE listeners, so the warning
+// covers every address the hub bound and not only the one -listen gave. Dev
+// mode is exempt: it uses real password authentication from the start, so
+// there is no credential-free state to warn about.
 //
-// An address listenset cannot parse counts as exposed, which keeps the warning
-// conservative: it is shown when the answer is unknown.
-func listenIsNonLoopback(listen string) bool {
-	addr, err := listenset.Parse(listen)
-	if err != nil {
-		return true
-	}
-	return !addr.IsLoopback()
+// The NoTCP test is gone with the string. A desktop hub binds no TCP address
+// of its own, which used to make the whole question moot -- but it can gain
+// one from the extra_listen_addresses setting, and that address exposes the
+// hub exactly as much as a -listen one would.
+func shouldWarnNonLoopback(cfg Config, exposed bool) bool {
+	return !cfg.DevMode && exposed
 }
 
 // defaultExtraFlags are the koanf-backed flags solo/dev registers on top of the
@@ -1138,7 +1135,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 	}
 }
 
-// defaultCLIFlags names the subset of the HUB's own flags a solo or dev launcher
+// defaultCLIFlags lists the subset of the HUB's own flags a solo or dev launcher
 // puts on the command line. The rest of the hub's table is still reachable in
 // these modes -- LoadWithOptions records every flag's default and koanf key
 // before it consults this list, so the config file and LEAPMUX_HUB_* env vars
@@ -1155,7 +1152,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // allowance) -- it is just tuned through the settings table now.
 //
 // use-login-shell is deliberately absent even though `leapmux solo
-// --use-login-shell=false` works: this list names HUB flags, and that one is an
+// --use-login-shell=false` works: this list holds HUB flags, and that one is an
 // ExtraFlag (see defaultExtraFlags), which LoadWithOptions registers unconditionally
 // without consulting this list. Listing it here was inert -- it matched no hub flag
 // -- and implied the wrong home for it.

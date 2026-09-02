@@ -1,6 +1,7 @@
 import type { CustomEditorComponent } from '../types'
+import type { AddressRow } from './networkAddress'
 import type { GetListenStatusResponse } from '~/generated/proto/leapmux/v1/admin_pb'
-import { createSignal, For, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, For, onMount, Show, untrack } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { adminNetworkClient, userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
@@ -9,74 +10,13 @@ import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/Dro
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
-import { formatErrorMessage } from '~/lib/errors'
+import { ADDRESS_SOURCE_LISTEN, ADDRESS_SOURCE_MERGED, MAX_EXTRA_LISTEN_ADDRESSES } from '~/generated/contracts/listen'
+import { isValidPort } from '~/lib/ipAddress'
 import { loadSystemInfo, soloPasswordSet } from '~/lib/systemInfo'
 import { fieldLabel } from '../account/accountFields.css'
+import { createAccountAction } from '../account/createAccountAction'
 import * as styles from './NetworkAccessControl.css'
-
-/**
- * The host every "All interfaces" row carries.
- *
- * The hub's own spelling: `listenset` canonicalises an empty host and `*` to
- * this, so a row built here and a row read back from the hub compare equal.
- */
-const ANY_HOST = '*'
-
-/** One editable address in the panel. */
-interface AddressRow {
-  /** Stable across re-renders, so `<For>` does not rebuild a row being typed in. */
-  id: number
-  /** `*` for every interface, else an IP literal (with a zone where it has one). */
-  host: string
-  /** Kept as TEXT: a half-typed port is not a number, and clearing the field is not 0. */
-  port: string
-}
-
-let nextRowID = 0
-
-/** Splits a canonical `host:port` back into the two fields the row edits. */
-function rowFromAddress(address: string): AddressRow {
-  const lastColon = address.lastIndexOf(':')
-  if (lastColon < 0)
-    return { id: nextRowID++, host: address, port: '' }
-  const host = address.slice(0, lastColon)
-  return {
-    id: nextRowID++,
-    // An IPv6 literal arrives bracketed inside an address and unbracketed on
-    // its own; the row edits the bare form and `toAddress` brackets it back.
-    host: host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host,
-    port: address.slice(lastColon + 1),
-  }
-}
-
-/** Renders one row as the canonical address the hub stores. */
-function toAddress(row: AddressRow): string {
-  const host = row.host.includes(':') ? `[${row.host}]` : row.host
-  return `${host}:${row.port}`
-}
-
-/** A port a client can actually connect to. */
-function portIsValid(port: string): boolean {
-  if (!/^\d{1,5}$/.test(port))
-    return false
-  const n = Number(port)
-  return n >= 1 && n <= 65535
-}
-
-/** Whether a row names an address only this machine can reach. */
-function rowIsLoopback(row: AddressRow, status: GetListenStatusResponse | null): boolean {
-  if (row.host === ANY_HOST)
-    return false
-  for (const iface of status?.interfaces ?? []) {
-    for (const addr of iface.addresses) {
-      if (addr.ip === row.host)
-        return addr.loopback
-    }
-  }
-  // An address this machine no longer holds is treated as exposed. The safe
-  // answer to "could another machine reach this" is yes.
-  return false
-}
+import { ANY_HOST, mergeNotes, newRow, portOf, rowFromAddress, rowIsLoopback, toAddress } from './networkAddress'
 
 /**
  * The Network access panel: which addresses this hub answers on, and the
@@ -108,8 +48,20 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
   const rows = () => state.rows
   const [password, setPassword] = createSignal('')
   const [confirmPassword, setConfirmPassword] = createSignal('')
-  const [busy, setBusy] = createSignal(false)
-  const [message, setMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
+  /*
+   * The same in-flight-and-outcome pair the Account rows keep, from the same
+   * helper: this panel writes the account's password, so a divergent copy here
+   * would be the fifth spelling of one behaviour. `run` clears `busy` only
+   * after `work` resolves, which is what keeps Apply disabled through the
+   * read-back below rather than through the write alone.
+   */
+  const action = createAccountAction()
+  const busy = action.running
+  /**
+   * Whether THIS apply already stored the password, so a retry after a refused
+   * address write does not store it again. See `apply`.
+   */
+  const [passwordStored, setPasswordStored] = createSignal(false)
 
   const pwProps = { password, confirmPassword }
 
@@ -129,20 +81,46 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       setStatus(resp)
       setLoadFailed(false)
     }
-    catch (e) {
+    catch {
       // A separate flag, never an empty list: "this hub answers nowhere" and
       // "the hub did not answer" look identical otherwise, and the first is
       // alarming while the second is a hiccup.
+      //
+      // The FLAG alone, never the shared status line. `apply` reads the hub
+      // back after it writes, and writing the failure there let the success
+      // message that follows overwrite it -- the panel then showed a green
+      // "Network access updated." beside a "The hub did not report its
+      // listeners." it had just replaced. The Serving-now list states this
+      // failure, which is the one place it belongs.
       setLoadFailed(true)
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to read the network status') })
     }
     finally {
       setLoading(false)
     }
   }
 
+  /**
+   * The rows follow the STORED list whenever the panel is not mid-edit.
+   *
+   * The row above this editor renders its own Reset, which clears the stored
+   * document. Seeding once at mount left the deleted addresses on screen after
+   * that Reset, the preview promising to publish them, and the next Apply
+   * writing them straight back -- silently undoing what the operator had just
+   * done.
+   *
+   * `dirty` is what keeps the effect from overwriting an edit in progress: a
+   * write of this key publishes a new snapshot, which re-runs this, and a
+   * half-typed port must survive that. Apply and Cancel both clear it, so the
+   * rows re-seed from what the hub actually stored.
+   */
+  const [dirty, setDirty] = createSignal(false)
+  createEffect(() => {
+    const stored = storedAddresses()
+    if (!untrack(dirty))
+      setState('rows', stored.map(rowFromAddress))
+  })
+
   onMount(() => {
-    setState('rows', storedAddresses().map(rowFromAddress))
     void refresh()
   })
 
@@ -150,16 +128,31 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
     // Seeded with the port -listen already uses, because publishing the hub on
     // the port it already answers on is the common case and the merge handles
     // the overlap.
-    const defaultPort = status()?.defaultAddress?.split(':').pop() ?? '4327'
-    setState('rows', state.rows.length, { id: nextRowID++, host: ANY_HOST, port: portIsValid(defaultPort) ? defaultPort : '4327' })
+    const defaultPort = portOf(status()?.defaultAddress ?? '')
+    setDirty(true)
+    setState('rows', state.rows.length, newRow(ANY_HOST, isValidPort(defaultPort) ? defaultPort : '4327'))
   }
 
-  const removeRow = (id: number) => setState('rows', prev => prev.filter(r => r.id !== id))
-  const updateRow = (id: number, patch: Partial<AddressRow>) =>
-    setState('rows', r => r.id === id, patch)
+  /**
+   * Whether another row may be added.
+   *
+   * The cap is the hub's, from the contract both sides generate from. Without
+   * it the button built a row the settings validator then refused, so the
+   * operator learned the limit from a rejected Apply.
+   */
+  const canAddRow = () => rows().length < MAX_EXTRA_LISTEN_ADDRESSES
 
-  const rowsAreValid = () => rows().every(r => r.host !== '' && portIsValid(r.port))
-  const exposesTheHub = () => rows().some(r => !rowIsLoopback(r, status()))
+  const removeRow = (id: number) => {
+    setDirty(true)
+    setState('rows', prev => prev.filter(r => r.id !== id))
+  }
+  const updateRow = (id: number, patch: Partial<AddressRow>) => {
+    setDirty(true)
+    setState('rows', r => r.id === id, patch)
+  }
+
+  const rowsAreValid = () => rows().every(r => r.host !== '' && isValidPort(r.port))
+  const exposesTheHub = () => rows().some(r => !rowIsLoopback(r))
   /**
    * The password half is shown only while the account has none. Once it does,
    * Preferences → Account owns changing it, so the two surfaces never offer
@@ -195,39 +188,56 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
   const apply = async () => {
     if (!canApply())
       return
-    setBusy(true)
-    setMessage(null)
-    try {
-      // The password FIRST. A failure here leaves no address published, where
-      // the reverse would publish an address nobody can authenticate against.
-      // The reply carries this browser's new session: storing the first
-      // password is what starts demanding one, so without it the page that
-      // made the write is signed out of the form it is standing in.
-      if (needsPassword() && passwordCanSubmit(pwProps)) {
-        await userClient.changePassword({ newPassword: password() })
+    await action.run({
+      fallback: 'Failed to apply the network settings',
+      work: async () => {
+        // The password FIRST. A failure here leaves no address published, where
+        // the reverse would publish an address nobody can authenticate against.
+        // The reply carries this browser's new session: storing the first
+        // password is what starts demanding one, so without it the page that
+        // made the write is signed out of the form it is standing in.
+        //
+        // LATCHED, and the fields are cleared only once the whole apply lands.
+        // Clearing them beside this call left the operator with no way to retry
+        // a REFUSED address write: the password was stored, the panel's snapshot
+        // still said it was not, and Apply demanded a password whose fields it
+        // had just emptied. The latch is what keeps the retry from re-hashing
+        // and revoking credentials for a password the account already holds.
+        if (needsPassword() && !passwordStored() && passwordCanSubmit(pwProps)) {
+          await userClient.changePassword({ newPassword: password() })
+          setPasswordStored(true)
+        }
+        await props.binding.set({ addresses: rows().map(toAddress) })
         setPassword('')
         setConfirmPassword('')
-      }
-      await props.binding.set({ addresses: rows().map(toAddress) })
-      // Read the hub back rather than trusting the request: a stored address
-      // the hub could not bind is reported here, and the password half has to
-      // disappear now that one exists.
-      await Promise.all([refresh(), loadSystemInfo(true)])
-      setMessage({ type: 'success', text: 'Network access updated.' })
-    }
-    catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to apply the network settings') })
-    }
-    finally {
-      setBusy(false)
-    }
+        setPasswordStored(false)
+        // The rows follow the stored list again: what the hub kept is now the
+        // answer, and a bind failure it reports below belongs to that list.
+        setDirty(false)
+        // Read the hub back rather than trusting the request: a stored address
+        // the hub could not bind is reported here, and the password half has to
+        // disappear now that one exists.
+        //
+        // AWAITED inside the work, so Apply stays disabled until the panel shows
+        // what the hub kept. allSettled, because BOTH writes already committed:
+        // loadSystemInfo rejects by design, so a transient failure of the
+        // read-back -- likeliest right here, on a connection whose
+        // authentication rule just changed -- reported "Failed to apply the
+        // network settings" for an apply that succeeded. Each read states its
+        // own failure where it belongs.
+        await Promise.allSettled([refresh(), loadSystemInfo(true)])
+        return 'Network access updated.'
+      },
+    })
   }
 
   const cancel = () => {
+    setDirty(false)
     setState('rows', storedAddresses().map(rowFromAddress))
     setPassword('')
     setConfirmPassword('')
-    setMessage(null)
+    setPasswordStored(false)
+    action.clear()
   }
 
   return (
@@ -260,7 +270,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
                   inputMode="numeric"
                   class={styles.portInput}
                   aria-label="Port"
-                  aria-invalid={row.port !== '' && !portIsValid(row.port)}
+                  aria-invalid={row.port !== '' && !isValidPort(row.port)}
                   value={row.port}
                   onInput={e => updateRow(row.id, { port: e.currentTarget.value })}
                 />
@@ -278,7 +288,12 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
           </For>
         </Show>
         <div>
-          <button type="button" class="outline small" onClick={addRow}>+ Add address</button>
+          <button type="button" class="outline small" onClick={addRow} disabled={!canAddRow()}>+ Add address</button>
+          <Show when={!canAddRow()}>
+            <span class={styles.servingNote}>
+              {` At most ${MAX_EXTRA_LISTEN_ADDRESSES} addresses. Use “All interfaces” to serve every one of them from a single entry.`}
+            </span>
+          </Show>
         </div>
       </div>
 
@@ -289,7 +304,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
             {' '}
             <span class={styles.previewAddresses}>{rows().map(toAddress).join(', ')}</span>
           </div>
-          <MergeNote defaultAddress={status()?.defaultAddress ?? ''} rows={rows()} />
+          <MergeNotes defaultAddress={status()?.defaultAddress ?? ''} rows={rows()} />
         </div>
       </Show>
 
@@ -313,7 +328,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
         </div>
       </Show>
 
-      <StatusLine message={message()} />
+      <StatusLine message={action.message()} />
 
       <div class={actionsFooter}>
         <button type="button" class="outline" onClick={cancel} disabled={busy()}>Cancel</button>
@@ -327,13 +342,15 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
 
 /** The read-only list of what the hub answers on right now. */
 function ServingList(props: { status: GetListenStatusResponse | null, failed: boolean }) {
+  // The tokens come from the contract the hub generates its own from, so the
+  // two sides cannot drift on three words the proto carries as a plain string.
   const sourceNote = (source: string) => {
     switch (source) {
-      case 'listen':
+      case ADDRESS_SOURCE_LISTEN:
         return 'from -listen'
       // The distinction the panel exists to make legible: the -listen address
       // is not gone, it is served by this wider one.
-      case 'merged':
+      case ADDRESS_SOURCE_MERGED:
         return 'from -listen, merged'
       default:
         return 'extra'
@@ -369,20 +386,21 @@ function ServingList(props: { status: GetListenStatusResponse | null, failed: bo
 }
 
 /**
- * States which address a wildcard will absorb.
+ * States which address the hub will absorb into which.
  *
  * Without it "Serving now" shows 127.0.0.1:4327 before Apply and only *:4327
  * after, which reads as an address that disappeared.
+ *
+ * `mergeNotes` is the browser's copy of the hub's merge rule, and
+ * `testdata/listen_merge_conformance.json` keeps the two from drifting.
  */
-function MergeNote(props: { defaultAddress: string, rows: AddressRow[] }) {
-  const merged = () => {
-    if (props.defaultAddress === '')
-      return ''
-    const port = props.defaultAddress.split(':').pop()
-    const absorbing = props.rows.find(r => r.host === ANY_HOST && r.port === port)
-    return absorbing ? `${props.defaultAddress} merges into ${toAddress(absorbing)}.` : ''
-  }
-  return <Show when={merged()}>{note => <div>{note()}</div>}</Show>
+function MergeNotes(props: { defaultAddress: string, rows: AddressRow[] }) {
+  const notes = () => mergeNotes(props.defaultAddress, props.rows)
+  return (
+    <For each={notes()}>
+      {note => <div>{`${note.absorbed} merges into ${note.into}.`}</div>}
+    </For>
+  )
 }
 
 /**

@@ -257,7 +257,7 @@
   },
   "usernames": {
     "systemReserved": {
-      "solo": "the single passwordless user auto-created and auto-authenticated in solo mode"
+      "solo": "the single user solo mode auto-creates; it starts with no password and is authenticated with none until it has one"
     },
     "publicReserved": {
       "admin": "the conventional first administrator; squat-protected in anonymous public signup, claimable by the first admin"

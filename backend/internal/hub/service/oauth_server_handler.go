@@ -665,7 +665,7 @@ func appScopeCeiling(app *store.OAuthClient) authscope.ScopeSet {
 // expects.
 func resolveRequestedScopes(raw string, app *store.OAuthClient, user *auth.UserInfo) (authscope.ScopeSet, *oauthErrorResponse) {
 	// Closed, so the ceiling states every IMPLIED permission of the ones the
-	// registration lists: a row that names git:write carries git:read, and an
+	// registration lists: a row that lists git:write carries git:read, and an
 	// ask checked against the unclosed string could be closed PAST the check.
 	ceiling := appScopeCeiling(app).Close()
 	// RFC 6749 section 3.3 lets the server pick a default for an omitted

@@ -63,7 +63,7 @@ func soloUserService(t *testing.T) (*service.UserService, store.Store, *auth.Sol
 	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
 
-	gate := auth.NewSoloGate(st)
+	gate := auth.NewSoloGate(true, st)
 	svc := service.NewUserService(
 		st,
 		&config.Config{SoloMode: true},
@@ -72,7 +72,7 @@ func soloUserService(t *testing.T) (*service.UserService, store.Store, *auth.Sol
 		nil,
 		mail.Renderer{},
 		nil,
-	).WithSoloGate(gate)
+	)
 
 	soloUser, err := auth.LoadSoloUser(context.Background(), st)
 	require.NoError(t, err)
@@ -177,4 +177,38 @@ func sessionIDFromSetCookie(t *testing.T, line string) string {
 	cookies := resp.Cookies()
 	require.Len(t, cookies, 1)
 	return cookies[0].Value
+}
+
+// The PASSKEY factor is refused by mode, unlike the elevation surface around
+// it.
+//
+// rejectSoloElevation reads the CALLER, because a solo hub that holds a
+// password has real sessions to elevate. But no account there can ever hold a
+// passkey -- every management verb is refused and GetSystemInfo reports
+// passkey_enabled false for every origin -- so a signed-in solo caller reached
+// the WebAuthn engine and was answered "no passkeys registered", which reads as
+// a missing credential rather than a feature the hub does not have.
+func TestPasskeyElevation_RefusedInSoloForARealSession(t *testing.T) {
+	svc, st, _, _ := soloUserService(t)
+
+	// A caller with an ordinary session, which is what a solo hub hands its
+	// network callers once the account holds a password.
+	user, err := st.Users().GetByUsername(context.Background(), usernames.Solo)
+	require.NoError(t, err)
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:         userid.MustNew(user.ID),
+		Username:   user.Username,
+		IsAdmin:    true,
+		Credential: auth.SessionCredential("ses_test"),
+	})
+
+	_, beginErr := svc.BeginPasskeyElevation(ctx, connect.NewRequest(&leapmuxv1.BeginPasskeyElevationRequest{}))
+	require.Error(t, beginErr)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(beginErr))
+	assert.Contains(t, beginErr.Error(), "solo mode")
+
+	_, finishErr := svc.FinishPasskeyElevation(ctx, connect.NewRequest(&leapmuxv1.FinishPasskeyElevationRequest{}))
+	require.Error(t, finishErr)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(finishErr))
+	assert.Contains(t, finishErr.Error(), "solo mode")
 }

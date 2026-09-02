@@ -433,7 +433,7 @@ message IssueAPITokenRequest {
   string user_id = 1;
   // The app this credential belongs to. Empty means the built-in
   // "leapmux-service-account" registration, which runs no flow and exists so
-  // this out-of-band credential still names an app.
+  // this out-of-band credential still identifies an app.
   string client_id = 2;
   // Which installation this credential is for ("ci-runner-3").
   string installation_name = 3;

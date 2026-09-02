@@ -238,6 +238,40 @@ export function checkHeaders(h) {
 }
 
 // ---------------------------------------------------------------------------
+// listen: the listen-address vocabulary
+// ---------------------------------------------------------------------------
+
+/** Source token -> the Go constant the hub compares and sends. */
+export const LISTEN_SOURCE_GO_NAMES = {
+  listen: 'AddressSourceListen',
+  extra: 'AddressSourceExtra',
+  merged: 'AddressSourceMerged',
+}
+
+/** Source token -> the TS constant the panel renders a label for. */
+export const LISTEN_SOURCE_TS_NAMES = {
+  listen: 'ADDRESS_SOURCE_LISTEN',
+  extra: 'ADDRESS_SOURCE_EXTRA',
+  merged: 'ADDRESS_SOURCE_MERGED',
+}
+
+export function checkListen(l) {
+  mustBe(typeof l.anyHost === 'string' && l.anyHost.length > 0, 'listen.json', 'anyHost must be a non-empty token')
+  // The wildcard is a SENTINEL, and listenset.Parse compares it before it
+  // tries netip or falls through to a host name -- so a token spelled only
+  // from characters a real host can hold would take that address away from
+  // every operator who wanted it. At least one character must be one no host
+  // can carry.
+  mustBe(/[^a-z0-9.:%[\]-]/i.test(l.anyHost), 'listen.json', `anyHost ${JSON.stringify(l.anyHost)} is spelled like a host, so it would shadow one`)
+  mustBe(Number.isInteger(l.maxExtraAddresses) && l.maxExtraAddresses >= 1, 'listen.json', 'maxExtraAddresses must be an integer >= 1')
+  checkTableCoverage('listen.json', 'addressSources', Object.keys(l.addressSources), [
+    ['LISTEN_SOURCE_GO_NAMES', LISTEN_SOURCE_GO_NAMES],
+    ['LISTEN_SOURCE_TS_NAMES', LISTEN_SOURCE_TS_NAMES],
+  ])
+  return {}
+}
+
+// ---------------------------------------------------------------------------
 // retry: cross-language retry policies
 // ---------------------------------------------------------------------------
 
@@ -1080,7 +1114,11 @@ ${goReservedUsernames(v)}
 
 /** Reserved usernames: named consts plus lookup sets for the predicates. */
 function goReservedUsernames(v) {
-  const goConst = name => `Username${name[0].toUpperCase()}${name.slice(1)}`
+  // The schema admits a HYPHEN in a username, and Go accepts none in an
+  // identifier -- `UsernameRead-only` is a syntax error in a generated file
+  // nobody reads before the compiler does. Each hyphenated segment is
+  // capitalized instead, which is Go's own spelling for the same words.
+  const goConst = name => `Username${name.split('-').map(part => part[0].toUpperCase() + part.slice(1)).join('')}`
   const block = (kind, label) => {
     const names = Object.keys(v.usernames[kind])
     const consts = goConstBlock(names.map(name => ({ name: goConst(name), value: jsonString(name) })))
@@ -1235,11 +1273,25 @@ export function tsUsernameConsts(usernames) {
   for (const kind of ['systemReserved', 'publicReserved']) {
     for (const [name, doc] of Object.entries(usernames[kind])) {
       lines.push(`/** ${doc} */`)
-      lines.push(`export const USERNAME_${name.toUpperCase()} = ${jsonString(name)} as const`)
+      lines.push(`export const ${usernameConstName(name)} = ${jsonString(name)} as const`)
       lines.push('')
     }
   }
   return lines.join('\n')
+}
+
+/**
+ * The constant name for one reserved username.
+ *
+ * The schema admits a HYPHEN in a username (`^[a-z][a-z0-9-]*$`), and neither
+ * language accepts one in an identifier -- `USERNAME_READ-ONLY` and
+ * `UsernameRead-only` are both syntax errors, in generated files nobody reads
+ * before the compiler does. It folds the hyphen rather than refusing the name,
+ * because the name is the contract and the identifier is this emitter's own
+ * problem.
+ */
+export function usernameConstName(name) {
+  return `USERNAME_${name.toUpperCase().replaceAll('-', '_')}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1904,6 +1956,47 @@ export function emitTsHeaders(h) {
   return `${TS_HEADER('headers.json')}\n// HTTP headers the hub sets and the browser reads (fetch lowercases them).\n${lines}`
 }
 
+export function emitGoListen(l) {
+  const sources = Object.entries(l.addressSources).map(([token, doc]) =>
+    `\t// ${LISTEN_SOURCE_GO_NAMES[token]} is ${doc}.\n\t${LISTEN_SOURCE_GO_NAMES[token]} = ${jsonString(token)}`)
+  const vocabulary = [
+    '\t// ListenAnyHost is the canonical wildcard host: every interface, on one',
+    '\t// port. The address parser renders it and the panel\'s picker stores it.',
+    `\tListenAnyHost = ${jsonString(l.anyHost)}`,
+    '\t// MaxExtraListenAddresses caps the stored extra address list. Every entry',
+    '\t// costs a listener, a serve goroutine and a file descriptor for the life',
+    '\t// of the process. A machine with more interfaces to publish on wants the',
+    '\t// wildcard, which is one entry.',
+    `\tMaxExtraListenAddresses = ${l.maxExtraAddresses}`,
+  ].join('\n')
+  return `${GO_HEADER('listen.json')}package contracts
+
+// The listen-address vocabulary the hub and the browser both spell.
+const (
+${vocabulary}
+)
+
+// Why the hub serves an address, as the administration surface reports it.
+const (
+${sources.join('\n')}
+)
+`
+}
+
+export function emitTsListen(l) {
+  const sources = Object.entries(l.addressSources).map(([token, doc]) =>
+    `/** ${doc} */\nexport const ${LISTEN_SOURCE_TS_NAMES[token]} = ${jsonString(token)} as const`)
+  return `${TS_HEADER('listen.json')}
+/** The canonical wildcard host: every interface, on one port. */
+export const LISTEN_ANY_HOST = ${jsonString(l.anyHost)} as const
+
+/** How many extra listen addresses one hub may store. */
+export const MAX_EXTRA_LISTEN_ADDRESSES = ${l.maxExtraAddresses}
+
+${sources.join('\n\n')}
+`
+}
+
 export function emitGoRetry(r) {
   const blocks = Object.entries(r.policies).map(([name, p]) => {
     const prefix = RETRY_GO_NAMES[name]
@@ -1988,6 +2081,15 @@ const DOMAINS = [
       checkHeaders(h)
       out['backend/generated/contracts/headers.go'] = emitGoHeaders(h)
       out['frontend/src/generated/contracts/headers.ts'] = emitTsHeaders(h)
+    },
+  },
+  {
+    name: 'listen',
+    emit(out, read) {
+      const l = read('listen')
+      checkListen(l)
+      out['backend/generated/contracts/listen.go'] = emitGoListen(l)
+      out['frontend/src/generated/contracts/listen.ts'] = emitTsListen(l)
     },
   },
   {

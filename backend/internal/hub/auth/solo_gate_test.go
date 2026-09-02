@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,7 +53,7 @@ func ipcCtx() context.Context {
 }
 
 // The whole rule, as one table. Each row is a case the feature's design
-// statement names.
+// statement lists.
 func TestSoloGate_CredentialFree(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -91,7 +92,7 @@ func TestSoloGate_CredentialFree(t *testing.T) {
 			if tc.passwordSet {
 				setSoloPassword(t, st)
 			}
-			assert.Equal(t, tc.want, auth.NewSoloGate(st).CredentialFree(tc.ctx))
+			assert.Equal(t, tc.want, auth.NewSoloGate(true, st).CredentialFree(tc.ctx))
 		})
 	}
 }
@@ -108,9 +109,9 @@ func TestSoloGate_ReadsTheHashAndNotTheColumn(t *testing.T) {
 	require.True(t, user.PasswordSet, "precondition: the bootstrap claims a password")
 	require.False(t, password.IsUsable(user.PasswordHash), "precondition: no hash backs the claim")
 
-	assert.True(t, auth.NewSoloGate(st).CredentialFree(tcpCtx("127.0.0.1")),
+	assert.True(t, auth.NewSoloGate(true, st).CredentialFree(tcpCtx("127.0.0.1")),
 		"a hub with no usable password must stay reachable, whatever the column says")
-	assert.False(t, auth.NewSoloGate(st).PasswordSet(context.Background()))
+	assert.False(t, auth.NewSoloGate(true, st).PasswordSet(context.Background()))
 }
 
 // The gate must see a password the moment it is stored, because that write is
@@ -118,7 +119,7 @@ func TestSoloGate_ReadsTheHashAndNotTheColumn(t *testing.T) {
 func TestSoloGate_SeesAPasswordWrittenAfterItRead(t *testing.T) {
 	t.Parallel()
 	st := soloStore(t)
-	gate := auth.NewSoloGate(st)
+	gate := auth.NewSoloGate(true, st)
 
 	require.True(t, gate.CredentialFree(tcpCtx("127.0.0.1")), "precondition: no password yet")
 
@@ -128,31 +129,12 @@ func TestSoloGate_SeesAPasswordWrittenAfterItRead(t *testing.T) {
 	assert.True(t, gate.PasswordSet(context.Background()))
 }
 
-// NotePasswordSet only saves the next callers a store read; the test above is
-// what proves the rule is enforced without it. What this pins is the direction:
-// the latch must never widen access, only narrow it.
-func TestSoloGate_NotePasswordSet(t *testing.T) {
-	t.Parallel()
-	st := soloStore(t)
-	gate := auth.NewSoloGate(st)
-
-	gate.NotePasswordSet()
-	assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")))
-	assert.True(t, gate.PasswordSet(context.Background()))
-	// The local socket is still exempt: the latch says the account has a
-	// password, not that the desktop app must present one.
-	assert.True(t, gate.CredentialFree(ipcCtx()))
-}
-
-// A store that cannot answer must not admit an unauthenticated caller. The
-// opposite polarity would hand the administrator to anybody who could reach
-// the port whenever the database hiccuped.
 func TestSoloGate_AStoreFailureAsksForCredentials(t *testing.T) {
 	t.Parallel()
 	st := soloStore(t)
 	require.NoError(t, st.Close())
 
-	gate := auth.NewSoloGate(st)
+	gate := auth.NewSoloGate(true, st)
 	assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")),
 		"an unreadable store must refuse the credential-free path")
 	// The local socket answers before the store is consulted at all, so a
@@ -160,13 +142,135 @@ func TestSoloGate_AStoreFailureAsksForCredentials(t *testing.T) {
 	assert.True(t, gate.CredentialFree(ipcCtx()))
 }
 
-// A nil gate is reachable only from a test that states solo mode and nothing
-// else; it must not panic.
-func TestSoloGate_NilIsUsable(t *testing.T) {
+// A gate that cannot READ the account admits the local socket and nothing else.
+//
+// Two shapes cannot read it: a nil gate, and a gate built over a nil store.
+// Both used to answer "credential-free" for every transport, which put a
+// fail-open one forgotten field away -- HTTPAuthOpts carries SoloUser,
+// SoloGate and Store independently, so a caller that set the first and neither
+// of the others got a gate that knew nothing and admitted everything.
+//
+// The local IPC socket still comes in, and that is the point of testing it
+// here: a hub with no gate must not lock the desktop app out of itself.
+func TestSoloGate_ThatCannotReadTheAccountAdmitsOnlyTheLocalSocket(t *testing.T) {
 	t.Parallel()
-	var gate *auth.SoloGate
-	assert.True(t, gate.CredentialFree(tcpCtx("127.0.0.1")))
-	assert.True(t, gate.CredentialFree(ipcCtx()))
-	assert.False(t, gate.PasswordSet(context.Background()))
-	gate.NotePasswordSet()
+	for name, gate := range map[string]*auth.SoloGate{
+		"a nil gate":           nil,
+		"a gate with no store": auth.NewSoloGate(true, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")),
+				"a gate that cannot tell whether a password exists must not hand out the administrator")
+			assert.True(t, gate.CredentialFree(ipcCtx()),
+				"the local socket answers before the store, so a hub with no gate cannot lock the desktop app out")
+			assert.False(t, gate.PasswordSet(context.Background()),
+				"no password is what an unconfigured gate honestly knows")
+
+			free, set := gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
+			assert.False(t, free)
+			assert.False(t, set)
+			free, set = gate.CredentialFreeAndPasswordSet(ipcCtx())
+			assert.True(t, free)
+			assert.False(t, set)
+
+		})
+	}
+}
+
+// An ABSENT account holds no password, and that is not the same answer as an
+// unreadable store.
+//
+// Two deployments have no `solo` row. `leapmux hub` and `leapmux dev` never
+// create one -- the username is reserved in every creation path -- so a gate
+// built there answered "has a password" on an account that does not exist, and
+// logged a warning about a sign-in decision those hubs never make on every
+// call of the administration surface that reads it. And a solo hub whose row
+// an administrator deleted demanded a password no account could hold, for
+// every TCP address at once, with no way back short of a restart.
+func TestSoloGate_AnAbsentAccountHoldsNoPassword(t *testing.T) {
+	t.Parallel()
+	// A store with no solo row at all: what `leapmux hub` opens.
+	st := hubtestutil.OpenTestStore(t)
+
+	gate := auth.NewSoloGate(true, st)
+	assert.False(t, gate.PasswordSet(context.Background()),
+		"an account that does not exist cannot hold a password")
+	assert.True(t, gate.CredentialFree(tcpCtx("127.0.0.1")),
+		"a missing account must not demand a password nobody can present")
+}
+
+// GetSystemInfo reports three solo facts that all rest on one row, so it reads
+// them together. The two answers must agree with the single-question methods,
+// or the app's view of the connection and the hub's own rule could differ.
+func TestSoloGate_CredentialFreeAndPasswordSet(t *testing.T) {
+	t.Parallel()
+	st := soloStore(t)
+
+	gate := auth.NewSoloGate(true, st)
+	free, set := gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
+	assert.True(t, free)
+	assert.False(t, set)
+
+	setSoloPassword(t, st)
+	free, set = gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
+	assert.False(t, free, "TCP asks for the password the account now holds")
+	assert.True(t, set)
+
+	// The local socket stays credential-free on the same answer.
+	free, set = gate.CredentialFreeAndPasswordSet(ipcCtx())
+	assert.True(t, free, "the desktop app cannot present a password and must not be asked")
+	assert.True(t, set)
+
+}
+
+// A gate for a hub that is NOT solo answers no to everything, and reads
+// nothing to do it.
+//
+// `leapmux hub` and `leapmux dev` have no solo account -- the username is
+// reserved in every creation path -- so a gate that looked anyway found
+// nothing, could never latch, and paid one indexed miss on every call of the
+// public GetSystemInfo. The local socket is refused too: those hubs have no
+// credential-free rung for the desktop app to take.
+func TestSoloGate_OutsideSoloModeAnswersNoAndReadsNothing(t *testing.T) {
+	t.Parallel()
+	inner := soloStore(t)
+	setSoloPassword(t, inner)
+	st := &countingSoloStore{Store: inner}
+
+	gate := auth.NewSoloGate(false, st)
+	assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")))
+	assert.False(t, gate.CredentialFree(ipcCtx()),
+		"a hub with no solo rung admits nobody through it, the local socket included")
+	assert.False(t, gate.PasswordSet(context.Background()),
+		"there is no solo account to hold a password")
+
+	free, set := gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
+	assert.False(t, free)
+	assert.False(t, set)
+
+	assert.Zero(t, st.soloLookups.Load(), "a hub with no solo account must not look one up")
+}
+
+// countingSoloStore counts lookups of the solo account, so a test can assert
+// that a path never asks for a row that cannot exist.
+type countingSoloStore struct {
+	store.Store
+	soloLookups atomic.Int64
+}
+
+func (s *countingSoloStore) Users() store.UserStore {
+	return countingSoloUsers{UserStore: s.Store.Users(), parent: s}
+}
+
+type countingSoloUsers struct {
+	store.UserStore
+	parent *countingSoloStore
+}
+
+func (u countingSoloUsers) GetByUsername(ctx context.Context, username string) (*store.User, error) {
+	if username == usernames.Solo {
+		u.parent.soloLookups.Add(1)
+	}
+	return u.UserStore.GetByUsername(ctx, username)
 }

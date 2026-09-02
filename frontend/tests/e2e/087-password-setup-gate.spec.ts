@@ -13,7 +13,7 @@ const SOLO_PASSWORD = 'correct-horse-battery-staple'
  * runner may hold no address of its own, and this needs none.
  */
 test.describe('Password setup gate', () => {
-  let solo: SoloServerHandle
+  let solo: SoloServerHandle | undefined
 
   test.beforeEach(async () => {
     solo = await startSoloServer({ listenHost: '0.0.0.0' })
@@ -24,7 +24,7 @@ test.describe('Password setup gate', () => {
   })
 
   test('blocks the app until the account has a password', async ({ page }) => {
-    await page.goto(`${solo.hubUrl}/`)
+    await page.goto(`${solo!.hubUrl}/`)
 
     // The whole app, not a dismissible notice: everything it offers is offered
     // to whoever reaches the port, and no sign-in stands between them.

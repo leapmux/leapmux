@@ -803,6 +803,11 @@ func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+	// A LIVE password, because that is what the premise protects. The
+	// bootstrap alone leaves the hash empty, and an empty hash differs from
+	// PlaceholderHash before a single verb runs -- so the closing assertion
+	// held whatever the three verbs did.
+	setSoloPasswordForTest(t, st)
 
 	svc := service.NewAuthService(servicetest.AuthServiceDeps(
 		st,
@@ -843,6 +848,7 @@ func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
 	// The premise holds only while the account's password survives all three.
 	user, err := st.Users().GetByUsername(ctx, usernames.Solo)
 	require.NoError(t, err)
-	assert.NotEqual(t, password.PlaceholderHash, user.PasswordHash,
+	assert.True(t, password.IsUsable(user.PasswordHash),
 		"no refused verb may have cleared the password on its way out")
+	assert.NotEqual(t, password.PlaceholderHash, user.PasswordHash)
 }

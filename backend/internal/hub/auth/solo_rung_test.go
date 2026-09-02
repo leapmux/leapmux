@@ -33,7 +33,7 @@ import (
 //
 // Every request here arrives over TCP -- httptest.NewServer binds one, and a
 // direct AuthenticateHTTP call carries no local-IPC mark -- so this is the
-// exposed arm of the rule table. The IPC arm is the gate's own test.
+// exposed case of the rule table. The IPC case is the gate's own test.
 type soloRungFixture struct {
 	store  store.Store
 	gate   *auth.SoloGate
@@ -52,7 +52,7 @@ func newSoloRungFixture(t *testing.T) soloRungFixture {
 	// ONE gate for both ladders, which is how the hub wires it. Sharing it
 	// here is what makes "the two cannot disagree" a tested property rather
 	// than a comment.
-	gate := auth.NewSoloGate(st)
+	gate := auth.NewSoloGate(true, st)
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
 		Store: st, SoloUser: soloUser, SoloGate: gate,
 	})

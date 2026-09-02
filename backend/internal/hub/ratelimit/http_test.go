@@ -16,7 +16,7 @@ import (
 // anonymous endpoint, so a request that FINISHED still counts. Releasing it
 // would let an attacker with fast responses run without limit.
 func TestAllowHTTPCountsEveryRequestAgainstOneAddress(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpOAuthAnonymous, true, 2, 600)
 
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
@@ -39,7 +39,7 @@ func TestAllowHTTPCountsEveryRequestAgainstOneAddress(t *testing.T) {
 // budget per request by varying it -- worse than no limit, because it also lets
 // them exhaust a victim's budget by claiming the victim's address.
 func TestAllowHTTPKeysOnTheConnectionAddressAndNotAHeader(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpOAuthAnonymous, true, 1, 600)
 
 	first := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
@@ -64,7 +64,7 @@ func TestAllowHTTPAdmitsWhenUnconfigured(t *testing.T) {
 	assert.True(t, AllowHTTP(context.Background(), nil, OpOAuthAnonymous, req),
 		"a nil manager admits: a test wires none, and a hub always has one")
 
-	solo := newTestManager(t, true)
+	solo := newTestManager(t)
 	upsertLimit(t, solo, OpOAuthAnonymous, true, 1, 600)
 	assert.True(t, AllowHTTP(context.Background(), solo, OpOAuthAnonymous, req),
 		"the first request of the window admits")
@@ -78,7 +78,7 @@ func TestAllowHTTPAdmitsWhenUnconfigured(t *testing.T) {
 // admissions into the IN-FLIGHT map that nothing on this path decremented,
 // which turned "2 per 10 minutes" into "2 per address per process lifetime".
 func TestAllowHTTPWindowActuallyResets(t *testing.T) {
-	m := newTestManager(t, false)
+	m := newTestManager(t)
 	upsertLimit(t, m, OpOAuthAnonymous, true, 2, 600)
 
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)

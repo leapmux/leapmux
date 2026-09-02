@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -15,37 +16,39 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 )
 
 // fakeListenReporter states a hub's listeners without binding a socket.
 type fakeListenReporter struct {
-	bound       []service.BoundListenAddress
-	primary     string
-	nonLoopback bool
+	bound   []listenset.Bound
+	primary string
 }
 
-func (f fakeListenReporter) Bound() []service.BoundListenAddress { return f.bound }
-func (f fakeListenReporter) PrimaryListenAddr() string           { return f.primary }
-func (f fakeListenReporter) HasNonLoopbackAddress() bool         { return f.nonLoopback }
+func (f fakeListenReporter) Bound() []listenset.Bound  { return f.bound }
+func (f fakeListenReporter) PrimaryListenAddr() string { return f.primary }
 
 func newNetworkService(t *testing.T, cfg *config.Config, listen service.ListenReporter) (*service.AdminNetworkService, store.Store, *settings.Manager) {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, cfg.SoloMode))
 	set := servicetest.NewSettingsManager(t, st, nil)
-	return service.NewAdminNetworkService(cfg, set, auth.NewSoloGate(st), listen), st, set
+	return service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
+		Config: cfg, Settings: set, SoloGate: auth.NewSoloGate(cfg.SoloMode, st), Listen: listen,
+	}), st, set
 }
 
 func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 	listen := fakeListenReporter{
-		bound: []service.BoundListenAddress{
-			{Address: "*:4327", Source: "merged"},
-			{Address: "192.168.1.24:8080", Source: "extra", Err: "address already in use"},
+		bound: []listenset.Bound{
+			{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceMerged},
+			{Addr: listenset.MustParse("192.168.1.24:8080"), Source: listenset.SourceExtra, Err: "address already in use"},
 		},
 	}
 	svc, _, set := newNetworkService(t, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"}, listen)
@@ -156,9 +159,12 @@ func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
 // empty machine: reporting no interfaces would make the picker offer only the
 // wildcard and look like a machine with no network.
 func TestAdminNetworkService_ReportsAnInterfaceReadFailure(t *testing.T) {
-	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true}, fakeListenReporter{})
-	service.SetInterfaceSourceForTest(svc, func() ([]net.Interface, error) {
-		return nil, errors.New("no such device")
+	st := hubtestutil.OpenTestStore(t)
+	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+	svc := service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
+		Config: &config.Config{SoloMode: true}, Settings: servicetest.NewSettingsManager(t, st, nil),
+		SoloGate: auth.NewSoloGate(true, st), Listen: fakeListenReporter{},
+		Interfaces: func() ([]net.Interface, error) { return nil, errors.New("no such device") },
 	})
 
 	_, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
@@ -178,7 +184,7 @@ func systemInfoForSolo(t *testing.T, listen service.ListenReporter, ctx context.
 	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"},
 		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	deps.Listen = listen
-	deps.SoloGate = auth.NewSoloGate(st)
+	deps.SoloGate = auth.NewSoloGate(true, st)
 
 	resp, err := service.NewAuthService(deps).GetSystemInfo(ctx, connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
@@ -205,7 +211,9 @@ func TestGetSystemInfo_AutoAuthenticatedFollowsTheTransportAndThePassword(t *tes
 // without a credential and nothing weaker.
 func TestGetSystemInfo_PasswordSetupRequiredNeedsExposureAndNoPassword(t *testing.T) {
 	loopbackOnly := fakeListenReporter{primary: "127.0.0.1:4327"}
-	exposed := fakeListenReporter{primary: ":4327", nonLoopback: true}
+	exposed := fakeListenReporter{primary: ":4327", bound: []listenset.Bound{
+		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},
+	}}
 	ctx := tcpCtx("127.0.0.1")
 
 	assert.True(t, systemInfoForSolo(t, exposed, ctx, false).GetPasswordSetupRequired(),
@@ -239,7 +247,9 @@ func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 	hubtestutil.CreateTestAdmin(t, st)
 	deps := servicetest.AuthServiceDeps(st, &config.Config{Listen: ":4327"},
 		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
-	deps.Listen = fakeListenReporter{primary: ":4327", nonLoopback: true}
+	deps.Listen = fakeListenReporter{primary: ":4327", bound: []listenset.Bound{
+		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},
+	}}
 
 	resp, err := service.NewAuthService(deps).GetSystemInfo(tcpCtx("192.168.1.24"),
 		connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
@@ -248,4 +258,50 @@ func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 	assert.False(t, resp.Msg.GetPasswordSetupRequired(),
 		"an exposed multi-user hub already asks every caller to sign in")
 	assert.False(t, resp.Msg.GetSoloPasswordSet())
+}
+
+// And it does not ASK the gate at all.
+//
+// NewInterceptor builds a gate on every hub, and `solo` is reserved in every
+// creation path -- so an unguarded read looked up a row that can never exist
+// and could never latch: one indexed miss on every page load, for ever, on a
+// deployment with no solo rule to decide.
+func TestGetSystemInfo_DoesNotReadTheSoloAccountOnAMultiUserHub(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	counted := &countingUserStore{Store: st}
+	deps := servicetest.AuthServiceDeps(counted, &config.Config{Listen: ":4327"},
+		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	deps.Listen = fakeListenReporter{primary: ":4327", bound: []listenset.Bound{
+		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},
+	}}
+	deps.SoloGate = auth.NewSoloGate(false, counted)
+
+	_, err := service.NewAuthService(deps).GetSystemInfo(tcpCtx("192.168.1.24"),
+		connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	require.NoError(t, err)
+	assert.Zero(t, counted.soloLookups.Load(), "a multi-user hub has no solo account to look up")
+}
+
+// countingUserStore counts the lookups of the solo account, so a test can
+// assert that a code path never asks for a row that cannot exist.
+type countingUserStore struct {
+	store.Store
+	soloLookups atomic.Int64
+}
+
+func (s *countingUserStore) Users() store.UserStore {
+	return countingUsers{UserStore: s.Store.Users(), parent: s}
+}
+
+type countingUsers struct {
+	store.UserStore
+	parent *countingUserStore
+}
+
+func (u countingUsers) GetByUsername(ctx context.Context, username string) (*store.User, error) {
+	if username == usernames.Solo {
+		u.parent.soloLookups.Add(1)
+	}
+	return u.UserStore.GetByUsername(ctx, username)
 }

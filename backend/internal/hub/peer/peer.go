@@ -63,19 +63,30 @@ func RemoteAddr(ctx context.Context) (net.Addr, bool) {
 
 // RemoteHost returns the peer's host with the port removed, or "" when no
 // address was recorded.
-//
-// The port goes because a client picks a fresh one for every connection, so a
-// budget keyed on it would give each request a budget of its own. The brackets
-// go so one IPv6 peer reads as one host whichever way its address was
-// rendered.
 func RemoteHost(ctx context.Context) string {
 	addr, ok := RemoteAddr(ctx)
 	if !ok {
 		return ""
 	}
-	s := addr.String()
-	if host, _, err := net.SplitHostPort(s); err == nil {
-		s = host
+	return HostOf(addr.String())
+}
+
+// HostOf reduces one address to the host a budget is keyed on.
+//
+// The port goes because a client picks a fresh one for every connection, so a
+// budget keyed on it would give each request a budget of its own. The brackets
+// go so one IPv6 peer reads as one host whichever way its address was
+// rendered.
+//
+// It is exported because TWO entry points reach an address differently -- the
+// plain-HTTP door reads r.RemoteAddr, and the Connect interceptor reads the
+// peer the http.Server stamped on the context -- and they must reduce it the
+// same way or one caller holds two budgets. That invariant was stated in a
+// comment beside two identical copies of these three lines; it is one function
+// now.
+func HostOf(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
 	}
-	return strings.Trim(s, "[]")
+	return strings.Trim(addr, "[]")
 }

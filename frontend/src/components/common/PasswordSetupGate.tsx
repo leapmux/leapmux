@@ -33,6 +33,16 @@ import { fieldLabel } from '../settings/account/accountFields.css'
 export const PasswordSetupGate: Component = () => {
   const [password, setPassword] = createSignal('')
   const [confirmPassword, setConfirmPassword] = createSignal('')
+  /*
+   * Its own pair, where the Account rows and the Network access panel share
+   * `createAccountAction`. That helper carries ONE outcome channel: `work`
+   * resolves to a success sentence, or it throws and reports the fallback. This
+   * screen has two failures that need opposite sentences. A refused write is a
+   * retry, and a re-read that fails AFTER the write must not tell the operator
+   * to retry a password the account already holds -- from a screen that offers
+   * no other way out. Throwing is the helper's only route to the second one, and
+   * throwing is what says "the write failed".
+   */
   const [busy, setBusy] = createSignal(false)
   const [message, setMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
@@ -45,12 +55,27 @@ export const PasswordSetupGate: Component = () => {
     setMessage(null)
     try {
       await userClient.changePassword({ newPassword: password() })
-      // Forced, because this snapshot is exactly what the gate reads: without
-      // it the screen stays up over a hub that no longer needs it.
-      await loadSystemInfo(true)
     }
     catch (e) {
       setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to set the password') })
+      setBusy(false)
+      return
+    }
+    // OUTSIDE the catch above, because the password is stored by now. Forced,
+    // because this snapshot is exactly what the gate reads: without it the
+    // screen stays up over a hub that no longer needs it. But `loadSystemInfo`
+    // rejects by design, and a refresh over a connection whose authentication
+    // rule just changed is exactly where a transient failure lands -- reported
+    // as "Failed to set the password" it told the operator to retry a write
+    // that succeeded, from a screen that offers no other way out.
+    try {
+      await loadSystemInfo(true)
+    }
+    catch {
+      setMessage({
+        type: 'error',
+        text: 'The password is set, but this page could not re-read the hub. Reload to continue.',
+      })
     }
     finally {
       setBusy(false)

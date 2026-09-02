@@ -241,13 +241,19 @@ describe('signedOutOnly', () => {
     })
   })
 
-  // A SOLO hub answers every request as the synthetic solo user, so no
+  // A CREDENTIAL-FREE connection is authenticated by the hub itself, so no
   // credential page can succeed on it. Each page used to spell the rule out,
-  // and it reached two of the five: /recover-account, /recover-account/complete and
-  // /setup each served a form the hub has no endpoint for.
-  it('sends a solo-hub visitor to the app, from every credential page', async () => {
-    setSystemInfoMock({ soloMode: true })
-    mockUser.mockReturnValue({ id: 'solo' })
+  // and it reached two of the five: /recover-account, /recover-account/complete
+  // and /setup each served a form the hub has no endpoint for.
+  //
+  // The visitor here is SIGNED OUT, which is the case nothing else covers: on a
+  // solo hub with no password that is the state every TCP visitor arrives in,
+  // and the rule's own doc says it "holds whether or not somebody is signed
+  // in". With a user present the ordinary signed-in redirect answers instead,
+  // so the assertion would pass with this rule deleted.
+  it('sends a credential-free visitor to the app, from every credential page', async () => {
+    setSystemInfoMock({ soloMode: true, autoAuthenticated: true })
+    mockUser.mockReturnValue(null)
     const { navigations } = renderGate('/recover-account')
     await vi.waitFor(() => {
       expect(navigations).toEqual(['/'])
@@ -255,17 +261,20 @@ describe('signedOutOnly', () => {
   })
 
   // The decision waits for the bootstrap, and that gate is the whole point:
-  // before the first system-info load `isSoloMode()` answers a fabricated
-  // `false`. Sampling it early gives the WRONG answer rather than an early
-  // one, and an onMount that sampled it never looked again.
-  it('waits for the bootstrap before it answers a solo hub', async () => {
+  // before the first system-info load `isAutoAuthenticated()` answers a
+  // fabricated `false`. Sampling it early gives the WRONG answer rather than
+  // an early one, and an onMount that sampled it never looked again.
+  //
+  // The visitor stays signed OUT throughout, so the credential-free rule is
+  // the only thing that can produce the navigation.
+  it('waits for the bootstrap before it answers a credential-free connection', async () => {
     mockLoading.mockReturnValue(true)
+    mockUser.mockReturnValue(null)
     const { navigations } = renderGate('/login')
     expect(screen.getByTestId('credential-form')).toBeInTheDocument()
     expect(navigations).toEqual([])
 
-    setSystemInfoMock({ soloMode: true })
-    mockUser.mockReturnValue({ id: 'solo' })
+    setSystemInfoMock({ soloMode: true, autoAuthenticated: true })
     mockLoading.mockReturnValue(false)
 
     await vi.waitFor(() => {

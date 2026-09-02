@@ -369,7 +369,9 @@ func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextR
 	state := &authState{}
 	soloGate := opts.SoloGate
 	if soloGate == nil {
-		soloGate = NewSoloGate(st)
+		// SoloUser is what states the mode here: the interceptor is given one
+		// only in solo mode, and nil gives normal multi-user auth.
+		soloGate = NewSoloGate(opts.SoloUser != nil, st)
 	}
 	a := &authInterceptor{
 		store:          st,
@@ -1031,10 +1033,10 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 
 	// Solo mode authenticates every procedure -- public or not -- as the
 	// synthetic user, and short-circuits the cookie path, for the callers
-	// soloCredentialFree admits: the local IPC socket, and any transport while
-	// the account holds no password. A TCP caller on a hub whose account HAS a
-	// password falls through to the ordinary cookie and bearer rungs below and
-	// signs in like any other account.
+	// SoloGate.CredentialFree admits: the local IPC socket, and any transport
+	// while the account holds no password. A TCP caller on a hub whose account
+	// HAS a password falls through to the ordinary cookie and bearer rungs
+	// below and signs in like any other account.
 	//
 	// It YIELDS to a presented lmx_ bearer, which is what makes the scope model
 	// work on a solo hub. The admitted caller carries an unscoped grant; a

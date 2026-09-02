@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "listen_merge_conformance.schema.json",
+  "title": "listen-address merge corpus",
+  "description": "Shared by backend/internal/hub/listenset/listenset_test.go and frontend/src/components/settings/controls/networkAddress.test.ts. listenset owns the merge and is the enforcement point; the browser mirror exists so the Network access panel can tell the operator which address will fold into which BEFORE Apply.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "cases"],
+  "properties": {
+    "_readme": { "$ref": "#/$defs/readme" },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["a", "b", "covers", "why"],
+        "properties": {
+          "a": { "type": "string", "minLength": 1 },
+          "b": { "type": "string", "minLength": 1 },
+          "covers": { "type": "boolean" },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "readme": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    }
+  }
+}

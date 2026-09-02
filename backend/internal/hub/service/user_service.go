@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -31,13 +32,6 @@ type UserService struct {
 	mail      mail.Sender
 	renderer  mail.Renderer
 	keystore  *keystore.Keystore
-	// soloGate is the hub's solo-admission gate. ChangePassword tells it the
-	// account now holds a password, and reads it to decide whether the caller
-	// it just re-armed the rule against needs a session of its own. Nil
-	// outside solo mode, and safe there: every method on it accepts a nil
-	// receiver.
-	soloGate *auth.SoloGate
-
 	// The clock every instant on the elevation path comes from: the grant,
 	// the predicate, the slide, and the first-credential freshness rule.
 	clockSeam
@@ -52,13 +46,6 @@ func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, l
 		panic("user service requires credential lifecycle effects")
 	}
 	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer, keystore: ks}
-}
-
-// WithSoloGate attaches the hub's solo-admission gate. Only the hub calls it,
-// and only in solo mode; every other construction leaves the gate nil.
-func (s *UserService) WithSoloGate(gate *auth.SoloGate) *UserService {
-	s.soloGate = gate
-	return s
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -421,8 +408,16 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	}
 
 	resp := connect.NewResponse(&leapmuxv1.ChangePasswordResponse{})
+	// A failure here is LOGGED, never returned. The password committed in the
+	// transaction above, and on a solo hub that write is what starts demanding
+	// one -- so answering with an error tells the caller to retry a change that
+	// already happened, and the retry meets the rule the change armed. The page
+	// would sit in a loop no attempt could leave. Without the cookie the caller
+	// signs in with the password it just chose, which is the ordinary route and
+	// not a trap.
 	if err := s.handOverSoloSession(ctx, userInfo, resp.Header()); err != nil {
-		return nil, err
+		slog.Error("the solo caller that set the first password could not be handed a session; it must sign in with that password",
+			"error", err)
 	}
 	return resp, nil
 }
@@ -444,25 +439,32 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 // administrator access one request ago, so the grant cannot widen what it can
 // do; refusing it would only ask the user to present, as a step-up proof, the
 // secret they chose in the request before.
+//
+// Its error is a PLAIN one, not a connect error, because its caller logs it
+// rather than answering with it: this runs after the password committed.
 func (s *UserService) handOverSoloSession(ctx context.Context, userInfo *auth.UserInfo, h http.Header) error {
 	if !userInfo.SoloAuthenticated() {
 		return nil
 	}
-	// The password already committed above, and the gate reads the store while
-	// its latch is false -- so the rule is armed for every caller from here on
-	// whether or not this line runs. It saves those callers a store read; it is
-	// not what closes the door. See SoloGate.NotePasswordSet.
-	s.soloGate.NotePasswordSet()
+	// NOTHING tells the gate. The password committed above, and the gate reads
+	// the store while its latch is false, so the rule is armed for every caller
+	// from here on -- see SoloGate.passwordSet for why the store is its only
+	// source.
 
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, userInfo.ID, settings.SessionDuration(s.set.Snapshot(ctx)))
+	// ONE snapshot for the duration and the cookie attributes. Two reads can
+	// straddle the manager's TTL and see different generations, which would
+	// stamp a lifetime from one configuration and a Secure flag from another.
+	snap := s.set.Snapshot(ctx)
+
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, userInfo.ID, settings.SessionDuration(snap))
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		return fmt.Errorf("create session: %w", err)
 	}
 	if _, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now()); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("elevate session: %w", err))
+		return fmt.Errorf("elevate session: %w", err)
 	}
 	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt,
-		settings.KeySecureCookies.Of(s.set.Snapshot(ctx))).String())
+		settings.KeySecureCookies.Of(snap)).String())
 	return nil
 }
 

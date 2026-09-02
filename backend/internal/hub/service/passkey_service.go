@@ -73,12 +73,16 @@ type stepUpAdmission struct {
 // opens with, in the one order that is correct, and returns the acting user.
 //
 // A helper rather than six copies, for the reason elevationCaller gives for
-// its own four: the ORDER is the rule. This refuses solo mode FIRST, because
-// solo mode authenticates every request as the synthetic solo user and has no
-// credential store to act on, so resolving the credential first would answer
-// a solo caller with a message about a user that is not the one it means.
-// A seventh handler that forgot the refusal would reach a store the mode does
-// not serve.
+// its own four: the ORDER is the rule. This refuses solo mode FIRST, so
+// resolving the credential cannot answer a solo caller with a message about a
+// user that is not the one it means. A seventh handler that forgot the
+// refusal would reach a surface the mode does not serve.
+//
+// It refuses the MODE and not the caller, unlike rejectSoloElevation next
+// door, and the difference is deliberate: a passkey is unusable on a solo hub
+// whoever asks. GetSystemInfo reports passkey_enabled false for every origin
+// there, so admitting a signed-in caller here would offer management verbs for
+// a capability the same hub says it does not have.
 func (s *UserService) passkeyManagementCaller(ctx context.Context) (*auth.UserInfo, error) {
 	if err := rejectSoloPasskeyManagement(s.cfg.SoloMode); err != nil {
 		return nil, err
@@ -287,8 +291,15 @@ const ceremonyGrace = hubwebauthn.CeremonyTTL
 // sibling branch -- elevate through the browser leg, and the elevation
 // branch takes it before this rule ever runs. The same refusal also fails
 // closed on a nil UserInfo, which must never reach the AuthenticatedAt read
-// below. Solo mode never arrives here: every caller refuses it before the
-// admission runs.
+// below.
+//
+// SOLO REACHES THIS, since ChangePassword stopped refusing solo mode, and it
+// misses this branch only by way of a column: bootstrap.Run writes
+// PasswordSet true with an EMPTY hash, so accountElevatesOnlyThroughAProvider
+// short-circuits on the claim rather than on a password that works. Correct
+// that column to the honest false and every solo ChangePassword lands here,
+// where the remedy -- verify an email, or link a provider -- is one the solo
+// account can never take, and the first password becomes impossible to set.
 func assertFirstCredentialAuthIsFresh(userInfo *auth.UserInfo, now time.Time, maxAge time.Duration) error {
 	if userInfo == nil || userInfo.Credential.SessionID() == "" {
 		// NO marker, and the message states the remedy instead. A delegation

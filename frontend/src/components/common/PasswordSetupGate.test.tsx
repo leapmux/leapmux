@@ -25,6 +25,10 @@ describe('passwordSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockChangePassword.mockResolvedValue({})
+    // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
+    // keeps the implementation, so one test's `mockRejectedValue` would
+    // otherwise reject in every test after it.
+    mockLoadSystemInfo.mockResolvedValue(undefined)
   })
 
   // A solo hub has exactly one account, named "solo", so a free field could
@@ -78,6 +82,21 @@ describe('passwordSetupGate', () => {
   // The exposed address is deliberately NOT named: the hub can answer on
   // several, and the one this page was opened at is often not the one that
   // exposes it.
+  // The password committed and only the re-read failed. Reporting that as
+  // "Failed to set the password" told the operator to retry a write that
+  // succeeded, from a screen that offers no other way out.
+  it('says the password landed when only the re-read failed', async () => {
+    mockLoadSystemInfo.mockRejectedValue(new Error('connection reset'))
+    render(() => <PasswordSetupGate />)
+    fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
+
+    expect(await screen.findByText(/The password is set/)).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to set the password/)).toBeNull()
+    expect(mockChangePassword).toHaveBeenCalledTimes(1)
+  })
+
   it('does not claim which address exposes the hub', () => {
     render(() => <PasswordSetupGate />)
     expect(screen.getByTestId('password-setup-gate')).toHaveTextContent(

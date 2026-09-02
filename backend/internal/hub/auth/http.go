@@ -69,6 +69,11 @@ type HTTPAuthOpts struct {
 	// passes it; only the latch is lost, which costs a store read per request
 	// and never an admission. A hub passes the interceptor's gate, so both
 	// ladders share one latch.
+	//
+	// A caller that sets SoloUser and neither of the other two gets a gate with
+	// no store, which admits the local IPC socket and refuses everything else.
+	// It is the honest answer for a caller that stated a solo hub and gave the
+	// gate nothing to read; see SoloGate.CredentialFree.
 	SoloGate *SoloGate
 	// ReadCookie turns the session-cookie rung on. Handlers that accept
 	// only a bearer or the solo user leave it false.
@@ -81,11 +86,14 @@ type HTTPAuthOpts struct {
 
 // soloGate returns the shared gate, or a throwaway one over the store. The
 // fallback keeps the RULE correct without the caller's help; see SoloGate.
+//
+// SoloUser states the mode, as it does in NewInterceptor: this method is
+// reached only from the solo rung, which the caller enters by setting one.
 func (o HTTPAuthOpts) soloGate() *SoloGate {
 	if o.SoloGate != nil {
 		return o.SoloGate
 	}
-	return NewSoloGate(o.Store)
+	return NewSoloGate(o.SoloUser != nil, o.Store)
 }
 
 // AuthenticateHTTP resolves the caller of `r` through the standard

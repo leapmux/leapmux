@@ -70,7 +70,8 @@ func newTestSet(t *testing.T, baseAddr string) (*listenerSet, chan error) {
 	}
 
 	serveErr := make(chan error, 1)
-	set := newListenerSet(server, baseLn, base, serveErr)
+	set := newListenerSet(baseLn, base, serveErr)
+	set.setServer(server)
 	set.Serve()
 	t.Cleanup(func() {
 		_ = set.Close()
@@ -172,7 +173,7 @@ func TestListenerSet_AWildcardMergesTheBaseAddress(t *testing.T) {
 
 	require.NoError(t, set.Apply([]listenset.Addr{listenset.MustParse("*:" + strconv.Itoa(port))}))
 
-	// ONE socket now, and it still answers on the address -listen named.
+	// ONE socket now, and it still answers on the address -listen gave.
 	assert.Equal(t, []string{"*:" + strconv.Itoa(port)}, boundStrings(set))
 	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(port))
 
@@ -184,7 +185,7 @@ func TestListenerSet_AWildcardMergesTheBaseAddress(t *testing.T) {
 
 // A failure must leave the hub exactly as it was. The base is what this
 // protects: a merge closes it first, so a rollback that forgot to rebind would
-// take the hub off the address its operator named on the command line.
+// take the hub off the address its operator gave on the command line.
 func TestListenerSet_AFailedApplyRollsBackAndKeepsTheBase(t *testing.T) {
 	ports := freePorts(t, 2)
 	basePort, occupiedPort := ports[0], ports[1]
@@ -291,15 +292,18 @@ func TestListenerSet_ApplyIsANoOpWhenNothingChanged(t *testing.T) {
 	require.NoError(t, set.Apply(extras))
 	requireAnswers(t, extras[0].String())
 
-	// The same connection must survive the second apply: a rebind would drop
-	// it, and a keep-alive client would see the socket close for no reason.
-	conn, err := net.Dial("tcp", extras[0].String())
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	// The LISTENER must survive, and identity is what proves it: closing a
+	// listener does not close the connections it already accepted, so a
+	// connection dialled before the applies would stay open through a full
+	// close-and-rebind and prove nothing.
+	before := listenerPointers(set)
 
 	for range 3 {
 		require.NoError(t, set.Apply(extras))
 	}
+	assert.Equal(t, before, listenerPointers(set),
+		"a no-op apply must not close and re-open a socket: a keep-alive client "+
+			"would see it close for no reason, and another process could take the port")
 	requireAnswers(t, extras[0].String())
 	assert.ElementsMatch(t, []string{
 		"127.0.0.1:" + strconv.Itoa(basePort),
@@ -384,7 +388,7 @@ func TestListenerSet_PrimaryListenAddr(t *testing.T) {
 		require.NoError(t, set.Apply([]listenset.Addr{listenset.MustParse("*:" + strconv.Itoa(port))}))
 		// ":4327" and never "*:4327": settings.browserHostForListen reads the
 		// wildcard as an EMPTY host with a port, so the canonical spelling
-		// would produce a link to a machine named "*".
+		// would produce a link to a machine called "*".
 		assert.Equal(t, ":"+strconv.Itoa(port), set.PrimaryListenAddr())
 	})
 
@@ -402,16 +406,19 @@ func TestListenerSet_PrimaryListenAddr(t *testing.T) {
 	})
 }
 
-func TestListenerSet_HasNonLoopbackAddress(t *testing.T) {
+// "Is this hub reachable from another machine" is answered from the REPORT, by
+// listenset.AnyNonLoopback -- the solo launcher's startup warning and the
+// password-setup screen both read it, so the two cannot disagree about one hub.
+func TestListenerSet_BoundReportsWhetherAnyAddressIsReachable(t *testing.T) {
 	ports := freePorts(t, 2)
 	basePort, wildcardPort := ports[0], ports[1]
 	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(basePort))
-	assert.False(t, set.HasNonLoopbackAddress(), "a loopback -listen exposes nothing")
+	assert.False(t, listenset.AnyNonLoopback(set.Bound()), "a loopback -listen exposes nothing")
 
 	require.NoError(t, set.Apply([]listenset.Addr{
 		listenset.MustParse("*:" + strconv.Itoa(wildcardPort)),
 	}))
-	assert.True(t, set.HasNonLoopbackAddress(),
+	assert.True(t, listenset.AnyNonLoopback(set.Bound()),
 		"a wildcard answers on every interface, so the hub is reachable from another machine")
 }
 
@@ -488,7 +495,7 @@ func TestResolvePort(t *testing.T) {
 
 // The report must say WHY each address is bound, because "127.0.0.1:4327 is
 // gone" and "127.0.0.1:4327 is served by *:4327" look identical in a list that
-// only names what is serving.
+// only states what is serving.
 func TestListenerSet_BoundReportsWhyEachAddressIsServed(t *testing.T) {
 	ports := freePorts(t, 2)
 	basePort, extraPort := ports[0], ports[1]
@@ -538,7 +545,8 @@ func TestListenerSet_DoesNotServeBeforeServeRuns(t *testing.T) {
 	baseLn, err := net.Listen("tcp", base.DialAddr())
 	require.NoError(t, err)
 
-	set := newListenerSet(server, baseLn, &base, make(chan error, 1))
+	set := newListenerSet(baseLn, &base, make(chan error, 1))
+	set.setServer(server)
 	t.Cleanup(func() {
 		_ = set.Close()
 		_ = server.Close()
@@ -557,4 +565,198 @@ func TestListenerSet_DoesNotServeBeforeServeRuns(t *testing.T) {
 	set.Serve()
 	requireAnswers(t, extra.String())
 	requireAnswers(t, base.String())
+}
+
+// listenerPointers identifies each live socket by the listener object itself,
+// so a test can tell "the same socket" from "a socket on the same address".
+func listenerPointers(set *listenerSet) map[string]net.Listener {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	out := make(map[string]net.Listener, len(set.active))
+	for key, bl := range set.active {
+		out[key] = bl.ln
+	}
+	return out
+}
+
+// An unrelated settings write must not touch the sockets.
+//
+// The settings manager fires EVERY subscriber on every write, so a hub with
+// one permanently unbindable stored address ran the per-address retry loop on
+// each save -- closing and re-binding every healthy socket, inside the
+// manager's own reload lock, with a window for another process to take the
+// port each time.
+func TestListenerSet_ApplyBestEffortIgnoresAnUnchangedList(t *testing.T) {
+	ports := freePorts(t, 3)
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(ports[0]))
+
+	good := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[1]))
+	// An address nothing can bind: another socket already holds the port.
+	occupied, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(ports[2]))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = occupied.Close() })
+	dead := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[2]))
+
+	extras := []listenset.Addr{good, dead}
+	set.ApplyBestEffort(extras)
+	requireAnswers(t, good.String())
+	before := listenerPointers(set)
+
+	// The SAME list again, which is what every unrelated settings write
+	// delivers. Nothing may move.
+	set.ApplyBestEffort(extras)
+	assert.Equal(t, before, listenerPointers(set),
+		"an unrelated settings write must not close and re-bind a working socket")
+
+	// The failure is still reported, so the panel keeps stating it.
+	var failures []string
+	for _, b := range set.Bound() {
+		if b.Err != "" {
+			failures = append(failures, b.Addr.String())
+		}
+	}
+	assert.Equal(t, []string{dead.String()}, failures)
+
+	// And a CHANGED list is applied.
+	set.ApplyBestEffort([]listenset.Addr{good})
+	requireAnswers(t, good.String())
+	assert.ElementsMatch(t,
+		[]string{"127.0.0.1:" + strconv.Itoa(ports[0]), good.String()},
+		boundStrings(set))
+}
+
+// A rollback records the address it could not restore, and a later successful
+// apply must not erase that record.
+//
+// The -listen socket is what this protects. ApplyBestEffort ends on a clean
+// apply in the ordinary case, and clearing the whole failure map there
+// reported a hub with no problems at the one address whose loss the operator
+// most needs to see.
+func TestListenerSet_AFailureThatIsStillTrueSurvivesTheNextApply(t *testing.T) {
+	ports := freePorts(t, 2)
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(ports[0]))
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(ports[1]))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = occupied.Close() })
+	dead := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[1]))
+
+	set.ApplyBestEffort([]listenset.Addr{dead})
+	failed := map[string]string{}
+	for _, b := range set.Bound() {
+		if b.Err != "" {
+			failed[b.Addr.String()] = b.Err
+		}
+	}
+	require.Contains(t, failed, dead.String())
+
+	// The port frees up. An UNCHANGED list is still not retried -- that is the
+	// whole point of skipping the unrelated settings write -- so the failure
+	// stands until the list itself changes or the hub restarts.
+	require.NoError(t, occupied.Close())
+	set.ApplyBestEffort([]listenset.Addr{dead})
+	assert.NotEmpty(t, set.Bound()[len(set.Bound())-1].Err,
+		"an unchanged list is not a retry, and the failure it reports is still true")
+
+	// A CHANGED list is applied, the address binds, and the failure stops
+	// being reported because the set now answers on it.
+	other := listenset.MustParse("127.0.0.1:" + strconv.Itoa(freePort(t)))
+	set.ApplyBestEffort([]listenset.Addr{dead, other})
+	requireAnswers(t, dead.String())
+	for _, b := range set.Bound() {
+		assert.Emptyf(t, b.Err, "%s bound, so it is no longer a failure", b.Addr)
+	}
+}
+
+// A failure stops being reported the moment the operator deletes the address.
+//
+// The failure record is not cleared wholesale any more -- a rollback writes an
+// address the hub could not bind AGAIN, and that one is still true after the
+// next successful apply -- so the pruning has to answer "does the caller still
+// ask for this?" as well as "does the hub serve it now?".
+func TestListenerSet_ADeletedAddressStopsBeingReported(t *testing.T) {
+	ports := freePorts(t, 2)
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(ports[0]))
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(ports[1]))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = occupied.Close() })
+	dead := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[1]))
+
+	set.ApplyBestEffort([]listenset.Addr{dead})
+	require.NotEmpty(t, failedStrings(set), "an unbindable address must be reported")
+
+	// The operator removes it. It is neither served nor asked for, so the panel
+	// must stop showing it -- there is no row left to remove it from.
+	set.ApplyBestEffort(nil)
+	assert.Empty(t, failedStrings(set), "a deleted address is not a failure")
+	assert.Equal(t, []string{"127.0.0.1:" + strconv.Itoa(ports[0])}, boundStrings(set))
+}
+
+// failedStrings renders the addresses the set reports as unbindable.
+func failedStrings(set *listenerSet) []string {
+	out := []string{}
+	for _, b := range set.Bound() {
+		if b.Err != "" {
+			out = append(out, b.Addr.String())
+		}
+	}
+	return out
+}
+
+// An address that cannot bind must not disturb the addresses that already
+// serve.
+//
+// The set retried the list one entry at a time FROM EMPTY, so adding one
+// unbindable address closed and re-bound every healthy socket -- and a re-bind
+// that lost its port was not rolled back, because that attempt had closed
+// nothing of its own to restore. One new address took a published one away.
+func TestListenerSet_ApplyBestEffortLeavesTheServingSocketsAlone(t *testing.T) {
+	ports := freePorts(t, 4)
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(ports[0]))
+
+	first := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[1]))
+	second := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[2]))
+	set.ApplyBestEffort([]listenset.Addr{first, second})
+	requireAnswers(t, first.String())
+	requireAnswers(t, second.String())
+	before := listenerPointers(set)
+
+	blocker, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(ports[3]))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = blocker.Close() })
+	dead := listenset.MustParse("127.0.0.1:" + strconv.Itoa(ports[3]))
+
+	set.ApplyBestEffort([]listenset.Addr{first, second, dead})
+
+	assert.Equal(t, before, listenerPointers(set),
+		"an address that cannot bind must not close and re-open a socket that already serves")
+	requireAnswers(t, first.String())
+	requireAnswers(t, second.String())
+	assert.Equal(t, []string{dead.String()}, failedStrings(set))
+}
+
+// A set with no server yet binds, reports and closes.
+//
+// NewServer builds the set at the top -- before the mux and the CSP its
+// http.Server is built from exist -- so the reporter can hold it by value
+// rather than through a getter with a nil branch nothing can reach. Nothing
+// serves in that window: serveLocked spawns no goroutine while `serving` is
+// false, and only Serve sets it, strictly after setServer.
+func TestListenerSet_BindsBeforeItHasAServer(t *testing.T) {
+	port := freePort(t)
+	base := listenset.MustParse("127.0.0.1:" + strconv.Itoa(port))
+	baseLn, err := net.Listen("tcp", base.DialAddr())
+	require.NoError(t, err)
+
+	set := newListenerSet(baseLn, &base, make(chan error, 1))
+	t.Cleanup(func() { _ = set.Close() })
+
+	extraPort := freePort(t)
+	extra := listenset.MustParse("127.0.0.1:" + strconv.Itoa(extraPort))
+	require.NoError(t, set.Apply([]listenset.Addr{extra}),
+		"a set with no server must still bind what it is asked for")
+	assert.ElementsMatch(t, []string{base.String(), extra.String()}, boundStrings(set))
+	assert.Equal(t, base.DialAddr(), set.PrimaryListenAddr())
+	assert.False(t, listenset.AnyNonLoopback(set.Bound()))
 }

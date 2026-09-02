@@ -2625,7 +2625,7 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 	require.NoError(t, key.Set(context.Background(), set, ratelimit.LimitValue{
 		Enabled: true, MaxAttempts: 1, WindowSeconds: 600,
 	}))
-	limiter := ratelimit.NewManager(set, false)
+	limiter := ratelimit.NewManager(set)
 
 	mux := http.NewServeMux()
 	service.NewOAuthServerHandler(service.OAuthServerDeps{

@@ -57,14 +57,14 @@ func listSettings(c leapmuxv1connect.AdminSettingsServiceClient) error {
 //
 // The rule is decided by auth.SoloGate and the mark is placed by the
 // http.Server's BaseContext, which compares the accepting listener against
-// localLn. Every other test of this arm builds the marked context BY HAND, so
+// localLn. Every other test of this case builds the marked context BY HAND, so
 // all of them pass whatever that comparison does. This one drives real
 // connections through the real server, which is the only way the wiring itself
 // is under test.
 //
-// Both arms are asserted from ONE hub, after ONE password write, because the
+// Both cases are asserted from ONE hub, after ONE password write, because the
 // two answers have to diverge on the same process: a rule that refused both or
-// admitted both would satisfy either arm alone.
+// admitted both would satisfy either case alone.
 func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T) {
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
 	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})

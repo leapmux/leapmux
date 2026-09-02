@@ -1,8 +1,10 @@
 import type { SettingBinding } from '../types'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setSystemInfoMock } from '~/test-support/systemInfoMock'
+import { MAX_EXTRA_LISTEN_ADDRESSES } from '~/generated/contracts/listen'
+import { mockLoadSystemInfo, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { NetworkAccessControl } from './NetworkAccessControl'
 
 const mockGetListenStatus = vi.fn()
@@ -65,6 +67,10 @@ describe('networkAccessControl', () => {
     setSystemInfoMock({ soloMode: true, soloPasswordSet: false })
     mockGetListenStatus.mockResolvedValue(listenStatus())
     mockChangePassword.mockResolvedValue({})
+    // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
+    // keeps the implementation, so one test's `mockRejectedValue` would
+    // otherwise reject in every test after it.
+    mockLoadSystemInfo.mockResolvedValue(undefined)
   })
 
   it('reports what the hub serves now, and why', async () => {
@@ -75,7 +81,7 @@ describe('networkAccessControl', () => {
   })
 
   // "127.0.0.1:4327 is gone" and "127.0.0.1:4327 is served by *:4327" look
-  // identical in a list that only names what is serving.
+  // identical in a list that only states what is serving.
   it('says when one socket serves the -listen address too', async () => {
     mockGetListenStatus.mockResolvedValue(listenStatus({
       bound: [{ address: '*:4327', source: 'merged', error: '' }],
@@ -263,6 +269,42 @@ describe('networkAccessControl', () => {
     expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
   })
 
+  // The other direction: -listen is an ordinary entry in the merge, so a
+  // wildcard THERE absorbs the row. Matching a row's host against `*` reported
+  // only the first direction, and this apply showed no note at all before it
+  // produced one address where the operator had asked for two.
+  it('states when the -listen address absorbs a row', async () => {
+    mockGetListenStatus.mockResolvedValue(listenStatus({
+      defaultAddress: '*:4327',
+      bound: [{ address: '*:4327', source: 'listen', error: '' }],
+    }))
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:4327'] })} />)
+
+    expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
+  })
+
+  // `0.0.0.0` is a wildcard the interface menu itself can produce, and the
+  // host-equals-`*` test called it an ordinary literal.
+  it('states the fold into a wildcard that is not spelled with a star', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['0.0.0.0:4327'] })} />)
+
+    expect(await screen.findByText('127.0.0.1:4327 merges into 0.0.0.0:4327.')).toBeInTheDocument()
+  })
+
+  it('states every fold, not only the first', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327', '192.168.1.24:4327'] })} />)
+
+    expect(await screen.findByText('127.0.0.1:4327 merges into *:4327.')).toBeInTheDocument()
+    expect(screen.getByText('192.168.1.24:4327 merges into *:4327.')).toBeInTheDocument()
+  })
+
+  it('says nothing about a fold when each address stands on its own', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+
+    expect(await screen.findByText(/After apply:/)).toBeInTheDocument()
+    expect(screen.queryByText(/merges into/)).toBeNull()
+  })
+
   // A closed popover is outside the accessibility tree, so the role queries
   // take `hidden: true` -- the rule ~/test-support/menu.ts states for every
   // DropdownMenu. The ROLE is still asserted: these must be `menuitemradio`,
@@ -290,6 +332,132 @@ describe('networkAccessControl', () => {
 
     expect(within(row).getByText('en0')).toBeInTheDocument()
     expect(within(row).getByText('lo0')).toBeInTheDocument()
+  })
+
+  // The shared port validator trims before it tests, so a padded field enables
+  // Apply. Sending the padding would reach the hub as a port it refuses with a
+  // message about something else.
+  it('sends a padded port without its padding', async () => {
+    const set = vi.fn()
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] }, set)} />)
+
+    const port = await screen.findByLabelText('Port')
+    fireEvent.input(port, { target: { value: ' 9001 ' } })
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    await vi.waitFor(() => expect(set).toHaveBeenCalledWith({ addresses: ['127.0.0.1:9001'] }))
+  })
+
+  // The panel demands a password for what EXPOSES the hub, and it must read
+  // the address to know. Matching the row's host against the reported
+  // interface list called every loopback address the machine does not hold
+  // verbatim exposed -- and, while the status read was in flight or had
+  // failed, called EVERY row exposed.
+  it('reads loopback from the address, not from the interface list', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.5:9000'] })} />)
+
+    // 127.0.0.5 is loopback and this machine does not hold it, so the old
+    // lookup answered "exposed" and held Apply out for a password.
+    expect(await screen.findByRole('button', { name: 'Apply' })).toBeEnabled()
+    expect(screen.queryByText(/Set the password below first/)).toBeNull()
+  })
+
+  it('does not demand a password for a loopback list while the hub is unreachable', async () => {
+    mockGetListenStatus.mockRejectedValue(new Error('boom'))
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] })} />)
+
+    expect(await screen.findByText('The hub did not report its listeners.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
+    expect(screen.queryByText(/Set the password below first/)).toBeNull()
+  })
+
+  // The hub refuses a ninth address, so the button that builds one must stop
+  // at the same number -- otherwise the operator learns the cap from a
+  // rejected Apply.
+  it('stops offering Add at the hub\'s cap', async () => {
+    const at = Array.from({ length: MAX_EXTRA_LISTEN_ADDRESSES }, (_, i) => `127.0.0.1:${9000 + i}`)
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: at })} />)
+
+    const add = await screen.findByRole('button', { name: '+ Add address' })
+    expect(add).toBeDisabled()
+    expect(screen.getByText(new RegExp(`At most ${MAX_EXTRA_LISTEN_ADDRESSES} addresses`))).toBeInTheDocument()
+  })
+
+  // The password committed, the address write did not. The operator must be
+  // able to retry the address without typing a NEW password -- which would
+  // silently replace the one they just set.
+  it('lets a refused address write be retried after the password landed', async () => {
+    const set = vi.fn()
+      .mockRejectedValueOnce(new Error('bind refused'))
+      .mockResolvedValueOnce(undefined)
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] }, set)} />)
+    await fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByText(/bind refused/)).toBeInTheDocument()
+    expect(mockChangePassword).toHaveBeenCalledTimes(1)
+
+    // Apply is still offered, and the retry does NOT store the password again.
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(await screen.findByText('Network access updated.')).toBeInTheDocument()
+    expect(mockChangePassword).toHaveBeenCalledTimes(1)
+  })
+
+  // Both writes committed, so a failure of the read-back afterwards must not
+  // read as a failed apply. loadSystemInfo rejects by design, and the read
+  // most likely to fail is the one right after the rule changed.
+  it('reports success when the write landed and only the read-back failed', async () => {
+    mockLoadSystemInfo.mockRejectedValue(new Error('connection reset'))
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
+    await fillPassword()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    expect(await screen.findByText('Network access updated.')).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to apply/)).toBeNull()
+  })
+
+  // Apply stays disabled through the READ-BACK, not only through the write.
+  // The re-read is what removes the password half and lists a bind failure, so
+  // an Apply re-enabled before it lands invites a second write against a panel
+  // still showing the state from before the first one.
+  it('keeps Apply disabled until the read-back lands', async () => {
+    let finishReadBack = () => {}
+    mockLoadSystemInfo.mockReturnValue(new Promise<void>((resolve) => {
+      finishReadBack = resolve
+    }))
+    // A LOOPBACK address, so nothing but the apply in flight can disable the
+    // button: an exposed one re-shows the password half with empty fields, and
+    // the assertion below would then pass for the wrong reason.
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] })} />)
+
+    const applyButton = await screen.findByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButton)
+
+    const applying = await screen.findByRole('button', { name: 'Applying...' })
+    expect(applying).toBeDisabled()
+
+    finishReadBack()
+    expect(await screen.findByText('Network access updated.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled()
+  })
+
+  // The row above this editor renders a Reset that clears the stored document.
+  // Seeding the rows once left the deleted addresses on screen, and the next
+  // Apply wrote them straight back.
+  it('follows the stored list when the row is reset', async () => {
+    const [stored, setStored] = createSignal<{ addresses: string[] } | undefined>({ addresses: ['192.168.1.24:8080'] })
+    render(() => (
+      <NetworkAccessControl
+        binding={{ value: () => stored(), set: vi.fn(), customized: () => stored() !== undefined, reset: () => Promise.resolve() }}
+      />
+    ))
+    expect(await screen.findAllByTestId('network-address-row')).toHaveLength(1)
+
+    setStored(undefined)
+    await vi.waitFor(() => expect(screen.queryAllByTestId('network-address-row')).toHaveLength(0))
   })
 
   it('returns the rows to the stored list on cancel', async () => {

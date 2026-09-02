@@ -40,7 +40,7 @@ async function accepts(port: number): Promise<boolean> {
  * password authentication from the start.
  */
 test.describe('Network access', () => {
-  let solo: SoloServerHandle
+  let solo: SoloServerHandle | undefined
 
   test.beforeEach(async () => {
     solo = await startSoloServer()
@@ -51,7 +51,7 @@ test.describe('Network access', () => {
   })
 
   test('publishes an address, then asks every address for the password', async ({ page }) => {
-    await page.goto(`${solo.hubUrl}/`)
+    await page.goto(`${solo!.hubUrl}/`)
 
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
@@ -59,7 +59,7 @@ test.describe('Network access', () => {
 
     // -listen is reported read-only: it is a command-line option, never a
     // setting, and the panel adds addresses BESIDE it.
-    await expect(row.getByText(solo.listen)).toBeVisible()
+    await expect(row.getByText(solo!.listen)).toBeVisible()
     await expect(row.getByText('from -listen')).toBeVisible()
 
     // A SECOND port, beside the one the hub already serves on. The row
@@ -125,7 +125,7 @@ test.describe('Network access', () => {
   })
 
   test('removes an address and stops answering there', async ({ page }) => {
-    await page.goto(`${solo.hubUrl}/`)
+    await page.goto(`${solo!.hubUrl}/`)
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
 
@@ -144,15 +144,19 @@ test.describe('Network access', () => {
     await row.getByRole('button', { name: /^Remove / }).click()
     await expect(row.getByTestId('network-address-row')).toHaveCount(0)
     await row.getByRole('button', { name: 'Apply' }).click()
-    // A refused write leaves an error on the status line and the address
-    // serving, which would otherwise read as a listener that did not close.
-    await expect(row.locator('[data-testid^="setting-error-"]')).toHaveCount(0)
+    // The panel reports its own outcome on the STATUS LINE -- `apply` calls
+    // `props.binding.set` directly, so the row's `setting-error-*` slot can
+    // never fill for it -- and a refused write leaves the failure text there
+    // instead of the success. Asserting the success is what waits for the
+    // second write to land at all.
+    await expect(row.getByText('Network access updated.')).toBeVisible()
+    await expect(row.getByText(/Failed to apply/)).toBeHidden()
     await expect(async () => {
       expect(await accepts(port)).toBe(false)
     }).toPass()
 
     // And the -listen address is never dropped, whatever the list says: Apply
     // merges it back in every time.
-    expect(await accepts(Number(solo.listen.split(':').pop()))).toBe(true)
+    expect(await accepts(Number(solo!.listen.split(':').pop()))).toBe(true)
   })
 })

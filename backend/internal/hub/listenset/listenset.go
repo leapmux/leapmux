@@ -1,4 +1,4 @@
-// Package listenset answers one question: given the address `-listen` names
+// Package listenset answers one question: given the address `-listen` gives
 // and the extra addresses an administrator stored, which sockets does the hub
 // bind?
 //
@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
 )
 
@@ -90,33 +91,49 @@ func Parse(s string) (Addr, error) {
 	if err != nil {
 		return Addr{}, fmt.Errorf("listen address %q is not host:port (bracket an IPv6 literal, e.g. [::1]:4327): %w", s, err)
 	}
-	port, err := strconv.Atoi(portStr)
+	// net.LookupPort, not strconv.Atoi, because net.Listen resolves the port
+	// this way and Parse must accept every address that used to bind. It reads
+	// the machine's services table, so `-listen 127.0.0.1:http` gives 80, and
+	// it maps an EMPTY port to 0, so `-listen localhost:` still asks the
+	// operating system to choose. It also does the range check, and refuses a
+	// service name the machine does not list.
+	//
+	// The resolved NUMBER is what the address carries from here on. A stored
+	// or logged address then states the port a client can dial, which the
+	// service name does not on a machine with a different services table.
+	port, err := net.LookupPort("tcp", portStr)
 	if err != nil {
-		return Addr{}, fmt.Errorf("listen address %q has a non-numeric port %q", s, portStr)
+		return Addr{}, fmt.Errorf("listen address %q has no usable port %q: %w", s, portStr, err)
 	}
 	// Port 0 is ACCEPTED here, and it means "let the operating system choose".
 	// It is what a test harness or an embedded launcher passes to -listen to
 	// get a free port, so refusing it would take a working option away.
 	//
 	// It is refused where it is meaningless instead: a STORED extra address of
-	// port 0 names a port nobody can be told, so settings.validateExtraListen
+	// port 0 specifies a port nobody can be told, so settings.validateExtraListen
 	// rejects it. The listener set resolves the real port from the bound
 	// socket, so nothing downstream ever reports ":0" as a served address.
-	if port < 0 || port > 65535 {
-		return Addr{}, fmt.Errorf("listen address %q has port %d, which is outside 0-65535", s, port)
-	}
 
-	host = strings.ToLower(strings.TrimSpace(host))
-	if host == "" || host == "*" {
+	host = strings.TrimSpace(host)
+	if host == "" || host == contracts.ListenAnyHost {
 		return Addr{port: port, kind: KindAny}, nil
 	}
 
 	// netip rather than net.ParseIP: net.ParseIP returns nil for a zoned
 	// link-local address ("fe80::1%en0"), which is a real thing to bind to on
 	// a machine with more than one link-local interface.
+	//
+	// The host reaches netip WITH ITS CASE. An IPv6 zone is an interface name,
+	// and net.Listen resolves it through net.InterfaceByName, which matches
+	// exactly -- so folding the case here would turn `%Ethernet` on Windows
+	// into `%ethernet`, which no interface answers to, and every link-local
+	// address the picker offers on such a machine would fail to bind for ever.
+	// netip lower-cases the hexadecimal digits itself and leaves the zone
+	// alone, which is the split this package wants.
 	ip, ipErr := netip.ParseAddr(host)
 	if ipErr != nil {
-		return Addr{host: host, port: port, kind: KindHost}, nil
+		// A NAME is case-insensitive, so it folds. Only a name reaches here.
+		return Addr{host: strings.ToLower(host), port: port, kind: KindHost}, nil
 	}
 	// ip.String() and never the host as written, for EVERY kind. The canonical
 	// string is this package's identity for an address -- Merge dedupes on it
@@ -173,7 +190,7 @@ func (a Addr) Kind() Kind { return a.kind }
 // reader of a log line or of the settings row sees a host in every entry.
 func (a Addr) String() string {
 	if a.kind == KindAny {
-		return "*:" + strconv.Itoa(a.port)
+		return contracts.ListenAnyHost + ":" + strconv.Itoa(a.port)
 	}
 	return net.JoinHostPort(a.host, strconv.Itoa(a.port))
 }
@@ -196,7 +213,7 @@ func (a Addr) DialAddr() string {
 //
 // A NAME is false, with one exception. The addresses a name resolves to are not
 // knowable here, so the safe answer to "is this exposed" is yes -- but
-// "localhost" names this machine by a convention every operating system ships,
+// "localhost" identifies this machine by a convention every operating system ships,
 // and `-listen localhost:4327` exposes nothing. Calling it exposed would demand
 // a password for a hub nobody else can reach. httpsec.LoopbackHosts is where
 // that convention lives, and reading it here keeps the two answers from
@@ -334,4 +351,57 @@ func Strings(addrs []Addr) []string {
 		out[i] = a.String()
 	}
 	return out
+}
+
+// Source says why the hub binds an address, for the administration surface
+// that reports what is serving.
+//
+// The tokens come from contracts/listen.json, because the browser renders one
+// label per token and the proto field carries them as a plain string: nothing
+// but the contract keeps the two sides on the same three words.
+type Source string
+
+const (
+	// SourceListen is the address -listen gives, bound alone.
+	SourceListen Source = contracts.AddressSourceListen
+	// SourceExtra is an address the extra_listen_addresses setting adds.
+	SourceExtra Source = contracts.AddressSourceExtra
+	// SourceMerged is an address that is BOTH: the operator asked for it and
+	// it also covers what -listen gives, so one socket serves both. The panel
+	// says so, because "127.0.0.1:4327 is gone" and "127.0.0.1:4327 is served
+	// by *:4327" look identical in a list that only states what is bound.
+	SourceMerged Source = contracts.AddressSourceMerged
+)
+
+// Bound is one entry of a hub's listener report: an address it serves on, or
+// one it was asked to serve on and could not bind.
+//
+// It lives HERE, beside the address model, because both sides of the report
+// already import this package -- the hub that owns the sockets and the service
+// that answers the administration RPC. A mirrored struct in the service
+// package cost a conversion at the boundary and stringified the address, which
+// takes String() and DialAddr() away from every consumer: those two differ
+// exactly at the wildcard, and the difference is what decides between a
+// working mail link and `http://*:4327`.
+type Bound struct {
+	Addr   Addr
+	Source Source
+	// Err is why this address is NOT serving, and empty when it is. A stored
+	// address whose interface went away must not fail the hub, so the failure
+	// travels to the administration surface instead of to a startup error.
+	Err string
+}
+
+// AnyNonLoopback reports whether any SERVING address in the report answers on
+// an address another machine can reach.
+//
+// A failed entry does not count: the hub is not reachable at an address it
+// could not bind.
+func AnyNonLoopback(bound []Bound) bool {
+	for _, b := range bound {
+		if b.Err == "" && !b.Addr.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }

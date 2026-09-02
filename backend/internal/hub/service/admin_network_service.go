@@ -26,23 +26,31 @@ import (
 type ListenReporter interface {
 	// Bound reports every address the hub serves on, plus every configured
 	// address it could not bind.
-	Bound() []BoundListenAddress
-	// PrimaryListenAddr is the address a browser-facing URL should name, in
+	Bound() []listenset.Bound
+	// PrimaryListenAddr is the address a browser-facing URL should give, in
 	// the form -listen carries, or "" when the hub binds no TCP address.
+	//
+	// It is NOT derivable from Bound: the answer for a hub with nothing bound
+	// is the address -listen was given, which is by definition not in a report
+	// of what is bound.
 	PrimaryListenAddr() string
-	// HasNonLoopbackAddress reports whether the hub answers on an address
-	// another machine can reach.
-	HasNonLoopbackAddress() bool
 }
 
-// BoundListenAddress is one entry of the listener report. It mirrors the hub's
-// own type, and the hub converts: a shared struct would have to live in a
-// third package that neither side owns.
-type BoundListenAddress struct {
-	Address string
-	Source  string
-	Err     string
+// ConfiguredListen is the reporter for a hub that has no listener set to ask.
+//
+// Two callers state no listeners: a test that exercises a service and not the
+// sockets, and the window inside NewServer before the set exists. Both used to
+// reach a nil interface, so every consumer carried its own "and if there is no
+// reporter, read cfg.Listen" branch -- which is the SAME rule the live
+// reporter applies when nothing is bound, spelled a second time. Stating it
+// once as a default keeps the two from drifting.
+type ConfiguredListen struct {
+	// Listen is the address -listen gave, or "" for a hub that binds no TCP.
+	Listen string
 }
+
+func (c ConfiguredListen) Bound() []listenset.Bound  { return nil }
+func (c ConfiguredListen) PrimaryListenAddr() string { return c.Listen }
 
 // AdminNetworkService reports which addresses the hub answers on.
 //
@@ -61,9 +69,44 @@ type AdminNetworkService struct {
 	interfaces func() ([]net.Interface, error)
 }
 
+// AdminNetworkServiceDeps is what the service needs, stated rather than
+// positional -- the shape AuthServiceDeps sets for a constructor this wide.
+//
+// Interfaces is here rather than behind a post-construction setter for the
+// reason the hub states of every service it builds: a dependency passed to the
+// constructor cannot be forgotten, replaced at the wrong moment, or reached by
+// a caller that has no business writing it.
+type AdminNetworkServiceDeps struct {
+	Config   *config.Config
+	Settings *settings.Manager
+	SoloGate *auth.SoloGate
+	// Listen reports the hub's live sockets. Nil degrades to ConfiguredListen,
+	// so every read in the service is unconditional.
+	Listen ListenReporter
+	// Interfaces is the machine-interface source. Nil takes net.Interfaces.
+	//
+	// A test states a machine rather than asserting about the one it runs on,
+	// and it is the only way to exercise the failure path at all: no fixture
+	// can make net.Interfaces fail, and reporting an empty machine instead
+	// would make the picker offer only the wildcard and look like a host with
+	// no network.
+	Interfaces func() ([]net.Interface, error)
+}
+
 // NewAdminNetworkService builds the service over the hub's listener set.
-func NewAdminNetworkService(cfg *config.Config, set *settings.Manager, gate *auth.SoloGate, listen ListenReporter) *AdminNetworkService {
-	return &AdminNetworkService{cfg: cfg, set: set, soloGate: gate, listen: listen, interfaces: net.Interfaces}
+func NewAdminNetworkService(deps AdminNetworkServiceDeps) *AdminNetworkService {
+	listen := deps.Listen
+	if listen == nil {
+		listen = ConfiguredListen{Listen: deps.Config.Listen}
+	}
+	interfaces := deps.Interfaces
+	if interfaces == nil {
+		interfaces = net.Interfaces
+	}
+	return &AdminNetworkService{
+		cfg: deps.Config, set: deps.Settings, soloGate: deps.SoloGate,
+		listen: listen, interfaces: interfaces,
+	}
 }
 
 // GetListenStatus reports the machine's interfaces and the hub's live
@@ -99,14 +142,12 @@ func (s *AdminNetworkService) GetListenStatus(
 		Configured:     configured,
 		PasswordSet:    s.soloGate.PasswordSet(ctx),
 	}
-	if s.listen != nil {
-		for _, b := range s.listen.Bound() {
-			out.Bound = append(out.Bound, &leapmuxv1.BoundAddress{
-				Address: b.Address,
-				Source:  b.Source,
-				Error:   b.Err,
-			})
-		}
+	for _, b := range s.listen.Bound() {
+		out.Bound = append(out.Bound, &leapmuxv1.BoundAddress{
+			Address: b.Addr.String(),
+			Source:  string(b.Source),
+			Error:   b.Err,
+		})
 	}
 	return connect.NewResponse(out), nil
 }
@@ -178,13 +219,4 @@ func interfaceAddress(a net.Addr, ifaceName string) (*leapmuxv1.NetworkInterface
 		Ipv6:     addr.Is6(),
 		Loopback: addr.IsLoopback(),
 	}, true
-}
-
-// SetInterfaceSourceForTest replaces the machine-interface source.
-//
-// A seam, because no fixture can make net.Interfaces FAIL: the failure path
-// reports an internal error, and reporting an empty machine instead would make
-// the picker offer only the wildcard and look like a host with no network.
-func SetInterfaceSourceForTest(s *AdminNetworkService, src func() ([]net.Interface, error)) {
-	s.interfaces = src
 }
