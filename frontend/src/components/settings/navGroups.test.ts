@@ -21,6 +21,16 @@ describe('the section order (NAV_GROUPS)', () => {
   it('gives every group a distinct id', () => {
     expect(new Set(NAV_GROUPS.map(g => g.id)).size).toBe(NAV_GROUPS.length)
   })
+
+  // Desktop sits between Terminal and Files & Editors. The docs page lists the
+  // categories in navigation order (site/content/docs/using/settings.md), and
+  // nothing derives that page from this list, so a reorder here would leave it
+  // describing a dialog that no longer matches.
+  it('places Desktop between Terminal and Files & Editors', () => {
+    const ids = NAV_GROUPS.map(g => g.id)
+    expect(ids.slice(ids.indexOf('terminal'), ids.indexOf('files') + 1))
+      .toEqual(['terminal', 'desktop', 'files'])
+  })
 })
 
 describe('the section the dialog opens on (DEFAULT_NAV_GROUP_ID)', () => {

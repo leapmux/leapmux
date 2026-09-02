@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -680,6 +681,65 @@ func TestUserService_ResetUserSetting(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, resp.Msg.GetValue().GetCustomized())
 	assert.JSONEq(t, `100`, resp.Msg.GetValue().GetEffectiveJson())
+}
+
+// TestUserService_DesktopEnumRoundTrip drives a Desktop enum through the REAL
+// write path: the RPC handler, the registry's validator and the stored blob.
+//
+// These three keys are the one setting family a THIRD language spells -- the
+// Rust shell matches the same tokens out of its set_desktop_behavior payload
+// -- so a value the hub stores and the shell refuses is a preference the user
+// set and nothing obeys. The unit tests pin the enum catalogue against
+// contracts/desktop.json; this pins what the service does with it.
+func TestUserService_DesktopEnumRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+
+	resp, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "tray_on_close",
+		PartialJson: fmt.Sprintf("%q", contracts.TrayOnCloseQuit),
+	}, env.token))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.GetValue().GetCustomized())
+	assert.JSONEq(t, fmt.Sprintf("%q", contracts.TrayOnCloseQuit), resp.Msg.GetValue().GetEffectiveJson())
+
+	// "minimize" is the plausible wrong guess: a real word for a window action
+	// that is not one of this key's two values. The handler must refuse it and
+	// leave the stored value alone.
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "tray_on_close",
+		PartialJson: `"minimize"`,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	list, err := env.client.ListUserSettings(context.Background(), authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
+	require.NoError(t, err)
+	byKey := map[string]*leapmuxv1.SettingValue{}
+	for _, v := range list.Msg.GetValues() {
+		byKey[v.GetKey()] = v
+	}
+	require.Contains(t, byKey, "tray_on_close")
+	assert.JSONEq(t, fmt.Sprintf("%q", contracts.TrayOnCloseQuit), byKey["tray_on_close"].GetEffectiveJson(),
+		"a refused write must not disturb the stored value")
+	// The four siblings are scalar keys of their own, so one write cannot
+	// customize them. That is the property the five-keys decision buys.
+	for _, key := range []string{"tray_enabled", "tray_on_minimize", "start_on_login", "start_minimized"} {
+		require.Contains(t, byKey, key)
+		assert.False(t, byKey[key].GetCustomized(), "%s must stay at its default", key)
+	}
+	assert.JSONEq(t, fmt.Sprintf("%q", contracts.TrayOnMinimizeTaskbar), byKey["tray_on_minimize"].GetEffectiveJson())
+	assert.JSONEq(t, fmt.Sprintf("%q", contracts.StartMinimizedWindow), byKey["start_minimized"].GetEffectiveJson())
+	assert.JSONEq(t, `false`, byKey["tray_enabled"].GetEffectiveJson())
+	assert.JSONEq(t, `false`, byKey["start_on_login"].GetEffectiveJson())
+
+	reset, err := env.client.ResetUserSetting(context.Background(), authedReq(&leapmuxv1.ResetUserSettingRequest{
+		Key: "tray_on_close",
+	}, env.token))
+	require.NoError(t, err)
+	assert.False(t, reset.Msg.GetValue().GetCustomized())
+	assert.JSONEq(t, fmt.Sprintf("%q", contracts.TrayOnCloseTray), reset.Msg.GetValue().GetEffectiveJson())
 }
 
 func TestUserService_UserSettings_Unauthenticated(t *testing.T) {

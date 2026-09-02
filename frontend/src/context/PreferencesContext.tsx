@@ -829,7 +829,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // override is read.
     // A VALUE comparator, not the default reference one. Every device-tier
     // parse builds a fresh object, so an unchanged field still reads as a new
-    // value: one unrelated preference written in another tab would notify all
+    // value: one unrelated preference written in another tab would notify
     // every dual setting and repaint the whole palette. The values all come
     // from JSON and each parse builds a fixed key order, so serializing is an
     // exact comparison here.

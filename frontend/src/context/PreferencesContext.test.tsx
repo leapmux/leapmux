@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR } from '~/generated/contracts/desktop'
+import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EDITOR, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
@@ -579,6 +579,83 @@ describe('preferencesContext — a stored browser value passes the same parse', 
     await waitFor(() => expect(ctx.get().turnEndSound()).toBe('ding-dong'))
 
     expect(ctx.get().dual.turnEndSound.browser()).toBeNull()
+  })
+})
+
+// The five Desktop keys, at the DEVICE tier. The enum walk below drives their
+// account halves off the golden file; this is the other parse, and it is the
+// one that reads a document a person can edit by hand. A value that got past
+// it would reach a `set_desktop_behavior` payload the Rust shell then refuses.
+describe('preferencesContext — the Desktop device tier', () => {
+  it('resolves the device value over the account one, and clears back', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, { trayOnClose: TRAY_ON_CLOSE_QUIT, trayEnabled: true })
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [settingValue('tray_on_close', `"${TRAY_ON_CLOSE_TRAY}"`, true)],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().dual.trayOnClose.account()).toBe(TRAY_ON_CLOSE_TRAY))
+
+    expect(ctx.get().dual.trayOnClose.browser()).toBe(TRAY_ON_CLOSE_QUIT)
+    expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_QUIT)
+    expect(ctx.get().trayEnabled()).toBe(true)
+
+    // Clearing the override falls back to the account value, not to the
+    // built-in default.
+    ctx.get().dual.trayOnClose.setBrowser(null)
+    await waitFor(() => expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY))
+    expect('trayOnClose' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('refuses a stored value the contract does not declare', async () => {
+    // "minimize" is a real word for a window action and not one of this key's
+    // two tokens; a boolean key with a string is the hand-edit that a bare
+    // `string` field type cannot prevent.
+    localStorageSet(KEY_BROWSER_PREFS, {
+      trayOnClose: 'minimize',
+      trayOnMinimize: 'quit',
+      startMinimized: 'hidden',
+      trayEnabled: 'yes',
+      startOnLogin: 1,
+    })
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    for (const key of ['trayEnabled', 'trayOnClose', 'trayOnMinimize', 'startOnLogin', 'startMinimized'] as const)
+      expect(ctx.get().dual[key].browser(), key).toBeNull()
+    expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY)
+    expect(ctx.get().trayOnMinimize()).toBe(TRAY_ON_MINIMIZE_TASKBAR)
+    expect(ctx.get().startMinimized()).toBe(START_MINIMIZED_WINDOW)
+    expect(ctx.get().trayEnabled()).toBe(false)
+    expect(ctx.get().startOnLogin()).toBe(false)
+  })
+
+  // Signing out must leave nothing of the departing account in either tier.
+  // `useDesktopWindowBehavior` stops pushing at the same moment, so a stale
+  // value here would be what the NEXT account's first push started from.
+  it('returns all five to their defaults after a sign-out', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, {
+      trayEnabled: true,
+      trayOnClose: TRAY_ON_CLOSE_QUIT,
+      trayOnMinimize: TRAY_ON_MINIMIZE_TRAY,
+      startOnLogin: true,
+      startMinimized: START_MINIMIZED_MINIMIZED,
+    })
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [settingValue('start_minimized', `"${START_MINIMIZED_MINIMIZED}"`, true)],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().dual.startMinimized.account()).toBe(START_MINIMIZED_MINIMIZED))
+    expect(ctx.get().trayEnabled()).toBe(true)
+
+    ctx.get().resetForSignOut()
+
+    expect(ctx.get().trayEnabled()).toBe(false)
+    expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY)
+    expect(ctx.get().trayOnMinimize()).toBe(TRAY_ON_MINIMIZE_TASKBAR)
+    expect(ctx.get().startOnLogin()).toBe(false)
+    expect(ctx.get().startMinimized()).toBe(START_MINIMIZED_WINDOW)
   })
 })
 

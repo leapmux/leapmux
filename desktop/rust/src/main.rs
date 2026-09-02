@@ -1299,6 +1299,12 @@ fn launcher_url(local_app_url: &str, cleanup_errors: &[String]) -> Result<(Url, 
 
 // restart_app is macOS-only: only the Full Disk Access flow needs the app
 // to relaunch itself, and FDA is macOS-only.
+//
+// The relaunch passes NO arguments, so the new process never sees
+// `--autostart` and always opens an ordinary window. That is correct and must
+// stay: `start_minimized` governs the LOGIN launch alone, and a user who just
+// granted Full Disk Access is waiting for the window to come back. Forwarding
+// argv here would hide it into the tray instead.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 async fn restart_app(
@@ -1388,9 +1394,13 @@ async fn set_desktop_behavior(
     // 4. The device cache, so the next launch can decide before the webview
     //    exists. A failure here is logged, not reported: the live policy
     //    already applies and the only loss is the next launch's head start.
+    //    The mirror moves only once the write lands, so a failed RPC is
+    //    retried by the next push instead of being skipped for as long as the
+    //    user leaves the values alone.
     if state.cache_needs_write(&behavior) {
-        if let Err(err) = shell.save_desktop_behavior(behavior).await {
-            eprintln!("leapmux-desktop: cache the window behaviour: {err}");
+        match shell.save_desktop_behavior(behavior).await {
+            Ok(()) => state.record_cache(&behavior),
+            Err(err) => eprintln!("leapmux-desktop: cache the window behaviour: {err}"),
         }
     }
 
@@ -1795,7 +1805,7 @@ fn main() {
             let tray_state = Arc::new(tray::TrayState::new());
             // The mirror starts at what the sidecar already holds, so the
             // first push from the webview writes only a real change.
-            tray_state.seed_cache(&behavior);
+            tray_state.record_cache(&behavior);
             if let Err(err) = tray_state.apply(app.handle(), &behavior) {
                 // A tray that cannot be created is not a launch failure. The
                 // policy records the effective state, so nothing will hide a

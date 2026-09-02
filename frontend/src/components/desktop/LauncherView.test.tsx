@@ -89,4 +89,24 @@ describe('launcherView', () => {
     }
     expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
   })
+
+  // The shell decides the launch state, because only it knows both the launch
+  // arguments and the cached tray setting, and it knows them before this view
+  // exists. This is the one seam that carries the decision from
+  // `getStartupInfo` into `restoreWindowGeometry`, and a one-sided edit to
+  // either end would leave a login launch silently opening a window.
+  it('forwards the shell launch decision into the geometry restore', async () => {
+    bridgeMocks.getStartupInfo.mockResolvedValue({
+      config: { mode: '', hub_url: '', window_width: 1280, window_height: 800, window_mode: 'maximized' },
+      buildInfo: { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' },
+      launchVisibility: 'hidden',
+    })
+
+    render(() => <LauncherView onConnected={() => {}} />)
+    await screen.findByText('lease release failed')
+
+    await vi.waitFor(() => {
+      expect(bridgeMocks.restoreWindowGeometry).toHaveBeenCalledWith(1280, 800, 'maximized', 'hidden')
+    })
+  })
 })

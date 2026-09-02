@@ -349,12 +349,14 @@ impl LaunchState {
     }
 
     /// The decision without consuming it, for the startup safety net.
+    ///
+    /// The RAW decision, unlike `take`. The safety net asks what THIS launch
+    /// decided, and it must get the same answer whether or not the webview
+    /// already read it -- the webview reads it within milliseconds, so a
+    /// `Normal` answer once consumed would make the net reveal, five seconds
+    /// in, the window a hidden login launch deliberately left in the tray.
     pub(crate) fn peek(&self) -> LaunchVisibility {
-        if self.consumed.load(Ordering::SeqCst) {
-            LaunchVisibility::Normal
-        } else {
-            self.visibility
-        }
+        self.visibility
     }
 }
 
@@ -492,24 +494,27 @@ impl TrayState {
         Ok(())
     }
 
-    /// Whether the sidecar needs a fresh cache write, recording the new value
-    /// when it does.
+    /// Whether the sidecar needs a fresh cache write.
+    ///
+    /// A pure question. Recording is `record_cache`, and the two are separate
+    /// so that only a write that SUCCEEDED moves the mirror.
     pub(crate) fn cache_needs_write(&self, behavior: &DesktopBehavior) -> bool {
-        let Ok(mut guard) = self.cached.lock() else {
+        let Ok(guard) = self.cached.lock() else {
             // A poisoned lock must not silently stop the cache from
             // converging; write, and let the next push try again.
             return true;
         };
-        let differs = guard.as_ref().is_none_or(|prev| prev.cache_differs(behavior));
-        if differs {
-            *guard = Some(*behavior);
-        }
-        differs
+        guard.as_ref().is_none_or(|prev| prev.cache_differs(behavior))
     }
 
-    /// Seed the cache mirror from the config the shell read at launch, so the
-    /// first push does not rewrite values the sidecar already holds.
-    pub(crate) fn seed_cache(&self, behavior: &DesktopBehavior) {
+    /// Record what the sidecar now holds.
+    ///
+    /// Two callers. At launch it seeds the mirror from the config the shell
+    /// just read, so the first push does not rewrite values already on disk.
+    /// After a push it runs only once the write SUCCEEDED -- recording before
+    /// the write would let one failed RPC leave the cache stale for as long as
+    /// the user does not change the values again.
+    pub(crate) fn record_cache(&self, behavior: &DesktopBehavior) {
         if let Ok(mut guard) = self.cached.lock() {
             *guard = Some(*behavior);
         }
@@ -913,7 +918,62 @@ mod tests {
         // A mode switch remounts the launcher, which asks again. The second
         // answer must not re-hide the window the user is looking at.
         assert_eq!(state.take(), LaunchVisibility::Normal);
-        assert_eq!(state.peek(), LaunchVisibility::Normal);
+    }
+
+    // The safety net asks what THIS launch decided, five seconds in, and the
+    // webview consumes the decision within milliseconds. A `peek` that
+    // answered `Normal` once consumed would therefore make the net reveal the
+    // window that a hidden login launch deliberately left in the tray.
+    #[test]
+    fn peeking_still_reports_a_consumed_decision() {
+        let state = LaunchState::new(LaunchVisibility::Hidden);
+        assert_eq!(state.take(), LaunchVisibility::Hidden);
+        assert_eq!(state.peek(), LaunchVisibility::Hidden);
+    }
+
+    // A cache write that FAILED must be retried, not skipped for as long as
+    // the user leaves the values alone -- the next launch reads that cache
+    // before the webview exists, so a stale copy decides the tray and the
+    // window state for a whole session.
+    #[test]
+    fn the_cache_mirror_moves_only_when_a_write_is_recorded() {
+        let state = TrayState::new();
+        let behavior = DesktopBehavior::default();
+
+        assert!(state.cache_needs_write(&behavior), "nothing is recorded yet");
+        assert!(
+            state.cache_needs_write(&behavior),
+            "asking must not record: an unrecorded write is a failed one"
+        );
+
+        state.record_cache(&behavior);
+        assert!(!state.cache_needs_write(&behavior));
+
+        let mut changed = behavior;
+        changed.tray_enabled = true;
+        assert!(state.cache_needs_write(&changed));
+    }
+
+    // A poisoned mirror must make the cache CONVERGE, not stall. The failing
+    // direction here is one extra RPC per push; the other direction leaves the
+    // next launch deciding the tray and the window state from a stale copy,
+    // with nothing to repair it for the rest of the install's life.
+    #[test]
+    fn a_poisoned_cache_mirror_still_writes() {
+        let state = Arc::new(TrayState::new());
+        let behavior = DesktopBehavior::default();
+        state.record_cache(&behavior);
+        assert!(!state.cache_needs_write(&behavior));
+
+        let poisoner = state.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.cached.lock().expect("a fresh mutex is not poisoned");
+            panic!("poison the mirror");
+        })
+        .join();
+
+        assert!(state.cached.is_poisoned());
+        assert!(state.cache_needs_write(&behavior));
     }
 
     #[test]

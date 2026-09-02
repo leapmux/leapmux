@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { desktopFetch, observeWindowMode, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
+import { desktopFetch, observeWindowMode, parseLaunchVisibility, parseRelayClosePayload, platformBridge, readClipboardImage, restoreWindowGeometry, windowExitFullscreen } from './platformBridge'
 
 // isMac() in ~/lib/shortcuts/platform caches the UA-detected platform on
 // first call, so flipping navigator.userAgent between tests doesn't actually
@@ -466,6 +466,100 @@ describe('restoreWindowGeometry', () => {
 
     const saves = calls.filter(c => c.cmd === 'save_window_geometry')
     expect(saves).toHaveLength(1)
+  })
+
+  // The three launch states the Rust shell decides. Every test above is the
+  // `normal` one; these two are what a login launch produces when the user
+  // asked LeapMux to start out of the way.
+  it('applies the saved size but shows nothing for a hidden launch', async () => {
+    installIPC({ fullscreen: false, maximized: true })
+    await restoreWindowGeometry(1280, 800, 'maximized', 'hidden')
+
+    // The size still lands, so the first "Show LeapMux" from the tray
+    // produces a correctly sized window instead of a default one.
+    expect(cmds()).toContain('plugin:window|set_size')
+    expect(cmds()).not.toContain('plugin:window|show')
+    expect(cmds()).not.toContain('plugin:window|maximize')
+    expect(cmds()).not.toContain('plugin:window|set_fullscreen')
+    expect(cmds()).not.toContain('plugin:window|minimize')
+  })
+
+  it('shows before it minimizes for a minimized launch', async () => {
+    installIPC({ fullscreen: false, maximized: false })
+    await restoreWindowGeometry(1280, 800, 'normal', 'minimized')
+
+    // The window has to be mapped before it is minimized, or there is no
+    // taskbar button or Dock tile to minimize into.
+    expect(cmds()).toContain('plugin:window|minimize')
+    expect(cmds().indexOf('plugin:window|show'))
+      .toBeLessThan(cmds().indexOf('plugin:window|minimize'))
+  })
+
+  it('never enters fullscreen for a launch that starts out of the way', async () => {
+    for (const launch of ['minimized', 'hidden'] as const) {
+      calls = []
+      installIPC({ fullscreen: false, maximized: false })
+      await restoreWindowGeometry(1280, 800, 'fullscreen', launch)
+      // Fullscreen takes over a macOS Space, which a window the user asked to
+      // start minimized or hidden must never do.
+      expect(cmds(), launch).not.toContain('plugin:window|set_fullscreen')
+    }
+  })
+
+  it('treats an unstated launch as a normal one', async () => {
+    installIPC({ fullscreen: false, maximized: true })
+    await restoreWindowGeometry(1280, 800, 'maximized')
+
+    expect(cmds()).toContain('plugin:window|show')
+    expect(cmds()).toContain('plugin:window|maximize')
+    expect(cmds()).not.toContain('plugin:window|minimize')
+  })
+})
+
+describe('parseLaunchVisibility', () => {
+  it('passes through the three states the shell reports', () => {
+    expect(parseLaunchVisibility('normal')).toBe('normal')
+    expect(parseLaunchVisibility('minimized')).toBe('minimized')
+    expect(parseLaunchVisibility('hidden')).toBe('hidden')
+  })
+
+  // Failing towards a VISIBLE window is the only safe direction here: the
+  // other way leaves an app the user cannot reach.
+  it('narrows anything else to normal', () => {
+    for (const raw of [undefined, null, '', 'Hidden', 'invisible', 0, {}, ['hidden']])
+      expect(parseLaunchVisibility(raw), JSON.stringify(raw ?? null)).toBe('normal')
+  })
+})
+
+describe('platformBridge getStartupInfo', () => {
+  const WIRE_BUILD = {
+    version: '1.2.3',
+    commit_hash: 'abc',
+    commit_time: 't1',
+    build_time: 't2',
+    branch: 'main',
+  }
+  const WIRE_CONFIG = { mode: 'solo', hub_url: '', window_width: 0, window_height: 0, window_mode: 'normal' }
+
+  beforeEach(() => {
+    (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+  })
+
+  afterEach(() => {
+    clearMocks()
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
+  it('carries the launch decision the shell reported', async () => {
+    mockIPC(() => ({ config: WIRE_CONFIG, build_info: WIRE_BUILD, launch_visibility: 'hidden' }))
+    await expect(platformBridge.getStartupInfo()).resolves.toMatchObject({ launchVisibility: 'hidden' })
+  })
+
+  // The field is snake_case on the wire and camelCase in the app, and a shell
+  // too old to report it sends nothing. Both must land on a visible window.
+  it('reads a missing launch decision as normal', async () => {
+    mockIPC(() => ({ config: WIRE_CONFIG, build_info: WIRE_BUILD }))
+    await expect(platformBridge.getStartupInfo()).resolves.toMatchObject({ launchVisibility: 'normal' })
   })
 })
 
