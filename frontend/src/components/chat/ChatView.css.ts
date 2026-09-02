@@ -386,6 +386,22 @@ export const infoValueText = style({
   wordBreak: 'break-all',
 })
 
+/**
+ * A row value that leads with an icon. Compose it with `infoValue` or
+ * `infoValueText`, which keep the typography.
+ *
+ * `inline-flex` so the glyph centres against the text; as plain inline content
+ * it sits on the text baseline instead. The gap is `--space-1`, half the row's
+ * own `--space-2`, so the pair reads as ONE value rather than as another item
+ * in the row.
+ */
+export const infoValueWithIcon = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  minWidth: 0,
+})
+
 export const infoCopyButton = style([chipBase, {
   justifyContent: 'center',
   padding: '2px',

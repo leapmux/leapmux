@@ -131,7 +131,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
         {row => (
           <div class={styles.infoRow} data-testid="info-row-agent-type">
             <span class={styles.infoLabel}>Agent</span>
-            <span class={styles.infoValueText} style={{ 'display': 'inline-flex', 'align-items': 'center', 'gap': 'var(--space-1)' }}>
+            <span class={`${styles.infoValueText} ${styles.infoValueWithIcon}`}>
               <AgentProviderIcon provider={row.provider} size={12} />
               {agentProviderLabel(row.provider)}
             </span>
@@ -166,12 +166,13 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
                 because it is the same glyph the sidebar row and the composer
                 chip carry -- this is where a reader connects the three. */}
             <span class={styles.infoLabel}>{workingTreeKindLabel(gitView()?.isWorktree ?? false)}</span>
-            {/* A direct child of the row, not a child of the value span: the
-                row is the flex container with `align-items: center`, so the
-                glyph centres against the text for free. Inside the value span
-                it would sit on the text baseline instead. */}
-            <WorkingTreeIcon isWorktree={gitView()?.isWorktree ?? false} size="xs" />
-            <span class={styles.infoValue}>
+            {/* The glyph belongs to the VALUE, beside the name it describes,
+                the same way the Agent row above carries its provider glyph.
+                `infoValueWithIcon` supplies the centring and the tighter gap;
+                as a direct child of the row it would take the row's own wider
+                gap and read as a third item. */}
+            <span class={`${styles.infoValue} ${styles.infoValueWithIcon}`}>
+              <WorkingTreeIcon isWorktree={gitView()?.isWorktree ?? false} size="xs" />
               {name}
               {(() => {
                 const git = gitView()

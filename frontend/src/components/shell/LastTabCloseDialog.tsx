@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { TabType as TabTypeT } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { createMemo, createUniqueId, Show } from 'solid-js'
+import { createMemo, createUniqueId, onMount, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
@@ -64,9 +64,12 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   // `repoRoot` is the same directory. `workingDir` is NOT interchangeable --
   // the worker resolves it per tab and it can sit in a subdirectory.
   const directory = () => (isWorktree() ? props.state.worktreePath : props.state.repoRoot)
-  // The worker's home dir, for the tilde path. The store is process-wide and
-  // this dialog only ever opens on a worker the user is already working on, so
-  // the entry is warm; an empty answer leaves the path absolute, not wrong.
+  // The worker's home dir, for the tilde path. One fetch on mount, exactly as
+  // the delete dialog does it, so the tilde is right even when nothing else
+  // warmed the store for this worker. The store enforces its own freshness
+  // TTL, so the usual warm entry costs no round trip -- and an empty answer
+  // leaves the path absolute, which is long but not wrong.
+  onMount(() => void workerInfoStore.fetchWorkerInfo(props.state.workerId))
   const homeDir = () => workerInfoStore.getHomeDir(props.state.workerId)
 
   const handleCancel = () => {

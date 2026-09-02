@@ -1,7 +1,9 @@
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { hoverForTooltip } from '~/test-support/clipStub'
 import { ComposerStatusBar } from './ComposerStatusBar'
 import '~/components/chat/providers'
 
@@ -34,6 +36,7 @@ function renderBar(
     isWorktree?: boolean
     directory?: string
     homeDir?: string
+    branchStats?: DiffStats | null
   } = {},
 ) {
   return render(() => (
@@ -172,5 +175,43 @@ describe('composerStatusBar', () => {
 
     const chip = screen.getByTestId('composer-branch-trigger')
     expect(chip.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
+  })
+
+  // The chip renders the other three git props only inside its tooltip, so the
+  // hover is the only place the wiring shows. A swap between `directory` and
+  // `homeDir` leaves the path absolute, and a dropped `branchStats` leaves the
+  // badge out -- neither one changes anything the tests above look at.
+  describe('forwarding the git props the tooltip renders', () => {
+    beforeAll(() => {
+      // The tooltip enters the top layer when it opens.
+      HTMLElement.prototype.showPopover = vi.fn()
+      HTMLElement.prototype.hidePopover = vi.fn()
+    })
+
+    // Scoped to this block: `hoverForTooltip` runs out the show delay on a fake
+    // clock, and the tests above drive real user events.
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('hands the chip the directory, the home dir and the diff stats', () => {
+      renderBar(agent(), {
+        branchName: 'feature',
+        isWorktree: true,
+        directory: '/home/dev/repos/leapmux-worktrees/feature',
+        homeDir: '/home/dev',
+        branchStats: { added: 38, deleted: 12, untracked: 0 },
+      })
+
+      const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))
+      expect(tooltip).not.toBeNull()
+      expect(tooltip!.querySelector('[data-testid="working-tree-directory"]'))
+        .toHaveTextContent('~/repos/leapmux-worktrees/feature')
+      expect(tooltip!.querySelector('[data-testid="git-diff-stats"]')).toHaveTextContent('+38')
+    })
   })
 })
