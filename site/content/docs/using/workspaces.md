@@ -89,7 +89,7 @@ Expand a workspace to see its tabs organized as a tree:
 - **Repo → Branch → tabs.** Tabs are grouped by their git repository, then by branch, then listed individually. The repo label comes from the git origin URL (for example `github.com/org/repo`), or the directory name for a repo with no origin.
 - Tabs with no git information appear as flat leaves in an ungrouped bucket.
 - A group whose worktree has no current branch (for example, a detached HEAD) is labeled **(no branch)** and offers no branch actions.
-- Branch rows expose a **Change branch** and **Delete branch** menu when the branch has a real name. See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+- Branch rows carry an icon for the kind of checkout — a branch in the main repository, or a linked worktree — and expose a change and a delete action when the branch has a real name. See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 Each tab leaf shows the tab's type icon and label. For closable tabs, a close **×** button appears (middle-click also closes them). Double-click an agent or terminal leaf to rename it inline; file tabs are not renamable.
 
