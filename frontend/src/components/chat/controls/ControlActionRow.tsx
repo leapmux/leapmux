@@ -21,7 +21,7 @@ export interface ControlActionRowProps {
    * The left-end actions that are NOT a decision on the request: Stop, YOLO.
    *
    * A decision button belongs in `primary`, next to the one it opposes, however
-   * it is worded — Reject, Cancel, Deny, "Stay in Plan Mode". Several providers
+   * it is worded — Reject, Cancel, or Deny. Several providers
    * emit their allow and deny buttons from ONE runtime list inside a connected
    * `ButtonGroup`, so a zone split by polarity would break that segmented control
    * and would put the same-named button at opposite ends of the row depending on

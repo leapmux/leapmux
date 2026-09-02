@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { FileAttachment } from './attachments'
 import type { AskQuestionState, EditorContentRef } from './controls/types'
-import type { ProviderSettingChange } from './providers/registry'
+import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
@@ -18,7 +18,7 @@ export interface ControlResponseHandlingProps {
   agent?: { optionValues?: Record<string, string>, agentProvider?: AgentProvider }
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array, claimToken?: string) => Promise<void>
-  onSettingChange?: (change: ProviderSettingChange) => void
+  onSettingChange?: ProviderSettingChangeHandler
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   settingsLoading?: boolean
   agentWorking?: boolean
@@ -107,7 +107,7 @@ export function useControlResponseHandling(
   // controlRequestId swap effect is the authoritative source for editor
   // content state — it loads the correct draft and calls onContentChange.
   // Resetting hasContent here races with the MarkdownEditor and causes the
-  // "Send Feedback" button to disappear after a tab switch (A → B → A).
+  // "Send feedback" button to disappear after a tab switch (A → B → A).
   createEffect(on(
     activeRequestId,
     (requestId) => {

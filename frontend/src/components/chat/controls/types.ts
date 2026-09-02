@@ -1,4 +1,5 @@
 import type { Accessor, Setter } from 'solid-js'
+import type { ProviderSettingChangeHandler } from '../providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -64,7 +65,9 @@ export interface ActionsProps {
   /** The permission mode value that disables all approval prompts for this provider. */
   bypassPermissionMode?: PermissionMode
   /** Optional callback to change the agent's permission mode. */
-  onPermissionModeChange?: (mode: PermissionMode) => void
+  onPermissionModeChange?: (mode: PermissionMode) => void | Promise<void>
+  /** Applies one or more agent settings as one atomic change. */
+  onSettingChange?: ProviderSettingChangeHandler
   contextUsage?: ContextUsageInfo
   modelContextWindow?: number
   /**

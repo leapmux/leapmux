@@ -20,18 +20,18 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     const banner = await waitForControlBanner(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
-    // Verify both checkboxes are visible and unchecked
-    const clearContextCheckbox = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
-    await expect(clearContextCheckbox).toBeVisible()
-    await expect(clearContextCheckbox).not.toBeChecked()
+    // Verify both switches are visible and unchecked.
+    const clearContextSwitch = page.locator('[data-testid="plan-clear-context-checkbox"] input[type="checkbox"]')
+    await expect(clearContextSwitch).toBeVisible()
+    await expect(clearContextSwitch).not.toBeChecked()
 
-    const bypassCheckbox = page.locator('[data-testid="plan-bypass-permissions-checkbox"] input[type="checkbox"]')
-    await expect(bypassCheckbox).toBeVisible()
-    await expect(bypassCheckbox).not.toBeChecked()
+    const bypassSwitch = page.locator('[data-testid="plan-bypass-permissions-checkbox"] input[type="checkbox"]')
+    await expect(bypassSwitch).toBeVisible()
+    await expect(bypassSwitch).not.toBeChecked()
 
-    // Check bypass permissions, then approve
-    await bypassCheckbox.check()
-    await expect(bypassCheckbox).toBeChecked()
+    // Enable bypass permissions, then approve.
+    await bypassSwitch.check()
+    await expect(bypassSwitch).toBeChecked()
 
     const approveBtn = page.locator('[data-testid="plan-approve-btn"]')
     await expect(approveBtn).toBeEnabled()
@@ -45,12 +45,12 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     await expectSettingsChip(page, 'Bypass Permissions')
   })
 
-  test('approve and checkboxes toggle with reject on editor content', async ({ page, authenticatedWorkspace }) => {
+  test('approve and switches toggle with feedback on editor content', async ({ page, authenticatedWorkspace }) => {
     // Enter plan mode, write a dummy plan, and exit
     const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
-    // With empty editor: Reject, Approve, and checkboxes all visible
+    // The empty editor shows Reject, Approve, and both switches.
     await expect(page.locator('[data-testid="plan-reject-btn"]')).toBeVisible()
     await expect(page.locator('[data-testid="plan-approve-btn"]')).toBeVisible()
     await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).toBeVisible()
@@ -61,8 +61,8 @@ test.describe('Plan Mode - Bypass Permissions', () => {
     await editor.click()
     await page.keyboard.type('needs changes', { delay: 100 })
 
-    // With editor content: Reject visible, Approve hidden
-    await expect(page.locator('[data-testid="plan-reject-btn"]')).toBeVisible()
+    // With editor content: Send feedback is visible and Approve is hidden.
+    await expect(page.locator('[data-testid="plan-reject-btn"]')).toHaveText('Send feedback')
     await expect(page.locator('[data-testid="plan-approve-btn"]')).not.toBeVisible()
 
     // Clear the editor

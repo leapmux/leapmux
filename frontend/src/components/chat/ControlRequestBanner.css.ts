@@ -143,8 +143,8 @@ export const controlBannerTitle = style({
 
 // Control-request action footer: a full-width row below the editor inside the
 // composer box, using a three-zone [secondary | pagination | primary] grid.
-// secondary (Reject/Stop/Stay-in-plan) hugs the left end, the primary action
-// (Allow/Submit/Approve) hugs the right end, and pagination dots center between.
+// Secondary actions stay at the left end. Request decisions stay at the right
+// end. Pagination dots stay between them.
 //
 // NO top border. The line above this row belongs to the composer box, which
 // draws it as `editorSeparator` for every expanded action row -- the compact
@@ -191,7 +191,7 @@ export const controlFooterRight = style({
   gridColumn: 3,
 })
 
-export const planApprovalCheckboxes = style({
+export const controlRequestSwitches = style({
   display: 'flex',
   flexDirection: 'column',
   marginRight: 'var(--space-1)',

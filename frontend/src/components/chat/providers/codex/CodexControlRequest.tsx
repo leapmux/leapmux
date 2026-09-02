@@ -2,18 +2,17 @@ import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
 
 import type { CodexDecision } from './controlResponse'
-import { For, Match, Show, Switch } from 'solid-js'
-import { ButtonGroup } from '~/components/common/ButtonGroup'
-import { Tooltip } from '~/components/common/Tooltip'
+import { createSignal, Match, Show, Switch } from 'solid-js'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { keepFocusOnPress } from '~/lib/focusRetention'
+import { isObject } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { CollapsibleText } from '../../controls/CollapsibleText'
-import { ControlActionRow } from '../../controls/ControlActionRow'
-import { createPlanApprovalState, PlanApprovalCheckboxes } from '../../controls/PlanApprovalCheckboxes'
+import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
+import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
 import { sendResponse, toRpcId } from '../../controls/types'
+import { CODEX_BYPASS_PERMISSION_SETTINGS } from './constants'
 import { codexDecisionKey, codexDecisionLabel } from './controlResponse'
 
 /** Extract Codex approval params from the control request payload. */
@@ -111,9 +110,23 @@ function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string,
   }
 }
 
-/** Whether a decision is a cancel/decline type (rendered as outline button). */
-function isNegativeDecision(decision: CodexDecision): boolean {
-  return decision === 'decline' || decision === 'cancel'
+/** Find the Codex decision that records an allow choice for future requests. */
+function rememberedAllowDecision(decisions: CodexDecision[] | undefined): CodexDecision | undefined {
+  return decisions?.find(decision => isObject(decision) && 'acceptWithExecpolicyAmendment' in decision)
+    ?? decisions?.find(decision => decision === 'acceptForSession')
+}
+
+function isCodexDecision(value: unknown): value is CodexDecision {
+  return typeof value === 'string' || (isObject(value) && Object.keys(value).length > 0)
+}
+
+/** Return decisions that the fixed Deny/Allow controls do not cover. */
+function additionalDecisions(decisions: CodexDecision[] | undefined, rememberDecision: CodexDecision | undefined): CodexDecision[] {
+  return (decisions ?? []).filter((decision) => {
+    if (decision === 'accept' || decision === 'decline' || decision === rememberDecision)
+      return false
+    return true
+  })
 }
 
 /** Codex-specific control request content. */
@@ -170,45 +183,30 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
   )
 }
 
-/** Codex plan mode prompt action buttons (with clear context + bypass checkboxes). */
+/** Codex plan-mode prompt actions with clear-context and bypass switches. */
 const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   const planApproval = createPlanApprovalState(props)
 
-  const handleApprove = () => {
-    sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), { permissionMode: planApproval.permissionMode(), clearContext: planApproval.clearContext() }))
-  }
+  const handleApprove = () => sendCodexPlanPromptResponse(
+    props.request.agentId,
+    props.onRespond,
+    buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), {
+      permissionMode: planApproval.permissionMode(),
+      clearContext: planApproval.clearContext(),
+    }),
+  )
 
   return (
-    <ControlActionRow
-      primary={(
-        <>
-          <Show when={!props.hasEditorContent}>
-            <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
-          </Show>
-          <button
-            class="outline"
-            onMouseDown={keepFocusOnPress}
-            onClick={() => {
-              if (props.hasEditorContent) {
-                props.onTriggerSend()
-                return
-              }
-              sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
-            }}
-            data-testid="control-deny-btn"
-          >
-            {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
-          </button>
-          <Show when={!props.hasEditorContent}>
-            <button
-              onClick={handleApprove}
-              data-testid="control-allow-btn"
-            >
-              Implement Plan
-            </button>
-          </Show>
-        </>
-      )}
+    <ControlDecisionFooter
+      hasEditorContent={props.hasEditorContent}
+      onSendFeedback={props.onTriggerSend}
+      negativeAction={{
+        label: 'Reject',
+        testId: 'control-deny-btn',
+        onSelect: () => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, '')),
+      }}
+      positiveAction={{ label: 'Approve', testId: 'control-allow-btn', onSelect: handleApprove }}
+      switches={() => planApprovalSwitches(planApproval, props.bypassPermissionMode)}
     />
   )
 }
@@ -218,21 +216,27 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const toolName = () => getToolName(props.request.payload)
   const method = () => props.request.payload.method as string | undefined
   const params = () => getCodexParams(props.request.payload)
-  const availableDecisions = () => params()?.availableDecisions as CodexDecision[] | undefined
-  const questions = () => (params()?.questions as Question[] | undefined) ?? []
-
-  const handleDecision = (decision: CodexDecision) => {
-    sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, decision)
+  const availableDecisions = () => {
+    const decisions = params()?.availableDecisions
+    return Array.isArray(decisions) ? decisions.filter(isCodexDecision) : undefined
   }
+  const rememberDecision = () => rememberedAllowDecision(availableDecisions())
+  const extraDecisions = () => additionalDecisions(availableDecisions(), rememberDecision())
+  const questions = () => (params()?.questions as Question[] | undefined) ?? []
+  const [remember, setRemember] = createSignal(false)
+  const [bypass, setBypass] = createSignal(false)
 
-  // Accept the current request, then switch to bypass mode. The accept is
-  // AWAITED first: the worker dispatches the two concurrently, and a mode change
-  // the provider cannot take live relaunches the agent, killing the session
-  // before an un-awaited accept reaches it.
-  const handleBypassPermissions = async () => {
-    await sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, 'accept')
-    if (props.bypassPermissionMode)
-      props.onPermissionModeChange?.(props.bypassPermissionMode)
+  const handleDecision = (decision: CodexDecision) => sendCodexDecision(
+    props.request.agentId,
+    props.onRespond,
+    props.request.requestId,
+    decision,
+  )
+
+  const handleAllow = async () => {
+    await sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, remember() ? (rememberDecision() ?? 'accept') : 'accept')
+    if (bypass())
+      await props.onSettingChange?.({ sets: { ...CODEX_BYPASS_PERMISSION_SETTINGS } })
   }
 
   /**
@@ -260,56 +264,35 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   return (
     <Switch
       fallback={(
-        <ControlActionRow
-          primary={(
-            <Show
-              when={availableDecisions()}
-              fallback={(
-                <ButtonGroup>
-                  <button class="outline" onClick={() => handleDecision('cancel')} data-testid="control-deny-btn">Cancel</button>
-                  <button onClick={() => handleDecision('accept')} data-testid="control-allow-btn">Allow</button>
-                  <Show when={props.bypassPermissionMode}>
-                    <Tooltip text="Allow this request and stop asking for permissions">
-                      <button
-                        data-variant="secondary"
-                        onClick={handleBypassPermissions}
-                        data-testid="control-bypass-btn"
-                      >
-                        & Bypass Permissions
-                      </button>
-                    </Tooltip>
-                  </Show>
-                </ButtonGroup>
-              )}
-            >
-              {decisions => (
-                <ButtonGroup>
-                  <For each={decisions()}>
-                    {decision => (
-                      <button
-                        class={isNegativeDecision(decision) ? 'outline' : undefined}
-                        onClick={() => handleDecision(decision)}
-                        data-testid={`control-decision-${codexDecisionKey(decision)}`}
-                      >
-                        {codexDecisionLabel(decision)}
-                      </button>
-                    )}
-                  </For>
-                  <Show when={props.bypassPermissionMode}>
-                    <Tooltip text="Allow this request and stop asking for permissions">
-                      <button
-                        data-variant="secondary"
-                        onClick={handleBypassPermissions}
-                        data-testid="control-bypass-btn"
-                      >
-                        & Bypass Permissions
-                      </button>
-                    </Tooltip>
-                  </Show>
-                </ButtonGroup>
-              )}
-            </Show>
-          )}
+        <ControlDecisionFooter
+          hasEditorContent={props.hasEditorContent}
+          onSendFeedback={props.onTriggerSend}
+          negativeAction={{ label: 'Deny', testId: 'control-deny-btn', onSelect: () => handleDecision('decline') }}
+          positiveAction={{ label: 'Allow', testId: 'control-allow-btn', onSelect: handleAllow }}
+          switches={() => [
+            ...(rememberDecision()
+              ? [{
+                  id: 'control-remember-checkbox',
+                  label: 'Remember',
+                  checked: remember(),
+                  onChange: setRemember,
+                }]
+              : []),
+            ...(props.bypassPermissionMode && props.onSettingChange
+              ? [{
+                  id: 'control-bypass-permissions-checkbox',
+                  label: 'Bypass Permissions',
+                  checked: bypass(),
+                  onChange: setBypass,
+                }]
+              : []),
+          ]}
+          additionalActions={() => extraDecisions().map(decision => ({
+            label: codexDecisionLabel(decision),
+            testId: `control-decision-${codexDecisionKey(decision)}`,
+            onSelect: () => handleDecision(decision),
+            outline: decision === 'decline' || decision === 'cancel',
+          }))}
         />
       )}
     >

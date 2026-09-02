@@ -85,6 +85,55 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 	})
 }
 
+func TestCodexClearContextStartsFreshThread(t *testing.T) {
+	t.Parallel()
+
+	a, sink, requests := newCodexAgentForRPC(t, func(method string) json.RawMessage {
+		require.Equal(t, "thread/start", method)
+		return json.RawMessage(`{
+			"thread":{"id":"thread-new"},
+			"model":"gpt-5.6-sol",
+			"reasoningEffort":"medium",
+			"approvalPolicy":"never",
+			"sandbox":{"type":"dangerFullAccess"}
+		}`)
+	})
+	a.threadID = "thread-old"
+	a.turnID = "turn-old"
+	a.turnSawPlan = true
+	a.turnPlanText = "old plan"
+	a.turnAssistantText = "old answer"
+	a.streamingPlan = true
+	a.model = "gpt-5.6-sol"
+	a.approvalPolicy = "never"
+	a.sandboxPolicy = CodexSandboxDangerFullAccess
+	a.serviceTier = CodexServiceTierFast
+
+	sessionID, ok := a.ClearContext()
+
+	require.True(t, ok)
+	assert.Equal(t, "thread-new", sessionID)
+	assert.Equal(t, "thread-new", a.threadID)
+	assert.Empty(t, a.turnID)
+	assert.False(t, a.turnSawPlan)
+	assert.Empty(t, a.turnPlanText)
+	assert.Empty(t, a.turnAssistantText)
+	assert.False(t, a.streamingPlan)
+	assert.Equal(t, CodexSandboxDangerFullAccess, a.sandboxPolicy)
+	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
+	assert.Equal(t, "thread-new", sink.LastSessionID())
+
+	sent := requests()
+	require.Len(t, sent, 1)
+	assert.Equal(t, "thread/start", sent[0].Method)
+	assert.NotContains(t, sent[0].Params, "threadId", "a clear must not resume the old thread")
+	assert.Equal(t, "clear", sent[0].Params["sessionStartSource"])
+	assert.Equal(t, "gpt-5.6-sol", sent[0].Params["model"])
+	assert.Equal(t, "never", sent[0].Params["approvalPolicy"])
+	assert.Equal(t, CodexSandboxDangerFullAccess, sent[0].Params["sandbox"])
+	assert.Equal(t, CodexServiceTierFast, sent[0].Params["serviceTier"])
+}
+
 func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 	t.Parallel()
 
@@ -112,6 +161,44 @@ func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 	assert.Equal(t, CodexServiceTierFast, a.serviceTier)
 	assert.Equal(t, CodexDefaultApprovalPolicy, a.approvalPolicy)
 	assert.Equal(t, CodexSandboxWorkspaceWrite, a.sandboxPolicy)
+}
+
+func TestCodexThreadResultAppliesCurrentSandboxObject(t *testing.T) {
+	t.Parallel()
+
+	result, err := newCodexThreadResult(
+		"thread-1",
+		"gpt-5.6-sol",
+		nil,
+		nil,
+		nil,
+		json.RawMessage(`{"type":"workspaceWrite","networkAccess":true}`),
+	)
+	require.NoError(t, err)
+
+	a := &CodexAgent{
+		sandboxPolicy: CodexSandboxReadOnly,
+		networkAccess: CodexNetworkRestricted,
+	}
+	a.applyThreadResult(result)
+
+	assert.Equal(t, CodexSandboxWorkspaceWrite, a.sandboxPolicy)
+	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
+
+	fullAccess, err := newCodexThreadResult(
+		"thread-2",
+		"gpt-5.6-sol",
+		nil,
+		nil,
+		nil,
+		json.RawMessage(`{"type":"dangerFullAccess"}`),
+	)
+	require.NoError(t, err)
+	a.sandboxPolicy = CodexSandboxReadOnly
+	a.networkAccess = CodexNetworkRestricted
+	a.applyThreadResult(fullAccess)
+	assert.Equal(t, CodexSandboxDangerFullAccess, a.sandboxPolicy)
+	assert.Equal(t, CodexNetworkEnabled, a.networkAccess)
 }
 
 func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {

@@ -13,35 +13,12 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
+import type { ProviderSettingsAction } from '../providerSettings'
 import type { AgentInfo, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 import type { PermissionMode } from '~/utils/controlResponse'
-
-/**
- * An agent-settings change emitted by the (generic) settings panel: a map of
- * option-group id -> new value. A single option pick carries one entry; an action
- * button (e.g. Codex's "Bypass permissions") carries several. The host
- * (`AgentEditorPanel` → `useAgentOperations`) applies them in ONE RPC so a
- * multi-axis change is atomic; it routes by well-known group id and is otherwise
- * provider-agnostic.
- */
-export interface ProviderSettingChange {
-  sets: Record<string, string>
-}
-
-/**
- * A declarative "action" button a provider can surface in the settings panel
- * that sets several option groups at once (e.g. Codex's "Bypass permissions",
- * which sets network/sandbox/approval together). Rendered generically.
- */
-export interface ProviderSettingsAction {
-  label: string
-  testId: string
-  /** Option-group id -> value to apply, all in one atomic change. */
-  sets: Record<string, string>
-}
 
 export interface AttachmentCapabilities {
   text: boolean
@@ -448,7 +425,7 @@ export interface Provider {
 
   /**
    * The permission mode value that disables all approval prompts.
-   * Used by the "& Bypass Permissions" button in approval controls.
+   * Used by the Bypass Permissions switch in approval controls.
    * E.g. "bypassPermissions" for Claude Code, "never" for Codex.
    */
   bypassPermissionMode?: PermissionMode

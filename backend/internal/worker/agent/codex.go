@@ -285,6 +285,8 @@ type codexThreadResult struct {
 	ApprovalPolicyPresent bool
 	SandboxPolicy         string
 	SandboxPolicyPresent  bool
+	NetworkAccess         string
+	NetworkAccessPresent  bool
 }
 
 func (a *CodexAgent) applyThreadResult(result codexThreadResult) {
@@ -300,6 +302,9 @@ func (a *CodexAgent) applyThreadResult(result codexThreadResult) {
 	}
 	if result.SandboxPolicyPresent && result.SandboxPolicy != "" {
 		a.sandboxPolicy = result.SandboxPolicy
+	}
+	if result.NetworkAccessPresent && result.NetworkAccess != "" {
+		a.networkAccess = result.NetworkAccess
 	}
 }
 
@@ -397,7 +402,6 @@ func newCodexThreadResult(id, model string, effort, serviceTier, approvalPolicy,
 		{effort, &result.Effort, &result.EffortPresent, "reasoningEffort"},
 		{serviceTier, &result.ServiceTier, &result.ServiceTierPresent, "serviceTier"},
 		{approvalPolicy, &result.ApprovalPolicy, &result.ApprovalPolicyPresent, "approvalPolicy"},
-		{sandbox, &result.SandboxPolicy, &result.SandboxPolicyPresent, "sandbox"},
 	} {
 		if len(target.raw) == 0 {
 			continue
@@ -416,7 +420,76 @@ func newCodexThreadResult(id, model string, effort, serviceTier, approvalPolicy,
 			return codexThreadResult{}, fmt.Errorf("codex thread response field %s was not a string: %w", target.label, err)
 		}
 	}
+	var err error
+	result.SandboxPolicy, result.SandboxPolicyPresent, result.NetworkAccess, result.NetworkAccessPresent, err = decodeCodexThreadSandbox(sandbox)
+	if err != nil {
+		return codexThreadResult{}, err
+	}
 	return result, nil
+}
+
+// decodeCodexThreadSandbox accepts the legacy string and the current tagged
+// object. The current object also reports the effective network access.
+func decodeCodexThreadSandbox(raw json.RawMessage) (policy string, policyPresent bool, network string, networkPresent bool, err error) {
+	if len(raw) == 0 {
+		return "", false, "", false, nil
+	}
+	if string(raw) == "null" {
+		return "", true, "", false, nil
+	}
+
+	if json.Unmarshal(raw, &policy) == nil {
+		return policy, true, "", false, nil
+	}
+
+	var sandbox struct {
+		Type          string          `json:"type"`
+		NetworkAccess json.RawMessage `json:"networkAccess"`
+	}
+	if err := json.Unmarshal(raw, &sandbox); err != nil {
+		return "", false, "", false, fmt.Errorf("codex thread response field sandbox was invalid: %w", err)
+	}
+
+	switch sandbox.Type {
+	case "dangerFullAccess":
+		policy, policyPresent = CodexSandboxDangerFullAccess, true
+		network, networkPresent = CodexNetworkEnabled, true
+	case "workspaceWrite":
+		policy, policyPresent = CodexSandboxWorkspaceWrite, true
+		network, networkPresent = codexThreadNetworkAccess(sandbox.NetworkAccess, CodexNetworkRestricted)
+	case "readOnly":
+		policy, policyPresent = CodexSandboxReadOnly, true
+		network, networkPresent = codexThreadNetworkAccess(sandbox.NetworkAccess, CodexNetworkRestricted)
+	case "externalSandbox":
+		// LeapMux has no external-sandbox option. Preserve the stored sandbox
+		// value, but reconcile the network value that this variant still reports.
+		network, networkPresent = codexThreadNetworkAccess(sandbox.NetworkAccess, CodexNetworkRestricted)
+	default:
+		// Preserve both stored values for a future Codex sandbox variant.
+		return "", false, "", false, nil
+	}
+	return policy, policyPresent, network, networkPresent, nil
+}
+
+func codexThreadNetworkAccess(raw json.RawMessage, defaultValue string) (string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return defaultValue, true
+	}
+	var enabled bool
+	if json.Unmarshal(raw, &enabled) == nil {
+		if enabled {
+			return CodexNetworkEnabled, true
+		}
+		return CodexNetworkRestricted, true
+	}
+	var value string
+	if json.Unmarshal(raw, &value) == nil {
+		switch value {
+		case CodexNetworkEnabled, CodexNetworkRestricted:
+			return value, true
+		}
+	}
+	return "", false
 }
 
 // Interrupt aborts the active Codex turn by sending a `turn/interrupt`
@@ -471,6 +544,9 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.mu.Unlock()
 
 	threadParams := codexThreadParams(model, workingDir, approvalPolicy, sandboxPolicy, serviceTier)
+	// Codex uses this source to distinguish a deliberate context clear from an
+	// unrelated new conversation. Both sources start with empty model history.
+	threadParams["sessionStartSource"] = "clear"
 
 	thread, err := a.startThread(threadParams, a.APITimeout())
 	if err != nil || thread.ID == "" {

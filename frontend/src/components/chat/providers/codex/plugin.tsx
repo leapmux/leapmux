@@ -7,7 +7,7 @@ import type { ClassificationContext, ClassificationInput, Provider } from '../re
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
-import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
+import { buildPlanMode } from '~/components/chat/settingsGroups'
 import { CODEX_RATE_LIMIT_REACHED_TIME_WINDOW, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
@@ -23,9 +23,8 @@ import { acpBuildControlResponse, isJsonRpcResponseObject } from '../acp/classif
 import { registerProvider } from '../registry'
 import { CodexControlActions, CodexControlContent, sendCodexUserInputResponse } from './CodexControlRequest'
 import {
+  CODEX_BYPASS_PERMISSION_SETTINGS,
   CODEX_OPTION_COLLABORATION_MODE,
-  CODEX_OPTION_NETWORK_ACCESS,
-  CODEX_OPTION_SANDBOX_POLICY,
   DEFAULT_CODEX_COLLABORATION_MODE,
 } from './constants'
 import { codexControlResponseDisplay } from './controlResponse'
@@ -412,11 +411,7 @@ const codexPlugin: Provider = {
   settingsActions: [{
     label: 'Bypass permissions',
     testId: 'codex-bypass-permissions',
-    sets: {
-      [CODEX_OPTION_NETWORK_ACCESS]: 'enabled',
-      [CODEX_OPTION_SANDBOX_POLICY]: 'danger-full-access',
-      [OPTION_ID_PERMISSION_MODE]: 'never',
-    },
+    sets: { ...CODEX_BYPASS_PERMISSION_SETTINGS },
   }],
   classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
     const parent = input.parentObject

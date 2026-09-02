@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { ProviderSettingChange, ProviderSettingsAction } from '~/components/chat/providers/registry'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
+import type { ProviderSettingChangeHandler, ProviderSettingsAction } from '~/components/chat/providerSettings'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -31,7 +31,7 @@ export interface ComposerPlusMenuProps {
   /** Provider, used to resolve the mode axis label and declared actions. */
   agentProvider?: AgentProvider
   /** Dispatch a settings change (any axis). Optional to match the panel's `onChange?`. */
-  onSettingChange?: (change: ProviderSettingChange) => void
+  onSettingChange?: ProviderSettingChangeHandler
   /** Open the OS file picker. Disabled during a control request. */
   onAttachFile: () => void
   /** Whether attaching files is currently allowed (false during control requests). */
@@ -403,7 +403,7 @@ function PlusGroupSubmenu(props: {
   groupId: string
   optionGroups: AvailableOptionGroup[] | undefined
   optionValues: Record<string, string>
-  onChange?: (change: ProviderSettingChange) => void
+  onChange?: ProviderSettingChangeHandler
   /** Why the composer accepts no changes; its presence disables the options. */
   disabledReason?: string
 }): JSX.Element {

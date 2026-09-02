@@ -3,13 +3,12 @@ import type { ActionsProps } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { Show } from 'solid-js'
-import { keepFocusOnPress } from '~/lib/focusRetention'
 import { pluralize } from '~/lib/plural'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
-import { ControlActionRow } from './ControlActionRow'
-import { createPlanApprovalState, PlanApprovalCheckboxes } from './PlanApprovalCheckboxes'
+import { ControlDecisionFooter } from './ControlDecisionFooter'
+import { createPlanApprovalState, planApprovalSwitches } from './planApproval'
 import { sendResponse } from './types'
 
 interface ToolGroup {
@@ -81,35 +80,22 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
     props.onTriggerSend()
   }
 
-  const handleApprove = () => {
-    sendResponse(props.request.agentId, props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), { permissionMode: planApproval.permissionMode(), clearContext: planApproval.clearContext() }))
-  }
+  const handleApprove = () => sendResponse(
+    props.request.agentId,
+    props.onRespond,
+    buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), {
+      permissionMode: planApproval.permissionMode(),
+      clearContext: planApproval.clearContext(),
+    }),
+  )
 
   return (
-    <ControlActionRow
-      primary={(
-        <>
-          <Show when={!props.hasEditorContent}>
-            <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
-          </Show>
-          <button
-            class="outline"
-            onMouseDown={keepFocusOnPress}
-            onClick={handleReject}
-            data-testid="plan-reject-btn"
-          >
-            {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
-          </button>
-          <Show when={!props.hasEditorContent}>
-            <button
-              onClick={handleApprove}
-              data-testid="plan-approve-btn"
-            >
-              Approve
-            </button>
-          </Show>
-        </>
-      )}
+    <ControlDecisionFooter
+      hasEditorContent={props.hasEditorContent}
+      onSendFeedback={handleReject}
+      negativeAction={{ label: 'Reject', testId: 'plan-reject-btn', onSelect: handleReject }}
+      positiveAction={{ label: 'Approve', testId: 'plan-approve-btn', onSelect: handleApprove }}
+      switches={() => planApprovalSwitches(planApproval, props.bypassPermissionMode)}
     />
   )
 }

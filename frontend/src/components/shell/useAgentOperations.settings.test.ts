@@ -359,7 +359,7 @@ describe('useAgentOperations settings reconciliation', () => {
     expect(stores.view.getAgentTab('a1')?.optionValues?.model).toBe('claude-fable-5[effort=high]')
   })
 
-  it('applies a multi-axis change optimistically and sends both axes in ONE RPC', async () => {
+  it('applies a multi-axis change optimistically and sends all axes in one RPC', async () => {
     const stores = seedAgent({
       optionValues: { model: 'opus[1m]', effort: 'high', permissionMode: 'default' },
       optionGroups: opusCatalog(),
@@ -370,20 +370,23 @@ describe('useAgentOperations settings reconciliation', () => {
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
       // An action button (e.g. Codex "Bypass permissions") carries several axes.
-      await ops.handleAgentSettingChange('a1', { sets: { network_access: 'enabled', permissionMode: 'never' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { network_access: 'enabled', sandbox_policy: 'danger-full-access', permissionMode: 'never' },
+      })
       dispose()
     })
 
-    // Both axes are written optimistically in one update.
+    // All axes are written optimistically in one update.
     const tab = stores.view.getAgentTab('a1')
     expect(tab?.optionValues?.network_access).toBe('enabled')
+    expect(tab?.optionValues?.sandbox_policy).toBe('danger-full-access')
     expect(tab?.optionValues?.permissionMode).toBe('never')
-    // ONE RPC carrying BOTH axes -- not one RPC per axis -- so the worker applies them
+    // One RPC carries all axes, so the worker applies them
     // atomically and can't leave the agent half-bypassed.
     expect(updateAgentSettings).toHaveBeenCalledTimes(1)
     expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
       agentId: 'a1',
-      settings: { options: { network_access: 'enabled', permissionMode: 'never' } },
+      settings: { options: { network_access: 'enabled', sandbox_policy: 'danger-full-access', permissionMode: 'never' } },
     })
   })
 
@@ -468,7 +471,7 @@ describe('useAgentOperations settings reconciliation', () => {
 
   it('refuses a change for an agent that has reported no option catalog yet', async () => {
     // An agent mid-startup whose catalog has not arrived: optionGroups is empty. A
-    // programmatic caller (the control-request "& Bypass Permissions" button, gated on a
+    // programmatic caller (the control-request bypass switch, controlled by a
     // static provider constant rather than the live catalog) can still dispatch here.
     const stores = seedAgent({
       optionValues: { model: 'opus[1m]' },

@@ -1,5 +1,5 @@
 import type { TabContext } from './tabContext'
-import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
@@ -389,7 +389,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // back the optimistic write, so the UI would show a selection nothing can reconcile, and the
     // RPC would target an axis the running session may not validate. The pre-unification model/effort
     // handler refused the same way on an empty availableModels list; programmatic callers (the
-    // control-request "& Bypass Permissions" button, the plan-mode toggle) can otherwise reach here
+    // control-request bypass switch, the plan-mode toggle) can otherwise reach here
     // with an empty catalog because their visibility is gated on a static provider constant, not the
     // live catalog.
     if (!agent.optionGroups || agent.optionGroups.length === 0)
@@ -481,8 +481,8 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   /**
-   * Permission-mode change shim for the approval-control "& Bypass Permissions"
-   * button (which calls onPermissionModeChange directly). Routes through the
+   * Permission-mode change shim for a generic approval-control bypass switch.
+   * The switch calls onPermissionModeChange directly. This method routes through the
    * unified dispatcher.
    */
   const handlePermissionModeChange = (agentId: string, mode: PermissionMode) =>

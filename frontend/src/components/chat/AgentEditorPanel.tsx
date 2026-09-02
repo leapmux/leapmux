@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
-import type { ProviderSettingChange } from './providers/registry'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
+import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -65,13 +65,12 @@ export interface AgentEditorPanelProps {
   controlRequests?: ControlRequest[]
   onControlResponse?: (agentId: string, content: Uint8Array, claimToken?: string) => Promise<void>
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
-  onSettingChange?: (change: ProviderSettingChange) => void
+  onSettingChange?: ProviderSettingChangeHandler
   /**
-   * Bypass-permission shortcut from control-request actions. Stays separate
-   * from `onSettingChange` because control approval has different semantics
-   * (it's tied to an active control request, not a free-form settings edit).
+   * Changes only the permission mode for providers that use the generic
+   * control-request path.
    */
-  onPermissionModeChange?: (mode: PermissionMode) => void
+  onPermissionModeChange?: (mode: PermissionMode) => void | Promise<void>
   onInterrupt?: () => void
   /**
    * Whether Interrupt can target this agent alone. Omit (or pass true) for a
@@ -547,6 +546,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       editorContentRef={() => editorContentRef}
                       bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
                       onPermissionModeChange={props.onPermissionModeChange}
+                      onSettingChange={props.onSettingChange}
                       contextUsage={props.agentSessionInfo?.contextUsage}
                       modelContextWindow={modelContextWindow()}
                     />

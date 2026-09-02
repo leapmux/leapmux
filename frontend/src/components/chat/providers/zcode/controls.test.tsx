@@ -60,7 +60,7 @@ describe('zcode plan approval control', () => {
     expect(container.textContent ?? '').toContain('ready to proceed')
   })
 
-  // Every arm ships the SHARED allow/deny envelope unchanged; the worker translates
+  // Every case sends the shared allow/deny envelope unchanged. The worker translates
   // it into the app-server's accept/decline reply when it forwards it.
   it('approves through the shared plan actions with the neutral allow envelope', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
@@ -206,8 +206,8 @@ describe('zcode permission control', () => {
     expect(onRespond).not.toHaveBeenCalled()
   })
 
-  // ZCode declares `yolo` as its bypass mode, so the banner offers the second allow
-  // button. It must allow FIRST and switch the mode after: applying a mode the
+  // ZCode declares `yolo` as its bypass mode, so the banner offers a bypass switch.
+  // It must allow FIRST and switch the mode after: applying a mode the
   // provider cannot take live relaunches the agent, and a relaunch that won the race
   // would kill the session before the allow arrived.
   it('allows and then switches to the bypass mode', async () => {
@@ -224,15 +224,18 @@ describe('zcode permission control', () => {
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
         bypassPermissionMode={ZCODE_MODE.Yolo}
-        onPermissionModeChange={mode => order.push(`mode:${mode}`)}
+        onPermissionModeChange={(mode) => {
+          order.push(`mode:${mode}`)
+        }}
       />
     ))
-    fireEvent.click(getByTestId('control-bypass-btn'))
+    fireEvent.click(getByTestId('control-bypass-permissions-checkbox').querySelector('input')!)
+    fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(order).toEqual(['allow', `mode:${ZCODE_MODE.Yolo}`]))
   })
 
   // A tool name the dispatcher does not know is a permission, which is the fallback
-  // arm -- so a tool ZCode adds later still gets an actionable banner.
+  // case. A tool that ZCode adds later still gets an actionable banner.
   it('treats an unknown tool name as a permission', () => {
     const { container } = render(() => (
       <ZCodeControlContent

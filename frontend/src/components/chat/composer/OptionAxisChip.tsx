@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { Show } from 'solid-js'
@@ -19,7 +19,7 @@ export interface OptionAxisChipProps {
   /** Optimistic option-value map keyed by group id. */
   optionValues: Record<string, string>
   /** Dispatch a change for this axis. */
-  onChange?: (change: ProviderSettingChange) => void
+  onChange?: ProviderSettingChangeHandler
   /** Whether the composer accepts setting changes at all. */
   /** Why the composer accepts no changes; its presence disables the options. */
   disabledReason?: string

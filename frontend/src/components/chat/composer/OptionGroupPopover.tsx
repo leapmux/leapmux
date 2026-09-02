@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { SettingsItem } from '~/components/chat/settingsGroups'
 import type { DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -30,7 +30,7 @@ export interface OptionGroupPopoverProps {
   /** Optimistic option-value map keyed by group id. */
   optionValues: Record<string, string>
   /** Dispatch a change for this axis. */
-  onChange?: (change: ProviderSettingChange) => void
+  onChange?: ProviderSettingChangeHandler
   /**
    * Why the composer accepts no changes at all, when it does not. Its PRESENCE
    * is what disables the options, so a dead surface can never render without

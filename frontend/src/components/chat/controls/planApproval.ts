@@ -1,11 +1,10 @@
-import type { Accessor, Component } from 'solid-js'
+import type { Accessor } from 'solid-js'
+import type { ControlRequestSwitch } from './ControlRequestSwitches'
 import type { ActionsProps } from './types'
 import type { PermissionMode } from '~/utils/controlResponse'
 
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createMemo, createSignal } from 'solid-js'
 import { computePercentage } from '~/components/chat/widgets/ContextUsageGrid'
-import { CompactSwitch } from '~/components/common/CompactSwitch'
-import * as styles from '../ControlRequestBanner.css'
 
 export interface PlanApprovalState {
   clearContext: Accessor<boolean>
@@ -29,37 +28,23 @@ export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage'
   return { clearContext, setClearContext, bypassPermissions, setBypassPermissions, contextPct, permissionMode }
 }
 
-/** Shared checkboxes for plan approval (Clear Context + Bypass Permissions). */
-export const PlanApprovalCheckboxes: Component<{
-  state: PlanApprovalState
-  bypassPermissionMode?: PermissionMode
-}> = (props) => {
-  return (
-    <div class={styles.planApprovalCheckboxes}>
-      <CompactSwitch
-        checked={props.state.clearContext()}
-        onChange={props.state.setClearContext}
-        data-testid="plan-clear-context-checkbox"
-        fontSize="var(--text-8)"
-      >
-        Clear Context
-        <Show when={props.state.contextPct() !== null}>
-          {' '}
-          (
-          {props.state.contextPct()}
-          %)
-        </Show>
-      </CompactSwitch>
-      <Show when={props.bypassPermissionMode}>
-        <CompactSwitch
-          checked={props.state.bypassPermissions()}
-          onChange={props.state.setBypassPermissions}
-          data-testid="plan-bypass-permissions-checkbox"
-          fontSize="var(--text-8)"
-        >
-          Bypass Permissions
-        </CompactSwitch>
-      </Show>
-    </div>
-  )
+/** Builds the shared option list for a plan approval. */
+export function planApprovalSwitches(state: PlanApprovalState, bypassPermissionMode?: PermissionMode): ControlRequestSwitch[] {
+  return [
+    {
+      id: 'plan-clear-context-checkbox',
+      label: 'Clear Context',
+      checked: state.clearContext(),
+      onChange: state.setClearContext,
+      suffix: state.contextPct() !== null ? ` (${state.contextPct()}%)` : undefined,
+    },
+    ...(bypassPermissionMode
+      ? [{
+          id: 'plan-bypass-permissions-checkbox',
+          label: 'Bypass Permissions',
+          checked: state.bypassPermissions(),
+          onChange: state.setBypassPermissions,
+        }]
+      : []),
+  ]
 }

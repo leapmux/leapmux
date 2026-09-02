@@ -6,12 +6,7 @@ import { feedback, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, lab
 /** A Codex approval decision: a bare string (`accept`, `decline`, ...) or an amendment object. */
 export type CodexDecision = string | Record<string, unknown>
 
-/**
- * The human label for a Codex decision. The SINGLE source of truth for these labels: the live
- * approval buttons (CodexControlRequest) and the persisted-row derivation
- * ({@link codexControlResponseDisplay}) both call it, so a rendered answer reads identically to the
- * button the user clicked.
- */
+/** Gives the shared live-action and persisted-response label for a Codex decision. */
 export function codexDecisionLabel(decision: CodexDecision): string {
   if (typeof decision === 'string') {
     switch (decision) {
@@ -22,10 +17,7 @@ export function codexDecisionLabel(decision: CodexDecision): string {
       default: return decision
     }
   }
-  // Guard the `in` reads with isObject: `decision` is typed string | object, but the live-button
-  // path casts it straight from wire bytes (`params.availableDecisions as CodexDecision[]`), so a
-  // malformed entry (null / a number) would make `'x' in decision` throw a TypeError and crash the
-  // control banner render. Any non-string, non-amendment value falls through to the neutral "Allow".
+  // Persisted provider data can be malformed. Check the object before each `in` operation.
   if (isObject(decision)) {
     if ('acceptWithExecpolicyAmendment' in decision)
       return 'Allow & Remember'
@@ -35,13 +27,7 @@ export function codexDecisionLabel(decision: CodexDecision): string {
   return 'Allow'
 }
 
-/**
- * The stable `data-testid` key for a Codex decision button: the decision string, or the first key of
- * an amendment object. Total like {@link codexDecisionLabel} -- the live-button path casts
- * `decision` straight from wire bytes (`params.availableDecisions as CodexDecision[]`), so a
- * malformed entry (null / a number / an empty object) must degrade to 'unknown' rather than throw a
- * TypeError on `Object.keys(null)` and crash the control-banner render.
- */
+/** Gives a stable test key for a Codex decision button. */
 export function codexDecisionKey(decision: CodexDecision): string {
   if (typeof decision === 'string')
     return decision
@@ -108,11 +94,13 @@ function codexUserInputAnswers(
  * the native decision without deriving a label). Null for a missing/null/empty decision so the
  * caller degrades gracefully.
  */
-function codexDecisionText(response: Record<string, unknown> | undefined): string | null {
+function codexDecisionText(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): string | null {
   const result = pickObject(response, 'result', undefined)
   const decision = result?.decision
   if (typeof decision === 'string') {
     const trimmed = decision.trim()
+    if (trimmed === 'decline' && pickString(request, 'method', '').endsWith('/requestApproval'))
+      return 'Deny'
     return trimmed ? codexDecisionLabel(trimmed) : null
   }
   if (isObject(decision))
@@ -136,5 +124,5 @@ export function codexControlResponseDisplay(cr: PersistedControlResponse): Contr
   const env = decodeControlBehaviorEnvelope(cr.response)
   if (env?.message)
     return feedback(env.message)
-  return labelOrNull(codexDecisionText(cr.response))
+  return labelOrNull(codexDecisionText(cr.request, cr.response))
 }
