@@ -116,6 +116,8 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     setMessageError: vi.fn(),
     removeMessage: vi.fn(),
     forgetAgent: vi.fn(),
+    clearToolProgress: vi.fn(),
+    streamingText: { clear: vi.fn() },
   } as any
 
   const repoGitStore = createRepoGitStore()
@@ -437,7 +439,7 @@ describe('useAgentOperations', () => {
     it('calls the worker-side InterruptAgent RPC', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { ops, add } = setup()
+          const { ops, add, agentSessionStore, chatStore } = setup()
           const agent = create(AgentInfoSchema, {
             id: 'codex-1',
             workerId: 'w-1',
@@ -446,12 +448,44 @@ describe('useAgentOperations', () => {
           })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockResolvedValue({})
+          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
 
           await ops.handleInterrupt('codex-1')
 
           expect(mockInterruptAgent).toHaveBeenCalledWith('w-1', {
             agentId: 'codex-1',
           })
+          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('')
+          expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBeUndefined()
+          expect(chatStore.streamingText.clear).toHaveBeenCalledWith('codex-1')
+          expect(chatStore.clearToolProgress).toHaveBeenCalledWith('codex-1')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('keeps live state when the worker rejects the interrupt', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add, agentSessionStore, chatStore } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'codex-1',
+            workerId: 'w-1',
+            agentProvider: AgentProvider.CODEX,
+            agentSessionId: 'thread-1',
+          })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          mockInterruptAgent.mockRejectedValue(new Error('interrupt failed'))
+          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
+
+          await ops.handleInterrupt('codex-1')
+
+          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
+          expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
+          expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
+          expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
         }
         finally {
           dispose()

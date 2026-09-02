@@ -172,8 +172,9 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 // codexInterruptRig captures every JSON-RPC frame Codex writes to stdin and
 // supplies the delayed response for a turn/interrupt request.
 type codexInterruptRig struct {
-	agent    *CodexAgent
-	captured func() []map[string]any
+	agent          *CodexAgent
+	responseBodies chan json.RawMessage
+	captured       func() []map[string]any
 }
 
 func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
@@ -200,6 +201,7 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 		mu       sync.Mutex
 		captured []map[string]any
 	)
+	responseBodies := make(chan json.RawMessage, 1)
 	go func() {
 		scanner := bufio.NewScanner(readPipe)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -221,7 +223,12 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 			})
 			mu.Unlock()
 			if frame.ID != 0 {
-				a.deliver(frame.ID, json.RawMessage(`{}`))
+				body := json.RawMessage(`{}`)
+				select {
+				case body = <-responseBodies:
+				default:
+				}
+				a.deliver(frame.ID, body)
 			}
 		}
 	}()
@@ -233,7 +240,8 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 	})
 
 	return &codexInterruptRig{
-		agent: a,
+		agent:          a,
+		responseBodies: responseBodies,
 		captured: func() []map[string]any {
 			mu.Lock()
 			defer mu.Unlock()
@@ -242,6 +250,19 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 			return out
 		},
 	}
+}
+
+func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRig(t)
+	rig.agent.threadID = "thread-A"
+	rig.agent.turnID = "turn-42"
+	rig.responseBodies <- json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)
+
+	err := rig.agent.Interrupt()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "turn is not active")
 }
 
 func TestCodexAgent_Interrupt_SendsTurnInterruptRequest(t *testing.T) {

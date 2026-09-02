@@ -320,7 +320,11 @@ func (a *CodexAgent) InterruptChild(childKey string) error {
 	if err != nil {
 		return fmt.Errorf("marshal turn/interrupt params: %w", err)
 	}
-	if _, err := a.sendRequest("turn/interrupt", paramsJSON, 0); err != nil {
+	resp, err := a.sendRequest("turn/interrupt", paramsJSON, 0)
+	if err != nil {
+		return fmt.Errorf("turn/interrupt child: %w", err)
+	}
+	if err := jsonRPCResultError(resp); err != nil {
 		return fmt.Errorf("turn/interrupt child: %w", err)
 	}
 	return nil

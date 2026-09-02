@@ -304,6 +304,11 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       const workerId = getAgentWorkerId(agentId)
       await workerRpc.interruptAgent(workerId, { agentId })
+      props.agentSessionStore.clearThinkingTokens(agentId)
+      props.chatStore.streamingText.clear(agentId)
+      props.chatStore.clearToolProgress(agentId)
+      if (props.view.getAgentTab(agentId)?.agentProvider === AgentProvider.CODEX)
+        props.agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
     }
     catch (err) {
       showWarnToast('Failed to interrupt', err)

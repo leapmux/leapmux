@@ -360,7 +360,11 @@ func (a *CodexAgent) Interrupt() error {
 	if err != nil {
 		return fmt.Errorf("marshal turn/interrupt params: %w", err)
 	}
-	if _, err := a.sendRequest("turn/interrupt", json.RawMessage(params), 0); err != nil {
+	resp, err := a.sendRequest("turn/interrupt", json.RawMessage(params), 0)
+	if err != nil {
+		return fmt.Errorf("turn/interrupt: %w", err)
+	}
+	if err := jsonRPCResultError(resp); err != nil {
 		return fmt.Errorf("turn/interrupt: %w", err)
 	}
 	return nil
