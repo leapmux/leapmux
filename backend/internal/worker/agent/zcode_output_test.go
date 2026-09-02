@@ -578,11 +578,12 @@ func TestHandleZCodeOutput_ToolResult_PersistsClosesAndCountsTheCall(t *testing.
 	assert.Equal(t, 0, names, "the side tables are released with the call")
 	assert.Equal(t, 0, inputs)
 
-	// The close broadcasts no running-tool clear. The frontend drops a span's
-	// running_tool entry when the result row above lands, so a provider never
-	// sends an end message -- see closeZCodeToolCall.
-	assert.NotContains(t, sink.LastSessionInfo(), "zcode_running_tool")
-	assert.NotContains(t, sink.LastSessionInfo(), contracts.SessionInfoKeyRunningTool)
+	// The close broadcasts no running-tool clear -- no session info at all. The
+	// frontend drops a span's running_tool entry when the result row above lands,
+	// so a provider never sends an end message; see closeZCodeToolCall. Asserted
+	// as a nil payload for the reason the `started` test above gives: NotContains
+	// passes vacuously against a nil map, so it would state nothing here.
+	assert.Nil(t, sink.LastSessionInfo())
 }
 
 func TestHandleZCodeOutput_ToolError_ClosesTheCallToo(t *testing.T) {

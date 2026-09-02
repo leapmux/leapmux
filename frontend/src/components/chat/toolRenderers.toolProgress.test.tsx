@@ -4,6 +4,7 @@ import { render } from '@solidjs/testing-library'
 import SquareTerminal from 'lucide-solid/icons/square-terminal'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { createToolProgressStore } from '~/stores/chatToolProgress'
 import { ToolUseLayout } from './toolRenderers'
 
 /**
@@ -85,5 +86,44 @@ describe('toolUseLayout running-tool badge', () => {
     setProgress({ toolName: 'Bash', elapsedSeconds: 60 })
     expect(container.textContent).toContain('30s')
     expect(container.textContent).not.toContain('1m')
+  })
+
+  /**
+   * The same two properties over the REAL store, which is what TileRenderer wires
+   * in. A store update merges into an existing entry instead of replacing it, so
+   * it exercises the fine-grained path the signal cases above cannot reach.
+   */
+  it('holds every node of the card and honours the selection over a live store', () => {
+    const store = createToolProgressStore()
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+    const [selecting, setSelecting] = createSignal(false)
+    const context = {
+      toolProgress: () => store.get('a1', 'toolu_A'),
+      textSelectionActive: selecting,
+    } as unknown as RenderContext
+    const { getByText, getByTestId } = render(() => (
+      <ToolUseLayout
+        icon={SquareTerminal}
+        toolName="Bash"
+        title="npm run build"
+        summary={<span data-testid="summary">the summary line</span>}
+        context={context}
+      />
+    ))
+    const title = getByText('npm run build')
+    const summary = getByTestId('summary')
+    const badge = getByTestId('tool-running-badge')
+    expect(badge.textContent).toBe('30s')
+
+    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 60 })
+    expect(badge.textContent).toBe('1m')
+    expect(getByText('npm run build')).toBe(title)
+    expect(getByTestId('summary')).toBe(summary)
+    // Even the badge's own element survives: only its text node is rewritten.
+    expect(getByTestId('tool-running-badge')).toBe(badge)
+
+    setSelecting(true)
+    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 90 })
+    expect(badge.textContent).toBe('1m')
   })
 })

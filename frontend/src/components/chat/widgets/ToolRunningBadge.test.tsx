@@ -3,6 +3,7 @@ import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { createToolProgressStore } from '~/stores/chatToolProgress'
 import { retryDetailText, ToolRunningBadge } from './ToolRunningBadge'
 
 const RETRY = { attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, errorCategory: 'overloaded' }
@@ -96,6 +97,48 @@ describe('toolRunningBadge', () => {
     // The memo tracks the selection signal too, so ending the selection re-runs
     // it and it returns the value it had been holding back -- no separate flush.
     expect(container.textContent).toBe('1m 30s')
+  })
+
+  /**
+   * The freeze must hold against the REAL store, which is what production wires
+   * in. `getToolProgress` hands back a live store proxy, and merging a heartbeat
+   * into an entry does NOT change that proxy's identity -- so a badge that held
+   * the entry object itself would hold a reference that keeps reporting the
+   * newest value. The freeze would then read as working against fresh object
+   * literals (every test above) and do nothing at all in the app.
+   */
+  it('freezes against a live store entry, whose identity never changes', () => {
+    const store = createToolProgressStore()
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+    const [selecting, setSelecting] = createSignal(false)
+    const { container } = render(() => (
+      <ToolRunningBadge progress={() => store.get('a1', 'toolu_A')} selectionActive={selecting} />
+    ))
+    expect(container.textContent).toBe('30s')
+
+    setSelecting(true)
+    store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 60 })
+    expect(container.textContent).toBe('30s')
+
+    setSelecting(false)
+    expect(container.textContent).toBe('1m')
+  })
+
+  it('freezes a live store retry the same way', () => {
+    const store = createToolProgressStore()
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Agent', retry: RETRY })
+    const [selecting, setSelecting] = createSignal(false)
+    const { container } = render(() => (
+      <ToolRunningBadge progress={() => store.get('a1', 'toolu_A')} selectionActive={selecting} />
+    ))
+    expect(container.textContent).toBe('Retrying 2/5')
+
+    setSelecting(true)
+    store.apply('a1', { spanId: 'toolu_A', retry: { ...RETRY, attempt: 3 } })
+    expect(container.textContent).toBe('Retrying 2/5')
+
+    setSelecting(false)
+    expect(container.textContent).toBe('Retrying 3/5')
   })
 
   it('holds a badge that would have disappeared, until the selection ends', () => {
