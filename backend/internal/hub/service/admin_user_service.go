@@ -94,10 +94,14 @@ func adminUserToProto(u *store.User) *leapmuxv1.AdminUser {
 		Email:         u.Email,
 		EmailVerified: u.EmailVerified,
 		PendingEmail:  u.PendingEmail,
-		PasswordSet:   u.PasswordSet,
-		IsAdmin:       u.IsAdmin,
-		CreatedAt:     timestamppb.New(u.CreatedAt),
-		UpdatedAt:     timestamppb.New(u.UpdatedAt),
+		// The hash, for the reason userToProto states: the column is a claim,
+		// and the solo bootstrap makes it with an empty hash. An operator who
+		// lists that account reads "password_set true" for an account no
+		// password signs in to.
+		PasswordSet: password.IsUsable(u.PasswordHash),
+		IsAdmin:     u.IsAdmin,
+		CreatedAt:   timestamppb.New(u.CreatedAt),
+		UpdatedAt:   timestamppb.New(u.UpdatedAt),
 	}
 	return out
 }

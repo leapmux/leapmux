@@ -232,6 +232,8 @@ message AdminUser {
   string email = 4;
   bool email_verified = 5;
   string pending_email = 6;
+  // True when the account holds a password that can sign in. The stored hash
+  // decides it, as it does on User.password_set.
   bool password_set = 7;
   bool is_admin = 8;
   google.protobuf.Timestamp created_at = 9;

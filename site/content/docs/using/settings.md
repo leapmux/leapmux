@@ -37,7 +37,7 @@ The user categories, in navigation order:
 
 | Category | Covers |
 |---|---|
-| **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode hides every row, and the category disappears from the dialog. |
+| **Account** | Profile name, email, password, passkeys, linked accounts. The section the dialog opens on. Solo mode keeps **Password** alone and hides the other four rows. |
 | **Apps** | The apps feature in two rows: **Connected apps** (what your account authorized) and the app registrations you own. An ordinary account may register an app for itself; an administrator's registrations are visible to everybody. Both rows stay in solo mode, because a solo Hub authorizes apps like any other. See [App Authorization](/docs/admin/app-authorization/). |
 | **Appearance** | Theme (palette + light/dark), terminal theme, syntax theme, diff view, UI fonts, monospace fonts. |
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
@@ -52,11 +52,11 @@ Administrators additionally see an **ADMINISTRATION** group in the navigation, b
 
 ## Account
 
-The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides all of them but **Password**, and hides that one too until the account has a password — before then, [Network access](#network-access) sets the first one, beside the addresses it guards. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+The Account category carries your account settings, as one row per concern. It leads the navigation. Solo mode hides all of them but **Password**, which sets the `solo` account's first password as well as changes it; [Network access](#network-access) asks for that first password too, beside the addresses it guards. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
 - **Profile** — your username and display name, saved together. A username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it requires verification when the Hub has a mail relay configured (see [Email (SMTP)](#email-smtp) below); a pending change shows a notice until confirmed.
-- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts can set a first password here.
+- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and disconnects every app; your current session stays signed in. OAuth-only accounts, and the `solo` account, set their first password here.
 - **Passkeys** — the credentials registered to this account, with add, rename and remove. See [Managing passkeys in your profile](/docs/using/accounts/#managing-passkeys-in-your-profile).
 - **Linked accounts** — your linked OAuth/OIDC providers, each with an **Unlink** button. You cannot detach your only sign-in method without a password set.
 

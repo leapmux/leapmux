@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { AccountPassword } from './AccountPassword'
 
 const mockChangePassword = vi.fn()
@@ -20,6 +21,11 @@ vi.mock('~/context/AuthContext', () => ({
   }),
 }))
 
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
+
 const withPassword = {
   id: 'user-1',
   username: 'alice',
@@ -36,9 +42,14 @@ const withoutPassword = { ...withPassword, passwordSet: false }
 describe('accountPassword', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetSystemInfoMock()
     mockUser.mockReturnValue(withPassword)
     mockRefreshUser.mockResolvedValue(undefined)
     mockChangePassword.mockResolvedValue({})
+    // Restated, not merely cleared: `clearAllMocks` and `resetSystemInfoMock`
+    // both forget the CALLS and keep the implementation, so the rejecting case
+    // below would otherwise reject in every test after it.
+    mockLoadSystemInfo.mockResolvedValue(undefined)
   })
 
   // The step-up is the SESSION's elevation, proved once in the prompt, not a
@@ -109,5 +120,80 @@ describe('accountPassword', () => {
     await screen.findByText('Password changed.')
     expect(screen.getByLabelText('New Password')).toHaveValue('')
     expect(screen.getByLabelText('Confirm Password')).toHaveValue('')
+  })
+
+  /** Types a matching pair and submits, whatever the button is called. */
+  async function submit(name: 'Set Password' | 'Change Password') {
+    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.click(screen.getByRole('button', { name }))
+  }
+
+  // The first password on a solo hub arms a rule that reaches every address,
+  // and this is the one surface that can arm it from inside the app. The two
+  // others -- the setup gate and the Network access panel -- both say so.
+  it('states what the first password does on a solo hub', async () => {
+    setSystemInfoMock({ soloMode: true })
+    mockUser.mockReturnValue(withoutPassword)
+    render(() => <AccountPassword />)
+
+    expect(await screen.findByText(/asks every network address for a sign-in as “solo”/))
+      .toBeInTheDocument()
+  })
+
+  // Replacing a password changes nothing about who is asked for one, and a
+  // multi-user hub never had the rule to arm.
+  it('states nothing extra once a password exists, or off a solo hub', async () => {
+    setSystemInfoMock({ soloMode: true })
+    const { unmount } = render(() => <AccountPassword />)
+    expect(await screen.findByRole('button', { name: 'Change Password' })).toBeInTheDocument()
+    expect(screen.queryByText(/asks every network address/)).not.toBeInTheDocument()
+    unmount()
+
+    setSystemInfoMock({ soloMode: false })
+    mockUser.mockReturnValue(withoutPassword)
+    render(() => <AccountPassword />)
+    expect(await screen.findByRole('button', { name: 'Set Password' })).toBeInTheDocument()
+    expect(screen.queryByText(/asks every network address/)).not.toBeInTheDocument()
+  })
+
+  // This row sets the FIRST password on a solo hub, and the hub's own snapshot
+  // carries that fact for Administration → Network access. Leaving the
+  // snapshot stale leaves that panel offering the field, and an Apply there
+  // replaces the password this row just stored.
+  it('re-reads the hub snapshot on a solo hub', async () => {
+    setSystemInfoMock({ soloMode: true })
+    mockUser.mockReturnValue(withoutPassword)
+    render(() => <AccountPassword />)
+    await submit('Set Password')
+
+    expect(await screen.findByText('Password set.')).toBeInTheDocument()
+    expect(mockRefreshUser).toHaveBeenCalled()
+    // FORCED, or the cached snapshot answers with the state before the write.
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+  })
+
+  // A multi-user hub reports `soloPasswordSet` false whatever the account
+  // holds, so the read would cost a round trip and move nothing.
+  it('leaves the hub snapshot alone off a solo hub', async () => {
+    render(() => <AccountPassword />)
+    await submit('Change Password')
+
+    expect(await screen.findByText('Password changed.')).toBeInTheDocument()
+    expect(mockRefreshUser).toHaveBeenCalled()
+    expect(mockLoadSystemInfo).not.toHaveBeenCalled()
+  })
+
+  // The hub stored the password before either re-read ran. Reporting a failure
+  // here would tell the user to retry a write that landed -- and the retry
+  // meets the sign-in rule that the write armed.
+  it('reports the change although the snapshot re-read fails', async () => {
+    setSystemInfoMock({ soloMode: true })
+    mockLoadSystemInfo.mockRejectedValue(new Error('the hub did not answer'))
+    render(() => <AccountPassword />)
+    await submit('Change Password')
+
+    expect(await screen.findByText('Password changed.')).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to change password/)).not.toBeInTheDocument()
   })
 })

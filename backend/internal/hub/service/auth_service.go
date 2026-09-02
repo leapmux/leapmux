@@ -976,8 +976,18 @@ func userToProto(u *store.User, passkeyCount int64) *leapmuxv1.User {
 		Email:         u.Email,
 		EmailVerified: u.EmailVerified,
 		PendingEmail:  u.PendingEmail,
-		PasswordSet:   u.PasswordSet,
-		PasskeyCount:  int32(passkeyCount),
+		// The HASH, not the users.password_set column. The column is a claim
+		// the creating flow makes, and the solo bootstrap sets it true with an
+		// empty hash -- so the column reports a password on an account that
+		// cannot sign in with one. The client renders "Change Password" and
+		// "Password changed." from this field, which is exactly the sentence a
+		// solo owner must not read while setting their first one.
+		//
+		// The ADMISSION rules keep reading the column, and that is deliberate:
+		// the claim is what routes solo past the first-credential rule that no
+		// solo account could ever satisfy. See assertFirstCredentialAuthIsFresh.
+		PasswordSet:  pwdhash.IsUsable(u.PasswordHash),
+		PasskeyCount: int32(passkeyCount),
 	}
 }
 

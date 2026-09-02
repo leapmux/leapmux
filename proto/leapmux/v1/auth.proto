@@ -143,6 +143,12 @@ message User {
   bool email_verified = 6;
   string pending_email = 7;
   repeated LinkedOAuthProvider oauth_providers = 8;
+  // True when this account holds a password that can sign in.
+  //
+  // The stored hash decides it, never the users.password_set column. That
+  // column is a claim the creating flow makes, and the solo bootstrap makes
+  // it with an empty hash, so a client that read the claim would offer a
+  // solo owner "Change Password" for the first password on the hub.
   bool password_set = 9;
   int32 passkey_count = 10;
   // Whether the hub accepts a step-up from one of this account's linked
@@ -279,10 +285,11 @@ message GetSystemInfoResponse {
   // mode only; false on a multi-user hub, where each account answers for
   // itself.
   //
-  // Frontend restriction: the Account section's Password row appears on a
-  // solo hub only once this is true. Before that the Network access panel
-  // owns setting the first password, so the two surfaces never offer the
-  // same field at the same time.
+  // Frontend restriction: the Network access panel asks for a password
+  // beside the addresses it guards while this is false, and points at
+  // Account → Password once it is true. It answers for the HUB -- whether a
+  // network address can be signed in to at all, which is the question that
+  // panel asks. An account's own password is User.password_set.
   bool solo_password_set = 19;
 }
 

@@ -21,7 +21,7 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 
 In **solo mode** there is nothing to sign up for, and nothing to sign out of until the `solo` account has a password. While it has none, `/login` and `/signup` redirect you straight into the app. Solo mode disables most account actions: it refuses a change to your profile or your email, and it refuses to detach an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
-**Password is the exception.** Setting one is what lets the Hub answer on a network address, so **Preferences → Administration → Network access** offers the first password beside the addresses it guards, and **Preferences → Account → Password** changes it afterwards. See [Network access](/docs/admin/configuration/#network-access).
+**Password is the exception.** **Preferences → Account → Password** is the one account row solo mode keeps, and it both sets the account's first password and changes it afterwards. Setting one is also what lets the Hub answer on a network address, so **Preferences → Administration → Network access** asks for that first password as well, beside the addresses it guards. See [Network access](/docs/admin/configuration/#network-access).
 
 {{< callout type="info" >}}
 While the `solo` account has no password, solo mode authenticates *every* request as the admin. If the Hub answers on a non-loopback address in that state, anyone who can reach the port has full admin access without credentials, and LeapMux warns you about it at startup. Set the password: every network address then asks for it, `127.0.0.1` included. For a multi-user deployment, run `leapmux hub` (or `leapmux dev`). See [Security & Threat Model](/docs/admin/security/).
