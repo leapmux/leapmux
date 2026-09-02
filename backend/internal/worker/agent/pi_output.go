@@ -190,6 +190,10 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// really ends measures from the zero time and reports no duration at all.
 	startedAt := a.turnStartedAt
 	if !env.WillRetry {
+		// turnToolUses is write-only state for Pi: nothing enriches agent_end
+		// with num_tool_uses, so the turn-end event leaves the count unset and
+		// the frontend rings even for a turn that used no tool.
+		// https://github.com/leapmux/leapmux/issues/435
 		a.turnToolUses = 0
 		a.turnStartedAt = time.Time{}
 	}
