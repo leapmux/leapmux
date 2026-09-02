@@ -71,6 +71,32 @@ export const SHARED_ICON_FILES = [
 export const ICO_FILE = 'icon.ico'
 export const ICO_SIZE = 256
 
+// The tray / menu-bar icons.
+//
+// They are NOT bundler icons and must never join the two lists above or
+// `bundle.icon` in either config. The binary embeds them with
+// `tauri::include_image!`, which decodes the PNG at compile time, so
+// tauri-bundler never sees them -- and a tray PNG that reached the Linux
+// bundler would install into the hicolor theme as if it were the app icon.
+//
+// Each entry states its size, because these names do not carry one: the
+// `<width>x<height>[@2x].png` form that `pixelSize` parses states a LOGICAL
+// size and a density, and a status icon has neither. The platform decides how
+// large it draws the image.
+//
+// `source` picks which SVG renders it. macOS needs the monochrome template
+// (see icons/leapmux-icon-mono.svg); the Linux panel and the Windows
+// notification area draw the app's own colours.
+export const TRAY_ICON_FILES = [
+  // Windows draws the notification area at SM_CXSMICON -- 16 pixels at 100% DPI
+  // and 32 at 200% -- and the Linux appindicator panel typically at 22 to 24.
+  // 32 covers the largest of those without an upscale.
+  { name: 'tray.png', size: 32, source: 'colour' },
+  // macOS: tray-icon forces the status image to 18 points, so 36 pixels is
+  // exactly @2x and nothing is resampled on a Retina display.
+  { name: 'tray-template.png', size: 36, source: 'template' },
+]
+
 const ICON_NAME_PATTERN = /^(\d+)x(\d+)(@2x)?\.png$/
 
 // Returns the physical pixel size that `name` states. `128x128@2x.png` is 256

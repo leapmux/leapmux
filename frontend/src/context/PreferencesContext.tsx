@@ -5,6 +5,14 @@ import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
+import {
+  START_MINIMIZED_MINIMIZED,
+  START_MINIMIZED_WINDOW,
+  TRAY_ON_CLOSE_QUIT,
+  TRAY_ON_CLOSE_TRAY,
+  TRAY_ON_MINIMIZE_TASKBAR,
+  TRAY_ON_MINIMIZE_TRAY,
+} from '~/generated/contracts/desktop'
 import { NAME_BYTE_LIMIT } from '~/generated/contracts/validate'
 import {
   batchBrowserPrefWrites,
@@ -53,6 +61,20 @@ export type DiffViewPreference = 'unified' | 'split'
 export type TurnEndSoundPreference = 'none' | 'ding-dong'
 
 /**
+ * The three Desktop enums, DERIVED from the generated tokens rather than
+ * retyped.
+ *
+ * The emitted constants carry `as const`, so `typeof X` is the literal type. A
+ * token renamed in contracts/desktop.json therefore fails the type check here,
+ * where a hand-written union would keep compiling and quietly narrow to a value
+ * the hub no longer sends. These are the one setting family a third language
+ * (the Rust shell) also spells, which is why they are contract-backed at all.
+ */
+export type TrayOnClosePreference = typeof TRAY_ON_CLOSE_TRAY | typeof TRAY_ON_CLOSE_QUIT
+export type TrayOnMinimizePreference = typeof TRAY_ON_MINIMIZE_TRAY | typeof TRAY_ON_MINIMIZE_TASKBAR
+export type StartMinimizedPreference = typeof START_MINIMIZED_WINDOW | typeof START_MINIMIZED_MINIMIZED
+
+/**
  * One font-family tier: the enable switch plus the ordered stack. Mirrors the
  * backend's `FontFamilyValue` (usersettings keys `ui_fonts` / `mono_fonts`)
  * exactly — the whole object is the override unit on both tiers, because
@@ -85,6 +107,16 @@ export interface PreferencesState {
   turnEndSoundVolume: () => number
   /** Resolved debug logging preference. */
   debugLogging: () => boolean
+  /** Resolved "show a tray / menu-bar icon" preference (desktop app only). */
+  trayEnabled: () => boolean
+  /** Resolved action for closing the window (desktop app only). */
+  trayOnClose: () => TrayOnClosePreference
+  /** Resolved action for minimizing the window (desktop app only). */
+  trayOnMinimize: () => TrayOnMinimizePreference
+  /** Resolved "start at login" preference (desktop app only). */
+  startOnLogin: () => boolean
+  /** Resolved window state for a login launch (desktop app only). */
+  startMinimized: () => StartMinimizedPreference
   /** Whether thinking/reasoning bubbles should start expanded. */
   expandAgentThoughts: () => boolean
   setExpandAgentThoughts: (value: boolean) => void
@@ -149,6 +181,11 @@ export interface PreferencesState {
     turnEndSound: DualPreference<TurnEndSoundPreference>
     turnEndSoundVolume: DualPreference<number>
     debugLogging: DualPreference<boolean>
+    trayEnabled: DualPreference<boolean>
+    trayOnClose: DualPreference<TrayOnClosePreference>
+    trayOnMinimize: DualPreference<TrayOnMinimizePreference>
+    startOnLogin: DualPreference<boolean>
+    startMinimized: DualPreference<StartMinimizedPreference>
   }
 
   /** Which account keys carry a stored (customized) value, by proto key. */
@@ -417,7 +454,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * ONE registry rather than one array per purpose. Seeding an account,
    * following another tab and returning to the defaults are three passes over
    * the same set, and a second array is a set a signal can be missing from: the
-   * cross-tab pass covered the nine dual settings alone, so a diff view or an
+   * cross-tab pass covered the dual settings alone, so a diff view or an
    * Enter-key mode changed next door did not follow, and neither did the two
    * preferences that live in a key of their own.
    */
@@ -793,7 +830,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // A VALUE comparator, not the default reference one. Every device-tier
     // parse builds a fresh object, so an unchanged field still reads as a new
     // value: one unrelated preference written in another tab would notify all
-    // nine dual settings and repaint the whole palette. The values all come
+    // every dual setting and repaint the whole palette. The values all come
     // from JSON and each parse builds a fixed key order, so serializing is an
     // exact comparison here.
     const [browser, setSignal] = createSignal<T | null>(null, {
@@ -905,6 +942,45 @@ export const PreferencesProvider: ParentComponent = (props) => {
       browserPrefKey: 'debugLogging',
       fallback: false,
       parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+    }),
+    // The Desktop tier. Each `parse` is at least as strict as the hub's
+    // validator (usersettings/keys.go), and both sides read the SAME generated
+    // tokens, so the two cannot drift. A hand-edited localStorage document
+    // therefore cannot put a value on screen -- or into a set_desktop_behavior
+    // payload -- that the hub or the Rust shell would refuse.
+    //
+    // No `onBrowserWrite` on any of them: that hook fires on a DEVICE write
+    // only, and the push to the shell has to happen on an account write too.
+    // `useDesktopWindowBehavior` watches the resolved values instead.
+    trayEnabled: createDualSetting<boolean>({
+      protoKey: 'tray_enabled',
+      browserPrefKey: 'trayEnabled',
+      fallback: false,
+      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+    }),
+    trayOnClose: createDualSetting<TrayOnClosePreference>({
+      protoKey: 'tray_on_close',
+      browserPrefKey: 'trayOnClose',
+      fallback: TRAY_ON_CLOSE_TRAY,
+      parse: oneOf(TRAY_ON_CLOSE_TRAY, TRAY_ON_CLOSE_QUIT),
+    }),
+    trayOnMinimize: createDualSetting<TrayOnMinimizePreference>({
+      protoKey: 'tray_on_minimize',
+      browserPrefKey: 'trayOnMinimize',
+      fallback: TRAY_ON_MINIMIZE_TASKBAR,
+      parse: oneOf(TRAY_ON_MINIMIZE_TRAY, TRAY_ON_MINIMIZE_TASKBAR),
+    }),
+    startOnLogin: createDualSetting<boolean>({
+      protoKey: 'start_on_login',
+      browserPrefKey: 'startOnLogin',
+      fallback: false,
+      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+    }),
+    startMinimized: createDualSetting<StartMinimizedPreference>({
+      protoKey: 'start_minimized',
+      browserPrefKey: 'startMinimized',
+      fallback: START_MINIMIZED_WINDOW,
+      parse: oneOf(START_MINIMIZED_WINDOW, START_MINIMIZED_MINIMIZED),
     }),
   }
 
@@ -1091,6 +1167,11 @@ export const PreferencesProvider: ParentComponent = (props) => {
       turnEndSound: dualSettings.turnEndSound.resolved,
       turnEndSoundVolume: dualSettings.turnEndSoundVolume.resolved,
       debugLogging: dualSettings.debugLogging.resolved,
+      trayEnabled: dualSettings.trayEnabled.resolved,
+      trayOnClose: dualSettings.trayOnClose.resolved,
+      trayOnMinimize: dualSettings.trayOnMinimize.resolved,
+      startOnLogin: dualSettings.startOnLogin.resolved,
+      startMinimized: dualSettings.startMinimized.resolved,
 
       // Derived from the same record the settings are built from, so a
       // tier this literal could forget to wire cannot exist.

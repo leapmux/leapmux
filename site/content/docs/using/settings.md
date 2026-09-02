@@ -1,6 +1,6 @@
 ---
 title: "Settings & Preferences"
-description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Files & Editors, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
+description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Desktop, Files & Editors, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
 type: docs
 weight: 10
 ---
@@ -43,6 +43,7 @@ The user categories, in navigation order:
 | **Notifications** | Turn-end sound and volume, terminal OS notifications. |
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
 | **Terminal** | Terminal renderer. |
+| **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
 | **Files & Editors** | Preferred editor (desktop), reveal after download (desktop), hidden files in directory picker. |
 | **Keyboard Shortcuts** | The keybinding editor (see below). |
 | **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
@@ -163,6 +164,44 @@ Per-device toggles for the chat surface. The in-context controls — the tab-bar
 |---|---|---|
 | **Terminal renderer** | Auto | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
 
+## Desktop
+
+The **Desktop** category appears in the desktop app only. A browser has no tray, no menu bar item and no login items, so the whole category disappears from the dialog there.
+
+Every row is a dual-tier setting: the account default follows you to each machine you sign in on, and any machine can override it.
+
+### Tray icon
+
+On Linux and Windows this row is **Tray icon** and the icon sits in the system tray. On macOS it is **Menu bar icon** and the icon sits in the menu bar. Turn it on to keep LeapMux available when no window is open. The built-in default is **off**.
+
+The next two rows apply only while this one is on, so the dialog hides them while the tray is off on both tiers.
+
+{{< callout type="info" >}}
+On Linux the tray needs a status-icon library (`libayatana-appindicator3`). The `.deb` package recommends it rather than requiring it, because many desktop environments have no tray at all. Where the library is absent LeapMux reports that it could not create the icon, and no window is ever hidden — closing and minimizing keep their ordinary behaviour.
+{{< /callout >}}
+
+### When you close the window
+
+What LeapMux does when you close the last window: **Hide to the tray** (**Hide to the menu bar** on macOS), or **Quit LeapMux**. The built-in default is to hide to the tray.
+
+### When you minimize the window
+
+What LeapMux does when you minimize a window: **Hide to the tray** (**Hide to the menu bar** on macOS), or **Keep in the taskbar** (**Keep in the Dock** on macOS). The built-in default keeps it in the taskbar.
+
+On macOS the window plays its minimize animation into the Dock before the tile disappears. macOS gives an application no way to intercept a minimize before it happens, so this is the same behaviour every Mac app with this feature shows.
+
+### Start at login
+
+Registers LeapMux with your operating system's login items, so it starts when you sign in to the computer. Off by default. Some systems ask you to approve the login item the first time.
+
+### Window at login
+
+Applies to the **login launch only** — starting LeapMux yourself always shows a window. **Show the window** is the built-in default. **Hide the window** starts LeapMux in the tray (menu bar) when the tray icon is on, and starts it minimized when the tray icon is off. The dialog hides this row while **Start at login** is off on both tiers.
+
+{{< callout type="info" >}}
+The desktop app has to decide the window state before it can read your preferences, so it keeps a copy of the tray and login-launch settings on the machine. The copy is rewritten whenever a setting changes, and your account stays the source of truth. It belongs to the operating-system user rather than to a LeapMux account, so a machine that two LeapMux accounts sign in on starts with the settings of whichever signed in last. A change made on another device reaches this machine when you next sign in there, so one launch can still follow the previous choice.
+{{< /callout >}}
+
 ## Files & Editors
 
 Per-device toggles for files and external editors. As with the chat toggles, the in-context controls — the editor menu on **Open in …**, the file viewer's save action, the directory picker — change the same stored value as these rows.
@@ -276,6 +315,11 @@ Device override (if set)  →  Account default  →  built-in default
 | Turn-end sound | Ding dong |
 | Turn-end volume | 100% |
 | Debug logging | Off |
+| Tray / menu bar icon | Off |
+| When you close the window | Hide to the tray |
+| When you minimize the window | Keep in the taskbar |
+| Start at login | Off |
+| Window at login | Show the window |
 | Custom UI / monospace fonts | Off (empty) |
 | Keybinding overrides | None |
 

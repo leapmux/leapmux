@@ -23,6 +23,7 @@
       },
       "deb": {
         "desktopTemplate": "desktop-template.desktop",
+        "recommends": ["libayatana-appindicator3-1"],
         "files": {
           "/usr/bin/leapmux": "../../leapmux"
         }

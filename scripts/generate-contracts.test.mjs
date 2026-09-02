@@ -32,7 +32,10 @@ import {
   checkWorkerVocab,
   ContractError,
   deriveWire,
+  DESKTOP_GO_BEHAVIOR_NAMES,
+  DESKTOP_RS_BEHAVIOR_NAMES,
   DESKTOP_RS_MACOS_ONLY_EVENTS,
+  DESKTOP_TS_BEHAVIOR_NAMES,
   emitGoDesktop,
   emitGoHeaders,
   emitGoRetry,
@@ -901,6 +904,34 @@ describe('checkSessionInfo', () => {
 })
 
 describe('checkWorkerVocab / checkDesktop', () => {
+  // A valid windowBehavior block, spread into every negative desktop fixture
+  // below so each one fails for the reason it names. Without it a fixture
+  // reaches `Object.keys(undefined)` the moment a check is reordered, and the
+  // test would then pass on a TypeError rather than on the ContractError it
+  // asserts.
+  const behavior = () => ({
+    trayOnCloseTray: 'tray',
+    trayOnCloseQuit: 'quit',
+    trayOnMinimizeTray: 'tray',
+    trayOnMinimizeTaskbar: 'taskbar',
+    startMinimizedWindow: 'window',
+    startMinimizedMinimized: 'minimized',
+  })
+
+  // A COMPLETE event set, for a fixture whose asserted failure lies past the
+  // tauriEvents coverage check. The abbreviated four-event literals below
+  // predate that check and survive only because their own failure fires
+  // first.
+  const events = () => ({
+    channelMessage: 'c:m',
+    channelClose: 'c:c',
+    userEventsMessage: 'u:m',
+    userEventsClose: 'u:c',
+    sidecarLog: 's:l',
+    menuShowAbout: 'm:a',
+    menuShowPreferences: 'm:p',
+  })
+
   it('accepts the shipped contracts', () => {
     const v = readContract('worker-vocab')
     const d = readContract('desktop')
@@ -955,6 +986,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: { channelMessage: 'same:event', channelClose: 'same:event', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+      windowBehavior: behavior(),
     }), 'share one name')
   })
 
@@ -962,11 +994,18 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', extra: 'C_Z' },
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+      windowBehavior: behavior(),
     }), 'has no DESKTOP_GO_ENV_NAMES entry')
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
+      windowBehavior: behavior(),
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+      tauriEvents: events(),
+      windowBehavior: { ...behavior(), extra: 'x' },
+    }), 'has no DESKTOP_GO_BEHAVIOR_NAMES entry')
   })
 
   it('rejects a macOS-only event key that no name table carries', () => {
@@ -977,11 +1016,31 @@ describe('checkWorkerVocab / checkDesktop', () => {
       expectContractError(() => checkDesktop({
         envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
         tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+        windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
     }
     finally {
       DESKTOP_RS_MACOS_ONLY_EVENTS.delete('noSuchEvent')
     }
+  })
+
+  it('rejects one setting whose two tokens are the same string', () => {
+    // A setting with one token offers no choice: the pill group would render
+    // two options that store the same value.
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y' },
+      tauriEvents: events(),
+      windowBehavior: { ...behavior(), trayOnCloseQuit: 'tray' },
+    }), 'tray_on_close declares one token twice')
+  })
+
+  it('accepts one token shared by two DIFFERENT settings', () => {
+    // `tray` names both close-to-tray and minimize-to-tray in the shipped
+    // contract. A uniqueness check across the whole block -- the obvious
+    // reading of the rule above -- would refuse it.
+    const d = readContract('desktop')
+    expect(d.windowBehavior.trayOnCloseTray).toBe(d.windowBehavior.trayOnMinimizeTray)
+    expect(() => checkDesktop(d)).not.toThrow()
   })
 
   it('emits the Rust module without inner doc comments (include! cannot take them)', () => {
@@ -999,6 +1058,33 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const d = readContract('desktop')
     expect(emitGoDesktop(d)).toContain(`const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}`)
     expect(emitRsDesktop(d)).toContain(`pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};`)
+  })
+
+  it('emits the window-behaviour tokens to all three languages from one contract value', () => {
+    // These are the one setting family a THIRD language spells, so the three
+    // emissions are what keeps the hub's validator, the webview's parse and
+    // the shell's match on the same strings.
+    const d = readContract('desktop')
+    const go = emitGoDesktop(d)
+    const ts = emitTsDesktop(d)
+    const rs = emitRsDesktop(d)
+    for (const [key, token] of Object.entries(d.windowBehavior)) {
+      // goConstBlock pads the names into a column, so match the separator
+      // loosely rather than pinning the alignment.
+      expect(go).toMatch(new RegExp(`${DESKTOP_GO_BEHAVIOR_NAMES[key]} += "${token}"`))
+      expect(ts).toContain(`export const ${DESKTOP_TS_BEHAVIOR_NAMES[key]} = "${token}" as const`)
+      expect(rs).toContain(`pub const ${DESKTOP_RS_BEHAVIOR_NAMES[key]}: &str = "${token}";`)
+    }
+  })
+
+  it('gives every window-behaviour key a distinct name in each language', () => {
+    // A duplicated table entry would emit one constant twice and leave the
+    // other token with no name at all -- the failure the coverage check
+    // cannot see, because both keys are present.
+    for (const table of [DESKTOP_GO_BEHAVIOR_NAMES, DESKTOP_RS_BEHAVIOR_NAMES, DESKTOP_TS_BEHAVIOR_NAMES]) {
+      const names = Object.values(table)
+      expect(new Set(names).size).toBe(names.length)
+    }
   })
 })
 

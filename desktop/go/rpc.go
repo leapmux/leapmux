@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 
 	"github.com/leapmux/leapmux/util/drain"
@@ -427,6 +428,22 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 			Result: &desktoppb.Response_SetWindowSize{SetWindowSize: &desktoppb.SetWindowSizeResponse{}},
 		})
 
+	case *desktoppb.Request_SetDesktopBehavior:
+		err := s.app.SetDesktopBehavior(
+			m.SetDesktopBehavior.TrayEnabled,
+			trayOnCloseFromProto(m.SetDesktopBehavior.TrayOnClose),
+			trayOnMinimizeFromProto(m.SetDesktopBehavior.TrayOnMinimize),
+			startMinimizedFromProto(m.SetDesktopBehavior.StartMinimized),
+		)
+		if err != nil {
+			s.writeError(id, err)
+			return
+		}
+		s.writeResponse(&desktoppb.Response{
+			Id:     id,
+			Result: &desktoppb.Response_SetDesktopBehavior{SetDesktopBehavior: &desktoppb.SetDesktopBehaviorResponse{}},
+		})
+
 	case *desktoppb.Request_GetBuildInfo:
 		s.writeResponse(&desktoppb.Response{
 			Id: id,
@@ -646,12 +663,65 @@ func (s *RPCSession) writeLifecycleResult(id uint64, outcome lifecycleOutcome) {
 
 func configToProto(cfg *DesktopConfig) *desktoppb.DesktopConfig {
 	return &desktoppb.DesktopConfig{
-		Mode:         cfg.Mode,
-		HubUrl:       cfg.HubURL,
-		WindowWidth:  int32(cfg.WindowWidth),
-		WindowHeight: int32(cfg.WindowHeight),
-		WindowMode:   windowModeToProto(cfg.WindowMode),
+		Mode:           cfg.Mode,
+		HubUrl:         cfg.HubURL,
+		WindowWidth:    int32(cfg.WindowWidth),
+		WindowHeight:   int32(cfg.WindowHeight),
+		WindowMode:     windowModeToProto(cfg.WindowMode),
+		TrayEnabled:    cfg.TrayEnabled,
+		TrayOnClose:    trayOnCloseToProto(cfg.TrayOnClose),
+		TrayOnMinimize: trayOnMinimizeToProto(cfg.TrayOnMinimize),
+		StartMinimized: startMinimizedToProto(cfg.StartMinimized),
 	}
+}
+
+// The window-behaviour bridges between the config's string tokens (which the
+// account setting and the webview also use, from contracts/desktop.json) and
+// the wire enums. Each pair follows windowMode{To,From}Proto above: an empty or
+// unknown value becomes that setting's documented default, so a config written
+// before these fields existed reads as the built-in defaults rather than as a
+// third state.
+
+func trayOnCloseToProto(v string) desktoppb.TrayOnClose {
+	if v == contracts.TrayOnCloseQuit {
+		return desktoppb.TrayOnClose_TRAY_ON_CLOSE_QUIT
+	}
+	return desktoppb.TrayOnClose_TRAY_ON_CLOSE_TRAY
+}
+
+func trayOnCloseFromProto(v desktoppb.TrayOnClose) string {
+	if v == desktoppb.TrayOnClose_TRAY_ON_CLOSE_QUIT {
+		return contracts.TrayOnCloseQuit
+	}
+	return contracts.TrayOnCloseTray
+}
+
+func trayOnMinimizeToProto(v string) desktoppb.TrayOnMinimize {
+	if v == contracts.TrayOnMinimizeTray {
+		return desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TRAY
+	}
+	return desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TASKBAR
+}
+
+func trayOnMinimizeFromProto(v desktoppb.TrayOnMinimize) string {
+	if v == desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TRAY {
+		return contracts.TrayOnMinimizeTray
+	}
+	return contracts.TrayOnMinimizeTaskbar
+}
+
+func startMinimizedToProto(v string) desktoppb.StartMinimized {
+	if v == contracts.StartMinimizedMinimized {
+		return desktoppb.StartMinimized_START_MINIMIZED_MINIMIZED
+	}
+	return desktoppb.StartMinimized_START_MINIMIZED_WINDOW
+}
+
+func startMinimizedFromProto(v desktoppb.StartMinimized) string {
+	if v == desktoppb.StartMinimized_START_MINIMIZED_MINIMIZED {
+		return contracts.StartMinimizedMinimized
+	}
+	return contracts.StartMinimizedWindow
 }
 
 // windowModeToProto maps the config's string window mode onto the wire enum.

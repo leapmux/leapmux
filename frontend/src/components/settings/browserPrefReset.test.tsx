@@ -50,7 +50,14 @@ describe('browserPrefReset', () => {
     ctx.get().setExpandAgentThoughts(false) // default-on opt-out
     ctx.get().setShowHiddenMessages(true) // default-off opt-in
     ctx.get().setPreferredEditorId('zed') // nullable, own key
+    // A Desktop override too. These rows are hidden outside the desktop app,
+    // but "Reset overrides" clears them all the same -- the reset walks the
+    // registry rather than the visible rows, so a preference set on a desktop
+    // install and then reset from a browser must still go.
+    ctx.get().dual.trayEnabled.setBrowser(true)
+    ctx.get().dual.trayOnClose.setBrowser('quit')
     expect(loadBrowserPrefs().theme).toEqual({ name: 'nord', mode: 'dark' })
+    expect(loadBrowserPrefs().trayOnClose).toBe('quit')
 
     for (const action of buildBrowserReset(ctx.get()))
       action.reset()
@@ -60,6 +67,8 @@ describe('browserPrefReset', () => {
     expect('theme' in loadBrowserPrefs()).toBe(false)
     expect('expandAgentThoughts' in loadBrowserPrefs()).toBe(false)
     expect('showHiddenMessages' in loadBrowserPrefs()).toBe(false)
+    expect('trayEnabled' in loadBrowserPrefs()).toBe(false)
+    expect('trayOnClose' in loadBrowserPrefs()).toBe(false)
     expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBeUndefined()
 
     // The signals fall back to their defaults.
@@ -67,6 +76,8 @@ describe('browserPrefReset', () => {
     expect(ctx.get().expandAgentThoughts()).toBe(true)
     expect(ctx.get().showHiddenMessages()).toBe(false)
     expect(ctx.get().preferredEditorId()).toBeUndefined()
+    expect(ctx.get().trayEnabled()).toBe(false)
+    expect(ctx.get().trayOnClose()).toBe('tray')
 
     // The consolidated blob itself survives (other fields would be kept).
     expect(localStorageGet(KEY_BROWSER_PREFS)).toBeDefined()

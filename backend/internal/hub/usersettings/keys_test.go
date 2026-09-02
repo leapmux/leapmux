@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
@@ -349,4 +350,47 @@ func TestFontFamilyCapsOneNameBeforeItEchoesIt(t *testing.T) {
 			Enabled: true, Fonts: []string{strings.Repeat("一", 43)},
 		}), "43 CJK characters is 129 bytes")
 	})
+}
+
+// TestDesktopEnumTokensComeFromTheContract is the tripwire for someone
+// retyping a token as a Go literal.
+//
+// These three keys are the ONE family whose values a third language spells:
+// the Rust shell matches them out of the set_desktop_behavior payload. If the
+// catalogue here drifted from contracts/desktop.json, the hub would store a
+// value the shell refuses and the preference would silently do nothing --
+// which is precisely the failure the contract exists to prevent, and which no
+// other test in this package can see.
+func TestDesktopEnumTokensComeFromTheContract(t *testing.T) {
+	for _, tc := range []struct {
+		key      settings.Descriptor
+		def      string
+		expected []string
+	}{
+		{KeyTrayOnClose, contracts.TrayOnCloseTray, []string{contracts.TrayOnCloseTray, contracts.TrayOnCloseQuit}},
+		{KeyTrayOnMinimize, contracts.TrayOnMinimizeTaskbar, []string{contracts.TrayOnMinimizeTray, contracts.TrayOnMinimizeTaskbar}},
+		{KeyStartMinimized, contracts.StartMinimizedWindow, []string{contracts.StartMinimizedWindow, contracts.StartMinimizedMinimized}},
+	} {
+		t.Run(tc.key.Name(), func(t *testing.T) {
+			assert.Equal(t, tc.def, tc.key.Default(), "the default must be a generated constant")
+
+			fields := tc.key.UI().Fields
+			require.Len(t, fields, 1)
+			got := make([]string, 0, len(fields[0].EnumValues))
+			for _, ev := range fields[0].EnumValues {
+				got = append(got, ev.Value)
+			}
+			// The ORDER matters as well as the set: the dialog renders the
+			// pills in the order the wire declares them.
+			assert.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+// TestDesktopBoolKeysDefaultOff pins two product decisions the type system
+// cannot: a tray icon and a login item are both opt-in, so a user who never
+// opens the Desktop section gets neither.
+func TestDesktopBoolKeysDefaultOff(t *testing.T) {
+	assert.Equal(t, false, KeyTrayEnabled.Default())
+	assert.Equal(t, false, KeyStartOnLogin.Default())
 }

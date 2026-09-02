@@ -51,6 +51,9 @@ message Request {
     // tunnels relaying (or their cached channels reusable) under the old
     // identity -- the sidecar has no identity of its own to key that on.
     ResetTunnelsRequest reset_tunnels = 34;
+    // Cache the resolved Desktop preferences on this device. See
+    // SetDesktopBehaviorRequest below for why the shell needs a copy at all.
+    SetDesktopBehaviorRequest set_desktop_behavior = 35;
   }
 }
 
@@ -143,6 +146,24 @@ message SetWindowSizeRequest {
   WindowMode mode = 3;
 }
 
+// SetDesktopBehavior caches the resolved Desktop account preferences on this
+// device. The shell must decide tray creation and the initial window state
+// BEFORE the webview exists, and it can read neither the browser's storage nor
+// the account blob at that point -- so the webview pushes the resolved values
+// down and the sidecar keeps them beside the window geometry.
+//
+// The cache flows ONE WAY. The account setting is the source of truth and
+// every push rewrites the whole set; nothing here is ever read back into a
+// preference. `start_on_login` is deliberately absent: the operating system's
+// login-item registration is that setting's state, the shell never needs to
+// read it back, and a copy would be a second authority over a fact the OS owns.
+message SetDesktopBehaviorRequest {
+  bool tray_enabled = 1;
+  TrayOnClose tray_on_close = 2;
+  TrayOnMinimize tray_on_minimize = 3;
+  StartMinimized start_minimized = 4;
+}
+
 message ConnectDistributedRequest {
   string hub_url = 1;
 }
@@ -190,6 +211,7 @@ message Response {
     ListEditorsResponse list_editors = 20;
     CliPathStatusResponse cli_path_status = 21;
     CliInstallSymlinkResponse cli_install_symlink = 22;
+    SetDesktopBehaviorResponse set_desktop_behavior = 23;
   }
 }
 
@@ -246,6 +268,7 @@ message CliInstallSymlinkResponse {
 }
 
 message SetWindowSizeResponse {}
+message SetDesktopBehaviorResponse {}
 message BoolValue { bool value = 1; }
 message LifecycleResult {
   SidecarInfo sidecar_info = 1;
@@ -362,12 +385,51 @@ enum WindowMode {
   WINDOW_MODE_FULLSCREEN = 3;
 }
 
+// The three Desktop window-behaviour choices, as the device cache stores them.
+// Each UNSPECIFIED maps to that setting's documented default, exactly the way
+// WINDOW_MODE_UNSPECIFIED maps to NORMAL, so a config written before this
+// change -- or by a shell that never pushed -- reads as the built-in default
+// rather than as a third state. The string tokens the account setting and the
+// webview use live in contracts/desktop.json; these enums are the Rust<->Go
+// spelling and the two are bridged in rpc.go and in the shell.
+enum TrayOnClose {
+  TRAY_ON_CLOSE_UNSPECIFIED = 0; // treated as TRAY
+  TRAY_ON_CLOSE_TRAY = 1;
+  TRAY_ON_CLOSE_QUIT = 2;
+}
+
+enum TrayOnMinimize {
+  TRAY_ON_MINIMIZE_UNSPECIFIED = 0; // treated as TASKBAR
+  TRAY_ON_MINIMIZE_TRAY = 1;
+  TRAY_ON_MINIMIZE_TASKBAR = 2;
+}
+
+enum StartMinimized {
+  START_MINIMIZED_UNSPECIFIED = 0; // treated as WINDOW
+  START_MINIMIZED_WINDOW = 1;
+  START_MINIMIZED_MINIMIZED = 2;
+}
+
 message DesktopConfig {
   string mode = 1;
   string hub_url = 2;
   int32 window_width = 3;
   int32 window_height = 4;
   WindowMode window_mode = 5;
+  // The device-local cache of the Desktop preferences. See
+  // SetDesktopBehaviorRequest for the direction of flow and for why
+  // start_on_login is not among them.
+  //
+  // The cache belongs to the OPERATING-SYSTEM user, while the preference
+  // belongs to a LeapMux account. A machine that two accounts sign in on holds
+  // whichever signed in last, so its next login launch follows that account's
+  // choice. Keying the cache by account is not possible: the shell reads it
+  // before it knows who will sign in, which is the whole reason the cache
+  // exists.
+  bool tray_enabled = 6;
+  TrayOnClose tray_on_close = 7;
+  TrayOnMinimize tray_on_minimize = 8;
+  StartMinimized start_minimized = 9;
 }
 
 message BuildInfo {

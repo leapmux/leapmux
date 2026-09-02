@@ -29,6 +29,11 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   { id: 'notifications', title: 'Notifications', category: 'notifications', admin: false },
   { id: 'chat', title: 'Chat & Composer', category: 'chat', admin: false },
   { id: 'terminal', title: 'Terminal', category: 'terminal', admin: false },
+  // The tray / menu-bar icon, what a close and a minimize do, and the login
+  // launch. Every row carries `hidden: () => !isDesktopApp()`, so
+  // `occupiedNavGroups` drops the whole section in a browser -- the group
+  // needs no visibility rule of its own.
+  { id: 'desktop', title: 'Desktop', category: 'desktop', admin: false },
   { id: 'files', title: 'Files & Editors', category: 'files', admin: false },
   { id: 'shortcuts', title: 'Keyboard Shortcuts', category: 'shortcuts', admin: false },
   { id: 'advanced', title: 'Advanced', category: 'advanced', admin: false },

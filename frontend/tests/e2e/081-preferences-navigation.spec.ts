@@ -132,4 +132,28 @@ test.describe('Preferences navigation', () => {
     await search.press('Escape')
     await expect(dialog).toBeHidden()
   })
+
+  // The Desktop rows are hidden by `isDesktopApp()`, and the section is
+  // supposed to disappear WITH them -- `occupiedNavGroups` drops a group whose
+  // rows are all hidden. That chain is asserted in unit tests against the same
+  // derivation the dialog renders; this pins it against the real dialog, which
+  // is the one thing a unit test cannot do.
+  //
+  // A browser is the only environment this suite can produce: it never
+  // launches the Tauri shell, and faking `__TAURI_INTERNALS__` would send the
+  // app into its desktop launcher with no Preferences dialog at all. So the
+  // POSITIVE case (the section appearing in the desktop app) is verified by
+  // hand, and this covers the half that is reachable.
+  test('shows no Desktop section, and no desktop rows in search, in a browser', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+    const dialog = await openSettingsAt(page, 'appearance')
+
+    await expect(dialog.getByTestId('preferences-nav-desktop')).toHaveCount(0)
+
+    // The search index is built from the same filtered rows, so a row that
+    // leaked into search but not the panel would surface here.
+    await dialog.getByTestId('preferences-search').fill('tray')
+    await expect(dialog.locator('[data-setting-id^="desktop."]')).toHaveCount(0)
+  })
 })

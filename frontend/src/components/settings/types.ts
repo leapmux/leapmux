@@ -200,7 +200,7 @@ export interface SettingRowModel {
   binding: SettingBinding
 }
 
-export type CategoryId = 'appearance' | 'notifications' | 'chat' | 'terminal' | 'files' | 'shortcuts' | 'advanced' | 'account' | 'general' | 'signup' | 'email' | 'captcha' | 'rate-limits' | 'limits' | 'apps'
+export type CategoryId = 'appearance' | 'notifications' | 'chat' | 'terminal' | 'desktop' | 'files' | 'shortcuts' | 'advanced' | 'account' | 'general' | 'signup' | 'email' | 'captcha' | 'rate-limits' | 'limits' | 'apps'
 
 /** A component rendering the whole-setting editor for a CustomEditorId. */
 export type CustomEditorComponent = Component<Record<string, never>>

@@ -158,8 +158,9 @@ func clonePtr[T any](p *T) *T {
 type UIMeta struct {
 	// Category is one of "general", "signup", "email", "captcha",
 	// "rate-limits", "limits" (instance scope) or "appearance",
-	// "notifications", "shortcuts" (user scope). "advanced" is declared in
-	// BOTH scopes, and the dialog renders one navigation group per scope.
+	// "notifications", "shortcuts", "desktop" (user scope). "advanced" is
+	// declared in BOTH scopes, and the dialog renders one navigation group per
+	// scope.
 	Category string
 	Title    string
 	// Summary is the one-line description the CLI's `settings get` and

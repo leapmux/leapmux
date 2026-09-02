@@ -13,12 +13,21 @@ prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-tauri = { version = "2", features = ["devtools"] }
+# `tray-icon` is optional and off by default. The tray-icon crate itself is
+# already in Cargo.lock through tauri's own optional edge, so enabling the
+# feature adds no new package.
+#
+# No `image-png`: the tray images go through `tauri::include_image!`, which
+# decodes the PNG at COMPILE time into OUT_DIR. Only `Image::from_bytes` and
+# `Image::from_path` need that feature, and both would move the decode into
+# startup for no gain.
+tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
 dirs = "6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net"] }
 
@@ -32,9 +41,33 @@ libc = "0.2"
 # Tauri 2 already pulls these in transitively (it returns
 # `gtk::ApplicationWindow` from `WebviewWindow::gtk_window()`).
 # We name them explicitly so `tabfix_linux.rs` can install a GTK-level
-# Tab key-press handler.
+# Tab key-press handler, and `tray/minimize_linux.rs` a window-state handler.
 gtk = "0.18"
 gdk = "0.18"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The NSWindowDidMiniaturizeNotification observer; see
+# `tray/minimize_macos.rs`. Tauri 2 emits no Minimized window event and tao
+# tracks the state without reporting it, so the AppKit notification is the only
+# signal that catches every way a window can be miniaturized.
+#
+# Tauri re-exports objc2 only under `target_os = "ios"`, so these must be named
+# here. All four are already in Cargo.lock at these versions through
+# tao/muda/tray-icon, so naming them adds direct edges and no new packages.
+#
+# The objc2-foundation feature list is what gates
+# `addObserverForName:object:queue:usingBlock:`. Drop one and the method simply
+# does not exist, with no hint as to which is missing.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSNotification",
+    "NSOperation",
+    "NSString",
+    "block2",
+] }
+block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 # Only the SID lookup that ACLs the named pipe, and the pipe's own error codes,

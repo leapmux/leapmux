@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/generated/contracts"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
@@ -688,4 +689,65 @@ func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return conns.Load() == 0 }, time.Second, 5*time.Millisecond,
 		"the teardown must reach the transport behind the lane wrappers")
+}
+
+// TestSetDesktopBehaviorPersists is the twin of TestSetWindowSizePersistsMode
+// for the window-behaviour cache. The shell reads that cache at launch, before
+// the webview exists, so a value that does not reach disk means the next login
+// launch decides on the built-in defaults instead of the user's choice.
+func TestSetDesktopBehaviorPersists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := &App{config: &DesktopConfig{WindowWidth: 1280, WindowHeight: 800, WindowMode: WindowModeNormal}}
+
+	err := a.SetDesktopBehavior(true, contracts.TrayOnCloseQuit, contracts.TrayOnMinimizeTray, contracts.StartMinimizedMinimized)
+	require.NoError(t, err)
+
+	reloaded, err := LoadConfig()
+	require.NoError(t, err)
+	assert.True(t, reloaded.TrayEnabled)
+	assert.Equal(t, contracts.TrayOnCloseQuit, reloaded.TrayOnClose)
+	assert.Equal(t, contracts.TrayOnMinimizeTray, reloaded.TrayOnMinimize)
+	assert.Equal(t, contracts.StartMinimizedMinimized, reloaded.StartMinimized)
+
+	// The geometry beside it is untouched: the two writes go through the same
+	// updateConfig, and one clobbering the other would lose the window size.
+	assert.Equal(t, 1280, reloaded.WindowWidth)
+	assert.Equal(t, WindowModeNormal, reloaded.WindowMode)
+
+	// Every push carries the whole set, so turning the tray off must clear the
+	// behaviour that only applied while it was on.
+	err = a.SetDesktopBehavior(false, contracts.TrayOnCloseTray, contracts.TrayOnMinimizeTaskbar, contracts.StartMinimizedWindow)
+	require.NoError(t, err)
+	reloaded, err = LoadConfig()
+	require.NoError(t, err)
+	assert.False(t, reloaded.TrayEnabled)
+	assert.Equal(t, contracts.TrayOnCloseTray, reloaded.TrayOnClose)
+}
+
+// A config written before these fields existed, or by a shell that never
+// pushed, must read as the built-in defaults rather than as a third state.
+func TestDesktopBehaviorProtoBridgesDefaultWhenUnset(t *testing.T) {
+	proto := configToProto(&DesktopConfig{})
+	assert.False(t, proto.TrayEnabled)
+	assert.Equal(t, desktoppb.TrayOnClose_TRAY_ON_CLOSE_TRAY, proto.TrayOnClose)
+	assert.Equal(t, desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_TASKBAR, proto.TrayOnMinimize)
+	assert.Equal(t, desktoppb.StartMinimized_START_MINIMIZED_WINDOW, proto.StartMinimized)
+
+	assert.Equal(t, contracts.TrayOnCloseTray, trayOnCloseFromProto(desktoppb.TrayOnClose_TRAY_ON_CLOSE_UNSPECIFIED))
+	assert.Equal(t, contracts.TrayOnMinimizeTaskbar, trayOnMinimizeFromProto(desktoppb.TrayOnMinimize_TRAY_ON_MINIMIZE_UNSPECIFIED))
+	assert.Equal(t, contracts.StartMinimizedWindow, startMinimizedFromProto(desktoppb.StartMinimized_START_MINIMIZED_UNSPECIFIED))
+}
+
+// Each token must survive the trip to the wire enum and back, or the cache the
+// shell reads at launch would disagree with the preference that wrote it.
+func TestDesktopBehaviorTokensRoundTripThroughProto(t *testing.T) {
+	for _, token := range []string{contracts.TrayOnCloseTray, contracts.TrayOnCloseQuit} {
+		assert.Equal(t, token, trayOnCloseFromProto(trayOnCloseToProto(token)))
+	}
+	for _, token := range []string{contracts.TrayOnMinimizeTray, contracts.TrayOnMinimizeTaskbar} {
+		assert.Equal(t, token, trayOnMinimizeFromProto(trayOnMinimizeToProto(token)))
+	}
+	for _, token := range []string{contracts.StartMinimizedWindow, contracts.StartMinimizedMinimized} {
+		assert.Equal(t, token, startMinimizedFromProto(startMinimizedToProto(token)))
+	}
 }

@@ -17,7 +17,7 @@ var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/account_s
 
 // goldenPath is the ONE artifact both scopes are pinned to.
 //
-// The nine account settings are declared here AND in the frontend's
+// The account settings are declared here AND in the frontend's
 // browser registry, which owns their PRESENTATION because it also renders
 // a device-local override the wire cannot carry. This file pins what the
 // two must agree on, and nothing else: the key set, the field names and

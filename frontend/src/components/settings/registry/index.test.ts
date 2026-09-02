@@ -19,16 +19,21 @@ vi.mock('~/api/clients', () => ({
   authClient: {},
 }))
 
-// Solo mode is the one environment fact a hide rule reads. Control it per
-// test rather than depending on the fabricated default.
+// Solo mode and the desktop app are the two environment facts a hide rule
+// reads. Control them per test rather than depending on the fabricated
+// defaults -- `isDesktopApp` answers false under jsdom, which would hide every
+// Desktop row and make its visibility cases vacuous.
 const solo = vi.hoisted(() => vi.fn(() => false))
+const desktop = vi.hoisted(() => vi.fn(() => true))
 vi.mock('~/lib/systemInfo', async importOriginal => ({
   ...(await importOriginal<typeof import('~/lib/systemInfo')>()),
   isSoloMode: () => solo(),
+  isDesktopApp: () => desktop(),
 }))
 
 beforeEach(() => {
   solo.mockReturnValue(false)
+  desktop.mockReturnValue(true)
 })
 
 // The registry is HALF of every account row: the hub's descriptor states
@@ -792,30 +797,53 @@ describe('createBrowserRows visibility', () => {
    * `turnEndSound` is the account default and `turnEndSoundOverride` is
    * this device's override (null when the device follows the account).
    */
+  /** A dual entry whose two tiers a visibility rule can read apart. */
+  function tier<T>(base: { protoKey: string }, account: T, override: T | null) {
+    return {
+      ...base,
+      resolved: () => override ?? account,
+      browser: () => override,
+      account: () => account,
+    }
+  }
+
   function prefsWith(opts: {
     uiFontsEnabled?: boolean
     monoFontsEnabled?: boolean
     turnEndSound?: string
     turnEndSoundOverride?: string | null
+    trayEnabled?: boolean
+    trayEnabledOverride?: boolean | null
+    startOnLogin?: boolean
+    startOnLoginOverride?: boolean | null
   }) {
     const base = makeFakePrefs()
-    const account = opts.turnEndSound ?? 'ding-dong'
-    const override = opts.turnEndSoundOverride ?? null
-    const turnEndSound = {
-      ...base.dual.turnEndSound,
-      resolved: () => override ?? account,
-      browser: () => override,
-      account: () => account,
-    }
+    const turnEndSound = tier(
+      base.dual.turnEndSound,
+      opts.turnEndSound ?? 'ding-dong',
+      opts.turnEndSoundOverride ?? null,
+    )
+    const trayEnabled = tier(
+      base.dual.trayEnabled,
+      opts.trayEnabled ?? true,
+      opts.trayEnabledOverride ?? null,
+    )
+    const startOnLogin = tier(
+      base.dual.startOnLogin,
+      opts.startOnLogin ?? true,
+      opts.startOnLoginOverride ?? null,
+    )
     return {
       ...base,
-      dual: { ...base.dual, turnEndSound },
+      dual: { ...base.dual, turnEndSound, trayEnabled, startOnLogin },
       uiFonts: () => ({ enabled: opts.uiFontsEnabled ?? true, fonts: [] }),
       monoFonts: () => ({ enabled: opts.monoFontsEnabled ?? true, fonts: [] }),
       // The context publishes the resolved reader as a top-level accessor
       // too. Taken FROM the dual entry, so the double cannot state one
       // resolved value at one address and a different one at the other.
       turnEndSound: turnEndSound.resolved,
+      trayEnabled: trayEnabled.resolved,
+      startOnLogin: startOnLogin.resolved,
     } as unknown as PreferencesState
   }
 
@@ -861,6 +889,91 @@ describe('createBrowserRows visibility', () => {
     expect(visible(off, 'appearance.uiFonts')).toBe(true)
     expect(visible(off, 'appearance.monoFonts')).toBe(true)
     expect(visible(off, 'notifications.turnEndSound')).toBe(true)
+  })
+
+  const DESKTOP_ROWS = [
+    'desktop.trayEnabled',
+    'desktop.trayOnClose',
+    'desktop.trayOnMinimize',
+    'desktop.startOnLogin',
+    'desktop.startMinimized',
+  ]
+
+  // A browser has no tray, no menu bar and no login items. Every row hiding is
+  // also what makes the whole Desktop section disappear, because
+  // occupiedNavGroups drops a group with no visible rows.
+  it('hides every desktop row outside the desktop app', () => {
+    desktop.mockReturnValue(false)
+    const prefs = prefsWith({})
+    for (const id of DESKTOP_ROWS)
+      expect(visible(prefs, id), id).toBe(false)
+  })
+
+  it('shows every desktop row in the desktop app', () => {
+    const prefs = prefsWith({})
+    for (const id of DESKTOP_ROWS)
+      expect(visible(prefs, id), id).toBe(true)
+  })
+
+  it('hides the close and minimize rows while the tray is off on both tiers', () => {
+    const off = prefsWith({ trayEnabled: false, trayEnabledOverride: null })
+    expect(visible(off, 'desktop.trayOnClose')).toBe(false)
+    expect(visible(off, 'desktop.trayOnMinimize')).toBe(false)
+    // The row that turns the tray ON must never hide with them, or the user
+    // has no way back.
+    expect(visible(off, 'desktop.trayEnabled')).toBe(true)
+  })
+
+  // The same both-tiers rule the turn-end volume row states. A user who turns
+  // the tray off on THIS laptop still decides what their other devices do on
+  // close, and that decision is the account default this row edits.
+  it('keeps the close and minimize rows while either tier has the tray on', () => {
+    const deviceOff = prefsWith({ trayEnabled: true, trayEnabledOverride: false })
+    expect(visible(deviceOff, 'desktop.trayOnClose')).toBe(true)
+    expect(visible(deviceOff, 'desktop.trayOnMinimize')).toBe(true)
+
+    const accountOff = prefsWith({ trayEnabled: false, trayEnabledOverride: true })
+    expect(visible(accountOff, 'desktop.trayOnClose')).toBe(true)
+    expect(visible(accountOff, 'desktop.trayOnMinimize')).toBe(true)
+
+    const bothOff = prefsWith({ trayEnabled: false, trayEnabledOverride: false })
+    expect(visible(bothOff, 'desktop.trayOnClose')).toBe(false)
+    expect(visible(bothOff, 'desktop.trayOnMinimize')).toBe(false)
+  })
+
+  it('hides the login window state while start-at-login is off on both tiers', () => {
+    const off = prefsWith({ startOnLogin: false, startOnLoginOverride: null })
+    expect(visible(off, 'desktop.startMinimized')).toBe(false)
+    expect(visible(off, 'desktop.startOnLogin')).toBe(true)
+  })
+
+  it('keeps the login window state while either tier starts at login', () => {
+    const deviceOff = prefsWith({ startOnLogin: true, startOnLoginOverride: false })
+    expect(visible(deviceOff, 'desktop.startMinimized')).toBe(true)
+
+    const accountOff = prefsWith({ startOnLogin: false, startOnLoginOverride: true })
+    expect(visible(accountOff, 'desktop.startMinimized')).toBe(true)
+
+    const bothOff = prefsWith({ startOnLogin: false, startOnLoginOverride: false })
+    expect(visible(bothOff, 'desktop.startMinimized')).toBe(false)
+  })
+
+  // The tray rows and the login rows are independent: turning the tray off
+  // must not take the login launch with it, and vice versa.
+  it('keeps the tray and the login rules apart', () => {
+    const trayOffLoginOn = prefsWith({
+      trayEnabled: false,
+      trayEnabledOverride: false,
+      startOnLogin: true,
+    })
+    expect(visible(trayOffLoginOn, 'desktop.startMinimized')).toBe(true)
+
+    const trayOnLoginOff = prefsWith({
+      trayEnabled: true,
+      startOnLogin: false,
+      startOnLoginOverride: false,
+    })
+    expect(visible(trayOnLoginOff, 'desktop.trayOnClose')).toBe(true)
   })
 
   it('yields one descriptor per entry, in declaration order', () => {

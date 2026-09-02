@@ -424,6 +424,25 @@ func (a *App) SetWindowSize(width, height int, mode string) error {
 	})
 }
 
+// SetDesktopBehavior caches the resolved Desktop preferences for this device.
+//
+// Unlike SetWindowSize there is no "0 means keep" rule: the webview always
+// pushes the whole resolved set, so a partial update would be a state no caller
+// can produce. See DesktopConfig for the direction of flow.
+func (a *App) SetDesktopBehavior(trayEnabled bool, onClose, onMinimize, startMinimized string) error {
+	done, err := a.beginOperation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return a.updateConfig(func(config *DesktopConfig) {
+		config.TrayEnabled = trayEnabled
+		config.TrayOnClose = onClose
+		config.TrayOnMinimize = onMinimize
+		config.StartMinimized = startMinimized
+	})
+}
+
 func (a *App) updateConfig(update func(*DesktopConfig)) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()

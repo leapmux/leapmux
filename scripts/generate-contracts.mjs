@@ -1260,6 +1260,57 @@ export const DESKTOP_TS_EVENT_NAMES = {
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
 }
 
+// The Desktop account settings' enum tokens, in the three languages that spell
+// them: the hub declares and validates them (usersettings/keys.go), the webview
+// parses its device tier with them, and the Rust shell matches them out of the
+// set_desktop_behavior payload. The other account settings' tokens stay in Go
+// alone, because only Go and the webview read those and the webview reads them
+// off the wire.
+export const DESKTOP_GO_BEHAVIOR_NAMES = {
+  trayOnCloseTray: 'TrayOnCloseTray',
+  trayOnCloseQuit: 'TrayOnCloseQuit',
+  trayOnMinimizeTray: 'TrayOnMinimizeTray',
+  trayOnMinimizeTaskbar: 'TrayOnMinimizeTaskbar',
+  startMinimizedWindow: 'StartMinimizedWindow',
+  startMinimizedMinimized: 'StartMinimizedMinimized',
+}
+
+export const DESKTOP_RS_BEHAVIOR_NAMES = {
+  trayOnCloseTray: 'TRAY_ON_CLOSE_TRAY',
+  trayOnCloseQuit: 'TRAY_ON_CLOSE_QUIT',
+  trayOnMinimizeTray: 'TRAY_ON_MINIMIZE_TRAY',
+  trayOnMinimizeTaskbar: 'TRAY_ON_MINIMIZE_TASKBAR',
+  startMinimizedWindow: 'START_MINIMIZED_WINDOW',
+  startMinimizedMinimized: 'START_MINIMIZED_MINIMIZED',
+}
+
+export const DESKTOP_TS_BEHAVIOR_NAMES = {
+  trayOnCloseTray: 'TRAY_ON_CLOSE_TRAY',
+  trayOnCloseQuit: 'TRAY_ON_CLOSE_QUIT',
+  trayOnMinimizeTray: 'TRAY_ON_MINIMIZE_TRAY',
+  trayOnMinimizeTaskbar: 'TRAY_ON_MINIMIZE_TASKBAR',
+  startMinimizedWindow: 'START_MINIMIZED_WINDOW',
+  startMinimizedMinimized: 'START_MINIMIZED_MINIMIZED',
+}
+
+/**
+ * Which windowBehavior keys are the two values of ONE account setting.
+ *
+ * CHECKER-ONLY, never emitted: each language groups the tokens in its own
+ * declaration (Go's enum catalogue, the webview's `oneOf`, Rust's match), so
+ * emitting the grouping a fourth time would be the drift this file exists to
+ * prevent. It is here because the uniqueness rule cannot be stated without it.
+ * `tray` is deliberately the token of BOTH tray_on_close and tray_on_minimize,
+ * so a check across the whole block would refuse the shipped contract -- while
+ * a setting whose two values are one string offers no choice at all. The keys
+ * are the Go setting names, so a reader can find each one.
+ */
+const DESKTOP_BEHAVIOR_SETTINGS = {
+  tray_on_close: ['trayOnCloseTray', 'trayOnCloseQuit'],
+  tray_on_minimize: ['trayOnMinimizeTray', 'trayOnMinimizeTaskbar'],
+  start_minimized: ['startMinimizedWindow', 'startMinimizedMinimized'],
+}
+
 export function checkDesktop(d) {
   mustBe(d.envVars.devEndpoint !== d.envVars.binaryHash, 'desktop.json', 'the two env vars must be distinct names')
   const events = Object.values(d.tauriEvents)
@@ -1277,6 +1328,35 @@ export function checkDesktop(d) {
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
     ['DESKTOP_TS_EVENT_NAMES', DESKTOP_TS_EVENT_NAMES],
   ])
+  checkTableCoverage('desktop.json', 'windowBehavior', Object.keys(d.windowBehavior), [
+    ['DESKTOP_GO_BEHAVIOR_NAMES', DESKTOP_GO_BEHAVIOR_NAMES],
+    ['DESKTOP_RS_BEHAVIOR_NAMES', DESKTOP_RS_BEHAVIOR_NAMES],
+    ['DESKTOP_TS_BEHAVIOR_NAMES', DESKTOP_TS_BEHAVIOR_NAMES],
+  ])
+  // The grouping must partition the block exactly, or the per-setting
+  // uniqueness rule below silently skips a token.
+  const grouped = Object.values(DESKTOP_BEHAVIOR_SETTINGS).flat()
+  mustBe(
+    new Set(grouped).size === grouped.length,
+    'desktop.json',
+    'DESKTOP_BEHAVIOR_SETTINGS lists one windowBehavior key under two settings',
+  )
+  const behaviorKeys = Object.keys(d.windowBehavior).filter(k => !k.startsWith('_'))
+  mustBe(
+    grouped.length === behaviorKeys.length && grouped.every(k => behaviorKeys.includes(k)),
+    'desktop.json',
+    'DESKTOP_BEHAVIOR_SETTINGS and windowBehavior name different key sets',
+  )
+  // Per SETTING, never across the block: two settings sharing a token is the
+  // shipped state (`tray` names both close-to-tray and minimize-to-tray).
+  for (const [setting, keys] of Object.entries(DESKTOP_BEHAVIOR_SETTINGS)) {
+    const tokens = keys.map(k => d.windowBehavior[k])
+    mustBe(
+      new Set(tokens).size === tokens.length,
+      'desktop.json',
+      `windowBehavior: ${setting} declares one token twice, so it offers one choice`,
+    )
+  }
   return {}
 }
 
@@ -1297,6 +1377,14 @@ ${goConstBlock(Object.keys(DESKTOP_GO_ENV_NAMES).map(k => ({ name: DESKTOP_GO_EN
 // bootstrap up to channelwire.UserEventsReadLimit -- plus its Frame/Event
 // proto envelope; the Rust shell enforces the same cap on read.
 const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}
+
+// The enum tokens of the Desktop account settings. usersettings/keys.go builds
+// each key's enum catalogue from these, and validateEnum derives the write-path
+// rule from that same catalogue, so a token is stated once for the hub, the
+// webview and the Rust shell together.
+const (
+${goConstBlock(Object.keys(DESKTOP_GO_BEHAVIOR_NAMES).map(k => ({ name: DESKTOP_GO_BEHAVIOR_NAMES[k], value: jsonString(d.windowBehavior[k]) })))}
+)
 `
 }
 
@@ -1304,12 +1392,21 @@ export function emitTsDesktop(d) {
   const lines = Object.keys(DESKTOP_TS_EVENT_NAMES)
     .map(k => `export const ${DESKTOP_TS_EVENT_NAMES[k]} = ${jsonString(d.tauriEvents[k])} as const\n`)
     .join('')
+  const behavior = Object.keys(DESKTOP_TS_BEHAVIOR_NAMES)
+    .map(k => `export const ${DESKTOP_TS_BEHAVIOR_NAMES[k]} = ${jsonString(d.windowBehavior[k])} as const\n`)
+    .join('')
   return `${TS_HEADER('desktop.json')}
 // Tauri events the desktop shell emits and the webview listens for,
 // generated from contracts/desktop.json (the Rust shell reads the same
 // names from its generated module). The env vars are Rust<->Go only and
 // ride in those outputs.
-${lines}`
+${lines}
+// Enum tokens of the Desktop account settings. \`as const\` is what lets the
+// preference types derive (\`typeof TRAY_ON_CLOSE_TRAY | typeof
+// TRAY_ON_CLOSE_QUIT\`) rather than restate the union, so a token renamed in
+// the contract fails the type check instead of narrowing to a value the hub
+// never sends.
+${behavior}`
 }
 
 export function emitRsDesktop(d) {
@@ -1323,6 +1420,9 @@ export function emitRsDesktop(d) {
         : ''
       return `${attr}pub const ${DESKTOP_RS_EVENT_NAMES[k]}: &str = ${rustString(d.tauriEvents[k])};`
     })
+    .join('\n')
+  const behavior = Object.keys(DESKTOP_RS_BEHAVIOR_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_BEHAVIOR_NAMES[k]}: &str = ${rustString(d.windowBehavior[k])};`)
     .join('\n')
   return `// Code generated by scripts/generate-contracts.mjs from contracts/desktop.json. DO NOT EDIT.
 
@@ -1339,6 +1439,11 @@ ${events}
 /// Frame cap the shell enforces on the sidecar IPC wire (the Go twin is
 /// contracts.MaxFrameSizeBytes).
 pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};
+
+/// Enum tokens of the Desktop account settings, as the webview sends them in
+/// the \`set_desktop_behavior\` payload (the Go twin is the
+/// contracts.TrayOnClose*/TrayOnMinimize*/StartMinimized* family).
+${behavior}
 `
 }
 

@@ -118,6 +118,85 @@
     ]
   },
   {
+    "key": "tray_enabled",
+    "category": "desktop",
+    "title": "Tray icon",
+    "fields": [
+      {
+        "name": "",
+        "kind": "bool"
+      }
+    ]
+  },
+  {
+    "key": "tray_on_close",
+    "category": "desktop",
+    "title": "Window close action",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "tray"
+          },
+          {
+            "value": "quit"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "tray_on_minimize",
+    "category": "desktop",
+    "title": "Window minimize action",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "tray"
+          },
+          {
+            "value": "taskbar"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "start_on_login",
+    "category": "desktop",
+    "title": "Start at login",
+    "fields": [
+      {
+        "name": "",
+        "kind": "bool"
+      }
+    ]
+  },
+  {
+    "key": "start_minimized",
+    "category": "desktop",
+    "title": "Window state at login",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "window"
+          },
+          {
+            "value": "minimized"
+          }
+        ]
+      }
+    ]
+  },
+  {
     "key": "debug_logging",
     "category": "advanced",
     "title": "Debug logging",

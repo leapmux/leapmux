@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR } from '~/generated/contracts/desktop'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EDITOR, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
@@ -757,6 +758,12 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
     // the terminal-theme describe block below.
     diff_view: { read: p => p.dual.diffView.account(), fallback: 'unified' },
     turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: 'ding-dong' },
+    // The three Desktop enums. Their tokens come from contracts/desktop.json,
+    // which the hub's catalogue also reads, so the golden file and these
+    // fallbacks are two views of one source.
+    tray_on_close: { read: p => p.dual.trayOnClose.account(), fallback: TRAY_ON_CLOSE_TRAY },
+    tray_on_minimize: { read: p => p.dual.trayOnMinimize.account(), fallback: TRAY_ON_MINIMIZE_TASKBAR },
+    start_minimized: { read: p => p.dual.startMinimized.account(), fallback: START_MINIMIZED_WINDOW },
   }
 
   const enumKeys = golden.filter(k => k.fields.some(f => (f.enumValues?.length ?? 0) > 0))

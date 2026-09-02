@@ -122,8 +122,8 @@ func (r *Registry) States(prefsJSON string) map[string]State {
 //
 // The write path answers with the key it just wrote, and nothing else, so
 // it decodes and validates that key alone. Going through States there
-// resolved all nine account keys and discarded eight — work that grows
-// with every key added, on every toggle flip, slider release and font
+// resolved every account key and discarded all but one — work that grows
+// with each key added, on every toggle flip, slider release and font
 // edit.
 func (r *Registry) State(prefsJSON, key string) (State, bool) {
 	if _, ok := r.byName[key]; !ok {

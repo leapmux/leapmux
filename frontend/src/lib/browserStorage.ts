@@ -124,6 +124,22 @@ export interface BrowserPreferences {
   /** Desktop/browser terminal OSC notifications (OSC 9 / 777 / 99). Default off. */
   terminalOsNotifications?: boolean
   /**
+   * Device overrides of the five Desktop account keys. Absent means "use the
+   * account value", like every other dual tier, and they ride inside this same
+   * consolidated document so `LOCAL_KEY_SPECS` needs no entry of its own.
+   *
+   * FIVE SCALARS, not one object: the user makes five choices under five scope
+   * chips, so an object would make an override of any one of them drag the
+   * other four onto the device tier. The enums are typed as bare `string` for
+   * the reason {@link diffView} is -- this is untrusted storage, and the parse
+   * in PreferencesContext is what narrows it.
+   */
+  trayEnabled?: boolean
+  trayOnClose?: string
+  trayOnMinimize?: string
+  startOnLogin?: boolean
+  startMinimized?: string
+  /**
    * Whether the composer status bar (branch/model/effort/mode +
    * rate-limit/context chips) is shown beneath the input box. Default on;
    * toggled from the composer's `[+]` menu.

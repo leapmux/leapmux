@@ -16,13 +16,30 @@ const (
 	WindowModeFullscreen = "fullscreen"
 )
 
-// DesktopConfig persists the user's last connection mode, hub URL, and window size.
+// DesktopConfig persists the user's last connection mode, hub URL, window size,
+// and a cache of the Desktop window-behaviour preferences.
+//
+// The behaviour fields are a ONE-WAY cache of an account setting, not a setting
+// of their own: the webview pushes the resolved values down, and the shell
+// reads them at launch because it must decide tray creation and the initial
+// window state before the webview -- and therefore before any preference -- can
+// be read. Nothing here is ever read back into a preference. See
+// SetDesktopBehaviorRequest in proto/leapmux/desktop/v1/frame.proto for why
+// start_on_login is not among them, and for the per-OS-user limit.
+//
+// An absent behaviour field means the built-in default, which is why every one
+// of them is `omitempty` and why the zero value of each is the default: tray
+// off, close to the tray, minimize to the taskbar, start with a window.
 type DesktopConfig struct {
-	Mode         string `json:"mode"`                    // "solo" or "distributed"
-	HubURL       string `json:"hub_url"`                 // Only for distributed
-	WindowWidth  int    `json:"window_width,omitempty"`  // Saved windowed width
-	WindowHeight int    `json:"window_height,omitempty"` // Saved windowed height
-	WindowMode   string `json:"window_mode,omitempty"`   // "normal" | "maximized" | "fullscreen"
+	Mode           string `json:"mode"`                       // "solo" or "distributed"
+	HubURL         string `json:"hub_url"`                    // Only for distributed
+	WindowWidth    int    `json:"window_width,omitempty"`     // Saved windowed width
+	WindowHeight   int    `json:"window_height,omitempty"`    // Saved windowed height
+	WindowMode     string `json:"window_mode,omitempty"`      // "normal" | "maximized" | "fullscreen"
+	TrayEnabled    bool   `json:"tray_enabled,omitempty"`     // Show a tray / menu-bar icon
+	TrayOnClose    string `json:"tray_on_close,omitempty"`    // "tray" | "quit"
+	TrayOnMinimize string `json:"tray_on_minimize,omitempty"` // "tray" | "taskbar"
+	StartMinimized string `json:"start_minimized,omitempty"`  // "window" | "minimized"
 }
 
 func configPath() (string, error) {

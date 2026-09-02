@@ -34,9 +34,21 @@ export interface DesktopConfig {
   window_mode: WindowMode
 }
 
+/**
+ * The state the main window starts in, decided by the Rust shell.
+ *
+ * The shell owns the decision because it is the only side that knows both the
+ * launch arguments (a login launch carries `--autostart`) and the cached tray
+ * setting, and it knows them before the webview exists. It reports the value
+ * ONCE; a later `getStartupInfo` -- the one a mode switch triggers when the
+ * launcher remounts -- answers `normal`.
+ */
+export type LaunchVisibility = 'normal' | 'minimized' | 'hidden'
+
 export interface StartupInfo {
   config: DesktopConfig
   buildInfo: BuildInfo
+  launchVisibility: LaunchVisibility
 }
 
 /** Wire format from sidecar (snake_case JSON). */
@@ -49,6 +61,28 @@ interface StartupInfoWire {
     build_time: string
     branch: string
   }
+  launch_visibility: string
+}
+
+/**
+ * The five resolved Desktop preferences, as the Rust shell receives them.
+ *
+ * ONE payload rather than five commands: the shell decides a close, a minimize
+ * and a login launch from the whole set together (a minimize goes to the tray
+ * only while a tray exists), so five commands would let it act on a
+ * half-applied set.
+ *
+ * The three enum members carry the tokens from contracts/desktop.json, and the
+ * shell matches them against the same generated constants — no boolean is
+ * derived at this boundary, because `hideOnClose = onClose === 'tray'` is
+ * exactly the line that gets inverted.
+ */
+export interface DesktopBehavior {
+  trayEnabled: boolean
+  trayOnClose: string
+  trayOnMinimize: string
+  startOnLogin: boolean
+  startMinimized: string
 }
 
 export interface DesktopRuntimeState {
@@ -377,7 +411,17 @@ let removeGeometrySaver: (() => void) | null = null
  * Tauri's `setSize()` expects — this avoids the GTK CSD offset issue
  * where `appWindow.innerSize()` includes shadow + header bar.
  */
-export async function restoreWindowGeometry(width: number, height: number, mode: WindowMode): Promise<void> {
+/** Narrow the shell's launch decision, failing towards a visible window. */
+export function parseLaunchVisibility(raw: unknown): LaunchVisibility {
+  return raw === 'hidden' || raw === 'minimized' ? raw : 'normal'
+}
+
+export async function restoreWindowGeometry(
+  width: number,
+  height: number,
+  mode: WindowMode,
+  launch: LaunchVisibility = 'normal',
+): Promise<void> {
   if (!isTauriApp())
     return
 
@@ -387,25 +431,43 @@ export async function restoreWindowGeometry(width: number, height: number, mode:
     const appWindow = getCurrentWindow()
 
     // Establish the windowed size first so exiting maximized/fullscreen
-    // returns to the saved geometry.
+    // returns to the saved geometry. This runs for a HIDDEN launch too, so the
+    // first "Show LeapMux" from the tray produces a correctly sized window.
     if (width > 0 && height > 0)
       await appWindow.setSize(new LogicalSize(width, height))
 
-    if (mode === 'maximized')
+    if (mode === 'maximized' && launch !== 'hidden')
       await appWindow.maximize()
 
     // Show the window now that it's at the correct size. The window starts
     // hidden (visible: false in tauri.conf.json) so the Wayland compositor
     // sees the final size at first map. macOS only performs the fullscreen
     // transition on a visible window, so show before entering fullscreen.
-    await appWindow.show()
+    //
+    // A login launch the user asked to start out of the way skips this: with
+    // a tray icon the shell decided `hidden`, without one it decided
+    // `minimized`, and either way the window must not be raised in front of
+    // whatever they were doing.
+    if (launch !== 'hidden')
+      await appWindow.show()
 
-    if (mode === 'fullscreen')
+    if (launch === 'minimized')
+      await appWindow.minimize()
+
+    if (mode === 'fullscreen' && launch === 'normal')
       await appWindow.setFullscreen(true)
 
     // Save window geometry + mode on resize / maximize / fullscreen, debounced.
     const saveGeometry = trailingDebounce(async () => {
       try {
+        // Hiding to the tray needs no guard here, although it looks like it
+        // should. This saver reads the DOM viewport, which an unmapped window
+        // does not change, and the one platform that does report a size on the
+        // way out (Windows sends 0x0 for a minimize) is already covered:
+        // `App.SetWindowSize` ignores a non-positive dimension, so the last
+        // windowed geometry survives. A visibility check here would instead
+        // add a way to stop saving geometry for good, because a failed or
+        // unexpected `isVisible` reads as "not visible".
         const nextMode = await readWindowMode(appWindow)
         // innerWidth/Height report the screen size while maximized/fullscreen;
         // send 0 so the sidecar preserves the last windowed dimensions.
@@ -621,6 +683,21 @@ export async function revealInFileManager(path: string): Promise<void> {
   }
 }
 
+/**
+ * Push the resolved Desktop preferences into the shell.
+ *
+ * It REJECTS rather than swallowing, unlike `tauriFireAndForget`, because two
+ * of the things it asks for can fail outside the app: an operating system may
+ * refuse a login-item registration, and a Linux desktop may have no
+ * status-icon library. Both look like "LeapMux ignores my settings" when they
+ * stay silent, so the caller surfaces them.
+ */
+export async function setDesktopBehavior(behavior: DesktopBehavior): Promise<void> {
+  if (!isTauriApp())
+    return
+  await tauriInvoke<void>('set_desktop_behavior', { behavior })
+}
+
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
 export const windowClose = () => tauriWindowOp(w => w.close())
 export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
@@ -784,6 +861,10 @@ export const platformBridge = {
         buildTime: wire.build_info.build_time,
         branch: wire.build_info.branch,
       },
+      // A value this build does not know narrows to `normal`, which shows the
+      // window. Failing towards a VISIBLE window is the only safe direction:
+      // the alternative leaves an app the user cannot reach.
+      launchVisibility: parseLaunchVisibility(wire.launch_visibility),
     }
   },
   async checkFullDiskAccess(): Promise<boolean> {
