@@ -1,4 +1,4 @@
-import { createStore, produce } from 'solid-js/store'
+import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 
 // ---------------------------------------------------------------------------
 // Per-agent store spine
@@ -29,6 +29,21 @@ export interface PerAgentStore<T> {
   get: (agentId: string) => T
   /** Replace an agent's value. */
   set: (agentId: string, value: T) => void
+  /**
+   * Replace an agent's LIST value, matching entries by `key` so that an entry
+   * whose fields did not change keeps its identity and its per-field signals.
+   *
+   * Use this for a leaf a UI renders as rows. `set` replaces the array whole,
+   * so every entry is a new object, `<For>` reconciles by REFERENCE, and one
+   * changed field therefore tears down and rebuilds every row on screen. That
+   * is not merely wasteful: a rebuilt row loses the tooltip the pointer was
+   * resting on and restarts the CSS animation on its status dot, so the
+   * sidebar's background-task rows flickered whenever any one of them reported
+   * progress.
+   *
+   * `key` names the field that identifies an entry across updates.
+   */
+  setReconciled: (agentId: string, value: T, key: string) => void
   /** Reset an agent's value to the configured empty value. */
   clear: (agentId: string) => void
   /**
@@ -58,6 +73,25 @@ export function createPerAgentStore<T>(empty: T): PerAgentStore<T> {
   return {
     get: agentId => state.byAgent[agentId] ?? empty,
     set: write,
+    setReconciled: (agentId, value, key) => {
+      const prev = state.byAgent[agentId]
+      // Never reconcile INTO the empty value. `reconcile` applies its diff by
+      // writing through the store proxy to the object underneath, and that
+      // object is the ONE default handed to every unset and cleared agent -- so
+      // reconciling a two-row list into it would give every other agent those
+      // two rows. There is nothing to preserve in an absent or empty leaf
+      // anyway, so a plain replace is also the whole answer here.
+      //
+      // `unwrap`, not a bare `===`: a read through the store hands back a PROXY
+      // of the empty value, which is never identical to the value itself. A
+      // cleared agent holds exactly that, so the bare comparison let the
+      // reconcile through on the second write to any agent that was cleared.
+      if (prev === undefined || unwrap(prev) === empty) {
+        write(agentId, value)
+        return
+      }
+      setState('byAgent', agentId, reconcile(value as never, { key }) as never)
+    },
     clear: agentId => write(agentId, empty),
     remove: agentId => setState('byAgent', produce((map) => {
       delete map[agentId]

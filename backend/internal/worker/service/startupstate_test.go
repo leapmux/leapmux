@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -218,4 +219,236 @@ func TestStartupCore_BeginReclaimsAFailedEntry(t *testing.T) {
 	require.NotNil(t, h, "a retry after a failed startup must be able to claim the tab again")
 	core.finish()
 	core.WaitForInFlight()
+}
+
+// fakeStartupClock is a deterministic startupTimerClock. NewTimer records the
+// requested delay and hands back a channel the test fires explicitly, so
+// nothing in awaitInFlight is timed by the wall clock: a test can hold a wait
+// in its armed-but-not-expired window for as long as it likes, and a test about
+// the give-up path spends no wall time reaching it.
+//
+// Timers fire in arm order, one per fire() call, which is also the order a real
+// clock would fire them in for the one-wait-at-a-time shape awaitInFlight has.
+type fakeStartupClock struct {
+	mu     sync.Mutex
+	timers []chan time.Time
+	fired  int
+	delays []time.Duration
+	armed  chan struct{} // buffered(1); pinged on every NewTimer
+}
+
+func newFakeStartupClock() *fakeStartupClock {
+	return &fakeStartupClock{armed: make(chan struct{}, 1)}
+}
+
+func (c *fakeStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
+	ch := make(chan time.Time, 1)
+	c.mu.Lock()
+	c.timers = append(c.timers, ch)
+	c.delays = append(c.delays, d)
+	c.mu.Unlock()
+	// Buffered(1) and non-blocking: a pending ping already covers the waiter's
+	// next check, so a dropped send loses nothing.
+	select {
+	case c.armed <- struct{}{}:
+	default:
+	}
+	return ch, func() {}
+}
+
+// waitArmed blocks until a timer is armed, which is the signal that the code
+// under test chose to WAIT rather than answer at once.
+func (c *fakeStartupClock) waitArmed(t *testing.T) time.Duration {
+	t.Helper()
+	select {
+	case <-c.armed:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "no wait was armed; the caller answered without waiting")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.delays[len(c.delays)-1]
+}
+
+// fire expires the oldest timer that has not fired yet.
+func (c *fakeStartupClock) fire(t *testing.T) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Less(t, c.fired, len(c.timers), "no armed timer left to fire")
+	c.timers[c.fired] <- time.Now()
+	c.fired++
+}
+
+// TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID pins the two
+// states in which begin hands out the claim: an id nobody holds, and one whose
+// entry already FAILED. A wait in either is a wait for a startup that is not
+// running, and the caller would pay the whole bound for nothing.
+func TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	clock := newFakeStartupClock()
+	core.clock = clock
+
+	assert.True(t, core.awaitInFlight("tab-unclaimed", time.Hour))
+
+	core.fail("tab-failed", "claude: command not found")
+	assert.True(t, core.awaitInFlight("tab-failed", time.Hour))
+
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	assert.Empty(t, clock.timers, "neither state may arm a timer")
+}
+
+// TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID is the wait
+// itself: it must not return while the claim holder is still running, and it
+// must return the moment that holder is done.
+func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		end  func(core *startupCore)
+	}{
+		{"succeed", func(core *startupCore) { core.succeed("tab-1") }},
+		{"fail", func(core *startupCore) { core.fail("tab-1", "boom") }},
+		{"cancelAndClear", func(core *startupCore) { core.cancelAndClear("tab-1", keepWorktreeOnClose) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			core := newStartupCore()
+			clock := newFakeStartupClock()
+			core.clock = clock
+			require.NotNil(t, core.begin("tab-1", func() {}))
+
+			done := make(chan bool, 1)
+			go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
+
+			clock.waitArmed(t)
+			select {
+			case <-done:
+				require.FailNow(t, "the wait returned while the startup still held the id")
+			default:
+			}
+
+			tc.end(&core)
+			select {
+			case ok := <-done:
+				assert.True(t, ok, "the holder finished, so the wait must report success")
+			case <-time.After(10 * time.Second):
+				require.FailNow(t, "the wait never returned after the holder finished")
+			}
+			core.finish()
+			core.WaitForInFlight()
+		})
+	}
+}
+
+// TestStartupCore_AwaitInFlightGivesUpOnTheBound pins the bound. A startup
+// goroutine can be stuck on a provider that never answers, and the caller is
+// answering a user; an unbounded wait would hold that answer for ever.
+func TestStartupCore_AwaitInFlightGivesUpOnTheBound(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	clock := newFakeStartupClock()
+	core.clock = clock
+	require.NotNil(t, core.begin("tab-1", func() {}))
+
+	done := make(chan bool, 1)
+	go func() { done <- core.awaitInFlight("tab-1", 90*time.Second) }()
+
+	assert.Equal(t, 90*time.Second, clock.waitArmed(t), "the wait must be armed for the bound it was given")
+	clock.fire(t)
+	select {
+	case ok := <-done:
+		assert.False(t, ok, "a wait that expired must report that it did")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the wait outlived its own bound")
+	}
+
+	core.cancelAndClear("tab-1", keepWorktreeOnClose)
+	core.finish()
+	core.WaitForInFlight()
+}
+
+// TestStartupCore_AwaitInFlightIsSafeForManyWaiters pins that the done signal is
+// a broadcast, not a handoff: every send that lands in one startup window waits
+// on the same entry, and closing the channel is what wakes all of them.
+func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	clock := newFakeStartupClock()
+	core.clock = clock
+	require.NotNil(t, core.begin("tab-1", func() {}))
+
+	const waiters = 8
+	done := make(chan bool, waiters)
+	for range waiters {
+		go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
+	}
+	clock.waitArmed(t)
+
+	core.succeed("tab-1")
+	for range waiters {
+		select {
+		case ok := <-done:
+			assert.True(t, ok)
+		case <-time.After(10 * time.Second):
+			require.FailNow(t, "a waiter was left behind by the wake-up")
+		}
+	}
+	core.finish()
+	core.WaitForInFlight()
+}
+
+// TestStartupCore_ReleasingTheSameStartupTwiceIsSafe pins that the done signal
+// is closed once per entry. The three state transitions all release, and each
+// takes the entry out of the map first -- so a second transition for the same
+// id finds nothing and closes nothing. Closing a closed channel panics, and
+// that panic would land on whichever of them ran second.
+func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		first func(core *startupCore)
+		then  func(core *startupCore)
+	}{
+		{"succeed then succeed",
+			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.succeed("tab-1") }},
+		{"succeed then cancelAndClear",
+			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) }},
+		{"succeed then fail",
+			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.fail("tab-1", "boom") }},
+		{"cancelAndClear then succeed",
+			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) },
+			func(c *startupCore) { c.succeed("tab-1") }},
+		{"fail then fail",
+			func(c *startupCore) { c.fail("tab-1", "boom") },
+			func(c *startupCore) { c.fail("tab-1", "boom again") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			core := newStartupCore()
+			core.clock = newFakeStartupClock()
+			require.NotNil(t, core.begin("tab-1", func() {}))
+
+			tc.first(&core)
+			assert.NotPanics(t, func() { tc.then(&core) })
+			// Whatever the pair did, the id must be waitable again without a
+			// wait: nothing is in flight for it any more.
+			assert.True(t, core.awaitInFlight("tab-1", time.Hour))
+
+			core.finish()
+			core.WaitForInFlight()
+		})
+	}
 }

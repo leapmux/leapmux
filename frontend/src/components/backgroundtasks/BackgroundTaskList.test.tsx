@@ -1,8 +1,12 @@
+import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { fireEvent, render } from '@solidjs/testing-library'
+import { createStore } from 'solid-js/store'
 import { describe, expect, it, vi } from 'vitest'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
+import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createBackgroundTaskStore } from '~/stores/chatBackgroundTaskStore'
 import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
@@ -15,6 +19,25 @@ function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): Background
     status: over.status ?? 'running',
     ...over,
   }
+}
+
+/** One wire row, for the cases that drive the real store rather than a literal list. */
+function protoTask(id: string, title: string, activeForm: string): ProtoBackgroundTaskItem {
+  return {
+    id,
+    kind: BackgroundTaskKind.SUBAGENT,
+    status: BackgroundTaskStatus.RUNNING,
+    title,
+    activeForm,
+    childAgentId: '',
+    parentAgentId: '',
+    groupKey: '',
+    groupLabel: '',
+    description: '',
+    createdAt: '',
+    updatedAt: '',
+    endedAt: '',
+  } as ProtoBackgroundTaskItem
 }
 
 /**
@@ -614,5 +637,143 @@ describe('backgroundTaskList load failure', () => {
     expect(rowsText(container)).not.toContain('Could not load background tasks')
     expect(queryByTestId('bg-task-empty')).not.toBeNull()
     expect(queryByTestId('bg-task-load-failed')).toBeNull()
+  })
+})
+
+/**
+ * What a row must NOT rebuild when one of its fields changes.
+ *
+ * The registry arrives whole on every broadcast, so a subagent that reports
+ * progress every few seconds redraws the section that often. A row rebuilt from
+ * scratch takes its tooltip and its animations with it: the full-title tooltip
+ * the pointer was resting on closed and reopened, and the status dot restarted
+ * its pulse -- both under a cursor that never moved.
+ *
+ * The store half is `setReconciled` in `~/stores/chatPerAgentStore`, which is
+ * what keeps a row's identity across the broadcast. These cases hold the
+ * component half: one field changing must update ONE binding.
+ */
+describe('backgroundTaskList in-place updates', () => {
+  /** A store-backed list, which is the shape the sidebar actually renders. */
+  function renderLiveList(initial: BackgroundTaskItem[]) {
+    const [tasks, setTasks] = createStore<BackgroundTaskItem[]>(initial)
+    const result = render(() => <BackgroundTaskList variant="sidebar" tasks={tasks} />)
+    return { ...result, setTasks }
+  }
+
+  it('leaves the title and the status dot alone when the activity changes', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 't1', title: 'Review the diff', status: 'running', activity: 'reading' }),
+    ])
+    const titleBefore = titles(container)[0]!
+    const dotBefore = container.querySelector('[data-testid="bg-task-status-dot"]')!
+    const rowBefore = container.querySelector('[data-testid="bg-task-row"]')!
+
+    setTasks(0, 'activity', 'writing')
+
+    expect(secondaries(container)[0]!.textContent).toBe('writing')
+    expect(titles(container)[0]).toBe(titleBefore)
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dotBefore)
+    expect(container.querySelector('[data-testid="bg-task-row"]')).toBe(rowBefore)
+  })
+
+  it('updates the title in place when the title changes', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 't1', title: 'Untitled work', status: 'running', activity: 'reading' }),
+    ])
+    const titleBefore = titles(container)[0]!
+
+    setTasks(0, 'title', 'Review the diff')
+
+    expect(titles(container)[0]).toBe(titleBefore)
+    expect(titleBefore.textContent).toBe('Review the diff')
+  })
+
+  // `data-status` is what the E2E suite selects a finished row by, and the
+  // strike-through class is how a finished row reads. Both were correct only
+  // because the row used to be rebuilt; a row that survives has to carry them
+  // reactively.
+  it('follows a status change on the row and its dot without rebuilding either', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 't1', title: 'Review the diff', status: 'running', activity: 'reading' }),
+    ])
+    const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    const dotBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-status-dot"]')!
+
+    setTasks(0, 'status', 'completed')
+
+    expect(container.querySelector('[data-testid="bg-task-row"]')).toBe(rowBefore)
+    expect(rowBefore.dataset.status).toBe('completed')
+    expect(classes(rowBefore)).toContain(styles.taskStruck)
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dotBefore)
+    expect(classes(dotBefore)).toContain(styles.statusDotSuccess)
+  })
+
+  // The row becomes clickable only once the worker reports the child agent id,
+  // which arrives in a later broadcast than the row itself.
+  it('turns into a button once the child agent id arrives', () => {
+    const [tasks, setTasks] = createStore<BackgroundTaskItem[]>([
+      row({ rowKey: 't1', title: 'Review the diff', status: 'running' }),
+    ])
+    const { container } = render(() => (
+      <BackgroundTaskList variant="sidebar" tasks={tasks} onOpenSubagent={() => {}} />
+    ))
+    expect(container.querySelector('[data-testid="bg-task-row"]')!.tagName).toBe('DIV')
+
+    setTasks(0, 'childAgentId', 'c1')
+
+    const el = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    expect(el.tagName).toBe('BUTTON')
+    expect(el.dataset.childAgentId).toBe('c1')
+  })
+
+  /**
+   * The reported bug, end to end, through the real store.
+   *
+   * The worker rebroadcasts the WHOLE registry whenever one row changes, so this
+   * is the path the sidebar actually takes -- and the one the two halves of the
+   * fix have to survive together. The tooltip is what made it visible: a
+   * tooltip closes with the element it is attached to, so a row rebuilt under a
+   * stationary pointer blinks.
+   */
+  it('keeps a hovered title tooltip open across a whole-registry rebroadcast', () => {
+    vi.useFakeTimers()
+    try {
+      const store = createBackgroundTaskStore()
+      const long = 'A title far wider than the row that holds it'
+      store.replace('a1', [protoTask('t1', long, 'reading')])
+      const { container } = render(() => (
+        <BackgroundTaskList variant="sidebar" tasks={store.get('a1')} />
+      ))
+
+      const title = titles(container)[0]!
+      stubClipped(title)
+      expect(hoverForTooltip(title)?.textContent).toBe(long)
+
+      store.replace('a1', [protoTask('t1', long, 'writing')])
+
+      expect(secondaries(container)[0]!.textContent).toBe('writing')
+      expect(titles(container)[0]).toBe(title)
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(long)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The other half of the same rebroadcast: a dot that is rebuilt restarts its
+  // pulse from the top, which reads as a blink on a row that only reported new
+  // activity.
+  it('keeps the status dot across a whole-registry rebroadcast', () => {
+    const store = createBackgroundTaskStore()
+    store.replace('a1', [protoTask('t1', 'Review the diff', 'reading')])
+    const { container } = render(() => (
+      <BackgroundTaskList variant="sidebar" tasks={store.get('a1')} />
+    ))
+    const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
+
+    store.replace('a1', [protoTask('t1', 'Review the diff', 'writing')])
+
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dot)
   })
 })

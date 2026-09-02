@@ -54,6 +54,13 @@ export function createBackgroundTaskStore() {
      * A successful load clears the failure flag, and that write happens even
      * when the rows are unchanged: a retry that returns the same (empty) list
      * is still the answer that the registry is reachable again.
+     *
+     * The write RECONCILES by row key rather than replacing the array, so a row
+     * whose fields did not change keeps its identity and the sidebar leaves its
+     * DOM alone. The broadcast that carries one subagent's new activity string
+     * carries the whole registry with it, so a plain replace rebuilt every row
+     * on screen: the tooltip under the pointer closed and reopened, and every
+     * status dot restarted its pulse. See `PerAgentStore.setReconciled`.
      */
     replace(agentId: string, protoTasks: ProtoBackgroundTaskItem[]) {
       if (failed.get(agentId))
@@ -62,7 +69,7 @@ export function createBackgroundTaskStore() {
       const prev = base.byAgent[agentId]
       if (prev && shallowEqualArraysDeep(prev, next))
         return
-      base.set(agentId, next)
+      base.setReconciled(agentId, next, 'rowKey')
     },
     /** Record that the worker could not answer for this agent's registry. */
     markLoadFailed(agentId: string) {

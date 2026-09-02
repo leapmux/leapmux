@@ -219,64 +219,78 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // JSX read of `.ungrouped`/`.groups`), and only when the visible rows change.
   const grouped = createMemo(() => groupBackgroundTasks(sortBackgroundTasks(visible())))
 
-  // Status reads as COLOR on one constant dot, not as a different glyph per
-  // state. Six shapes made the column a legend to memorize; one dot in the
-  // status palette (in progress / succeeded / failed) is legible at a glance,
-  // and an in-progress dot pulses so activity is visible without a spinner.
-  // The exact state stays available as the dot's accessible name and tooltip,
-  // and as the row's `data-status`, which is what tests and E2E select on.
-  //
-  // Rendered at the right end of the title line, as a flex sibling of the
-  // title -- see titleRow in the stylesheet.
-  const renderStatusDot = (item: BackgroundTaskItem): JSX.Element => (
-    <StatusDot
-      class={statusDotClass(item.status)}
-      label={backgroundTaskStatusLabel(item.status)}
-      tooltip
-      testId="bg-task-status-dot"
-    />
-  )
-
-  const kindIcon = (item: BackgroundTaskItem): JSX.Element => {
-    if (item.kind === 'shell')
-      return <Terminal class={styles.taskIcon} size={14} />
-    return <Bot class={styles.taskIcon} size={14} />
-  }
-
-  // The line is clipped to one line, so ClippedText offers the full string on
-  // hover. An explanatory tip is passed as the DETAIL, so it stands under the
-  // label rather than in its place -- a clipped label keeps its route back even
-  // when the row also has an explanation. A detail also shows while the label
-  // fits, because it carries what the label cannot.
-  const renderSecondary = (item: BackgroundTaskItem, title: string): JSX.Element => {
-    const text = secondary(item, title)
-    if (!text)
-      return null
-    return (
-      <ClippedText
-        text={text}
-        class={styles.taskSecondary}
-        detail={secondaryTooltip(item)}
-      />
-    )
-  }
-
-  // The row's inner content and its data attributes are identical for both
-  // element kinds; only the tag and the click handler differ. Building them once
-  // keeps the clickable and static rows from drifting apart.
+  /**
+   * The row's inner content and its data attributes are identical for both
+   * element kinds; only the tag and the click handler differ. Building them once
+   * keeps the clickable and static rows from drifting apart.
+   *
+   * Every part of it is a reactive EXPRESSION on one field, never a helper that
+   * returns an element. That distinction is the whole point of this shape. A
+   * `{renderStatusDot(item)}` re-runs its whole body whenever any field it reads
+   * changes and puts a NEW element in place of the old one, so a task that
+   * reported progress lost the tooltip the pointer was resting on and restarted
+   * the pulse on its status dot. A prop getter updates one attribute of an
+   * element that stays.
+   *
+   * `~/stores/chatPerAgentStore`'s `setReconciled` is the other half: without a
+   * store that keeps a row's identity across a broadcast, `<For>` would rebuild
+   * the row before any of this could matter.
+   */
   const rowBody = (item: BackgroundTaskItem): JSX.Element => {
-    // Cleaned once per row: the title line renders it and the echo guard in
-    // `secondary` compares against it.
-    const title = rowTitle(item)
+    // A memo, because two bindings read it -- the title line, and the echo guard
+    // in `secondary` -- and a row must not clean its title twice per update or
+    // let the two reads disagree.
+    const title = createMemo(() => rowTitle(item))
+    const secondaryText = createMemo(() => secondary(item, title()))
     return (
       <>
-        {kindIcon(item)}
+        {/* `Show`, not a function that returns one icon or the other: a kind
+            that changed would otherwise replace the element rather than swap
+            the branch. */}
+        <Show
+          when={item.kind === 'shell'}
+          fallback={<Bot class={styles.taskIcon} size={14} />}
+        >
+          <Terminal class={styles.taskIcon} size={14} />
+        </Show>
         <div class={styles.taskBody}>
           <div class={styles.titleRow}>
-            <ClippedText text={title} class={titleClass(item)} />
-            {renderStatusDot(item)}
+            <ClippedText text={title()} class={titleClass(item)} />
+            {/* Status reads as COLOR on one constant dot, not as a different
+                glyph per state. Six shapes made the column a legend to
+                memorize; one dot in the status palette (in progress /
+                succeeded / failed) is legible at a glance, and an in-progress
+                dot pulses so activity is visible without a spinner. The exact
+                state stays available as the dot's accessible name and tooltip,
+                and as the row's `data-status`, which is what tests and E2E
+                select on.
+
+                At the right end of the title line, as a flex sibling of the
+                title -- see titleRow in the stylesheet. */}
+            <StatusDot
+              class={statusDotClass(item.status)}
+              label={backgroundTaskStatusLabel(item.status)}
+              tooltip
+              testId="bg-task-status-dot"
+            />
           </div>
-          {renderSecondary(item, title)}
+          {/* The line is clipped to one line, so ClippedText offers the full
+              string on hover. An explanatory tip is passed as the DETAIL, so it
+              stands under the label rather than in its place -- a clipped label
+              keeps its route back even when the row also has an explanation. A
+              detail also shows while the label fits, because it carries what
+              the label cannot.
+
+              `Show` compares its condition by TRUTHINESS, so an activity string
+              that changes from one non-empty value to another updates the text
+              in place and never rebuilds the label. */}
+          <Show when={secondaryText()}>
+            <ClippedText
+              text={secondaryText()}
+              class={styles.taskSecondary}
+              detail={secondaryTooltip(item)}
+            />
+          </Show>
         </div>
       </>
     )
@@ -284,20 +298,30 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
 
   // `extraClass` carries taskRowStatic for the non-clickable row, which drops
   // the pointer cursor taskRow sets for the clickable one.
+  //
+  // GETTERS, because Solid spreads this object inside a render effect and reads
+  // each property there: a plain value is read once and then never again. Every
+  // field that can change while the row lives is one -- the status a task
+  // finishes with, and the child agent id a subagent gets only once it spawns.
+  // A frozen `data-status` would be invisible on screen and wrong for every E2E
+  // locator that selects on it.
   const rowAttrs = (item: BackgroundTaskItem, extraClass?: string) => ({
     'class': extraClass ? `${styles.taskRow} ${extraClass}` : styles.taskRow,
-    'classList': { [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) },
+    get 'classList'() { return { [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) } },
     'data-testid': 'bg-task-row',
-    'data-status': item.status,
-    'data-kind': item.kind,
-    'data-child-agent-id': item.childAgentId ?? '',
+    get 'data-status'() { return item.status },
+    get 'data-kind'() { return item.kind },
+    get 'data-child-agent-id'() { return item.childAgentId ?? '' },
   })
 
   const renderRow = (item: BackgroundTaskItem): JSX.Element => {
-    const clickable = opensSubagentTranscript(item) && !!props.onOpenSubagent
+    // An accessor, not a value: a subagent row becomes clickable only once the
+    // worker reports the child agent id, which arrives in a later broadcast --
+    // and the row now survives that broadcast instead of being rebuilt by it.
+    const clickable = () => opensSubagentTranscript(item) && !!props.onOpenSubagent
     return (
       <Show
-        when={clickable}
+        when={clickable()}
         fallback={<div {...rowAttrs(item, styles.taskRowStatic)}>{rowBody(item)}</div>}
       >
         <button type="button" {...rowAttrs(item)} onClick={() => props.onOpenSubagent?.(item)}>

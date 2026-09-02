@@ -76,6 +76,49 @@ type startupEntry struct {
 	// goroutine is reading.
 	closeDisposition closeWorktreeDisposition
 	closeRaced       bool
+	// done is closed when this startup stops being IN FLIGHT -- when succeed,
+	// fail or cancelAndClear takes the entry out of the map. awaitInFlight
+	// waits on it, so a caller that finds the id claimed can wait for the claim
+	// holder instead of refusing.
+	//
+	// Only an entry that begin created carries one. The entry fail installs is a
+	// finished record with no goroutine behind it, and awaitInFlight skips a
+	// failed entry for the same reason begin does not refuse on one.
+	done chan struct{}
+}
+
+// release closes e.done, so every awaitInFlight waiting on this startup stops
+// waiting. The caller holds r.mu and has already taken the entry out of the
+// map, which is what makes the close happen exactly once: begin is the only
+// writer of an in-flight entry, and one entry leaves the map one time.
+func (e *startupEntry) release() {
+	if e != nil && e.done != nil {
+		close(e.done)
+	}
+}
+
+// startupTimerClock is the time source awaitInFlight bounds its wait with.
+// Production uses systemStartupClock; the registry's tests substitute a fake
+// that fires on demand, so a test about the give-up path spends no wall time
+// and a test about the wait NOT giving up cannot lose to a real timer on a
+// loaded machine.
+//
+// It mirrors streamevents.retryClock deliberately: the same two-value
+// NewTimer, so the codebase has one shape for "a timer a test can drive".
+type startupTimerClock interface {
+	// NewTimer starts a timer for d, returning the channel it delivers on and a
+	// stop func that releases it -- time.Timer's C/Stop pair without the
+	// concrete type. The caller must call stop exactly once, whether or not it
+	// consumed the delivery.
+	NewTimer(d time.Duration) (<-chan time.Time, func())
+}
+
+// systemStartupClock is the production startupTimerClock: a plain time.NewTimer.
+type systemStartupClock struct{}
+
+func (systemStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -92,10 +135,14 @@ type startupCore struct {
 	mu      sync.Mutex
 	entries map[string]*startupEntry
 	wg      sync.WaitGroup
+	// clock is the time source awaitInFlight bounds its wait with. Set once by
+	// newStartupCore and never reassigned in production, so a waiter reads it
+	// without the mutex; a test substitutes a fake before it starts one.
+	clock startupTimerClock
 }
 
 func newStartupCore() startupCore {
-	return startupCore{entries: make(map[string]*startupEntry)}
+	return startupCore{entries: make(map[string]*startupEntry), clock: systemStartupClock{}}
 }
 
 // begin records an entry in STARTING state, adds one to the in-flight counter,
@@ -126,10 +173,53 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 	if existing, busy := r.entries[id]; busy && !existing.failed {
 		return nil
 	}
-	entry := &startupEntry{cancel: cancel, resizeSignal: make(chan struct{}, 1)}
+	entry := &startupEntry{
+		cancel:       cancel,
+		resizeSignal: make(chan struct{}, 1),
+		done:         make(chan struct{}),
+	}
 	r.entries[id] = entry
 	r.wg.Add(1)
 	return entry
+}
+
+// awaitInFlight blocks until no startup for id is in flight, and reports
+// whether it reached that state inside `within`. It returns true at once when
+// the id is unclaimed, and when the entry holding it already FAILED -- the two
+// states in which begin hands out the claim.
+//
+// It exists so a caller that must have a running process can wait for the
+// startup that is already producing one, rather than refuse. The refusal is
+// what a user saw as a message that vanished: a message sent inside the open
+// path's startup window reached ensureAgentRunning, which found the id claimed
+// and reported "not running", and nothing ever handed that message to the
+// process the open path then started.
+//
+// The wait is bounded because a startup goroutine can be stuck on a provider
+// that never answers, and the caller is answering a user. On a timeout the
+// caller keeps whatever it does today for a startup it cannot join.
+func (r *startupCore) awaitInFlight(id string, within time.Duration) bool {
+	// Take the channel itself under the lock, not the entry: every other field
+	// of an entry belongs to the goroutine that owns it or to a caller holding
+	// r.mu, and reading one out here would be the one place that reads an entry
+	// unguarded.
+	r.mu.Lock()
+	var done chan struct{}
+	if entry, busy := r.entries[id]; busy && !entry.failed {
+		done = entry.done
+	}
+	r.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	expired, stop := r.clock.NewTimer(within)
+	defer stop()
+	select {
+	case <-done:
+		return true
+	case <-expired:
+		return false
+	}
 }
 
 // finish marks one startup goroutine as returned. Always called via `defer` at
@@ -171,6 +261,7 @@ func (r *startupCore) succeed(id string) {
 	r.mu.Lock()
 	entry := r.entries[id]
 	delete(r.entries, id)
+	entry.release()
 	r.mu.Unlock()
 	if entry != nil && entry.evictTimer != nil {
 		entry.evictTimer.Stop()
@@ -191,9 +282,14 @@ func (r *startupCore) fail(id, startupError string) {
 		}
 	})
 	r.mu.Lock()
-	// Stop any prior pending eviction if fail is called twice.
-	if prev, ok := r.entries[id]; ok && prev.evictTimer != nil {
-		prev.evictTimer.Stop()
+	// Stop any prior pending eviction if fail is called twice, and release the
+	// startup this failure replaces: an awaited startup that FAILS has stopped
+	// being in flight just as surely as one that succeeded.
+	if prev, ok := r.entries[id]; ok {
+		if prev.evictTimer != nil {
+			prev.evictTimer.Stop()
+		}
+		prev.release()
 	}
 	r.entries[id] = entry
 	r.mu.Unlock()
@@ -217,6 +313,7 @@ func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposi
 	if entry != nil {
 		entry.closeDisposition = disposition
 		entry.closeRaced = true
+		entry.release()
 	}
 	r.mu.Unlock()
 	if entry == nil {

@@ -30,6 +30,22 @@ export function menuOptions(testId: string): string[] {
     .map(el => el.textContent?.trim() ?? '')
 }
 
+/**
+ * The option LABELS one menu offers, in order.
+ *
+ * Distinct from {@link menuOptions}, which reads the whole row: a row that
+ * carries a DETAIL -- the age of a session -- holds that text as well, and an
+ * age is a moving target. Use this whenever the assertion is about the label.
+ *
+ * `DropdownMenuCheckableItem` derives the label's test id from the row's own,
+ * which is what makes one suffix match every menu.
+ */
+export function menuOptionLabels(testId: string): string[] {
+  return within(popover(testId))
+    .queryAllByRole('menuitemradio', { hidden: true })
+    .map(el => el.querySelector('[data-testid$="-label"]')?.textContent?.trim() ?? '')
+}
+
 /** Activate the option with this exact label. */
 export function pickMenuOption(testId: string, label: string | RegExp): void {
   fireEvent.click(within(popover(testId)).getByRole('menuitemradio', { name: label, hidden: true }))

@@ -100,6 +100,61 @@ describe('createPerAgentStore', () => {
     })
   })
 
+  // The reason the method exists: a UI that renders these entries as rows
+  // reconciles by REFERENCE, so a replace that hands over all-new objects tears
+  // down and rebuilds every row on screen -- losing the tooltip under the
+  // pointer and restarting each row's animation.
+  it('setReconciled keeps the identity of an entry that did not change', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<{ id: string, n: number }[]>([])
+      store.set('a', [{ id: 'x', n: 1 }, { id: 'y', n: 1 }])
+      const [x, y] = store.get('a')
+
+      store.setReconciled('a', [{ id: 'x', n: 1 }, { id: 'y', n: 2 }], 'id')
+
+      expect(store.get('a')[0]).toBe(x)
+      expect(store.get('a')[1]).toBe(y)
+      expect(store.get('a')[1]!.n).toBe(2)
+      dispose()
+    })
+  })
+
+  it('setReconciled adds, drops and reorders entries by key', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<{ id: string, n: number }[]>([])
+      store.set('a', [{ id: 'x', n: 1 }, { id: 'y', n: 2 }])
+
+      store.setReconciled('a', [{ id: 'y', n: 2 }, { id: 'z', n: 3 }], 'id')
+
+      expect(store.get('a').map(e => e.id)).toEqual(['y', 'z'])
+      expect(store.get('a').map(e => e.n)).toEqual([2, 3])
+      dispose()
+    })
+  })
+
+  // `reconcile` writes its diff THROUGH the store proxy into the object
+  // underneath, and the empty value is one object shared by every unset agent.
+  // Reconciling into it would give every other agent this agent's rows.
+  it('setReconciled leaves the shared empty value alone', () => {
+    createRoot((dispose) => {
+      const empty: { id: string }[] = []
+      const store = createPerAgentStore<{ id: string }[]>(empty)
+
+      store.setReconciled('a', [{ id: 'x' }], 'id')
+      expect(store.get('a').map(e => e.id)).toEqual(['x'])
+      expect(empty).toEqual([])
+      expect(store.get('b')).toEqual([])
+
+      // The same hazard through the other door: a CLEARED agent holds the
+      // shared empty as its value, not undefined.
+      store.clear('a')
+      store.setReconciled('a', [{ id: 'z' }], 'id')
+      expect(store.get('a').map(e => e.id)).toEqual(['z'])
+      expect(empty).toEqual([])
+      dispose()
+    })
+  })
+
   it('set replaces (does not index-merge) a shorter array, and clear empties it', () => {
     // The pendingOutbound/todos slices depend on this: setting a shorter array
     // must drop the trailing entries, not keep them via SolidJS index-merge.

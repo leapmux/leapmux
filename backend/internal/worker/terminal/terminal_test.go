@@ -170,6 +170,38 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 	assert.Error(t, term.SendInput([]byte("echo fail"+testutil.TestShellEnter())), "expected error sending input after stop")
 }
 
+// TestTerminal_StopAfterANaturalExitIsSafe pins the second teardown of a pty
+// this worker already tore down once.
+//
+// A shell that exits on its own closes the child side of its pty, and the tab
+// stays in the manager until the user closes it -- so the close that follows
+// runs Stop on a terminal whose child side is already gone. On Windows that
+// side is the pseudoconsole, whose handle go-pty does not clear, and a second
+// ClosePseudoConsole closes a handle this process no longer owns.
+func TestTerminal_StopAfterANaturalExitIsSafe(t *testing.T) {
+	term, err := Start(context.Background(), Options{
+		ID:         "test-natural-exit-stop",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+	}, func([]byte, int64, []Signal) {})
+	require.NoError(t, err, "Start")
+	t.Cleanup(term.Stop)
+
+	require.NoError(t, term.SendInput([]byte("exit"+testutil.TestShellEnter())), "SendInput")
+	term.Wait()
+	select {
+	case <-term.readDoneCh:
+	case <-time.After(30 * time.Second):
+		require.FailNow(t, "the reader never ended after the shell exited on its own")
+	}
+
+	assert.NotPanics(t, func() {
+		term.Stop()
+		term.Stop()
+	}, "a close after a natural exit tore the pty down a second time")
+	assert.True(t, term.IsExited())
+}
+
 func TestTerminal_IsExited(t *testing.T) {
 	term, err := Start(context.Background(), Options{
 		ID:         "test-exited",
@@ -284,12 +316,9 @@ func TestManager_ExitNotification(t *testing.T) {
 // handler that runs first snapshots a screen the reader can still grow, and a
 // natural exit persists only once, so the row keeps the truncated copy.
 //
-// The two signals are driven by hand rather than by a real shell. Through a
-// PTY the reader wins this race on any unloaded machine -- waitForExit polls
-// for the process group's death before it closes exitCh, which hands the reader
-// all the time it needs -- so a shell-driven version of this test passes
-// whether the wait is there or not. That is exactly how the loss reached CI:
-// visible only on a runner slow enough to lose the race.
+// The two signals are driven by hand rather than by a real shell, so the order
+// is asserted rather than raced for. What ENDS a real reader is the subject of
+// TestManager_NaturalExitRunsTheExitHandler; this test covers only the wait.
 func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
 	m := NewManager()
 	const id = "tm-exit-order"
@@ -323,6 +352,150 @@ func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
 		require.Fail(t, "the exit handler never ran after the reader drained")
 	}
 	m.WaitForExit(id)
+}
+
+// TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains pins the bound
+// on that wait. A tty can outlive the kill group that this worker can reach --
+// a setsid descendant that inherited it keeps every descriptor for it open --
+// and the reader for such a pty never returns. The handler is the only persist
+// a natural exit performs, so waiting for ever would lose the exit code and the
+// screen outright. A screen one chunk short is the better answer.
+func TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains(t *testing.T) {
+	m := NewManager()
+	// A real grace would spend itself on every run of this test for nothing:
+	// the reader here is one that never drains, by construction.
+	m.readDrainGrace = 10 * time.Millisecond
+	const id = "tm-exit-stuck-reader"
+
+	term := &Terminal{
+		id:         id,
+		exitCh:     make(chan struct{}),
+		readDoneCh: make(chan struct{}),
+		screenBuf:  NewScreenBuffer(),
+	}
+	ran := make(chan struct{})
+	m.installTerminal(id, term, func(string, int) { close(ran) },
+		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
+
+	// The child is reaped and the reader never finishes.
+	close(term.exitCh)
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "the exit handler never ran for a reader that never drained")
+	}
+	m.WaitForExit(id)
+}
+
+// readerEnded reports whether the terminal's read goroutine has returned. It
+// reaches into the manager because the drain signal is what the assertion is
+// about and no exported call answers it without blocking.
+func readerEnded(m *Manager, id string) bool {
+	m.mu.RLock()
+	t, ok := m.terminals[id]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	select {
+	case <-t.readDoneCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// TestManager_NaturalExitRunsTheExitHandler pins that a shell which exits on
+// its own reaches the exit handler, carrying the output it wrote last, with no
+// caller stopping the terminal first.
+//
+// Nothing about the child ends the reader. This process holds the child side of
+// the pty open for the pty's whole life -- go-pty's slave descriptor on Unix,
+// the pseudoconsole on Windows -- and a master read ends only when the last
+// descriptor for the tty is gone, so the reaped shell leaves the reader blocked
+// on a pty that can never produce another byte. waitForExit closing that side
+// is what ends it. Darwin is the one platform that hides the defect, because it
+// revokes the tty when the session leader exits.
+func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
+	m := NewManager()
+	const id = "tm-natural-exit"
+	const marker = "natural_exit_marker"
+	const lastMarker = "natural_exit_last_write"
+
+	type exitReport struct {
+		code    int
+		screen  []byte
+		drained bool
+	}
+	exited := make(chan exitReport, 1)
+	require.NoError(t, m.StartTerminal(context.Background(), Options{
+		ID:         id,
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       200,
+		Rows:       24,
+	}, func([]byte, int64, []Signal) {}, func(tid string, code int) {
+		// Snapshot the way the service's exit handler does: this is the only
+		// persist a natural exit performs, so what is on the screen HERE is
+		// what the tab keeps.
+		screen, _, _ := m.ScreenSnapshotSince(tid, 0)
+		// Read the drain signal HERE, not after: the handler runs either
+		// because the reader ended or because the bound expired, and only this
+		// point tells the two apart. Asserting on the handler alone would pass
+		// on the give-up path and hide the very defect this test covers.
+		exited <- exitReport{code: code, screen: screen, drained: readerEnded(m, tid)}
+	}))
+	t.Cleanup(func() { m.RemoveTerminal(id) })
+
+	// Echo a marker first and wait for it, so the shell is past its init
+	// scripts and the exit below cannot be read before them.
+	require.NoError(t, m.SendInput(id, []byte("echo "+marker+testutil.TestShellEnter())))
+	testutil.AssertEventually(t, func() bool {
+		screen, _, _ := m.ScreenSnapshotSince(id, 0)
+		return bytes.Contains(screen, []byte(marker))
+	}, "expected the shell to echo the marker")
+
+	// cmd.exe under ConPTY does not propagate `exit N` to its OS exit code on
+	// the GitHub runner, so ask for a bare exit there and assert only that the
+	// handler ran. The persisted-code contract is covered cross-platform by the
+	// service's own tests.
+	exitArg := " 7"
+	if runtime.GOOS == "windows" {
+		exitArg = ""
+	}
+	// The LAST thing the shell writes, sent back to back with the exit and
+	// deliberately NOT waited for. Those bytes are the ones the drain is about:
+	// they can still sit unread in the pty when the child is reaped, and a
+	// handler that snapshots without them persists a screen missing the last
+	// thing the user saw. Two writes rather than one line, so no shell's
+	// command separator (`;` against cmd.exe's `&`) gets in the way.
+	require.NoError(t, m.SendInput(id, []byte("echo "+lastMarker+testutil.TestShellEnter())))
+	require.NoError(t, m.SendInput(id, []byte("exit"+exitArg+testutil.TestShellEnter())))
+
+	var got exitReport
+	select {
+	case got = <-exited:
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "the exit handler never ran for a shell that exited on its own")
+	}
+
+	require.True(t, got.drained,
+		"the natural exit must end the reader; the handler only ran because the bound expired")
+
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, 7, got.code, "the handler must carry the shell's own exit code")
+		// The drain is what puts these here: the shell wrote them before it
+		// exited, and the handler snapshots after the reader applied them.
+		assert.Contains(t, string(got.screen), marker,
+			"the screen the handler persists must carry the shell's output")
+		assert.Contains(t, string(got.screen), lastMarker,
+			"the shell's LAST write was lost; the handler snapshotted before the reader applied it")
+	}
+
+	// The child side of the pty is closed twice on this path: once by the
+	// natural exit above, once by this close. On Windows an unguarded second
+	// close would close a pseudoconsole handle this process no longer owns.
+	m.RemoveTerminal(id)
 }
 
 func TestManager_StopAll(t *testing.T) {

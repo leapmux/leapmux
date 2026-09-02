@@ -30,6 +30,52 @@ describe('createBackgroundTaskStore', () => {
     expect(store.get('a1')[0].activity).toBe('working')
   })
 
+  // The registry arrives WHOLE on every broadcast, so one subagent's new
+  // activity string used to hand the sidebar a fresh object for every row. The
+  // list reconciles by reference, so all of them were torn down and rebuilt --
+  // which closed the tooltip under the pointer and restarted each status dot's
+  // pulse.
+  it('replace keeps the identity of a row whose fields did not change', () => {
+    const store = createBackgroundTaskStore()
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING, 'reading'),
+      proto('t2', BackgroundTaskStatus.RUNNING, 'reading'),
+    ])
+    const [first, second] = store.get('a1')
+
+    store.replace('a1', [
+      proto('t1', BackgroundTaskStatus.RUNNING, 'reading'),
+      proto('t2', BackgroundTaskStatus.RUNNING, 'writing'),
+    ])
+
+    expect(store.get('a1')[0]).toBe(first)
+    expect(store.get('a1')[1]).toBe(second)
+    expect(store.get('a1')[1]!.activity).toBe('writing')
+  })
+
+  it('replace still adds, drops and reorders rows', () => {
+    const store = createBackgroundTaskStore()
+    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING), proto('t2', BackgroundTaskStatus.RUNNING)])
+
+    store.replace('a1', [proto('t2', BackgroundTaskStatus.COMPLETED), proto('t3', BackgroundTaskStatus.PENDING)])
+
+    expect(store.get('a1').map(t => t.rowKey)).toEqual(['t2', 't3'])
+    expect(store.get('a1').map(t => t.status)).toEqual(['completed', 'pending'])
+  })
+
+  // A reconcile writes THROUGH the store proxy, and an agent with no rows holds
+  // the one empty array every other agent reads as its default.
+  it('replace into a cleared agent leaves every other agent empty', () => {
+    const store = createBackgroundTaskStore()
+    store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])
+    store.clear('a1')
+
+    store.replace('a1', [proto('t2', BackgroundTaskStatus.RUNNING)])
+
+    expect(store.get('a1').map(t => t.rowKey)).toEqual(['t2'])
+    expect(store.get('a2')).toEqual([])
+  })
+
   it('replace skips an identical re-broadcast', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING)])

@@ -191,10 +191,7 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 		}
 	}
 	if tl := snap.ThoughtLevel; tl != nil {
-		// Auto leads the list: it is LeapMux's "send no level" sentinel, and every
-		// model accepts it because it produces no RPC at all.
 		levels := make([]*EffortInfo, 0, len(tl.Available)+1)
-		levels = append(levels, zcodeAutoEffort)
 		available := make(map[string]bool, len(tl.Available))
 		for _, l := range tl.Available {
 			if l.Value == "" {
@@ -203,6 +200,16 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 			available[l.Value] = true
 			levels = append(levels, zcodeEffortTier(l.Value, l.Label, l.Description))
 		}
+		// Strongest first, exactly as the configured catalog orders them
+		// (zcodeModelInfo). The app-server reports the levels in the order the
+		// model's own configuration lists them, which is the order this replaces --
+		// so without the same sort here the menu reordered itself the moment the
+		// agent reported its first snapshot.
+		sortEffortsByStrength(levels)
+		// Auto leads the list: it is LeapMux's "send no level" sentinel, and every
+		// model accepts it because it produces no RPC at all. It is not a strength,
+		// so it joins after the sort.
+		levels = append([]*EffortInfo{zcodeAutoEffort}, levels...)
 		if !tl.Enabled || len(available) == 0 {
 			// The model offers no thought level at all. Auto alone keeps the axis
 			// selectable-but-inert rather than showing a level the model would refuse.

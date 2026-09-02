@@ -5,7 +5,8 @@ import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { popoverCard } from '~/styles/popover.css'
-import { clippedText, menuItemContent, menuItemShortcut } from '~/styles/shared.css'
+import { clippedText, menuItemContent, menuItemDetail } from '~/styles/shared.css'
+import { ClippedText } from './ClippedText'
 import { attachContextMenuGesture, holdIsOverMenu, pressAnchorRect } from './contextMenuGesture'
 import { dismissActiveTooltip } from './Tooltip'
 
@@ -239,7 +240,7 @@ export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
           author's decision, not a mechanical swap. */}
       <span class={clippedText}>{props.label}</span>
       <Show when={props.shortcut}>
-        {shortcut => <span class={menuItemShortcut}>{shortcut()}</span>}
+        {shortcut => <span class={menuItemDetail}>{shortcut()}</span>}
       </Show>
     </span>
   )
@@ -265,6 +266,32 @@ export interface DropdownMenuCheckableItemProps {
    * passed here sets `aria-hidden`.
    */
   'leading'?: JSXElement
+  /**
+   * A short note at the RIGHT end of the row -- the age of a session, the
+   * shortcut of a command.
+   *
+   * It never shrinks and never wraps, so it stays readable while a long `label`
+   * clips beside it. That is the whole reason it is a slot of its own rather
+   * than text a caller appends to `label`: text inside the label is inside the
+   * ellipsis, so the row that most needs its timestamp is the row that loses it.
+   *
+   * Content, not decoration, so it is NOT `aria-hidden`: a screen reader reads
+   * it as part of the item, which is what `leading` deliberately withholds for
+   * a colour swatch.
+   */
+  'detail'?: JSXElement
+  /**
+   * Show the whole `label` in a tooltip once the row clips it.
+   *
+   * OFF by default, and the default is not caution about the cost. An item
+   * whose CALLER wraps it in a `Tooltip` -- `~/components/chat/settingsShared`
+   * puts the option's description, or the reason the group is read-only, on the
+   * whole button -- can hold only one open tooltip at a time, so a second one
+   * that repeats the label verbatim would dismiss the description that explains
+   * the option. A caller that wraps no tooltip of its own sets this, and its
+   * clipped labels keep a route back.
+   */
+  'revealClippedLabel'?: boolean
   /** Invoked on activation. Not called while `disabled`. */
   'onSelect': () => void
 }
@@ -281,6 +308,14 @@ export interface DropdownMenuCheckableItemProps {
  * that mistake impossible.
  */
 export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps) {
+  // Derived from the item's own test id, so a test can address the LABEL rather
+  // than the whole row -- whose text now also holds the detail, and whose detail
+  // may be a clock that ticks while the test reads it.
+  const labelTestId = () => {
+    const testId = props['data-testid']
+    return testId === undefined ? undefined : `${testId}-label`
+  }
+
   return (
     <button
       // A <button> defaults to type="submit". This item toggles a preference, so
@@ -312,13 +347,29 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
             letting a caller supply one. `display: contents` keeps the wrapper
             out of the flex layout, so the swatch sits exactly where it did. */}
         <span aria-hidden="true" style={{ display: 'contents' }}>{props.leading}</span>
-        {/* The raw style, not `ClippedText`, although `label` is a string. A
-            caller already wraps this whole button in a `Tooltip` that carries
-            the option's DESCRIPTION. A second tooltip inside it would dismiss
-            that one -- `Tooltip` keeps at most one open -- and replace the
-            description with a verbatim repeat of the label, which is a net
-            loss. The fix is one tooltip chosen by the item, not two nested. */}
-        <span class={clippedText}>{props.label}</span>
+        {/* Two spellings of one label, and the caller picks. `ClippedText`
+            pairs the ellipsis with the tooltip that reads the rest, which is
+            what a row of unbounded titles needs. The raw style is for the
+            caller that wraps this whole button in a `Tooltip` of its own: a
+            second tooltip would dismiss that one -- `Tooltip` keeps at most one
+            open -- and replace the option's DESCRIPTION with a verbatim repeat
+            of the label. See `revealClippedLabel`. */}
+        <Show
+          when={props.revealClippedLabel}
+          fallback={<span class={clippedText} data-testid={labelTestId()}>{props.label}</span>}
+        >
+          <ClippedText text={props.label} testId={labelTestId()} />
+        </Show>
+        {/* The callback form, and it is load-bearing: `Show` memoizes `when`,
+            so `props.detail` is read ONCE per tracking cycle. A caller whose
+            detail is an expression (`LoadingMenu` renders one from the option)
+            has a getter behind that prop, and a second read there builds a
+            second element -- one to test for presence and a different one on
+            screen. An empty detail draws nothing, which is what an option with
+            no note wants. */}
+        <Show when={props.detail}>
+          {detail => <span class={menuItemDetail}>{detail()}</span>}
+        </Show>
       </span>
     </button>
   )

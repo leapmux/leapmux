@@ -702,13 +702,15 @@ func TestRemintControlIPC_AFailedMintStillReleasesTheDelegation(t *testing.T) {
 }
 
 // TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent pins the claim
-// AgentStartup.begin makes.
+// AgentStartup.begin makes, on the one path that reaches it: a startup that
+// holds the agent for longer than the caller can wait.
 //
 // An OpenAgent startup holds no manager entry until its final handoff, so
 // HasAgent is false while one is in flight -- and the send gate refuses only a
 // PERMANENT startup failure. A message that lands in that window used to spawn a
 // second process for the same tab, and its begin() overwrote the open's registry
-// entry, so a later CloseAgent cancelled the wrong context.
+// entry, so a later CloseAgent cancelled the wrong context. The claim is what
+// stops that; this test drives the wait past its bound to reach it.
 func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T) {
 	t.Parallel()
 
@@ -716,6 +718,10 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	rec := newStartRecorder()
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
+	// A fake clock, so the give-up costs no wall time and the assertion below
+	// about the caller WAITING first cannot lose to a real timer.
+	clock := newFakeStartupClock()
+	svc.AgentStartup.clock = clock
 
 	// Stand in for the open path's in-flight startup.
 	openCtx, openCancel := context.WithCancel(context.Background())
@@ -724,14 +730,99 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	require.NotNil(t, openHandle)
 	t.Cleanup(func() { svc.AgentStartup.finish() })
 
-	require.Error(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart),
-		"a cold start ran while another startup held the agent; that spawns a second process for one tab")
+	errCh := make(chan error, 1)
+	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+
+	assert.Equal(t, svc.agentStartupTimeout(), clock.waitArmed(t),
+		"the wait must be armed for the same budget the startup it waits on has")
+	select {
+	case <-errCh:
+		require.FailNow(t, "refused while the startup was still in flight; the user's message had a process coming")
+	default:
+	}
+
+	clock.fire(t)
+	select {
+	case err := <-errCh:
+		require.Error(t, err,
+			"a cold start ran while another startup held the agent; that spawns a second process for one tab")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the wait outlived its own bound")
+	}
 	assert.Empty(t, rec.ids())
 
 	// The open's handle must still be the registered one, so a close reaches IT.
 	svc.AgentStartup.cancelAndClear("agent-1", keepWorktreeOnClose)
 	assert.ErrorIs(t, openCtx.Err(), context.Canceled,
 		"the auto-start displaced the open's registry entry; a close then cancels the wrong context")
+}
+
+// TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent is the other half,
+// and it is the one a user feels.
+//
+// A message sent inside the open path's startup window takes the auto-start
+// path, because HasAgent is false until that startup's final handoff. Refusing
+// there loses the message outright: SendAgentMessage records "agent is not
+// running" on the row, the open path brings the CLI up a second later, and
+// nothing ever hands it what the user typed. Joining the startup that is already
+// running is what keeps that message.
+func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-1", true)
+	clock := newFakeStartupClock()
+	svc.AgentStartup.clock = clock
+
+	openHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, openHandle)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+
+	clock.waitArmed(t)
+	assert.Empty(t, rec.ids(), "it must not spawn a second process for the tab that is already starting")
+
+	// The open path finishes.
+	svc.AgentStartup.succeed("agent-1")
+	svc.AgentStartup.finish()
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err, "the startup it waited for finished, so the message has a process to reach")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the caller never resumed after the startup it waited for finished")
+	}
+	assert.Equal(t, []string{"agent-1"}, rec.ids(),
+		"the agent must be running once the wait is over, or the message has nowhere to go")
+}
+
+// TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup pins the
+// asymmetry. The resume sweep has no message to lose: the startup it would wait
+// for produces the very process it wants, so skipping is the same outcome
+// sooner -- and a sweep worker parked on that wait holds up the Shutdown that
+// joins the sweep.
+func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-1", true)
+	clock := newFakeStartupClock()
+	svc.AgentStartup.clock = clock
+
+	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
+	t.Cleanup(func() { svc.AgentStartup.finish() })
+
+	require.Error(t, svc.ensureAgentRunning("agent-1", nil, backgroundStart))
+	assert.Empty(t, rec.ids())
+
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	assert.Empty(t, clock.timers, "the sweep must not wait on a startup that is already doing its work")
 }
 
 // requireAgentRow is a small readability helper for the tests above.

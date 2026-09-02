@@ -1,15 +1,23 @@
 import type { AgentSessionSummary } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RESUME_SESSION_ERROR_ID } from '~/components/shell/resumeSession'
+import { RESUME_SESSION_ERROR_ID, typeAHandleLabel } from '~/components/shell/resumeSession'
 import {
   NEW_SESSION_LABEL,
+  sessionOptionDetail,
   sessionOptionLabel,
   SessionSelect,
-  TYPE_A_HANDLE_LABEL,
   TYPE_A_HANDLE_VALUE,
 } from '~/components/shell/SessionSelect'
-import { menuOptions, menuOptionValues, menuTriggerText, pickMenuValue } from '~/test-support/menu'
+import { clippedText } from '~/styles/shared.css'
+import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
+import {
+  menuOptionLabels,
+  menuOptions,
+  menuOptionValues,
+  menuTriggerText,
+  pickMenuValue,
+} from '~/test-support/menu'
 
 afterEach(() => {
   cleanup()
@@ -37,6 +45,7 @@ function renderSelect(overrides: Partial<Parameters<typeof SessionSelect>[0]> = 
       sessions={[summary()]}
       loading={false}
       invalid={false}
+      isFilePath={false}
       {...overrides}
     />
   ))
@@ -44,21 +53,55 @@ function renderSelect(overrides: Partial<Parameters<typeof SessionSelect>[0]> = 
 }
 
 describe('sessionOptionLabel', () => {
-  it('states the title and how long ago the session ran', () => {
-    expect(sessionOptionLabel(summary(), NOW)).toBe('Build the thing — 1h ago')
+  it('states the title', () => {
+    expect(sessionOptionLabel(summary())).toBe('Build the thing')
   })
 
   // Pi stores no title and a Claude session has none until its title pass
   // runs, so the handle stands in -- a string the user can recognise, unlike a
   // placeholder that would read the same on every such row.
   it('falls back to the handle when the store recorded no title', () => {
-    expect(sessionOptionLabel(summary({ title: '', sessionId: 'ses_abc' }), NOW)).toBe('ses_abc — 1h ago')
-    expect(sessionOptionLabel(summary({ title: '   ', sessionId: 'ses_abc' }), NOW)).toBe('ses_abc — 1h ago')
+    expect(sessionOptionLabel(summary({ title: '', sessionId: 'ses_abc' }))).toBe('ses_abc')
+    expect(sessionOptionLabel(summary({ title: '   ', sessionId: 'ses_abc' }))).toBe('ses_abc')
   })
 
-  it('omits the age when the store recorded no time', () => {
-    expect(sessionOptionLabel(summary({ updatedAt: '' }), NOW)).toBe('Build the thing')
-    expect(sessionOptionLabel(summary({ updatedAt: 'not a timestamp' }), NOW)).toBe('Build the thing')
+  // The age is a column of its own, so a title long enough to clip does not
+  // take the timestamp with it.
+  it('leaves the age out, whatever the store recorded', () => {
+    expect(sessionOptionLabel(summary({ updatedAt: '' }))).toBe('Build the thing')
+    expect(sessionOptionLabel(summary())).toBe('Build the thing')
+  })
+})
+
+describe('sessionOptionDetail', () => {
+  it('states how long ago the session ran, as text the filter can match', () => {
+    expect(sessionOptionDetail(summary(), NOW)?.text).toBe('1h ago')
+  })
+
+  // No time, no column: an empty detail would draw a gap at the right end of
+  // the row and give the filter an empty string to match everything with.
+  it('gives no detail when the store recorded no time', () => {
+    expect(sessionOptionDetail(summary({ updatedAt: '' }), NOW)).toBeUndefined()
+    expect(sessionOptionDetail(summary({ updatedAt: 'not a timestamp' }), NOW)).toBeUndefined()
+  })
+
+  // The rendered form is `RelativeTime`, not the plain text: that is what puts
+  // the full local date and time one hover away from a row that has room for
+  // "4h ago" and nothing more.
+  it('renders the age as a timestamp whose hover states the full date', () => {
+    vi.useFakeTimers()
+    try {
+      const detail = sessionOptionDetail(summary(), NOW)
+      const { container } = render(() => <>{detail!.render!()}</>)
+
+      // Wrapper -> the span Tooltip resolves as its target.
+      const target = container.firstElementChild!.firstElementChild as HTMLElement
+      expect(target.textContent).toContain('ago')
+      expect(hoverForTooltip(target)?.textContent).toContain('2026')
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -70,19 +113,31 @@ describe('sessionSelect', () => {
         summary({ sessionId: 'ses_b', title: 'Older', updatedAt: '2026-08-30T12:00:00.000Z' }),
       ],
     })
-    expect(menuOptionValues(MENU)).toEqual(['', 'ses_a', 'ses_b', TYPE_A_HANDLE_VALUE])
+    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_a', 'ses_b'])
   })
 
   // The list holds only what this worker can enumerate, so a handle from
   // another machine, one a tab already holds open, and one past the worker's
   // cap are all missing from it. Without this row a directory with a single
   // session would take typing away entirely.
-  it('ends with a row that hands the field back to its text box', () => {
+  it('offers a row that hands the field back to its text box, above the sessions', () => {
     const { onChange } = renderSelect({ sessions: [summary({ sessionId: 'ses_a' })] })
-    expect(menuOptions(MENU).at(-1)).toBe(TYPE_A_HANDLE_LABEL)
+    // Second, beside the other row that is not a session: at the bottom it sat
+    // under a list that runs to the worker's cap, so the answer to "my session
+    // is not here" was the one row a user had to scroll to find.
+    expect(menuOptions(MENU)[1]).toBe(typeAHandleLabel(false))
 
     pickMenuValue(MENU, TYPE_A_HANDLE_VALUE)
     expect(onChange).toHaveBeenCalledWith(TYPE_A_HANDLE_VALUE)
+  })
+
+  // The row is the one sentence a user reads BEFORE the text box exists, so it
+  // has to invite the same shapes the box's placeholder does. Pi's session is a
+  // file, and a row that said "Enter a session ID…" invited the shape the
+  // worker then refused with "path must be absolute".
+  it('invites a file path too when the provider takes one', () => {
+    renderSelect({ isFilePath: true, sessions: [summary({ sessionId: 'ses_a' })] })
+    expect(menuOptions(MENU)[1]).toBe('Enter a session ID or a file path…')
   })
 
   it('marks the trigger invalid and points it at the field error', () => {
@@ -149,7 +204,9 @@ describe('sessionSelect', () => {
     expect(menuOptionValues(MENU)).toEqual(['ses_b'])
   })
 
-  it('filters on the age as well as the title, because both are in the label', () => {
+  // The age left the label for a column of its own. The filter reads both, so
+  // the search the label used to serve still works.
+  it('filters on the age as well as the title', () => {
     renderSelect({
       sessions: [
         summary({ sessionId: 'ses_recent', title: 'Recent', updatedAt: new Date().toISOString() }),
@@ -158,6 +215,43 @@ describe('sessionSelect', () => {
     })
     fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'y ago' } })
     expect(menuOptionValues(MENU)).toEqual(['ses_ancient'])
+  })
+
+  // The requirement the two columns exist for: a title with no length limit
+  // must not be able to push the timestamp out of the row.
+  it('keeps the age beside a title far too long for the row', () => {
+    const title = Array.from({ length: 40 }, (_, i) => `Refactor step ${i}`).join(', ')
+    renderSelect({ sessions: [summary({ sessionId: 'ses_long', title })] })
+
+    const row = screen.getByTestId('loading-menu-option-ses_long')
+    expect(row.textContent).toContain('ago')
+    // The label clips; the detail beside it does not, so the two are separate
+    // elements and only the first carries the clipping style.
+    const label = screen.getByTestId('loading-menu-option-ses_long-label')
+    expect(label.textContent).toBe(title)
+    expect(label.className.split(/\s+/)).toContain(clippedText)
+    expect(label.contains(screen.getByText(/ago/))).toBe(false)
+  })
+
+  // A clipped title is unreadable, and the tooltip is the only way back to it.
+  it('gives the whole title on hover once the row clips it', () => {
+    vi.useFakeTimers()
+    try {
+      const title = 'Teach the parser to accept a trailing comma in every list'
+      renderSelect({ sessions: [summary({ sessionId: 'ses_long', title })] })
+
+      const label = screen.getByTestId('loading-menu-option-ses_long-label')
+      stubClipped(label)
+      expect(hoverForTooltip(label)?.textContent).toBe(title)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the title alone in the option labels', () => {
+    renderSelect({ sessions: [summary({ sessionId: 'ses_a', title: 'Newest' })] })
+    expect(menuOptionLabels(MENU)).toEqual([NEW_SESSION_LABEL, typeAHandleLabel(false), 'Newest'])
   })
 
   it('names itself for a screen reader with the field label', () => {

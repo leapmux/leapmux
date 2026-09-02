@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { popoverCard } from '~/styles/popover.css'
 import { motion } from '~/styles/tokens'
+import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
 import { pointerEvent } from '~/test-support/pointer'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 import { Tooltip } from './Tooltip'
@@ -715,5 +716,97 @@ describe('dropdownMenuCheckableItem', () => {
 
     const checkbox = screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement
     expect(checkbox.style.pointerEvents).toBe('none')
+  })
+
+  // The reason `detail` is a slot rather than text a caller appends to the
+  // label: the label clips, so anything inside it goes with the ellipsis.
+  it('draws a detail outside the label, and announces it as part of the item', () => {
+    render(() => (
+      <DropdownMenuCheckableItem
+        kind="radio"
+        label="Build the thing"
+        detail="4h ago"
+        checked={false}
+        data-testid="row"
+        onSelect={() => {}}
+      />
+    ))
+
+    // Its OWN element, so the label's ellipsis cannot reach it.
+    expect(screen.getByTestId('row-label').textContent).toBe('Build the thing')
+    expect(screen.getByText('4h ago')).toBeInTheDocument()
+    // Content, not decoration: unlike `leading`, it is not aria-hidden.
+    expect(screen.getByRole('menuitemradio', { name: /4h ago/ })).toBeInTheDocument()
+  })
+
+  it('draws no detail element for an item that has none', () => {
+    render(() => (
+      <DropdownMenuCheckableItem kind="radio" label="Alpha" checked={false} data-testid="row" onSelect={() => {}} />
+    ))
+
+    expect(screen.getByRole('menuitemradio').textContent?.trim()).toBe('Alpha')
+  })
+
+  // `revealClippedLabel` is OPT-IN, and this is the case that keeps it so. The
+  // caller here wraps the item in a Tooltip that carries the reason it is
+  // disabled; `Tooltip` keeps at most one open, so a second tooltip inside the
+  // button would dismiss that reason and replace it with a verbatim repeat of
+  // the label.
+  it('opens no tooltip of its own on a clipped label by default', () => {
+    vi.useFakeTimers()
+    try {
+      render(() => (
+        <DropdownMenuCheckableItem
+          kind="radio"
+          label="A label far wider than the row that holds it"
+          checked={false}
+          data-testid="row"
+          onSelect={() => {}}
+        />
+      ))
+
+      const label = screen.getByTestId('row-label')
+      stubClipped(label)
+      expect(hoverForTooltip(label)).toBeNull()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A caller that wraps no tooltip of its own sets the flag, and its clipped
+  // labels keep a route back. `LoadingMenu` is that caller.
+  it('reveals the whole label on hover once the caller asks for it', () => {
+    vi.useFakeTimers()
+    try {
+      render(() => (
+        <DropdownMenuCheckableItem
+          kind="radio"
+          label="A label far wider than the row that holds it"
+          checked={false}
+          revealClippedLabel
+          data-testid="row"
+          onSelect={() => {}}
+        />
+      ))
+
+      const label = screen.getByTestId('row-label')
+      stubClipped(label)
+      expect(hoverForTooltip(label)?.textContent).toBe('A label far wider than the row that holds it')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The label test id is DERIVED from the item's own, so a test can address the
+  // label rather than the whole row -- whose text also holds the detail, and
+  // whose detail may be a clock that ticks while the test reads it.
+  it('gives the label no test id of its own when the item has none', () => {
+    render(() => (
+      <DropdownMenuCheckableItem kind="radio" label="Alpha" checked={false} revealClippedLabel onSelect={() => {}} />
+    ))
+
+    expect(document.querySelector('[data-testid$="-label"]')).toBeNull()
   })
 })

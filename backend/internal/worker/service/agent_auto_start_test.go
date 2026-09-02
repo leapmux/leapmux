@@ -326,3 +326,75 @@ func TestEnsureAgentRunning_ShutdownDrainsAMessageDrivenColdStart(t *testing.T) 
 	}
 	<-done
 }
+
+// TestSendAgentMessage_DuringAnOpenStartupIsDelivered is the handler-level form
+// of the defect a user reported as a first message that vanished.
+//
+// The open path holds no manager entry until its final handoff, so HasAgent is
+// false for the whole of its startup and a message that lands in that window
+// takes the auto-start branch. That branch used to find the tab's id claimed by
+// the open's own startup and record "agent is not running" on the row: the CLI
+// came up a second later and nothing ever handed it what the user typed. The
+// send must join that startup instead, and deliver.
+func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	// A fake clock, so the assertion that the handler WAITS cannot lose to a
+	// real timer, and a regression that refuses again fails in milliseconds
+	// rather than after the whole startup budget.
+	clock := newFakeStartupClock()
+	svc.AgentStartup.clock = clock
+
+	// A start that REGISTERS in the manager, not a stub that returns success and
+	// leaves it empty: the delivery this test is about is the SendInput that
+	// follows, and it needs a process to reach.
+	svc.startAgentFn = svc.Agents.MockStartAgent
+	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	// Stand in for the open path's in-flight startup.
+	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
+
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+			AgentId: "agent-1",
+			Content: "hello",
+		}, w)
+	}()
+
+	clock.waitArmed(t)
+	select {
+	case <-sent:
+		require.FailNow(t, "the send answered while the tab's own startup was still running")
+	default:
+	}
+
+	// The open path finishes and hands over its process.
+	svc.AgentStartup.succeed("agent-1")
+	svc.AgentStartup.finish()
+
+	select {
+	case <-sent:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the send never resumed after the startup it waited for finished")
+	}
+	require.Empty(t, w.errors)
+
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+		AgentID: "agent-1",
+		Limit:   10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Empty(t, rows[0].DeliveryError,
+		"the message was refused although the tab had a process coming; nothing ever retries it")
+}

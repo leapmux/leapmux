@@ -83,7 +83,43 @@ func TestApplySettingsSnapshot_ReadsTheAuthoritativeCurrentFields(t *testing.T) 
 	for _, level := range a.observedThoughtLevels {
 		ids = append(ids, level.GetId())
 	}
-	assert.Equal(t, []string{EffortAuto, "low", "high"}, ids, "auto leads the list as the send-nothing sentinel")
+	assert.Equal(t, []string{EffortAuto, "high", "low"}, ids,
+		"auto leads the list as the send-nothing sentinel, then the levels strongest first -- the same order the configured catalog uses, so the menu does not reorder itself when the first snapshot lands")
+}
+
+// The two lists of levels are built in two places -- the configured catalog
+// (zcodeModelInfo) and this snapshot -- and the second REPLACES the first for the
+// running model. Ordered differently, the menu would reorder itself the moment
+// the agent reported its first snapshot, under a user reading it.
+func TestApplySettingsSnapshot_OrdersTheLevelsLikeTheConfiguredCatalog(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {"builtin:zai": {"kind": "openai", "options": {"apiKey": "k"},
+        "models": {"GLM-5.3": {"reasoning": {"enabled": true, "variants": ["low", "max", "high"]}}}}}
+    }`)
+	require.Len(t, catalog.Models, 1)
+	fromConfig := []string{}
+	for _, level := range catalog.Models[0].SupportedEfforts {
+		fromConfig = append(fromConfig, level.GetId())
+	}
+
+	a := newZCodeTestAgent(t, &recordingControlSink{})
+	// The app-server reports the levels in the model's own configured order, which
+	// is exactly the order that states no ladder.
+	zcodeApplySettings(t, a, `{
+      "thoughtLevel": {"enabled": true, "current": "high",
+                       "available": [{"value":"low"},{"value":"max"},{"value":"high"}]}
+    }`)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	fromSnapshot := []string{}
+	for _, level := range a.observedThoughtLevels {
+		fromSnapshot = append(fromSnapshot, level.GetId())
+	}
+	assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, fromSnapshot)
+	assert.Equal(t, fromConfig, fromSnapshot, "the live list must not reorder the menu")
 }
 
 // A patch carries only the axes that changed. An absent axis must leave the agent's
@@ -340,7 +376,7 @@ func TestZCodeModelsForUI_OverridesOnlyTheCurrentModelsEfforts(t *testing.T) {
 			for _, e := range m.SupportedEfforts {
 				ids = append(ids, e.GetId())
 			}
-			assert.Equal(t, []string{EffortAuto, "low", "high", "max"}, ids,
+			assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, ids,
 				"the shared catalog entry must not be mutated")
 		}
 	}

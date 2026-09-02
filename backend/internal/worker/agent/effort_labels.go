@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // effortLabels is the display label for each reasoning-effort id, shared by
 // every provider.
@@ -13,9 +16,12 @@ import "strings"
 // special-cased it to "XHigh", so the four could disagree and did: correcting
 // one of them by hand is exactly what this table makes unnecessary.
 var effortLabels = map[string]string{
-	EffortAuto:  "Auto",
-	"off":       "Off",
-	"none":      "None",
+	EffortAuto: "Auto",
+	"off":      "Off",
+	"none":     "None",
+	// ZCode's on/off toggle for a model that offers no ladder: GLM-5-Turbo
+	// declares `enabled` and `off` where GLM-5.3 declares low/high/max.
+	"enabled":   "Enabled",
 	"minimal":   "Minimal",
 	"low":       "Low",
 	"medium":    "Medium",
@@ -43,4 +49,57 @@ func effortLabel(id string) string {
 // one exists.
 func effortTier(id string) *EffortInfo {
 	return &EffortInfo{Id: id, Name: effortLabel(id)}
+}
+
+// effortStrength ranks a reasoning level by how much thinking it asks for.
+//
+// The app lists the levels STRONGEST FIRST. Codex's own catalog
+// (codexDefaultEfforts) states that order by hand, and this table repeats its
+// ladder for the providers whose levels arrive as DATA and therefore in whatever
+// order the source wrote them: ZCode reads them from the user's `config.json`,
+// which ships GLM-5.3 as `["low", "max", "high"]`, and listing that verbatim put
+// the weakest level at the top of the menu and the ladder out of order under it.
+//
+// Only the order matters, not the numbers; the gaps leave room for a level a CLI
+// adds between two of these.
+//
+// `enabled` is ZCode's on/off toggle for a model that offers no tiers
+// (GLM-5-Turbo gives `enabled` and `off`). Only its position ABOVE `off` is
+// load-bearing -- a model offers the ladder or the toggle, never both.
+var effortStrength = map[string]int{
+	"ultracode": 100,
+	"ultra":     90,
+	"max":       80,
+	EffortXHigh: 70,
+	EffortHigh:  60,
+	"medium":    50,
+	"low":       40,
+	"enabled":   30,
+	"minimal":   20,
+	"none":      10,
+	"off":       0,
+}
+
+// sortEffortsByStrength orders levels strongest first, in place.
+//
+// A level the ladder does not rank keeps its given position relative to the
+// other unranked ones and sorts BEHIND every ranked one: a level a CLI adds
+// mid-release has no claim to a place in the middle of the ladder, and a stable
+// sort keeps the source's own order among such levels.
+//
+// `EffortAuto` is not on the ladder and must not be passed here. It is not a
+// strength -- it means "send no level at all" -- and every caller puts it first
+// by hand, ahead of whatever this returns.
+func sortEffortsByStrength(efforts []*EffortInfo) {
+	sort.SliceStable(efforts, func(i, j int) bool {
+		left, leftOK := effortStrength[strings.ToLower(efforts[i].GetId())]
+		right, rightOK := effortStrength[strings.ToLower(efforts[j].GetId())]
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if !leftOK {
+			return false
+		}
+		return left > right
+	})
 }

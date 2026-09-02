@@ -101,18 +101,56 @@ test.describe('Session picker in the New Agent dialog', () => {
     await expect(trigger).toBeEnabled()
     await openMenu(dialog, SESSION_MENU)
 
-    // Exactly one resumable session, between the row that withdraws a pick and
-    // the row that hands the field back to its text box. The Keeper's session
-    // is still open AND in another directory, so it is absent on both counts.
+    // Exactly one resumable session, UNDER the two rows that are not sessions:
+    // the one that withdraws a pick and the one that hands the field back to
+    // its text box. The Keeper's session is still open AND in another
+    // directory, so it is absent on both counts.
     const options = dialog.getByTestId(SESSION_MENU).getByRole('menuitemradio')
     await expect(options).toHaveCount(3)
     await expect(options.first()).toHaveText(NEW_SESSION_ROW)
-    await expect(options.last()).toHaveText(TYPE_A_HANDLE_ROW)
+    await expect(options.nth(1)).toHaveText(TYPE_A_HANDLE_ROW)
 
-    const sessionRow = options.nth(1)
-    const sessionLabel = (await sessionRow.textContent())?.trim() ?? ''
+    // The menu opens over a dialog, so it must not outgrow the control it
+    // belongs to or the dialog that holds it. One long session title used to
+    // make it wider than the dialog, and a long list made it taller.
+    const triggerBox = await trigger.boundingBox()
+    const dialogBox = await dialog.boundingBox()
+    const menuBox = await dialog.getByTestId(SESSION_MENU).boundingBox()
+    expect(menuBox!.width).toBeLessThanOrEqual(triggerBox!.width + 1)
+    expect(menuBox!.height).toBeLessThanOrEqual(dialogBox!.height + 1)
+
+    const sessionRow = options.nth(2)
+    const sessionValue = (await sessionRow.getAttribute('data-testid'))!
+      .replace('loading-menu-option-', '')
+    // The TITLE, not the row's whole text: the row also carries the age, which
+    // is a live relative time and can tick between this read and the assertion
+    // below. Every row states one beside its title, and it stays put however
+    // long that title is.
+    const sessionTitle = (await sessionRow
+      .getByTestId(`loading-menu-option-${sessionValue}-label`)
+      .textContent())?.trim() ?? ''
+    await expect(sessionRow).toContainText('ago')
+
     await sessionRow.click()
-    await expect(trigger).toContainText(sessionLabel)
+    await expect(trigger).toHaveAttribute('data-value', sessionValue)
+    await expect(trigger).toContainText(sessionTitle)
+
+    // The route into the text box is a menu row, so the route out is a button
+    // on the field. Without it a mistaken pick held the user in the text box
+    // for as long as the dialog stayed open.
+    await openMenu(dialog, SESSION_MENU)
+    await dialog.getByTestId(SESSION_MENU)
+      .getByRole('menuitemradio', { name: TYPE_A_HANDLE_ROW })
+      .click()
+    await expect(dialog.getByPlaceholder(/^Session ID/)).toBeVisible()
+    await dialog.getByTestId('session-field-pick-from-list').click()
+    await expect(trigger).toBeVisible()
+    // The way back withdraws the pick, so the field starts from the top.
+    await expect(trigger).toHaveAttribute('data-value', '')
+
+    await openMenu(dialog, SESSION_MENU)
+    await dialog.getByTestId(`loading-menu-option-${sessionValue}`).click()
+    await expect(trigger).toHaveAttribute('data-value', sessionValue)
 
     await dialog.getByRole('button', { name: 'Create' }).click()
     await expect(page.getByRole('heading', { name: 'New Agent' })).toBeHidden()

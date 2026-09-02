@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
 
@@ -301,6 +302,10 @@ type Terminal struct {
 	// cmd.Wait() in a separate goroutine, so a closed exitCh does NOT
 	// imply screenBuf writes have stopped — wait on this instead.
 	readDoneCh chan struct{}
+	// childSideOnce guards closePTYChildSide. Both the natural-exit path and
+	// Stop reach it, and on Windows it must run exactly once — see the Windows
+	// implementation for what a second call closes.
+	childSideOnce sync.Once
 }
 
 // Options configures a new Terminal.
@@ -479,9 +484,13 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 }
 
 // Stop terminates the terminal session and every process spawned beneath
-// the shell. Closing the PTY master triggers the kernel's normal hang-up
+// the shell. Closing the PTY triggers the kernel's normal hang-up
 // flow; Terminate then reaps anything still alive in the shell's kill
 // group (JobObject on Windows, process-group SIGHUP+SIGKILL on Unix).
+//
+// Both pty ends close here, child side first. A forced stop discards whatever
+// the child wrote and nobody read yet, which is the point: the caller wants the
+// session gone, not drained.
 func (t *Terminal) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -491,7 +500,8 @@ func (t *Terminal) Stop() {
 	}
 	t.stopped = true
 
-	_ = t.ptmx.Close()
+	t.closeChildSide()
+	t.closeWorkerSide()
 	if err := t.jobObject.Terminate(); err != nil {
 		slog.Debug("terminal job object terminate failed",
 			"terminal_id", t.id,
@@ -516,6 +526,53 @@ func (t *Terminal) Wait() int {
 // the PTY is closed (via Stop or natural child exit).
 func (t *Terminal) WaitForReadDrained() {
 	<-t.readDoneCh
+}
+
+// waitForReadDrained is WaitForReadDrained with a bound, and reports whether
+// the reader finished inside it.
+//
+// The bound exists for a pty this worker cannot end. The natural-exit path
+// closes the child side, and on a Unix tty that ends the reader only once the
+// LAST descriptor for it is gone -- so a descendant that escaped the shell's
+// kill group (a setsid daemon that inherited the tty) holds the reader open,
+// and this process cannot reach that descendant. On Windows the close itself
+// waits on the console host, which a parked output handler holds up. An
+// unbounded wait would strand the caller for ever in both cases. Giving up
+// returns a screen that can be one chunk short of the shell's last write, which
+// is what the caller received before the drain wait existed at all.
+func (t *Terminal) waitForReadDrained(within time.Duration) bool {
+	if within <= 0 {
+		<-t.readDoneCh
+		return true
+	}
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case <-t.readDoneCh:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// closeChildSide closes the pty end the child process wrote through, at most
+// once per terminal. The reader then drains what the child left behind and
+// returns; see closePTYChildSide for the per-platform mechanism.
+func (t *Terminal) closeChildSide() {
+	if t.ptmx == nil {
+		return
+	}
+	t.childSideOnce.Do(func() { closePTYChildSide(t.ptmx) })
+}
+
+// closeWorkerSide closes the ends this process reads and writes through. Only
+// Stop calls it: a terminal that exited on its own keeps them open so
+// ScreenSnapshot and a later restart still work off the same instance.
+func (t *Terminal) closeWorkerSide() {
+	if t.ptmx == nil {
+		return
+	}
+	closePTYWorkerSide(t.ptmx)
 }
 
 // IsExited returns true if the terminal process has exited.
@@ -620,6 +677,21 @@ func (t *Terminal) waitForExit() {
 		)
 	}
 	close(t.exitCh)
+
+	// End the reader now that the shell and its kill group are gone. Nothing
+	// else will: the pty stays open for a terminal that exited on its own --
+	// the manager keeps the entry so restart-via-Enter can respawn into the
+	// same screen buffer -- and this process holds the child side of it, so
+	// readOutput would block on a pty that can never produce another byte.
+	// Buffered output survives: both platforms hand the reader what is already
+	// there before they end the read.
+	//
+	// It runs AFTER exitCh, so no waiter on the exit is gated on it. On Windows
+	// this closes the pseudoconsole, which blocks until the console host
+	// flushes; a handler that parks the reader mid-chunk therefore parks this
+	// call too. Exiting is the fact the child established, and it is reported
+	// either way -- only the drain waits, and that wait is bounded.
+	t.closeChildSide()
 
 	slog.Info("terminal exited",
 		"terminal_id", t.id,

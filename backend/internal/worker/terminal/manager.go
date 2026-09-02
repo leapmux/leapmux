@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -42,20 +44,34 @@ type TerminalSnapshot struct {
 	Screen []byte
 }
 
+// defaultReadDrainGrace is how long the exit goroutine waits for the reader to
+// finish before it runs the exit handler anyway. Reaching it means a process
+// this worker could not kill still holds the tty open, and a longer wait does
+// not change that. The value only has to cover the scheduling of a reader the
+// kernel already woke.
+const defaultReadDrainGrace = 2 * time.Second
+
 // Manager tracks active terminal sessions.
 type Manager struct {
 	mu        sync.RWMutex
 	terminals map[string]*Terminal     // terminalID -> Terminal
 	meta      map[string]TerminalMeta  // terminalID -> metadata
 	exitDone  map[string]chan struct{} // terminalID -> closed when the exit-handler goroutine has finished
+	// readDrainGrace limits the exit goroutine's wait for the reader. A field
+	// rather than a constant so a test can drive the give-up path without
+	// spending the real grace on it. Written only at construction -- by
+	// NewManager, or by a test before it installs a terminal -- so no lock
+	// guards it.
+	readDrainGrace time.Duration
 }
 
 // NewManager creates a new terminal Manager.
 func NewManager() *Manager {
 	return &Manager{
-		terminals: make(map[string]*Terminal),
-		meta:      make(map[string]TerminalMeta),
-		exitDone:  make(map[string]chan struct{}),
+		terminals:      make(map[string]*Terminal),
+		meta:           make(map[string]TerminalMeta),
+		exitDone:       make(map[string]chan struct{}),
+		readDrainGrace: defaultReadDrainGrace,
 	}
 }
 
@@ -128,11 +144,20 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 		// for its whole life -- the user reopens an exited tab and the last
 		// thing the shell printed is missing.
 		//
-		// The wait is bounded. waitForExit terminates the job object, which
-		// reaps the whole process group, BEFORE it closes exitCh -- so by the
-		// time t.Wait returns nothing holds the PTY slave open and readOutput's
-		// next read ends it.
-		t.WaitForReadDrained()
+		// What ends the reader is waitForExit closing the child side of the pty,
+		// which it does right after it closes exitCh. The reaped child does not
+		// end it: this process holds the child side too, and on Linux a master
+		// read ends only when the last descriptor for the tty is gone. The
+		// bound covers the holders this worker cannot reach -- see
+		// Terminal.waitForReadDrained. A shell that leaves none behind never
+		// reaches it.
+		if !t.waitForReadDrained(m.readDrainGrace) {
+			slog.Warn("terminal reader did not drain after the shell exited; "+
+				"persisting the screen without its last output",
+				"terminal_id", id,
+				"grace", m.readDrainGrace,
+			)
+		}
 		if exitFn != nil {
 			exitFn(id, exitCode)
 		}

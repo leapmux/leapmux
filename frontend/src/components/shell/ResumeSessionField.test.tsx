@@ -59,6 +59,9 @@ const textInput = () => screen.queryByPlaceholderText(/^Session ID/)
 
 const refreshButton = () => screen.getByTestId('session-field-refresh')
 
+/** The way back to the menu, which only the text-box state offers. */
+const pickFromListButton = () => screen.queryByTestId('session-field-pick-from-list')
+
 // A harness whose working directory can CHANGE, which the fixed-prop one above
 // cannot express. The directory is the field's most-used key: the user picks it
 // from a tree while the dialog stays open.
@@ -219,13 +222,13 @@ describe('resumeSessionField', () => {
     listAgentSessions.mockResolvedValueOnce(response('ses_a'))
     renderField()
     await flush()
-    expect(menuOptionValues(MENU)).toEqual(['', 'ses_a', TYPE_A_HANDLE_VALUE])
+    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_a'])
 
     listAgentSessions.mockResolvedValue(response('ses_a', 'ses_b'))
     fireEvent.click(refreshButton())
     await flush()
 
-    expect(menuOptionValues(MENU)).toEqual(['', 'ses_a', 'ses_b', TYPE_A_HANDLE_VALUE])
+    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_a', 'ses_b'])
   })
 
   it('refuses a second fetch while one is in flight', async () => {
@@ -338,6 +341,50 @@ describe('resumeSessionField', () => {
     expect(textInput()).toBeInTheDocument()
     // The sentinel is not a handle, so it must never reach the state.
     expect(state.trimmed()).toBe('')
+  })
+
+  // The route INTO the text box is a menu row, so the route out cannot be one.
+  // Without this button, a user who picked "Enter a session ID…" by mistake was
+  // held in the text box for the life of the dialog: nothing else clears that
+  // state, and the field re-keys only on a change of worker, directory or
+  // provider.
+  it('returns to the menu from the text box, dropping what was typed', async () => {
+    listAgentSessions.mockResolvedValue(response('ses_a'))
+    const { state } = renderField()
+    await flush()
+
+    pickMenuValue(MENU, TYPE_A_HANDLE_VALUE)
+    fireEvent.input(textInput()!, { target: { value: 'ses_from_elsewhere' } })
+    expect(state.trimmed()).toBe('ses_from_elsewhere')
+
+    fireEvent.click(pickFromListButton()!)
+
+    expect(menuTrigger(MENU)).toBeInTheDocument()
+    expect(textInput()).toBeNull()
+    // Cleared, exactly as the row that switched TO the text box clears a picked
+    // handle: a typed handle is not one the menu can offer, so carrying it back
+    // would leave the trigger showing raw text the list does not hold.
+    expect(state.trimmed()).toBe('')
+    expect(menuTriggerText(MENU)).toBe('Start a new session')
+  })
+
+  // The button states a way back that exists. With no list to return to,
+  // pressing it would put the same text box straight back.
+  it('offers no way back while the text box is the only control', async () => {
+    listAgentSessions.mockResolvedValue(response())
+    renderField()
+    await flush()
+
+    expect(textInput()).toBeInTheDocument()
+    expect(pickFromListButton()).toBeNull()
+  })
+
+  it('offers no way back while the menu is already showing', async () => {
+    listAgentSessions.mockResolvedValue(response('ses_a'))
+    renderField()
+    await flush()
+
+    expect(pickFromListButton()).toBeNull()
   })
 
   // The error travels with the FIELD, so it survives the swap -- and whichever
