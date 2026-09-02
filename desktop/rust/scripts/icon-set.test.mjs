@@ -17,6 +17,7 @@ import {
   LINUX_ICON_FILES,
   pixelSize,
   SHARED_ICON_FILES,
+  TRAY_ICON_FILES,
 } from './icon-set.mjs'
 
 const RUST_DIR = resolve(import.meta.dirname, '..')
@@ -138,6 +139,53 @@ describe('ALL_ICON_FILES', () => {
     for (const name of ALL_ICON_FILES) {
       expect(shipped.has(name)).toBe(true)
     }
+  })
+})
+
+describe('TRAY_ICON_FILES', () => {
+  // The tray icons are embedded by `tauri::include_image!`, never bundled. If
+  // one reached `bundle.icon` the Linux bundler would install a 32 pixel
+  // silhouette into the hicolor theme as the APP icon, and every launcher
+  // would show it -- a failure that no build step reports, exactly like the
+  // undeclared-directory case the LINUX_ICON_FILES comment describes.
+  it('ships in neither bundler list', () => {
+    const bundled = new Set([...ALL_ICON_FILES, ICO_FILE])
+    for (const { name } of TRAY_ICON_FILES) {
+      expect(bundled.has(name)).toBe(false)
+    }
+  })
+
+  it('appears in neither config bundle.icon', () => {
+    const declared = new Set([...baseConfig.bundle.icon, ...linuxConfig.bundle.icon])
+    for (const { name } of TRAY_ICON_FILES) {
+      expect(declared.has(`icons/${name}`)).toBe(false)
+      expect(declared.has(name)).toBe(false)
+    }
+  })
+
+  it('renders the macOS template at exactly twice the 18 point status height', () => {
+    // tray-icon forces the NSImage to 18 points, so anything but 36 pixels is
+    // resampled on a Retina display.
+    const template = TRAY_ICON_FILES.find(f => f.source === 'template')
+    expect(template).toBeDefined()
+    expect(template.size).toBe(36)
+  })
+
+  it('gives every entry a unique PNG name and a known source', () => {
+    const names = TRAY_ICON_FILES.map(f => f.name)
+    expect(new Set(names).size).toBe(names.length)
+    for (const { name, size, source } of TRAY_ICON_FILES) {
+      expect(name.endsWith('.png')).toBe(true)
+      expect(Number.isInteger(size) && size > 0).toBe(true)
+      expect(['colour', 'template']).toContain(source)
+    }
+  })
+
+  it('covers both platform families', () => {
+    // One template for macOS and one colour icon for Linux and Windows. A
+    // missing source means a platform silently falls back to the app icon.
+    const sources = new Set(TRAY_ICON_FILES.map(f => f.source))
+    expect(sources).toEqual(new Set(['colour', 'template']))
   })
 })
 

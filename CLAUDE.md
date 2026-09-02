@@ -42,10 +42,12 @@ before building).
   `validate.json` — validation policy parameters (byte limits, strip/fold/
   refused character classes, reserved usernames). `desktop.json` — the Tauri
   event names (Rust shell emits, webview listens — all seven of them,
-  including the sidecar-log and menu events) and the env vars Rust passes
-  the Go sidecar; it also emits a RUST module
-  (`desktop/rust/src/generated/contracts.rs`, include!d from main.rs), so
-  `prepare-desktop` depends on `generate-contracts`.
+  including the sidecar-log and menu events), the env vars Rust passes
+  the Go sidecar, and `windowBehavior`, the enum tokens of the five Desktop
+  account settings (the one setting family a THIRD language spells: the Rust
+  shell matches them out of the `set_desktop_behavior` payload). It also emits
+  a RUST module (`desktop/rust/src/generated/contracts.rs`, include!d from
+  main.rs), so `prepare-desktop` depends on `generate-contracts`.
 - Go consumers import `generated/contracts` directly: one Go spelling per
   contract constant (`contracts.MaxMessageSize`, `contracts.WSRouteChannel`).
   `channelwire` keeps only the Go-owned limits no contract holds

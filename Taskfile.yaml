@@ -330,6 +330,7 @@ tasks:
       - scripts/sync-generated.mjs
       - icons/leapmux-icon-square.svg
       - icons/leapmux-icon.svg
+      - icons/leapmux-icon-mono.svg
       - desktop/rust/scripts/**/*
       - scripts/build-ico.mjs
       - scripts/render-icon.mjs
@@ -337,7 +338,8 @@ tasks:
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
-      # The set that desktop/rust/scripts/icon-set.mjs defines.
+      # The set that desktop/rust/scripts/icon-set.mjs defines, including the
+      # tray icons its TRAY_ICON_FILES adds.
       - desktop/rust/icons/*.png
       - desktop/rust/icons/icon.ico
     cmds:
@@ -350,9 +352,11 @@ tasks:
       # macOS renders the square source, because the system applies its own mask
       # and a rounded icon would show the corner twice. Linux and Windows draw
       # the icon as authored, so they render the rounded source.
-      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-square.svg icons/leapmux-icon.svg desktop/rust/icons opaque
+      # The third source is the tray / menu-bar silhouette, which is the same
+      # picture on every platform.
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-square.svg icons/leapmux-icon.svg icons/leapmux-icon-mono.svg desktop/rust/icons opaque
         if: '[ "{{OS}}" = "darwin" ]'
-      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon.svg desktop/rust/icons transparent
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon.svg icons/leapmux-icon-mono.svg desktop/rust/icons transparent
         if: '[ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
 
   # --- Build ---

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/generated/contracts"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
@@ -487,25 +488,18 @@ func TestConnectRequiresLauncherState(t *testing.T) {
 	require.Equal(t, "https://original.example", app.connection.proxy.baseURL)
 }
 
-func TestWindowModeProtoRoundTrip(t *testing.T) {
-	for _, mode := range []string{WindowModeNormal, WindowModeMaximized, WindowModeFullscreen} {
-		if got := windowModeFromProto(windowModeToProto(mode)); got != mode {
-			t.Errorf("round-trip %q -> %q", mode, got)
-		}
+// The window mode crosses the wire as the CONTRACT TOKEN, unchanged. There is
+// no enum to bridge and therefore nothing that can rewrite an unrecognized
+// value to a default behind the shell's back -- the shell normalizes once,
+// where the policy that reads the mode lives.
+func TestWindowModeCrossesTheWireVerbatim(t *testing.T) {
+	for _, mode := range []string{WindowModeNormal, WindowModeMaximized, WindowModeFullscreen, "", "bogus"} {
+		assert.Equal(t, mode, configToProto(&DesktopConfig{WindowMode: mode}).WindowMode,
+			"the sidecar stores this vocabulary and must not interpret it")
 	}
-
-	// Empty / unknown strings collapse to normal (fresh-config default).
-	if got := windowModeToProto(""); got != desktoppb.WindowMode_WINDOW_MODE_NORMAL {
-		t.Errorf("empty mode -> %v, want NORMAL", got)
-	}
-	if got := windowModeToProto("bogus"); got != desktoppb.WindowMode_WINDOW_MODE_NORMAL {
-		t.Errorf("bogus mode -> %v, want NORMAL", got)
-	}
-
-	// UNSPECIFIED on the wire maps back to normal.
-	if got := windowModeFromProto(desktoppb.WindowMode_WINDOW_MODE_UNSPECIFIED); got != WindowModeNormal {
-		t.Errorf("unspecified -> %q, want %q", got, WindowModeNormal)
-	}
+	// The Go constants ARE the contract tokens, so no second spelling exists.
+	assert.Equal(t, contracts.WindowModeMaximized, WindowModeMaximized)
+	assert.Equal(t, contracts.WindowModeFullscreen, WindowModeFullscreen)
 }
 
 // TestConnectSoloDoesNotBlockLifecycleReadersDuringStartup guards the invariant
@@ -688,4 +682,131 @@ func TestShutdownClosesIdleConnectionsOfARealProxy(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return conns.Load() == 0 }, time.Second, 5*time.Millisecond,
 		"the teardown must reach the transport behind the lane wrappers")
+}
+
+// TestSetDesktopBehaviorPersists is the twin of TestSetWindowSizePersistsMode
+// for the window-behaviour cache. The shell reads that cache at launch, before
+// the webview exists, so a value that does not reach disk means the next login
+// launch decides on the built-in defaults instead of the user's choice.
+func TestSetDesktopBehaviorPersists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := &App{config: &DesktopConfig{WindowWidth: 1280, WindowHeight: 800, WindowMode: WindowModeNormal}}
+
+	err := a.SetDesktopBehavior(DesktopBehavior{
+		TrayEnabled:    true,
+		TrayOnClose:    contracts.TrayOnCloseQuit,
+		TrayOnMinimize: contracts.TrayOnMinimizeTray,
+		StartMinimized: contracts.StartMinimizedMinimized,
+	})
+	require.NoError(t, err)
+
+	reloaded, err := LoadConfig()
+	require.NoError(t, err)
+	assert.True(t, reloaded.TrayEnabled)
+	// The expected side carries the field's DEFINED type. testify compares
+	// dynamic types, so an untyped constant would arrive as a plain `string`
+	// and never match.
+	assert.Equal(t, TrayOnClose(contracts.TrayOnCloseQuit), reloaded.TrayOnClose)
+	assert.Equal(t, TrayOnMinimize(contracts.TrayOnMinimizeTray), reloaded.TrayOnMinimize)
+	assert.Equal(t, StartMinimized(contracts.StartMinimizedMinimized), reloaded.StartMinimized)
+
+	// The geometry beside it is untouched: the two writes go through the same
+	// updateConfig, and one clobbering the other would lose the window size.
+	assert.Equal(t, 1280, reloaded.WindowWidth)
+	assert.Equal(t, WindowModeNormal, reloaded.WindowMode)
+
+	// Every push carries the whole set, so turning the tray off must clear the
+	// behaviour that only applied while it was on.
+	err = a.SetDesktopBehavior(DesktopBehavior{
+		TrayEnabled:    false,
+		TrayOnClose:    contracts.TrayOnCloseTray,
+		TrayOnMinimize: contracts.TrayOnMinimizeTaskbar,
+		StartMinimized: contracts.StartMinimizedWindow,
+	})
+	require.NoError(t, err)
+	reloaded, err = LoadConfig()
+	require.NoError(t, err)
+	assert.False(t, reloaded.TrayEnabled)
+	assert.Equal(t, TrayOnClose(contracts.TrayOnCloseTray), reloaded.TrayOnClose)
+}
+
+// A push that changes nothing must not rewrite the file. The shell sends the
+// whole resolved set on every webview mount, and this guard is what makes that
+// free -- so the shell needs no second copy of the set to compare against, and
+// no copy can drift from the config that is the authority.
+func TestUpdateConfigSkipsAWriteThatChangesNothing(t *testing.T) {
+	makeConfigUnwritable(t)
+	behavior := DesktopBehavior{
+		TrayEnabled:    true,
+		TrayOnClose:    contracts.TrayOnCloseQuit,
+		TrayOnMinimize: contracts.TrayOnMinimizeTray,
+		StartMinimized: contracts.StartMinimizedMinimized,
+	}
+	a := &App{config: &DesktopConfig{
+		TrayEnabled:    behavior.TrayEnabled,
+		TrayOnClose:    behavior.TrayOnClose,
+		TrayOnMinimize: behavior.TrayOnMinimize,
+		StartMinimized: behavior.StartMinimized,
+	}}
+
+	// The config already holds this set, so nothing reaches a disk that
+	// SaveConfig cannot write to.
+	require.NoError(t, a.SetDesktopBehavior(behavior))
+
+	// A set that DIFFERS still reaches SaveConfig and still reports its
+	// failure: the guard must skip a no-op write, never a real one.
+	behavior.TrayEnabled = false
+	require.Error(t, a.SetDesktopBehavior(behavior))
+}
+
+// A config written before these fields existed, or by a shell that never
+// pushed, carries the EMPTY token, and the sidecar passes that through
+// unchanged: normalizing it here would be a second authority over a rule the
+// Rust shell already applies where the policy lives.
+func TestUnsetDesktopBehaviorCrossesTheWireEmpty(t *testing.T) {
+	proto := configToProto(&DesktopConfig{})
+	assert.False(t, proto.TrayEnabled)
+	assert.Empty(t, proto.TrayOnClose)
+	assert.Empty(t, proto.TrayOnMinimize)
+	assert.Empty(t, proto.StartMinimized)
+	assert.Empty(t, proto.WindowMode)
+}
+
+// Each token crosses to the wire unchanged, or the cache the shell reads at
+// launch would disagree with the preference that wrote it.
+func TestDesktopBehaviorTokensCrossTheWireVerbatim(t *testing.T) {
+	for _, token := range []TrayOnClose{contracts.TrayOnCloseTray, contracts.TrayOnCloseQuit} {
+		assert.Equal(t, string(token), configToProto(&DesktopConfig{TrayOnClose: token}).TrayOnClose)
+	}
+	for _, token := range []TrayOnMinimize{contracts.TrayOnMinimizeTray, contracts.TrayOnMinimizeTaskbar} {
+		assert.Equal(t, string(token), configToProto(&DesktopConfig{TrayOnMinimize: token}).TrayOnMinimize)
+	}
+	for _, token := range []StartMinimized{contracts.StartMinimizedWindow, contracts.StartMinimizedMinimized} {
+		assert.Equal(t, string(token), configToProto(&DesktopConfig{StartMinimized: token}).StartMinimized)
+	}
+}
+
+// The RPC arm is what wires the four payload fields onto the four config
+// fields, and two of them accept the same token ("tray" is both
+// contracts.TrayOnCloseTray and contracts.TrayOnMinimizeTray). A swap there was
+// invisible while the setter took four positional strings; the defined types
+// make it a compile error, and this pins the mapping itself.
+func TestSetDesktopBehaviorMapsEachFieldToItsOwnSetting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	a := &App{config: &DesktopConfig{}}
+
+	// Deliberately asymmetric: every field takes a value no other field can
+	// take, so a crossed wire changes the answer.
+	require.NoError(t, a.SetDesktopBehavior(DesktopBehavior{
+		TrayEnabled:    true,
+		TrayOnClose:    contracts.TrayOnCloseQuit,
+		TrayOnMinimize: contracts.TrayOnMinimizeTaskbar,
+		StartMinimized: contracts.StartMinimizedMinimized,
+	}))
+
+	proto := configToProto(a.config)
+	assert.True(t, proto.TrayEnabled)
+	assert.Equal(t, contracts.TrayOnCloseQuit, proto.TrayOnClose)
+	assert.Equal(t, contracts.TrayOnMinimizeTaskbar, proto.TrayOnMinimize)
+	assert.Equal(t, contracts.StartMinimizedMinimized, proto.StartMinimized)
 }

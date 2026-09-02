@@ -2,10 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "desktop.schema.json",
   "title": "desktop shell cross-language contract",
-  "description": "Tauri event names (Rust emits, webview listens) and the env vars Rust passes to the Go sidecar. Event names are Tauri namespace:name tokens; env vars are UPPER_SNAKE.",
+  "description": "Tauri event names (Rust emits, webview listens), the env vars Rust passes to the Go sidecar, and the enum tokens of the Desktop account settings. Event names are Tauri namespace:name tokens; env vars are UPPER_SNAKE; setting tokens are slugs.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["_readme", "envVars", "tauriEvents", "maxFrameSizeBytes"],
+  "required": [
+    "_readme",
+    "envVars",
+    "tauriEvents",
+    "windowBehavior",
+    "launchVisibility",
+    "windowMode",
+    "maxFrameSizeBytes"
+  ],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
     "envVars": {
@@ -31,6 +39,63 @@
         "menuShowPreferences": { "$ref": "#/$defs/tauriEvent" }
       }
     },
+    "windowBehavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Enum tokens of the Desktop account settings, spelled by the hub (usersettings), the webview (device-tier parse) and the Rust shell (set_desktop_behavior payload). One object per SETTING, so the grouping is data this schema enforces rather than a table the generator has to keep in step. Two settings may share a token value; the generator checks uniqueness inside each object, never across the block.",
+      "required": ["trayOnClose", "trayOnMinimize", "startMinimized"],
+      "properties": {
+        "trayOnClose": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tray", "quit"],
+          "properties": {
+            "tray": { "$ref": "#/$defs/settingToken" },
+            "quit": { "$ref": "#/$defs/settingToken" }
+          }
+        },
+        "trayOnMinimize": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tray", "taskbar"],
+          "properties": {
+            "tray": { "$ref": "#/$defs/settingToken" },
+            "taskbar": { "$ref": "#/$defs/settingToken" }
+          }
+        },
+        "startMinimized": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["window", "minimized"],
+          "properties": {
+            "window": { "$ref": "#/$defs/settingToken" },
+            "minimized": { "$ref": "#/$defs/settingToken" }
+          }
+        }
+      }
+    },
+    "launchVisibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The window state the shell reports at launch. Rust writes these through get_startup_info and the webview reads them in parseLaunchVisibility; unlike windowBehavior they are one setting, so all three must differ.",
+      "required": ["normal", "minimized", "hidden"],
+      "properties": {
+        "normal": { "$ref": "#/$defs/settingToken" },
+        "minimized": { "$ref": "#/$defs/settingToken" },
+        "hidden": { "$ref": "#/$defs/settingToken" }
+      }
+    },
+    "windowMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The saved display state of the main window. All three languages spell these: Go persists the token, the Rust shell matches it at launch, and the webview reads and writes it through save_window_geometry. One setting, so all three must differ.",
+      "required": ["normal", "maximized", "fullscreen"],
+      "properties": {
+        "normal": { "$ref": "#/$defs/settingToken" },
+        "maximized": { "$ref": "#/$defs/settingToken" },
+        "fullscreen": { "$ref": "#/$defs/settingToken" }
+      }
+    },
     "maxFrameSizeBytes": {
       "type": "integer",
       "minimum": 1048576,
@@ -38,6 +103,7 @@
     }
   },
   "$defs": {
-    "tauriEvent": { "type": "string", "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$" }
+    "tauriEvent": { "type": "string", "pattern": "^[a-z][a-z0-9]*:[a-z][a-z0-9-]*$" },
+    "settingToken": { "type": "string", "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", "maxLength": 32 }
   }
 }

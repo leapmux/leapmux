@@ -17,6 +17,7 @@ import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { TAURI_EVENT_MENU_SHOW_ABOUT, TAURI_EVENT_MENU_SHOW_PREFERENCES } from '~/generated/contracts/desktop'
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
+import { useDesktopWindowBehavior } from '~/hooks/useDesktopWindowBehavior'
 import { usePreferencesForIdentity } from '~/hooks/usePreferencesForIdentity'
 import { initStorageCleanup } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
@@ -51,6 +52,10 @@ const PreferencesApplier: ParentComponent = (props) => {
   const preferences = usePreferences()
 
   usePreferencesForIdentity()
+
+  // Keep the desktop shell's tray, window and login-item behaviour in step
+  // with the resolved preferences. A no-op in a browser.
+  useDesktopWindowBehavior()
 
   // Push the resolved theme into the store that owns the live palette, so a
   // value arriving from either tier repaints. Until this runs, ~/lib/themeStore

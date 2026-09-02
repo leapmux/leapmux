@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/util/validate"
@@ -397,6 +398,25 @@ var (
 		{Value: "none"},
 		{Value: "ding-dong"},
 	}
+	// The Desktop keys are the ONE family whose tokens come from
+	// contracts/desktop.json rather than from a literal here, because a THIRD
+	// language spells them: the Rust shell matches them out of the
+	// set_desktop_behavior payload to decide what a close, a minimize and a
+	// login launch do. `unified`, `none` and the rest stay literals for the
+	// opposite reason -- only this package and the browser read those, and the
+	// browser reads them off the wire rather than restating them.
+	trayOnCloseEnumValues = []settings.EnumValue{
+		{Value: contracts.TrayOnCloseTray},
+		{Value: contracts.TrayOnCloseQuit},
+	}
+	trayOnMinimizeEnumValues = []settings.EnumValue{
+		{Value: contracts.TrayOnMinimizeTray},
+		{Value: contracts.TrayOnMinimizeTaskbar},
+	}
+	startMinimizedEnumValues = []settings.EnumValue{
+		{Value: contracts.StartMinimizedWindow},
+		{Value: contracts.StartMinimizedMinimized},
+	}
 )
 
 // dropStaleVariant clears a variant the MERGE carried over from a palette the
@@ -541,6 +561,74 @@ var (
 			}},
 		})
 
+	// --- Desktop ---
+	//
+	// Five settings the desktop shell applies and a browser ignores. The hub
+	// declares them all the same, because the account tier follows the user to
+	// whatever they sign in on; the CLIENT hides the rows outside the desktop
+	// app.
+	//
+	// The Titles and Summaries here are PLATFORM-NEUTRAL and say "tray or menu
+	// bar". They are the CLI's `settings get` output, and the hub cannot know
+	// the operating system of the client that reads them. The dialog supplies
+	// its own macOS wording; see the browser registry.
+	KeyTrayEnabled = settings.NewKey[bool]("tray_enabled").
+			WithDefault(false).
+			WithUI(settings.UIMeta{
+			Category: "desktop",
+			Title:    "Tray icon",
+			Summary:  "show a LeapMux icon in the system tray or the menu bar",
+			Fields:   []settings.Field{{Name: "", Kind: settings.FieldBool}},
+		})
+
+	KeyTrayOnClose = settings.NewKey[string]("tray_on_close").
+			WithDefault(contracts.TrayOnCloseTray).
+			WithValidate(validateEnum(trayOnCloseEnumValues)).
+			WithUI(settings.UIMeta{
+			Category: "desktop",
+			Title:    "Window close action",
+			Summary:  "what the desktop app does when you close the last window",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldEnum,
+				EnumValues: trayOnCloseEnumValues,
+			}},
+		})
+
+	KeyTrayOnMinimize = settings.NewKey[string]("tray_on_minimize").
+				WithDefault(contracts.TrayOnMinimizeTaskbar).
+				WithValidate(validateEnum(trayOnMinimizeEnumValues)).
+				WithUI(settings.UIMeta{
+			Category: "desktop",
+			Title:    "Window minimize action",
+			Summary:  "what the desktop app does when you minimize a window",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldEnum,
+				EnumValues: trayOnMinimizeEnumValues,
+			}},
+		})
+
+	KeyStartOnLogin = settings.NewKey[bool]("start_on_login").
+			WithDefault(false).
+			WithUI(settings.UIMeta{
+			Category: "desktop",
+			Title:    "Start at login",
+			Summary:  "start the desktop app when you sign in to the computer",
+			Fields:   []settings.Field{{Name: "", Kind: settings.FieldBool}},
+		})
+
+	KeyStartMinimized = settings.NewKey[string]("start_minimized").
+				WithDefault(contracts.StartMinimizedWindow).
+				WithValidate(validateEnum(startMinimizedEnumValues)).
+				WithUI(settings.UIMeta{
+			Category: "desktop",
+			Title:    "Window state at login",
+			Summary:  "whether a login launch shows a window; the login launch only",
+			Fields: []settings.Field{{
+				Name: "", Kind: settings.FieldEnum,
+				EnumValues: startMinimizedEnumValues,
+			}},
+		})
+
 	KeyDebugLogging = settings.NewKey[bool]("debug_logging").
 			WithDefault(false).
 			WithUI(settings.UIMeta{
@@ -575,6 +663,11 @@ func descriptors() []settings.Descriptor {
 		KeyDiffView,
 		KeyTurnEndSound,
 		KeyTurnEndSoundVolume,
+		KeyTrayEnabled,
+		KeyTrayOnClose,
+		KeyTrayOnMinimize,
+		KeyStartOnLogin,
+		KeyStartMinimized,
 		KeyDebugLogging,
 		KeyKeybindings,
 	}

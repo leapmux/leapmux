@@ -1,12 +1,55 @@
 import type { CategoryId, SentinelShape, SettingBinding, SettingControl, SettingScope } from '../types'
-import type { PreferencesState } from '~/context/PreferencesContext'
+import type { DualPreference, PreferencesState } from '~/context/PreferencesContext'
+import {
+  START_MINIMIZED_MINIMIZED,
+  START_MINIMIZED_WINDOW,
+  TRAY_ON_CLOSE_QUIT,
+  TRAY_ON_CLOSE_TRAY,
+  TRAY_ON_MINIMIZE_TASKBAR,
+  TRAY_ON_MINIMIZE_TRAY,
+} from '~/generated/contracts/desktop'
 import { createLogger } from '~/lib/logger'
+import { isMac } from '~/lib/shortcuts/platform'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { themeLabel, THEMES } from '~/styles/themes'
 import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar } from './bindings'
 import { requestTerminalOsNotifications } from './terminalNotifications'
 
 const log = createLogger('settingsRegistry')
+
+/**
+ * The operating system's own word for each surface that the Desktop rows
+ * identify.
+ *
+ * macOS has a MENU BAR and a DOCK; Linux and Windows have a TRAY and a
+ * TASKBAR. "Tray icon" on macOS identifies something the platform does not
+ * have, so one wording cannot serve both -- that is the "one term per concept"
+ * rule failing at the platform boundary, not a nicety. Each row keeps both
+ * words in its `keywords`, unconditionally, so search still finds it.
+ *
+ * Resolved at MODULE scope, not per render: `getPlatform` caches a user-agent
+ * read on first call and the answer cannot change while the page is open, so a
+ * render-time accessor would buy nothing and would force `label` to become a
+ * function on every declaration in this file. `CustomTitlebar.tsx` resolves
+ * `isMacDesktop` the same way for the same reason.
+ */
+const TRAY_ICON_LABEL = isMac() ? 'Menu bar icon' : 'Tray icon'
+const TRAY_SURFACE = isMac() ? 'menu bar' : 'tray'
+const TRAY_HIDE_OPTION = isMac() ? 'Hide to the menu bar' : 'Hide to the tray'
+const TRAY_KEEP_OPTION = isMac() ? 'Keep in the Dock' : 'Keep in the taskbar'
+
+/**
+ * Whether NEITHER tier of a dual boolean turns its feature on.
+ *
+ * The rule a dependent row hides by, written once. A rule on the RESOLVED value
+ * alone takes the ACCOUNT default away from a user who turned the feature off
+ * on this device, and that default is what their other devices obey -- the
+ * mistake the turn-end volume row records as already made once. Three Desktop
+ * rows depend on this, so the next one must not have to copy it correctly.
+ */
+function neitherTierEnables(pref: DualPreference<boolean>): boolean {
+  return !pref.resolved() && !pref.account()
+}
 
 /**
  * What EVERY registry entry declares, whichever tier stores its value: the
@@ -389,6 +432,79 @@ export const browserSettings: BrowserSettingDecl[] = [
       set: v => prefs.setTerminalRenderer(v as 'auto' | 'webgl' | 'canvas'),
     }),
     resetBrowser: prefs => prefs.setTerminalRenderer(null),
+  },
+
+  // --- Desktop ---
+  //
+  // Every row here declares `hidden` outside the desktop app, so the whole
+  // section disappears in a browser (`occupiedNavGroups` drops a group with no
+  // visible rows). The dependent rows use `hiddenWhen` rather than a disabled
+  // control: without it a user turns the tray off, still sees "when you close
+  // the window", picks Quit, and nothing changes.
+  {
+    id: 'desktop.trayEnabled',
+    protoKey: 'tray_enabled',
+    label: TRAY_ICON_LABEL,
+    help: `Show a LeapMux icon in the ${TRAY_SURFACE}. The icon keeps LeapMux available when no window is open.`,
+    // BOTH platform words, whichever the label shows. A user who knows the
+    // feature from Windows types "tray" on a Mac and must still find the row.
+    keywords: ['tray', 'menu bar', 'system tray', 'status icon', 'notification area', 'background'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    hidden: () => !isDesktopApp(),
+    bind: prefs => dualScalar(prefs.dual.trayEnabled),
+  },
+  {
+    id: 'desktop.trayOnClose',
+    protoKey: 'tray_on_close',
+    label: 'When you close the window',
+    help: 'Select what LeapMux does when you close the last window.',
+    keywords: ['close', 'quit', 'exit', 'tray', 'menu bar', 'background'],
+    scope: 'dual',
+    optionLabels: { [TRAY_ON_CLOSE_TRAY]: TRAY_HIDE_OPTION, [TRAY_ON_CLOSE_QUIT]: 'Quit LeapMux' },
+    sentinel: 'nullable',
+    hidden: () => !isDesktopApp(),
+    hiddenWhen: prefs => neitherTierEnables(prefs.dual.trayEnabled),
+    bind: prefs => dualScalar(prefs.dual.trayOnClose),
+  },
+  {
+    id: 'desktop.trayOnMinimize',
+    protoKey: 'tray_on_minimize',
+    label: 'When you minimize the window',
+    help: 'Select what LeapMux does when you minimize the window.',
+    keywords: ['minimize', 'taskbar', 'dock', 'tray', 'menu bar', 'hide'],
+    scope: 'dual',
+    optionLabels: { [TRAY_ON_MINIMIZE_TRAY]: TRAY_HIDE_OPTION, [TRAY_ON_MINIMIZE_TASKBAR]: TRAY_KEEP_OPTION },
+    sentinel: 'nullable',
+    hidden: () => !isDesktopApp(),
+    hiddenWhen: prefs => neitherTierEnables(prefs.dual.trayEnabled),
+    bind: prefs => dualScalar(prefs.dual.trayOnMinimize),
+  },
+  {
+    id: 'desktop.startOnLogin',
+    protoKey: 'start_on_login',
+    label: 'Start at login',
+    help: 'Start LeapMux when you sign in to the computer.',
+    keywords: ['login', 'startup', 'autostart', 'start up', 'launch', 'boot', 'login item'],
+    scope: 'dual',
+    sentinel: 'nullable',
+    hidden: () => !isDesktopApp(),
+    bind: prefs => dualScalar(prefs.dual.startOnLogin),
+  },
+  {
+    id: 'desktop.startMinimized',
+    protoKey: 'start_minimized',
+    label: 'Window at login',
+    help: `Select if LeapMux shows a window when it starts at login. If the ${TRAY_SURFACE} icon is on, LeapMux starts in the ${TRAY_SURFACE}. If it is off, LeapMux starts minimized.`,
+    keywords: ['login', 'startup', 'minimized', 'hidden', 'background', 'window'],
+    scope: 'dual',
+    optionLabels: { [START_MINIMIZED_WINDOW]: 'Show the window', [START_MINIMIZED_MINIMIZED]: 'Hide the window' },
+    sentinel: 'nullable',
+    hidden: () => !isDesktopApp(),
+    // Over `start_on_login`, not the tray: this row governs the login launch
+    // alone, so it means nothing while neither tier starts LeapMux at login.
+    hiddenWhen: prefs => neitherTierEnables(prefs.dual.startOnLogin),
+    bind: prefs => dualScalar(prefs.dual.startMinimized),
   },
 
   // --- Files & editors ---

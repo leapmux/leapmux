@@ -14,9 +14,9 @@ mod alloc_probe;
 
 mod sidecar_ipc;
 
-// Windows-only connect/handshake + its tests. A single module-level gate (here)
-// replaces the per-import `#[cfg(windows)]` attributes the inline version grew --
-// every windows-only import inside `windows_impl` is windows-gated automatically,
+// Windows-only connect/handshake + its tests. A single module-level `cfg`
+// (here) replaces the per-import `#[cfg(windows)]` attributes the inline version
+// grew -- it restricts every windows-only import inside `windows_impl` at once,
 // so a new one cannot compile silently on macOS and fail only on Windows CI.
 #[cfg(windows)]
 mod windows_impl;
@@ -27,6 +27,11 @@ mod sidecar;
 
 // Streaming file-save subsystem (file_save_open/write/commit/abort chain).
 mod file_save;
+
+// The tray icon, the window-behaviour policy it governs, and the launch
+// decision that policy feeds. Its per-platform minimize hooks carry their own
+// `cfg` attributes inside the module, the way `windows_impl` does.
+mod tray;
 
 #[cfg(target_os = "linux")]
 mod tabfix_linux;
@@ -42,7 +47,7 @@ use crate::file_save::{
 use crate::frame::{get_sidecar_info_request, read_frame, write_frame};
 use crate::sidecar::bootstrap_sidecar;
 // The Windows-only connect/handshake surface (and its windows-only imports)
-// lives in `windows_impl`, gated by a single module-level `#[cfg(windows)]` --
+// lives in `windows_impl`, behind a single module-level `#[cfg(windows)]` --
 // see `mod windows_impl` below -- so the next windows-only import lands there
 // and cannot rot invisibly on a macOS dev host.
 // Unix-only peer-credential helpers; referenced by the unix sidecar-IPC tests.
@@ -70,8 +75,8 @@ use std::{
     time::Duration,
 };
 // `Command` is used only by the macOS relaunch helper (it shells out to
-// `/usr/bin/open -n` via LaunchServices); gate it so non-macOS targets don't
-// trip `-D unused-imports`.
+// `/usr/bin/open -n` via LaunchServices); restrict it to macOS so the other
+// targets do not trip `-D unused-imports`.
 #[cfg(target_os = "macos")]
 use std::process::Command;
 // `OsStr`, `Path`, and `Instant` are referenced unqualified only by the test
@@ -105,6 +110,11 @@ pub(crate) const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30
 pub(crate) const DEV_SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const DEV_SIDECAR_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const SIDECAR_INITIAL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `setup` waits for the cached window behaviour before it launches
+/// with the built-in defaults. Short, because this call sits on the startup
+/// path and every field it carries has a safe fallback: the cost of giving up
+/// is a tray icon that appears once the webview reports, not a broken launch.
+const CACHED_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
 
 // Cross-language env-var contract, generated from contracts/desktop.json
 // (the Go sidecar reads the same names from its generated contracts package;
@@ -179,10 +189,17 @@ struct RuntimeState {
     capabilities: PlatformCapabilities,
 }
 
+/// NOTE: no `serde(rename_all)`. This struct goes to the webview as
+/// snake_case, and `StartupInfoWire` in platformBridge.ts reads `build_info`
+/// under that exact name.
 #[derive(Serialize)]
 struct StartupInfoResponse {
     config: DesktopConfigResponse,
     build_info: BuildInfoResponse,
+    /// The state the window starts in, decided by the shell at launch and
+    /// reported ONCE (see `tray::LaunchState::take`). The webview sizes the
+    /// window before it is mapped, so it has to know whether to show it.
+    launch_visibility: String,
 }
 
 #[derive(Serialize)]
@@ -362,7 +379,12 @@ fn start_sidecar_writer_thread(
 }
 
 impl DesktopShell {
-    fn new(app_handle: AppHandle) -> Result<Self, String> {
+    /// Spawn the sidecar and open the session, WITHOUT the first handshake.
+    ///
+    /// The handshake is `initial_handshake`, so the caller can run it beside
+    /// the other launch read instead of before it. A shell this returns holds
+    /// the launcher defaults until that call completes.
+    fn connect(app_handle: AppHandle) -> Result<Self, String> {
         let local_app_url = if cfg!(debug_assertions) {
             "http://localhost:4328".to_string()
         } else {
@@ -394,22 +416,33 @@ impl DesktopShell {
             }),
         };
 
-        // Bound the initial sidecar handshake so a wedged child can't hang
-        // the Tauri setup thread indefinitely.
-        tauri::async_runtime::block_on(async {
-            tokio::time::timeout(
-                SIDECAR_INITIAL_HANDSHAKE_TIMEOUT,
-                shell.refresh_state_from_sidecar(),
-            )
-            .await
-            .map_err(|_| {
-                format!(
-                    "initial sidecar handshake timed out after {:?}",
-                    SIDECAR_INITIAL_HANDSHAKE_TIMEOUT
-                )
-            })?
-        })?;
         Ok(shell)
+    }
+
+    /// Learn the sidecar's state, with a limit so a wedged child cannot hang
+    /// the Tauri setup thread.
+    ///
+    /// SEPARATE from `connect`, so the caller can issue it beside the other
+    /// launch read rather than after it. The reader and writer threads start in
+    /// `connect` and `send_request_async` multiplexes by id, so the session is
+    /// ready before this runs -- and the Go sidecar dispatches every frame in
+    /// its own goroutine, so nothing forces the two to serialize. Running them
+    /// in sequence made the worst case the SUM of the two limits.
+    ///
+    /// A shell that has not completed this holds the launcher defaults, so
+    /// `setup` must await it before it reads `runtime_state`.
+    async fn initial_handshake(&self) -> Result<(), String> {
+        tokio::time::timeout(
+            SIDECAR_INITIAL_HANDSHAKE_TIMEOUT,
+            self.refresh_state_from_sidecar(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "initial sidecar handshake timed out after {:?}",
+                SIDECAR_INITIAL_HANDSHAKE_TIMEOUT
+            )
+        })?
     }
 
     async fn send_request_async(
@@ -449,11 +482,43 @@ impl DesktopShell {
                 proto::SetWindowSizeRequest {
                     width: width as i32,
                     height: height as i32,
-                    mode: window_mode_to_proto(&mode) as i32,
+                    mode,
                 },
             ))
             .await?;
         Ok(())
+    }
+
+    /// Cache the resolved Desktop preferences on this device.
+    ///
+    /// `start_on_login` is not among them: the operating system's login-item
+    /// registration is that setting's state. See `SetDesktopBehaviorRequest`.
+    async fn save_desktop_behavior(&self, behavior: tray::WindowBehavior) -> Result<(), String> {
+        let _ = self
+            .send_request_async(proto::request::Method::SetDesktopBehavior(
+                proto::SetDesktopBehaviorRequest {
+                    tray_enabled: behavior.tray_enabled,
+                    tray_on_close: behavior.tray_on_close.to_token().to_string(),
+                    tray_on_minimize: behavior.tray_on_minimize.to_token().to_string(),
+                    start_minimized: behavior.start_minimized.to_token().to_string(),
+                },
+            ))
+            .await?;
+        Ok(())
+    }
+
+    /// The persisted desktop config, for the launch decision.
+    async fn load_desktop_config(&self) -> Result<proto::DesktopConfig, String> {
+        let resp = check_response(
+            self.send_request_async(proto::request::Method::GetConfig(
+                proto::GetConfigRequest {},
+            ))
+            .await?,
+        )?;
+        match resp.result {
+            Some(proto::response::Result::Config(cfg)) => Ok(cfg),
+            _ => Err("unexpected response for get_config".to_string()),
+        }
     }
 
     fn current_zoom(&self) -> f64 {
@@ -549,32 +614,6 @@ fn shell_mode_from_proto(info: &proto::SidecarInfo) -> ShellMode {
         proto::SidecarShellMode::Distributed => ShellMode::Distributed,
         _ => ShellMode::Launcher,
     }
-}
-
-// The JSON string spellings of each window display mode, shared with the
-// frontend and the persisted config. Mirrors the Go constants in
-// desktop/go/config.go so the vocabulary is single-sourced within each binary.
-const WINDOW_MODE_NORMAL: &str = "normal";
-const WINDOW_MODE_MAXIMIZED: &str = "maximized";
-const WINDOW_MODE_FULLSCREEN: &str = "fullscreen";
-
-// Bridge the persisted window mode between the JSON string used with the
-// frontend and the proto enum on the sidecar wire. Empty/unknown -> normal.
-fn window_mode_to_proto(mode: &str) -> proto::WindowMode {
-    match mode {
-        WINDOW_MODE_MAXIMIZED => proto::WindowMode::Maximized,
-        WINDOW_MODE_FULLSCREEN => proto::WindowMode::Fullscreen,
-        _ => proto::WindowMode::Normal,
-    }
-}
-
-fn window_mode_from_proto(mode: proto::WindowMode) -> String {
-    match mode {
-        proto::WindowMode::Maximized => WINDOW_MODE_MAXIMIZED,
-        proto::WindowMode::Fullscreen => WINDOW_MODE_FULLSCREEN,
-        _ => WINDOW_MODE_NORMAL,
-    }
-    .to_string()
 }
 
 fn apply_sidecar_info(state: &Mutex<ShellState>, info: proto::SidecarInfo) {
@@ -751,6 +790,7 @@ fn get_runtime_state(shell: State<'_, Arc<DesktopShell>>) -> RuntimeState {
 #[tauri::command]
 async fn get_startup_info(
     shell: State<'_, Arc<DesktopShell>>,
+    launch: State<'_, Arc<tray::LaunchState>>,
 ) -> Result<StartupInfoResponse, String> {
     let resp = check_response(
         shell
@@ -765,7 +805,7 @@ async fn get_startup_info(
             let build = info.build_info.unwrap_or_default();
             Ok(StartupInfoResponse {
                 config: DesktopConfigResponse {
-                    window_mode: window_mode_from_proto(cfg.window_mode()),
+                    window_mode: cfg.window_mode,
                     mode: cfg.mode,
                     hub_url: cfg.hub_url,
                     window_width: cfg.window_width,
@@ -778,6 +818,7 @@ async fn get_startup_info(
                     build_time: build.build_time,
                     branch: build.branch,
                 },
+                launch_visibility: launch.take().as_str().to_string(),
             })
         }
         _ => Err("unexpected response for get_startup_info".to_string()),
@@ -1248,6 +1289,12 @@ fn launcher_url(local_app_url: &str, cleanup_errors: &[String]) -> Result<(Url, 
 
 // restart_app is macOS-only: only the Full Disk Access flow needs the app
 // to relaunch itself, and FDA is macOS-only.
+//
+// The relaunch passes NO arguments, so the new process never sees
+// `--autostart` and always opens an ordinary window. That is correct and must
+// stay: `start_minimized` governs the LOGIN launch alone, and a user who just
+// granted Full Disk Access waits for the window to come back. Forwarding argv
+// here would hide it into the tray instead.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 async fn restart_app(
@@ -1290,13 +1337,159 @@ async fn save_window_geometry(
     shell.save_window_size(width, height, mode).await
 }
 
+/// Apply the resolved Desktop preferences the webview just pushed.
+///
+/// Every step runs regardless of what the one before it did, so one broken
+/// piece never leaves the rest of the policy unapplied. Two failures are worth
+/// a message the user reads: an operating system that refuses a login item, and
+/// a Linux desktop with no status-icon library. Both look like "LeapMux ignores
+/// my settings" if they stay silent.
+///
+/// EVERY refusal is reported, each addressed to the row that owns it. The two
+/// failures are independent -- a Linux desktop with no status-icon library can
+/// also be one whose operating system declines a login item -- so a channel
+/// that carried one would leave the other toggle reading "on" with nothing
+/// behind it and no message anywhere.
+///
+/// The whole body runs under `push_lock`. Tauri gives each invocation its own
+/// task, and two that overlap can otherwise reach the sidecar in the opposite
+/// order to the one the user chose, which leaves the device cache holding the
+/// older set for the next launch to decide from.
 #[tauri::command]
-fn quit_app(app: AppHandle) {
+async fn set_desktop_behavior(
+    app: AppHandle,
+    shell: State<'_, Arc<DesktopShell>>,
+    state: State<'_, Arc<tray::TrayState>>,
+    launch: State<'_, Arc<tray::LaunchState>>,
+    behavior: tray::DesktopBehavior,
+) -> Result<(), Vec<tray::BehaviorRefusal>> {
+    let _serialized = state.push_lock.lock().await;
+    let mut refusals: Vec<tray::BehaviorRefusal> = Vec::new();
+    let mut record = |refusal: tray::BehaviorRefusal| {
+        eprintln!(
+            "leapmux-desktop: the system refused {}: {}",
+            refusal.setting, refusal.message
+        );
+        refusals.push(refusal);
+    };
+
+    // 1. The tray itself. `apply` records what was ACHIEVED, so a build that
+    //    fails downgrades the policy instead of leaving it lying.
+    if let Err(err) = state.apply(&app, &behavior.window()) {
+        record(tray::BehaviorRefusal::tray(err));
+    }
+
+    // 2. Bring the window back if the user is now stranded, or if the launch
+    //    left it out of the way on a cache the account contradicts. A PREDICATE
+    //    over the current state rather than a transition, so it also repairs a
+    //    tray that failed to build and a window left hidden by an earlier
+    //    session.
+    // A probe that fails reads as NOT visible, so the reveal happens. Getting
+    // this backwards costs a focus on a window that was already up; getting it
+    // the other way round leaves a user with no tray and no window, which is
+    // the exact state this step exists to prevent.
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    let launch_was_wrong = launch.launch_was_wrong(behavior.start_minimized, state.is_enabled());
+    if tray::must_reveal_window(state.is_enabled(), visible, launch_was_wrong) {
+        tray::show_main_window(&app);
+    }
+
+    // 3. The login item. `enable()` runs unconditionally while the preference
+    //    is on, because rewriting the entry is how a stale path is repaired
+    //    after the application moves (an AppImage rename, an MSI reinstall).
+    if let Err(err) = apply_login_item(&app, behavior.start_on_login) {
+        record(tray::BehaviorRefusal::start_on_login(err));
+    }
+
+    // 4. The device cache, so the next launch can decide before the webview
+    //    exists. A failure here is logged, not reported: the live policy
+    //    already applies and the only loss is the next launch's head start.
+    //
+    //    Pushed on EVERY call. The sidecar owns the config and skips a write
+    //    that changes nothing (`App.updateConfig`), so the shell keeps no
+    //    second copy of the set to compare against -- and with no copy, there
+    //    is nothing that can go stale against the file, and no failed RPC that
+    //    can leave one stale.
+    //
+    //    `window()`, so the login item cannot reach the file even by accident:
+    //    the cached type does not carry that field at all.
+    if let Err(err) = shell.save_desktop_behavior(behavior.window()).await {
+        eprintln!("leapmux-desktop: cache the window behaviour: {err}");
+    }
+
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals)
+    }
+}
+
+/// Register or deregister the operating system's login item.
+///
+/// A build that may not touch the login items REPORTS that, in both
+/// directions. Answering `Ok` instead tells the webview that the system
+/// accepted the choice, and the row then reads "on" with nothing behind it --
+/// the exact silence the refusal channel exists to remove. The disable
+/// direction matters as much: a release build and a development build resolve
+/// the same login-item entry, so a silent skip leaves an entry the user just
+/// asked to remove.
+fn apply_login_item(app: &AppHandle, start_on_login: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    if !autostart_allowed() {
+        return Err(
+            "This build of LeapMux does not change your login items. Set \
+             LEAPMUX_ALLOW_DEV_AUTOSTART to test this setting."
+                .to_string(),
+        );
+    }
+    let manager = app.autolaunch();
+    if start_on_login {
+        return manager.enable().map_err(|err| {
+            format!("LeapMux could not add itself to your login items: {err}")
+        });
+    }
+    // `is_enabled` is only a guard against a spurious error when nothing is
+    // registered. It must never block the ENABLE path: it compares the stored
+    // path against the current one, which is exactly what goes stale.
+    match manager.is_enabled() {
+        Ok(true) => manager.disable().map_err(|err| {
+            format!("LeapMux could not remove itself from your login items: {err}")
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Whether this build may touch the operating system's login items.
+///
+/// A debug build refuses, because `current_exe()` under `tauri dev` is a target
+/// directory artefact: a developer who opens the Desktop preferences would
+/// otherwise acquire a login item pointing at a binary that the next build
+/// overwrites and `cargo clean` deletes. Set LEAPMUX_ALLOW_DEV_AUTOSTART to
+/// test the feature itself.
+fn autostart_allowed() -> bool {
+    !cfg!(debug_assertions) || std::env::var_os("LEAPMUX_ALLOW_DEV_AUTOSTART").is_some()
+}
+
+/// Start the ordinary shutdown: drain the sidecar, then exit.
+///
+/// Shared by the `quit_app` command and the tray menu's Quit item so the two
+/// spellings cannot drift. It never touches the window, so it cannot be
+/// diverted into the hide-to-tray branch of `CloseRequested`.
+pub(crate) fn request_app_exit(app: &AppHandle) {
     if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
         handle_app_exit(shell.inner().clone());
     } else {
         app.exit(0);
     }
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    request_app_exit(&app);
 }
 
 #[tauri::command]
@@ -1357,14 +1550,6 @@ fn reset_webview_zoom(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String>
 
 // --- Window/app helpers ---
 
-fn focus_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
-
 fn open_main_web_inspector(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         window.open_devtools();
@@ -1392,6 +1577,17 @@ fn handle_app_exit(shell: Arc<DesktopShell>) {
         .is_err()
     {
         return;
+    }
+
+    // Drop every open save handle and remove its partial file BEFORE the
+    // sidecar goes away. The CAS above runs this exactly once.
+    //
+    // It lives here rather than in the `ExitRequested` arm because that arm is
+    // skipped once `exit_in_progress` is latched -- and `quit_app` latches it
+    // first, so the menu's Quit used to leave the partials on disk. The tray's
+    // Quit takes the same route, which is what made the gap worth closing.
+    if let Some(registry) = shell.app_handle.try_state::<Arc<SaveStreamRegistry>>() {
+        registry.cleanup_all();
     }
 
     tauri::async_runtime::spawn(async move {
@@ -1527,8 +1723,19 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            focus_main_window(app);
-        }));
+            // Launching a second copy is the other way a user expects a window
+            // back out of the tray, so this goes through the same restore the
+            // tray's Show item uses.
+            tray::show_main_window(app);
+        }))
+        // LaunchAgent, not AppleScript: the AppleScript login-item path
+        // registers a bundle path with NO arguments, so `--autostart` would
+        // never reach argv and a macOS login launch could not be told from a
+        // hand launch.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![tray::AUTOSTART_ARG]),
+        ));
 
     // Linux and Windows render the app menu as a hamburger dropdown inside
     // the custom titlebar (`CustomTitlebar.tsx`). Only macOS uses a native
@@ -1554,13 +1761,40 @@ fn main() {
                 return;
             }
 
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if let Some(shell) = window.app_handle().try_state::<Arc<DesktopShell>>() {
-                    if !shell.close_in_progress.load(Ordering::SeqCst) {
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    let app = window.app_handle();
+                    // The latch is read FIRST. `handle_main_window_close`
+                    // re-issues `window.close()`, which arrives here a second
+                    // time, and diverting THAT into the tray would strand a
+                    // quit already under way.
+                    let closing = app
+                        .try_state::<Arc<DesktopShell>>()
+                        .is_some_and(|shell| shell.close_in_progress.load(Ordering::SeqCst));
+                    if closing {
+                        return;
+                    }
+                    if let Some(state) = app.try_state::<Arc<tray::TrayState>>() {
+                        if state.window_action(tray::WindowIntent::CloseRequested)
+                            == tray::WindowAction::HideWindow
+                        {
+                            // HIDE, never close: closing destroys the webview
+                            // and every open tab's client state with it.
+                            api.prevent_close();
+                            let _ = window.hide();
+                            return;
+                        }
+                    }
+                    if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
                         api.prevent_close();
                         handle_main_window_close(shell.inner().clone(), window.clone());
                     }
                 }
+                // Windows reports a minimize as a resize; see
+                // `tray::minimize_windows`.
+                #[cfg(windows)]
+                WindowEvent::Resized(_) => tray::minimize_windows::on_resized(window),
+                _ => {}
             }
         })
         .setup(|app| {
@@ -1582,17 +1816,61 @@ fn main() {
                 tabfix_linux::install(&w);
             }
 
-            // Safety net: if the frontend doesn't show the window within 5s
-            // (e.g. JS error), show it anyway to avoid an invisible app.
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                if let Some(w) = handle.get_webview_window("main") {
-                    let _ = w.show();
-                }
-            });
+            // `start_minimized` governs the login launch alone, so the flag
+            // the autostart plugin registered is what distinguishes it.
+            //
+            // Read FIRST, because it needs no I/O and the safety net below is
+            // armed from it before anything can block.
+            //
+            // `args_os` and not `args`: the latter PANICS on an argument that
+            // is not valid Unicode, and this runs on the startup path for
+            // whatever a desktop launcher chose to pass.
+            let autostart_launch = tray::is_autostart_launch(
+                std::env::args_os().map(|arg| arg.to_string_lossy().into_owned()),
+            );
 
-            let shell = Arc::new(DesktopShell::new(app.handle().clone())?);
+            // Safety net: if the frontend does not show the window within
+            // tray::STARTUP_REVEAL_DEADLINE (a JS error, say), show it anyway
+            // rather than leave an invisible app.
+            //
+            // Armed HERE, at the top of setup, because everything below it can
+            // block: the sidecar handshake waits up to
+            // SIDECAR_INITIAL_HANDSHAKE_TIMEOUT and the cached-config read up
+            // to CACHED_CONFIG_TIMEOUT. A net armed after them promises five
+            // seconds and delivers forty.
+            tray::spawn_startup_safety_net(app.handle().clone(), autostart_launch);
+
+            let shell = Arc::new(DesktopShell::connect(app.handle().clone())?);
+
+            // The handshake and the device cache of the Desktop preferences,
+            // read TOGETHER. The shell must decide the tray and the initial
+            // window state before the webview exists, and neither read depends
+            // on the other: the session multiplexes by id and the sidecar
+            // dispatches each frame in its own goroutine. In sequence the worst
+            // case was the SUM of the two limits.
+            //
+            // A timeout limits the config read, the same as the handshake: a
+            // wedged sidecar must not hang the launch, and every field it
+            // carries has a safe default (tray off, ordinary window). The
+            // handshake has no such fallback, so its failure ends setup.
+            let (handshake, loaded) = tauri::async_runtime::block_on(async {
+                tokio::join!(
+                    shell.initial_handshake(),
+                    tokio::time::timeout(CACHED_CONFIG_TIMEOUT, shell.load_desktop_config()),
+                )
+            });
+            handshake?;
+            let cached = loaded.ok().and_then(Result::ok).unwrap_or_default();
+
+            // The login item is NOT reconciled here. Its state is the
+            // operating system's registration, which the cache deliberately
+            // does not mirror, so the shell has nothing authoritative to
+            // reconcile against until the first push arrives with the real
+            // preference. That push rewrites the entry, which is what repairs
+            // a path gone stale because the application moved.
+
+            let launch_state = tray::install(app.handle(), &cached, autostart_launch);
+
             let runtime_state = shell.runtime_state();
             if runtime_state.connected && runtime_state.shell_mode == ShellMode::Distributed {
                 if let Some(window) = app.get_webview_window("main") {
@@ -1602,8 +1880,32 @@ fn main() {
                         .navigate(target_url)
                         .map_err(|err| format!("navigate to reattached hub: {err}"))?;
                 }
+                // The shell reveals the window on THIS route, because
+                // `LauncherView` -- the only caller of `restoreWindowGeometry`
+                // -- never mounts once the webview navigates to the hub. It
+                // also carries the saved geometry for the same reason: nothing
+                // else sizes the window here, so without it every reattach
+                // launch opens at the built-in default.
+                //
+                // IMMEDIATELY, and not once the hub page loads. `navigate` only
+                // requests the navigation, so the window maps before the first
+                // byte arrives and the user sees an empty window for the length
+                // of the page load. That is the accepted trade: the load is
+                // over a NETWORK and can be slow, can serve an error, or can
+                // never finish, and a hub that is unreachable would then leave
+                // no window at all until the safety net fires five seconds in.
+                // A window the user can act on -- switch mode, quit -- beats a
+                // painted one that may never come.
+                //
+                // Through `take()`, so the decision is CONSUMED here: a later
+                // "Switch mode..." navigates back to the launcher, which mounts
+                // and asks `get_startup_info` for the launch state. Leaving the
+                // latch unread would answer `hidden` and hide the launcher the
+                // user just asked for.
+                tray::apply_launch_visibility(app.handle(), launch_state.take(), Some(&cached));
             }
             app.manage(shell);
+
             let save_registry = Arc::new(SaveStreamRegistry::new());
             // Reclaim orphaned save partials left by a prior hard death
             // (#285). Synchronous and pre-`manage`: every save command
@@ -1662,6 +1964,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             restart_app,
             save_window_geometry,
+            set_desktop_behavior,
             quit_app,
             open_web_inspector,
             set_menu_item_accelerator,
@@ -1675,13 +1978,9 @@ fn main() {
             if let RunEvent::ExitRequested { api, .. } = event {
                 if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
                     if !shell.exit_in_progress.load(Ordering::SeqCst) {
-                        // Drop any open save handles and remove their
-                        // partial files before shutting the sidecar
-                        // down. The CAS inside `handle_app_exit`
-                        // guarantees we run this exactly once.
-                        if let Some(registry) = app.try_state::<Arc<SaveStreamRegistry>>() {
-                            registry.cleanup_all();
-                        }
+                        // The save handles are dropped inside `handle_app_exit`,
+                        // which every exit route reaches -- including the ones
+                        // that latch `exit_in_progress` before this arm runs.
                         api.prevent_exit();
                         handle_app_exit(shell.inner().clone());
                     }
@@ -2147,29 +2446,23 @@ mod tests {
         );
     }
 
+    // The window mode is a CONTRACT TOKEN on every hop, so there is no bridge
+    // to round-trip and nothing that can rewrite one value into another. The
+    // shell's own tokens must be the generated ones, or the config it writes
+    // would not be the config the webview reads.
     #[test]
-    fn window_mode_proto_round_trips_every_state() {
-        for mode in ["normal", "maximized", "fullscreen"] {
-            assert_eq!(window_mode_from_proto(window_mode_to_proto(mode)), mode);
-        }
-    }
+    fn the_window_mode_tokens_come_from_the_contract() {
+        assert_eq!(contracts_generated::WINDOW_MODE_NORMAL, "normal");
+        assert_eq!(contracts_generated::WINDOW_MODE_MAXIMIZED, "maximized");
+        assert_eq!(contracts_generated::WINDOW_MODE_FULLSCREEN, "fullscreen");
 
-    #[test]
-    fn window_mode_to_proto_defaults_unknown_to_normal() {
-        // The JSON string from the frontend is untrusted; empty or unexpected
-        // values must land on Normal rather than a stray enum.
-        assert_eq!(window_mode_to_proto(""), proto::WindowMode::Normal);
-        assert_eq!(window_mode_to_proto("bogus"), proto::WindowMode::Normal);
-    }
-
-    #[test]
-    fn window_mode_from_proto_maps_unspecified_to_normal() {
-        // A fresh config or an older sidecar sends UNSPECIFIED; it must read
-        // back as the windowed default, not an empty string.
-        assert_eq!(
-            window_mode_from_proto(proto::WindowMode::Unspecified),
-            "normal",
-        );
+        let tokens = [
+            contracts_generated::WINDOW_MODE_NORMAL,
+            contracts_generated::WINDOW_MODE_MAXIMIZED,
+            contracts_generated::WINDOW_MODE_FULLSCREEN,
+        ];
+        let unique: std::collections::HashSet<_> = tokens.iter().collect();
+        assert_eq!(unique.len(), tokens.len(), "one setting, so all three differ");
     }
 
     #[test]

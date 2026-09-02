@@ -17,7 +17,7 @@ var updateGolden = flag.Bool("update-golden", false, "rewrite testdata/account_s
 
 // goldenPath is the ONE artifact both scopes are pinned to.
 //
-// The nine account settings are declared here AND in the frontend's
+// The account settings are declared here AND in the frontend's
 // browser registry, which owns their PRESENTATION because it also renders
 // a device-local override the wire cannot carry. This file pins what the
 // two must agree on, and nothing else: the key set, the field names and
@@ -195,7 +195,7 @@ var omittedWhileUnused = map[string]string{
 	"Field.Placeholder": "no account key declares a free-text string field, which is the only kind a " +
 		"placeholder hints at. Every account field is an enum, a bool, an integer, a string list, or a custom editor",
 	"Field.DependsOn": "no account key declares a visibility condition. The frontend registry's hiddenWhen owns " +
-		"the account rows that hide, because both of them (the font stacks and the turn-end volume) read a " +
+		"the account rows that hide, because each of them reads a " +
 		"browser-tier value the wire cannot carry",
 	"UIMeta.HiddenInSolo": "solo hiding is instance scope only. A solo hub has one user, whose account settings " +
 		"all stay editable",

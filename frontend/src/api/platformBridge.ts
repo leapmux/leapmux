@@ -1,6 +1,14 @@
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
-import { TAURI_EVENT_SIDECAR_LOG } from '~/generated/contracts/desktop'
+import {
+  LAUNCH_VISIBILITY_HIDDEN,
+  LAUNCH_VISIBILITY_MINIMIZED,
+  LAUNCH_VISIBILITY_NORMAL,
+  TAURI_EVENT_SIDECAR_LOG,
+  WINDOW_MODE_FULLSCREEN,
+  WINDOW_MODE_MAXIMIZED,
+  WINDOW_MODE_NORMAL,
+} from '~/generated/contracts/desktop'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
 import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
@@ -23,8 +31,16 @@ export interface PlatformCapabilities {
  * Mutually-exclusive top-level window display state. `window_width`/`height`
  * always hold the last *windowed* geometry, so exiting maximized/fullscreen
  * returns to a sensible size.
+ *
+ * DERIVED from the generated tokens. All three languages spell this one: the Go
+ * sidecar persists the token, the Rust shell matches it at launch, and this
+ * module reads and writes it through `save_window_geometry`. It was three
+ * hand-written mirrors before, and the Rust copy's own comment admitted it.
  */
-export type WindowMode = 'normal' | 'maximized' | 'fullscreen'
+export type WindowMode
+  = | typeof WINDOW_MODE_NORMAL
+    | typeof WINDOW_MODE_MAXIMIZED
+    | typeof WINDOW_MODE_FULLSCREEN
 
 export interface DesktopConfig {
   mode: '' | 'solo' | 'distributed'
@@ -34,9 +50,29 @@ export interface DesktopConfig {
   window_mode: WindowMode
 }
 
+/**
+ * The state the main window starts in, decided by the Rust shell.
+ *
+ * The shell owns the decision because it is the only side that knows both the
+ * launch arguments (a login launch carries `--autostart`) and the cached tray
+ * setting, and it knows them before the webview exists. It reports the value
+ * ONCE; a later `getStartupInfo` -- the one a mode switch triggers when the
+ * launcher remounts -- answers `normal`.
+ *
+ * DERIVED from the generated tokens rather than retyped, for the reason the
+ * Desktop preference types are: the emitted constants carry `as const`, so a
+ * token renamed in contracts/desktop.json fails the type check here instead of
+ * quietly narrowing to a value the shell no longer sends.
+ */
+export type LaunchVisibility
+  = | typeof LAUNCH_VISIBILITY_NORMAL
+    | typeof LAUNCH_VISIBILITY_MINIMIZED
+    | typeof LAUNCH_VISIBILITY_HIDDEN
+
 export interface StartupInfo {
   config: DesktopConfig
   buildInfo: BuildInfo
+  launchVisibility: LaunchVisibility
 }
 
 /** Wire format from sidecar (snake_case JSON). */
@@ -49,6 +85,77 @@ interface StartupInfoWire {
     build_time: string
     branch: string
   }
+  launch_visibility: string
+}
+
+/**
+ * The five resolved Desktop preferences, as the Rust shell receives them.
+ *
+ * ONE payload rather than five commands: the shell decides a close, a minimize
+ * and a login launch from the whole set together (a minimize goes to the tray
+ * only while a tray exists), so five commands would let it act on a
+ * half-applied set.
+ *
+ * The three enum members carry the tokens from contracts/desktop.json, and the
+ * shell matches them against the same generated constants — no boolean is
+ * derived at this boundary, because `hideOnClose = onClose === 'tray'` is
+ * exactly the line that gets inverted.
+ */
+export interface DesktopBehavior {
+  trayEnabled: boolean
+  trayOnClose: string
+  trayOnMinimize: string
+  startOnLogin: boolean
+  startMinimized: string
+}
+
+/**
+ * Something the operating system refused, and which choice it belongs to.
+ *
+ * Two of the five can fail outside the app: a Linux desktop with no
+ * status-icon library cannot show a tray, and an operating system can refuse a
+ * login item. `setting` is the FIELD NAME of the choice that failed, from the
+ * payload above -- the shell reuses that vocabulary rather than inventing a
+ * second one for the same five things, so the caller can place the message on
+ * the row that owns the field.
+ */
+export interface DesktopBehaviorRefusal {
+  /**
+   * `Extract`, not a bare union: only these two choices can be refused, and
+   * the intersection with `keyof DesktopBehavior` is what keeps the name tied
+   * to the payload. Renaming the field there narrows this to `never`, and
+   * every consumer stops compiling rather than addressing a row that is gone.
+   */
+  setting: Extract<keyof DesktopBehavior, 'trayEnabled' | 'startOnLogin'>
+  message: string
+}
+
+/**
+ * Narrow a `setDesktopBehavior` rejection into the refusals it carries.
+ *
+ * A LIST, because the two refusable choices fail independently: a Linux desktop
+ * with no status-icon library can also be one whose operating system declines a
+ * login item, and each message belongs on its own row.
+ *
+ * Empty for a rejection that carries no recognizable shape (the IPC layer
+ * itself failing, say). Such a rejection belongs to no row, and printing a
+ * transport error beside a toggle explains nothing. An entry the shape check
+ * refuses is dropped rather than failing the whole list, so one unknown
+ * `setting` cannot hide a refusal beside it.
+ */
+export function parseDesktopBehaviorRefusals(err: unknown): DesktopBehaviorRefusal[] {
+  if (!Array.isArray(err))
+    return []
+  return err.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null)
+      return []
+    const { setting, message } = entry as { setting?: unknown, message?: unknown }
+    if (typeof message !== 'string' || message === '')
+      return []
+    if (setting !== 'trayEnabled' && setting !== 'startOnLogin')
+      return []
+    return [{ setting, message }]
+  })
 }
 
 export interface DesktopRuntimeState {
@@ -358,7 +465,7 @@ interface WindowModeQueryable {
  */
 async function readWindowMode(win: WindowModeQueryable): Promise<WindowMode> {
   const [fullscreen, maximized] = await Promise.all([win.isFullscreen(), win.isMaximized()])
-  return fullscreen ? 'fullscreen' : maximized ? 'maximized' : 'normal'
+  return fullscreen ? WINDOW_MODE_FULLSCREEN : maximized ? WINDOW_MODE_MAXIMIZED : WINDOW_MODE_NORMAL
 }
 
 // Disposes the resize saver installed by the most recent restoreWindowGeometry
@@ -370,6 +477,20 @@ async function readWindowMode(win: WindowModeQueryable): Promise<WindowMode> {
 let removeGeometrySaver: (() => void) | null = null
 
 /**
+ * Narrow the shell's launch decision, failing towards a visible window.
+ *
+ * The tokens come from the generated contract, not from literals here. This
+ * parse answers `normal` for anything it does not recognize, so a token renamed
+ * on the Rust side alone would show a window on every login launch that asked
+ * to start in the tray -- and no test on either side would notice.
+ */
+export function parseLaunchVisibility(raw: unknown): LaunchVisibility {
+  return raw === LAUNCH_VISIBILITY_HIDDEN || raw === LAUNCH_VISIBILITY_MINIMIZED
+    ? raw
+    : LAUNCH_VISIBILITY_NORMAL
+}
+
+/**
  * Restore the window to the saved geometry + mode on startup and install a
  * resize listener that debounces and saves via the Rust sidecar.
  *
@@ -377,7 +498,12 @@ let removeGeometrySaver: (() => void) | null = null
  * Tauri's `setSize()` expects — this avoids the GTK CSD offset issue
  * where `appWindow.innerSize()` includes shadow + header bar.
  */
-export async function restoreWindowGeometry(width: number, height: number, mode: WindowMode): Promise<void> {
+export async function restoreWindowGeometry(
+  width: number,
+  height: number,
+  mode: WindowMode,
+  launch: LaunchVisibility = LAUNCH_VISIBILITY_NORMAL,
+): Promise<void> {
   if (!isTauriApp())
     return
 
@@ -387,29 +513,64 @@ export async function restoreWindowGeometry(width: number, height: number, mode:
     const appWindow = getCurrentWindow()
 
     // Establish the windowed size first so exiting maximized/fullscreen
-    // returns to the saved geometry.
+    // returns to the saved geometry. This runs for a HIDDEN launch too, so the
+    // first "Show LeapMux" from the tray produces a correctly sized window.
     if (width > 0 && height > 0)
       await appWindow.setSize(new LogicalSize(width, height))
 
-    if (mode === 'maximized')
+    // Every launch restores maximized, a HIDDEN one included. `maximize()`
+    // sets a window-state flag that an unmapped window keeps, so the first
+    // "Show LeapMux" from the tray produces the maximized window the user left
+    // behind rather than a small one.
+    if (mode === WINDOW_MODE_MAXIMIZED)
       await appWindow.maximize()
 
     // Show the window now that it's at the correct size. The window starts
     // hidden (visible: false in tauri.conf.json) so the Wayland compositor
     // sees the final size at first map. macOS only performs the fullscreen
     // transition on a visible window, so show before entering fullscreen.
-    await appWindow.show()
+    //
+    // A login launch the user asked to start out of the way skips this: with
+    // a tray icon the shell decided `hidden`, without one it decided
+    // `minimized`, and either way the window must not be raised in front of
+    // whatever else they opened.
+    if (launch !== 'hidden')
+      await appWindow.show()
 
-    if (mode === 'fullscreen')
+    if (launch === 'minimized')
+      await appWindow.minimize()
+
+    // Fullscreen is the one mode a launch that starts out of the way cannot
+    // restore. macOS performs the transition on a VISIBLE window only, and a
+    // window that goes straight to the tray or the taskbar is not one.
+    let fullscreenDeferred = mode === WINDOW_MODE_FULLSCREEN && launch !== LAUNCH_VISIBILITY_NORMAL
+    if (mode === WINDOW_MODE_FULLSCREEN && !fullscreenDeferred)
       await appWindow.setFullscreen(true)
 
     // Save window geometry + mode on resize / maximize / fullscreen, debounced.
     const saveGeometry = trailingDebounce(async () => {
       try {
-        const nextMode = await readWindowMode(appWindow)
+        // Hiding to the tray needs no guard here, although it looks like it
+        // should. This saver reads the DOM viewport, which an unmapped window
+        // does not change, and the one platform that does report a size on the
+        // way out (Windows sends 0x0 for a minimize) is already covered:
+        // `App.SetWindowSize` ignores a non-positive dimension, so the last
+        // windowed geometry survives. A visibility check here would instead
+        // add a way to stop saving geometry for good, because a failed or
+        // unexpected `isVisible` reads as "not visible".
+        const observed = await readWindowMode(appWindow)
+        // A launch that could not restore fullscreen must not let the first
+        // resize DESTROY it. The window is windowed only because the launch
+        // left it that way, so the saved mode is still what the user chose,
+        // and reporting the observed `normal` would overwrite it for good.
+        // Any other observation means the user took control of the mode, and
+        // from then on the observation is the truth.
+        if (fullscreenDeferred && observed !== WINDOW_MODE_NORMAL)
+          fullscreenDeferred = false
+        const nextMode = fullscreenDeferred ? mode : observed
         // innerWidth/Height report the screen size while maximized/fullscreen;
         // send 0 so the sidecar preserves the last windowed dimensions.
-        const windowed = nextMode === 'normal'
+        const windowed = observed === WINDOW_MODE_NORMAL
         tauriInvoke('save_window_geometry', {
           width: windowed ? window.innerWidth : 0,
           height: windowed ? window.innerHeight : 0,
@@ -621,6 +782,21 @@ export async function revealInFileManager(path: string): Promise<void> {
   }
 }
 
+/**
+ * Push the resolved Desktop preferences into the shell.
+ *
+ * It REJECTS rather than swallowing, unlike `tauriFireAndForget`, because two
+ * of the things it asks for can fail outside the app: an operating system may
+ * refuse a login-item registration, and a Linux desktop may have no
+ * status-icon library. Both look like "LeapMux ignores my settings" when they
+ * stay silent, so the caller surfaces them.
+ */
+export async function setDesktopBehavior(behavior: DesktopBehavior): Promise<void> {
+  if (!isTauriApp())
+    return
+  await tauriInvoke<void>('set_desktop_behavior', { behavior })
+}
+
 export const windowMinimize = () => tauriWindowOp(w => w.minimize())
 export const windowClose = () => tauriWindowOp(w => w.close())
 export const windowToggleMaximize = () => tauriWindowOp(w => w.toggleMaximize())
@@ -784,6 +960,10 @@ export const platformBridge = {
         buildTime: wire.build_info.build_time,
         branch: wire.build_info.branch,
       },
+      // A value this build does not know narrows to `normal`, which shows the
+      // window. Failing towards a VISIBLE window is the only safe direction:
+      // the alternative leaves an app the user cannot reach.
+      launchVisibility: parseLaunchVisibility(wire.launch_visibility),
     }
   },
   async checkFullDiskAccess(): Promise<boolean> {

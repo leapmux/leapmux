@@ -74,7 +74,7 @@ message SettingDescriptor {
   string key = 1;
   // One of the shared category ids: general, signup, email, captcha,
   // rate-limits, limits, advanced (hub scope) or appearance, notifications,
-  // shortcuts, advanced (user scope).
+  // shortcuts, desktop, advanced (user scope).
   string category = 2;
   string title = 3;
   string summary = 4;

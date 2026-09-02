@@ -5,24 +5,75 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // Window display modes persisted in DesktopConfig.WindowMode. The states are
 // mutually exclusive; WindowWidth/Height always hold the last *windowed*
 // geometry so exiting maximized/fullscreen returns to a sensible size.
+//
+// From the CONTRACT, not literals here: the Rust shell matches these tokens at
+// launch and the webview reads and writes them, so all three languages must
+// agree. They were three hand-written mirrors before, and the Rust copy's own
+// comment admitted it.
 const (
-	WindowModeNormal     = "normal"
-	WindowModeMaximized  = "maximized"
-	WindowModeFullscreen = "fullscreen"
+	WindowModeNormal     = contracts.WindowModeNormal
+	WindowModeMaximized  = contracts.WindowModeMaximized
+	WindowModeFullscreen = contracts.WindowModeFullscreen
 )
 
-// DesktopConfig persists the user's last connection mode, hub URL, and window size.
+// DesktopConfig persists the user's last connection mode, hub URL, window size,
+// and a cache of the Desktop window-behaviour preferences.
+//
+// The behaviour fields are a ONE-WAY cache of an account setting, not a setting
+// of their own: the webview pushes the resolved values down, and the shell
+// reads them at launch because it must decide tray creation and the initial
+// window state before the webview -- and therefore before any preference -- can
+// be read. Nothing here is ever read back into a preference. See
+// SetDesktopBehaviorRequest in proto/leapmux/desktop/v1/frame.proto for why
+// start_on_login is not among them, and for the per-OS-user limit.
+//
+// An absent behaviour field means the built-in default, which is why every one
+// of them is `omitempty` and why the zero value of each is the default: tray
+// off, close to the tray, minimize to the taskbar, start with a window.
 type DesktopConfig struct {
-	Mode         string `json:"mode"`                    // "solo" or "distributed"
-	HubURL       string `json:"hub_url"`                 // Only for distributed
-	WindowWidth  int    `json:"window_width,omitempty"`  // Saved windowed width
-	WindowHeight int    `json:"window_height,omitempty"` // Saved windowed height
-	WindowMode   string `json:"window_mode,omitempty"`   // "normal" | "maximized" | "fullscreen"
+	Mode           string         `json:"mode"`                       // "solo" or "distributed"
+	HubURL         string         `json:"hub_url"`                    // Only for distributed
+	WindowWidth    int            `json:"window_width,omitempty"`     // Saved windowed width
+	WindowHeight   int            `json:"window_height,omitempty"`    // Saved windowed height
+	WindowMode     string         `json:"window_mode,omitempty"`      // "normal" | "maximized" | "fullscreen"
+	TrayEnabled    bool           `json:"tray_enabled,omitempty"`     // Show a tray / menu-bar icon
+	TrayOnClose    TrayOnClose    `json:"tray_on_close,omitempty"`    // "tray" | "quit"
+	TrayOnMinimize TrayOnMinimize `json:"tray_on_minimize,omitempty"` // "tray" | "taskbar"
+	StartMinimized StartMinimized `json:"start_minimized,omitempty"`  // "window" | "minimized"
+}
+
+// One DEFINED type per window-behaviour setting, rather than three bare
+// strings.
+//
+// Two of these settings share the token "tray" (contracts.TrayOnCloseTray and
+// contracts.TrayOnMinimizeTray are the same string), so a swapped pair of
+// arguments compiles, passes every test, and silently degrades both settings to
+// their defaults. A defined type makes that a compile error instead. Each one
+// marshals exactly like the string it wraps, so the stored document is
+// unchanged.
+type (
+	TrayOnClose    string
+	TrayOnMinimize string
+	StartMinimized string
+)
+
+// DesktopBehavior is the window-behaviour cache as one value.
+//
+// A parameter object, not four positional arguments: it puts a field name
+// beside each value at the one call site, which is the second half of what
+// makes a swap impossible to write.
+type DesktopBehavior struct {
+	TrayEnabled    bool
+	TrayOnClose    TrayOnClose
+	TrayOnMinimize TrayOnMinimize
+	StartMinimized StartMinimized
 }
 
 func configPath() (string, error) {

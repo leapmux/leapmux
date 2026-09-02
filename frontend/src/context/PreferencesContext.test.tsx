@@ -1,7 +1,9 @@
 import type { JSX } from 'solid-js'
 import { render, waitFor } from '@solidjs/testing-library'
+import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EDITOR, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
@@ -581,6 +583,83 @@ describe('preferencesContext — a stored browser value passes the same parse', 
   })
 })
 
+// The five Desktop keys, at the DEVICE tier. The enum walk below drives their
+// account halves off the golden file; this is the other parse, and it is the
+// one that reads a document a person can edit by hand. A value that got past
+// it would reach a `set_desktop_behavior` payload the Rust shell then refuses.
+describe('preferencesContext — the Desktop device tier', () => {
+  it('resolves the device value over the account one, and clears back', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, { trayOnClose: TRAY_ON_CLOSE_QUIT, trayEnabled: true })
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [settingValue('tray_on_close', `"${TRAY_ON_CLOSE_TRAY}"`, true)],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().dual.trayOnClose.account()).toBe(TRAY_ON_CLOSE_TRAY))
+
+    expect(ctx.get().dual.trayOnClose.browser()).toBe(TRAY_ON_CLOSE_QUIT)
+    expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_QUIT)
+    expect(ctx.get().trayEnabled()).toBe(true)
+
+    // Clearing the override falls back to the account value, not to the
+    // built-in default.
+    ctx.get().dual.trayOnClose.setBrowser(null)
+    await waitFor(() => expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY))
+    expect('trayOnClose' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('refuses a stored value the contract does not declare', async () => {
+    // "minimize" is a real word for a window action and not one of this key's
+    // two tokens; a boolean key with a string is the hand-edit that a bare
+    // `string` field type cannot prevent.
+    localStorageSet(KEY_BROWSER_PREFS, {
+      trayOnClose: 'minimize',
+      trayOnMinimize: 'quit',
+      startMinimized: 'hidden',
+      trayEnabled: 'yes',
+      startOnLogin: 1,
+    })
+    const ctx = captureContext()
+    await flushMicrotasks()
+
+    for (const key of ['trayEnabled', 'trayOnClose', 'trayOnMinimize', 'startOnLogin', 'startMinimized'] as const)
+      expect(ctx.get().dual[key].browser(), key).toBeNull()
+    expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY)
+    expect(ctx.get().trayOnMinimize()).toBe(TRAY_ON_MINIMIZE_TASKBAR)
+    expect(ctx.get().startMinimized()).toBe(START_MINIMIZED_WINDOW)
+    expect(ctx.get().trayEnabled()).toBe(false)
+    expect(ctx.get().startOnLogin()).toBe(false)
+  })
+
+  // Signing out must leave nothing of the departing account in either tier.
+  // `useDesktopWindowBehavior` stops pushing at the same moment, so a stale
+  // value here would be what the NEXT account's first push started from.
+  it('returns all five to their defaults after a sign-out', async () => {
+    localStorageSet(KEY_BROWSER_PREFS, {
+      trayEnabled: true,
+      trayOnClose: TRAY_ON_CLOSE_QUIT,
+      trayOnMinimize: TRAY_ON_MINIMIZE_TRAY,
+      startOnLogin: true,
+      startMinimized: START_MINIMIZED_MINIMIZED,
+    })
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [settingValue('start_minimized', `"${START_MINIMIZED_MINIMIZED}"`, true)],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().dual.startMinimized.account()).toBe(START_MINIMIZED_MINIMIZED))
+    expect(ctx.get().trayEnabled()).toBe(true)
+
+    ctx.get().resetForSignOut()
+
+    expect(ctx.get().trayEnabled()).toBe(false)
+    expect(ctx.get().trayOnClose()).toBe(TRAY_ON_CLOSE_TRAY)
+    expect(ctx.get().trayOnMinimize()).toBe(TRAY_ON_MINIMIZE_TASKBAR)
+    expect(ctx.get().startOnLogin()).toBe(false)
+    expect(ctx.get().startMinimized()).toBe(START_MINIMIZED_WINDOW)
+  })
+})
+
 // A key that no setting declares must not be counted as customized: the
 // badge would then sit over a value that no signal holds. A known key on
 // the same path records it, which is what makes the drop observable.
@@ -610,6 +689,47 @@ describe('preferencesContext — an undeclared account key', () => {
     })
     await ctx.get().reload()
     expect(ctx.get().customKeybindings()).toEqual([])
+  })
+
+  // One reply carries EVERY account key, so an un-batched apply flushed the
+  // effect queue once per key and every consumer of a resolved preference ran
+  // that often, each time over a partly-updated set. That is what made a hook
+  // with a side effect outside the app -- `useDesktopWindowBehavior`, which
+  // registers the OS login item -- need a debounce to be correct rather than
+  // only to be economical.
+  it('applies one reload as a single update', async () => {
+    listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
+    const ctx = captureContext()
+    await waitFor(() => expect(listUserSettings).toHaveBeenCalled())
+
+    let runs = 0
+    createRoot(() => {
+      createEffect(() => {
+        ctx.get().trayEnabled()
+        ctx.get().trayOnClose()
+        ctx.get().startOnLogin()
+        ctx.get().diffView()
+        runs++
+      })
+    })
+    await flushMicrotasks()
+    const base = runs
+
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [
+        settingValue('tray_enabled', 'true'),
+        settingValue('tray_on_close', '"quit"'),
+        settingValue('start_on_login', 'true'),
+        settingValue('diff_view', '"split"'),
+      ],
+    })
+    await ctx.get().reload()
+    await flushMicrotasks()
+
+    expect(ctx.get().trayEnabled()).toBe(true)
+    expect(ctx.get().startOnLogin()).toBe(true)
+    expect(runs - base).toBe(1)
   })
 
   it('leaves every declared key at its value', async () => {
@@ -757,6 +877,12 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
     // the terminal-theme describe block below.
     diff_view: { read: p => p.dual.diffView.account(), fallback: 'unified' },
     turn_end_sound: { read: p => p.dual.turnEndSound.account(), fallback: 'ding-dong' },
+    // The three Desktop enums. Their tokens come from contracts/desktop.json,
+    // which the hub's catalogue also reads, so the golden file and these
+    // fallbacks are two views of one source.
+    tray_on_close: { read: p => p.dual.trayOnClose.account(), fallback: TRAY_ON_CLOSE_TRAY },
+    tray_on_minimize: { read: p => p.dual.trayOnMinimize.account(), fallback: TRAY_ON_MINIMIZE_TASKBAR },
+    start_minimized: { read: p => p.dual.startMinimized.account(), fallback: START_MINIMIZED_WINDOW },
   }
 
   const enumKeys = golden.filter(k => k.fields.some(f => (f.enumValues?.length ?? 0) > 0))
@@ -1278,7 +1404,7 @@ describe('preferencesContext — cross-tab sync', () => {
     expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
   })
 
-  // EVERY device-tier signal follows, not only the nine that have an account
+  // EVERY device-tier signal follows, not only the ones that have an account
   // half. The browser-only fields share the same document and the same event,
   // so a set they were missing from meant a diff view or an Enter-key mode
   // changed next door stayed stale here until the tab was reloaded.

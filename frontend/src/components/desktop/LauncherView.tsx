@@ -125,15 +125,22 @@ export const LauncherView: Component<{ onConnected: () => void }> = (props) => {
 
   onMount(async () => {
     try {
-      const [, { config, buildInfo }] = await Promise.all([
+      const [, { config, buildInfo, launchVisibility }] = await Promise.all([
         getRuntimeState(),
         platformBridge.getStartupInfo(),
       ])
       if (buildInfo.version)
         setVersionLine(formatVersionLine(buildInfo))
 
-      // Restore saved window geometry on startup.
-      await restoreWindowGeometry(config.window_width, config.window_height, config.window_mode)
+      // Restore saved window geometry on startup. `launchVisibility` decides
+      // whether the window is shown at all: the shell reports `hidden` or
+      // `minimized` for a login launch the user asked to start out of the way.
+      await restoreWindowGeometry(
+        config.window_width,
+        config.window_height,
+        config.window_mode,
+        launchVisibility,
+      )
 
       if (config.mode === 'distributed' && config.hub_url) {
         setHubUrl(config.hub_url)

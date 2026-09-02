@@ -3,8 +3,16 @@ import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/
 import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
-import { createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
+import { batch, createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
+import {
+  START_MINIMIZED_MINIMIZED,
+  START_MINIMIZED_WINDOW,
+  TRAY_ON_CLOSE_QUIT,
+  TRAY_ON_CLOSE_TRAY,
+  TRAY_ON_MINIMIZE_TASKBAR,
+  TRAY_ON_MINIMIZE_TRAY,
+} from '~/generated/contracts/desktop'
 import { NAME_BYTE_LIMIT } from '~/generated/contracts/validate'
 import {
   batchBrowserPrefWrites,
@@ -53,6 +61,20 @@ export type DiffViewPreference = 'unified' | 'split'
 export type TurnEndSoundPreference = 'none' | 'ding-dong'
 
 /**
+ * The three Desktop enums, DERIVED from the generated tokens rather than
+ * retyped.
+ *
+ * The emitted constants carry `as const`, so `typeof X` is the literal type. A
+ * token renamed in contracts/desktop.json therefore fails the type check here,
+ * where a hand-written union would keep compiling and quietly narrow to a value
+ * the hub no longer sends. These are the one setting family a third language
+ * (the Rust shell) also spells, which is why they are contract-backed at all.
+ */
+export type TrayOnClosePreference = typeof TRAY_ON_CLOSE_TRAY | typeof TRAY_ON_CLOSE_QUIT
+export type TrayOnMinimizePreference = typeof TRAY_ON_MINIMIZE_TRAY | typeof TRAY_ON_MINIMIZE_TASKBAR
+export type StartMinimizedPreference = typeof START_MINIMIZED_WINDOW | typeof START_MINIMIZED_MINIMIZED
+
+/**
  * One font-family tier: the enable switch plus the ordered stack. Mirrors the
  * backend's `FontFamilyValue` (usersettings keys `ui_fonts` / `mono_fonts`)
  * exactly — the whole object is the override unit on both tiers, because
@@ -85,6 +107,16 @@ export interface PreferencesState {
   turnEndSoundVolume: () => number
   /** Resolved debug logging preference. */
   debugLogging: () => boolean
+  /** Resolved "show a tray / menu-bar icon" preference (desktop app only). */
+  trayEnabled: () => boolean
+  /** Resolved action for closing the window (desktop app only). */
+  trayOnClose: () => TrayOnClosePreference
+  /** Resolved action for minimizing the window (desktop app only). */
+  trayOnMinimize: () => TrayOnMinimizePreference
+  /** Resolved "start at login" preference (desktop app only). */
+  startOnLogin: () => boolean
+  /** Resolved window state for a login launch (desktop app only). */
+  startMinimized: () => StartMinimizedPreference
   /** Whether thinking/reasoning bubbles should start expanded. */
   expandAgentThoughts: () => boolean
   setExpandAgentThoughts: (value: boolean) => void
@@ -149,6 +181,11 @@ export interface PreferencesState {
     turnEndSound: DualPreference<TurnEndSoundPreference>
     turnEndSoundVolume: DualPreference<number>
     debugLogging: DualPreference<boolean>
+    trayEnabled: DualPreference<boolean>
+    trayOnClose: DualPreference<TrayOnClosePreference>
+    trayOnMinimize: DualPreference<TrayOnMinimizePreference>
+    startOnLogin: DualPreference<boolean>
+    startMinimized: DualPreference<StartMinimizedPreference>
   }
 
   /** Which account keys carry a stored (customized) value, by proto key. */
@@ -220,6 +257,11 @@ const PreferencesContext = createStableContext<PreferencesState>('context/Prefer
 /** Accept one of a closed set of string values, and refuse anything else. */
 function oneOf<T extends string>(...allowed: T[]): (raw: unknown) => T | undefined {
   return raw => (allowed.includes(raw as T) ? raw as T : undefined)
+}
+
+/** Accept a stored boolean, and refuse anything else. */
+function parseBoolean(raw: unknown): boolean | undefined {
+  return typeof raw === 'boolean' ? raw : undefined
 }
 
 /**
@@ -417,7 +459,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * ONE registry rather than one array per purpose. Seeding an account,
    * following another tab and returning to the defaults are three passes over
    * the same set, and a second array is a set a signal can be missing from: the
-   * cross-tab pass covered the nine dual settings alone, so a diff view or an
+   * cross-tab pass covered the dual settings alone, so a diff view or an
    * Enter-key mode changed next door did not follow, and neither did the two
    * preferences that live in a key of their own.
    */
@@ -442,8 +484,10 @@ export const PreferencesProvider: ParentComponent = (props) => {
   /** Re-read every device-tier signal from the account now in force. */
   const reseedBrowserTier = () => {
     const prefs = loadBrowserPrefs()
-    for (const entry of deviceTier)
-      entry.seed(prefs)
+    batch(() => {
+      for (const entry of deviceTier)
+        entry.seed(prefs)
+    })
   }
 
   /**
@@ -459,15 +503,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
     if (!hasStorageAccount())
       return
     const prefs = loadBrowserPrefs()
-    for (const entry of deviceTier) {
-      if (stored !== null && storedKeyFor(entry.storageName) !== stored)
-        continue
-      entry.seed(prefs)
-      // The applier, WITHOUT the write that a `set` performs. Echoing the value
-      // back to storage would raise a `storage` event in the tab that wrote it,
-      // and the two tabs would write to each other for as long as both are open.
-      entry.apply?.()
-    }
+    batch(() => {
+      for (const entry of deviceTier) {
+        if (stored !== null && storedKeyFor(entry.storageName) !== stored)
+          continue
+        entry.seed(prefs)
+        // The applier, WITHOUT the write that a `set` performs. Echoing the
+        // value back to storage would raise a `storage` event in the tab that
+        // wrote it, and the two tabs would write to each other for as long as
+        // both are open.
+        entry.apply?.()
+      }
+    })
   }
 
   /**
@@ -674,20 +721,27 @@ export const PreferencesProvider: ParentComponent = (props) => {
     }
     if (!loadSeq.isNewest(undefined, mySeq))
       return
-    setAccountLoadError(null)
-    // The SCHEMA, kept beside the values it describes. The settings
-    // registry joins its presentation onto these descriptors instead of
-    // restating each key's category, control kind, enum values and bounds,
-    // so discarding them here left the dialog with nothing to render an
-    // account row from.
-    setAccountDescriptors(resp.descriptors)
-    for (const value of resp.values) {
-      if (!writeSeq.isNewest(value.key, issuedAt.get(value.key) ?? 0))
-        continue
-      // applyAccountValue records the customized flag for the key it
-      // applies, so a skipped key keeps the flag its own newer reply set.
-      applyAccountValue(value.key, value)
-    }
+    // ONE update, not one per key. A reply carries every account key, so an
+    // un-batched apply flushed the effect queue 15+ times and every consumer of
+    // a resolved preference re-ran that often, each time over a partly-updated
+    // set. `batch` defers only the flush: it keeps the write order, and a
+    // functional updater still sees the accumulated value.
+    batch(() => {
+      setAccountLoadError(null)
+      // The SCHEMA, kept beside the values it describes. The settings
+      // registry joins its presentation onto these descriptors instead of
+      // restating each key's category, control kind, enum values and bounds,
+      // so discarding them here left the dialog with nothing to render an
+      // account row from.
+      setAccountDescriptors(resp.descriptors)
+      for (const value of resp.values) {
+        if (!writeSeq.isNewest(value.key, issuedAt.get(value.key) ?? 0))
+          continue
+        // applyAccountValue records the customized flag for the key it
+        // applies, so a skipped key keeps the flag its own newer reply set.
+        applyAccountValue(value.key, value)
+      }
+    })
   }
 
   /**
@@ -792,8 +846,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // override is read.
     // A VALUE comparator, not the default reference one. Every device-tier
     // parse builds a fresh object, so an unchanged field still reads as a new
-    // value: one unrelated preference written in another tab would notify all
-    // nine dual settings and repaint the whole palette. The values all come
+    // value: one unrelated preference written in another tab would notify
+    // every dual setting and repaint the whole palette. The values all come
     // from JSON and each parse builds a fixed key order, so serializing is an
     // exact comparison here.
     const [browser, setSignal] = createSignal<T | null>(null, {
@@ -904,7 +958,46 @@ export const PreferencesProvider: ParentComponent = (props) => {
       protoKey: 'debug_logging',
       browserPrefKey: 'debugLogging',
       fallback: false,
-      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+      parse: parseBoolean,
+    }),
+    // The Desktop tier. Each `parse` is at least as strict as the hub's
+    // validator (usersettings/keys.go), and both sides read the SAME generated
+    // tokens, so the two cannot drift. A hand-edited localStorage document
+    // therefore cannot put a value on screen -- or into a set_desktop_behavior
+    // payload -- that the hub or the Rust shell would refuse.
+    //
+    // No `onBrowserWrite` on any of them: that hook fires on a DEVICE write
+    // only, and the push to the shell has to happen on an account write too.
+    // `useDesktopWindowBehavior` watches the resolved values instead.
+    trayEnabled: createDualSetting<boolean>({
+      protoKey: 'tray_enabled',
+      browserPrefKey: 'trayEnabled',
+      fallback: false,
+      parse: parseBoolean,
+    }),
+    trayOnClose: createDualSetting<TrayOnClosePreference>({
+      protoKey: 'tray_on_close',
+      browserPrefKey: 'trayOnClose',
+      fallback: TRAY_ON_CLOSE_TRAY,
+      parse: oneOf(TRAY_ON_CLOSE_TRAY, TRAY_ON_CLOSE_QUIT),
+    }),
+    trayOnMinimize: createDualSetting<TrayOnMinimizePreference>({
+      protoKey: 'tray_on_minimize',
+      browserPrefKey: 'trayOnMinimize',
+      fallback: TRAY_ON_MINIMIZE_TASKBAR,
+      parse: oneOf(TRAY_ON_MINIMIZE_TRAY, TRAY_ON_MINIMIZE_TASKBAR),
+    }),
+    startOnLogin: createDualSetting<boolean>({
+      protoKey: 'start_on_login',
+      browserPrefKey: 'startOnLogin',
+      fallback: false,
+      parse: parseBoolean,
+    }),
+    startMinimized: createDualSetting<StartMinimizedPreference>({
+      protoKey: 'start_minimized',
+      browserPrefKey: 'startMinimized',
+      fallback: START_MINIMIZED_WINDOW,
+      parse: oneOf(START_MINIMIZED_WINDOW, START_MINIMIZED_MINIMIZED),
     }),
   }
 
@@ -989,13 +1082,18 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * same.
    */
   const resetForSignOut = () => {
-    for (const setting of settingsByProtoKey.values())
-      setting.clear()
-    setAccountCustomized({})
-    for (const entry of deviceTier) {
-      entry.seed(null)
-      entry.apply?.()
-    }
+    // Batched, so the intermediate state the paragraph above describes never
+    // reaches a consumer at all: the account tier and the device tier land as
+    // one update, and there is no flush in between to paint the wrong palette.
+    batch(() => {
+      for (const setting of settingsByProtoKey.values())
+        setting.clear()
+      setAccountCustomized({})
+      for (const entry of deviceTier) {
+        entry.seed(null)
+        entry.apply?.()
+      }
+    })
   }
   // `accountLoadError` and `accountDescriptors` deliberately survive. Neither
   // is a VALUE of the account that left: the error is the record of the load
@@ -1040,8 +1138,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
   // identity resolves `storedKeyFor` answers null, which matches no event -- the
   // right answer, and the reason it does not throw here.
   //
-  // A null `event.key` is a whole-store `clear()` next door, and it names no
-  // key, so every entry answers for it. Dropping it left the signals showing
+  // A null `event.key` is a whole-store `clear()` next door, and it identifies
+  // no key, so every entry answers for it. Dropping it left the signals showing
   // values whose document was gone, and the next write in this tab merged onto
   // an empty one and silently discarded them.
   onMount(() => {
@@ -1091,6 +1189,11 @@ export const PreferencesProvider: ParentComponent = (props) => {
       turnEndSound: dualSettings.turnEndSound.resolved,
       turnEndSoundVolume: dualSettings.turnEndSoundVolume.resolved,
       debugLogging: dualSettings.debugLogging.resolved,
+      trayEnabled: dualSettings.trayEnabled.resolved,
+      trayOnClose: dualSettings.trayOnClose.resolved,
+      trayOnMinimize: dualSettings.trayOnMinimize.resolved,
+      startOnLogin: dualSettings.startOnLogin.resolved,
+      startMinimized: dualSettings.startMinimized.resolved,
 
       // Derived from the same record the settings are built from, so a
       // tier this literal could forget to wire cannot exist.

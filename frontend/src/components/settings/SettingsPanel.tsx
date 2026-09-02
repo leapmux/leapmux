@@ -29,8 +29,14 @@ export interface SettingsPanelProps {
    * derives `restartGroup`.
    */
   elevationGroup: boolean
-  /** The owning store's most recent failed write, or null. */
-  writeError: { key: string, message: string } | null
+  /**
+   * The failed writes to place on their rows, empty when there are none.
+   *
+   * A LIST because the desktop shell can refuse two INDEPENDENT choices in one
+   * push. An admin store has only ever one failed write, so that caller passes
+   * a list of at most one.
+   */
+  writeErrors: readonly { key: string, message: string }[]
 }
 
 /**
@@ -45,7 +51,6 @@ export interface SettingsPanelProps {
  */
 export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
   const storeError = (id: string): string | null => {
-    const writeError = props.writeError
     // The store keys errors by the proto key (the RPC target). A scalar row's
     // id is that key; an object-shaped setting renders one row per field as
     // `${key}.${field}`. Prefix-matching would paint every sibling field with
@@ -53,10 +58,13 @@ export const SettingsPanel: Component<SettingsPanelProps> = (props) => {
     // marked worker_bytes and userevents_bytes). Object-field errors surface
     // from SettingRow's own catch of the failed set.
     //
-    // A registry row cannot collide with a hub key here: the dialog passes
-    // a `writeError` only while the active group is an admin one, and only
-    // the hub scope has a store that records one.
-    return writeError !== null && id === writeError.key ? writeError.message : null
+    // A registry row cannot collide with a hub key here, although the dialog
+    // passes errors for a USER group too (the desktop shell's refusals, on
+    // `desktop.trayEnabled` or `desktop.startOnLogin`). A registry id is
+    // dotted and a hub key is a bare snake_case name, so the two id spaces do
+    // not meet -- and only one of the two sources can be in play at a time,
+    // because a group is either admin or not.
+    return props.writeErrors.find(e => e.key === id)?.message ?? null
   }
 
   return (

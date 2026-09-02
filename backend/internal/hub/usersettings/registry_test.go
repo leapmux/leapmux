@@ -471,3 +471,44 @@ func TestApplyPartialAcceptsAnOrdinaryDocument(t *testing.T) {
 	require.NoError(t, err)
 	assert.Less(t, len(merged), MaxPrefsBytes)
 }
+
+// TestApplyPartialTrayKeysMergeIndependently is what proves the five-scalar-
+// keys decision at the storage layer.
+//
+// The Desktop settings could have been one object-shaped key, which would have
+// rendered the same five rows. This is the difference: each key merges alone,
+// so a device override of one of them cannot drag the other four onto the
+// device tier with it.
+func TestApplyPartialTrayKeysMergeIndependently(t *testing.T) {
+	blob := `{"tray_enabled":true,"tray_on_close":"quit","tray_on_minimize":"tray","start_on_login":true,"start_minimized":"minimized"}`
+	merged, err := Default.ApplyPartial(blob, "tray_on_close", json.RawMessage(`"tray"`))
+	require.NoError(t, err)
+
+	doc := map[string]json.RawMessage{}
+	require.NoError(t, json.Unmarshal([]byte(merged), &doc))
+	assert.JSONEq(t, `"tray"`, string(doc["tray_on_close"]))
+	assert.JSONEq(t, `true`, string(doc["tray_enabled"]), "the sibling keeps its value")
+	assert.JSONEq(t, `"tray"`, string(doc["tray_on_minimize"]))
+	assert.JSONEq(t, `true`, string(doc["start_on_login"]))
+	assert.JSONEq(t, `"minimized"`, string(doc["start_minimized"]))
+}
+
+// A token the contract does not declare must store NOTHING. The Rust shell
+// refuses it too, so a stored value here would be a preference the user set
+// and no client obeys.
+func TestApplyPartialRefusesAnUnlistedDesktopToken(t *testing.T) {
+	blob := `{"tray_on_close":"tray"}`
+	for _, tc := range []struct{ key, value string }{
+		{"tray_on_close", `"minimize"`},
+		{"tray_on_minimize", `"quit"`},
+		{"start_minimized", `"hidden"`},
+	} {
+		// The RETURNED document is what the caller stores, so it is what the
+		// test must read. Re-parsing `blob` would assert only that a Go string
+		// is immutable, and would stay green if ApplyPartial wrote the rejected
+		// value before validating it.
+		out, err := Default.ApplyPartial(blob, tc.key, json.RawMessage(tc.value))
+		require.Errorf(t, err, "%s must refuse %s", tc.key, tc.value)
+		assert.Emptyf(t, out, "%s must return no document to store", tc.key)
+	}
+}

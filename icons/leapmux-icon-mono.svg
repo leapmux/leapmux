@@ -1,0 +1,33 @@
+<!--
+  The macOS menu-bar icon source: the chevron and the spark of leapmux-icon.svg
+  in solid black on a transparent square, with no background plate.
+
+  macOS ONLY. TRAY_ICON_FILES in desktop/rust/scripts/icon-set.mjs gives this
+  file to tray-template.png alone; the Linux panel and the Windows notification
+  area draw tray.png, which renders from the colour leapmux-icon.svg. An edit
+  here changes the menu bar and nothing else.
+
+  Black is not a colour choice. macOS renders a status item as a TEMPLATE
+  image, which takes the alpha channel alone and recolours it to match the menu
+  bar (white on a dark bar, black on a light one), so any other fill produces
+  the same picture.
+
+  The two paths are copied from leapmux-icon.svg UNCHANGED, and the group
+  transform only recentres them. Both are already centred on y=32 there, so
+  copying them verbatim is what keeps the vertical alignment identical to the
+  colour icon; retyping the coordinates is how the spark ended up a unit low.
+  Together the marks span x=12.5 to x=58 (the chevron's half stroke of 3.5
+  counts), whose centre is 35.25, so the group moves left by 3.25 to sit at
+  x=32. The plate in the colour icon hid that offset; without one it reads as a
+  mark pushed to the right.
+
+  Keep every XML comment here free of a double hyphen. XML forbids one inside a
+  comment, and resvg refuses the whole file with "invalid comment at 1:1",
+  which points at the file rather than at the line.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <g transform="translate(-3.25 0)">
+    <path d="M16 20 L30 32 L16 44" fill="none" stroke="#000000" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M44 17 L48 28 L58 32 L48 36 L44 47 L40 36 L30 32 L40 28 Z" fill="#000000"/>
+  </g>
+</svg>

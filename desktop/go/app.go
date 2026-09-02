@@ -424,11 +424,45 @@ func (a *App) SetWindowSize(width, height int, mode string) error {
 	})
 }
 
+// SetDesktopBehavior caches the resolved Desktop preferences for this device.
+//
+// Unlike SetWindowSize there is no "0 means keep" rule: the webview always
+// pushes the whole resolved set, so a partial update would be a state no caller
+// can produce. See DesktopConfig for the direction of flow.
+func (a *App) SetDesktopBehavior(behavior DesktopBehavior) error {
+	done, err := a.beginOperation()
+	if err != nil {
+		return err
+	}
+	defer done()
+	return a.updateConfig(func(config *DesktopConfig) {
+		config.TrayEnabled = behavior.TrayEnabled
+		config.TrayOnClose = behavior.TrayOnClose
+		config.TrayOnMinimize = behavior.TrayOnMinimize
+		config.StartMinimized = behavior.StartMinimized
+	})
+}
+
+// updateConfig applies update to a copy of the current config and persists it.
+//
+// An update that changes nothing writes nothing. a.config holds exactly what
+// the last successful SaveConfig wrote, so the file already carries next and a
+// rewrite would produce identical bytes. This is what lets the shell push the
+// whole resolved behaviour set on every webview mount without keeping a second
+// copy of that set to compare against: the authority does the comparison, so
+// nothing can drift from it.
+//
+// DesktopConfig is comparable -- every field is a string, an int, a bool, or a
+// defined string type -- so == compares every field, and it covers a new field
+// the moment somebody adds one.
 func (a *App) updateConfig(update func(*DesktopConfig)) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
 	next := *a.config
 	update(&next)
+	if next == *a.config {
+		return nil
+	}
 	if err := SaveConfig(&next); err != nil {
 		return err
 	}

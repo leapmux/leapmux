@@ -1260,6 +1260,95 @@ export const DESKTOP_TS_EVENT_NAMES = {
   menuShowPreferences: 'TAURI_EVENT_MENU_SHOW_PREFERENCES',
 }
 
+// The Desktop account settings' enum tokens, in the three languages that spell
+// them: the hub declares and validates them (usersettings/keys.go), the webview
+// parses its device tier with them, and the Rust shell matches them out of the
+// set_desktop_behavior payload. The other account settings' tokens stay in Go
+// alone, because only Go and the webview read those and the webview reads them
+// off the wire.
+export const DESKTOP_GO_BEHAVIOR_NAMES = {
+  trayOnCloseTray: 'TrayOnCloseTray',
+  trayOnCloseQuit: 'TrayOnCloseQuit',
+  trayOnMinimizeTray: 'TrayOnMinimizeTray',
+  trayOnMinimizeTaskbar: 'TrayOnMinimizeTaskbar',
+  startMinimizedWindow: 'StartMinimizedWindow',
+  startMinimizedMinimized: 'StartMinimizedMinimized',
+}
+
+export const DESKTOP_RS_BEHAVIOR_NAMES = {
+  trayOnCloseTray: 'TRAY_ON_CLOSE_TRAY',
+  trayOnCloseQuit: 'TRAY_ON_CLOSE_QUIT',
+  trayOnMinimizeTray: 'TRAY_ON_MINIMIZE_TRAY',
+  trayOnMinimizeTaskbar: 'TRAY_ON_MINIMIZE_TASKBAR',
+  startMinimizedWindow: 'START_MINIMIZED_WINDOW',
+  startMinimizedMinimized: 'START_MINIMIZED_MINIMIZED',
+}
+
+export const DESKTOP_TS_BEHAVIOR_NAMES = {
+  trayOnCloseTray: 'TRAY_ON_CLOSE_TRAY',
+  trayOnCloseQuit: 'TRAY_ON_CLOSE_QUIT',
+  trayOnMinimizeTray: 'TRAY_ON_MINIMIZE_TRAY',
+  trayOnMinimizeTaskbar: 'TRAY_ON_MINIMIZE_TASKBAR',
+  startMinimizedWindow: 'START_MINIMIZED_WINDOW',
+  startMinimizedMinimized: 'START_MINIMIZED_MINIMIZED',
+}
+
+/**
+ * Flatten `windowBehavior` to the `<setting><Value>` keys the name tables use.
+ *
+ * The contract NESTS one object per setting, so the grouping is data the schema
+ * enforces and the per-setting uniqueness rule reads straight off it. The
+ * emitted constant names stay flat, which is the same split `flattenWire` makes
+ * for wire.json's nested blocks.
+ */
+function flattenBehavior(b) {
+  // DERIVED, not a fixed list of the six keys: a setting added to the contract
+  // must reach the coverage check below as an unknown key, so the generator
+  // refuses it until the three name tables carry it. A hardcoded list would
+  // drop the new setting here and emit nothing for it, in silence.
+  return Object.fromEntries(
+    Object.entries(b).flatMap(([setting, tokens]) =>
+      Object.entries(tokens).map(([value, token]) =>
+        [`${setting}${value[0].toUpperCase()}${value.slice(1)}`, token])),
+  )
+}
+
+// The launch-visibility tokens. Rust and TS only, like the Tauri events: the
+// shell reports one through get_startup_info and the webview parses it. Unlike
+// windowBehavior this block is ONE setting, so all three tokens must differ.
+export const DESKTOP_RS_LAUNCH_NAMES = {
+  normal: 'LAUNCH_VISIBILITY_NORMAL',
+  minimized: 'LAUNCH_VISIBILITY_MINIMIZED',
+  hidden: 'LAUNCH_VISIBILITY_HIDDEN',
+}
+
+export const DESKTOP_TS_LAUNCH_NAMES = {
+  normal: 'LAUNCH_VISIBILITY_NORMAL',
+  minimized: 'LAUNCH_VISIBILITY_MINIMIZED',
+  hidden: 'LAUNCH_VISIBILITY_HIDDEN',
+}
+
+// The saved window-mode tokens, in all THREE languages: the Go config persists
+// one, the Rust shell matches it at launch, and the webview reads and writes it
+// through save_window_geometry.
+export const DESKTOP_GO_WINDOW_MODE_NAMES = {
+  normal: 'WindowModeNormal',
+  maximized: 'WindowModeMaximized',
+  fullscreen: 'WindowModeFullscreen',
+}
+
+export const DESKTOP_RS_WINDOW_MODE_NAMES = {
+  normal: 'WINDOW_MODE_NORMAL',
+  maximized: 'WINDOW_MODE_MAXIMIZED',
+  fullscreen: 'WINDOW_MODE_FULLSCREEN',
+}
+
+export const DESKTOP_TS_WINDOW_MODE_NAMES = {
+  normal: 'WINDOW_MODE_NORMAL',
+  maximized: 'WINDOW_MODE_MAXIMIZED',
+  fullscreen: 'WINDOW_MODE_FULLSCREEN',
+}
+
 export function checkDesktop(d) {
   mustBe(d.envVars.devEndpoint !== d.envVars.binaryHash, 'desktop.json', 'the two env vars must be distinct names')
   const events = Object.values(d.tauriEvents)
@@ -1276,6 +1365,37 @@ export function checkDesktop(d) {
   checkTableCoverage('desktop.json', 'tauriEvents', Object.keys(d.tauriEvents), [
     ['DESKTOP_RS_EVENT_NAMES', DESKTOP_RS_EVENT_NAMES],
     ['DESKTOP_TS_EVENT_NAMES', DESKTOP_TS_EVENT_NAMES],
+  ])
+  // One rule, applied to each block of tokens that is ONE choice: a setting
+  // whose two values are the same string offers no choice at all. Never across
+  // `windowBehavior` as a whole, because `tray` is deliberately the token of
+  // both close-to-tray and minimize-to-tray.
+  //
+  // Before the coverage check below, so a setting the name tables do not know
+  // yet is still checked -- which is the order a real change arrives in.
+  const checkTokenBlock = (name, tokens) => mustBe(
+    new Set(Object.values(tokens)).size === Object.keys(tokens).length,
+    'desktop.json',
+    `${name} declares one token twice, so it offers one choice`,
+  )
+  for (const [setting, tokens] of Object.entries(d.windowBehavior))
+    checkTokenBlock(`windowBehavior.${setting}`, tokens)
+  checkTokenBlock('launchVisibility', d.launchVisibility)
+  checkTokenBlock('windowMode', d.windowMode)
+
+  checkTableCoverage('desktop.json', 'windowBehavior', Object.keys(flattenBehavior(d.windowBehavior)), [
+    ['DESKTOP_GO_BEHAVIOR_NAMES', DESKTOP_GO_BEHAVIOR_NAMES],
+    ['DESKTOP_RS_BEHAVIOR_NAMES', DESKTOP_RS_BEHAVIOR_NAMES],
+    ['DESKTOP_TS_BEHAVIOR_NAMES', DESKTOP_TS_BEHAVIOR_NAMES],
+  ])
+  checkTableCoverage('desktop.json', 'launchVisibility', Object.keys(d.launchVisibility), [
+    ['DESKTOP_RS_LAUNCH_NAMES', DESKTOP_RS_LAUNCH_NAMES],
+    ['DESKTOP_TS_LAUNCH_NAMES', DESKTOP_TS_LAUNCH_NAMES],
+  ])
+  checkTableCoverage('desktop.json', 'windowMode', Object.keys(d.windowMode), [
+    ['DESKTOP_GO_WINDOW_MODE_NAMES', DESKTOP_GO_WINDOW_MODE_NAMES],
+    ['DESKTOP_RS_WINDOW_MODE_NAMES', DESKTOP_RS_WINDOW_MODE_NAMES],
+    ['DESKTOP_TS_WINDOW_MODE_NAMES', DESKTOP_TS_WINDOW_MODE_NAMES],
   ])
   return {}
 }
@@ -1297,6 +1417,21 @@ ${goConstBlock(Object.keys(DESKTOP_GO_ENV_NAMES).map(k => ({ name: DESKTOP_GO_EN
 // bootstrap up to channelwire.UserEventsReadLimit -- plus its Frame/Event
 // proto envelope; the Rust shell enforces the same cap on read.
 const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}
+
+// The enum tokens of the Desktop account settings. usersettings/keys.go builds
+// each key's enum catalogue from these, and validateEnum derives the write-path
+// rule from that same catalogue, so a token is stated once for the hub, the
+// webview and the Rust shell together.
+const (
+${goConstBlock(Object.entries(flattenBehavior(d.windowBehavior)).map(([k, v]) => ({ name: DESKTOP_GO_BEHAVIOR_NAMES[k], value: jsonString(v) })))}
+)
+
+// The saved display state of the main window. DesktopConfig persists one of
+// these tokens verbatim, and the Rust shell and the webview match the same
+// three, so the wire carries no second spelling of them.
+const (
+${goConstBlock(Object.keys(DESKTOP_GO_WINDOW_MODE_NAMES).map(k => ({ name: DESKTOP_GO_WINDOW_MODE_NAMES[k], value: jsonString(d.windowMode[k]) })))}
+)
 `
 }
 
@@ -1304,12 +1439,36 @@ export function emitTsDesktop(d) {
   const lines = Object.keys(DESKTOP_TS_EVENT_NAMES)
     .map(k => `export const ${DESKTOP_TS_EVENT_NAMES[k]} = ${jsonString(d.tauriEvents[k])} as const\n`)
     .join('')
+  const behavior = Object.entries(flattenBehavior(d.windowBehavior))
+    .map(([k, v]) => `export const ${DESKTOP_TS_BEHAVIOR_NAMES[k]} = ${jsonString(v)} as const\n`)
+    .join('')
+  const launch = Object.keys(DESKTOP_TS_LAUNCH_NAMES)
+    .map(k => `export const ${DESKTOP_TS_LAUNCH_NAMES[k]} = ${jsonString(d.launchVisibility[k])} as const\n`)
+    .join('')
+  const windowMode = Object.keys(DESKTOP_TS_WINDOW_MODE_NAMES)
+    .map(k => `export const ${DESKTOP_TS_WINDOW_MODE_NAMES[k]} = ${jsonString(d.windowMode[k])} as const\n`)
+    .join('')
   return `${TS_HEADER('desktop.json')}
 // Tauri events the desktop shell emits and the webview listens for,
 // generated from contracts/desktop.json (the Rust shell reads the same
 // names from its generated module). The env vars are Rust<->Go only and
 // ride in those outputs.
-${lines}`
+${lines}
+// Enum tokens of the Desktop account settings. \`as const\` is what lets the
+// preference types derive (\`typeof TRAY_ON_CLOSE_TRAY | typeof
+// TRAY_ON_CLOSE_QUIT\`) rather than restate the union, so a token renamed in
+// the contract fails the type check instead of narrowing to a value the hub
+// never sends.
+${behavior}
+// The window state the shell reports at launch, which \`parseLaunchVisibility\`
+// narrows. That parse answers the first token for anything it does not know, so
+// without the contract a renamed token would show a window on every login
+// launch that asked to start in the tray, and nothing would fail.
+${launch}
+// The saved display state of the main window. \`WindowMode\` derives from these,
+// so the union cannot drift from the token the Go config persists and the Rust
+// shell matches.
+${windowMode}`
 }
 
 export function emitRsDesktop(d) {
@@ -1323,6 +1482,15 @@ export function emitRsDesktop(d) {
         : ''
       return `${attr}pub const ${DESKTOP_RS_EVENT_NAMES[k]}: &str = ${rustString(d.tauriEvents[k])};`
     })
+    .join('\n')
+  const behavior = Object.entries(flattenBehavior(d.windowBehavior))
+    .map(([k, v]) => `pub const ${DESKTOP_RS_BEHAVIOR_NAMES[k]}: &str = ${rustString(v)};`)
+    .join('\n')
+  const launch = Object.keys(DESKTOP_RS_LAUNCH_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_LAUNCH_NAMES[k]}: &str = ${rustString(d.launchVisibility[k])};`)
+    .join('\n')
+  const windowMode = Object.keys(DESKTOP_RS_WINDOW_MODE_NAMES)
+    .map(k => `pub const ${DESKTOP_RS_WINDOW_MODE_NAMES[k]}: &str = ${rustString(d.windowMode[k])};`)
     .join('\n')
   return `// Code generated by scripts/generate-contracts.mjs from contracts/desktop.json. DO NOT EDIT.
 
@@ -1339,6 +1507,20 @@ ${events}
 /// Frame cap the shell enforces on the sidecar IPC wire (the Go twin is
 /// contracts.MaxFrameSizeBytes).
 pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};
+
+/// Enum tokens of the Desktop account settings, as the webview sends them in
+/// the \`set_desktop_behavior\` payload (the Go twin is the
+/// contracts.TrayOnClose*/TrayOnMinimize*/StartMinimized* family).
+${behavior}
+
+/// The window state this shell reports through \`get_startup_info\`, which the
+/// webview narrows in \`parseLaunchVisibility\`.
+${launch}
+
+/// The saved display state of the main window (the Go twin is the
+/// contracts.WindowMode* family). The sidecar persists one of these tokens
+/// verbatim, so the wire carries no second spelling of them.
+${windowMode}
 `
 }
 

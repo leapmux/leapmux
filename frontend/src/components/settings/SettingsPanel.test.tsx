@@ -12,9 +12,13 @@ import { buildProtoRows } from './protoRegistry'
 import { CLAIMED_PROTO_KEYS, createBrowserRows } from './registry'
 import { SettingsPanel } from './SettingsPanel'
 
+// `isDesktopApp` is a controllable signal, defaulting to FALSE so every case
+// below sees the browser environment it was written for. Only the Desktop
+// group needs the other answer, and its rows exist nowhere else.
+const isDesktopApp = vi.hoisted(() => vi.fn(() => false))
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
-  isDesktopApp: () => false,
+  isDesktopApp: () => isDesktopApp(),
 }))
 
 // The panel renders the verified-session state at the top of an
@@ -132,7 +136,7 @@ function registryFor(category: string): SettingRowModel[] {
 describe('settingsPanel string-list accessible names', () => {
   it('gives the two font-stack add affordances distinct names', () => {
     render(withPreferences(() => (
-      <SettingsPanel rows={registryFor('appearance')} restartGroup={false} elevationGroup={false} writeError={null} />
+      <SettingsPanel rows={registryFor('appearance')} restartGroup={false} elevationGroup={false} writeErrors={[]} />
     )))
     expect(screen.getByRole('textbox', { name: 'Add UI font' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Add monospace font' })).toBeTruthy()
@@ -150,7 +154,7 @@ describe('settingsPanel claimed proto keys', () => {
         rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
         restartGroup={false}
         elevationGroup={false}
-        writeError={null}
+        writeErrors={[]}
       />
     )))
     expect(screen.getByText('Custom UI fonts')).toBeTruthy()
@@ -169,7 +173,7 @@ describe('settingsPanel claimed proto keys', () => {
         rows={[...registryFor('appearance'), ...rowsFor(store, 'appearance')]}
         restartGroup={false}
         elevationGroup={false}
-        writeError={null}
+        writeErrors={[]}
       />
     )))
     expect(screen.getByText('Unclaimed appearance toggle')).toBeTruthy()
@@ -186,7 +190,7 @@ describe('settingsPanel claimed proto keys', () => {
         rows={rowsFor(store, 'signup', false)}
         restartGroup={false}
         elevationGroup={false}
-        writeError={null}
+        writeErrors={[]}
       />
     ))
     expect(screen.getByText('Allow public signup')).toBeTruthy()
@@ -208,7 +212,7 @@ describe('settingsPanel claimed proto keys', () => {
         rows={rowsFor(store, 'advanced', false)}
         restartGroup={false}
         elevationGroup={false}
-        writeError={{ key: 'queue_budget', message: 'queue budget relay_bytes must be 0 (auto-size) or at least 4194304 bytes' }}
+        writeErrors={[{ key: 'queue_budget', message: 'queue budget relay_bytes must be 0 (auto-size) or at least 4194304 bytes' }]}
       />
     ))
     expect(screen.getByText('Queue budget - relay')).toBeTruthy()
@@ -228,11 +232,63 @@ describe('settingsPanel claimed proto keys', () => {
         rows={rowsFor(store, 'general', false)}
         restartGroup={false}
         elevationGroup={false}
-        writeError={{ key: 'session_duration_seconds', message: 'session duration must be at least 300s' }}
+        writeErrors={[{ key: 'session_duration_seconds', message: 'session duration must be at least 300s' }]}
       />
     ))
     expect(screen.getByTestId('setting-error-session_duration_seconds').textContent)
       .toContain('session duration must be at least 300s')
+  })
+
+  // The desktop shell's refusal is the one error a USER group carries, and a
+  // registry row is addressed by its dotted id rather than by a hub key. The
+  // tray toggle would otherwise read "on" beside no icon and no explanation,
+  // which is the failure the Linux `recommends` decision made ordinary.
+  it('shows the desktop shell refusal on its registry row only', () => {
+    isDesktopApp.mockReturnValue(true)
+    try {
+      render(withPreferences(() => (
+        <SettingsPanel
+          rows={registryFor('desktop')}
+          restartGroup={false}
+          elevationGroup={false}
+          writeErrors={[{ key: 'desktop.trayEnabled', message: 'LeapMux could not create a tray icon on this desktop' }]}
+        />
+      )))
+      expect(screen.getByTestId('setting-error-desktop.trayEnabled').textContent)
+        .toContain('LeapMux could not create a tray icon on this desktop')
+      expect(screen.queryByTestId('setting-error-desktop.startOnLogin')).toBeNull()
+    }
+    finally {
+      isDesktopApp.mockReturnValue(false)
+    }
+  })
+
+  // The two refusable choices fail INDEPENDENTLY, and a Linux desktop with no
+  // status-icon library is also a plausible one for the system to decline a
+  // login item on. A channel carrying one would leave the other toggle reading
+  // "on" with nothing behind it -- the exact silence it exists to remove.
+  it('shows every refusal, each on the row that owns it', () => {
+    isDesktopApp.mockReturnValue(true)
+    try {
+      render(withPreferences(() => (
+        <SettingsPanel
+          rows={registryFor('desktop')}
+          restartGroup={false}
+          elevationGroup={false}
+          writeErrors={[
+            { key: 'desktop.trayEnabled', message: 'no status-icon library' },
+            { key: 'desktop.startOnLogin', message: 'the system declined the login item' },
+          ]}
+        />
+      )))
+      expect(screen.getByTestId('setting-error-desktop.trayEnabled').textContent)
+        .toContain('no status-icon library')
+      expect(screen.getByTestId('setting-error-desktop.startOnLogin').textContent)
+        .toContain('the system declined the login item')
+    }
+    finally {
+      isDesktopApp.mockReturnValue(false)
+    }
   })
 })
 
@@ -254,7 +310,7 @@ describe('settingsPanel restart warning', () => {
         rows={rowsFor(store, 'general', false)}
         restartGroup={true}
         elevationGroup={false}
-        writeError={null}
+        writeErrors={[]}
       />
     ))
     expect(screen.getByRole('alert').textContent).toContain('after a hub restart')
@@ -267,7 +323,7 @@ describe('settingsPanel restart warning', () => {
         rows={rowsFor(store, 'general', false)}
         restartGroup={false}
         elevationGroup={false}
-        writeError={null}
+        writeErrors={[]}
       />
     ))
     expect(screen.queryByRole('alert')).toBeNull()
@@ -291,14 +347,14 @@ describe('settingsPanel verified-session state', () => {
   it('shows it on an elevation group while the session is verified', () => {
     elevationExpiresAt.mockReturnValue(inTwoHours())
     render(() => (
-      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={true} writeError={null} />
+      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={true} writeErrors={[]} />
     ))
     expect(screen.getByTestId('elevation-status')).toBeTruthy()
   })
 
   it('shows nothing on an elevation group while the session is not verified', () => {
     render(() => (
-      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={true} writeError={null} />
+      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={true} writeErrors={[]} />
     ))
     expect(screen.queryByTestId('elevation-status')).toBeNull()
   })
@@ -306,7 +362,7 @@ describe('settingsPanel verified-session state', () => {
   it('shows nothing on a group that holds no elevation-guarded row', () => {
     elevationExpiresAt.mockReturnValue(inTwoHours())
     render(() => (
-      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={false} writeError={null} />
+      <SettingsPanel rows={[]} restartGroup={false} elevationGroup={false} writeErrors={[]} />
     ))
     expect(screen.queryByTestId('elevation-status')).toBeNull()
   })
@@ -317,7 +373,7 @@ describe('settingsPanel verified-session state', () => {
   it('puts it above the restart warning when a group carries both', () => {
     elevationExpiresAt.mockReturnValue(inTwoHours())
     const { container } = render(() => (
-      <SettingsPanel rows={[]} restartGroup={true} elevationGroup={true} writeError={null} />
+      <SettingsPanel rows={[]} restartGroup={true} elevationGroup={true} writeErrors={[]} />
     ))
     const alerts = [...container.querySelectorAll('[role="alert"]')]
     expect(alerts).toHaveLength(2)
