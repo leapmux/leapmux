@@ -250,6 +250,36 @@ func TestListenerSet_ApplyBestEffortKeepsTheUsableAddresses(t *testing.T) {
 	assert.Contains(t, failed.Err, "address already in use")
 }
 
+// A best-effort apply must still REMOVE the addresses the new configuration
+// drops, whatever else in it fails to bind.
+//
+// The two halves of one edit are independent: an operator who deletes a
+// published address and adds an unreachable one in the same write must get the
+// deletion. The failing half rolls itself back, and a rollback restores the set
+// it started from -- which still holds the address that was deleted. Keeping it
+// published would leave the hub answering at an address its operator removed,
+// until the next write or the next restart.
+func TestListenerSet_ApplyBestEffortStillRemovesADroppedAddress(t *testing.T) {
+	ports := freePorts(t, 3)
+	basePort, droppedPort, occupiedPort := ports[0], ports[1], ports[2]
+	blocker, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(occupiedPort))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = blocker.Close() })
+
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(basePort))
+	dropped := listenset.MustParse("127.0.0.1:" + strconv.Itoa(droppedPort))
+	require.NoError(t, set.Apply([]listenset.Addr{dropped}))
+	requireAnswers(t, dropped.String())
+
+	// One write: the published address goes, an unbindable one arrives.
+	set.ApplyBestEffort([]listenset.Addr{listenset.MustParse("127.0.0.1:" + strconv.Itoa(occupiedPort))})
+
+	requireStopsAnswering(t, dropped.String())
+	// The -listen address survives, as it must survive every reconfiguration.
+	requireAnswers(t, "127.0.0.1:"+strconv.Itoa(basePort))
+	assert.Equal(t, []string{"127.0.0.1:" + strconv.Itoa(basePort)}, boundStrings(set))
+}
+
 // The settings subscriber fires on EVERY snapshot change, so an unrelated
 // write must not close and rebind every socket the hub holds.
 func TestListenerSet_ApplyIsANoOpWhenNothingChanged(t *testing.T) {
@@ -383,6 +413,34 @@ func TestListenerSet_HasNonLoopbackAddress(t *testing.T) {
 	}))
 	assert.True(t, set.HasNonLoopbackAddress(),
 		"a wildcard answers on every interface, so the hub is reachable from another machine")
+}
+
+// unserved answers the settle failure in ApplyBestEffort, and it must not
+// blame an address the merge folded into a wider one.
+//
+// Its interesting case is unreachable from Apply: reaching it needs a socket
+// that bound a moment ago to refuse the next bind, which no fixture can stage.
+// So the predicate is exercised directly.
+func TestListenerSet_UnservedAsksCoverageNotIdentity(t *testing.T) {
+	ports := freePorts(t, 2)
+	basePort, wildcardPort := ports[0], ports[1]
+	set, _ := newTestSet(t, "127.0.0.1:"+strconv.Itoa(basePort))
+	require.NoError(t, set.Apply([]listenset.Addr{
+		listenset.MustParse("*:" + strconv.Itoa(wildcardPort)),
+	}))
+
+	// Bound under a key of its own.
+	assert.Empty(t, set.unserved([]listenset.Addr{
+		listenset.MustParse("127.0.0.1:" + strconv.Itoa(basePort)),
+	}))
+	// Served by the wildcard, with NO key of its own. An identity test would
+	// call this absent and report a working address as a failure.
+	assert.Empty(t, set.unserved([]listenset.Addr{
+		listenset.MustParse("127.0.0.1:" + strconv.Itoa(wildcardPort)),
+	}))
+	// Genuinely absent: a port nothing in the set covers.
+	missing := listenset.MustParse("127.0.0.1:1")
+	assert.Equal(t, []listenset.Addr{missing}, set.unserved([]listenset.Addr{missing}))
 }
 
 // -listen may ask for port 0 (a harness picking a free port). Every surface

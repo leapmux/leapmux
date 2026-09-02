@@ -127,9 +127,12 @@ func TestIsLoopback(t *testing.T) {
 		{":4327", false},
 		{"0.0.0.0:4327", false},
 		{"[::]:4327", false},
-		// A name resolves to addresses this package cannot enumerate, so the
-		// safe answer to "is this exposed" is yes.
-		{"localhost:4327", false},
+		// "localhost" is the ONE name that names this machine by convention,
+		// and httpsec.LoopbackHosts is where that convention lives.
+		{"localhost:4327", true},
+		{"LocalHost:4327", true}, // Parse folds the case
+		// Every other name resolves to addresses this package cannot
+		// enumerate, so the safe answer to "is this exposed" is yes.
 		{"hub.example:4327", false},
 	} {
 		t.Run(tc.in, func(t *testing.T) {

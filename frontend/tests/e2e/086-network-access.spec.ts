@@ -3,7 +3,7 @@ import { connect } from 'node:net'
 import { expect, test } from './fixtures'
 import { startSoloServer, stopSoloServer } from './helpers/devServer'
 import { findFreePort } from './helpers/server'
-import { openSettingsAt } from './helpers/ui'
+import { logoutViaUI, openSettingsAt } from './helpers/ui'
 
 /** A password the hub's own validator accepts. */
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
@@ -111,6 +111,17 @@ test.describe('Network access', () => {
     await page.getByLabel('Password').fill(SOLO_PASSWORD)
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
+
+    // And the session can be ENDED. A solo hub offered no Log out while it
+    // authenticated everybody with nothing; this one holds a real session, and
+    // whoever signed in must be able to sign out again.
+    //
+    // The dialog is closed first because it is addressable -- its open state
+    // lives in `?prefs=` -- so the reload above brought it back over the app
+    // menu that carries the item.
+    await dialog.getByRole('button', { name: 'Close' }).click()
+    await expect(dialog).toBeHidden()
+    await logoutViaUI(page)
   })
 
   test('removes an address and stops answering there', async ({ page }) => {

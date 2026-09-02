@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/logging"
@@ -1100,24 +1100,21 @@ func shouldWarnNonLoopback(cfg Config, listen string) bool {
 }
 
 // listenIsNonLoopback reports whether `listen` would expose the hub on
-// something other than a loopback address. Used only to drive the solo-mode
-// security warning; the heuristic stays conservative — empty/missing host or
-// an unparseable hostname is treated as non-loopback so the warning errs on
-// the side of being shown. Wildcard addresses ("0.0.0.0", "::") parse as
-// non-loopback IPs, so `net.IP.IsLoopback` already handles them.
+// something other than a loopback address.
+//
+// It asks listenset, which is the ONE place that classifies a bind address --
+// the same predicate decides whether the frontend blocks the app with the
+// password-setup screen. A second heuristic here would let the warning and the
+// gate disagree about the same command line.
+//
+// An address listenset cannot parse counts as exposed, which keeps the warning
+// conservative: it is shown when the answer is unknown.
 func listenIsNonLoopback(listen string) bool {
-	if listen == "" {
+	addr, err := listenset.Parse(listen)
+	if err != nil {
 		return true
 	}
-	host, _, err := net.SplitHostPort(listen)
-	if err != nil || host == "" {
-		return true
-	}
-	if strings.EqualFold(host, "localhost") {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip == nil || !ip.IsLoopback()
+	return !addr.IsLoopback()
 }
 
 // defaultExtraFlags are the koanf-backed flags solo/dev registers on top of the

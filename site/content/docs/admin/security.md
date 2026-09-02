@@ -228,6 +228,8 @@ Loopback buys no exemption once a password exists, and that is deliberate: an ad
 
 Setting the password is what [Network access](/docs/admin/configuration/#network-access) asks for before it will publish an address.
 
+A solo hub runs no captcha, so a rate limit guards the sign-in form instead: ten failed passwords from one client address pause sign-in from that address for fifteen minutes. `rate_limit.login_anonymous` sets it — see [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits).
+
 {{< callout type="warning" >}}
 Point solo mode at a non-loopback address with `-listen` and LeapMux warns you at startup: the hub is reachable from other machines, and until the `solo` account has a password every request is authenticated as the administrator without credentials.
 

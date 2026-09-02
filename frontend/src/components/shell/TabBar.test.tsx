@@ -75,12 +75,12 @@ const {
   setShowAboutDialog,
   openPreferences,
   isDesktopApp,
-  isSoloMode,
+  isAutoAuthenticated,
 } = vi.hoisted(() => ({
   setShowAboutDialog: vi.fn(),
   openPreferences: vi.fn(),
   isDesktopApp: { value: false },
-  isSoloMode: { value: false },
+  isAutoAuthenticated: { value: false },
 }))
 
 vi.mock('~/components/shell/UserMenuState', () => ({
@@ -95,7 +95,7 @@ vi.mock('~/lib/systemInfo', async (importOriginal) => {
   return {
     ...actual,
     isDesktopApp: () => isDesktopApp.value,
-    isSoloMode: () => isSoloMode.value,
+    isAutoAuthenticated: () => isAutoAuthenticated.value,
   }
 })
 
@@ -224,7 +224,7 @@ function createdSortables(): MockSortable[] {
 beforeEach(() => {
   localStorageClearForTests()
   isDesktopApp.value = false
-  isSoloMode.value = false
+  isAutoAuthenticated.value = false
 })
 
 // `activateBindings` writes into a module singleton and installs a document
@@ -892,8 +892,12 @@ describe('tabBar mobile variant', () => {
     expect(openPreferences).toHaveBeenCalledWith()
   })
 
-  it('hides Log out from the mobile App menu in solo mode', () => {
-    isSoloMode.value = true
+  // A credential-free connection holds no session, so there is nothing to log
+  // out of: the desktop app's local socket, or a solo hub whose account has no
+  // password. A solo hub that HOLDS one hands its callers a real session and
+  // keeps the item.
+  it('hides Log out from the mobile App menu on a credential-free connection', () => {
+    isAutoAuthenticated.value = true
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
     expect(screen.getByRole('menuitem', { name: /Preferences/ })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Log out' })).toBeNull()

@@ -2,11 +2,11 @@ import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UserMenuItems } from './UserMenuItems'
 
-const { setShowAboutDialog, openPreferences, isDesktopApp, isSoloMode, switchMode } = vi.hoisted(() => ({
+const { setShowAboutDialog, openPreferences, isDesktopApp, isAutoAuthenticated, switchMode } = vi.hoisted(() => ({
   setShowAboutDialog: vi.fn(),
   openPreferences: vi.fn(),
   isDesktopApp: { value: false },
-  isSoloMode: { value: false },
+  isAutoAuthenticated: { value: false },
   switchMode: vi.fn(async () => {}),
 }))
 
@@ -31,7 +31,7 @@ vi.mock('~/lib/systemInfo', async (importOriginal) => {
   return {
     ...actual,
     isDesktopApp: () => isDesktopApp.value,
-    isSoloMode: () => isSoloMode.value,
+    isAutoAuthenticated: () => isAutoAuthenticated.value,
   }
 })
 
@@ -57,7 +57,7 @@ vi.mock('~/components/common/DropdownMenu', () => ({
 
 beforeEach(() => {
   isDesktopApp.value = false
-  isSoloMode.value = false
+  isAutoAuthenticated.value = false
   setShowAboutDialog.mockClear()
   openPreferences.mockClear()
   switchMode.mockClear()
@@ -74,12 +74,16 @@ describe('userMenuItems', () => {
     expect(screen.getByRole('menuitem', { name: /Preferences/ })).toBeInTheDocument()
   })
 
-  it('shows Log out on a hub session and hides it in solo', () => {
+  // Log out ends a SESSION, so the question is whether this connection holds
+  // one -- not whether the hub runs in solo mode. A solo hub whose account has
+  // a password hands its network callers a real session, and hiding the item
+  // there would leave them no way to end it.
+  it('shows Log out for a session and hides it on a credential-free connection', () => {
     render(() => <UserMenuItems />)
     expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeInTheDocument()
     cleanup()
 
-    isSoloMode.value = true
+    isAutoAuthenticated.value = true
     render(() => <UserMenuItems />)
     expect(screen.queryByRole('menuitem', { name: 'Log out' })).toBeNull()
   })
@@ -97,7 +101,9 @@ describe('userMenuItems', () => {
   })
 
   it('keeps Switch mode in solo desktop (no logout, still return to launcher)', () => {
-    isSoloMode.value = true
+    // The desktop app reaches its hub over the local socket, which the hub
+    // authenticates by existing: no session, so nothing to log out of.
+    isAutoAuthenticated.value = true
     isDesktopApp.value = true
     render(() => <UserMenuItems />)
     expect(screen.queryByRole('menuitem', { name: 'Log out' })).toBeNull()

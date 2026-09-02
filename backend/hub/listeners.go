@@ -350,12 +350,53 @@ func (s *listenerSet) ApplyBestEffort(extras []listenset.Addr) {
 		}
 		usable = append(usable, addr)
 	}
+	// Settle on the addresses that bound, and do it whatever the loop ended on.
+	// A failed Apply rolls back to the set it STARTED from, so an attempt that
+	// fails last leaves the previous configuration standing -- including every
+	// address this write removes. Without this call, deleting a published
+	// address and adding an unbindable one in the same write would keep the
+	// deleted address serving until the next write or the next restart.
+	//
+	// It is a no-op diff when the loop already ended on a success, which is the
+	// ordinary case.
+	if err := s.Apply(usable); err != nil {
+		slog.Error("the hub could not bind again an address that bound a moment ago; it is no longer served",
+			"error", err)
+		for _, addr := range s.unserved(usable) {
+			failures[addr.String()] = err.Error()
+		}
+	}
 	// AFTER the loop, never inside it. A successful Apply clears the failure
 	// record -- it means every address the caller asked for is serving -- so
 	// recording as we went would let the last success erase the failures the
 	// earlier attempts found, and the panel would show a hub with no problems
 	// and a missing address.
 	s.recordFailures(failures)
+}
+
+// unserved reports which of addrs no live listener answers on.
+//
+// It asks Covers rather than the map keys, because an address the merge folded
+// into a wider one IS served -- an extra of 127.0.0.1:4327 beside a bound
+// *:4327 has no key of its own, and reporting it as absent would blame a
+// working address for a failure elsewhere.
+func (s *listenerSet) unserved(addrs []listenset.Addr) []listenset.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []listenset.Addr
+	for _, addr := range addrs {
+		served := false
+		for _, bl := range s.active {
+			if bl.addr.Covers(addr) {
+				served = true
+				break
+			}
+		}
+		if !served {
+			out = append(out, addr)
+		}
+	}
+	return out
 }
 
 // recordFailures replaces the report of addresses the hub could not bind.

@@ -142,6 +142,14 @@ const (
 	// from each attempt, so each attempt must cost. A success clears the
 	// window, so a person who mistypes twice and then signs in is not held
 	// against their next sign-in.
+	//
+	// The address is the one the hub itself sees, never a forwarded header;
+	// clientAddressKey states why. So a hub behind a reverse proxy shares ONE
+	// budget across every client behind it, and ten failures from anywhere
+	// pause sign-in for all of them. That is the cost of counting only what
+	// the hub can verify, and the operator's answer is the budget key an
+	// administrator can raise, or a sign-in limit in the proxy, which knows
+	// the real client address. The admin-cli chapter says so.
 	OpLoginAnonymous Operation = "login_anonymous"
 )
 

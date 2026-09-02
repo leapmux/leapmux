@@ -274,9 +274,11 @@ See [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-lim
 One row per counted operation:
 
 - **Rate limit - elevation** — failed attempts to verify your identity for a sensitive change: 5 per 15 minutes, per user.
+- **Rate limit - email_change** — requests to change an account email that reach the mail machinery: 6 per 15 minutes, per user.
+- **Rate limit - login_anonymous** — failed passwords at the sign-in form: 10 per 15 minutes, per client address.
 - **Rate limit - oauth_anonymous** — the authorization server's anonymous endpoints: 600 per 10 minutes, per client address.
 
-In solo mode only the anonymous limit stays.
+In solo mode the two address-keyed limits stay, and the two user-keyed ones are hidden.
 
 ### Limits & Timeouts
 

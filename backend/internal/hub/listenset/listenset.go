@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 )
 
 // Kind classifies what an address SPECIFIES, which is what decides whether one
@@ -193,15 +195,29 @@ func (a Addr) DialAddr() string {
 //
 // Every wildcard is false, including KindAnyV4 and KindAnyV6: they answer on
 // the loopback interface AND on every other one, so treating them as loopback
-// would call an exposed hub private. A name is false as well -- the addresses
-// it resolves to are not knowable here, and the safe answer to "is this
-// exposed" is yes.
+// would call an exposed hub private.
 //
-// It uses netip's own predicate rather than httpsec.IsLoopbackHost, which
-// answers a different question: that one matches the three literals an OAuth
-// redirect may name, while a bind address may be any of 127.0.0.0/8.
+// A NAME is false, with one exception. The addresses a name resolves to are not
+// knowable here, so the safe answer to "is this exposed" is yes -- but
+// "localhost" names this machine by a convention every operating system ships,
+// and `-listen localhost:4327` exposes nothing. Calling it exposed would demand
+// a password for a hub nobody else can reach. httpsec.LoopbackHosts is where
+// that convention lives, and reading it here keeps the two answers from
+// drifting apart. The residual: an operator who redefines localhost in
+// /etc/hosts to a routable address gets no warning, on a machine they control.
+//
+// An IP literal takes netip's own predicate rather than httpsec.IsLoopbackHost,
+// which answers a narrower question: that one matches the three literals an
+// OAuth redirect may name, while a bind address may be any of 127.0.0.0/8.
 func (a Addr) IsLoopback() bool {
-	return a.kind == KindIP && a.ip.IsLoopback()
+	switch a.kind {
+	case KindIP:
+		return a.ip.IsLoopback()
+	case KindHost:
+		return httpsec.IsLoopbackHost(a.host)
+	default:
+		return false
+	}
 }
 
 // Covers reports whether binding a makes binding b both redundant and
