@@ -120,13 +120,13 @@ export function ToolUseLayout(props: {
           ? <span class={toolInputText}>{props.title}</span>
           : props.title}
         {/*
-          The thunk is passed on WITHOUT being called: reading the value here
-          would subscribe this layout to it, and re-rendering the card would drop
+          ToolUseLayout passes the thunk on WITHOUT calling it: a read here
+          subscribes this layout to the value, and a re-render of the card drops
           a text selection the user holds across it. Only the badge reads it.
         */}
         <ToolRunningBadge
-          progress={props.context?.toolProgress}
-          selectionActive={props.context?.textSelectionActive}
+          toolProgress={props.context?.toolProgress}
+          textSelectionActive={props.context?.textSelectionActive}
         />
         <Show when={hasActions()}>
           <ToolHeaderActions

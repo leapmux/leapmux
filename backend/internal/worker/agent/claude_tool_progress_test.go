@@ -53,7 +53,6 @@ func TestHandleOutput_ToolProgressHeartbeatBroadcastsTheRunningTool(t *testing.T
 	// Keyed on parent_tool_use_id. The frame's own tool_use_id is the synthetic
 	// "<realId>-heartbeat-0", which matches no row in the transcript.
 	assert.Equal(t, "toolu_01TZ7EZih11vksrqCqRgGVi2", update[contracts.RunningToolFieldSpanId])
-	assert.Equal(t, "Bash", update[contracts.RunningToolFieldToolName])
 	assert.Equal(t, int64(30), update[contracts.RunningToolFieldElapsedSeconds])
 	assert.NotContains(t, update, contracts.RunningToolFieldRetry,
 		"a heartbeat says nothing about a retry, so it must not clear one")
@@ -66,7 +65,7 @@ func TestHandleOutput_ToolProgressHeartbeatBroadcastsTheRunningTool(t *testing.T
 }
 
 // The leak this handler closes: before it existed, tool_progress fell to the
-// default arm and was broadcast as a span-less stream chunk. With NO span open
+// default case and was broadcast as a span-less stream chunk. With NO span open
 // -- exactly the state during a top-level Agent/Task call, which opens none --
 // the tracker let it through and the frontend appended the raw JSON to the
 // chat's streaming text.
@@ -122,9 +121,7 @@ func TestHandleOutput_ToolProgressKeepsParallelToolsApart(t *testing.T) {
 	first := sink.sessionInfos[0][contracts.SessionInfoKeyRunningTool].(map[string]interface{})
 	second := sink.sessionInfos[1][contracts.SessionInfoKeyRunningTool].(map[string]interface{})
 	assert.Equal(t, "toolu_A", first[contracts.RunningToolFieldSpanId])
-	assert.Equal(t, "Bash", first[contracts.RunningToolFieldToolName])
 	assert.Equal(t, "toolu_B", second[contracts.RunningToolFieldSpanId])
-	assert.Equal(t, "Read", second[contracts.RunningToolFieldToolName])
 }
 
 func TestHandleOutput_ToolProgressSubagentRetryCarriesEveryField(t *testing.T) {
@@ -136,8 +133,6 @@ func TestHandleOutput_ToolProgressSubagentRetryCarriesEveryField(t *testing.T) {
 
 	update := runningToolUpdate(t, sink)
 	assert.Equal(t, "toolu_01LPaMFvQw8He49JbtUk7MZx", update[contracts.RunningToolFieldSpanId])
-	assert.Equal(t, "Agent", update[contracts.RunningToolFieldToolName])
-	assert.Equal(t, "Explore", update[contracts.RunningToolFieldSubagentType])
 	// elapsed_time_seconds is always 0 on this family, so the key must be absent
 	// rather than shipped as a 0 that would reset the heartbeat's clock.
 	assert.NotContains(t, update, contracts.RunningToolFieldElapsedSeconds)
@@ -246,47 +241,123 @@ func TestHandleOutput_ToolProgressDropsAnUndecodableRetry(t *testing.T) {
 	}
 }
 
-// tool_name is not optional on the wire, but an absent one must not stop the
-// badge reporting the elapsed time: the frontend seeds an empty name rather
-// than rendering "undefined".
-func TestHandleOutput_ToolProgressHeartbeatWithoutAToolName(t *testing.T) {
+// The update carries the span and the elapsed time, and NOTHING else. The card
+// already shows the tool's name and a subagent's type from the tool_use row, so
+// broadcasting either here would store a value no component reads.
+//
+// `tool_name` is also not captured at all, which is what keeps a MISTYPED one
+// harmless: an unknown field is skipped, while a `tool_name` field of the wrong
+// type would fail the whole decode and cost the badge a readable heartbeat.
+func TestHandleOutput_ToolProgressCarriesOnlyWhatTheBadgeRenders(t *testing.T) {
 	t.Parallel()
 
-	sink := &outputTestSink{}
-	agent := newTestAgent(sink)
-	agent.HandleOutput([]byte(`{"type":"tool_progress","tool_use_id":"toolu_A-heartbeat-0",` +
-		`"parent_tool_use_id":"toolu_A","elapsed_time_seconds":30,"heartbeat":true}`))
+	for name, line := range map[string]string{
+		"a well-formed frame": `{"type":"tool_progress","tool_use_id":"toolu_A-heartbeat-0","tool_name":"Bash",` +
+			`"parent_tool_use_id":"toolu_A","elapsed_time_seconds":30,"heartbeat":true}`,
+		"no tool name": `{"type":"tool_progress","tool_use_id":"toolu_A-heartbeat-0",` +
+			`"parent_tool_use_id":"toolu_A","elapsed_time_seconds":30,"heartbeat":true}`,
+		"a mistyped tool name": `{"type":"tool_progress","tool_use_id":"toolu_A-heartbeat-0","tool_name":42,` +
+			`"parent_tool_use_id":"toolu_A","elapsed_time_seconds":30,"heartbeat":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	update := runningToolUpdate(t, sink)
-	assert.Equal(t, "toolu_A", update[contracts.RunningToolFieldSpanId])
-	assert.Equal(t, "", update[contracts.RunningToolFieldToolName])
-	assert.Equal(t, int64(30), update[contracts.RunningToolFieldElapsedSeconds])
+			sink := &outputTestSink{}
+			agent := newTestAgent(sink)
+			agent.HandleOutput([]byte(line))
+
+			update := runningToolUpdate(t, sink)
+			assert.Equal(t, map[string]interface{}{
+				contracts.RunningToolFieldSpanId:         "toolu_A",
+				contracts.RunningToolFieldElapsedSeconds: int64(30),
+			}, update)
+		})
+	}
 }
 
 func TestClaudeNonNegativeCount(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
-		raw  string
-		want int64
+		raw    string
+		want   int64
+		wantOk bool
 	}{
-		"plain integer":      {`30`, 30},
-		"absent":             {``, 0},
-		"quoted":             {`"30"`, 0},
-		"fractional":         {`230.0`, 230},
-		"exponent":           {`1.5e4`, 15000},
-		"truncates down":     {`29.9`, 29},
-		"negative clamps":    {`-5`, 0},
-		"negative fraction":  {`-0.5`, 0},
-		"float64 overflow":   {`1e400`, 0},
-		"int64 out of range": {`1e300`, 0},
-		"not a number":       {`{"a":1}`, 0},
+		"plain integer":      {`30`, 30, true},
+		"zero":               {`0`, 0, true},
+		"absent":             {``, 0, false},
+		"quoted":             {`"30"`, 0, false},
+		"json null":          {`null`, 0, false},
+		"fractional":         {`230.0`, 230, true},
+		"exponent":           {`1.5e4`, 15000, true},
+		"truncates down":     {`29.9`, 29, true},
+		"negative":           {`-5`, 0, false},
+		"negative fraction":  {`-0.5`, 0, false},
+		"float64 overflow":   {`1e400`, 0, false},
+		"int64 out of range": {`1e300`, 0, false},
+		"not a number":       {`{"a":1}`, 0, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, claudeNonNegativeCount(json.RawMessage(tc.raw)))
+			got, ok := claudeNonNegativeCount(json.RawMessage(tc.raw))
+			assert.Equal(t, tc.want, got)
+			// A real 0 is distinct from "no usable number": the elapsed-time
+			// caller ships the first and omits the key for the second.
+			assert.Equal(t, tc.wantOk, ok)
 		})
 	}
+}
+
+// A heartbeat whose elapsed time does not read OMITS the key rather than
+// shipping a 0. The frontend merges each update into the span's entry, so an
+// omitted key keeps the last good elapsed time while a 0 means "not measured
+// yet" and blanks the badge. The CLI derives the value from the wall clock, so
+// a backward clock step is a real source of a negative one.
+func TestHandleOutput_ToolProgressOmitsAnUnreadableElapsedTime(t *testing.T) {
+	t.Parallel()
+
+	for name, elapsed := range map[string]string{
+		"negative":       `-5`,
+		"quoted":         `"30"`,
+		"null":           `null`,
+		"absent":         ``,
+		"out of range":   `1e300`,
+		"not a number":   `{"a":1}`,
+		"float overflow": `1e400`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &outputTestSink{}
+			agent := newTestAgent(sink)
+			line := `{"type":"tool_progress","tool_use_id":"toolu_A-heartbeat-0","tool_name":"Bash",` +
+				`"parent_tool_use_id":"toolu_A","heartbeat":true`
+			if elapsed != "" {
+				line += `,"elapsed_time_seconds":` + elapsed
+			}
+			agent.HandleOutput([]byte(line + `}`))
+
+			update := runningToolUpdate(t, sink)
+			// The frame still ships -- it names a running tool -- but with no
+			// elapsed key, so the badge holds whatever it already showed.
+			assert.Equal(t, "toolu_A", update[contracts.RunningToolFieldSpanId])
+			assert.NotContains(t, update, contracts.RunningToolFieldElapsedSeconds)
+		})
+	}
+}
+
+// A real zero still ships. It is the agent's own measurement, and only the
+// frontend decides that a 0 renders nothing.
+func TestHandleOutput_ToolProgressShipsAMeasuredZero(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"tool_progress","tool_use_id":"toolu_A-heartbeat-0","tool_name":"Bash",` +
+		`"parent_tool_use_id":"toolu_A","elapsed_time_seconds":0,"heartbeat":true}`))
+
+	update := runningToolUpdate(t, sink)
+	assert.Equal(t, int64(0), update[contracts.RunningToolFieldElapsedSeconds])
 }
 
 // The shared clamp must give the thinking-token estimate the same answers it
@@ -317,20 +388,22 @@ func TestParseThinkingTokens_SanitizesThroughTheSharedClamp(t *testing.T) {
 	}
 }
 
-// The default arm forwards stream_event and NOTHING else. It used to forward
-// every unknown type as a span-less stream chunk, which printed the raw line
-// into the chat tail.
-func TestHandleOutput_OnlyStreamEventReachesTheStreamingText(t *testing.T) {
+// NO type reaches the streaming text. The switch used to end in a catch-all that
+// forwarded every unhandled type as a span-less stream chunk, which printed the
+// raw line into the chat tail; the default case now drops it.
+//
+// `stream_event` is in this list on purpose. It was the one type the catch-all's
+// replacement still forwarded, and it is unreachable anyway: StartClaudeCode
+// passes no `--include-partial-messages`, which is the flag the CLI requires
+// before it emits the type at all.
+func TestHandleOutput_NoUnhandledTypeReachesTheStreamingText(t *testing.T) {
 	t.Parallel()
 
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
-	agent.HandleOutput([]byte(`{"type":"stream_event","event":{"type":"content_block_delta"}}`))
-	require.Equal(t, 1, sink.StreamChunkCount(), "stream_event still streams")
-	assert.Empty(t, sink.LastStreamChunk().SpanID)
-
 	for _, line := range []string{
+		`{"type":"stream_event","event":{"type":"content_block_delta"}}`,
 		`{"type":"tool_use_summary","summary":"x"}`,
 		`{"type":"sdk_status","status":"requesting"}`,
 		`{"type":"compact_progress"}`,
@@ -338,6 +411,7 @@ func TestHandleOutput_OnlyStreamEventReachesTheStreamingText(t *testing.T) {
 	} {
 		agent.HandleOutput([]byte(line))
 	}
-	assert.Equal(t, 1, sink.StreamChunkCount(), "an unknown type is dropped, not printed")
+	assert.Equal(t, 0, sink.StreamChunkCount(), "an unhandled type is dropped, not printed")
 	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, sink.NotificationCount())
 }

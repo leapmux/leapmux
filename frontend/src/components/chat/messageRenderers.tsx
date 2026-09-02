@@ -121,7 +121,7 @@ export interface RenderContext {
    * retry), as a thunk. A caller must pass the thunk on WITHOUT invoking it:
    * reading it here would subscribe the whole renderer to a value that changes
    * while the row is on screen, and re-rendering the row drops any text
-   * selection the user is holding across it. Only the leaf that displays it
+   * selection the user holds across it. Only the leaf that displays it
    * calls it -- see ToolRunningBadge.
    */
   toolProgress?: () => ToolProgressEntry | undefined

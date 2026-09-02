@@ -40,7 +40,7 @@ function sessionInfoMessage(info: unknown) {
 describe('wireRunningToolToUpdate', () => {
   it('translates a heartbeat payload', () => {
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 }))
-      .toEqual({ spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+      .toEqual({ spanId: 'toolu_A', elapsedSeconds: 30 })
   })
 
   it('translates a subagent-retry payload, every field camel-cased', () => {
@@ -49,12 +49,25 @@ describe('wireRunningToolToUpdate', () => {
       tool_name: 'Agent',
       subagent_type: 'Explore',
       retry: RETRY_WIRE,
-    })).toEqual({ spanId: 'toolu_A', toolName: 'Agent', subagentType: 'Explore', retry: RETRY })
+    })).toEqual({ spanId: 'toolu_A', retry: RETRY })
+  })
+
+  // The badge renders neither the tool's name nor the subagent's type -- the
+  // card already has both from the tool_use row -- so the translation drops them
+  // rather than storing a value nothing can observe.
+  it('drops the tool name and the subagent type, which no reader wants', () => {
+    const update = wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      tool_name: 'Agent',
+      subagent_type: 'Explore',
+      elapsed_seconds: 30,
+    })
+    expect(update).toEqual({ spanId: 'toolu_A', elapsedSeconds: 30 })
   })
 
   it('carries an explicit null retry through as null -- the resolved signal', () => {
     const update = wireRunningToolToUpdate({ span_id: 'toolu_A', tool_name: 'Agent', retry: null })
-    expect(update).toEqual({ spanId: 'toolu_A', toolName: 'Agent', retry: null })
+    expect(update).toEqual({ spanId: 'toolu_A', retry: null })
   })
 
   it('leaves `retry` absent when the payload omits it, so a heartbeat cannot clear one', () => {
@@ -62,7 +75,7 @@ describe('wireRunningToolToUpdate', () => {
     expect(update && 'retry' in update).toBe(false)
   })
 
-  it('rejects a payload that names no span', () => {
+  it('rejects a payload that identifies no span', () => {
     for (const value of [undefined, null, 'x', 42, {}, { span_id: '' }, { span_id: 7 }])
       expect(wireRunningToolToUpdate(value)).toBeUndefined()
   })
@@ -76,23 +89,26 @@ describe('wireRunningToolToUpdate', () => {
     }
   })
 
-  it('reads a malformed retry as resolved rather than half-rendering it', () => {
-    // "Retrying undefined/undefined" is worse than no badge.
-    for (const retry of [{ attempt: 2 }, { max_retries: 5 }, { attempt: '2', max_retries: 5 }, 'x', 42]) {
-      expect(wireRunningToolToUpdate({ span_id: 'toolu_A', retry })?.retry).toBeNull()
+  // A retry this cannot read leaves the key OFF the update, so a live badge
+  // keeps its last attempt. Only an explicit null clears one. A shape change on
+  // the wire must not erase what the user is looking at, and a partial badge
+  // would read "Retrying 0/0".
+  it('omits a retry it cannot read, so a live badge survives an unknown shape', () => {
+    for (const retry of [{ attempt: 2 }, { max_retries: 5 }, { attempt: '2', max_retries: 5 }, 'x', 42, [], undefined]) {
+      const update = wireRunningToolToUpdate({ span_id: 'toolu_A', retry })
+      expect(update && 'retry' in update).toBe(false)
     }
+  })
+
+  it('reads only an explicit null as the resolved signal', () => {
+    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', retry: null })?.retry).toBeNull()
   })
 
   it('forwards a zero elapsed time -- the badge, not this, decides it shows nothing', () => {
     // The worker never sends 0 for a heartbeat (the first tick is 30), but the
     // translation must not silently swallow a number the agent did report.
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 0 }))
-      .toEqual({ spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 0 })
-  })
-
-  it('leaves the tool name absent when the payload omits it', () => {
-    const update = wireRunningToolToUpdate({ span_id: 'toolu_A', elapsed_seconds: 30 })
-    expect(update && 'toolName' in update).toBe(false)
+      .toEqual({ spanId: 'toolu_A', elapsedSeconds: 0 })
   })
 
   it('supplies defaults for the retry fields the agent left out', () => {
@@ -111,7 +127,7 @@ describe('handleAgentSessionInfo running_tool', () => {
       const s = stores()
       const msg = sessionInfoMessage({ running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 } })
       expect(handleAgentSessionInfo('a1', parseMessageContent(msg), s)).toBe(true)
-      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ toolName: 'Bash', elapsedSeconds: 30 })
+      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
       dispose()
     })
   })
@@ -139,9 +155,7 @@ describe('handleAgentSessionInfo running_tool', () => {
         running_tool: { span_id: 'toolu_A', tool_name: 'Agent', subagent_type: 'Explore', retry: RETRY_WIRE },
       })), s)
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({
-        toolName: 'Agent',
         elapsedSeconds: 90,
-        subagentType: 'Explore',
         retry: RETRY,
       })
       dispose()
@@ -163,7 +177,7 @@ describe('handleAgentSessionInfo running_tool', () => {
     })
   })
 
-  it('ignores a payload whose running_tool names no span', () => {
+  it('ignores a payload whose running_tool identifies no span', () => {
     createRoot((dispose) => {
       const s = stores()
       const msg = sessionInfoMessage({ running_tool: { tool_name: 'Bash', elapsed_seconds: 30 } })
@@ -176,12 +190,12 @@ describe('handleAgentSessionInfo running_tool', () => {
   it('writes nothing for a running_tool the translation rejects', () => {
     createRoot((dispose) => {
       const s = stores()
-      s.chatStore.applyToolProgress('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+      s.chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
       for (const value of [null, 'x', 42, {}])
         handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: value })), s)
       // The entry that WAS running is left exactly as it was -- a malformed
       // payload must not clear a live badge.
-      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ toolName: 'Bash', elapsedSeconds: 30 })
+      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
       dispose()
     })
   })
@@ -212,10 +226,15 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     void harness
     const tabs = createTestTabStores(WS)
     const chatStore = createChatStore()
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_B', toolName: 'Read', elapsedSeconds: 60 })
+    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 60 })
+    const agentSessionStore = createAgentSessionStore()
+    // The thinking counter is the OTHER live per-turn indicator, and it has to
+    // go at exactly the same boundaries. Seeded here so each case below can
+    // assert the pair, not just the badges.
+    agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
     return {
-      agentSessionStore: createAgentSessionStore(),
+      agentSessionStore,
       chatStore,
       controlStore: createControlStore(),
       view: tabs.view,
@@ -231,37 +250,63 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       .filter(Boolean)
   }
 
-  it('the turn-end result divider clears every span', () => {
+  /**
+   * Every TURN-ENDING boundary drops both live per-turn indicators, or neither.
+   *
+   * They are one concept -- state the worker broadcasts but cannot see the end
+   * of -- so a boundary that clears one and forgets the other leaves an
+   * indicator frozen for the rest of the session. That is the failure mode
+   * clearPerTurnLiveState exists to make impossible, and this is what pins it:
+   * a future boundary that calls only `clearToolProgress` fails here.
+   *
+   * A control request is deliberately NOT one of these; see its own case below.
+   */
+  function expectNothingLive(s: ReturnType<typeof boundaryStores>) {
+    expect(running(s.chatStore)).toHaveLength(0)
+    expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
+  }
+
+  it('the turn-end result divider clears every live indicator', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       expect(running(s.chatStore)).toHaveLength(2)
       const msg = agentMessage({ type: 'result', subtype: 'success' })
       handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
-      expect(running(s.chatStore)).toHaveLength(0)
+      expectNothingLive(s)
       dispose()
     })
   })
 
-  it('the agent going INACTIVE clears every span', () => {
+  it('the agent going INACTIVE clears every live indicator', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       handleAgentInactive('a1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', s, undefined)
-      expect(running(s.chatStore)).toHaveLength(0)
+      expectNothingLive(s)
       dispose()
     })
   })
 
-  it('a context clear clears every span', () => {
+  it('a context clear clears every live indicator', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       const msg = agentMessage({ type: 'context_cleared' }, { source: MessageSource.LEAPMUX })
       applyNotificationMetadata('a1', msg, parseMessageContent(msg), s, 'live')
-      expect(running(s.chatStore)).toHaveLength(0)
+      expectNothingLive(s)
       dispose()
     })
   })
 
-  it('a control request clears every span -- the tool is blocked on the user', () => {
+  /**
+   * A control request is the ONE boundary that keeps the badges.
+   *
+   * Claude Code starts a tool's heartbeat only after the permission decision, so
+   * the tool that raised this prompt has reported nothing and owns no entry. The
+   * e2e spec rests on the same rule: it has to bypass permissions, because a Bash
+   * call held at a prompt never sends a heartbeat. Every entry that exists here
+   * therefore belongs to a SIBLING tool that is still running, and clearing
+   * blanks that live card until its next heartbeat, up to 30 seconds later.
+   */
+  it('a control request clears the estimate but keeps a still-running sibling\'s badge', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
       const req = {
@@ -270,7 +315,9 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
         payload: new TextEncoder().encode(JSON.stringify({ method: 'x' })),
       } as unknown as AgentControlRequest
       handleControlRequest('a1', req, 'live', s, undefined)
-      expect(running(s.chatStore)).toHaveLength(0)
+      expect(running(s.chatStore)).toHaveLength(2)
+      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
+      expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
       dispose()
     })
   })
@@ -287,7 +334,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   it('a boundary on ONE agent leaves another agent\'s spans alone', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
-      s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+      s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', elapsedSeconds: 30 })
       const msg = agentMessage({ type: 'result', subtype: 'success' })
       handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
       expect(running(s.chatStore)).toHaveLength(0)
@@ -300,7 +347,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
 describe('dropFinishedToolProgress', () => {
   function seeded() {
     const chatStore = createChatStore()
-    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
     return chatStore
   }
 
@@ -344,7 +391,7 @@ describe('dropFinishedToolProgress', () => {
   it('drops only the span whose result landed', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
-      chatStore.applyToolProgress('a1', { spanId: 'toolu_B', toolName: 'Read', elapsedSeconds: 60 })
+      chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 60 })
       const msg = agentMessage(
         { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] } },
         { spanId: 'toolu_A' },

@@ -3,10 +3,16 @@ import { createStore } from 'solid-js/store'
 // ---------------------------------------------------------------------------
 // Tool-progress slice
 //
-// Live per-span progress for a tool that is still executing (keyed
+// Live per-span progress for a tool that still runs (keyed
 // agentId -> spanId -> entry), fed by the ephemeral `running_tool`
 // agent_session_info key. A self-contained sub-store, shaped like the
 // command-stream slice beside it.
+//
+// An entry holds ONLY what the badge renders. A field that no component reads
+// does not belong here: the wire carries it, the store merges it, and nothing
+// can observe it, which is the drift contracts/session-info.json's own admission
+// rule exists to stop. The tool's name and a subagent's type both already reach
+// the card from the tool_use ROW, so neither is on the entry.
 //
 // The worker sends only UPDATES, never an end message: it cannot observe the
 // boundaries at which a card should stop showing progress (a result row landing,
@@ -21,26 +27,29 @@ import { createStore } from 'solid-js/store'
 // replace would let each family erase the other's field twice a minute.
 // ---------------------------------------------------------------------------
 
-/** The retry state of a Task subagent that is retrying an API call. */
+/** The retry state of a Task subagent that retries an API call. */
 export interface ToolProgressRetry {
   attempt: number
   maxRetries: number
   retryDelayMs: number
-  /** null when the failure carried no HTTP status (a connection error). */
+  /** null when the failure carried no HTTP status. */
   errorStatus: number | null
   errorCategory: string
 }
 
 /** What one still-running tool reports about itself. */
 export interface ToolProgressEntry {
-  toolName: string
   /**
-   * Seconds the tool has run, as the AGENT last reported it. Absent until the
-   * first heartbeat. Claude Code ticks every 30 seconds, so this steps 30, 60,
-   * 90 -- it is not a live clock, and nothing here interpolates between ticks.
+   * How long the tool ran, in seconds, as the AGENT last reported it. Absent
+   * until the first heartbeat. Claude Code ticks every 30 seconds, so this steps
+   * 30, 60, 90 -- it is not a live clock, and nothing here interpolates between
+   * the ticks.
+   *
+   * Only Claude reports it, and only for its main agent. Replacing it with a
+   * start timestamp the browser counts from would give every provider a badge:
+   * https://github.com/leapmux/leapmux/issues/439
    */
   elapsedSeconds?: number
-  subagentType?: string
   retry?: ToolProgressRetry
 }
 
@@ -55,9 +64,7 @@ export interface ToolProgressEntry {
  */
 export interface ToolProgressUpdate {
   spanId: string
-  toolName?: string
   elapsedSeconds?: number
-  subagentType?: string
   retry?: ToolProgressRetry | null
 }
 
@@ -68,18 +75,18 @@ export function createToolProgressStore() {
 
   // Vivify the per-agent record before a nested path-set: the per-span setter
   // keeps each span's reactivity isolated but cannot navigate into an undefined
-  // agent entry on that agent's first update. Mirror of dropAgentIfEmpty.
+  // agent entry on that agent's first update.
+  //
+  // The record is NOT removed again when its last span drops. A Solid store
+  // subscribes a reader to every path segment it reads, so every mounted badge
+  // holds a subscription on `byAgent[agentId]`, and a delete-then-recreate wakes
+  // all of them. The main agent runs one tool at a time, so a collapse here
+  // would fire that wake twice for every long tool of the turn, to reclaim one
+  // empty object per agent. clearAgent already reclaims it at each turn
+  // boundary.
   const ensureAgentRecord = (agentId: string) => {
     if (!state.byAgent[agentId])
       setState('byAgent', agentId, {})
-  }
-  // Remove a now-empty parent record so a long session does not accumulate one
-  // empty `{}` per agent that ever ran a tool. Readers coalesce a missing parent
-  // to undefined, so this is invisible to them.
-  const dropAgentIfEmpty = (agentId: string) => {
-    const parent = state.byAgent[agentId]
-    if (parent && Object.keys(parent).length === 0)
-      setState('byAgent', agentId, undefined!)
   }
 
   return {
@@ -96,16 +103,10 @@ export function createToolProgressStore() {
       // returning only the fields this update carries is what keeps the other
       // fields. An omitted key is left alone by construction; there is nothing
       // to copy forward by hand.
-      setState('byAgent', agentId, update.spanId, (prev): Partial<ToolProgressEntry> => {
+      setState('byAgent', agentId, update.spanId, (): Partial<ToolProgressEntry> => {
         const next: Partial<ToolProgressEntry> = {}
-        // Every entry needs a name, so the first update seeds one even when the
-        // agent omitted it -- the badge must never render "undefined".
-        if (update.toolName !== undefined || prev?.toolName === undefined)
-          next.toolName = update.toolName ?? ''
         if (update.elapsedSeconds !== undefined)
           next.elapsedSeconds = update.elapsedSeconds
-        if (update.subagentType !== undefined)
-          next.subagentType = update.subagentType
         if (update.retry != null)
           next.retry = update.retry
         return next
@@ -130,16 +131,21 @@ export function createToolProgressStore() {
       if (!spanId || !state.byAgent[agentId]?.[spanId])
         return
       setState('byAgent', agentId, spanId, undefined!)
-      dropAgentIfEmpty(agentId)
     },
 
     /**
      * Drop every entry for an agent. The backstop for a tool whose result row
      * never arrives -- an interrupt, a crash, a context clear -- which is why the
-     * turn/agent boundaries call it rather than relying on per-span drops alone.
+     * turn boundaries and the agent boundaries call it rather than relying on
+     * per-span drops alone.
+     *
+     * An ALREADY-EMPTY record returns early. Deleting it would wake every badge
+     * subscribed through `byAgent[agentId]` for nothing, and the four boundaries
+     * that call this run several times per turn. See ensureAgentRecord.
      */
     clearAgent(agentId: string) {
-      if (!state.byAgent[agentId])
+      const parent = state.byAgent[agentId]
+      if (!parent || Object.keys(parent).length === 0)
         return
       setState('byAgent', agentId, undefined!)
     },

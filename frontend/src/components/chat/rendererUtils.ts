@@ -28,20 +28,23 @@ export function firstNonEmptyLine(text?: string): string | null {
   return null
 }
 
-/** Format a duration in milliseconds as a human-readable string (e.g. "5ms", "3.2s", "2m 30s", "1h 5m"). */
-export function formatDuration(ms: number): string {
-  if (ms < 1000)
-    return `${Math.round(ms)}ms`
-
-  const totalSeconds = ms / 1000
-  if (totalSeconds < 10)
-    return `${totalSeconds.toFixed(1)}s`
-
-  const totalSecondsRounded = Math.round(totalSeconds)
-  const days = Math.floor(totalSecondsRounded / 86400)
-  const hours = Math.floor((totalSecondsRounded % 86400) / 3600)
-  const minutes = Math.floor((totalSecondsRounded % 3600) / 60)
-  const seconds = totalSecondsRounded % 60
+/**
+ * Format a number of seconds in the parts form: "30s", "1m 30s", "1h 5m",
+ * "2d 3h". The value rounds to a whole second first, and a negative one reads
+ * as 0.
+ *
+ * Split out of formatDuration for the caller that already holds whole seconds.
+ * formatDuration renders one decimal below 10 seconds ("5.0s"), which is right
+ * for a measured duration in milliseconds and wrong for a counter that steps in
+ * whole seconds -- there "5.0s" reads as a different unit from the "30s" and
+ * "1m 30s" beside it. The running-tool badge takes this entry point.
+ */
+export function formatSecondsParts(totalSeconds: number): string {
+  const total = Math.max(0, Math.round(totalSeconds))
+  const days = Math.floor(total / 86400)
+  const hours = Math.floor((total % 86400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
 
   const parts: string[] = []
   if (days > 0)
@@ -53,6 +56,18 @@ export function formatDuration(ms: number): string {
   if (seconds > 0 || parts.length === 0)
     parts.push(`${seconds}s`)
   return parts.join(' ')
+}
+
+/** Format a duration in milliseconds as a human-readable string (e.g. "5ms", "3.2s", "2m 30s", "1h 5m"). */
+export function formatDuration(ms: number): string {
+  if (ms < 1000)
+    return `${Math.round(ms)}ms`
+
+  const totalSeconds = ms / 1000
+  if (totalSeconds < 10)
+    return `${totalSeconds.toFixed(1)}s`
+
+  return formatSecondsParts(totalSeconds)
 }
 
 /** Format a number with locale-aware separators (e.g. 1,234). */

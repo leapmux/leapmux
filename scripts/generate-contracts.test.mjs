@@ -795,7 +795,7 @@ describe('checkSessionInfo', () => {
   /** A minimal but complete contract; each test perturbs one table. */
   function sessionInfo(overrides = {}) {
     return {
-      keys: { ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
+      keys: { TotalCostUsd: 'total_cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
       contextUsageFields: { InputTokens: 'input_tokens' },
       rateLimitFields: { Status: 'status' },
       runningToolFields: { SpanId: 'span_id' },
@@ -838,6 +838,32 @@ describe('checkSessionInfo', () => {
     expectContractError(
       () => checkSessionInfo(sessionInfo({ contextUsageFields: {} })),
       'contextUsageFields must hold at least one entry',
+    )
+  })
+
+  // The one token LeapMux does not own. Claude Code writes `total_cost_usd` on
+  // its own `result` line, the worker persists that line unchanged, and the
+  // browser reads the persisted row through this constant -- while the Go
+  // decoder reads it through a struct tag, which takes a literal and cannot
+  // follow a rename. Without this pin a rename generates cleanly, passes every
+  // test, and blanks the per-turn cost on every Claude result divider.
+  it('rejects a rename of the cost token Claude Code itself writes', () => {
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({
+        keys: { TotalCostUsd: 'cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
+      })),
+      'Claude Code writes that spelling on its own result line',
+    )
+  })
+
+  // A table added to the JSON and to its schema, but forgotten in
+  // SESSION_INFO_TABLES, emits no Go and no TS and says nothing -- the first
+  // report would be an undefined-constant build failure that never names the
+  // contract.
+  it('rejects a contract table that no SESSION_INFO_TABLES entry renders', () => {
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({ compactionFields: { PreTokens: 'pre_tokens' } })),
+      'compactionFields has no SESSION_INFO_TABLES entry',
     )
   })
 

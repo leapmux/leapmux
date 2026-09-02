@@ -5,7 +5,7 @@ import { expect, test } from './fixtures'
 import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, waitForSettingsIdle } from './helpers/ui'
 
 /**
- * The last mile of the Claude `tool_progress` handling: a real CLI heartbeat
+ * The final step of the Claude `tool_progress` handling: a real CLI heartbeat
  * reaching a real browser as a badge on the running tool's card.
  *
  * Everything below the browser is covered by unit tests -- the Go handler
@@ -22,7 +22,7 @@ import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectS
  *     emits nothing, which reads exactly like a broken badge.
  *   - The tool must be allowed to run at all. Under the default permission mode
  *     a Bash call waits on a prompt nothing answers, so it never starts and
- *     never heartbeats.
+ *     sends no heartbeat.
  *
  * The command waits on a FILE rather than sleeping for a fixed time. The test
  * therefore owns when the tool ends, which is what lets it assert the clear as
@@ -56,19 +56,27 @@ test.describe('Tool Running Badge', () => {
       page,
       `Run this exact bash command with a 180000 ms timeout, then reply DONE: until [ -f ${flag} ]; do sleep 2; done`,
     )
-    // Fail here, rather than 120 s later on a missing badge, if the send itself
-    // was refused.
-    await expect(page.getByText('Failed to deliver')).not.toBeVisible()
+    // Wait for the tool's own card, which is the POSITIVE proof that the send
+    // reached the agent and the Bash call started. It is also the fast failure:
+    // a refused send never produces a card, so the run stops here naming the
+    // missing tool rather than 120 s later naming a missing badge.
+    //
+    // The absence of the "Failed to deliver" banner cannot serve as that proof.
+    // sendMessage returns as soon as the composer clears, which happens before
+    // the round trip, so at that moment the banner has not rendered either way --
+    // and `not.toBeVisible()` passes at once for a locator matching no element.
+    //
+    // :visible-scoped throughout, because ChatView mounts an off-screen
+    // premeasure copy of every unmeasured row and it renders these nodes too.
+    await expect(page.locator('[data-tool-message]:visible').first()).toBeVisible()
 
-    // :visible-scoped because ChatView mounts an off-screen premeasure copy of
-    // every unmeasured row, and it renders the badge too.
     const badge = page.locator('[data-testid="tool-running-badge"]:visible')
 
     // The first heartbeat lands 30 seconds into the call, so this assertion
     // spends that long waiting. The global expect timeout (120s) covers it.
     await expect(badge).toBeVisible()
-    // formatDuration's parts form, which is what every value at or above 30 s
-    // takes: "30s", "1m", "1m 30s". Anchored, so a badge rendering "NaNs" or an
+    // formatSecondsParts' output, which the badge always takes: "30s", "1m",
+    // "1m 30s". Anchored, so a badge rendering "NaNs", a decimal "5.0s" or an
     // empty string fails rather than passing on a substring. Not pinned to "30s"
     // exactly -- a slow worker can deliver the second heartbeat first, and "1m"
     // is just as correct an answer.

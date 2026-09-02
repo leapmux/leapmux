@@ -562,6 +562,11 @@ func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	// payload.ToolCallID) once ZCode reports either. The clear needs no code --
 	// the frontend drops a span's entry when its result row lands, and
 	// closeZCodeToolCall already persists that row with Closing: true.
+	//
+	// The other route to a ZCode badge needs nothing from the app-server: the
+	// browser can count from the tool_use row's own timestamp, which would give
+	// every provider a badge at once.
+	// https://github.com/leapmux/leapmux/issues/439
 }
 
 // streamZCodeToolProgress ships the new output of a running tool.

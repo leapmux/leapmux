@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assignDefined,
   isObject,
   pickBool,
+  pickBoolean,
   pickFirstNumber,
   pickFirstObject,
   pickFirstString,
@@ -131,5 +133,68 @@ describe('stringarray', () => {
     expect(stringArray('not-an-array')).toEqual([])
     expect(stringArray({ 0: 'a' })).toEqual([])
     expect(stringArray([])).toEqual([])
+  })
+})
+
+describe('pickboolean', () => {
+  it('returns the boolean when the value is one', () => {
+    expect(pickBoolean({ b: true }, 'b')).toBe(true)
+    expect(pickBoolean({ b: false }, 'b')).toBe(false)
+  })
+
+  // The whole reason it exists beside pickBool: an explicit `false` and an
+  // absent key are DIFFERENT answers here, where pickBool folds both to false.
+  it('separates an explicit false from an absent key, which pickBool cannot', () => {
+    expect(pickBoolean({ b: false }, 'b', undefined)).toBe(false)
+    expect(pickBoolean({}, 'b', undefined)).toBeUndefined()
+    expect(pickBool({ b: false }, 'b')).toBe(pickBool({}, 'b'))
+  })
+
+  it('returns the fallback for a non-boolean value', () => {
+    expect(pickBoolean({ b: 'true' }, 'b', undefined)).toBeUndefined()
+    expect(pickBoolean({ b: 1 }, 'b', undefined)).toBeUndefined()
+    expect(pickBoolean({ b: null }, 'b', undefined)).toBeUndefined()
+  })
+
+  it('defaults to null when no fallback is given', () => {
+    expect(pickBoolean({}, 'b')).toBeNull()
+    expect(pickBoolean(null, 'b')).toBeNull()
+  })
+})
+
+describe('assignDefined', () => {
+  it('assigns a defined value', () => {
+    const target: { a?: number, b?: string } = {}
+    assignDefined(target, 'a', 1)
+    assignDefined(target, 'b', '')
+    expect(target).toEqual({ a: 1, b: '' })
+  })
+
+  /**
+   * Asserted on Object.keys, not with toEqual: toEqual IGNORES an
+   * undefined-valued key, so it cannot tell "absent" from "present and
+   * undefined" -- which is the entire distinction this helper exists for. A
+   * caller whose result is later compared by key count (shallowEqual) breaks on
+   * exactly that difference.
+   */
+  it('leaves the key ABSENT for undefined, rather than present and undefined', () => {
+    const target: { a?: number } = {}
+    assignDefined(target, 'a', undefined)
+    expect(Object.keys(target)).toEqual([])
+    expect('a' in target).toBe(false)
+  })
+
+  it('assigns a falsy value that is not undefined', () => {
+    const target: { n?: number, s?: string, b?: boolean } = {}
+    assignDefined(target, 'n', 0)
+    assignDefined(target, 's', '')
+    assignDefined(target, 'b', false)
+    expect(Object.keys(target).sort()).toEqual(['b', 'n', 's'])
+  })
+
+  it('leaves an existing value alone when the new one is undefined', () => {
+    const target: { a?: number } = { a: 7 }
+    assignDefined(target, 'a', undefined)
+    expect(target.a).toBe(7)
   })
 })

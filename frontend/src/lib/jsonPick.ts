@@ -39,6 +39,43 @@ export function pickBool(obj: Record<string, unknown> | null | undefined, key: s
 }
 
 /**
+ * Read a boolean-typed property, returning `fallback` when the value is missing
+ * or not a boolean.
+ *
+ * Distinct from {@link pickBool}, which folds "absent" and "the wrong type" into
+ * `false`. A caller that must tell an explicit `false` apart from an absent key
+ * needs this one and an `undefined` fallback -- a wire translator that omits an
+ * absent key, for instance.
+ */
+export function pickBoolean(obj: Record<string, unknown> | null | undefined, key: string): boolean | null
+export function pickBoolean<T>(obj: Record<string, unknown> | null | undefined, key: string, fallback: T): boolean | T
+export function pickBoolean(obj: Record<string, unknown> | null | undefined, key: string, ...rest: [] | [unknown]): unknown {
+  const v = obj?.[key]
+  if (typeof v === 'boolean')
+    return v
+  return rest.length > 0 ? rest[0] : null
+}
+
+/**
+ * Assign `value` to `target[key]`, and do NOTHING when it is undefined, so the
+ * key stays ABSENT rather than present-and-undefined.
+ *
+ * The distinction is load-bearing wherever a result is later compared by key
+ * count. `shallowEqual` compares `Object.keys(a).length` first, and a value that
+ * round-trips through `JSON.stringify` loses its undefined-valued keys, so an
+ * object built with explicit `undefined`s compares unequal to its own rehydrated
+ * copy -- forever, on every comparison. `toEqual` cannot catch that, because it
+ * ignores an undefined-valued key.
+ *
+ * Pair it with a picker whose fallback is `undefined`:
+ * `assignDefined(info, 'utilization', pickNumber(raw, 'utilization', undefined))`.
+ */
+export function assignDefined<T, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
+  if (value !== undefined)
+    target[key] = value
+}
+
+/**
  * Narrow an unknown value to its string elements: an array keeps only its string
  * entries, anything else yields []. The canonical home for the
  * `Array.isArray(v) ? v.filter((s): s is string => ...) : []` idiom that the

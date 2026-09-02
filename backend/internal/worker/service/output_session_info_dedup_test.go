@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -273,9 +276,9 @@ func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
 // thinking_tokens in the exemption, and for the same reason. The frontend drops
 // a span's entry when the tool's result row lands and at every turn/agent
 // boundary -- none of which the worker observes -- so an identical repeat must
-// still ship. A resolved-retry update is the case that bites: its payload can
-// equal the previous one byte for byte, and deduping it would leave the badge
-// stuck on the last attempt for as long as the tool runs.
+// still ship. A resolved-retry update is the case this exemption exists for: its
+// payload can equal the previous one byte for byte, and a dedup would leave the
+// badge stuck on the last attempt for as long as the tool runs.
 func TestBroadcastSessionInfo_RunningToolNeverDeduped(t *testing.T) {
 	t.Parallel()
 
@@ -285,7 +288,6 @@ func TestBroadcastSessionInfo_RunningToolNeverDeduped(t *testing.T) {
 		return map[string]interface{}{
 			contracts.SessionInfoKeyRunningTool: map[string]interface{}{
 				contracts.RunningToolFieldSpanId:         "toolu_A",
-				contracts.RunningToolFieldToolName:       "Bash",
 				contracts.RunningToolFieldElapsedSeconds: int64(30),
 			},
 		}
@@ -298,7 +300,6 @@ func TestBroadcastSessionInfo_RunningToolNeverDeduped(t *testing.T) {
 	sink.BroadcastSessionInfo(map[string]interface{}{
 		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
 			contracts.RunningToolFieldSpanId:         "toolu_A",
-			contracts.RunningToolFieldToolName:       "Bash",
 			contracts.RunningToolFieldElapsedSeconds: int64(60),
 		},
 	})
@@ -329,4 +330,60 @@ func TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestSessionInfoKeysStateTheirDedupPolicy pins the seam between
+// contracts/session-info.json and dedupExemptSessionInfoKeys. The contract owns
+// the top-level agent_session_info vocabulary; this file owns which of those keys
+// skip the per-key dedup. Nothing else compiles the two together, so a key added
+// to the contract and forgotten in the exemption set takes the dedup in silence --
+// the exact failure the exemption exists to prevent, where a counter or a badge
+// stays hidden until a strictly different value arrives. Every contract key must
+// appear in exactly one of the two sets, and every exempt key must still be a
+// contract key, so a rename cannot leave a stale exemption behind.
+//
+// The contract holds the keys the BROWSER reads. A Go-only ephemeral key (the
+// pi_* family, zcode_api_retry) is outside it and outside this guard, which is
+// the right boundary: a key that drives a badge or a counter is browser-read by
+// definition, so it is in the contract.
+func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
+	t.Parallel()
+
+	// The keys that carry meaningfully across turns, so the dedup is correct for
+	// them. A new contract key belongs here or in dedupExemptSessionInfoKeys.
+	deduped := map[string]struct{}{
+		contracts.SessionInfoKeyTotalCostUsd:  {},
+		contracts.SessionInfoKeyContextUsage:  {},
+		contracts.SessionInfoKeyRateLimits:    {},
+		contracts.SessionInfoKeyCodexTurnId:   {},
+		contracts.SessionInfoKeyStreamingType: {},
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	contractPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..",
+		"contracts", "session-info.json")
+	raw, err := os.ReadFile(contractPath)
+	require.NoError(t, err, "the session-info contract must stay readable at %s", contractPath)
+
+	var contract struct {
+		Keys map[string]string `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &contract))
+	require.NotEmpty(t, contract.Keys, "contracts/session-info.json must list its top-level keys")
+
+	tokens := make(map[string]struct{}, len(contract.Keys))
+	for name, token := range contract.Keys {
+		tokens[token] = struct{}{}
+		_, exempt := dedupExemptSessionInfoKeys[token]
+		_, dedup := deduped[token]
+		assert.True(t, exempt != dedup,
+			"session-info key %s (%q) must be listed exactly once: in dedupExemptSessionInfoKeys, for live per-turn state the frontend drops, or in this test's deduped set, for state that carries across turns",
+			name, token)
+	}
+	for token := range dedupExemptSessionInfoKeys {
+		_, known := tokens[token]
+		assert.True(t, known,
+			"dedupExemptSessionInfoKeys holds %q, which contracts/session-info.json no longer lists -- a stale exemption exempts nothing", token)
+	}
 }

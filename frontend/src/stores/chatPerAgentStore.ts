@@ -12,8 +12,9 @@ import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 // slice has no domain logic, so the window store uses this spine directly for it.
 // chatLiveTail layers its bump/settle/onDelete reconcilers on a `bigint` value.
 // Mirrors the chatReconcile / chatMessageOrder leaf extractions: a small,
-// independently tested unit the slices compose. NOT for chatCommandStreams, whose
-// two-level agentId -> spanId nesting is a fundamentally different shape.
+// independently tested unit the slices compose. NOT for the two-level
+// agentId -> spanId slices -- chatCommandStreams and chatToolProgress -- whose
+// nesting is a different shape; each keeps its own vivify/collapse spine.
 // ---------------------------------------------------------------------------
 
 export interface PerAgentStore<T> {

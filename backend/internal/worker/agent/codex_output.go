@@ -687,12 +687,13 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
 	}
 
-	usage := map[string]interface{}{
-		contracts.ContextUsageFieldInputTokens:              max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
-		contracts.ContextUsageFieldCacheCreationInputTokens: int64(0),
-		contracts.ContextUsageFieldCacheReadInputTokens:     notif.TokenUsage.Last.CachedInputTokens,
-		contracts.ContextUsageFieldOutputTokens:             notif.TokenUsage.Last.OutputTokens,
-	}
+	// Codex reports the cached part inside InputTokens, so the uncached remainder
+	// is the input the other providers report.
+	usage := contextUsageMap(contextTokenCounts{
+		Input:     max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
+		CacheRead: notif.TokenUsage.Last.CachedInputTokens,
+		Output:    notif.TokenUsage.Last.OutputTokens,
+	})
 	if notif.TokenUsage.ModelContextWindow != nil {
 		usage[contracts.ContextUsageFieldContextWindow] = *notif.TokenUsage.ModelContextWindow
 	} else if cw := modelContextWindow(a.availableModels, a.model); cw > 0 {
@@ -877,7 +878,9 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 	// window already exceeded" (status >=100), NOT on "no exceeded window carries a
 	// reset": a window at >=100% without a reset already reads as exceeded, so
 	// elevating a DIFFERENT binding window there would disagree with the frontend
-	// replay path, which gates purely on the per-window status (extractRateLimitInfo).
+	// replay path, which depends only on the per-window status
+	// (codexRateLimitsFromMessage, via codexTierToRateLimitInfo in
+	// lib/rateLimitUtils.ts).
 	if reachedType == codexRateLimitReachedTimeWindow && !anyExceeded && bindingTierKey != "" {
 		if info, ok := s.rateLimits[bindingTierKey].(map[string]interface{}); ok {
 			info[contracts.RateLimitFieldStatus] = codexRateLimitStatusExceeded

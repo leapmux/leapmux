@@ -86,13 +86,12 @@ func zcodeContextUsageMap(usage zcodeUsage, contextWindow int64) map[string]any 
 	if usage.empty() {
 		return nil
 	}
-	out := map[string]any{}
-	zcodeTokenCounts{
+	out := contextUsageMap(contextTokenCounts{
 		Input:      usage.InputTokens,
 		CacheWrite: usage.CacheWriteTokens,
 		CacheRead:  usage.CacheReadTokens,
 		Output:     usage.OutputTokens,
-	}.into(out)
+	})
 	if contextWindow > 0 {
 		out[contracts.ContextUsageFieldContextWindow] = contextWindow
 	}
@@ -110,7 +109,7 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 	}
 	// The per-request counts default to zero, so the popover's breakdown is present even
 	// when the readout carries no `cache` block. `output_tokens` has no source here.
-	var counts zcodeTokenCounts
+	var counts contextTokenCounts
 	if c := usage.Cache; c != nil {
 		counts.Input = c.InputTokens
 		counts.CacheRead = c.CacheReadTokens
@@ -122,42 +121,6 @@ func zcodeContextUsageFromRuntime(usage *zcodeContextUsage) map[string]any {
 		out[contracts.ContextUsageFieldContextWindow] = usage.Size
 	}
 	return out
-}
-
-// zcodeTokenCounts is the four per-request token counts, and the ONE place their
-// broadcast key names are written.
-//
-// Three sites need the same four keys: the two projections and the merge that refreshes
-// them over an authoritative reading. Spelling them out at each one meant a fifth count
-// could be added to the projections and silently dropped by the merge.
-type zcodeTokenCounts struct {
-	Input      int64
-	CacheWrite int64
-	CacheRead  int64
-	Output     int64
-}
-
-// into writes the counts under their broadcast key names.
-func (t zcodeTokenCounts) into(out map[string]any) {
-	out[contracts.ContextUsageFieldInputTokens] = t.Input
-	out[contracts.ContextUsageFieldCacheCreationInputTokens] = t.CacheWrite
-	out[contracts.ContextUsageFieldCacheReadInputTokens] = t.CacheRead
-	out[contracts.ContextUsageFieldOutputTokens] = t.Output
-}
-
-// tokenCountsFrom reads the four counts back out of a projected map. Paired with
-// `into`, so the merge below refreshes exactly the keys the projections write.
-func tokenCountsFrom(m map[string]any) zcodeTokenCounts {
-	pick := func(k string) int64 {
-		v, _ := m[k].(int64)
-		return v
-	}
-	return zcodeTokenCounts{
-		Input:      pick(contracts.ContextUsageFieldInputTokens),
-		CacheWrite: pick(contracts.ContextUsageFieldCacheCreationInputTokens),
-		CacheRead:  pick(contracts.ContextUsageFieldCacheReadInputTokens),
-		Output:     pick(contracts.ContextUsageFieldOutputTokens),
-	}
 }
 
 // applyZCodeRuntimeState records the runtime readout and broadcasts it.

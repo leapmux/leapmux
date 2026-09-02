@@ -19,6 +19,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
+  clearPerTurnLiveState,
   handleAgentMessage,
   handleAgentStatusChange,
   handleControlRequest,
@@ -112,6 +113,33 @@ export function collectWorkerOfflineTargets(
       agents.push(tab)
   }
   return { terminals, agents }
+}
+
+/**
+ * Drop every live, unpersisted indicator an agent carries, because its worker
+ * went offline.
+ *
+ * A dropped link ends the turn without a word: no result row, no turn-end
+ * divider and no INACTIVE status change. Every OTHER site that reclaims this
+ * state runs off one of those events, so this sweep is the only thing standing
+ * between an outage and a chat that reads as busy for as long as it lasts --
+ * streaming text half-written, a command stream mid-line, a thinking counter and
+ * a running-tool badge frozen on their last value.
+ *
+ * Exported for its own test: the effect that calls it fires on an internal
+ * offline signal a test cannot drive.
+ */
+export function clearOfflineAgentState(
+  agentId: string,
+  stores: {
+    chatStore: ReturnType<typeof createChatStore>
+    agentSessionStore: ReturnType<typeof createAgentSessionStore>
+  },
+): void {
+  stores.chatStore.streamingText.clear(agentId)
+  for (const spanId of Object.keys(stores.chatStore.getAgentCommandStreams(agentId)))
+    stores.chatStore.clearCommandStream(agentId, spanId)
+  clearPerTurnLiveState(agentId, stores)
 }
 
 export function reconcileLaggingTails(deps: {
@@ -512,9 +540,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             )
           }
           for (const tab of agents) {
-            chatStore.streamingText.clear(tab.id)
-            for (const spanId of Object.keys(chatStore.getAgentCommandStreams(tab.id)))
-              chatStore.clearCommandStream(tab.id, spanId)
+            // The patch below writes the tab's status directly and never reaches
+            // handleAgentInactive, so this sweep owns the whole reclamation.
+            clearOfflineAgentState(tab.id, { chatStore, agentSessionStore })
             if (tab.agentStatus === AgentStatus.ACTIVE)
               metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
           }

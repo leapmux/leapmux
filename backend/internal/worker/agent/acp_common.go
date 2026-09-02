@@ -1897,14 +1897,12 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 		return
 	}
 
+	// ACP reports one used-token total and no breakdown, so it lands on Input and
+	// the other three counts stay zero.
+	contextUsage := contextUsageMap(contextTokenCounts{Input: usage.Used})
+	contextUsage[contracts.ContextUsageFieldContextWindow] = usage.Size
 	info := map[string]interface{}{
-		contracts.SessionInfoKeyContextUsage: map[string]interface{}{
-			contracts.ContextUsageFieldInputTokens:              usage.Used,
-			contracts.ContextUsageFieldCacheCreationInputTokens: int64(0),
-			contracts.ContextUsageFieldCacheReadInputTokens:     int64(0),
-			contracts.ContextUsageFieldOutputTokens:             int64(0),
-			contracts.ContextUsageFieldContextWindow:            usage.Size,
-		},
+		contracts.SessionInfoKeyContextUsage: contextUsage,
 	}
 	if usage.Cost.Amount > 0 {
 		info[contracts.SessionInfoKeyTotalCostUsd] = usage.Cost.Amount

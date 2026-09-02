@@ -140,7 +140,7 @@ export function createChatStore() {
   // message version. That bump wakes the auto-scroll effect and the
   // classified-entry cache, which would re-render the row -- the exact thing the
   // badge is built to avoid, since replacing a row's nodes drops a text
-  // selection the user is holding.
+  // selection the user holds.
   const toolProgress = createToolProgressStore()
   const annotations = createMessageAnnotationStore()
   const pendingOutbound = createPendingOutboundStore()

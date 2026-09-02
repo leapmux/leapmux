@@ -2,7 +2,7 @@
  * The agent-event pipeline, as module-level units.
  *
  * Every handler here takes its stores as an explicit deps bag rather than
- * closing over the connection hook -- which is what makes the arms of
+ * closing over the connection hook -- which is what makes the branches of
  * `agentMessage` independently testable, and what let this move out of a
  * 1700-line module without changing a line of behaviour.
  */
@@ -28,6 +28,7 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
+import { assignDefined, isObject, pickBoolean, pickNumber, pickString } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
@@ -49,41 +50,30 @@ const TEXT_DECODER = new TextDecoder()
  * both emit it that way); the frontend keeps idiomatic camelCase types.
  */
 function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | undefined {
-  if (typeof value !== 'object' || value === null)
+  if (!isObject(value))
     return undefined
   const out: Record<string, RateLimitInfo> = {}
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof raw !== 'object' || raw === null)
+  for (const [key, tier] of Object.entries(value)) {
+    if (!isObject(tier))
       continue
-    const tier = raw as Record<string, unknown>
+    // One checked line per field. Each picker states the type it accepts, and
+    // `assignDefined` leaves the key ABSENT when the tier omits it or carries the
+    // wrong type -- which matters beyond tidiness: agentSession.store compares a
+    // tier with `shallowEqual`, which reads key COUNTS first, and a tier that
+    // round-tripped through localStorage has lost its undefined-valued keys. A
+    // form that wrote all eight keys would compare unequal on every broadcast.
+    //
+    // Every picker's fallback is an explicit `undefined`, so a field's type still
+    // comes from RateLimitInfo and a mismatched picker fails to compile.
     const info: RateLimitInfo = {}
-    // Each value is bound to a local before the typeof guard: narrowing an index
-    // expression does not carry to a second read of it, so `tier[K]` after the
-    // guard would still be `unknown`.
-    const rateLimitType = tier[RATE_LIMIT_FIELD.RateLimitType]
-    if (typeof rateLimitType === 'string')
-      info.rateLimitType = rateLimitType
-    const status = tier[RATE_LIMIT_FIELD.Status]
-    if (typeof status === 'string')
-      info.status = status
-    const utilization = tier[RATE_LIMIT_FIELD.Utilization]
-    if (typeof utilization === 'number')
-      info.utilization = utilization
-    const resetsAt = tier[RATE_LIMIT_FIELD.ResetsAt]
-    if (typeof resetsAt === 'number')
-      info.resetsAt = resetsAt
-    const surpassedThreshold = tier[RATE_LIMIT_FIELD.SurpassedThreshold]
-    if (typeof surpassedThreshold === 'number')
-      info.surpassedThreshold = surpassedThreshold
-    const overageStatus = tier[RATE_LIMIT_FIELD.OverageStatus]
-    if (typeof overageStatus === 'string')
-      info.overageStatus = overageStatus
-    const overageResetsAt = tier[RATE_LIMIT_FIELD.OverageResetsAt]
-    if (typeof overageResetsAt === 'number')
-      info.overageResetsAt = overageResetsAt
-    const isUsingOverage = tier[RATE_LIMIT_FIELD.IsUsingOverage]
-    if (typeof isUsingOverage === 'boolean')
-      info.isUsingOverage = isUsingOverage
+    assignDefined(info, 'rateLimitType', pickString(tier, RATE_LIMIT_FIELD.RateLimitType, undefined))
+    assignDefined(info, 'status', pickString(tier, RATE_LIMIT_FIELD.Status, undefined))
+    assignDefined(info, 'utilization', pickNumber(tier, RATE_LIMIT_FIELD.Utilization, undefined))
+    assignDefined(info, 'resetsAt', pickNumber(tier, RATE_LIMIT_FIELD.ResetsAt, undefined))
+    assignDefined(info, 'surpassedThreshold', pickNumber(tier, RATE_LIMIT_FIELD.SurpassedThreshold, undefined))
+    assignDefined(info, 'overageStatus', pickString(tier, RATE_LIMIT_FIELD.OverageStatus, undefined))
+    assignDefined(info, 'overageResetsAt', pickNumber(tier, RATE_LIMIT_FIELD.OverageResetsAt, undefined))
+    assignDefined(info, 'isUsingOverage', pickBoolean(tier, RATE_LIMIT_FIELD.IsUsingOverage, undefined))
     out[key] = info
   }
   return out
@@ -103,17 +93,31 @@ export function wireSessionInfoToUpdates(
   const updates: Record<string, unknown> = {}
   if (!info)
     return updates
-  if (typeof info[SESSION_INFO_KEY.TotalCostUsd] === 'number')
-    updates.totalCostUsd = info[SESSION_INFO_KEY.TotalCostUsd]
+  // Each value binds to a local ONCE. A `typeof` guard on `info[K]` does not
+  // narrow a SECOND read of the same index expression -- element-access
+  // narrowing needs a literal or a `const` key, and a property of an `as const`
+  // table is neither -- so a guard-then-index form would assign `unknown` and
+  // the type checker would stop catching a mismatch here.
+  //
+  // wireRateLimitsToCamel solves the same problem the other way, with a picker
+  // per field. These five keep the inline guards because each lands on a
+  // differently-typed field of an untyped `updates` record, where a picker buys
+  // nothing.
+  const totalCostUsd = info[SESSION_INFO_KEY.TotalCostUsd]
+  if (typeof totalCostUsd === 'number')
+    updates.totalCostUsd = totalCostUsd
   const contextUsage = normalizeContextUsage(info[SESSION_INFO_KEY.ContextUsage])
   if (contextUsage)
     updates.contextUsage = contextUsage
-  if (info[SESSION_INFO_KEY.RateLimits] !== undefined)
-    updates.rateLimits = wireRateLimitsToCamel(info[SESSION_INFO_KEY.RateLimits])
-  if (info[SESSION_INFO_KEY.CodexTurnId] !== undefined)
-    updates.codexTurnId = info[SESSION_INFO_KEY.CodexTurnId] as string
-  if (info[SESSION_INFO_KEY.StreamingType] !== undefined)
-    updates.streamingType = info[SESSION_INFO_KEY.StreamingType] as string
+  const rateLimits = info[SESSION_INFO_KEY.RateLimits]
+  if (rateLimits !== undefined)
+    updates.rateLimits = wireRateLimitsToCamel(rateLimits)
+  const codexTurnId = info[SESSION_INFO_KEY.CodexTurnId]
+  if (codexTurnId !== undefined)
+    updates.codexTurnId = codexTurnId as string
+  const streamingType = info[SESSION_INFO_KEY.StreamingType]
+  if (streamingType !== undefined)
+    updates.streamingType = streamingType as string
   // Only positive estimates: `> 0` rejects both the zero-estimate first delta
   // (nothing to show yet) and a NaN a future provider might emit (NaN > 0 is
   // false), so the indicator never has to defend against "0 tokens" or a NaN
@@ -137,54 +141,60 @@ export function wireSessionInfoToUpdates(
  * families that report disjoint facts (see chatToolProgress). `retry` keeps its
  * three states: absent leaves the entry's retry alone, an object sets it, and an
  * explicit null clears it -- the agent's only "the retry resolved" signal.
+ *
+ * It carries ONLY what the badge renders. The payload also states the tool's
+ * name and a subagent's type, and the card already has both from the tool_use
+ * row, so this drops them rather than storing a value nothing reads.
  */
 export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | undefined {
-  if (typeof value !== 'object' || value === null)
+  if (!isObject(value))
     return undefined
-  const raw = value as Record<string, unknown>
-  const spanId = raw[RUNNING_TOOL_FIELD.SpanId]
-  if (typeof spanId !== 'string' || spanId === '')
+  const spanId = pickString(value, RUNNING_TOOL_FIELD.SpanId)
+  if (spanId === '')
     return undefined
 
   const update: ToolProgressUpdate = { spanId }
-  const toolName = raw[RUNNING_TOOL_FIELD.ToolName]
-  if (typeof toolName === 'string')
-    update.toolName = toolName
-  // Finite guard, not just `typeof number`: a NaN or Infinity would reach
-  // formatDuration and render as "NaNs" on the card.
-  const elapsed = raw[RUNNING_TOOL_FIELD.ElapsedSeconds]
-  if (typeof elapsed === 'number' && Number.isFinite(elapsed) && elapsed >= 0)
+  // Finite and non-negative, not just `typeof number`: a NaN or an Infinity
+  // reaches the duration formatter and renders as "NaNs" on the card, and a
+  // negative elapsed time is not a duration at all.
+  const elapsed = pickNumber(value, RUNNING_TOOL_FIELD.ElapsedSeconds, undefined)
+  if (elapsed !== undefined && Number.isFinite(elapsed) && elapsed >= 0)
     update.elapsedSeconds = elapsed
-  const subagentType = raw[RUNNING_TOOL_FIELD.SubagentType]
-  if (typeof subagentType === 'string')
-    update.subagentType = subagentType
-  if (RUNNING_TOOL_FIELD.Retry in raw)
-    update.retry = wireRunningToolRetry(raw[RUNNING_TOOL_FIELD.Retry])
+  if (RUNNING_TOOL_FIELD.Retry in value) {
+    const retry = wireRunningToolRetry(value[RUNNING_TOOL_FIELD.Retry])
+    // An unreadable retry leaves `retry` OFF the update, so the entry keeps
+    // whatever it held. Only an explicit null reaches the store as a clear.
+    if (retry !== undefined)
+      update.retry = retry
+  }
   return update
 }
 
 /**
- * The `retry` member of a running_tool update. Returns null for the resolved
- * signal AND for a malformed object -- both mean "show no retry", and a partial
- * badge reading "Retrying undefined/undefined" is worse than none.
+ * The `retry` member of a running_tool update, or undefined when the payload
+ * carries a retry this cannot read.
+ *
+ * The three answers are distinct on purpose. `null` is the agent's resolved
+ * signal and CLEARS the badge. An object sets it. `undefined` leaves the badge
+ * alone -- a payload whose shape changed must not erase a live retry, and a
+ * partial badge would read "Retrying 0/0", which is worse than the last known
+ * attempt.
  */
-function wireRunningToolRetry(value: unknown): ToolProgressRetry | null {
-  if (typeof value !== 'object' || value === null)
+function wireRunningToolRetry(value: unknown): ToolProgressRetry | null | undefined {
+  if (value === null)
     return null
-  const raw = value as Record<string, unknown>
-  const attempt = raw[RUNNING_TOOL_RETRY_FIELD.Attempt]
-  const maxRetries = raw[RUNNING_TOOL_RETRY_FIELD.MaxRetries]
-  if (typeof attempt !== 'number' || typeof maxRetries !== 'number')
-    return null
-  const retryDelayMs = raw[RUNNING_TOOL_RETRY_FIELD.RetryDelayMs]
-  const errorStatus = raw[RUNNING_TOOL_RETRY_FIELD.ErrorStatus]
-  const errorCategory = raw[RUNNING_TOOL_RETRY_FIELD.ErrorCategory]
+  if (!isObject(value))
+    return undefined
+  const attempt = pickNumber(value, RUNNING_TOOL_RETRY_FIELD.Attempt, undefined)
+  const maxRetries = pickNumber(value, RUNNING_TOOL_RETRY_FIELD.MaxRetries, undefined)
+  if (attempt === undefined || maxRetries === undefined)
+    return undefined
   return {
     attempt,
     maxRetries,
-    retryDelayMs: typeof retryDelayMs === 'number' ? retryDelayMs : 0,
-    errorStatus: typeof errorStatus === 'number' ? errorStatus : null,
-    errorCategory: typeof errorCategory === 'string' ? errorCategory : '',
+    retryDelayMs: pickNumber(value, RUNNING_TOOL_RETRY_FIELD.RetryDelayMs, 0),
+    errorStatus: pickNumber(value, RUNNING_TOOL_RETRY_FIELD.ErrorStatus),
+    errorCategory: pickString(value, RUNNING_TOOL_RETRY_FIELD.ErrorCategory),
   }
 }
 
@@ -211,7 +221,7 @@ export function shouldClearThinkingTokensForMessage(
 /**
  * The hook-scoped stores the agentMessage sub-handlers below write to. Passed
  * explicitly so each handler is a module-level unit (no closure over the hook), which
- * is what makes the three concerns of the agentMessage arm independently testable.
+ * is what makes the three concerns of the agentMessage case independently testable.
  */
 export interface AgentMessageStores {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -228,7 +238,7 @@ export interface AgentMessageStores {
  * frontend store's camelCase shape at this boundary so JS consumers (RateLimitInfo,
  * ContextUsageInfo, AgentSessionInfo) can stay idiomatic without forcing snake_case
  * identifiers throughout the frontend. Returns true when it consumed the message, so
- * the agentMessage arm breaks before the persisted-message processing below.
+ * the agentMessage case breaks before the persisted-message processing below.
  */
 export function handleAgentSessionInfo(
   agentId: string,
@@ -294,14 +304,12 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
   if (innerType === NOTIFICATION_TYPE.ContextCleared) {
     agentSessionStore.clearContextUsage(agentId)
     chatStore.todos.clear(agentId)
-    // The conversation was wiped; drop any in-flight thinking-token estimate too. The
-    // backend resets its own estimator on a context clear, but that reset is in-memory
-    // only (no broadcast), so the counter would otherwise linger frozen on its last
-    // value until the next turn produces a delta or a clear of its own.
-    agentSessionStore.clearThinkingTokens(agentId)
-    // Same reasoning for the running-tool badges: the rows they were attached to are
-    // gone, and no provider sends an end message for a running tool.
-    chatStore.clearToolProgress(agentId)
+    // The conversation was wiped, so every live indicator on it goes too. The
+    // backend resets its own thinking estimator on a context clear, but that reset
+    // is in-memory only (no broadcast); and the rows the running-tool badges were
+    // attached to are gone. Both would otherwise linger frozen on their last value
+    // until the next turn produces a delta or a clear of its own.
+    clearPerTurnLiveState(agentId, stores)
   }
 
   // Rate limits and Codex token usage self-gate in the provider plugin (they return null for a
@@ -395,16 +403,14 @@ export function handleResultDivider(
   catchUpPhase: CatchUpPhase,
 ): void {
   const { agentSessionStore, chatStore, view } = stores
-  // Clear the per-turn thinking-token estimate on the turn-end divider itself, not just
-  // via the AGENT-message clear above. The divider is the structural turn boundary for
-  // every provider; gating the clear on message source/status would miss a terminal
-  // envelope whose source is not AGENT, or a catch-up replay where the INACTIVE-driven
-  // onTurnEnd is skipped -- leaving the counter frozen on its last value.
-  agentSessionStore.clearThinkingTokens(agentId)
-  // The turn is over, so no tool of it is still running. This is the backstop for a
-  // tool whose result row never arrived (an interrupt, a crashed CLI): without it the
-  // badge would stay on that card for the rest of the session.
-  chatStore.clearToolProgress(agentId)
+  // Clear every live indicator on the turn-end divider itself, not just via the
+  // per-message clear above. The divider is the structural turn boundary for every
+  // provider; a clear gated on message source/status would miss a terminal envelope
+  // whose source is not AGENT, or a catch-up replay where the INACTIVE-driven
+  // onTurnEnd is skipped. It is also the backstop for a tool whose result row never
+  // arrived (an interrupt, a crashed CLI), whose badge would otherwise stay on that
+  // card for the rest of the session.
+  clearPerTurnLiveState(agentId, stores)
   // Resolve the context-window hint from the CONFIRMED catalog current value, not the
   // optimistic optionValues: a result divider is post-relaunch ground truth for a turn
   // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
@@ -497,6 +503,38 @@ export function dropFinishedToolProgress(
 }
 
 /**
+ * Drop every live per-turn indicator for an agent: the thinking-token estimate
+ * and every running-tool badge.
+ *
+ * The two share one property, which is why they share one function. Each is
+ * ephemeral state that the WORKER broadcasts but cannot see the end of -- it
+ * observes no turn-end divider, no user prompt and no dropped link -- so the
+ * frontend owns every removal, and each removal has to happen at EVERY boundary
+ * or the indicator freezes on its last value for the rest of the session.
+ *
+ * Call this from each boundary that ENDS the turn. A third live indicator then
+ * reaches all of them by construction, instead of reaching three and missing the
+ * fourth.
+ *
+ * Two kinds of site deliberately do NOT call it, and both clear the estimate
+ * alone:
+ *
+ *   - The two per-PHASE thinking clears (a zero-estimate reset, and a main-agent
+ *     message that ends a thinking phase). They fire many times inside one turn,
+ *     while a tool of that turn still runs.
+ *   - A control request. The agent pauses, but the tool that raised the prompt
+ *     never started, so every entry belongs to a sibling that is still running.
+ *     See handleControlRequest.
+ */
+export function clearPerTurnLiveState(
+  agentId: string,
+  stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
+): void {
+  stores.agentSessionStore.clearThinkingTokens(agentId)
+  stores.chatStore.clearToolProgress(agentId)
+}
+
+/**
  * Method-specific lifecycle handling for a persisted message. Gated on AGENT source rather than
  * category because some lifecycle items (e.g. Codex `thread/started`) classify as `hidden` -- a
  * category-only gate would silently skip them. Clears a stale Codex turn id on thread/started and
@@ -524,9 +562,9 @@ export function applyAgentLifecycle(
  * session-info short-circuit, notification metadata, the windowed append + thinking-token
  * / streaming-text clears + background trim, the completed-span stream reclaim, the
  * method-specific lifecycle, and the turn-end result divider. Extracted from the
- * switch arm so the pipeline matches the sibling extractions (handleAgentSessionInfo /
- * applyNotificationMetadata / handleResultDivider) instead of one arm dwarfing the rest.
- * The caller marks the agent live BEFORE this (that step is shared with the other arms).
+ * switch case so the pipeline matches the sibling extractions (handleAgentSessionInfo /
+ * applyNotificationMetadata / handleResultDivider) instead of one case that dwarfs the rest.
+ * The caller marks the agent live BEFORE this (that step is shared with the other cases).
  */
 export function handleAgentMessage(
   agentId: string,
@@ -764,8 +802,7 @@ export function handleAgentInactive(
   onTurnEnd: ((agentId: string) => void) | undefined,
 ): void {
   stores.controlStore.clearAgent(agentId)
-  stores.agentSessionStore.clearThinkingTokens(agentId)
-  stores.chatStore.clearToolProgress(agentId)
+  clearPerTurnLiveState(agentId, stores)
   if (catchUpPhase === 'live')
     stores.chatStore.sweepOrphanedBufferedSpans(agentId)
   if (catchUpPhase === 'live' && sc.agentSessionId && stores.view.getAgentTab(agentId))
@@ -773,12 +810,12 @@ export function handleAgentInactive(
 }
 
 /**
- * The `streamChunk` arm of handleAgentEvent: route a streaming-text delta to its
+ * The `streamChunk` case of handleAgentEvent: route a streaming-text delta to its
  * command-stream buffer (when it carries a spanId) or the agent's free-form streaming
  * text. Extracted as a module-level handler -- with the sibling handlers below -- so the
- * dispatcher reads as a routing table and each arm is independently unit-testable (the
+ * dispatcher reads as a routing table and each case is independently unit-testable (the
  * dispatcher closure itself is driven only by gRPC streams). The caller marks the agent
- * live BEFORE this (mirrors the other live arms).
+ * live BEFORE this (mirrors the other live cases).
  */
 export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chatStore: ReturnType<typeof createChatStore>): void {
   const text = TEXT_DECODER.decode(value.delta)
@@ -797,7 +834,7 @@ export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chat
 }
 
 /**
- * The `streamEnd` arm: close the streaming buffer (command stream or free-form
+ * The `streamEnd` case: close the streaming buffer (command stream or free-form
  * text). Tab badging for a finished turn is owned by `handleTurnEnd`.
  */
 export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: Pick<AgentMessageStores, 'chatStore'>): void {
@@ -809,7 +846,7 @@ export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: 
 }
 
 /**
- * The `controlRequest` arm: register a pending control prompt (permission / plan), and --
+ * The `controlRequest` case: register a pending control prompt (permission / plan), and --
  * only on a LIVE frame -- badge a backgrounded tab and end the turn (the agent paused to
  * wait on the user, which may produce no agent message and no INACTIVE). During catch-up a
  * replayed request for an already-INACTIVE agent is skipped so the user isn't stuck on an
@@ -823,7 +860,7 @@ export function handleControlRequest(
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
 ): void {
-  const { view, metadata, selection, getActiveWorkspaceId, controlStore, agentSessionStore, chatStore } = stores
+  const { view, metadata, selection, getActiveWorkspaceId, controlStore } = stores
   // During catch-up, the INACTIVE statusChange may have already been processed before
   // this replayed controlRequest arrives. Skip adding the request so the user isn't
   // stuck on an unanswerable prompt.
@@ -849,13 +886,22 @@ export function handleControlRequest(
     // agent is now waiting on them. Match FULL's on-screen rule (tile-active).
     if (!isAgentTabOnScreen(cr.agentId, view, selection, getActiveWorkspaceId))
       metadata.patch(cr.agentId, { hasNotification: true })
-    // The agent paused mid-turn to wait on the user; it is no longer thinking, and this
-    // pause may produce no agent message and no INACTIVE, so drop the per-turn estimate
-    // here too -- otherwise the counter lingers frozen until the next turn.
-    agentSessionStore.clearThinkingTokens(agentId)
-    // The tool that asked the question is blocked on the user, not running, and its
-    // heartbeats stop for as long as the prompt is open.
-    chatStore.clearToolProgress(agentId)
+    // The agent paused mid-turn to wait on the user, so it no longer thinks. The
+    // pause may produce no agent message and no INACTIVE, so the estimate is
+    // dropped here -- otherwise it stays frozen until the next turn.
+    //
+    // The running-tool badges STAY, and this is the one boundary that keeps them.
+    // Claude Code starts a tool's heartbeat only AFTER the permission decision, so
+    // the tool that raised this prompt reports no progress and owns no entry --
+    // tests/e2e/193-tool-running-badge.spec.ts rests on the same rule, because a
+    // Bash call held at a prompt sends no heartbeat and the spec has to bypass
+    // permissions to see a badge at all. So every entry that exists here belongs
+    // to a SIBLING tool that is still running, and clearing blanks that live card
+    // until its next heartbeat, up to 30 seconds later.
+    //
+    // Nothing leaks: the result divider, agent-inactive, context-cleared, the
+    // worker-offline sweep and forgetAgent all still reclaim every span.
+    stores.agentSessionStore.clearThinkingTokens(agentId)
     onTurnEnd?.(agentId)
   }
 }
@@ -887,7 +933,7 @@ export function handleTurnEnd(
 }
 
 /**
- * The `statusChange` arm: apply a worker status snapshot to the agent tab. Skips a
+ * The `statusChange` case: apply a worker status snapshot to the agent tab. Skips a
  * payload-less catch-up sentinel; otherwise drains the pending-outbound queue on a
  * STARTING->ACTIVE/STARTUP_FAILED transition, reconciles the reported option-group
  * catalog into the tab (with per-axis optimistic suppression), consolidates every field

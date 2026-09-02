@@ -105,12 +105,12 @@ func piContextUsageFromAssistantUsage(usage piAssistantUsage, contextWindow int6
 	if usage.Input == 0 && usage.Output == 0 && usage.CacheRead == 0 && usage.CacheWrite == 0 {
 		return nil
 	}
-	ctx := map[string]any{
-		contracts.ContextUsageFieldInputTokens:              usage.Input,
-		contracts.ContextUsageFieldCacheCreationInputTokens: usage.CacheWrite,
-		contracts.ContextUsageFieldCacheReadInputTokens:     usage.CacheRead,
-		contracts.ContextUsageFieldOutputTokens:             usage.Output,
-	}
+	ctx := contextUsageMap(contextTokenCounts{
+		Input:      usage.Input,
+		CacheWrite: usage.CacheWrite,
+		CacheRead:  usage.CacheRead,
+		Output:     usage.Output,
+	})
 	if contextWindow > 0 {
 		ctx[contracts.ContextUsageFieldContextWindow] = contextWindow
 	}
@@ -124,13 +124,11 @@ func piSnapshotFromStats(stats piSessionStats) piUsageSnapshot {
 		snap.HasTotalCost = true
 	}
 	if stats.ContextUsage != nil && stats.ContextUsage.Tokens != nil && *stats.ContextUsage.Tokens > 0 {
-		ctx := map[string]any{
-			contracts.ContextUsageFieldInputTokens:              int64(0),
-			contracts.ContextUsageFieldCacheCreationInputTokens: int64(0),
-			contracts.ContextUsageFieldCacheReadInputTokens:     int64(0),
-			contracts.ContextUsageFieldOutputTokens:             int64(0),
-			contracts.ContextUsageFieldContextTokens:            *stats.ContextUsage.Tokens,
-		}
+		// The session stats give the total the context holds and no per-request
+		// breakdown, so the four counts stay zero and the popover shows a row
+		// rather than a blank.
+		ctx := contextUsageMap(contextTokenCounts{})
+		ctx[contracts.ContextUsageFieldContextTokens] = *stats.ContextUsage.Tokens
 		if stats.ContextUsage.ContextWindow > 0 {
 			ctx[contracts.ContextUsageFieldContextWindow] = stats.ContextUsage.ContextWindow
 		}

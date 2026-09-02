@@ -289,6 +289,13 @@ export const SESSION_INFO_TABLES = [
 ]
 
 export function checkSessionInfo(v) {
+  // Biject the JSON's own tables with SESSION_INFO_TABLES. Without this, a table
+  // added to session-info.json and to its schema emits no Go and no TS, and says
+  // nothing: the emitters below iterate the descriptor list alone, so the first
+  // report is an undefined-constant build failure that never names the contract.
+  checkTableCoverage('session-info.json', 'session-info', Object.keys(v), [
+    ['SESSION_INFO_TABLES', Object.fromEntries(SESSION_INFO_TABLES.map(t => [t.json, t]))],
+  ])
   for (const table of SESSION_INFO_TABLES) {
     const entries = Object.entries(v[table.json])
     mustBe(entries.length > 0, 'session-info.json', `${table.json} must hold at least one entry`)
@@ -298,6 +305,15 @@ export function checkSessionInfo(v) {
     // -- the second name would generate a constant nothing can distinguish.
     mustBe(new Set(tokens).size === tokens.length, 'session-info.json', `two ${table.json} entries share one wire token`)
   }
+  // Claude Code writes `total_cost_usd` on its own `result` line, and the worker
+  // persists that line unchanged. The browser reads the persisted row through
+  // SESSION_INFO_KEY.TotalCostUsd (extractResultMetadata in messageParser.ts), and
+  // claude_output.go decodes the same field through a struct tag, which must be a
+  // literal and cannot follow a rename. Anthropic owns this spelling, so LeapMux
+  // cannot change it: a rename would generate cleanly, pass every test, and blank
+  // the per-turn cost on every Claude result divider. Pi and ZCode inject the same
+  // key under the generated constant, so the read cannot go back to a literal.
+  mustBe(v.keys.TotalCostUsd === 'total_cost_usd', 'session-info.json', 'keys.TotalCostUsd must stay "total_cost_usd" -- Claude Code writes that spelling on its own result line, and the browser reads the persisted row through this constant, so a rename blanks the per-turn cost with no build failure')
   return {}
 }
 

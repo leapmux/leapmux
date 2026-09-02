@@ -8,10 +8,16 @@ import { style } from '@vanilla-extract/css'
 // two and leave the badge floating in the middle of the row. Sitting beside the
 // title reads as an annotation on the tool, and the actions stay right-aligned.
 //
-// It must never change the header's height: the premeasure pass measures a row
-// once, and a badge that appeared later and wrapped the title onto a second line
-// would leave every measured height stale. flexShrink 0 + nowrap keep the badge
-// on one line and let the (already clipped) title give up the space instead.
+// flexShrink 0 + nowrap keep the BADGE itself on one line, so its own text never
+// wraps. They do NOT keep the header at one line. A title that wraps -- the
+// `toolInputPath` and `toolInputSummary` forms, which set no nowrap -- gives up
+// horizontal space to the badge and can take a second line, which makes the
+// header taller. A clipped title absorbs the space instead and does not.
+//
+// That is why the premeasure pass must render this badge, and does: ChatView
+// builds one host for both the hidden measuring copy and the real row, so the
+// measured height already includes the badge. Do not suppress the badge in
+// premeasure mode -- every wrapping-title row would then measure one line short.
 export const root = style({
   flexShrink: 0,
   whiteSpace: 'nowrap',
@@ -24,8 +30,8 @@ export const root = style({
   userSelect: 'none',
 })
 
-// retry marks a tool whose subagent is retrying an API call. Warning-coloured
-// because it reports a failure the agent is working around, not normal progress.
+// retry marks a tool whose subagent retries an API call. Warning-coloured
+// because it reports a failure that the agent works around, not normal progress.
 export const retry = style({
   color: 'var(--warning)',
 })
