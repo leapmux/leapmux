@@ -69,16 +69,19 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 	assert.Equal(t, 0, sink.SessionInfoCount())
 }
 
-// piClockFrom installs a clock that starts at a fixed instant and advances by
-// step on every read, so a test states the exact duration it expects.
-func piClockFrom(a *PiAgent, start time.Time, step time.Duration) {
-	reads := 0
-	a.nowFn = func() time.Time {
-		now := start.Add(time.Duration(reads) * step)
-		reads++
-		return now
-	}
+// piFakeClock pins the agent's clock at start and returns the function that
+// moves it. The caller advances between events, so a test reads as the timeline
+// it means and stays correct however many times a handler reads the clock --
+// a step-per-read clock silently re-times every case the moment a handler
+// gains or loses one call.
+func piFakeClock(a *PiAgent, start time.Time) (advance func(time.Duration)) {
+	now := start
+	a.nowFn = func() time.Time { return now }
+	return func(d time.Duration) { now = now.Add(d) }
 }
+
+// piEpoch is an arbitrary fixed instant. Only the differences matter.
+var piEpoch = time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
 
 // piPersistedAgentEnd decodes the nth persisted message as a JSON object.
 func piPersistedAgentEnd(t *testing.T, sink *recordingControlSink, index int) map[string]any {
@@ -113,10 +116,10 @@ func TestHandlePiOutput_AgentEnd_ReportsTurnDuration(t *testing.T) {
 
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
-	base := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
-	piClockFrom(a, base, 2500*time.Millisecond)
+	advance := piFakeClock(a, piEpoch)
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(2500 * time.Millisecond)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
 
 	assert.Equal(t, float64(2500), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
@@ -130,7 +133,8 @@ func TestHandlePiOutput_AgentEnd_ZeroLengthTurnReportsZero(t *testing.T) {
 
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
-	piClockFrom(a, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), 0)
+	// The clock never advances, so the turn takes no measurable time at all.
+	piFakeClock(a, piEpoch)
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
@@ -160,13 +164,15 @@ func TestHandlePiOutput_AgentEnd_SecondEndOmitsDuration(t *testing.T) {
 
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
-	piClockFrom(a, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), time.Second)
+	advance := piFakeClock(a, piEpoch)
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(time.Second)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
+	advance(time.Second)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
 
-	assert.Contains(t, piPersistedAgentEnd(t, sink, 0), "duration_ms")
+	assert.Equal(t, float64(1000), piPersistedAgentEnd(t, sink, 0)["duration_ms"])
 	assert.NotContains(t, piPersistedAgentEnd(t, sink, 1), "duration_ms")
 }
 
@@ -177,12 +183,15 @@ func TestHandlePiOutput_AgentEnd_RetryKeepsTurnStartMark(t *testing.T) {
 
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
-	piClockFrom(a, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), time.Second)
+	advance := piFakeClock(a, piEpoch)
 
-	// Clock reads: agent_start 0s, agent_end 1s, agent_start 2s, agent_end 3s.
+	// One turn, two runs: the attempt takes 1s, the backoff 1s, the retry 1s.
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(time.Second)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[],"willRetry":true}`)))
+	advance(time.Second)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	advance(time.Second)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
 
 	assert.Equal(t, float64(1000), piPersistedAgentEnd(t, sink, 0)["duration_ms"],
@@ -377,10 +386,11 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 	a := newPiAgentWithSink(sink)
 	a.model = "gpt-5.5"
 	a.availableModels = []*ModelInfo{{Id: "gpt-5.5", ContextWindow: 200000}}
-	piClockFrom(a, time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), 750*time.Millisecond)
+	advance := piFakeClock(a, piEpoch)
 
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
 	handlePiOutput(a, parseLine([]byte(`{"type":"message_end","message":{"role":"assistant","usage":{"input":100,"output":10,"cacheRead":20,"cacheWrite":5,"totalTokens":135,"cost":{"total":0.00033}}}}`)))
+	advance(750 * time.Millisecond)
 	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","messages":[]}`)))
 
 	msgs := sink.Messages()
