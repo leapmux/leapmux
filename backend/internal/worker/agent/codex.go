@@ -330,17 +330,14 @@ func (a *CodexAgent) startThread(threadParams map[string]interface{}, timeout ti
 	return result.Thread.ID, nil
 }
 
-// Interrupt aborts the active Codex turn by sending the
-// `turn/interrupt` JSON-RPC notification with the current threadId
-// and turnId. This matches the wire format the frontend's
-// buildCodexInterruptRequest produced before the dedicated RPC, and
-// the codexProvider.IsInterrupt classifier detects.
+// Interrupt aborts the active Codex turn by sending a `turn/interrupt`
+// JSON-RPC request with the current threadId and turnId. Codex responds to
+// this request only after it emits TurnAborted, so this method waits for the
+// response that confirms the turn stopped. A notification is ignored by
+// Codex because the app server handles this method only as a request.
 //
-// Notification (not request) — Codex doesn't ack `turn/interrupt`;
-// the running turn ends with its normal `turn/completed` once the
-// model has acknowledged. Returns nil when there's nothing to
-// interrupt (no active turn) so callers don't need to track turn
-// lifecycle to invoke this safely.
+// Returns nil when there's nothing to interrupt (no active turn) so callers
+// can invoke this safely without tracking turn lifecycle.
 func (a *CodexAgent) Interrupt() error {
 	a.mu.Lock()
 	stopped := a.stopped
@@ -363,7 +360,7 @@ func (a *CodexAgent) Interrupt() error {
 	if err != nil {
 		return fmt.Errorf("marshal turn/interrupt params: %w", err)
 	}
-	if err := a.sendNotification("turn/interrupt", json.RawMessage(params)); err != nil {
+	if _, err := a.sendRequest("turn/interrupt", json.RawMessage(params), 0); err != nil {
 		return fmt.Errorf("turn/interrupt: %w", err)
 	}
 	return nil

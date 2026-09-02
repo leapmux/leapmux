@@ -320,7 +320,10 @@ func (a *CodexAgent) InterruptChild(childKey string) error {
 	if err != nil {
 		return fmt.Errorf("marshal turn/interrupt params: %w", err)
 	}
-	return a.sendNotification("turn/interrupt", paramsJSON)
+	if _, err := a.sendRequest("turn/interrupt", paramsJSON, 0); err != nil {
+		return fmt.Errorf("turn/interrupt child: %w", err)
+	}
+	return nil
 }
 
 // sendTurnStartChild starts a new turn on a child thread. Mirrors sendTurnStart
