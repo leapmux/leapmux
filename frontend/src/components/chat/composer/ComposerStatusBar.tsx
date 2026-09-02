@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
@@ -28,7 +28,7 @@ export interface ComposerStatusBarProps {
    * between — cannot read two different answers. An optional prop with a
    * `?? false` repair here would let a new host omit the kind and paint a
    * worktree as a branch, with no compile error.
-  */
+   */
   workingTree: WorkingTreeInfo
   /** Branch chip callbacks. */
   onChangeBranch: () => void

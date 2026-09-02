@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
-import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { ProviderSettingChangeHandler, ProviderSettingsAction } from '~/components/chat/providerSettings'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
