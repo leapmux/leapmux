@@ -95,9 +95,3 @@ export const menuGroupHeader = style({
   fontWeight: 'var(--font-medium)',
   color: 'var(--muted-foreground)',
 })
-
-/** A menu option's second line: what the option means. */
-export const optionHelp = style({
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-})

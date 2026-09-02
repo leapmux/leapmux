@@ -9,7 +9,7 @@ Short answers to the questions people ask most often about LeapMux. Each one lin
 
 ## Do I need a server, or can I just run it locally?
 
-You can run everything locally. The `leapmux solo` command starts a Hub and a Worker in a single process, bound to `127.0.0.1:4327` (loopback only), with no login required — it auto-authenticates every request as the admin. The desktop app does the same thing, listening only on a local socket so it opens no TCP port at all.
+You can run everything locally. The `leapmux solo` command starts a Hub and a Worker in a single process, bound to `127.0.0.1:4327`, with no login required — it authenticates every request as the admin while its single account has no password. The desktop app does the same thing, listening only on a local socket so it opens no TCP port at all. Set that account a password and add an address in **Preferences → Administration → Network access** to reach the same Hub from another machine.
 
 You only need a separate Hub when you want multiple users, remote Workers, or sign-in. In that case run `leapmux hub` (central relay, real authentication) and connect one or more `leapmux worker` processes to it.
 

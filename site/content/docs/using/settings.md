@@ -234,7 +234,7 @@ Most rows apply without a restart. The Hub that serves the write applies the cha
 - **Session duration** — how long a session lives after your last activity. See [Sessions and signing out](/docs/using/accounts/#sessions-and-signing-out).
 - **Secure cookies** — serve the session cookie with the `__Host-` prefix behind TLS; changing it signs everybody out.
 
-In solo mode only **Public base URL** stays.
+Every row here stays in solo mode. A solo Hub whose account holds a password signs its network callers in with an ordinary session and an ordinary cookie, so both of the last two apply to it.
 
 ### Network access
 

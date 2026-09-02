@@ -33,6 +33,8 @@ While the `solo` account has no password, anyone who can reach the port has full
 
 Set the `solo` account's password and add the address in **Preferences → Administration → Network access**. The Hub starts answering there at once, and again on every later start. From then on every network address asks you to sign in as `solo` — `127.0.0.1` included — while the desktop app, which reaches its Hub over a local socket, never does. [Network access](/docs/admin/configuration/#network-access) covers the panel, and [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) the rule.
 
+The sign-in that follows is an ordinary one, so the Hub's session settings apply to a solo hub as well: `session_duration_seconds` sets how long it lasts, and `secure_cookies` is what a solo hub behind a TLS-terminating proxy sets so its cookie carries the `__Host-` prefix.
+
 A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead.
 {{< /callout >}}
 

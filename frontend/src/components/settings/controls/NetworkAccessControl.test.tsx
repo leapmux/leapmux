@@ -239,14 +239,18 @@ describe('networkAccessControl', () => {
   // DropdownMenu. The ROLE is still asserted: these must be `menuitemradio`,
   // which is what makes the group a one-of-N choice rather than a list of
   // buttons.
-  it('offers every interface address and the wildcard', async () => {
+  //
+  // The loopback marker is part of the option's NAME, not decoration beside
+  // it. Whether the chosen address is loopback decides whether Apply demands a
+  // password, so the reason has to reach a screen reader as well as an eye.
+  it('offers every interface address and the wildcard, marking the loopback ones', async () => {
     render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
     const row = (await screen.findAllByTestId('network-address-row'))[0]!
 
     const options = within(row)
       .getAllByRole('menuitemradio', { hidden: true })
       .map(el => el.textContent?.trim())
-    expect(options).toEqual(['All interfaces', '192.168.1.24', '127.0.0.1'])
+    expect(options).toEqual(['All interfaces', '192.168.1.24', '127.0.0.1 (loopback)'])
   })
 
   // The picker groups by interface, so an address is read beside the interface

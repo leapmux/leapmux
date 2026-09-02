@@ -149,9 +149,6 @@ func MustParse(s string) Addr {
 // everywhere in this package.
 func isV4(ip netip.Addr) bool { return ip.Is4() || ip.Is4In6() }
 
-// Host returns the canonical host: "" for the family-neutral wildcard.
-func (a Addr) Host() string { return a.host }
-
 // WithPort returns the same address on another port.
 //
 // It exists for ONE caller: the listener set, which asks for port 0 and must

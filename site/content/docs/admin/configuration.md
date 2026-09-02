@@ -248,13 +248,14 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 | Omitted in solo | Because |
 | --- | --- |
 | `signup_enabled` | Solo has no sign-up. |
-| `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
 | `smtp` | Solo has no sign-up and no outbound mail. |
-| `captcha.*` | Solo has no sign-up, no sign-in, and no other captcha-protected surface. |
+| `captcha.*` | Solo runs no captcha. Its sign-in form is guarded by `rate_limit.login_anonymous`, which stays. |
 | `rate_limit.elevation`, `rate_limit.email_change` | Keyed by USER, and solo has one; solo also refuses email changes outright. |
 | `mail_limits` | Solo sends no mail: no relay, no recipient to cap. |
 
-`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `rate_limit.login_anonymous` and `rate_limit.oauth_anonymous` stay too, and for the reason the omissions above give: both are keyed by client ADDRESS on surfaces a solo Hub also serves. A solo Hub whose account holds a password serves a sign-in form and runs no captcha, so `login_anonymous` is the only thing that limits guesses at it. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
+`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
+
+The rest stay because a solo Hub whose account holds a password serves a real sign-in. `session_duration_seconds` and `secure_cookies` govern the session and the cookie that sign-in issues, so a Hub published behind a TLS proxy sets `secure_cookies` there like any other. `rate_limit.login_anonymous` and `rate_limit.oauth_anonymous` are keyed by client ADDRESS on surfaces a solo Hub also serves, and because solo runs no captcha, `login_anonymous` is the only thing that limits guesses at the sign-in form.
 
 See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and account-recovery flows, and [Sign-in Providers](/docs/admin/sign-in-providers/) for OAuth/OIDC.
 

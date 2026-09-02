@@ -248,7 +248,7 @@ For security, the Hub returns the identical error for both an unknown username a
 **Fix**
 Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/admin/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/admin/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped.
 
-Either way, every session, token, **and passkey** the account holds is revoked. Solo mode has no login at all — it auto-authenticates every request.
+Either way, every session, token, **and passkey** the account holds is revoked. Solo mode has one account, `solo`, and it asks for a password only once you set one; change it in **Preferences → Account → Password**.
 
 ### Passkey sign-in fails or the authenticator never appears
 

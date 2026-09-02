@@ -417,7 +417,11 @@ function InterfaceMenu(props: {
               {addr => (
                 <DropdownMenuCheckableItem
                   kind="radio"
-                  label={addr.ip}
+                  // The marker goes in the LABEL, which is the option's
+                  // accessible name, rather than beside it: whether an address
+                  // is loopback is what decides if publishing it demands a
+                  // password, so it must reach a screen reader too.
+                  label={addr.loopback ? `${addr.ip} (loopback)` : addr.ip}
                   checked={props.host === addr.ip}
                   onSelect={() => props.onSelect(addr.ip)}
                 />

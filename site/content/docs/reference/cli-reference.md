@@ -35,7 +35,7 @@ Any command name can be shortened as far as it stays unambiguous.
 
 | Command | What it does | Reference |
 |---------|--------------|-----------|
-| `solo` | Hub + Worker in one process, loopback only, no login | [Running LeapMux](/docs/admin/running-leapmux/) |
+| `solo` | Hub + Worker in one process, loopback by default, no login until you set a password | [Running LeapMux](/docs/admin/running-leapmux/) |
 | `hub` | Hub service only; Workers connect separately | [Running LeapMux](/docs/admin/running-leapmux/) |
 | `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/admin/managing-workers/) |
 | `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/admin/running-leapmux/) |

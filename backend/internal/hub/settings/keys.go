@@ -497,18 +497,17 @@ var (
 			Fields:       []Field{{Name: "", Label: "Open sign-up", Kind: FieldBool}},
 		})
 
-	// Solo mints no session: the auth interceptor authenticates every
-	// procedure as the synthetic solo user and refreshes nothing, and the
-	// bootstrapped solo user has no password hash, so Login cannot
-	// succeed. Nothing reads this duration there.
+	// Solo READS this, so it stays administrable there. A solo hub whose
+	// account holds a password authenticates its TCP callers with an ordinary
+	// session, and Login mints that session for the duration this key states.
+	// The solo rung short-circuits only a credential-free caller.
 	KeySessionDurationSeconds = NewKey[int64]("session_duration_seconds").
 					WithDefault(DefaultSessionDurationSeconds).
 					WithValidate(validateSessionDuration).
 					WithUI(UIMeta{
-			Category:     "general",
-			Title:        "Session duration",
-			Summary:      "idle session lifetime in seconds (300 to 315360000)",
-			HiddenInSolo: true,
+			Category: "general",
+			Title:    "Session duration",
+			Summary:  "idle session lifetime in seconds (300 to 315360000)",
 			Fields: []Field{{
 				Name: "", Label: "Session duration", Kind: FieldInt,
 				Min:  ptrconv.Ptr(MinSessionDurationSeconds),
@@ -517,23 +516,23 @@ var (
 			}},
 		})
 
-	// Solo sets and reads no cookie -- the solo rung precedes the cookie
-	// rung in every auth ladder. Its other job, the scheme that BaseURL
-	// derives, reaches only the mail renderer and the /oauth/* endpoints,
-	// and the mail one is unreachable in solo (no recipient). KeyPublicURL
-	// below does NOT go through BaseURL, so hiding this one cannot affect it.
+	// Solo READS this too, and hiding it took the answer away from the one
+	// deployment that needs it most. Every session cookie a solo hub writes
+	// -- from Login, and from the ChangePassword that hands the first
+	// password's author a session -- takes its __Host- prefix and its Secure
+	// attribute from here. A solo hub published on a LAN behind a TLS proxy
+	// must be able to ask for one, and no other key can.
 	KeySecureCookies = NewKey[bool]("secure_cookies").
 				WithUI(UIMeta{
-			Category:     "general",
-			Title:        "Secure cookies",
-			Summary:      "use __Host- prefixed cookies (behind TLS); changing it signs everyone out",
-			HiddenInSolo: true,
-			Fields:       []Field{{Name: "", Label: "Secure cookies", Kind: FieldBool}},
+			Category: "general",
+			Title:    "Secure cookies",
+			Summary:  "use __Host- prefixed cookies (behind TLS); changing it signs everyone out",
+			Fields:   []Field{{Name: "", Label: "Secure cookies", Kind: FieldBool}},
 		})
 
-	// The one general-category key that STAYS in solo, which is why that
-	// category has no whole-category hide. A solo hub is not localhost-only:
-	// `leapmux solo -listen 0.0.0.0:4327` serves a LAN or Tailscale address,
+	// Solo reads this too, so the whole general category stays there. A solo
+	// hub is not localhost-only: `leapmux solo -listen 0.0.0.0:4327` and the
+	// extra_listen_addresses setting both serve a LAN or Tailscale address,
 	// and public_url is how that hub tells a REMOTE worker where to dial.
 	// It reaches the solo launcher's banner and, as worker_hub_url in
 	// GetSystemInfo, the `leapmux worker --hub ...` command that
