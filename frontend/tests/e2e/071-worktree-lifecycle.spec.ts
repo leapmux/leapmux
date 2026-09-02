@@ -42,7 +42,11 @@ test.describe('Worktree Lifecycle', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Worktree Test WS')
+    // By ROLE and NAME, not by placeholder. The field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Worktree Test WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
