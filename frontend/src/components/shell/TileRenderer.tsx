@@ -148,7 +148,7 @@ interface TileRendererOpts {
    */
   onOpenBackgroundTask?: (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => void
   /**
-   * Branch-action callbacks for the composer's GitBranch chip. Each receives a
+   * Branch-action callbacks for the composer's WorkingTreeChip. Each receives a
    * fully-built {@link BranchRef} (the focused agent's repo + the tabs on its
    * branch); the shell opens the Change/Delete Branch dialog from it. Omit to
    * keep the chip non-interactive.
@@ -1086,7 +1086,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
     const agentId = () => focusedAgentId()!
     const subagentReadOnly = () => isSubagentReadOnly(agentId())
-    // The composer's GitBranch chip: one call answers both "can these actions
+    // The composer's WorkingTreeChip: one call answers both "can these actions
     // run?" and "what ref do the dialogs get?", so an enabled menu item can
     // never resolve to nothing. `buildRef` is lazy — the guard is read on
     // every reactive tick, and building the ref walks the whole workspace.

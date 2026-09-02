@@ -676,6 +676,22 @@ describe('workspaceTabTree interactions', () => {
       expect(within(row).queryByTestId('worktree-icon')).toBeNull()
     })
 
+    // The row is a plain div with no tabindex, so its tooltip opens under a
+    // pointer alone. The glyph is the ONLY thing on the row that states the
+    // kind, so it carries the word too -- otherwise a screen-reader user cannot
+    // tell the row that deletes a directory from the row that does not.
+    it('names a worktree for a screen reader, which the tooltip cannot reach', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      expect(within(row).getByRole('img', { name: 'Worktree' })).toBeInTheDocument()
+    })
+
+    it('names a branch for a screen reader too', () => {
+      const row = renderRow({ isWorktree: false, toplevel: '/home/user/Workspaces/r' })
+
+      expect(within(row).getByRole('img', { name: 'Branch' })).toBeInTheDocument()
+    })
+
     // On EVERY hover, not only when the label clips: the kind and the directory
     // are nowhere else on the row, so a clipped-only tooltip would hide both
     // whenever the branch name happened to fit.
@@ -711,6 +727,69 @@ describe('workspaceTabTree interactions', () => {
       const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
       expect(tooltip!.textContent).toContain('/home/user/Workspaces/r-worktrees/feature')
       expect(tooltip!.textContent).not.toContain('~/')
+    })
+
+    /**
+     * Two workers, one branch, the same path under each home directory.
+     *
+     * The visible label disambiguates with `(worker-a)`, but it ellipsizes, and
+     * the tooltip states the branch NAME rather than that label -- so without a
+     * Worker row both rows read `Worktree feature` / `Directory ~/w/r` and the
+     * user cannot tell which machine's directory Delete removes.
+     */
+    it('names the worker when two of them hold the same branch at the same path', () => {
+      const toplevel = '/home/user/w/r'
+      const lookup = (id: string) => ({
+        name: id === 'w1' ? 'build-box' : 'mac-mini',
+        os: 'linux',
+        arch: 'arm64',
+        homeDir: '/home/user',
+        version: '0',
+        commitHash: '',
+        buildTime: '',
+        updatedAt: 0,
+      })
+      for (const id of ['w1', 'w2'])
+        seedRepo(id, toplevel, { branch: 'feature', originUrl: 'https://github.com/o/r.git', isWorktree: true })
+      render(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={(['w1', 'w2'] as const).map(id => ({
+            type: TabType.AGENT,
+            workspaceId: 'ws-1',
+            id: `a-${id}`,
+            title: `a-${id}`,
+            tileId: 'tile-1',
+            position: '0',
+            workerId: id,
+            gitToplevel: toplevel,
+          } as Tab))}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          workerInfoFn={lookup}
+        />
+      ))
+
+      const rows = screen.getAllByTestId('tab-tree-branch-group')
+      expect(rows).toHaveLength(2)
+      const workers = rows.map((row) => {
+        const tip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+        const name = tip!.querySelector('[data-testid="working-tree-worker"]')!.textContent
+        unhoverTooltip(row.querySelector(`.${labelWithStats}`)!)
+        return name
+      })
+
+      expect(workers.toSorted()).toEqual(['build-box', 'mac-mini'])
+    })
+
+    // ...and it stays out of the way when one worker owns everything on screen,
+    // where it would be noise on every hover.
+    it('states no worker when a single worker owns the branch', () => {
+      const row = renderRow({ isWorktree: true, toplevel: '/home/user/Workspaces/r-worktrees/feature' })
+
+      const tooltip = hoverForTooltip(row.querySelector(`.${labelWithStats}`)!)
+      expect(tooltip!.querySelector('[data-testid="working-tree-worker"]')).toBeNull()
     })
 
     // ...and it must SHORTEN once that answer lands. The home dir arrives on

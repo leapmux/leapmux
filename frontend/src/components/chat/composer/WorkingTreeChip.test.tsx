@@ -1,3 +1,4 @@
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,17 +22,22 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function renderChip(overrides: Partial<Parameters<typeof WorkingTreeChip>[0]> = {}) {
+/** The flat option shape the cases read better in, assembled into the prop. */
+function renderChip(overrides: Partial<WorkingTreeInfo> & { disabledReason?: string } = {}) {
+  const workingTree: WorkingTreeInfo = {
+    isWorktree: overrides.isWorktree ?? true,
+    name: 'name' in overrides ? overrides.name! : 'feature',
+    directory: overrides.directory ?? WORKTREE_DIR,
+    homeDir: 'homeDir' in overrides ? overrides.homeDir : '/home/dev',
+    flavor: overrides.flavor,
+    stats: overrides.stats,
+  }
   render(() => (
     <WorkingTreeChip
-      branchName={'branchName' in overrides ? overrides.branchName : 'feature'}
-      isWorktree={overrides.isWorktree ?? true}
-      directory={overrides.directory ?? WORKTREE_DIR}
-      homeDir={'homeDir' in overrides ? overrides.homeDir : '/home/dev'}
-      stats={overrides.stats}
+      workingTree={workingTree}
       disabledReason={overrides.disabledReason}
-      onChangeBranch={overrides.onChangeBranch ?? (() => {})}
-      onDeleteBranch={overrides.onDeleteBranch ?? (() => {})}
+      onChangeBranch={() => {}}
+      onDeleteBranch={() => {}}
     />
   ))
   return screen.queryByTestId('composer-branch-trigger')
@@ -108,11 +114,21 @@ describe('workingTreeChip', () => {
     expect(tooltip!.querySelector('[data-testid="working-tree-rows"]')).toBeNull()
   })
 
-  it('renders nothing when the branch is not known yet', () => {
-    expect(renderChip({ branchName: undefined })).toBeNull()
+  it('renders nothing for an empty branch name', () => {
+    expect(renderChip({ name: '' })).toBeNull()
   })
 
-  it('renders nothing for an empty branch name', () => {
-    expect(renderChip({ branchName: '' })).toBeNull()
+  // The worker's own path rule, threaded from the panel. Without it the chip
+  // sniffs the flavor from the string, and a Windows worker whose git reports
+  // a forward-slash UNC path falls through to posix and never compresses.
+  it('shortens a UNC directory with the caller flavor', () => {
+    const chip = renderChip({
+      directory: '//srv/share/dev/repo',
+      homeDir: '\\\\srv\\share\\dev',
+      flavor: 'win32',
+    })
+
+    expect(hoverForTooltip(chip!)!.querySelector('[data-testid="working-tree-directory"]')!.textContent)
+      .toBe('~\\repo')
   })
 })

@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
+import type { PathFlavor } from '~/lib/paths'
 import { Show } from 'solid-js'
 import { WorkingTreeRows } from '~/components/common/WorkingTree'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
@@ -22,6 +23,8 @@ export interface BranchSnapshot {
   directory: string
   /** The worker's home directory, for the tilde compression. */
   homeDir?: string
+  /** The worker's path flavor. Absent lets `tildify` sniff it from the path. */
+  flavor?: PathFlavor
   /**
    * Shared diff/push snapshot. Undefined when the caller's RPC took a
    * fast path that skipped the snapshot — the component renders the
@@ -89,6 +92,7 @@ export const BranchStatusInfo: Component<BranchStatusInfoProps> = (props) => {
         name={props.branch.branchName}
         directory={props.branch.directory}
         homeDir={props.branch.homeDir}
+        flavor={props.branch.flavor}
       />
       <Show when={props.branch.gitState}>
         {gs => (

@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { DiffStats } from '~/stores/repoGit'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { groupHasOptions, OPTION_ID_EFFORT, OPTION_ID_MODEL } from '~/components/chat/settingsGroups'
@@ -19,16 +19,17 @@ export interface ComposerStatusBarProps {
   optionValues: Record<string, string>
   /** Dispatch a settings change for the model/effort/mode chips. Optional to match the panel's `onChange?`. */
   onSettingChange?: (change: ProviderSettingChange) => void
-  /** Branch label from {@link repoGitView}. */
-  branchName?: string
-  /** True iff the agent's checkout is a linked worktree ({@link repoGitView}). */
-  isWorktree?: boolean
-  /** Absolute working-tree root ({@link repoGitView}'s `toplevel`). */
-  directory?: string
-  /** The agent's worker home directory, for the chip tooltip's tilde path. */
-  homeDir?: string
-  /** Diff stats for the chip tooltip's badge. */
-  branchStats?: DiffStats | null
+  /**
+   * The checkout the branch chip names, resolved from {@link repoGitView}.
+   *
+   * REQUIRED, and passed whole. The bar owns no git state and applies no
+   * default: the panel above it resolves the whole value once, so the chip here
+   * and the `[+]` menu's branch row — the two surfaces one preference toggles
+   * between — cannot read two different answers. An optional prop with a
+   * `?? false` repair here would let a new host omit the kind and paint a
+   * worktree as a branch, with no compile error.
+   */
+  workingTree: WorkingTreeInfo
   /** Branch chip callbacks. */
   onChangeBranch: () => void
   onDeleteBranch: () => void
@@ -78,11 +79,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
         <WorkingTreeChip
-          branchName={props.branchName}
-          isWorktree={props.isWorktree ?? false}
-          directory={props.directory ?? ''}
-          homeDir={props.homeDir}
-          stats={props.branchStats}
+          workingTree={props.workingTree}
           disabledReason={props.branchDisabledReason}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}

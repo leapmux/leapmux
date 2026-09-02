@@ -256,6 +256,17 @@ test.describe('Worktree Detection', () => {
     await expect(worktreeTip).toContainText('Worktree')
     await expect(worktreeTip.getByTestId('working-tree-directory'))
       .toContainText('test-repo-row-icons-worktrees/row-icon-branch')
+
+    // The composer chip names the same checkout as the row above it, through
+    // the same component. It cannot assert the TILDE here: an E2E repo lives
+    // under the temp data dir, never under the worker's home, so the correct
+    // answer is the absolute path on both surfaces. The tilde wiring is pinned
+    // in `AgentEditorPanel.test.tsx` instead, where the home dir is injectable.
+    const rowDirectory = await worktreeTip.getByTestId('working-tree-directory').textContent() ?? ''
+    await page.getByTestId('composer-branch-trigger').hover()
+    const chipTip = page.getByRole('tooltip')
+    await expect(chipTip).toContainText('Worktree')
+    await expect(chipTip.getByTestId('working-tree-directory')).toHaveText(rowDirectory)
   })
 
   test('dirty warning appears when source working copy has uncommitted changes', async ({

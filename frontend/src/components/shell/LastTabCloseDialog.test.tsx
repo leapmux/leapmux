@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -18,6 +19,15 @@ vi.mock('~/components/common/Toast', () => ({
   showInfoToast: vi.fn(),
   showWarnToast: vi.fn(),
   showErrorToast: vi.fn(),
+}))
+
+vi.mock('~/stores/workerInfo.store', () => ({
+  workerInfoStore: {
+    fetchWorkerInfo: vi.fn().mockResolvedValue(undefined),
+    workerInfo: () => null,
+    getHomeDir: () => '/home/u',
+    getOs: () => undefined,
+  },
 }))
 
 type GitStateFlat = Partial<{
@@ -131,7 +141,10 @@ describe('lastTabCloseDialog', () => {
       worktreePath: '/tmp/wt',
       branchName: 'wt-branch',
     }))
-    expect(screen.getByText('This closes the last tab for this worktree.').closest('p')).not.toBeNull()
+    // `.tagName`, not `.closest('p')`: `getByText` returns the paragraph itself
+    // (the sentence is its whole text), so `closest('p')` returns that same
+    // node and can never be null -- an assertion that states nothing.
+    expect(screen.getByText('This closes the last tab for this worktree.').tagName).toBe('P')
     expect(screen.queryByText(/last non-worktree tab/)).toBeNull()
   })
 
@@ -155,7 +168,7 @@ describe('lastTabCloseDialog', () => {
       branchName: 'release/v1',
       worktreePath: '',
     }))
-    expect(screen.getByText('This closes the last non-worktree tab for this branch.').closest('p')).not.toBeNull()
+    expect(screen.getByText('This closes the last non-worktree tab for this branch.').tagName).toBe('P')
     expect(screen.getByTestId('working-tree-name').textContent).toBe('release/v1')
     expect(screen.queryByText(/closes the last tab for this worktree/)).toBeNull()
   })
@@ -518,5 +531,36 @@ describe('lastTabCloseDialog', () => {
   it('shows the "no changes" line when the branch is clean', () => {
     renderDialog(makeState())
     expect(screen.getByText('No uncommitted changes or unpushed commits.')).toBeInTheDocument()
+  })
+
+  /**
+   * The home-dir fetch is keyed to the WORKER ID, not to the mount.
+   *
+   * `AppShellDialogs` renders this dialog under a deliberately NON-keyed
+   * `<Show>`, so a second `open()` re-points the same component instance
+   * without remounting it. Two tab groups closing in sequence on different
+   * workers reach exactly that: an `onMount` fetch warms the first worker and
+   * never the second, and the second prompt then prints a raw absolute path
+   * while every other surface shortens it.
+   */
+  it('fetches the home dir again when the payload swaps to another worker', async () => {
+    const [state, setState] = createSignal(makeState({ workerId: 'w1' }))
+    render(() => <LastTabCloseDialog state={state()} onDismiss={vi.fn()} />)
+
+    await waitFor(() => expect(workerInfoStore.fetchWorkerInfo).toHaveBeenCalledWith('w1'))
+
+    setState(makeState({ workerId: 'w2' }))
+
+    await waitFor(() => expect(workerInfoStore.fetchWorkerInfo).toHaveBeenCalledWith('w2'))
+  })
+
+  it('shortens the directory against the worker home dir', () => {
+    renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/home/u/w/feature',
+      branchName: 'feature',
+    }))
+
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('~/w/feature')
   })
 })

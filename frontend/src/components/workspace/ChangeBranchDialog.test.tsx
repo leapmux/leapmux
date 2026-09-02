@@ -586,6 +586,40 @@ describe('changeBranchDialog header', () => {
     expect(screen.getByText('Worktree')).toBeInTheDocument()
     expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
   })
+
+  // Pins `homeDir={worker.getHomeDir()}`. The two cases above use a directory
+  // OUTSIDE the mocked home, where `tildify` answers the same with or without a
+  // home dir -- so only a path under it can tell a wired prop from a dropped
+  // one, and every sibling surface already has this test.
+  it('shortens a directory under the worker home dir', async () => {
+    renderDialog({ gitToplevel: '/home/u/repo' })
+    await awaitFormReady()
+
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('~/repo')
+  })
+
+  // A failed inspect disproves neither the kind nor the branch: both come from
+  // the row that opened the dialog. Resetting them left a worktree relabelled
+  // "Branch" with a blank name, beside the error banner -- on the one surface
+  // that exists to state which checkout the dialog acts on.
+  it('keeps naming a worktree a worktree when the inspect RPC fails', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
+
+    await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
+    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
+  })
+
+  // The mirror case, so the reset is not simply pinned to `true`.
+  it('keeps naming a branch a branch when the inspect RPC fails', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    renderDialog({ gitToplevel: '/repo', isWorktree: false, branchName: 'main' })
+
+    await waitFor(() => expect(screen.getByText('worker offline')).toBeInTheDocument())
+    expect(screen.getByText('Branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('main')
+  })
 })
 
 // The Title field belongs to create-worktree only, the one mode that opens a

@@ -39,16 +39,26 @@ function renderBar(
     branchStats?: DiffStats | null
   } = {},
 ) {
+  // The bar takes ONE value now, so the helper assembles it from the flat
+  // options each case reads better in.
+  const workingTree = {
+    isWorktree: extra.isWorktree ?? false,
+    name: extra.branchName ?? '',
+    directory: extra.directory ?? '',
+    homeDir: extra.homeDir,
+    stats: extra.branchStats,
+  }
   return render(() => (
     <ComposerStatusBar
       agent={a}
-      branchName={extra.branchName}
+      workingTree={workingTree}
       optionValues={{}}
       onSettingChange={() => {}}
       onChangeBranch={() => {}}
       onDeleteBranch={() => {}}
       infoTrigger={() => <span data-testid="info" />}
-      {...extra}
+      disabledReason={extra.disabledReason}
+      branchDisabledReason={extra.branchDisabledReason}
     />
   ))
 }

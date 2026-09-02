@@ -3,7 +3,7 @@ import type { ContextMenuTargetProps, DropdownTriggerProps } from '~/components/
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { Tooltip } from '~/components/common/Tooltip'
-import { workingTreeKindLabel } from '~/components/common/WorkingTree'
+import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface BranchContextMenuProps extends ContextMenuTargetProps {
@@ -82,7 +82,7 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = props => (
         disabled={Boolean(props.disabledReason)}
         onClick={() => props.onDeleteBranch()}
       >
-        {`Delete ${workingTreeKindLabel(props.isWorktree).toLowerCase()}...`}
+        {`${workingTreeDeleteLabel(props.isWorktree)}...`}
       </button>
     </Tooltip>
   </DropdownMenu>

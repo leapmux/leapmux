@@ -1,14 +1,14 @@
 import type { Component } from 'solid-js'
 import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
-import { createMemo, createSignal, createUniqueId, onMount, Show } from 'solid-js'
+import { createMemo, createSignal, createUniqueId, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
-import { workingTreeKindLabel } from '~/components/common/WorkingTree'
+import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
 import { WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSelect'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
@@ -18,8 +18,10 @@ import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
+import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
+import { flavorFromOs } from '~/lib/paths'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { errorText, warningText } from '~/styles/shared.css'
@@ -132,17 +134,19 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   // authoritative once it lands; until then the row's seed answers, so the
   // title and the submit button never name the wrong kind on the first paint.
   const isWorktree = () => info()?.isWorktree ?? props.isWorktree
-  // The noun for the title and the submit button: "worktree" or "branch".
-  const kindLabel = () => workingTreeKindLabel(isWorktree())
+  // The title and the submit button, named after what the delete removes.
+  const deleteLabel = () => workingTreeDeleteLabel(isWorktree())
 
-  // The home dir behind the status block's tilde path. The store is process-
-  // wide and usually already warm (the sidebar and the tile renderer both read
-  // it), but a dialog opened before anything else touched this worker would
-  // find it empty -- and `tildify` then shows the absolute path, which is
-  // correct but long. One fetch closes that gap; the store enforces its own
-  // freshness TTL, so a warm entry costs no round trip.
-  onMount(() => void workerInfoStore.fetchWorkerInfo(props.workerId))
-  const homeDir = () => workerInfoStore.getHomeDir(props.workerId)
+  // The home dir and the path flavor behind the status block's tilde path. The
+  // store is process-wide and usually already warm (the sidebar and the tile
+  // renderer both read it), but a dialog opened before anything else touched
+  // this worker would find it empty -- and `tildify` then shows the absolute
+  // path, which is correct but long.
+  const homeDir = useWorkerHomeDir(() => props.workerId)
+  const flavor = () => {
+    const os = workerInfoStore.getOs(props.workerId)
+    return os ? flavorFromOs(os) : undefined
+  }
 
   // Selectable branches exclude the one being deleted. The inspect RPC
   // returns the candidate list directly (only populated server-side when
@@ -348,7 +352,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
 
   return (
     <WorkerDialogShell
-      title={`Delete ${kindLabel().toLowerCase()}`}
+      title={deleteLabel()}
       // Drives the busy overlay for both delete paths while their `run`
       // is in flight (worktree: the removal preflight only; branch: the
       // whole DeleteBranch RPC). The inspect RPC's error sink also
@@ -407,7 +411,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
               disabled={!canSubmit()}
               onClick={handleDelete}
             >
-              <Show when={submitting.loading()} fallback={`Delete ${kindLabel().toLowerCase()}`}>
+              <Show when={submitting.loading()} fallback={deleteLabel()}>
                 <Spinner />
                 {isWorktree() ? 'Checking...' : 'Deleting...'}
               </Show>
@@ -433,6 +437,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 // only on the worktree path, so it cannot serve both.
                 directory: isWorktree() ? i().worktreePath : props.gitToplevel,
                 homeDir: homeDir(),
+                flavor: flavor(),
                 gitState: i().gitState,
               }}
               affectedTabs={{
@@ -487,7 +492,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 Refreshing branch state
               </div>
             </Show>
-            <Show when={!i().isWorktree}>
+            <Show when={!isWorktree()}>
               <Show
                 when={!isOnlyBranch()}
                 fallback={(

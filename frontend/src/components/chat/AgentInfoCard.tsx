@@ -24,6 +24,15 @@ export interface AgentInfoCardProps {
   branchName?: string
   /** Git flags and ahead/behind from {@link repoGitView}. */
   gitView?: RepoGitView
+  /**
+   * The agent's worker home directory, for the tilde-compressed paths below.
+   *
+   * A PROP, not `agent.homeDir`. `agentTabToInfo` builds the `AgentInfo` from a
+   * Tab row, which carries no home directory, so that field is always the empty
+   * string here and every path on the card rendered absolute. The panel above
+   * reads the worker store instead and passes the answer down.
+   */
+  homeDir?: string
 }
 
 export function formatAgentSessionIdForDisplay(agentProvider: AgentProvider | undefined, sessionId: string): string {
@@ -71,6 +80,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   const sessionInfo = createMemo(() => props.agentSessionInfo)
   const gitView = createMemo(() => props.gitView)
   const branchLabel = createMemo(() => props.branchName)
+  const homeDir = createMemo(() => props.homeDir)
   // One spelling of the kind for the whole card, read by the row's label and by
   // its glyph. A branch stamped onto a tab before its first status push has no
   // git view at all; "Branch" is the safe reading there, because it claims
@@ -227,8 +237,13 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       <Show when={agent()?.workingDir} keyed>
         {workingDir => (
           <div class={styles.infoRow} data-testid="info-row-directory">
-            <span class={styles.infoLabel}>Directory</span>
-            <span class={styles.infoValue}>{tildify(workingDir, agent()?.homeDir)}</span>
+            {/* The AGENT's own working directory, which is not the working-tree
+                root: an agent opened in a subdirectory runs below it. The
+                `Directory` row that `WorkingTreeRows` prints IS that root, and
+                the `[+]` menu shows both one click apart -- so the two words
+                must differ. */}
+            <span class={styles.infoLabel}>Working dir</span>
+            <span class={styles.infoValue}>{tildify(workingDir, homeDir())}</span>
             <CopyButton
               getText={() => workingDir}
               title="Copy directory path"
@@ -241,7 +256,7 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           <div class={styles.infoRow} data-testid="info-row-plan-file">
             <span class={styles.infoLabel}>Plan File</span>
             <span class={styles.infoValue}>
-              {tildify(planFilePath, agent()?.homeDir)}
+              {tildify(planFilePath, homeDir())}
             </span>
             <CopyButton
               getText={() => planFilePath}

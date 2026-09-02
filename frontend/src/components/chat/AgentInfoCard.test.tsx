@@ -11,7 +11,7 @@ import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCar
 import './providers/claude/plugin'
 import './providers/pi/plugin'
 
-function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView }) {
+function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo, branchName?: string, gitView?: RepoGitView, homeDir?: string }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>
 }
@@ -88,9 +88,13 @@ describe('agent info card path rows', () => {
     })
   })
 
+  // The home directory arrives as a PROP, not on the agent. `agentTabToInfo`
+  // builds the AgentInfo from a Tab row, which carries none, so `agent.homeDir`
+  // is always the empty string in the app -- a test that seeded it there proved
+  // the abbreviation and hid the fact that no path on this card ever shortened.
   it('abbreviates the working directory but copies the absolute path', () => {
     const workingDir = `${HOME}/projects/app`
-    render(() => <InfoCardContent agent={withPaths({ workingDir, homeDir: HOME })} />)
+    render(() => <InfoCardContent agent={withPaths({ workingDir })} homeDir={HOME} />)
 
     expect(screen.getByTestId('info-row-directory')).toHaveTextContent('~/projects/app')
     expect(screen.getByTestId('info-row-directory')).not.toHaveTextContent(HOME)
@@ -99,11 +103,22 @@ describe('agent info card path rows', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(workingDir)
   })
 
+  // The label states WHOSE directory it is. `WorkingTreeRows` prints a
+  // `Directory` row for the working-tree ROOT, and the `[+]` menu puts the two
+  // one click apart -- an agent opened in a subdirectory makes them differ.
+  it('names the row after the agent working directory, not the checkout root', () => {
+    render(() => <InfoCardContent agent={withPaths({ workingDir: `${HOME}/projects/app` })} homeDir={HOME} />)
+
+    expect(screen.getByTestId('info-row-directory')).toHaveTextContent('Working dir')
+    expect(screen.queryByText('Directory')).toBeNull()
+  })
+
   it('abbreviates the plan file path but copies the absolute path', () => {
     const planFilePath = `${HOME}/projects/app/PLAN.md`
     render(() => (
       <InfoCardContent
-        agent={withPaths({ workingDir: `${HOME}/projects/app`, homeDir: HOME })}
+        agent={withPaths({ workingDir: `${HOME}/projects/app` })}
+        homeDir={HOME}
         agentSessionInfo={{ planFilePath }}
       />
     ))
@@ -118,7 +133,8 @@ describe('agent info card path rows', () => {
   // Not a repeat of tildify's own cases (paths.test.ts covers the abbreviation
   // itself). This is the wiring: the card must hand the worker's home directory
   // to tildify rather than call it with nothing, and a worker that reported no
-  // home directory must still show a usable path.
+  // home directory must still show a usable path. Omitting the prop is exactly
+  // the "worker system info not fetched yet" case.
   it('shows the absolute path when the worker reported no home directory', () => {
     const workingDir = `${HOME}/projects/app`
     render(() => <InfoCardContent agent={withPaths({ workingDir })} />)

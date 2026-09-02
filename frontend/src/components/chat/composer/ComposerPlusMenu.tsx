@@ -1,8 +1,8 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange, ProviderSettingsAction } from '~/components/chat/providers/registry'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EnterKeyMode } from '~/lib/browserStorage'
-import type { DiffStats } from '~/stores/repoGit'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
@@ -13,7 +13,7 @@ import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/Dro
 import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
-import { WorkingTreeIcon, WorkingTreeRows } from '~/components/common/WorkingTree'
+import { WorkingTreeIcon, WorkingTreeTooltip } from '~/components/common/WorkingTree'
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { formatShortcut } from '~/lib/shortcuts/display'
@@ -67,18 +67,15 @@ export interface ComposerPlusMenuProps {
   /** Toggle Enter-key mode. */
   onToggleEnterMode: () => void
   /**
-   * The current git branch, or undefined when the agent reports none. The
-   * branch submenu renders only when it is set, matching the status-bar chip.
+   * The checkout the branch submenu names, resolved from {@link repoGitView}.
+   * The submenu renders only when its `name` is set, matching the status-bar
+   * chip.
+   *
+   * REQUIRED, and passed whole — the same value the status bar receives, from
+   * the same accessor. See {@link ComposerStatusBarProps.workingTree} for why
+   * neither surface applies a default of its own.
    */
-  branchName?: string
-  /** True iff the agent's checkout is a linked worktree ({@link repoGitView}). */
-  isWorktree?: boolean
-  /** Absolute working-tree root ({@link repoGitView}'s `toplevel`). */
-  directory?: string
-  /** The agent's worker home directory, for the submenu tooltip's tilde path. */
-  homeDir?: string
-  /** Diff stats for the submenu tooltip's badge. */
-  branchStats?: DiffStats | null
+  workingTree: WorkingTreeInfo
   /** Open the "Change branch..." dialog. */
   onChangeBranch?: () => void
   /** Open the "Delete branch..." / "Delete worktree..." dialog. */
@@ -120,6 +117,16 @@ interface MenuStructure {
   groupIds: string[]
   actions: ProviderSettingsAction[]
   branchName?: string
+  /**
+   * Frozen WITH the branch name, because it names the destructive item rather
+   * than merely labelling it. A live kind under a held name lets "Delete
+   * branch..." become "Delete worktree..." beneath a pointer already aimed at
+   * it, which is the same hazard as a row sliding into that place — the user
+   * now clicks an action that removes a directory after reading one that does
+   * not. The other fields of the checkout (its directory, its diff badge) stay
+   * live: those are labels, and staleness there would be its own bug.
+   */
+  isWorktree: boolean
   agentInfo?: () => JSX.Element
 }
 
@@ -187,7 +194,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
     return {
       groupIds: liveGroupIds(),
       actions: liveActions(),
-      branchName: props.branchName,
+      branchName: props.workingTree.name || undefined,
+      isWorktree: props.workingTree.isWorktree,
       agentInfo: props.agentInfo,
     }
   })
@@ -196,11 +204,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const actions = () => structure().actions
   const branchName = () => structure().branchName
   const agentInfo = () => structure().agentInfo
-  // One spelling of the default for the three places that render the kind: the
-  // menu that names the delete item, the tooltip rows and the trigger's glyph.
-  // A tab whose git status has not landed reports nothing, and "branch" is the
-  // safe reading -- it claims nothing about a directory that a delete removes.
-  const isWorktree = () => props.isWorktree ?? false
+  const isWorktree = () => structure().isWorktree
 
   // Whether anything renders BETWEEN the attach item and the view toggles. Both
   // rules that fence that region are drawn only when it is non-empty: a fresh
@@ -300,20 +304,14 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               // Absent a reason it carries what the status-bar chip carries: the
               // kind of checkout and its directory. This menu exists because the
               // status bar is a preference the user can switch off, so it has to
-              // state everything the bar states.
-              <Tooltip
-                text={props.branchDisabledReason}
-                content={props.branchDisabledReason
-                  ? undefined
-                  : (
-                      <WorkingTreeRows
-                        isWorktree={isWorktree()}
-                        name={branch()}
-                        directory={props.directory ?? ''}
-                        homeDir={props.homeDir}
-                        stats={props.branchStats}
-                      />
-                    )}
+              // state everything the bar states, through the same component.
+              //
+              // The HELD kind and the HELD name, so the rows agree with the
+              // item below them while the menu is open; the directory and the
+              // badge stay live.
+              <WorkingTreeTooltip
+                disabledReason={props.branchDisabledReason}
+                info={{ ...props.workingTree, isWorktree: isWorktree(), name: branch() }}
               >
                 <button
                   role="menuitem"
@@ -327,7 +325,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
                   </span>
                   <Icon icon={ChevronRight} size="xs" />
                 </button>
-              </Tooltip>
+              </WorkingTreeTooltip>
             )}
           />
         )}

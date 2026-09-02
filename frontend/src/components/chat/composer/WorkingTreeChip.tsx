@@ -1,8 +1,7 @@
 import type { JSX } from 'solid-js'
-import type { DiffStats } from '~/stores/repoGit'
+import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import { Show } from 'solid-js'
-import { Tooltip } from '~/components/common/Tooltip'
-import { WorkingTreeIcon, WorkingTreeRows } from '~/components/common/WorkingTree'
+import { WorkingTreeIcon, WorkingTreeTooltip } from '~/components/common/WorkingTree'
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
 import * as styles from './composer.css'
 
@@ -10,16 +9,15 @@ import * as styles from './composer.css'
  * Props for the working-tree chip in the composer status bar.
  */
 export interface WorkingTreeChipProps {
-  /** Current branch name. The chip is hidden when this is empty. */
-  branchName: string | undefined
-  /** True iff the agent's checkout is a linked worktree. */
-  isWorktree: boolean
-  /** Absolute working-tree root, shown tilde-compressed in the tooltip. */
-  directory: string
-  /** The worker's home directory, for the tilde compression. */
-  homeDir?: string
-  /** Diff stats for the badge in the tooltip. The badge self-hides at all-zero. */
-  stats?: DiffStats | null
+  /**
+   * The checkout to name. REQUIRED, and required whole: the chip renders the
+   * kind's glyph, and a caller that could omit the kind would silently paint a
+   * worktree as a branch — the defect this component exists to remove.
+   *
+   * The chip is hidden when `name` is empty, which is a tab with no git status
+   * yet.
+   */
+  workingTree: WorkingTreeInfo
   /** Why both branch actions are unusable, or undefined when usable. */
   disabledReason?: string
   /** Open the "Change branch..." dialog. */
@@ -41,10 +39,10 @@ export interface WorkingTreeChipProps {
  */
 export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
   return (
-    <Show when={props.branchName}>
+    <Show when={props.workingTree.name}>
       {branch => (
         <BranchContextMenu
-          isWorktree={props.isWorktree}
+          isWorktree={props.workingTree.isWorktree}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}
           disabledReason={props.disabledReason}
@@ -55,29 +53,18 @@ export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
             // the kind of checkout and its directory, which the chip has no
             // room for. When the actions are unusable it carries the reason
             // instead, which otherwise only reaches a user who opens the menu.
-            <Tooltip
-              text={props.disabledReason}
-              content={props.disabledReason
-                ? undefined
-                : (
-                    <WorkingTreeRows
-                      isWorktree={props.isWorktree}
-                      name={branch()}
-                      directory={props.directory}
-                      homeDir={props.homeDir}
-                      stats={props.stats}
-                    />
-                  )}
-            >
+            <WorkingTreeTooltip info={props.workingTree} disabledReason={props.disabledReason}>
               <button
                 class={styles.axisChip}
                 data-testid="composer-branch-trigger"
                 {...triggerProps}
               >
-                <WorkingTreeIcon isWorktree={props.isWorktree} size="xs" />
+                {/* No `label`: the tooltip states the kind in words, and this
+                    trigger is a real button, so a keyboard user opens it. */}
+                <WorkingTreeIcon isWorktree={props.workingTree.isWorktree} size="xs" />
                 <span class={styles.axisChipLabel}>{branch()}</span>
               </button>
-            </Tooltip>
+            </WorkingTreeTooltip>
           )}
         />
       )}

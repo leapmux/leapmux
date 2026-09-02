@@ -37,7 +37,7 @@ Repo group   (Repo label)
 ```
 
 - The **repo group** header shows the repository, with the origin URL (or the toplevel path for a local repo with no origin) in its tooltip.
-- Each **branch group** header shows the branch name and a diff-stats badge summarizing changes in that working directory. Its icon states which kind of checkout the row is: a branch glyph for a branch in the main checkout, a folder-with-arrow glyph for a linked worktree. Hover the name for both facts in words — **Worktree** or **Branch** with the name, and **Directory** with the path it lives in.
+- Each **branch group** header shows the branch name and a diff-stats badge summarizing changes in that working directory. Its icon states which kind of checkout the row is: a branch glyph for a branch in the main checkout, a folder-with-arrow glyph for a linked worktree. Hover the name for both facts in words — **Worktree** or **Branch** with the name, and **Directory** with the path it lives in. When the same branch name sits on more than one Worker, a **Worker** row names the machine, so two rows that otherwise read alike stay distinguishable before you delete one of them.
 - LeapMux groups tabs by branch name, Worker, and repository path together, so two clones of the same repo on the same branch stay in separate groups.
 
 A working directory with no current branch carries a state label instead. **`(no branch)`** means a repository with no commits yet, or a tab LeapMux has not yet stamped with its git state — a new tab shows it for a moment, then picks up its real branch. A detached HEAD carries the **short commit SHA** (e.g. `a1b2c3d`). **Create new branch** moves either one onto a real branch.
@@ -56,7 +56,7 @@ The change item keeps one name on both kinds, because a worktree has a branch ch
 Both items act through the Worker that hosts the repository. LeapMux greys them out, with the reason on hover, while that Worker is offline. The `(no branch)` row carries no menu at all, because it has no branch to change or delete.
 
 {{< callout type="info" >}}
-A detached-HEAD row keeps its menu, because its short-SHA label is a real label. The branch delete fails there — the row identifies a commit, not a branch — and only after the working directory has already been switched to the branch you picked. Use **Create new branch** first to get onto a real branch.
+A detached-HEAD row keeps its menu, because its short-SHA label is a real label. The branch delete fails there — the row identifies a commit, not a branch — and only after LeapMux switches the working directory to the branch you picked. Use **Create new branch** first to get onto a real branch.
 {{< /callout >}}
 
 ### The branch chip in the composer

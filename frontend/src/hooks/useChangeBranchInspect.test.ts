@@ -204,14 +204,19 @@ describe('useChangeBranchInspect', () => {
     })
   })
 
-  it('resets the seed to a non-repo shape on RPC failure (GitOptions hides)', async () => {
+  it('hides GitOptions on RPC failure but keeps the caller seed', async () => {
     // Regression: the seed paints isGitRepo=true / isRepoRoot=true based
     // on the caller's optimistic belief that the row's gitToplevel is
     // still a git repo. If the worker rejects with "not a git repository"
     // (rm -rf .git, mount loss, permission flip), the dialog was stacking
     // branch radios on top of the error banner because info() still held
-    // the seed. The hook now rolls info back so showGitOptions flips
-    // false and GitOptionsLoader hides the form.
+    // the seed. `isGitRepo` goes false, so showGitOptions flips false and
+    // GitOptionsLoader hides the form.
+    //
+    // The KIND and the BRANCH LABEL survive, because they come from the row
+    // that opened the dialog and a failed RPC disproves neither. The dialog's
+    // header renders ABOVE GitOptionsLoader, so clearing them relabelled a
+    // worktree "Branch" with a blank name beside the error banner.
     vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('not a git repository'))
     await createRoot(async (dispose) => {
       const inspect = useChangeBranchInspect({
@@ -222,15 +227,35 @@ describe('useChangeBranchInspect', () => {
       // Pre-flush: seed is live, form would render.
       expect(inspect.pathInfo.showGitOptions()).toBe(true)
       await flushMicrotasks()
-      // Post-flush: seed cleared, showGitOptions false, BranchSelect
-      // loading flag also cleared so the dialog isn't stuck on a spinner.
+      // The form hides, and the BranchSelect loading flag clears so the
+      // dialog isn't stuck on a spinner.
       expect(inspect.pathInfo.info().isGitRepo).toBe(false)
-      expect(inspect.pathInfo.info().isRepoRoot).toBe(false)
-      expect(inspect.pathInfo.info().isWorktreeRoot).toBe(false)
-      expect(inspect.pathInfo.info().repoRoot).toBe('')
-      expect(inspect.pathInfo.info().currentBranch).toBe('')
       expect(inspect.pathInfo.showGitOptions()).toBe(false)
       expect(inspect.branchesLoading()).toBe(false)
+      // The worker's own answers are gone; the row's are not.
+      expect(inspect.pathInfo.info().repoRoot).toBe('')
+      expect(inspect.pathInfo.info().isRepoRoot).toBe(true)
+      expect(inspect.pathInfo.info().isWorktreeRoot).toBe(false)
+      expect(inspect.pathInfo.info().currentBranch).toBe('main')
+      dispose()
+    })
+  })
+
+  it('keeps a worktree seed on RPC failure', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
+    await createRoot(async (dispose) => {
+      const inspect = useChangeBranchInspect({
+        workerId: 'w1',
+        gitToplevel: '/repo-worktrees/feature',
+        branchName: 'feature',
+        isWorktree: true,
+      })
+      await flushMicrotasks()
+
+      expect(inspect.pathInfo.info().isWorktreeRoot).toBe(true)
+      expect(inspect.pathInfo.info().isRepoRoot).toBe(false)
+      expect(inspect.pathInfo.info().currentBranch).toBe('feature')
+      expect(inspect.pathInfo.showGitOptions()).toBe(false)
       dispose()
     })
   })
