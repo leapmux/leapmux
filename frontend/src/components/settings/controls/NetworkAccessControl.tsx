@@ -171,6 +171,27 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
 
   const canApply = () => !busy() && rowsAreValid() && passwordSatisfied()
 
+  /**
+   * The standing warning, in the three states the rule has.
+   *
+   * It reads the SAME two predicates Apply does, because a warning that
+   * demands what the button does not is worse than no warning: an operator
+   * adding a loopback address was told to set a password first, beside an
+   * enabled Apply that never asked for one.
+   */
+  const warning = () => {
+    if (!needsPassword()) {
+      return 'Every network address asks for a sign-in as “solo”, 127.0.0.1 included. '
+        + 'The desktop app’s local socket is the only exception.'
+    }
+    if (exposesTheHub()) {
+      return 'Applying this asks every network address for a sign-in, 127.0.0.1 included. '
+        + 'The desktop app’s local socket is the only exception. Set the password below first.'
+    }
+    return 'While the “solo” account has no password, this hub authenticates everyone who can reach it. '
+      + 'An address other machines can reach demands one, and Apply asks for it then.'
+  }
+
   const apply = async () => {
     if (!canApply())
       return
@@ -211,15 +232,7 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
 
   return (
     <div class="vstack gap-4">
-      <Alert variant="warning">
-        <Show
-          when={needsPassword()}
-          fallback="Every network address asks for a sign-in as “solo”, 127.0.0.1 included. The desktop app’s local socket is the only exception."
-        >
-          Applying this asks every network address for a sign-in, 127.0.0.1 included. The
-          desktop app’s local socket is the only exception. Set the password below first.
-        </Show>
-      </Alert>
+      <Alert variant="warning">{warning()}</Alert>
 
       <div class="vstack gap-2">
         <div class={styles.sectionHeading}>Serving now</div>

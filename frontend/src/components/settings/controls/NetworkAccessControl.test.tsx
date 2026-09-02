@@ -220,10 +220,39 @@ describe('networkAccessControl', () => {
 
   // A loopback address exposes nothing, so demanding a password for it would
   // be friction with nothing behind it.
-  it('lets a loopback address apply with no password', async () => {
+  //
+  // The WARNING has to agree with the button. Telling the operator to set a
+  // password first, beside an Apply that never asks for one, is a panel
+  // arguing with itself -- and the reader cannot tell which half is wrong.
+  it('lets a loopback address apply with no password, and does not demand one', async () => {
     render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['127.0.0.1:9000'] })} />)
 
     expect(await screen.findByRole('button', { name: 'Apply' })).toBeEnabled()
+    expect(screen.queryByText(/Set the password below first/)).toBeNull()
+    // It still states the standing condition: this hub asks nobody for one yet.
+    expect(screen.getByText(/authenticates everyone who can reach it/)).toBeInTheDocument()
+  })
+
+  // The other half of the same rule: an address another machine can reach is
+  // what arms it, so the warning and the button must both hold out for a
+  // password.
+  it('demands a password before publishing an address beyond loopback', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:9000'] })} />)
+
+    expect(await screen.findByText(/Set the password below first/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
+  })
+
+  // Once the account holds one, the warning stops asking for anything and
+  // states the rule that is now in force -- including on 127.0.0.1, which is
+  // the part an operator does not expect.
+  it('states the standing rule once the account holds a password', async () => {
+    setSystemInfoMock({ soloMode: true, soloPasswordSet: true })
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+
+    expect(await screen.findByText(/Every network address asks for a sign-in as “solo”, 127\.0\.0\.1 included/))
+      .toBeInTheDocument()
+    expect(screen.queryByText(/Set the password below first/)).toBeNull()
   })
 
   // Without the note, "Serving now" shows 127.0.0.1:4327 before Apply and only
