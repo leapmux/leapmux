@@ -199,6 +199,8 @@ var omittedWhileUnused = map[string]string{
 		"browser-tier value the wire cannot carry",
 	"UIMeta.HiddenInSolo": "solo hiding is instance scope only. A solo hub has one user, whose account settings " +
 		"all stay editable",
+	"UIMeta.HiddenInHub": "hub hiding is instance scope only, for the mirror of the reason HiddenInSolo states. " +
+		"Both flags pick a DEPLOYMENT, and an account key is editable in every one of them",
 }
 
 // exportedMembers lists one declared struct's exported members in
@@ -335,6 +337,7 @@ func TestGoldenCopiesEveryRecordedMember(t *testing.T) {
 		Title:        "probe-title",
 		Summary:      "probe-summary",
 		HiddenInSolo: true,
+		HiddenInHub:  true,
 		Fields:       []settings.Field{probeField},
 	}
 

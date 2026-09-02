@@ -2,9 +2,10 @@ import type { ParentComponent } from 'solid-js'
 import { useLocation, useNavigate } from '@solidjs/router'
 import { createEffect, createMemo, Match, Switch } from 'solid-js'
 import { BootSplash } from '~/components/common/BootSplash'
+import { PasswordSetupGate } from '~/components/common/PasswordSetupGate'
 import { useAuth } from '~/context/AuthContext'
 import { assertNever } from '~/lib/assertNever'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isAutoAuthenticated, passwordSetupRequired } from '~/lib/systemInfo'
 import { centeredFull } from '~/styles/shared.css'
 
 /**
@@ -26,6 +27,12 @@ type GuardState
     | { kind: 'authenticated' }
     | { kind: 'failed', title: string, detail: string }
     | { kind: 'redirect', to: string }
+    /**
+     * The hub is reachable from another machine and its one account has no
+     * password, so nothing stands between a stranger and the whole app. The
+     * gate replaces the app until one exists.
+     */
+    | { kind: 'password-setup' }
 
 /**
  * Sole gate on the authenticated app (`(app).tsx`). Everything behind it — `/`,
@@ -38,7 +45,7 @@ type GuardState
  * a hub that has one. That rule lives there rather than here because four
  * routes outside this guard need it too.
  *
- * `isSoloMode()` derives from the systemInfo snapshot signal: it is a safe
+ * `isAutoAuthenticated()` derives from the systemInfo snapshot signal: it is a safe
  * read because `AuthProvider` awaits `loadSystemInfo()` before it clears
  * `loading()` — by the time `state` is computed past its first line it has
  * its real value, and a later forced refresh re-evaluates this memo
@@ -67,20 +74,32 @@ export const AuthGuard: ParentComponent = (props) => {
       }
     }
 
+    // BEFORE the authenticated branch, because this caller IS authenticated --
+    // the hub let it in with no credentials, which is the problem. Ordering it
+    // after would render the app to exactly the visitor the gate exists for.
+    if (passwordSetupRequired() && isAutoAuthenticated())
+      return { kind: 'password-setup' }
+
     if (auth.isAuthenticated())
       return { kind: 'authenticated' }
 
-    // Solo mode has no login to send them to: the hub authenticates every
-    // request, so an unauthenticated answer here is a transport or
-    // configuration failure rather than a missing session. `restoreSession`
-    // records no bootstrapError for it — Unauthenticated is the ordinary "not
-    // logged in yet" reply everywhere else — so this branch is the only thing
-    // that stops that reply from becoming a spinner that never resolves.
-    if (isSoloMode()) {
+    // A CREDENTIAL-FREE connection has no login to send them to: the hub
+    // authenticates it outright, so an unauthenticated answer here is a
+    // transport or configuration failure rather than a missing session.
+    // `restoreSession` records no bootstrapError for it — Unauthenticated is
+    // the ordinary "not logged in yet" reply everywhere else — so this branch
+    // is the only thing that stops that reply from becoming a spinner that
+    // never resolves.
+    //
+    // isAutoAuthenticated, not isSoloMode. A solo hub whose account holds a
+    // password asks its network callers to sign in, and one of them arriving
+    // without a session is the ORDINARY case there, not a fault: it belongs in
+    // the redirect below.
+    if (isAutoAuthenticated()) {
       return {
         kind: 'failed',
         title: 'The hub reported no session.',
-        detail: 'This server runs in solo mode, where every request is authenticated, so there is no sign-in to fall back to. The hub may be misconfigured, or a proxy in front of it may strip credentials.',
+        detail: 'This connection is authenticated by the hub itself, so there is no sign-in to fall back to. The hub may be misconfigured, or a proxy in front of it may strip credentials.',
       }
     }
 
@@ -108,13 +127,15 @@ export const AuthGuard: ParentComponent = (props) => {
   // identity. A string memo suppresses equal-value propagation, so the branch
   // only changes when the branch actually changes -- and the `default` is where
   // the compiler enforces exhaustiveness.
-  const branch = createMemo<'children' | 'panel' | 'spinner'>(() => {
+  const branch = createMemo<'children' | 'panel' | 'spinner' | 'password-setup'>(() => {
     const current = state()
     switch (current.kind) {
       case 'authenticated':
         return 'children'
       case 'failed':
         return 'panel'
+      case 'password-setup':
+        return 'password-setup'
       // The guard decided a redirect, but the navigation did not land yet, so
       // there is nothing to show but the same spinner as 'loading'.
       case 'loading':
@@ -134,6 +155,9 @@ export const AuthGuard: ParentComponent = (props) => {
       </Match>
       <Match when={branch() === 'children'}>
         {props.children}
+      </Match>
+      <Match when={branch() === 'password-setup'}>
+        <PasswordSetupGate />
       </Match>
       <Match when={branch() === 'panel' && failure()}>
         {current => (

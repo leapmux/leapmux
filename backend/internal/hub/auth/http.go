@@ -64,6 +64,12 @@ type HTTPAuthOpts struct {
 	Validator *TokenValidator
 	SoloUser  *UserInfo
 	Contexts  *AuthContextRegistry
+	// SoloGate decides which solo callers may skip credentials. Nil builds a
+	// throwaway one over Store, so the RULE holds whether or not a caller
+	// passes it; only the latch is lost, which costs a store read per request
+	// and never an admission. A hub passes the interceptor's gate, so both
+	// ladders share one latch.
+	SoloGate *SoloGate
 	// ReadCookie turns the session-cookie rung on. Handlers that accept
 	// only a bearer or the solo user leave it false.
 	ReadCookie bool
@@ -71,6 +77,15 @@ type HTTPAuthOpts struct {
 	// session cookie. It is the hub's OWN setting, never a guess from the
 	// request.
 	SecureCookies bool
+}
+
+// soloGate returns the shared gate, or a throwaway one over the store. The
+// fallback keeps the RULE correct without the caller's help; see SoloGate.
+func (o HTTPAuthOpts) soloGate() *SoloGate {
+	if o.SoloGate != nil {
+		return o.SoloGate
+	}
+	return NewSoloGate(o.Store)
 }
 
 // AuthenticateHTTP resolves the caller of `r` through the standard
@@ -95,21 +110,21 @@ type HTTPAuthOpts struct {
 // safe and stays, so a session issued under TLS still validates after the
 // operator turns the setting off.
 func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (*UserInfo, error) {
-	// The solo rung YIELDS to a presented bearer.
+	// The solo rung admits the callers SoloGate allows -- the local IPC
+	// socket, and any transport while the account holds no password -- and
+	// YIELDS to a presented bearer.
 	//
-	// Solo authenticates every caller as its one account, with an unscoped
-	// grant, because reaching the port is the authentication. But a caller that
-	// presents an lmx_ bearer is ASKING to be its app: it accepted a narrower
-	// grant on a consent screen, and answering "you are the solo user, you may
-	// do anything" would discard that narrowing silently. The scope model would
-	// then be inert on solo -- an agent handed file:read would still hold every
-	// permission the account has.
+	// A caller that presents an lmx_ bearer is ASKING to be its app: it
+	// accepted a narrower grant on a consent screen, and answering "you are
+	// the solo user, you may do anything" would discard that narrowing
+	// silently. The scope model would then be inert on solo -- an agent handed
+	// file:read would still hold every permission the account has.
 	//
 	// It yields on the PRESENCE of a leapmux bearer, not on its validity: a
 	// revoked or malformed one falls through to the validator below and is
 	// refused there. Falling back to the solo rung instead would make a
 	// credential stronger by being broken.
-	if opts.SoloUser != nil && !presentsLeapMuxBearer(r) {
+	if opts.SoloUser != nil && opts.soloGate().CredentialFree(r.Context()) && !presentsLeapMuxBearer(r) {
 		return opts.Contexts.CurrentSyntheticUser(opts.SoloUser), nil
 	}
 	if opts.Validator != nil {

@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
+	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -1294,4 +1295,50 @@ func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.
 		"a worker that drained promptly must not be reported as failing to; "+
 			"WaitBounded only logs that line on timer.C, so its absence is the "+
 			"proof the hub stopped on the drain signal rather than the backstop")
+}
+
+// TestSoloStart_TheLocalWorkerDialsTheIPCSocket pins the property that keeps
+// the bundled Worker connected once the account holds a password.
+//
+// The solo hub authenticates a caller with no credentials only over the LOCAL
+// IPC socket, or while the account has no password (auth.SoloGate states the
+// rule). The Worker is a caller like any other, so if it dialled a TCP address
+// it would be signed out the moment an operator set that password -- and the
+// whole product would stop working in solo mode at exactly the step the
+// network-access feature asks the operator to take.
+//
+// It dials the IPC URL instead, which never asks. (It also presents an lmx_
+// bearer, which the solo rung yields to; this pins the transport, because that
+// is the half a listener change could break.)
+func TestSoloStart_TheLocalWorkerDialsTheIPCSocket(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	d := newTestDeps()
+	kill := serveUntilKilled(t, d, nil)
+	t.Cleanup(kill)
+
+	dialled := make(chan string, 1)
+	d.bringUpWorker = func(_ context.Context, p workerBringUp) error {
+		select {
+		case dialled <- p.listenURL:
+		default:
+		}
+		return nil
+	}
+
+	inst, err := start(context.Background(), cfg, d.deps)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = inst.Stop() })
+
+	var url string
+	select {
+	case url = <-dialled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the local worker never reported the address it dials")
+	}
+
+	require.NotEmpty(t, url)
+	assert.True(t, locallisten.IsLocal(url),
+		"the bundled Worker must dial the local IPC socket, not a TCP address: %q", url)
+	assert.Equal(t, inst.LocalListenURL(), url,
+		"and it must be the same socket the Hub reports, not a second one")
 }

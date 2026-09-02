@@ -17,7 +17,7 @@ See [Running LeapMux](/docs/admin/running-leapmux/) for the run modes and [Conce
 
 ## Is solo mode multi-user?
 
-No. Solo mode is single-user by design. Every request is auto-authenticated as the admin without credentials, so it offers no protection against another process that can reach the port.
+No. Solo mode is single-user by design: it has one account, `solo`. Until that account has a password, every request is authenticated as the admin without credentials, so it offers no protection against another process that can reach the port.
 
 {{< callout type="warning" >}}
 If you ever bind solo mode to a non-loopback address, anyone who can reach the port has full admin access with no password. LeapMux logs a warning when this happens. For multi-user or networked use, run `leapmux hub` instead, or place solo behind a firewall, VPN (Tailscale/WireGuard), or SSH tunnel.

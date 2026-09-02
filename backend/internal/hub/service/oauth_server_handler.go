@@ -98,6 +98,10 @@ type OAuthServerDeps struct {
 	// requireSession. An app credential must not be able to consent on its own
 	// behalf, which is the whole reason the step-up endpoint exists beside these.
 	SoloUser *auth.UserInfo
+	// SoloGate decides which solo callers may skip credentials. Nil is safe:
+	// AuthenticateHTTP builds a throwaway gate over the store, which reads the
+	// same rule and only loses the shared latch.
+	SoloGate *auth.SoloGate
 	// Settings reports the hub's own secure_cookies setting, which decides
 	// which session-cookie spelling the consent endpoints read, and
 	// open_app_registration, which decides whether /oauth/register answers.
@@ -132,6 +136,7 @@ type OAuthServerHandler struct {
 	store         store.Store
 	validator     *auth.TokenValidator
 	soloUser      *auth.UserInfo
+	soloGate      *auth.SoloGate
 	lifecycle     *auth.CredentialLifecycleEffects
 	hubURL        func() string
 	mail          mail.Sender
@@ -155,6 +160,7 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		store:     deps.Store,
 		validator: deps.Validator,
 		soloUser:  deps.SoloUser,
+		soloGate:  deps.SoloGate,
 		lifecycle: deps.Lifecycle,
 		hubURL:    deps.HubURL,
 		mail:      deps.Mail,
@@ -236,6 +242,7 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		Store:         h.store,
 		SoloUser:      h.soloUser,
+		SoloGate:      h.soloGate,
 		ReadCookie:    true,
 		SecureCookies: h.secureCookies(r.Context()),
 	})

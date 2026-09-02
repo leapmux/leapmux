@@ -140,6 +140,11 @@ var adminProcedures = map[string]bool{
 	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        true,
 	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       true,
 
+	// Which addresses the hub answers on, and what this machine could answer
+	// on. It reports no credential and no user data, but it does describe the
+	// host's network, which is an administrator's view of the deployment.
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure: true,
+
 	leapmuxv1connect.AdminUserServiceListUsersProcedure:             true,
 	leapmuxv1connect.AdminUserServiceGetUserProcedure:               true,
 	leapmuxv1connect.AdminUserServiceCreateUserProcedure:            true,
@@ -318,6 +323,8 @@ type authInterceptor struct {
 	// delegation tokens that authenticate dozens of concurrent inner-
 	// RPCs over a fresh Noise session.
 	bearerFlight singleflight.Group
+	// soloGate decides whether a solo caller may skip credentials; see SoloGate.
+	soloGate *SoloGate
 }
 
 // InterceptorOptions carries what the auth interceptor needs. Store is what a
@@ -341,6 +348,11 @@ type InterceptorOptions struct {
 	// plain cookie names, no verification requirement, and the default
 	// session duration.
 	Policy func() Policy
+	// SoloGate decides which solo callers may skip credentials. Nil builds one
+	// over Store, so the RULE never depends on the caller remembering to pass
+	// it -- only the latch does, and a hub shares one gate with
+	// AuthenticateHTTP so both ladders read the same latch.
+	SoloGate *SoloGate
 }
 
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
@@ -353,17 +365,23 @@ type InterceptorOptions struct {
 func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextRegistry) {
 	st := opts.Store
 	state := &authState{}
+	soloGate := opts.SoloGate
+	if soloGate == nil {
+		soloGate = NewSoloGate(st)
+	}
 	a := &authInterceptor{
 		store:          st,
 		policy:         opts.Policy,
 		soloUser:       opts.SoloUser,
 		tokenValidator: opts.TokenValidator,
 		state:          state,
+		soloGate:       soloGate,
 	}
 	sweepCtx, cancel := context.WithCancel(context.Background())
 	sc := &AuthContextRegistry{
-		state:  state,
-		cancel: cancel,
+		state:    state,
+		cancel:   cancel,
+		soloGate: soloGate,
 	}
 	if st != nil {
 		// Cache-miss fallback for CurrentCredentialExpiry: the authoritative DB
@@ -397,6 +415,31 @@ type AuthContextRegistry struct {
 	// construct the registry directly; a nil reader degrades to the connect-time
 	// value (the pre-fallback behavior).
 	sessionExpiry func(ctx context.Context, sessionID string) (time.Time, bool, error)
+	// soloGate is the hub's ONE solo-admission gate, so the Connect
+	// interceptor and every WebSocket handshake read the same latch. The
+	// registry carries it because the registry is what already reaches both;
+	// see AuthContextRegistry.SoloGate.
+	soloGate *SoloGate
+}
+
+// SoloGate returns the hub's solo-admission gate, or nil for a registry a test
+// built directly.
+//
+// It hangs on the registry because that is the object every authentication
+// ladder ALREADY holds -- the interceptor makes both together, and the
+// WebSocket authenticator takes the registry. Threading the gate through four
+// constructors instead would put the same value in four places for a caller to
+// forget, and a handler that forgot would fall back to a private latch and
+// read the store on every handshake.
+//
+// A nil result is safe: SoloGate.CredentialFree and PasswordSet both accept a
+// nil receiver, and AuthenticateHTTP builds a throwaway gate over the store
+// rather than admitting anybody it should not.
+func (c *AuthContextRegistry) SoloGate() *SoloGate {
+	if c == nil {
+		return nil
+	}
+	return c.soloGate
 }
 
 // dedupeBearerRefs keeps the FIRST occurrence of each valid ref. A batch a
@@ -985,21 +1028,24 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	var noRefresh sessionRefresh
 
 	// Solo mode authenticates every procedure -- public or not -- as the
-	// synthetic user, and short-circuits the cookie path.
+	// synthetic user, and short-circuits the cookie path, for the callers
+	// soloCredentialFree admits: the local IPC socket, and any transport while
+	// the account holds no password. A TCP caller on a hub whose account HAS a
+	// password falls through to the ordinary cookie and bearer rungs below and
+	// signs in like any other account.
 	//
 	// It YIELDS to a presented lmx_ bearer, which is what makes the scope model
-	// work on a solo hub. Reaching the port is the authentication there, so the
-	// synthetic user carries an unscoped grant; a caller that presents a bearer
-	// asks to be its APP instead, having accepted a narrower grant on a
-	// consent screen. Answering "you are the solo user" would discard that
-	// narrowing without a word, and an agent handed file:read would still hold
-	// everything the account can do.
+	// work on a solo hub. The admitted caller carries an unscoped grant; a
+	// caller that presents a bearer asks to be its APP instead, having accepted
+	// a narrower grant on a consent screen. Answering "you are the solo user"
+	// would discard that narrowing without a word, and an agent handed
+	// file:read would still hold everything the account can do.
 	//
 	// It yields on the PRESENCE of a bearer, not its validity. A revoked or
 	// malformed one falls through to tryAuthenticateBearer and is refused
 	// there; falling back to the solo rung would make a broken credential
 	// stronger than a working one.
-	if a.soloUser != nil && !headerPresentsLeapMuxBearer(authHeader) {
+	if a.soloUser != nil && a.soloGate.CredentialFree(ctx) && !headerPresentsLeapMuxBearer(authHeader) {
 		return WithUser(ctx, a.state.currentSyntheticUser(a.soloUser)), noRefresh, nil
 	}
 

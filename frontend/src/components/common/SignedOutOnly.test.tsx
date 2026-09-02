@@ -273,11 +273,11 @@ describe('signedOutOnly', () => {
     })
   })
 
-  // The solo rule OUTRANKS `whenSignedIn`. Offering to sign out is the wrong
-  // answer on a hub where signing out is impossible, and there is no password
-  // to reset either.
-  it('redirects rather than explains on a solo hub', async () => {
-    setSystemInfoMock({ soloMode: true })
+  // The credential-free rule OUTRANKS `whenSignedIn`. Offering to sign out is
+  // the wrong answer on a connection where signing out is impossible, and
+  // there is no password to reset either.
+  it('redirects rather than explains on a credential-free connection', async () => {
+    setSystemInfoMock({ soloMode: true, autoAuthenticated: true })
     mockUser.mockReturnValue({ id: 'solo', username: 'solo' })
     const { navigations } = renderGate('/recover-account/complete?token=abc', 'explain')
 
@@ -285,6 +285,21 @@ describe('signedOutOnly', () => {
       expect(navigations).toEqual(['/'])
     })
     expect(screen.queryByTestId('signed-out-only-explain')).not.toBeInTheDocument()
+  })
+
+  // The other half of that rule, and the reason it reads the CONNECTION rather
+  // than the hub: a solo hub whose account holds a password asks its network
+  // callers to sign in, so those callers do have a sign-out and the ordinary
+  // explanation applies to them.
+  it('explains on a solo hub reached at a network address', async () => {
+    setSystemInfoMock({ soloMode: true, autoAuthenticated: false })
+    mockUser.mockReturnValue({ id: 'solo', username: 'solo' })
+    const { navigations } = renderGate('/recover-account/complete?token=abc', 'explain')
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('signed-out-only-explain')).toBeInTheDocument()
+    })
+    expect(navigations).toEqual([])
   })
 
   // safeRedirect is the guard, and it lives in postAuthNavigate rather than

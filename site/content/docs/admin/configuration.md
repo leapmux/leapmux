@@ -155,11 +155,26 @@ Defaults differ by mode:
 | ------ | -------------------- | ------------------------------------------------------- |
 | `hub`  | `:4327`              | All interfaces; real authentication required.           |
 | `dev`  | `:4327`              | All interfaces.                                         |
-| `solo` | `127.0.0.1:4327`     | Loopback only; every request is auto-authenticated as admin. |
+| `solo` | `127.0.0.1:4327`     | Loopback only; no sign-in until the `solo` account has a password. |
+
+`listen` is a command-line option and nothing else — no setting changes it. Solo mode adds **more** addresses beside it through [Network access](#network-access) below.
 
 {{< callout type="warning" >}}
-In solo mode every request is auto-authenticated as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials, and the Hub logs a warning to that effect. Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication.
+While the `solo` account has no password, every request is authenticated as the administrator without credentials. If you bind solo mode to a non-loopback address in that state, anyone who can reach the port has full admin access, and the Hub logs a warning to that effect. Set a password — the app asks for one before anything else while such an address is served — and restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 {{< /callout >}}
+
+### Network access
+
+Solo mode serves additional addresses beside the one `-listen` gives it. Open **Preferences → Administration → Network access**, pick an interface and a port for each address you want, and apply. The Hub binds them straight away and binds them again on every later start; they are stored in the Hub's database as the `extra_listen_addresses` setting, so `leapmux control admin settings` reaches them too.
+
+Two things follow from adding one:
+
+- **Every network address then asks for a sign-in as `solo`**, `127.0.0.1` included. The panel asks you to set that password before it will publish an address. The desktop app's local socket is the only transport that never asks. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the rule in full.
+- **Overlapping addresses merge.** Ask for every interface on the port `-listen` already uses and the Hub serves one socket rather than two: `-listen 127.0.0.1:4327` plus `*:4327` becomes `*:4327` alone, which still answers on `127.0.0.1`. The panel says so, and lists what is serving with the reason for each entry.
+
+An address that cannot be bound — a VPN that is down, a port another program holds — does not stop the Hub. It stays configured, the rest are served, and the panel reports the operating system's own reason beside it.
+
+The section is solo-only. `leapmux hub` and `leapmux dev` already bind every interface by default and already authenticate every caller, so they configure their address with `-listen` and a reverse proxy instead.
 
 ### Local IPC listen (`local_listen`)
 

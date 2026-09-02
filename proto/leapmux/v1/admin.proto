@@ -121,6 +121,76 @@ message ResetSettingsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// AdminNetworkService — which addresses the hub answers on
+// ---------------------------------------------------------------------------
+
+// AdminNetworkService is called BY administrators (the preferences dialog's
+// Network access panel) on Hub via ConnectRPC. Every RPC requires an
+// authenticated admin user.
+//
+// It reports DERIVED state only: the machine's interfaces, and what the
+// hub's listeners actually hold right now. The configuration itself is the
+// `extra_listen_addresses` hub setting, written through AdminSettingsService
+// like every other setting, so there is no second place an address list
+// lives.
+service AdminNetworkService {
+  rpc GetListenStatus(GetListenStatusRequest) returns (GetListenStatusResponse);
+}
+
+// One address a network interface currently holds.
+message NetworkInterfaceAddress {
+  // The IP literal, canonically spelled, with an interface zone where the
+  // address carries one ("fe80::1%en0").
+  string ip = 1;
+  bool ipv6 = 2;
+  // True for an address only this machine can reach. The panel warns about
+  // the others, because publishing one asks every network address for a
+  // sign-in.
+  bool loopback = 3;
+}
+
+message NetworkInterface {
+  string name = 1;
+  // False for an interface that exists but is down. Its addresses are
+  // listed and cannot be bound, so the panel can show them without
+  // offering them.
+  bool up = 2;
+  repeated NetworkInterfaceAddress addresses = 3;
+}
+
+// One address the hub serves on, or one it was asked to serve on and could
+// not bind.
+message BoundAddress {
+  // Canonically spelled, with "*" for the family-neutral wildcard.
+  string address = 1;
+  // "listen" (the -listen address alone), "extra" (a stored address alone),
+  // or "merged" (one socket serving both, because this address covers what
+  // -listen named).
+  string source = 2;
+  // Why the address is NOT served, and empty when it is. A stored address
+  // stops existing whenever a VPN drops or a lease moves, and the hub keeps
+  // running and reports it here rather than refusing to start.
+  string error = 3;
+}
+
+message GetListenStatusRequest {}
+
+message GetListenStatusResponse {
+  repeated NetworkInterface interfaces = 1;
+  // The address -listen named, in the form -listen carries. Read-only: it
+  // is a command-line option, never a setting.
+  string default_address = 2;
+  // The stored extra_listen_addresses value, canonically spelled.
+  repeated string configured = 3;
+  // What the hub actually serves right now, plus every configured address
+  // it could not bind.
+  repeated BoundAddress bound = 4;
+  // True when the single account holds a password that can sign in. While
+  // it is false, the panel asks for one before it will publish an address.
+  bool password_set = 5;
+}
+
+// ---------------------------------------------------------------------------
 // AdminUserService — users, sessions, api-tokens, delegation-tokens
 // ---------------------------------------------------------------------------
 

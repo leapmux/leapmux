@@ -15,7 +15,7 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 
 | Mode | What it runs | Default listen | Login required | Config / data location |
 |------|--------------|----------------|----------------|------------------------|
-| `solo` | Hub + Worker in one process | `127.0.0.1:4327` (loopback only) | No — every request is auto-authenticated as the admin | `~/.config/leapmux/solo/` |
+| `solo` | Hub + Worker in one process | `127.0.0.1:4327` (loopback only), plus any address you add | Not until the `solo` account has a password | `~/.config/leapmux/solo/` |
 | `hub` | Hub service only | `:4327` (all interfaces) | Yes — full authentication | `~/.config/leapmux/hub/` |
 | `worker` | Worker only (connects out to a Hub) | n/a (no inbound port) | Registers with the Hub via a registration key | `~/.config/leapmux/worker/` |
 | `dev` | Hub + Worker in one process | `:4327` (all interfaces) | Yes — admin bootstrapped via `/setup` | `~/.config/leapmux/dev/` |
@@ -23,11 +23,17 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 Each mode reads a YAML config file named after the mode inside its config directory — for example `~/.config/leapmux/hub/hub.yaml` for the Hub. The file is optional; a missing config file is silently skipped. The default data directory for each mode is the same as its config directory.
 
 {{< callout type="info" >}}
-`solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. Solo binds loopback only and skips login: it injects an admin user into every request. Dev binds all interfaces and uses password authentication. Dev bootstraps its first admin through the `/setup` flow.
+`solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. Solo binds loopback only and has one account, `solo`, which starts with no password; until it has one, solo skips the login and treats every request as that admin. Dev binds all interfaces and uses password authentication from the start. Dev bootstraps its first admin through the `/setup` flow.
 {{< /callout >}}
 
 {{< callout type="warning" >}}
-Because solo mode auto-authenticates every request as the admin, anyone who can reach its port has full admin access with no credentials. That is safe on `127.0.0.1`. If you bind solo to a non-loopback address, LeapMux logs a startup warning telling you to restrict access externally or switch to `leapmux hub` (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) for the full warning text). For a multi-user or network-exposed deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead, both of which require a real login.
+While the `solo` account has no password, anyone who can reach the port has full admin access with no credentials. That is safe on `127.0.0.1`. If you bind solo to a non-loopback address in that state, LeapMux logs a startup warning, and the app replaces itself with a password-setup screen until you set one (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model)).
+
+### Reaching a solo hub from another machine
+
+Set the `solo` account's password and add the address in **Preferences → Administration → Network access**. The Hub starts answering there at once, and again on every later start. From then on every network address asks you to sign in as `solo` — `127.0.0.1` included — while the desktop app, which reaches its Hub over a local socket, never does. [Network access](/docs/admin/configuration/#network-access) covers the panel, and [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) the rule.
+
+A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, run `leapmux hub` (with separate Workers) or `leapmux dev` instead.
 {{< /callout >}}
 
 ## Solo mode
@@ -210,7 +216,7 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=dev -v leapmux-data:/data \
 ```
 
 {{< callout type="warning" >}}
-Do not run `LEAPMUX_MODE=solo` in a container expecting to reach it from outside. Solo's default listen address is `127.0.0.1:4327` (loopback only), which is not reachable from the host, and solo auto-authenticates every request as admin. Use `dev` for a single-process Hub + Worker that binds all interfaces with a real login, or run a `hub` container plus separate `worker` containers.
+Do not run `LEAPMUX_MODE=solo` in a container expecting to reach it from outside. Solo's default listen address is `127.0.0.1:4327` (loopback only), which is not reachable from the host, and a fresh solo hub has no password on its one account. Use `dev` for a single-process Hub + Worker that binds all interfaces with a real login, or run a `hub` container plus separate `worker` containers.
 {{< /callout >}}
 
 ### Running a Worker container

@@ -27,6 +27,7 @@ export const CUSTOM_EDITOR_IDS = [
   'accountAppRegistrations',
   'hubWideAppRegistrations',
   'keyPins',
+  'networkAccess',
   'theme',
   'terminalTheme',
   'syntaxTheme',
@@ -200,10 +201,22 @@ export interface SettingRowModel {
   binding: SettingBinding
 }
 
-export type CategoryId = 'appearance' | 'notifications' | 'chat' | 'terminal' | 'desktop' | 'files' | 'shortcuts' | 'advanced' | 'account' | 'general' | 'signup' | 'email' | 'captcha' | 'rate-limits' | 'limits' | 'apps'
+export type CategoryId = 'appearance' | 'notifications' | 'chat' | 'terminal' | 'desktop' | 'files' | 'shortcuts' | 'advanced' | 'account' | 'general' | 'signup' | 'email' | 'captcha' | 'rate-limits' | 'limits' | 'apps' | 'network'
 
-/** A component rendering the whole-setting editor for a CustomEditorId. */
-export type CustomEditorComponent = Component<Record<string, never>>
+/**
+ * A component rendering the whole-setting editor for a CustomEditorId.
+ *
+ * It receives the row's BINDING, because an editor for a hub setting has to
+ * read and write the setting: `binding.value()` is the stored document,
+ * `binding.set(next)` writes it through the same store the rest of the panel
+ * uses, and the row's own Customized/Reset chrome and error slot then stay
+ * correct without a second write path.
+ *
+ * Most editors ignore it. The account ones own their whole value through their
+ * own RPCs (`CUSTOM_EDITOR_OWNS_ITS_VALUE`), so their binding has nothing to
+ * give them.
+ */
+export type CustomEditorComponent = Component<{ binding: SettingBinding }>
 
 /**
  * The sentinel shape of a browser-stored preference: how "absent" maps to a

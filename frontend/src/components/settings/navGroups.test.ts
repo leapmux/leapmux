@@ -18,6 +18,14 @@ describe('the section order (NAV_GROUPS)', () => {
     expect(NAV_GROUPS.slice(firstAdmin).every(g => g.admin)).toBe(true)
   })
 
+  // Straight after Sign-up & Access, because it answers the same question one
+  // step earlier: that section decides who may hold an account, this one
+  // decides which addresses they can reach the hub at.
+  it('puts Network access directly after Sign-up & Access', () => {
+    const ids = NAV_GROUPS.map(g => g.id)
+    expect(ids.indexOf('admin-network')).toBe(ids.indexOf('admin-signup') + 1)
+  })
+
   it('gives every group a distinct id', () => {
     expect(new Set(NAV_GROUPS.map(g => g.id)).size).toBe(NAV_GROUPS.length)
   })

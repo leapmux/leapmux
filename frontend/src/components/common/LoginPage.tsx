@@ -10,11 +10,12 @@ import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
+import { USERNAME_SOLO } from '~/generated/contracts/validate'
 import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
-import { isEmailEnabled, isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
+import { isEmailEnabled, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
@@ -22,7 +23,7 @@ export const LoginPage: Component = () => {
   const auth = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [username, setUsername] = createSignal('')
+  const [username, setUsername] = createSignal(isSoloMode() ? USERNAME_SOLO : '')
   const [password, setPassword] = createSignal('')
   const methodSelection = createAuthMethodSelection('login')
   const effectiveMethod = methodSelection.effectiveMethod
@@ -149,10 +150,21 @@ export const LoginPage: Component = () => {
         <form class="vstack gap-4" onSubmit={handleSubmit}>
           <label>
             Username
+            {/*
+              * READ-ONLY on a solo hub. It has exactly one account, named
+              * "solo", so a free field could only be filled in with a name
+              * that cannot sign in -- and the person typing it has no way to
+              * discover the right one.
+              *
+              * `readOnly` rather than `disabled`: a disabled input is dropped
+              * from the form and skipped by the keyboard, and this value is
+              * the one the request needs.
+              */}
             <input
               ref={usernameRef}
               type="text"
               value={username()}
+              readOnly={isSoloMode()}
               onInput={e => setUsername(e.currentTarget.value)}
               autocomplete="username"
             />

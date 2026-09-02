@@ -90,6 +90,30 @@ describe('loginPage', () => {
     mockLoginWithPasskey.mockResolvedValue({ verificationRequired: false, verificationEmailSent: false })
   })
 
+  // A solo hub has exactly ONE account, named "solo". A free username field
+  // could only be filled in with a name that cannot sign in, and the person
+  // typing it has no way to discover the right one.
+  //
+  // `readOnly` and not `disabled`: a disabled input is dropped from the form
+  // and skipped by the keyboard, and this value is the one the request needs.
+  it('fixes the username to the single account on a solo hub', async () => {
+    setSystemInfoMock({ soloMode: true })
+    renderLoginPage()
+
+    const username = await screen.findByLabelText('Username')
+    expect(username).toHaveValue('solo')
+    expect(username).toHaveAttribute('readonly')
+  })
+
+  it('leaves the username free on a multi-user hub', async () => {
+    setSystemInfoMock({ soloMode: false })
+    renderLoginPage()
+
+    const username = await screen.findByLabelText('Username')
+    expect(username).toHaveValue('')
+    expect(username).not.toHaveAttribute('readonly')
+  })
+
   // This pins the bootstrap race. The system-info getters are plain module
   // reads whose pre-fetch values are fabrications (signupEnabled = false), so
   // sampling them before bootstrap resolves is sampling a guess. It used to

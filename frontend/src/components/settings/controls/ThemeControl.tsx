@@ -11,7 +11,7 @@ import { themeStore } from '~/lib/themeStore'
  * shape every entry in CUSTOM_EDITORS has. `showLabel` is off because
  * `SettingRow` already renders the row's own "Theme" label above it.
  */
-export const ThemeControl: Component<Record<string, never>> = () => {
+export const ThemeControl: Component = () => {
   const binding = useThemeChooser()
   return <ThemeChooser value={binding.value()} onChange={binding.onChange} showLabel={false} systemMode={themeStore.systemMode()} />
 }

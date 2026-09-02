@@ -31,7 +31,7 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
 
 ### Solo mode
 
-`leapmux solo` is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. There is **no login** — the UI opens straight into your workspace because every request is auto-authenticated as the admin.
+`leapmux solo` is the simplest setup — single-user, sensible defaults, and it runs out of the box. The Hub and Worker run **in the same process**, bound to loopback only at `127.0.0.1:4327`. There is **no login** at first — the UI opens straight into your workspace, because the single account starts with no password. Give it one and every network address asks for it.
 
 ```text
                  LeapMux (127.0.0.1:4327)

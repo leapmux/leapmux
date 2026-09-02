@@ -18,6 +18,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -25,6 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -782,4 +785,64 @@ func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 	require.NotNil(t, row.PendingRecoveryExpiresAt)
 	assert.WithinDuration(t, fixed.Add(time.Hour), *row.PendingRecoveryExpiresAt, time.Minute,
 		"the expiry must be measured from the service's clock, not the wall clock")
+}
+
+// TestSoloRefusesEveryPathThatCanClearAPassword pins the premise
+// auth.SoloGate's one-way latch rests on.
+//
+// The gate caches "the solo account holds a password" and never clears the
+// cache, which is sound only while no in-process path can REMOVE that
+// password. Exactly one can: account recovery, which replaces a password with
+// a passkey by storing PlaceholderHash. Solo mode refuses all three of its
+// verbs, so the latch cannot go stale.
+//
+// If a later change makes recovery reachable in solo, this test fails and
+// points at the latch that then needs invalidating -- rather than the hub
+// silently demanding a password that no longer exists, which locks the owner
+// out of every TCP address at once.
+func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
+	st := hubtestutil.OpenTestStore(t)
+	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+
+	svc := service.NewAuthService(servicetest.AuthServiceDeps(
+		st,
+		&config.Config{SoloMode: true},
+		servicetest.NewSettingsManager(t, st, nil),
+		auth.NewCredentialLifecycleEffects(nil, nil, nil),
+	))
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"CompleteAccountRecoveryPassword", func() error {
+			_, err := svc.CompleteAccountRecoveryPassword(ctx, connect.NewRequest(
+				&leapmuxv1.CompleteAccountRecoveryPasswordRequest{Token: "t", NewPassword: "irrelevant-password"}))
+			return err
+		}},
+		{"BeginAccountRecoveryPasskey", func() error {
+			_, err := svc.BeginAccountRecoveryPasskey(ctx, connect.NewRequest(
+				&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: "t"}))
+			return err
+		}},
+		// The one that actually writes PlaceholderHash over a live password.
+		{"FinishAccountRecoveryPasskey", func() error {
+			_, err := svc.FinishAccountRecoveryPasskey(ctx, connect.NewRequest(
+				&leapmuxv1.FinishAccountRecoveryPasskeyRequest{Token: "t"}))
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			require.Error(t, err, "solo must refuse this verb; auth.SoloGate's latch depends on it")
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		})
+	}
+
+	// The premise holds only while the account's password survives all three.
+	user, err := st.Users().GetByUsername(ctx, usernames.Solo)
+	require.NoError(t, err)
+	assert.NotEqual(t, password.PlaceholderHash, user.PasswordHash,
+		"no refused verb may have cleared the password on its way out")
 }

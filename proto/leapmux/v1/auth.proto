@@ -254,6 +254,36 @@ message GetSystemInfoResponse {
   // reached at another (a LAN IP behind the reverse proxy, a tunnel host)
   // is configured for passkeys and still runs none for that page.
   bool passkey_enabled = 16;
+  // True when the hub authenticates THIS connection with no credentials.
+  //
+  // Two cases produce it, and both are solo mode: the local IPC socket (the
+  // desktop app reaching its own hub), and any transport while the single
+  // account holds no password. It is FALSE once that account has one, on
+  // every TCP address including 127.0.0.1.
+  //
+  // It is per CONNECTION, where solo_mode is per hub, and the two answer
+  // different questions. solo_mode says "this hub has one account and no
+  // sign-up", which decides which account settings exist at all;
+  // auto_authenticated says "this page needs no sign-in", which decides
+  // whether the app falls back to the login form.
+  bool auto_authenticated = 17;
+  // True when the hub answers on an address another machine can reach and
+  // its single account holds no password, so nobody can sign in from those
+  // addresses.
+  //
+  // Frontend restriction: the app replaces itself with a password-setup
+  // screen while this is true, because every other affordance is reachable
+  // by anyone who can reach the port.
+  bool password_setup_required = 18;
+  // True when the single account holds a password that can sign in. Solo
+  // mode only; false on a multi-user hub, where each account answers for
+  // itself.
+  //
+  // Frontend restriction: the Account section's Password row appears on a
+  // solo hub only once this is true. Before that the Network access panel
+  // owns setting the first password, so the two surfaces never offer the
+  // same field at the same time.
+  bool solo_password_set = 19;
 }
 
 message GetOAuthProvidersRequest {}

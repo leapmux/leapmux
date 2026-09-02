@@ -95,6 +95,17 @@ func (s *AuthService) webauthnService(ctx context.Context) (*hubwebauthn.Service
 // reads RPConfig.AllowsOrigin and never touches the engine, and then
 // discarded it. GetSystemInfo calls this at every page load.
 func (s *AuthService) passkeysRunnableForOrigin(ctx context.Context, origin string) bool {
+	// Solo mode refuses EVERY passkey ceremony -- rejectSoloPasskeyManagement
+	// on the management verbs, rejectSolo on the sign-in and recovery ones --
+	// so no origin can run one there whatever the keystore and the hub URL
+	// say. Reporting the configured answer offered a sign-in form a Passkey
+	// button that could only fail.
+	//
+	// It was unreachable before this release, because a solo hub showed no
+	// sign-in form at all; a solo hub that holds a password now does.
+	if s.cfg.SoloMode {
+		return false
+	}
 	rp, err := passkeyRPConfig(ctx, s.set, s.cfg, s.keystore)
 	if err != nil {
 		return false

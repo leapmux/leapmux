@@ -20,21 +20,26 @@ vi.mock('~/api/clients', () => ({
   authClient: {},
 }))
 
-// Solo mode and the desktop app are the two environment facts a hide rule
-// reads. Control them per test rather than depending on the fabricated
-// defaults -- `isDesktopApp` answers false under jsdom, which would hide every
-// Desktop row and make its visibility cases vacuous.
+// Solo mode, the desktop app and the solo account's password are the three
+// environment facts a hide rule reads. Control them per test rather than
+// depending on the fabricated defaults -- `isDesktopApp` answers false under
+// jsdom, which would hide every Desktop row and make its visibility cases
+// vacuous, and the password is what decides whether the Password row appears
+// on a solo hub.
 const solo = vi.hoisted(() => vi.fn(() => false))
 const desktop = vi.hoisted(() => vi.fn(() => true))
+const soloPassword = vi.hoisted(() => vi.fn(() => false))
 vi.mock('~/lib/systemInfo', async importOriginal => ({
   ...(await importOriginal<typeof import('~/lib/systemInfo')>()),
   isSoloMode: () => solo(),
   isDesktopApp: () => desktop(),
+  soloPasswordSet: () => soloPassword(),
 }))
 
 beforeEach(() => {
   solo.mockReturnValue(false)
   desktop.mockReturnValue(true)
+  soloPassword.mockReturnValue(false)
 })
 
 // The registry is HALF of every account row: the hub's descriptor states
@@ -143,6 +148,34 @@ describe('browserSettings registry', () => {
     expect(connectedApps?.protoKey).toBeUndefined()
     expect(connectedApps && connectedApps.protoKey === undefined && connectedApps.needsElevation)
       .toBeFalsy()
+  })
+
+  // The Account section on a solo hub holds ONE row, and only once the account
+  // has a password.
+  //
+  // Its four neighbours stay hidden either way, because solo refuses the RPCs
+  // behind them; ChangePassword is reachable there, because the password is
+  // what lets the hub answer on a network address at all. Before that first
+  // password, Administration → Network access owns setting it -- beside the
+  // addresses it guards -- so the two surfaces never offer the field at once.
+  it('shows the Account password row in solo only once a password exists', () => {
+    const hiddenOf = (id: string) => {
+      const d = descriptorsOf(makeFakePrefs() as unknown as PreferencesState).find(x => x.id === id)
+      return d?.hidden?.() ?? false
+    }
+    const neighbours = ['account.profile', 'account.email', 'account.passkeys', 'account.linkedProviders']
+
+    expect(hiddenOf('account.password')).toBe(false)
+
+    solo.mockReturnValue(true)
+    expect(hiddenOf('account.password')).toBe(true)
+    for (const id of neighbours)
+      expect(hiddenOf(id), `${id} must stay hidden in solo`).toBe(true)
+
+    soloPassword.mockReturnValue(true)
+    expect(hiddenOf('account.password')).toBe(false)
+    for (const id of neighbours)
+      expect(hiddenOf(id), `${id} must stay hidden whatever the password says`).toBe(true)
   })
 
   it('derives its descriptors from the same entries (same ids, no duplicates)', () => {

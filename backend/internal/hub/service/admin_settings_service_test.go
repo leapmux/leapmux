@@ -448,11 +448,29 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 		"smtp",
 	}, omitted)
 
-	// Solo must list nothing that hub mode does not, so the filter can
-	// only ever subtract.
+	// The mirror. HiddenInHub is what makes this a second list rather than
+	// an empty one: the filter subtracts in BOTH directions now, so "solo
+	// lists nothing hub does not" stopped being true the moment a key existed
+	// that only a single-user local hub administers.
+	//
+	// Stated as an exact list for the same reason the one above is: a key
+	// that quietly stops appearing in one deployment is the failure this test
+	// exists to catch, and a subset assertion would not see it.
+	soloOnly := []string{}
 	for key := range solo {
-		assert.Truef(t, hub[key], "solo lists %s, which hub mode does not", key)
+		if !hub[key] {
+			soloOnly = append(soloOnly, key)
+		}
 	}
+	sort.Strings(soloOnly)
+
+	assert.Equal(t, []string{
+		// `leapmux hub` and `leapmux dev` already bind every interface and
+		// already authenticate every caller, so extra addresses would only
+		// offer them a way to break a working deployment. -listen and a
+		// reverse proxy are how a multi-user hub is published.
+		"extra_listen_addresses",
+	}, soloOnly)
 }
 
 // The section-level outcome the hiding exists to produce. Categories are
@@ -476,8 +494,11 @@ func TestAdminSettingsService_SoloSectionsGeneralSurvivesWithPublicURL(t *testin
 	assert.Empty(t, solo["signup"], "the sign-up section must vanish in solo")
 	assert.Empty(t, solo["email"], "the email section must vanish in solo")
 	assert.Empty(t, solo["captcha"], "the bot-protection section must vanish in solo")
-	assert.Equal(t, []string{ratelimit.SettingKeyPrefix + string(ratelimit.OpOAuthAnonymous)}, solo["rate-limits"],
-		"solo keeps the address-keyed anonymous limit and drops the per-user one")
+	assert.Equal(t, []string{
+		ratelimit.SettingKeyPrefix + string(ratelimit.OpLoginAnonymous),
+		ratelimit.SettingKeyPrefix + string(ratelimit.OpOAuthAnonymous),
+	}, solo["rate-limits"],
+		"solo keeps the two address-keyed limits and drops the per-user ones")
 
 	// The sections that solo keeps whole. Without this, hiding every
 	// remaining key would still satisfy the assertions above.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -479,7 +481,8 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 		leapmuxv1connect.UserServiceDeletePasskeyProcedure:             false,
 		leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     false,
 	}
-	assert.Len(t, procedureOperations, len(proving)+1,
+	// +2: the mail RPC and Login, each asserted on its own below.
+	assert.Len(t, procedureOperations, len(proving)+2,
 		"a procedure added to or removed from the routing map must be reflected here")
 	for procedure, provesCredential := range proving {
 		spec, ok := procedureOperations[procedure]
@@ -499,6 +502,18 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 		"the email-change loop succeeds per request, so failures would never count it")
 	require.NotNil(t, defaults[OpEmailChange].proceedsToBudget,
 		"a proceeded-counting operation must classify its outcomes")
+
+	// The one UNAUTHENTICATED procedure with a secret to guess. It is the
+	// only routed procedure keyed by address, and it must stay that way: keyed
+	// by user it would count nothing, because a caller that has not signed in
+	// has no user -- and Login is the request that decides whether it gets one.
+	loginSpec, routed := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
+	require.True(t, routed, "Login verifies a password with no captcha on a solo hub; it must take a budget")
+	assert.Equal(t, OpLoginAnonymous, loginSpec.op)
+	assert.True(t, loginSpec.provesCredential, "a wrong password is a guess and must consume the window")
+	assert.True(t, loginSpec.keyByAddress, "an unauthenticated caller has no user to key on")
+	assert.False(t, defaults[OpLoginAnonymous].hiddenInSolo,
+		"a solo hub has no captcha in front of Login, so this budget is the only thing bounding it")
 
 	// The negative half, and it is the half OpElevation's doc has to keep
 	// true. UnlinkOAuthProvider is an elevation-admitted mutation, so a
@@ -550,7 +565,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpOAuthAnonymous}, KnownOperations())
+	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpLoginAnonymous, OpOAuthAnonymous}, KnownOperations())
 
 	// No row: defaults, enabled.
 	m := newTestManager(t, false)
@@ -928,4 +943,108 @@ func TestLimitKeySummaryStatesTheCountedQuantity(t *testing.T) {
 		require.True(t, ok, "%s must have a settings key", op)
 		assert.Contains(t, key.UI().Summary, wantSubstring, string(op))
 	}
+}
+
+// TestBudgetKeyFor pins which budget an operation counts against, and which
+// requests it counts at all.
+//
+// The address branch is the one that matters for a published solo hub: keyed
+// by user it would count nothing, because Login is the request that decides
+// whether the caller gets a user.
+func TestBudgetKeyFor(t *testing.T) {
+	loginSpec := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
+	elevationSpec := procedureOperations[leapmuxv1connect.UserServiceElevateSessionProcedure]
+
+	remote := peer.WithRemoteAddr(context.Background(),
+		&net.TCPAddr{IP: net.ParseIP("192.168.1.24"), Port: 51234})
+
+	t.Run("an address-keyed operation counts an unauthenticated caller", func(t *testing.T) {
+		key, ok := budgetKeyFor(remote, newTestManager(t, false), loginSpec)
+		require.True(t, ok, "an absent user is this operation's normal state, not a reason to admit")
+		assert.Equal(t, "anonymous:192.168.1.24", key)
+	})
+
+	t.Run("an address-keyed operation counts on a solo hub too", func(t *testing.T) {
+		key, ok := budgetKeyFor(remote, newTestManager(t, true), loginSpec)
+		require.True(t, ok, "solo publishes addresses like any other hub, and has no captcha in front of Login")
+		assert.Equal(t, "anonymous:192.168.1.24", key)
+	})
+
+	t.Run("two ports of one caller share a budget", func(t *testing.T) {
+		second := peer.WithRemoteAddr(context.Background(),
+			&net.TCPAddr{IP: net.ParseIP("192.168.1.24"), Port: 51235})
+		first, _ := budgetKeyFor(remote, newTestManager(t, false), loginSpec)
+		other, _ := budgetKeyFor(second, newTestManager(t, false), loginSpec)
+		assert.Equal(t, first, other, "a fresh connection per guess must not mint a fresh budget")
+	})
+
+	t.Run("an unaddressed caller shares one named budget", func(t *testing.T) {
+		key, ok := budgetKeyFor(context.Background(), newTestManager(t, false), loginSpec)
+		require.True(t, ok)
+		assert.Equal(t, "anonymous:unknown", key, "an unknown address must not mean an unlimited one")
+	})
+
+	t.Run("a user-keyed operation stands down without a user", func(t *testing.T) {
+		_, ok := budgetKeyFor(remote, newTestManager(t, false), elevationSpec)
+		assert.False(t, ok, "auth produces the error for an unauthenticated call")
+	})
+
+	t.Run("a user-keyed operation stands down in solo", func(t *testing.T) {
+		ctx := auth.WithUser(remote, &auth.UserInfo{ID: userid.MustNew("usr_1")})
+		_, ok := budgetKeyFor(ctx, newTestManager(t, true), elevationSpec)
+		assert.False(t, ok, "one user means no per-user abuse surface")
+	})
+
+	t.Run("a user-keyed operation counts the user elsewhere", func(t *testing.T) {
+		ctx := auth.WithUser(remote, &auth.UserInfo{ID: userid.MustNew("usr_1")})
+		key, ok := budgetKeyFor(ctx, newTestManager(t, false), elevationSpec)
+		require.True(t, ok)
+		assert.Equal(t, "usr_1", key)
+	})
+}
+
+// A wrong password must consume the window and a right one must clear it, or
+// a person who mistypes twice carries that against their next sign-in.
+func TestLoginAnonymousCountsFailuresAndClearsOnSuccess(t *testing.T) {
+	m := newTestManager(t, false)
+	upsertLimit(t, m, OpLoginAnonymous, true, 2, 900)
+	spec := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
+	const key = "anonymous:192.168.1.24"
+
+	wrongPassword := connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))
+
+	for range 2 {
+		att, allowed, _, err := m.allow(context.Background(), spec, key)
+		require.NoError(t, err)
+		require.True(t, allowed)
+		m.complete(att, wrongPassword)
+	}
+
+	_, allowed, retryAfter, err := m.allow(context.Background(), spec, key)
+	require.NoError(t, err)
+	assert.False(t, allowed, "the third guess must be refused")
+	assert.Positive(t, retryAfter)
+
+	// A different address keeps its own budget: one attacker must not lock
+	// the owner out of their own hub.
+	_, allowed, _, err = m.allow(context.Background(), spec, "anonymous:10.0.0.9")
+	require.NoError(t, err)
+	assert.True(t, allowed)
+}
+
+// Only a wrong password counts. A captcha refusal or an unreachable store
+// carries a different code, and counting those would let an attacker exhaust
+// a shared address's budget without ever guessing.
+func TestLoginAnonymousCountsOnlyAWrongPassword(t *testing.T) {
+	spec := defaults[OpLoginAnonymous]
+	require.NotNil(t, spec.isCredentialFailure)
+
+	assert.True(t, spec.isCredentialFailure(
+		connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))))
+	assert.False(t, spec.isCredentialFailure(nil))
+	assert.False(t, spec.isCredentialFailure(
+		connect.NewError(connect.CodeResourceExhausted, errors.New("captcha required"))))
+	assert.False(t, spec.isCredentialFailure(
+		connect.NewError(connect.CodeUnavailable, errors.New("store down"))))
+	assert.False(t, spec.isCredentialFailure(errors.New("plain error")))
 }

@@ -18,6 +18,7 @@ import (
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/windowed"
@@ -119,6 +120,29 @@ const (
 	// like any other -- which is exactly why its settings key stays visible
 	// there.
 	OpOAuthAnonymous Operation = "oauth_anonymous"
+
+	// OpLoginAnonymous limits password guesses at AuthService.Login, keyed by
+	// CLIENT ADDRESS because a caller that has not signed in yet has no user
+	// to key on -- and the username it names is the thing being guessed.
+	//
+	// Login is protected by CAPTCHA on a multi-user hub, and by nothing at all
+	// on a solo one: captcha is off there by construction. That was harmless
+	// while a solo hub answered only on loopback and asked nobody for a
+	// password. It stops being harmless the moment such a hub holds a password
+	// and publishes an address, which is exactly what the network-access
+	// setting exists to do.
+	//
+	// So it is ENFORCED IN EVERY MODE, and keyed by address in every mode. The
+	// per-user stand-down that exempts solo reasons about the thing counted
+	// ("one user, so no per-user abuse surface"); this counts addresses, and a
+	// hub that publishes an address serves anonymous ones like any other.
+	//
+	// It counts FAILURES, unlike OpOAuthAnonymous, and the difference is that
+	// a wrong password IS a guess at a secret: an attacker learns something
+	// from each attempt, so each attempt must cost. A success clears the
+	// window, so a person who mistypes twice and then signs in is not held
+	// against their next sign-in.
+	OpLoginAnonymous Operation = "login_anonymous"
 )
 
 // Limits is one operation's effective budget.
@@ -236,6 +260,24 @@ var defaults = map[Operation]opSpec{
 		// a presented bearer -- and these endpoints are anonymous there too.
 		hiddenInSolo: false,
 	},
+	OpLoginAnonymous: {
+		// Ten failures in fifteen minutes. A person who has forgotten which
+		// password they chose gets several tries and a pause; a script gets
+		// forty guesses an hour against one address, which no password worth
+		// the name yields to.
+		limits: Limits{MaxAttempts: 10, WindowSeconds: 900},
+		// Login answers Unauthenticated for a wrong password and for nothing
+		// else -- an unknown user gets the same reply, deliberately, so the
+		// form cannot be used to learn which names exist. Every other failure
+		// it can produce (a captcha refusal, an unreachable store) carries a
+		// different code and must not consume the window.
+		isCredentialFailure: func(err error) bool {
+			return connect.CodeOf(err) == connect.CodeUnauthenticated
+		},
+		// Keyed by address, so it stays administrable on a solo hub -- which
+		// is the deployment that has no captcha in front of Login.
+		hiddenInSolo: false,
+	},
 }
 
 // limitKeys holds one settings key per catalogued operation, derived from
@@ -332,6 +374,14 @@ type procedureSpec struct {
 	// provesCredential is true only when a success means the caller
 	// presented the secret the operation's failure window counts.
 	provesCredential bool
+	// keyByAddress budgets the caller's ADDRESS rather than its user.
+	//
+	// It is for the procedures an UNAUTHENTICATED caller drives, where there
+	// is no user to key on. Such a procedure also skips the two stand-downs
+	// below it: "no user in the context" is its normal state rather than a
+	// reason to admit, and the solo exemption reasons about per-user abuse,
+	// which an address budget is not.
+	keyByAddress bool
 }
 
 // procedureOperations routes ConnectRPC procedures to their operations.
@@ -363,6 +413,9 @@ var procedureOperations = map[string]procedureSpec{
 	// budget from OpEmailChange, which counts every admitted request. See
 	// that operation's catalogue entry for why failures would not do.
 	leapmuxv1connect.UserServiceRequestEmailChangeProcedure: {op: OpEmailChange},
+	// The one UNAUTHENTICATED procedure with a secret to guess. Keyed by
+	// address, counted on failure, cleared on success; see OpLoginAnonymous.
+	leapmuxv1connect.AuthServiceLoginProcedure: {op: OpLoginAnonymous, provesCredential: true, keyByAddress: true},
 }
 
 // effectiveLimit is the resolved per-operation policy.
@@ -632,16 +685,12 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			if !ok {
 				return next(ctx, req)
 			}
-			user := auth.GetUser(ctx)
-			if user == nil {
+			budgetKey, ok := budgetKeyFor(ctx, m, spec)
+			if !ok {
 				return next(ctx, req)
 			}
-			if m.solo {
-				return next(ctx, req)
-			}
-			userID := user.ID.String()
 
-			att, allowed, retryAfter, err := m.allow(ctx, spec, userID)
+			att, allowed, retryAfter, err := m.allow(ctx, spec, budgetKey)
 			if err != nil {
 				// Config unreachable: fail closed for safety, same as the
 				// captcha interceptor — but with an honest code, so
@@ -675,6 +724,32 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			return resp, handlerErr
 		}
 	}
+}
+
+// budgetKeyFor picks the budget an operation counts against, and reports
+// whether this request is counted at all.
+//
+// TWO shapes, and the branch is the operation's own declaration rather than a
+// property of the request, so a procedure cannot fall into the wrong one by
+// accident:
+//
+//   - An ADDRESS-keyed operation always counts. Its callers are
+//     unauthenticated by definition, so an absent user is its normal state,
+//     and its budget bounds an address rather than a person -- which a solo
+//     hub needs exactly as much as any other, because it publishes addresses
+//     too.
+//   - A USER-keyed operation stands down for an unauthenticated call (auth
+//     produces the error) and for solo mode (one user, so no per-user abuse
+//     surface).
+func budgetKeyFor(ctx context.Context, m *Manager, spec procedureSpec) (string, bool) {
+	if spec.keyByAddress {
+		return AddressBudgetKey(peer.RemoteHost(ctx)), true
+	}
+	user := auth.GetUser(ctx)
+	if user == nil || m.solo {
+		return "", false
+	}
+	return user.ID.String(), true
 }
 
 // formatWindow renders a retry window in whole seconds, minimum one.

@@ -68,12 +68,21 @@ func clientAddressKey(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		addr = host
 	}
-	addr = strings.Trim(addr, "[]")
-	if addr == "" {
+	return AddressBudgetKey(strings.Trim(addr, "[]"))
+}
+
+// AddressBudgetKey renders one anonymous caller's budget key from its host.
+//
+// It is exported because the two entry points reach the host differently: the
+// plain-HTTP door reads r.RemoteAddr, and the Connect interceptor reads the
+// peer the http.Server stamped on the context. Both must produce the SAME key,
+// or one caller would hold two budgets and neither would bound it.
+func AddressBudgetKey(host string) string {
+	if host == "" {
 		// An unaddressed caller (a test transport, a unix socket) shares one
 		// budget under a name no address can collide with, rather than each
 		// getting an unlimited one.
 		return "anonymous:unknown"
 	}
-	return "anonymous:" + addr
+	return "anonymous:" + host
 }

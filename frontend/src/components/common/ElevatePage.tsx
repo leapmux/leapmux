@@ -10,7 +10,7 @@ import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { safeRedirect } from '~/lib/safeRedirect'
 import { stringParam } from '~/lib/searchParam'
 import { shallowEqual } from '~/lib/shallowEqual'
-import { isSoloMode } from '~/lib/systemInfo'
+import { isAutoAuthenticated } from '~/lib/systemInfo'
 import { centeredFull, pageCard } from '~/styles/shared.css'
 
 /**
@@ -68,11 +68,15 @@ export const ElevatePage: Component = () => {
   const state = createMemo<ElevateState>(() => {
     if (auth.loading())
       return { kind: 'loading' }
-    // Solo mode authenticates every request as the synthetic solo user and
-    // has no session row to stamp, so there is nothing to elevate. A hub whose
-    // first-run setup is incomplete never reaches this memo at all: SetupGate
-    // holds every address but `/setup` above the router outlet.
-    if (isSoloMode())
+    // A CREDENTIAL-FREE connection carries the synthetic solo user, which has
+    // no session row to stamp, so there is nothing to elevate. A solo hub
+    // reached at a network address is not that connection: it holds a real
+    // session and elevates like any other, which is what lets the person who
+    // set the password write a hub setting from the browser they set it in.
+    //
+    // A hub whose first-run setup is incomplete never reaches this memo at
+    // all: SetupGate holds every address but `/setup` above the router outlet.
+    if (isAutoAuthenticated())
       return { kind: 'redirect', to: '/' }
     if (!auth.isAuthenticated())
       return { kind: 'redirect', to: `/login?redirect=${encodeURIComponent(elevateHere())}` }

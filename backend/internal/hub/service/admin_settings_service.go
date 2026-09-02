@@ -132,9 +132,13 @@ func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, e
 	// only the listing enforced it, so a key an operator could not read was
 	// one the operator could still write -- and eleven keys are hidden in
 	// solo.
+	//
+	// The message names THIS deployment rather than solo, because the
+	// predicate now has two arms and telling a `leapmux hub` operator that a
+	// key is unavailable "in solo mode" describes a hub they are not running.
 	if s.hidden(desc) {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("setting key "+key+" is not administrable in solo mode"))
+			errors.New("setting key "+key+" is not administrable in "+s.deploymentName()+" mode"))
 	}
 	return desc, nil
 }
@@ -142,8 +146,24 @@ func (s *AdminSettingsService) descriptorFor(key string) (settings.Descriptor, e
 // hidden reports whether this deployment omits the key from the whole
 // administration surface. One predicate, so the read filter and the write
 // filter cannot disagree.
+//
+// The two flags are mirrors and both are read HERE, because a key hidden by
+// either one is hidden the same way: absent from the listing, and refused by
+// every write. `leapmux dev` carries SoloMode false, so it sees exactly what
+// `leapmux hub` sees.
 func (s *AdminSettingsService) hidden(desc settings.Descriptor) bool {
-	return desc.UI().HiddenInSolo && s.cfg.SoloMode
+	ui := desc.UI()
+	return (ui.HiddenInSolo && s.cfg.SoloMode) || (ui.HiddenInHub && !s.cfg.SoloMode)
+}
+
+// deploymentName is what an operator called the thing they are running, for a
+// refusal that has to say which deployment refused. `leapmux dev` reports
+// "hub": it is not solo, and the keys it hides are the ones a hub hides.
+func (s *AdminSettingsService) deploymentName() string {
+	if s.cfg.SoloMode {
+		return "solo"
+	}
+	return "hub"
 }
 
 // writeUnderElevation admits a write to the hub's configuration, runs it, and

@@ -577,8 +577,8 @@ func recheckStepUpUnderLock(
 // elevated command-line credential passed the gate and then met "account
 // credentials changed; please retry" inside the transaction, on every
 // attempt, permanently. A credential kind that carries no window at all keeps
-// the refusal, and no caller can reach that case -- requireElevation refuses
-// it before the transaction opens.
+// the refusal. One caller reaches that case: the solo rung's, which holds no
+// credential at all, and the body answers it before the switch.
 //
 // refuseIfActingAuthorityMovedFrom is the same rule at the other three
 // surfaces, and this stays consistent with it rather than contradicting it:
@@ -593,6 +593,23 @@ func recheckStepUpUnderLock(
 func recheckActingCredentialUnderLock(ctx context.Context, tx store.Store, p stepUpParams, now time.Time) error {
 	if p.userInfo == nil {
 		return stepUpStateMovedError()
+	}
+	// A solo caller the hub authenticated with no credentials has no row to
+	// re-read: it holds the zero CredentialIdentity, so there is no session
+	// whose elevation could lapse and no token that could be revoked. Its
+	// admission comes from the TRANSPORT -- requireElevation exempts it -- and
+	// the transport is re-decided on every request rather than stored.
+	//
+	// The case became reachable when ChangePassword stopped refusing solo
+	// mode; before that, rejectSolo was what kept it out, which is why the
+	// paragraph above still says requireElevation refuses it first.
+	//
+	// The window this leaves open is two credential-free callers racing to set
+	// the first password, where the second overwrites the first. Both held
+	// full administrator access at admission, so neither gained anything by
+	// racing, and last writer wins is the honest outcome.
+	if p.userInfo.SoloAuthenticated() {
+		return nil
 	}
 	sessionID, apiTokenID, ok := p.userInfo.Credential.ElevatableRow()
 	switch {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/mail"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
+	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -410,6 +412,76 @@ func validateMaxMessageSize(v int64) error {
 	return channelwire.ValidateMaxMessageSize(int(v))
 }
 
+// MaxExtraListenAddresses caps how many addresses extra_listen_addresses may
+// hold. Every entry costs a listener, a serve goroutine and a file descriptor
+// for the life of the process, and the apply path binds them one at a time
+// while it holds the listener set's lock. A machine with more than eight
+// interfaces to publish on wants a wildcard, which is one entry.
+const MaxExtraListenAddresses = 8
+
+// ExtraListenValue is the extra_listen_addresses key's shape: the addresses an
+// administrator adds BESIDE the one -listen gives.
+//
+// The -listen address is not in here and cannot be. It is read before the
+// database opens, so a hub whose stored settings are unreadable still binds
+// the address its operator named on the command line.
+type ExtraListenValue struct {
+	Addresses []string `json:"addresses,omitempty"`
+}
+
+// Addrs parses the stored list. It reports the first bad entry rather than
+// skipping it: the validator refused that entry at the write, so one here
+// means the row was edited outside the hub, and binding the rest of a document
+// nobody validated would publish an address list the operator never approved.
+func (v ExtraListenValue) Addrs() ([]listenset.Addr, error) {
+	return listenset.ParseAll(v.Addresses)
+}
+
+// ExtraListenAddresses reads the key as parsed addresses. A stored document
+// that no longer parses degrades to NO extra addresses, with the error for the
+// caller to log: the alternative is a hub that refuses to serve at all, and
+// the -listen address is always still bound.
+func ExtraListenAddresses(s *Snapshot) ([]listenset.Addr, error) {
+	return KeyExtraListenAddresses.Of(s).Addrs()
+}
+
+// validateExtraListen enforces what the picker already produces, because the
+// admin CLI writes the same key and a name there would expose an address the
+// operator never saw.
+func validateExtraListen(v ExtraListenValue) error {
+	if len(v.Addresses) > MaxExtraListenAddresses {
+		return fmt.Errorf("at most %d extra listen addresses (got %d); use a wildcard address to serve every interface",
+			MaxExtraListenAddresses, len(v.Addresses))
+	}
+	seen := make(map[string]bool, len(v.Addresses))
+	for i, raw := range v.Addresses {
+		addr, err := listenset.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("extra listen address %d: %w", i+1, err)
+		}
+		// Port 0 asks the operating system to choose, which -listen may do
+		// and a stored address may not: the hub would answer on a port
+		// nobody can be told, and a different one after every restart.
+		if addr.Port() == 0 {
+			return fmt.Errorf("extra listen address %d (%q) has port 0; give the port to connect to", i+1, raw)
+		}
+		// A NAME is refused, and this is the reason: the hub binds whatever it
+		// resolves to at bind time, so a name that answers loopback today can
+		// answer a public address after a DNS change nobody made here. Every
+		// other kind states exactly one thing to bind.
+		if addr.Kind() == listenset.KindHost {
+			return fmt.Errorf("extra listen address %d (%q) is a host name; give an IP address, or %q for every interface",
+				i+1, raw, "*:"+strconv.Itoa(addr.Port()))
+		}
+		canonical := addr.String()
+		if seen[canonical] {
+			return fmt.Errorf("extra listen address %d (%q) repeats %s", i+1, raw, canonical)
+		}
+		seen[canonical] = true
+	}
+	return nil
+}
+
 // The hub-core keys. Domain packages declare their own keys next to the
 // code that consumes them (captcha.*, rate_limit.*); these are the keys
 // with no closer home.
@@ -527,6 +599,42 @@ var (
 			},
 		})
 
+	// The addresses an administrator publishes the hub on, beside the one
+	// -listen gives. Solo only, and HiddenInHub says so: `leapmux hub` and
+	// `leapmux dev` already bind every interface by default and already
+	// authenticate every caller, so the key would only offer them a way to
+	// break a working deployment.
+	//
+	// HOT, and it has to be. The whole point of the panel is that the hub
+	// starts answering on the new address when the operator clicks Apply; a
+	// restart-class key would store the intent and serve nothing.
+	//
+	// The value is a list of strings rather than of a structured address,
+	// because listenset.Addr's identity IS its canonical string -- storing the
+	// parts would let a stored row state a host and a kind that disagree.
+	KeyExtraListenAddresses = NewKey[ExtraListenValue]("extra_listen_addresses").
+				WithValidate(validateExtraListen).
+				WithUI(UIMeta{
+			Category:    "network",
+			Title:       "Network access",
+			Summary:     "additional addresses this hub accepts connections on, beside the one -listen gives",
+			HiddenInHub: true,
+			// A WHOLE-VALUE custom editor: one field, no name, so the client
+			// owns the document rather than one property of it. The addresses
+			// and the password the panel sets are one decision an operator
+			// applies together, and a per-field row would offer Apply for half
+			// of it. `theme` and `keybindings` carry the same shape.
+			//
+			// It also has to be whole-value for a duller reason: the schema
+			// test refuses FieldCustom on a []string, because a plain list of
+			// strings is what FieldStringList already edits.
+			Fields: []Field{{
+				Name: "", Label: "Network access", Kind: FieldCustom,
+				CustomID: "networkAccess",
+				Help:     "Every network address asks for a sign-in once the account has a password.",
+			}},
+		})
+
 	KeyTimeouts = NewKey[TimeoutsValue]("timeouts").
 			WithDefault(DefaultTimeouts).
 			WithValidate(validateTimeouts).
@@ -638,6 +746,7 @@ func CoreDescriptors() []Descriptor {
 		KeySecureCookies,
 		KeySessionDurationSeconds,
 		KeyOpenAppRegistration,
+		KeyExtraListenAddresses,
 		KeySMTP,
 		KeyTimeouts,
 		KeyLimits,

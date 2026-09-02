@@ -1,5 +1,5 @@
 import { createClient } from '@connectrpc/connect'
-import { AdminSettingsService, AdminUserService } from '~/generated/proto/leapmux/v1/admin_pb'
+import { AdminNetworkService, AdminSettingsService, AdminUserService } from '~/generated/proto/leapmux/v1/admin_pb'
 import { AppService } from '~/generated/proto/leapmux/v1/app_pb'
 import { AuthService } from '~/generated/proto/leapmux/v1/auth_pb'
 import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
@@ -20,6 +20,7 @@ export const workspaceClient = createClient(WorkspaceService, transport)
 export const userCRDTClient = createClient(UserCRDT, transport)
 export const adminSettingsClient = createClient(AdminSettingsService, transport)
 export const adminUserClient = createClient(AdminUserService, transport)
+export const adminNetworkClient = createClient(AdminNetworkService, transport)
 /**
  * SubmitOps over the keepalive transport, for the `pagehide` flush only. See
  * `unloadTransport` for why keepalive is what makes that flush reach the hub at

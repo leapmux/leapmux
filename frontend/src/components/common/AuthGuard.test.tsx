@@ -25,9 +25,13 @@ vi.mock('~/context/AuthContext', () => ({
 }))
 
 const mockIsSoloMode = vi.fn<() => boolean>(() => false)
+const mockIsAutoAuthenticated = vi.fn<() => boolean>(() => false)
+const mockPasswordSetupRequired = vi.fn<() => boolean>(() => false)
 
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
+  isAutoAuthenticated: () => mockIsAutoAuthenticated(),
+  passwordSetupRequired: () => mockPasswordSetupRequired(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
 }))
@@ -71,6 +75,8 @@ function renderGuard(options: { path?: string } = {}) {
 describe('authGuard', () => {
   beforeEach(() => {
     mockIsSoloMode.mockReturnValue(false)
+    mockIsAutoAuthenticated.mockReturnValue(false)
+    mockPasswordSetupRequired.mockReturnValue(false)
     mockBootstrapError.mockReturnValue(null)
     mockRetryBootstrap.mockClear()
   })
@@ -135,14 +141,15 @@ describe('authGuard', () => {
   // so was the loading fallback this used to land on. `restoreSession` records
   // NO bootstrapError for an Unauthenticated reply (it is the ordinary "no
   // session yet" answer everywhere else), so solo + unauthenticated fell
-  // through every branch and spun forever with nothing to click. In solo mode the
-  // hub authenticates every request, so that reply is a transport or config
-  // failure and has to be reported like any other.
-  it('reports rather than spins when a solo hub answers with no session', async () => {
+  // through every branch and spun forever with nothing to click. On a
+  // CREDENTIAL-FREE connection the hub authenticates the caller outright, so
+  // that reply is a transport or config failure and has to be reported like
+  // any other.
+  it('reports rather than spins when a credential-free connection answers with no session', async () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
-    mockIsSoloMode.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
 
     const { navigations } = renderGuard()
 
@@ -153,11 +160,11 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
-  it('offers the same retry for a solo hub with no session', async () => {
+  it('offers the same retry for a credential-free connection with no session', async () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
-    mockIsSoloMode.mockReturnValue(true)
+    mockIsAutoAuthenticated.mockReturnValue(true)
 
     renderGuard()
 

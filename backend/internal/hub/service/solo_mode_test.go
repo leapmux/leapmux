@@ -6,6 +6,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/hub/auth"
 )
 
 // TestRejectSolo pins the one refusal eleven handlers used to write out.
@@ -32,8 +34,15 @@ func TestRejectSolo(t *testing.T) {
 
 	// The two named wrappers delegate, so their subjects cannot drift from
 	// the shape every other refusal takes.
-	assert.NoError(t, rejectSoloElevation(false))
-	assert.EqualError(t, rejectSoloElevation(true),
+	//
+	// The elevation one reads the CALLER rather than the hub's mode: a solo
+	// hub that holds a password authenticates a TCP caller with an ordinary
+	// session, which must be able to prove a factor like any other. Only the
+	// caller the solo rung admitted has no session row to stamp.
+	assert.NoError(t, rejectSoloElevation(nil))
+	assert.NoError(t, rejectSoloElevation(&auth.UserInfo{}),
+		"an ordinary session on a solo hub elevates like any other")
+	assert.EqualError(t, rejectSoloElevation(&auth.UserInfo{Solo: true}),
 		"failed_precondition: solo mode does not provide session elevation")
 	assert.NoError(t, rejectSoloPasskeyManagement(false))
 	assert.EqualError(t, rejectSoloPasskeyManagement(true),

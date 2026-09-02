@@ -175,7 +175,7 @@ Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreac
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.
 - To serve other machines, do **not** simply rebind solo to all interfaces. Either:
   - Run `leapmux hub` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
-  - If you must expose solo mode, restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel). Solo mode emits a warning when it binds a non-loopback address. The warning states that every request is auto-authenticated as the admin, so anyone who can reach the port has full admin access without credentials. See [Security & Threat Model](/docs/admin/security/) for the full implications.
+  - To expose solo mode, set the `solo` account's password first and add the address in **Preferences → Administration → Network access**; every network address then asks for that password. Restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust. Solo mode emits a warning when it binds a non-loopback address, because until that password exists every request is authenticated as the admin without credentials. See [Security & Threat Model](/docs/admin/security/) for the full implications.
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for binding and listen-address options.
 

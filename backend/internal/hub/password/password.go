@@ -24,6 +24,23 @@ const (
 // and is never accepted by Verify because its prefix doesn't match "$argon2id$".
 const PlaceholderHash = "$not-set$"
 
+// IsUsable reports whether a stored hash could ever verify a password.
+//
+// It answers what users.password_set cannot. That column is a CLAIM the
+// creating flow makes, and two flows set it true with no hash behind it: the
+// solo bootstrap stores an empty string, and an account may hold
+// PlaceholderHash. Login already works around this -- it verifies and treats a
+// parse failure as a wrong password -- so the column alone means "somebody
+// intended a password here", not "a password works".
+//
+// A caller that must know whether the account can SIGN IN asks this. It is the
+// cheap half of Verify: the format test, without the Argon2 work, which is
+// what makes it usable on a path that has no password to check.
+func IsUsable(storedHash string) bool {
+	parts := strings.Split(storedHash, "$")
+	return len(parts) == 6 && parts[1] == "argon2id"
+}
+
 // Hash hashes a password using Argon2id with OWASP-recommended parameters.
 // Returns a PHC-formatted string.
 func Hash(password string) (string, error) {
@@ -47,10 +64,14 @@ func Hash(password string) (string, error) {
 // Verify checks a password against a stored Argon2id hash.
 func Verify(storedHash, password string) (bool, error) {
 	// Parse PHC format: $argon2id$v=V$m=M,t=T,p=P$salt$hash
-	parts := strings.Split(storedHash, "$")
-	if len(parts) != 6 || parts[1] != "argon2id" {
+	//
+	// The shape test is IsUsable, so "a hash Verify can read" has one
+	// definition. A caller that only needs to know whether the account can
+	// sign in asks that instead, and pays no Argon2 work for the answer.
+	if !IsUsable(storedHash) {
 		return false, fmt.Errorf("invalid argon2id hash format")
 	}
+	parts := strings.Split(storedHash, "$")
 
 	var version int
 	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil {

@@ -95,14 +95,23 @@ func defaultDeps() deps {
 }
 
 // nonLoopbackListenWarnMsg is the security warning emitted when solo mode
-// binds to a non-loopback address. Solo mode injects a soloUser into the
-// auth interceptor (see hub.NewServer and auth.NewInterceptor), so every
-// request is auto-authenticated as the admin without credentials. Loopback
-// keeps that contained to the host; anything else hands the admin role to
-// anyone who can reach the port.
-const nonLoopbackListenWarnMsg = "solo mode is binding to a non-loopback address — every request is auto-authenticated as the admin, " +
-	"so anyone who can reach this port has full admin access without credentials. " +
-	"Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication."
+// binds to a non-loopback address.
+//
+// Solo mode authenticates a caller with no credentials WHILE the account holds
+// no password (auth.SoloGate states the whole rule), so a non-loopback bind in
+// that state hands the administrator to anyone who can reach the port. Setting
+// a password closes it: every TCP address then asks for one, 127.0.0.1
+// included.
+//
+// It is printed at STARTUP, before the store opens, so it cannot know whether
+// a password exists yet -- which is why it names the condition rather than
+// asserting the danger. The frontend makes the same demand where it can be
+// acted on: it blocks the whole app with a password-setup screen while the hub
+// is exposed and the account has none.
+const nonLoopbackListenWarnMsg = "solo mode is binding to a non-loopback address, so this hub is reachable from other machines. " +
+	"Until the \"solo\" account has a password, every request is authenticated as the administrator without credentials. " +
+	"Open the app and set one: it asks for a password before anything else while this address is served. " +
+	"Restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust."
 
 // Config configures the solo launcher.
 type Config struct {
@@ -485,9 +494,14 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	if !cfg.SkipBanner {
 		// Printed after the server exists so the URL reflects the
 		// public_url setting, exactly like the hub binary's banner.
+		// server.PrimaryListenAddr(), not hubCfg.Listen: a stored extra
+		// address can widen what -listen asked for (127.0.0.1:4327 merged
+		// into *:4327), or supply the only TCP address there is on a desktop
+		// hub that starts with none. The banner must name an address the hub
+		// actually answers on.
 		logging.PrintBannerURL(
 			settings.KeyPublicURL.Of(server.SettingsManager().Snapshot(context.Background())),
-			hubCfg.Listen)
+			server.PrimaryListenAddr())
 	}
 
 	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
@@ -679,7 +693,7 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	}
 	releaseBringUp()
 
-	slog.Info("leapmux "+modeName+" listening", "listen", hubCfg.Listen)
+	slog.Info("leapmux "+modeName+" listening", "listen", server.PrimaryListenAddr())
 
 	return inst, nil
 }

@@ -41,7 +41,7 @@ func runHub(args []string) error {
 	// one startup surface that shows the operator the canonical address.
 	logging.PrintBannerURL(
 		settings.KeyPublicURL.Of(server.SettingsManager().Snapshot(context.Background())),
-		cfg.Listen)
+		server.PrimaryListenAddr())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

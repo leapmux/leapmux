@@ -29,6 +29,7 @@ var adminProcedureRationale = map[string]string{
 	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      "rewrites several instance settings at once, both halves, in one transaction",
 	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        "returns instance configuration to defaults, cross-key validated",
 	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       "returns several instance settings to defaults in one transaction",
+	leapmuxv1connect.AdminNetworkServiceGetListenStatusProcedure:      "describes the host's network interfaces and which addresses the hub answers on",
 
 	// Credential and identity administration: these mint or destroy other
 	// users' credentials, which is the definition of administration.
@@ -154,15 +155,16 @@ func TestAdminProceduresDisjointFromOtherGates(t *testing.T) {
 	}
 }
 
-// TestAdminProtoServicesAreExactlyFour guards against a fifth admin
+// TestAdminProtoServicesAreExactlyFive guards against a sixth admin
 // service appearing in the proto without the gate (and its tripwires)
 // learning about it.
-func TestAdminProtoServicesAreExactlyFour(t *testing.T) {
+func TestAdminProtoServicesAreExactlyFive(t *testing.T) {
 	want := map[protoreflect.FullName]bool{
 		"leapmux.v1.AdminSettingsService": true,
 		"leapmux.v1.AdminUserService":     true,
 		"leapmux.v1.AdminWorkerService":   true,
 		"leapmux.v1.AdminIdPService":      true,
+		"leapmux.v1.AdminNetworkService":  true,
 	}
 	got := map[protoreflect.FullName]bool{}
 	services := leapmuxv1.File_leapmux_v1_admin_proto.Services()

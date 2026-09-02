@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"connectrpc.com/connect"
@@ -30,6 +31,12 @@ type UserService struct {
 	mail      mail.Sender
 	renderer  mail.Renderer
 	keystore  *keystore.Keystore
+	// soloGate is the hub's solo-admission gate. ChangePassword tells it the
+	// account now holds a password, and reads it to decide whether the caller
+	// it just re-armed the rule against needs a session of its own. Nil
+	// outside solo mode, and safe there: every method on it accepts a nil
+	// receiver.
+	soloGate *auth.SoloGate
 
 	// The clock every instant on the elevation path comes from: the grant,
 	// the predicate, the slide, and the first-credential freshness rule.
@@ -45,6 +52,13 @@ func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, l
 		panic("user service requires credential lifecycle effects")
 	}
 	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer, keystore: ks}
+}
+
+// WithSoloGate attaches the hub's solo-admission gate. Only the hub calls it,
+// and only in solo mode; every other construction leaves the gate nil.
+func (s *UserService) WithSoloGate(gate *auth.SoloGate) *UserService {
+	s.soloGate = gate
+	return s
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -340,10 +354,14 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 	}), nil
 }
 
+// ChangePassword sets or replaces the caller's password.
+//
+// It is REACHABLE IN SOLO MODE, unlike the account verbs around it, and that
+// is the feature: the solo account's password is what lets the hub answer on a
+// network address at all, so a hub that refused this could never be published.
+// The other solo refusals stay -- there is still no sign-up, no passkey, no
+// account recovery and no provider link.
 func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
-	if err := rejectSolo(s.cfg.SoloMode, "password changes"); err != nil {
-		return nil, err
-	}
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -402,7 +420,48 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
+	resp := connect.NewResponse(&leapmuxv1.ChangePasswordResponse{})
+	if err := s.handOverSoloSession(ctx, userInfo, resp.Header()); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// handOverSoloSession gives a credential-free solo caller a real session,
+// because the write it just made is what ended its credential-free access.
+//
+// A solo hub authenticates a TCP caller with nothing while the account holds
+// no password. Storing the first password re-arms the rule against the very
+// browser that stored it: without this, the response returns 200 and the next
+// request from that page is Unauthenticated -- the user is signed out of the
+// form they are standing in, having done nothing wrong.
+//
+// It runs only for a caller the solo rung admitted (SoloAuthenticated), so an
+// ordinary session that changed its password is untouched, and it is a no-op
+// outside solo mode.
+//
+// The session is ELEVATED, deliberately. This caller held unauthenticated full
+// administrator access one request ago, so the grant cannot widen what it can
+// do; refusing it would only ask the user to present, as a step-up proof, the
+// secret they chose in the request before.
+func (s *UserService) handOverSoloSession(ctx context.Context, userInfo *auth.UserInfo, h http.Header) error {
+	if !userInfo.SoloAuthenticated() {
+		return nil
+	}
+	// Before the session exists, so no window admits a credential-free caller
+	// between the commit and the gate learning about it.
+	s.soloGate.NotePasswordSet()
+
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, userInfo.ID, settings.SessionDuration(s.set.Snapshot(ctx)))
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+	}
+	if _, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now()); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("elevate session: %w", err))
+	}
+	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt,
+		settings.KeySecureCookies.Of(s.set.Snapshot(ctx))).String())
+	return nil
 }
 
 func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.UnlinkOAuthProviderRequest]) (*connect.Response[leapmuxv1.UnlinkOAuthProviderResponse], error) {

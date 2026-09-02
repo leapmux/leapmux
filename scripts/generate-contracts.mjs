@@ -1217,7 +1217,29 @@ export const SYSTEM_RESERVED_USERNAMES: readonly string[] = [${Object.keys(v.use
 
 /** Reserved in anonymous public signup only (claimable by the first admin). */
 export const PUBLIC_RESERVED_USERNAMES: readonly string[] = [${Object.keys(v.usernames.publicReserved).map(jsonString).join(', ')}]
-`
+
+${tsUsernameConsts(v.usernames)}`
+}
+
+/**
+ * The reserved usernames as NAMED constants, mirroring the Go emitter's
+ * `UsernameSolo`.
+ *
+ * The two arrays above answer "is this name reserved". A caller that has to
+ * WRITE one needs the name itself -- the sign-in form on a solo hub pre-fills
+ * its single account -- and reading it out of an array by index would depend
+ * on an order the contract does not promise.
+ */
+export function tsUsernameConsts(usernames) {
+  const lines = []
+  for (const kind of ['systemReserved', 'publicReserved']) {
+    for (const [name, doc] of Object.entries(usernames[kind])) {
+      lines.push(`/** ${doc} */`)
+      lines.push(`export const USERNAME_${name.toUpperCase()} = ${jsonString(name)} as const`)
+      lines.push('')
+    }
+  }
+  return lines.join('\n')
 }
 
 // ---------------------------------------------------------------------------

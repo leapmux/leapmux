@@ -62,6 +62,10 @@ vi.mock('~/api/platformBridge', () => ({
 const mockLoadSystemInfo = vi.fn<() => Promise<void>>(() => Promise.resolve())
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
+  // A multi-user hub: every caller signs in, and none of the solo facts hold.
+  isAutoAuthenticated: () => false,
+  passwordSetupRequired: () => false,
+  soloPasswordSet: () => false,
   loadSystemInfo: () => mockLoadSystemInfo(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,

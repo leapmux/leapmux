@@ -425,3 +425,81 @@ func TestBaseURLResolvesAWildcardBindToLoopback(t *testing.T) {
 	}}, nil)
 	assert.Equal(t, "https://localhost:4327", BaseURL(secure, "0.0.0.0:4327"))
 }
+
+// TestValidateExtraListenAccepts pins what the address picker produces: the
+// family-neutral wildcard, either family's wildcard, and any IP literal.
+func TestValidateExtraListenAccepts(t *testing.T) {
+	require.NoError(t, validateExtraListen(ExtraListenValue{}), "no addresses is the default")
+	require.NoError(t, validateExtraListen(ExtraListenValue{Addresses: []string{
+		"*:4327", ":9000", "0.0.0.0:8080", "[::]:8081",
+		"192.168.1.24:8080", "127.0.0.1:4327", "[::1]:4327", "[fe80::1%en0]:4327",
+	}}))
+}
+
+// TestValidateExtraListenRefuses covers every rule the write path enforces.
+// The admin CLI writes this key too, so a refusal the picker makes
+// unreachable still has to hold here.
+func TestValidateExtraListenRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      []string
+		wantMsg string
+	}{
+		{"unparseable", []string{"nonsense"}, "extra listen address 1"},
+		{"no port", []string{"192.168.1.24"}, "extra listen address 1"},
+		{"port zero", []string{"192.168.1.24:0"}, "extra listen address 1"},
+		{"port above the range", []string{"192.168.1.24:65536"}, "extra listen address 1"},
+		{"unbracketed IPv6 is ambiguous", []string{"::1:4327"}, "extra listen address 1"},
+		// A name binds whatever it resolves to AT BIND TIME, so a DNS change
+		// nobody made here could publish the hub on a public address.
+		{"a host name", []string{"hub.example:4327"}, "is a host name"},
+		{"localhost is still a name", []string{"localhost:4327"}, "is a host name"},
+		// The index names the offending entry, so an operator editing a list
+		// through the CLI is told which one to fix.
+		{"the second entry is named", []string{"127.0.0.1:4327", "nonsense"}, "extra listen address 2"},
+		{"an exact repeat", []string{"192.168.1.24:8080", "192.168.1.24:8080"}, "repeats"},
+		// Two spellings of one socket are one address, so the repeat rule has
+		// to read the canonical form rather than the string as written.
+		{"a repeat in another spelling", []string{"[::0]:4327", "[0:0:0:0:0:0:0:0]:4327"}, "repeats"},
+		{"a case-folded repeat", []string{"[::1]:4327", "[::1]:4327"}, "repeats"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateExtraListen(ExtraListenValue{Addresses: tc.in})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantMsg)
+		})
+	}
+}
+
+func TestValidateExtraListenCapsTheCount(t *testing.T) {
+	atCap := make([]string, 0, MaxExtraListenAddresses)
+	for i := range MaxExtraListenAddresses {
+		atCap = append(atCap, "127.0.0.1:"+strconv.Itoa(9000+i))
+	}
+	require.NoError(t, validateExtraListen(ExtraListenValue{Addresses: atCap}), "the cap itself is allowed")
+
+	overCap := append(atCap, "127.0.0.1:9999")
+	err := validateExtraListen(ExtraListenValue{Addresses: overCap})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most")
+}
+
+// The key defaults to no extra addresses, so an untouched hub binds exactly
+// what -listen gave it.
+func TestKeyExtraListenAddressesDefaultsToNothing(t *testing.T) {
+	def, ok := KeyExtraListenAddresses.Default().(ExtraListenValue)
+	require.True(t, ok)
+	assert.Empty(t, def.Addresses)
+}
+
+// Addrs is what the hub binds from, so it must reject a document the
+// validator would have refused rather than binding the entries it can parse.
+func TestExtraListenValueAddrs(t *testing.T) {
+	addrs, err := ExtraListenValue{Addresses: []string{"*:4327", "192.168.1.24:8080"}}.Addrs()
+	require.NoError(t, err)
+	require.Len(t, addrs, 2)
+	assert.Equal(t, "*:4327", addrs[0].String())
+
+	_, err = ExtraListenValue{Addresses: []string{"192.168.1.24:8080", "nonsense"}}.Addrs()
+	require.Error(t, err, "one bad entry must fail the whole document, never bind the rest")
+}
