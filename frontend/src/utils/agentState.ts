@@ -128,6 +128,11 @@ function containsContextCleared(parsed: ParsedMessageContent): boolean {
  * provider's plugin, which classifies its closing envelope (Claude
  * `type:"result"`, Codex `turn/completed`, ACP `stopReason`, Pi `agent_end`)
  * as `result_divider`.
+ *
+ * A divider does not always end the turn. The plugin's `resultDivider` model
+ * reports `turnContinues` for a run the provider restarts on its own -- Pi
+ * draws one for an attempt it is about to auto-retry -- and this reports the
+ * agent still working for the length of that backoff.
  */
 export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -176,10 +181,11 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     // restarted with a fresh context and is now idle — stop scanning.
     if (containsContextCleared(parsed))
       return false
-    // Empty notification wrappers are what the consolidator emits when
-    // every threaded message has been superseded — no progress signal.
-    if (parsed.wrapper && parsed.wrapper.messages.length === 0)
-      continue
+    // (An empty notification wrapper -- what the consolidator emits once every
+    // threaded message is superseded -- needs no branch of its own: every
+    // provider plugin classifies it `hidden`, so the skip above already took
+    // it. The tests below still pin that a transcript of them reports idle.)
+    //
     // Platform notifications, agent metadata, and provider lifecycle
     // events never indicate active work — keep scanning back.
     if (isNonProgressInner(getInnerMessage(parsed)))

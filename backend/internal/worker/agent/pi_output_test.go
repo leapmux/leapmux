@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -214,18 +215,37 @@ func TestHandlePiOutput_AgentEnd_WillRetryDoesNotEndTurn(t *testing.T) {
 }
 
 // Pi retries the WebSocket failure itself when it says willRetry, so LeapMux
-// must not schedule a second continuation for the same failure.
-func TestHandlePiOutput_AgentEnd_WillRetrySuppressesAutoContinue(t *testing.T) {
+// must not schedule a second continuation for the same failure. willRetry is
+// the ONLY difference between these two envelopes: Pi reports false once its
+// own retry budget is spent, and that is where LeapMux's auto-continue takes
+// over as the last resort.
+func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoContinue(t *testing.T) {
 	t.Parallel()
 
-	sink := &recordingControlSink{}
-	a := newPiAgentWithSink(sink)
-	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"}],"willRetry":true}`)
+	for _, tc := range []struct {
+		name      string
+		willRetry bool
+		schedules int
+		cancels   int
+	}{
+		{"Pi retries, so LeapMux stands down", true, 0, 1},
+		{"Pi is done retrying, so LeapMux continues", false, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	handlePiOutput(a, parseLine(raw))
+			sink := &recordingControlSink{}
+			a := newPiAgentWithSink(sink)
+			raw := fmt.Appendf(nil,
+				`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"}],"willRetry":%t}`,
+				tc.willRetry)
 
-	assert.Equal(t, 0, sink.AutoScheduleCount(), "Pi's own retry must not be doubled")
-	assert.Equal(t, 1, sink.AutoCancelCount())
+			handlePiOutput(a, parseLine(raw))
+
+			assert.Equal(t, tc.schedules, sink.AutoScheduleCount())
+			assert.Equal(t, tc.cancels, sink.AutoCancelCount())
+		})
+	}
 }
 
 func TestPiTurnDurationMs(t *testing.T) {

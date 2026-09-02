@@ -48,7 +48,7 @@ type piSessionStats struct {
 
 // piUsageSnapshot captures the cost/context-usage state to ship to a
 // single broadcast call. The snapshot is single-use: callers consume it
-// once via sessionInfo() (broadcast payload) or piAugmentRawWithSnapshot
+// once via sessionInfo() (broadcast payload) or piAugmentAgentEnd
 // (persisted envelope) and drop it. The ContextUsage map is owned by
 // the snapshot — sessionInfo() and mutatePiUsageFields hand the map
 // directly to the consuming payload, so callers must not mutate it

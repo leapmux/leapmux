@@ -133,17 +133,29 @@ describe('isAgentWorking', () => {
       ])).toBe(true)
     })
 
+    // willRetry is the only difference between these two: a divider Pi will
+    // retry past must keep the thinking indicator up for the whole backoff,
+    // where nothing streams and no other row arrives.
+    const failed = [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }]
+
     it('keeps working through a divider for a run Pi will retry', () => {
       expect(isAgentWorking([
         makeMsg(MessageSource.USER),
-        agentEnd({ willRetry: true, messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }] }),
+        agentEnd({ willRetry: true, messages: failed }),
       ])).toBe(true)
     })
 
     it('stops at the divider once Pi will not retry', () => {
       expect(isAgentWorking([
         makeMsg(MessageSource.USER),
-        agentEnd({ messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }] }),
+        agentEnd({ willRetry: false, messages: failed }),
+      ])).toBe(false)
+    })
+
+    it('stops at the divider when Pi omits willRetry (an older build)', () => {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.USER),
+        agentEnd({ messages: failed }),
       ])).toBe(false)
     })
   })
@@ -383,6 +395,45 @@ describe('shouldShowThinkingIndicator', () => {
       [makeMsg(MessageSource.USER)],
       '',
     )).toBe(true)
+  })
+
+  // The user-visible end of the Pi auto-retry rule: during the backoff nothing
+  // streams and the registry knows nothing, so the divider's own `turnContinues`
+  // is the only thing keeping the indicator lit.
+  it('keeps the indicator lit for a Pi divider Pi will retry past', () => {
+    const retrying = makeMessage({
+      source: MessageSource.AGENT,
+      content: rawContent({
+        type: 'agent_end',
+        willRetry: true,
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
+      }),
+      agentProvider: AgentProvider.PI,
+    })
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.PI }),
+      {},
+      [makeMsg(MessageSource.USER), retrying],
+      '',
+    )).toBe(true)
+  })
+
+  it('clears the indicator once a Pi turn really ends', () => {
+    const ended = makeMessage({
+      source: MessageSource.AGENT,
+      content: rawContent({
+        type: 'agent_end',
+        willRetry: false,
+        messages: [{ role: 'assistant', stopReason: 'stop' }],
+      }),
+      agentProvider: AgentProvider.PI,
+    })
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ agentProvider: AgentProvider.PI }),
+      {},
+      [makeMsg(MessageSource.USER), ended],
+      '',
+    )).toBe(false)
   })
 
   it('forces visible when this tab has active work, even with no streaming text', () => {
