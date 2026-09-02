@@ -25,6 +25,6 @@ function classifyGooseToolCallUpdate(parent: Record<string, unknown>): MessageCa
 registerACPProvider({
   provider: AgentProvider.GOOSE,
   defaultPermissionMode: GOOSE_MODE_AUTO,
-  bypassPermissionMode: GOOSE_MODE_AUTO,
+  bypassSettings: { sets: { permissionMode: GOOSE_MODE_AUTO } },
   classifyToolCallUpdate: classifyGooseToolCallUpdate,
 })

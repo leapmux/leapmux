@@ -855,12 +855,14 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 	_, persisted := opts[agent.OptionIDPermissionMode]
 	assert.False(t, persisted, "a foreign permissionMode must not be persisted on a primary-agent provider")
 
-	// And the RPC reply doesn't advertise it either.
+	// No process can confirm the sanitized removal, so the response reports it as unresolved.
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.UpdateAgentSettingsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	_, inReply := resp.ConfirmedOptions[agent.OptionIDPermissionMode]
-	assert.False(t, inReply, "the reply must not advertise a dropped foreign axis")
+	settlement := resp.OptionSettlements[agent.OptionIDPermissionMode]
+	require.NotNil(t, settlement)
+	assert.Equal(t, leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_UNRESOLVED, settlement.GetState())
+	assert.Nil(t, settlement.Value)
 }
 
 // TestUpdateAgentSettings_DropsForeignNonSecondaryAxes verifies the generalized strip:
@@ -972,11 +974,9 @@ func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 		"a well-known axis Claude owns (effort) must persist, not be stripped")
 }
 
-// TestUpdateAgentSettings_ResponseCarriesConfirmedOptions verifies the RPC reply returns
-// the settled options the client reconciles its optimistic state against -- here the
-// switched model -- so the reconcile doesn't depend on a separately-broadcast catalog.
-// For Cursor (no effort axis) the reply carries no effort key.
-func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
+// TestUpdateAgentSettings_OfflineResponseIsUnresolved verifies that persistence
+// alone does not claim that a provider applied the requested value.
+func TestUpdateAgentSettings_OfflineResponseIsUnresolved(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1000,10 +1000,10 @@ func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
 	var resp leapmuxv1.UpdateAgentSettingsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 
-	assert.Equal(t, "composer-2.5", resp.ConfirmedOptions[agent.OptionIDModel],
-		"the reply carries the settled model the client reconciles against")
-	_, hasEffort := resp.ConfirmedOptions[agent.OptionIDEffort]
-	assert.False(t, hasEffort, "Cursor's reply carries no effort (it has no effort axis)")
+	settlement := resp.OptionSettlements[agent.OptionIDModel]
+	require.NotNil(t, settlement)
+	assert.Equal(t, leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_UNRESOLVED, settlement.GetState())
+	assert.Nil(t, settlement.Value)
 }
 
 // TestApplySettingsViaRestartBroadcastsConfirmedCatalog guards the restart-apply path: the
@@ -1040,11 +1040,12 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	settled := svc.applySettingsViaRestart(dbAgent, map[string]string{
+	settled, result := svc.applySettingsViaRestart(dbAgent, map[string]string{
 		agent.OptionIDModel:  "opus[1m]",
 		agent.OptionIDEffort: agent.EffortAuto,
 	})
-	assert.NotEmpty(t, settled[agent.OptionIDEffort])
+	assert.Equal(t, "opus[1m]", settled[agent.OptionIDModel])
+	assert.NotNil(t, result.SurfacedOptions)
 	assert.Equal(t, 1, restartCalls, "settings restart must use the injectable starter so unit tests do not require a real agent binary")
 
 	var sawCatalog bool
@@ -1842,6 +1843,38 @@ func TestConfirmedOptions_PreservesProviderPrivateExtra(t *testing.T) {
 		map[string]string{agent.OptionIDModel: "deepseek-chat"})
 	assert.Equal(t, "deepseek", got[agent.PiOptionProvider],
 		"a provider-private extra must survive from the base when the confirmed catalog omits it")
+}
+
+func TestSettingsResponseSettlements_ReportsConfirmedRemovalAndUnresolvedValue(t *testing.T) {
+	t.Parallel()
+
+	confirmedValue := "high"
+	result := agent.SettingsApplyResult{
+		AppliedLive: true,
+		SurfacedOptions: OptionMap{
+			"reasoning_effort": confirmedValue,
+		},
+		Settlements: agent.OptionSettlements{
+			"reasoning_effort": {State: agent.OptionSettlementConfirmed, Value: &confirmedValue},
+			"service_tier":     {State: agent.OptionSettlementUnresolved},
+		},
+	}
+	requested := map[string]string{
+		"reasoning_effort": "xhigh",
+		"removed_option":   "on",
+		"service_tier":     "fast",
+	}
+	settled := OptionMap{
+		"reasoning_effort": confirmedValue,
+		"service_tier":     "fast",
+	}
+
+	got := settingsResponseSettlements(requested, OptionMap(requested), settled, result)
+	assert.Equal(t, agent.OptionSettlementConfirmed, got["reasoning_effort"].State)
+	assert.Equal(t, confirmedValue, *got["reasoning_effort"].Value)
+	assert.Equal(t, agent.OptionSettlementConfirmed, got["removed_option"].State)
+	assert.Nil(t, got["removed_option"].Value)
+	assert.Equal(t, agent.OptionSettlementUnresolved, got["service_tier"].State)
 }
 
 // TestReportModelChange verifies the settings_changed notification reports a model

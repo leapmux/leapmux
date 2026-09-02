@@ -449,6 +449,60 @@ func logRegistryRefusal(provider, op string, err error) {
 	}
 }
 
+// OptionSettlementState identifies a confirmed or unresolved option.
+type OptionSettlementState uint8
+
+const (
+	OptionSettlementConfirmed OptionSettlementState = iota + 1
+	OptionSettlementUnresolved
+)
+
+// OptionSettlement reports whether the provider confirmed one option. A
+// confirmed settlement with a nil value removes the option.
+type OptionSettlement struct {
+	State OptionSettlementState
+	Value *string
+}
+
+type OptionSettlements map[string]OptionSettlement
+
+// SettingsApplyResult reports whether the provider applied a change without a
+// restart. SurfacedOptions is the provider's complete live snapshot.
+type SettingsApplyResult struct {
+	AppliedLive     bool
+	Settlements     OptionSettlements
+	SurfacedOptions optionmap.Map
+}
+
+func (r SettingsApplyResult) ConfirmedOptions() optionmap.Map {
+	confirmed := make(optionmap.Map)
+	for id, settlement := range r.Settlements {
+		if settlement.State == OptionSettlementConfirmed && settlement.Value != nil && *settlement.Value != "" {
+			confirmed[id] = *settlement.Value
+		}
+	}
+	return confirmed
+}
+
+func confirmedSettings(options map[string]string) SettingsApplyResult {
+	settlements := make(OptionSettlements, len(options))
+	surfaced := make(optionmap.Map, len(options))
+	for id, value := range options {
+		surfaced[id] = value
+		value := value
+		settlements[id] = OptionSettlement{State: OptionSettlementConfirmed, Value: &value}
+	}
+	return SettingsApplyResult{AppliedLive: true, Settlements: settlements, SurfacedOptions: surfaced}
+}
+
+func restartRequiredSettings(options optionmap.Map) SettingsApplyResult {
+	settlements := make(OptionSettlements, len(options))
+	for id := range options {
+		settlements[id] = OptionSettlement{State: OptionSettlementUnresolved}
+	}
+	return SettingsApplyResult{Settlements: settlements}
+}
+
 // Agent is the interface that all coding agent providers must implement.
 type Agent interface {
 	AgentID() string
@@ -487,15 +541,11 @@ type Agent interface {
 	// It is the single source for both the read model (catalog + current value)
 	// and the persisted settings (via CurrentOptions).
 	OptionGroups() []*leapmuxv1.AvailableOptionGroup
-	// UpdateSettings applies the agent's FULL current option map (id->value) to a running
-	// agent so the next turn picks the change up without a restart. The service always passes
-	// the COMPLETE merged map, NOT a sparse delta; implementers compare each axis against the
-	// running value and push only what differs. An EMPTY value means "no value for this axis"
-	// and is IGNORED -- it is NOT a delete here. (The empty-value-deletes rule of optionmap.Map
-	// applies only to the persistence/merge path -- optionsChangeDelta + casPersistAgentOptions --
-	// never to this in-memory apply.) Returns false when the change requires a restart (e.g. a
-	// Claude effort->auto transition).
-	UpdateSettings(options optionmap.Map) bool
+	SettingsSnapshot() SettingsApplyResult
+	// UpdateSettings applies each included non-empty option to the running agent.
+	// Omitted and empty options do not change the live state. The result distinguishes
+	// confirmed values from values that need a restart or a later acknowledgement.
+	UpdateSettings(options optionmap.Map) SettingsApplyResult
 	// ClearContext starts a new thread/session on the running process,
 	// effectively clearing conversation context without a full restart.
 	// Returns the new session ID, or ("", false) if the provider does not

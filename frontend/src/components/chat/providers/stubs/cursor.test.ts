@@ -19,8 +19,8 @@ describe('cursor provider', () => {
   })
 
   it('recognizes cursor ask-question control payloads', () => {
-    expect(plugin.isAskUserQuestion?.({ method: 'cursor/ask_question' })).toBe(true)
-    expect(plugin.isAskUserQuestion?.({ method: 'cursor/create_plan' })).toBe(false)
+    expect(plugin.askUserQuestion?.isRequest({ method: 'cursor/ask_question' })).toBe(true)
+    expect(plugin.askUserQuestion?.isRequest({ method: 'cursor/create_plan' })).toBe(false)
   })
 
   it('declares plan mode on the permissionMode group and defaults to agent', () => {

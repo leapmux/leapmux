@@ -1640,6 +1640,49 @@ export function bufDescriptor(root) {
 }
 
 // ---------------------------------------------------------------------------
+// codex bypass settings
+// ---------------------------------------------------------------------------
+
+export function checkCodexBypass(c) {
+  const ids = c.settings.map(setting => setting.id)
+  mustBe(new Set(ids).size === ids.length, 'codex-bypass.json', 'two settings share one option id')
+  mustBe(ids.includes('permissionMode'), 'codex-bypass.json', 'permissionMode is required')
+  mustBe(c.settings.some(setting => setting.planOption), 'codex-bypass.json', 'at least one plan option is required')
+}
+
+export function emitGoCodexBypass(c) {
+  const indent = '\t'
+  const rows = c.settings
+    .filter(setting => setting.planOption)
+    .map(setting => `\t${jsonString(setting.id)}: ${jsonString(setting.value)},`)
+    .join('\n')
+  return `${GO_HEADER('codex-bypass.json')}package contracts
+
+// CodexPlanBypassOptions returns the provider options that accompany a
+// plan-mode bypass approval. The permission mode travels in its own field.
+func CodexPlanBypassOptions() map[string]string {
+${indent}return map[string]string{
+${rows}
+${indent}}
+}
+`
+}
+
+export function emitTsCodexBypass(c) {
+  const rows = c.settings
+    .map(setting => `    ${jsonString(setting.id)}: ${jsonString(setting.value)},`)
+    .join('\n')
+  return `${TS_HEADER('codex-bypass.json')}
+// The complete Codex settings change that disables permission prompts.
+export const CODEX_BYPASS_SETTINGS = {
+  sets: {
+${rows}
+  },
+} as const
+`
+}
+
+// ---------------------------------------------------------------------------
 // provider protocols: a coding agent's own wire vocabulary (zcode, pi)
 // ---------------------------------------------------------------------------
 
@@ -2145,6 +2188,15 @@ const DOMAINS = [
       out['backend/generated/contracts/desktop.go'] = emitGoDesktop(d)
       out['frontend/src/generated/contracts/desktop.ts'] = emitTsDesktop(d)
       out['desktop/rust/src/generated/contracts.rs'] = emitRsDesktop(d)
+    },
+  },
+  {
+    name: 'codex-bypass',
+    emit(out, read) {
+      const c = read('codex-bypass')
+      checkCodexBypass(c)
+      out['backend/generated/contracts/codex-bypass.go'] = emitGoCodexBypass(c)
+      out['frontend/src/generated/contracts/codex-bypass.ts'] = emitTsCodexBypass(c)
     },
   },
   {

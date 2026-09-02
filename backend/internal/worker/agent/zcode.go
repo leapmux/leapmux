@@ -54,6 +54,9 @@ type zcodeAgent struct {
 	// what the app-server settled on, and the two must not be compared. It resets with
 	// the session, because the next one reports its own.
 	modeObserved bool
+	// unresolvedSettings records successful setter calls whose response omitted
+	// the authoritative axis snapshot.
+	unresolvedSettings map[string]struct{}
 	// lastSeq is the highest event sequence number observed. A re-subscribe asks
 	// for events after it, so a subscription that lapsed replays what it missed
 	// instead of dropping it.
@@ -431,10 +434,12 @@ func (a *zcodeAgent) subscribe(timeout time.Duration) error {
 }
 
 // applyStateSnapshot folds a state document into the agent's own state.
-func (a *zcodeAgent) applyStateSnapshot(raw json.RawMessage) {
+func (a *zcodeAgent) applyStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, bool) {
 	if snap, ok := a.parseStateSnapshot(raw); ok {
 		a.applyParsedStateSnapshot(snap)
+		return snap, true
 	}
+	return zcodeStateSnapshot{}, false
 }
 
 // parseStateSnapshot decodes a state document. ok is false for an absent or a
@@ -468,7 +473,26 @@ func (a *zcodeAgent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
 	if snap.Projection.ContextWindow > 0 {
 		a.contextWindow = snap.Projection.ContextWindow
 	}
+	if snap.Settings != nil && snap.Settings.Model != nil && snap.Settings.Model.Current.ModelID != "" {
+		delete(a.unresolvedSettings, OptionIDModel)
+	}
+	if snap.Settings != nil && snap.Settings.ThoughtLevel != nil &&
+		(!snap.Settings.ThoughtLevel.Enabled || snap.Settings.ThoughtLevel.Current != "") {
+		delete(a.unresolvedSettings, OptionIDEffort)
+	}
+	if snap.Settings != nil && snap.Settings.Mode != nil && snap.Settings.Mode.Current != "" {
+		delete(a.unresolvedSettings, OptionIDPermissionMode)
+	}
 	a.applySettingsSnapshotLocked(snap.Settings)
+}
+
+func (a *zcodeAgent) markSettingUnresolved(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.unresolvedSettings == nil {
+		a.unresolvedSettings = make(map[string]struct{})
+	}
+	a.unresolvedSettings[id] = struct{}{}
 }
 
 // zcodeUsableSessionID reports whether a state document's session id can be

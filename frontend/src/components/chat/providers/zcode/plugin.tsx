@@ -10,6 +10,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
+import { sendResponse } from '../../controls/types'
 import { formatUnifiedDiffText } from '../../diff'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
@@ -25,7 +26,6 @@ import { extractZCodeBash, zcodeBashToCommandSource } from './extractors/bash'
 import { extractZCodeFileDiff, extractZCodeRead } from './extractors/fileEdit'
 import { zcodeEnvelope, zcodeErrorText, zcodeExtractTool, zcodeRow } from './extractors/toolCommon'
 import { zcodeAssistantText, zcodeIsBackgroundTask, zcodeIsModelResponse } from './messageContent'
-import { ZCODE_METHOD } from './protocol'
 import {
   describeZCodeNotification,
   ZCodeAssistantMessage,
@@ -266,7 +266,7 @@ const zcodePlugin: Provider = {
   // ZCode's mode axis rides LeapMux's permission-mode channel, so the mode chip and
   // the plan toggle drive `session/setMode`.
   triggerModeGroupKey: 'permissionMode',
-  bypassPermissionMode: ZCODE_MODE.Yolo,
+  bypassSettings: { sets: { permissionMode: ZCODE_MODE.Yolo } },
   planMode: {
     groupKey: 'permissionMode',
     currentMode: agent => agent.optionValues?.permissionMode ?? ZCODE_MODE.Build,
@@ -386,19 +386,13 @@ const zcodePlugin: Provider = {
   previewText: defaultMarkPreview,
   controlResponseDisplay: zcodeControlResponseDisplay,
 
-  buildInterruptContent(): string | null {
-    // Kept in step with the backend plugin's IsInterrupt, which parses this frame.
-    // LeapMux interrupts ZCode through the InterruptAgent RPC rather than a forwarded
-    // frame, so nothing sends this today; the two halves stay symmetric on purpose.
-    return JSON.stringify({ method: ZCODE_METHOD.SessionStop })
-  },
-
-  isAskUserQuestion: zcodeIsAskUserQuestion,
-  extractAskUserQuestions: zcodeQuestionsFromPayload,
-
-  async sendAskUserQuestionResponse(agentId, sendControlResponse, requestId, questions, askState, payload) {
-    const response = buildAskAnswers(askState, questions, getToolInput(payload), requestId)
-    await sendControlResponse(agentId, new TextEncoder().encode(JSON.stringify(response)))
+  askUserQuestion: {
+    isRequest: zcodeIsAskUserQuestion,
+    extractQuestions: zcodeQuestionsFromPayload,
+    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState, payload) =>
+      sendResponse(agentId, sendControlResponse, buildAskAnswers(askState, questions, getToolInput(payload), requestId)),
+    sendReject: (agentId, sendControlResponse, requestId, message) =>
+      sendResponse(agentId, sendControlResponse, buildDenyResponse(requestId, message)),
   },
 
   // Composer send is always a rejection. The placeholder says "Type a rejection

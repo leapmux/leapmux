@@ -250,7 +250,7 @@ func TestStartOpenCode_ModelChangeSurfacesEffort(t *testing.T) {
 	broadcastsBefore := sink.StatusActiveCount()
 
 	// Switch to the variant-bearing model.
-	require.True(t, agent.UpdateSettings(optionmap.Map{OptionIDModel: "openai/gpt-5.5"}))
+	require.True(t, agent.UpdateSettings(optionmap.Map{OptionIDModel: "openai/gpt-5.5"}).AppliedLive)
 
 	// The refreshed configOptions surfaced the effort axis.
 	groups := agent.OptionGroups()

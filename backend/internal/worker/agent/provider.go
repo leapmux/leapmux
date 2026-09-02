@@ -71,10 +71,8 @@ type Provider interface {
 	// group. The default keeps the newer entry verbatim; providers override
 	// when they want a richer reduction (e.g. accumulating retry counts).
 	Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error)
-	// IsInterrupt reports whether content is an interrupt-request frame in
-	// the provider's wire format. This is the inverse of the frontend
-	// plugin's buildInterruptContent — the producer and parser pair live
-	// at opposite ends of the same wire.
+	// IsInterrupt reports whether raw input contains a provider interrupt
+	// frame. The normal frontend path uses the InterruptAgent RPC instead.
 	IsInterrupt(content string) bool
 	// DefaultPermissionMode returns the provider-native default permission
 	// mode/approval policy -- the value stamped under the "permissionMode"
@@ -519,11 +517,8 @@ func (codexProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
 // removes the sandbox for the approved mode.
 func (codexProvider) PlanApprovalOptions() PlanApprovalOptions {
 	return PlanApprovalOptions{
-		Base: map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault},
-		Bypass: map[string]string{
-			CodexOptionNetworkAccess: CodexNetworkEnabled,
-			CodexOptionSandboxPolicy: CodexSandboxDangerFullAccess,
-		},
+		Base:   map[string]string{CodexOptionCollaborationMode: CodexCollaborationDefault},
+		Bypass: contracts.CodexPlanBypassOptions(),
 	}
 }
 

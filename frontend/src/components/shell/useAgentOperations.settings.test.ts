@@ -3,7 +3,7 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
-import { AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentOptionSettlementState, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
@@ -14,6 +14,23 @@ import { createTestTabStores } from '~/test-support/tabStores'
 // worker, mutating the tab's catalog mid-RPC (what the status push does) before
 // resolving the response.
 const updateAgentSettings = vi.fn()
+
+function confirmedResponse(values: Record<string, string | undefined>) {
+  return {
+    optionSettlements: Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, {
+      state: AgentOptionSettlementState.CONFIRMED,
+      ...(value === undefined ? {} : { value }),
+    }])),
+  }
+}
+
+function unresolvedResponse(...axes: string[]) {
+  return {
+    optionSettlements: Object.fromEntries(axes.map(axis => [axis, {
+      state: AgentOptionSettlementState.UNRESOLVED,
+    }])),
+  }
+}
 
 vi.mock('~/api/workerRpc', () => ({
   updateAgentSettings: (workerId: string, req: unknown) => updateAgentSettings(workerId, req),
@@ -71,7 +88,7 @@ const permissionGroup = create(AvailableOptionGroupSchema, {
 
 // The tab's starting catalog before any switch (running on Opus[1m] at xhigh). The
 // reconcile now reads the settled values from the RPC reply, not this catalog, so the
-// tests drive the resolved model/effort through updateAgentSettings' confirmedOptions.
+// tests drive resolved settings through updateAgentSettings' settlements.
 function opusCatalog(): AvailableOptionGroup[] {
   return [modelGroup('opus[1m]'), effortGroup(['auto', 'high', 'xhigh', 'ultracode', 'max'], 'xhigh', 'high'), permissionGroup]
 }
@@ -141,7 +158,7 @@ describe('useAgentOperations settings reconciliation', () => {
     // Sonnet, and the RPC reply carries the settled options (model + the effort the
     // relaunch reset to). The reconcile reads those directly -- no dependence on the
     // status broadcast arriving first.
-    updateAgentSettings.mockResolvedValue({ confirmedOptions: { model: 'sonnet', effort: 'high' } })
+    updateAgentSettings.mockResolvedValue(confirmedResponse({ model: 'sonnet', effort: 'high' }))
 
     await runChange(stores, { groupKey: 'model', value: 'default' })
 
@@ -165,16 +182,45 @@ describe('useAgentOperations settings reconciliation', () => {
       optionGroups: opusCatalog(),
     })
 
-    // A pure effort change is live-applied and confirms its requested value verbatim.
-    // The reconcile is scoped to MODEL changes, so an effort change ignores the reply's
-    // confirmedOptions entirely -- even when (as here) the reply echoes a stale "xhigh".
-    updateAgentSettings.mockResolvedValue({ confirmedOptions: { effort: 'xhigh' } })
+    updateAgentSettings.mockResolvedValue(unresolvedResponse('effort'))
 
     await runChange(stores, { groupKey: 'effort', value: 'max' })
 
-    // The optimistic "max" is preserved (a later status push reconciles it), not
-    // snapped back to the reply's stale "xhigh".
+    // An unresolved response preserves the optimistic value.
     expect(stores.view.getAgentTab('a1')?.optionValues?.effort).toBe('max')
+  })
+
+  it('reconciles a confirmed non-model option without a later status event', async () => {
+    const reasoningGroup = create(AvailableOptionGroupSchema, {
+      id: 'reasoning_effort',
+      label: 'Reasoning effort',
+      order: 20,
+      mutable: true,
+      currentValue: 'low',
+      options: [opt('low', 'Low'), opt('high', 'High'), opt('xhigh', 'Extra high')],
+    })
+    const stores = seedAgent({
+      optionValues: { model: 'opus[1m]', reasoning_effort: 'low' },
+      optionGroups: [modelGroup('opus[1m]'), reasoningGroup],
+    })
+
+    updateAgentSettings.mockResolvedValue(confirmedResponse({ reasoning_effort: 'high' }))
+
+    await runChange(stores, { groupKey: 'reasoning_effort', value: 'xhigh' })
+
+    expect(stores.view.getAgentTab('a1')?.optionValues?.reasoning_effort).toBe('high')
+  })
+
+  it('deletes an option when the provider confirms its removal', async () => {
+    const stores = seedAgent({
+      optionValues: { model: 'opus[1m]', reasoning_effort: 'xhigh' },
+      optionGroups: opusCatalog(),
+    })
+    updateAgentSettings.mockResolvedValue(confirmedResponse({ reasoning_effort: undefined }))
+
+    await runChange(stores, { groupKey: 'reasoning_effort', value: 'high' })
+
+    expect(stores.view.getAgentTab('a1')?.optionValues).not.toHaveProperty('reasoning_effort')
   })
 
   it('snaps the model but leaves effort untouched when switching to an effort-less model', async () => {
@@ -187,7 +233,7 @@ describe('useAgentOperations settings reconciliation', () => {
     // confirmed options carry the concrete model but NO effort key. The reconcile must
     // still snap the optimistic model to Haiku, but with no confirmed effort to read it
     // must leave the prior effort on its value rather than wiping it.
-    updateAgentSettings.mockResolvedValue({ confirmedOptions: { model: 'haiku' } })
+    updateAgentSettings.mockResolvedValue(confirmedResponse({ model: 'haiku' }))
 
     await runChange(stores, { groupKey: 'model', value: 'haiku' })
 
@@ -232,7 +278,7 @@ describe('useAgentOperations settings reconciliation', () => {
     })
     updateAgentSettings
       .mockReturnValueOnce(aPending)
-      .mockResolvedValueOnce({ confirmedOptions: {} })
+      .mockResolvedValueOnce(confirmedResponse({}))
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
@@ -262,13 +308,13 @@ describe('useAgentOperations settings reconciliation', () => {
     // settles, its model reconcile must snap the model to the resolved concrete value WITHOUT
     // snapping effort back to the reply's (pre-B) 'high' over B's newer 'low' -- the per-axis
     // guard skips the effort snap because effort no longer holds the value A left it at.
-    let resolveA: (v: { confirmedOptions: Record<string, string> }) => void = () => {}
-    const aPending = new Promise<{ confirmedOptions: Record<string, string> }>((resolve) => {
+    let resolveA: (v: ReturnType<typeof confirmedResponse>) => void = () => {}
+    const aPending = new Promise<ReturnType<typeof confirmedResponse>>((resolve) => {
       resolveA = resolve
     })
     updateAgentSettings
       .mockReturnValueOnce(aPending) // A: model change, hangs
-      .mockResolvedValueOnce({ confirmedOptions: { effort: 'low' } }) // B: effort change
+      .mockResolvedValueOnce(confirmedResponse({ effort: 'low' })) // B: effort change
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
@@ -279,13 +325,49 @@ describe('useAgentOperations settings reconciliation', () => {
       await ops.handleAgentSettingChange('a1', { sets: { effort: 'low' } })
       expect(stores.view.getAgentTab('a1')?.optionValues?.effort).toBe('low')
       // A settles: the relaunch resolved 'default' -> 'sonnet' and reset effort to 'high'.
-      resolveA({ confirmedOptions: { model: 'sonnet', effort: 'high' } })
+      resolveA(confirmedResponse({ model: 'sonnet', effort: 'high' }))
       await aDone
       const tab = stores.view.getAgentTab('a1')
       // Model snaps to the settled concrete model (A's own axis, still 'default' in the store).
       expect(tab?.optionValues?.model).toBe('sonnet')
       // Effort is NOT snapped back to A's reply 'high': B's newer 'low' wins.
       expect(tab?.optionValues?.effort).toBe('low')
+      dispose()
+    })
+  })
+
+  it('an old model settlement cannot replace a newer request with the same optimistic value', async () => {
+    const stores = seedAgent({
+      optionValues: { model: 'opus[1m]', effort: 'high', permissionMode: 'default' },
+      optionGroups: opusCatalog(),
+    })
+
+    let resolveOld: (response: ReturnType<typeof confirmedResponse>) => void = () => {}
+    let resolveNewest: (response: ReturnType<typeof confirmedResponse>) => void = () => {}
+    const oldPending = new Promise<ReturnType<typeof confirmedResponse>>((resolve) => {
+      resolveOld = resolve
+    })
+    const newestPending = new Promise<ReturnType<typeof confirmedResponse>>((resolve) => {
+      resolveNewest = resolve
+    })
+    updateAgentSettings
+      .mockReturnValueOnce(oldPending)
+      .mockResolvedValueOnce(confirmedResponse({ model: 'opus[1m]' }))
+      .mockReturnValueOnce(newestPending)
+
+    await createRoot(async (dispose) => {
+      const ops = useAgentOperations(stubProps(stores))
+      const oldChange = ops.handleAgentSettingChange('a1', { sets: { model: 'default' } })
+      await ops.handleAgentSettingChange('a1', { sets: { model: 'opus[1m]' } })
+      const newestChange = ops.handleAgentSettingChange('a1', { sets: { model: 'default' } })
+
+      resolveOld(confirmedResponse({ model: 'sonnet' }))
+      await oldChange
+      expect(stores.view.getAgentTab('a1')?.optionValues?.model).toBe('default')
+
+      resolveNewest(confirmedResponse({ model: 'fable[1m]' }))
+      await newestChange
+      expect(stores.view.getAgentTab('a1')?.optionValues?.model).toBe('fable[1m]')
       dispose()
     })
   })
@@ -298,7 +380,7 @@ describe('useAgentOperations settings reconciliation', () => {
 
     // The account-default switch settles to a concrete model, so the post-RPC reconcile
     // runs and writes the settled values.
-    updateAgentSettings.mockResolvedValue({ confirmedOptions: { model: 'sonnet', effort: 'high' } })
+    updateAgentSettings.mockResolvedValue(confirmedResponse({ model: 'sonnet', effort: 'high' }))
 
     // Make ONLY the reconcile's store write fault: the first patch is the optimistic
     // write (pass through), the second is the reconcile snap (throw). This simulates a
@@ -350,7 +432,7 @@ describe('useAgentOperations settings reconciliation', () => {
     // Cursor applies the switch LIVE and the reply confirms the same concrete model.
     // The reconcile only snaps the account-default sentinel, so a concrete switch keeps
     // its optimistic value untouched regardless of what the reply echoes.
-    updateAgentSettings.mockResolvedValue({ confirmedOptions: { model: 'claude-fable-5[effort=high]', permissionMode: 'agent' } })
+    updateAgentSettings.mockResolvedValue(confirmedResponse({ model: 'claude-fable-5[effort=high]', permissionMode: 'agent' }))
 
     await runChange(stores, { groupKey: 'model', value: 'claude-fable-5[effort=high]' })
 
@@ -359,31 +441,34 @@ describe('useAgentOperations settings reconciliation', () => {
     expect(stores.view.getAgentTab('a1')?.optionValues?.model).toBe('claude-fable-5[effort=high]')
   })
 
-  it('applies a multi-axis change optimistically and sends both axes in ONE RPC', async () => {
+  it('applies a multi-axis change optimistically and sends all axes in one RPC', async () => {
     const stores = seedAgent({
       optionValues: { model: 'opus[1m]', effort: 'high', permissionMode: 'default' },
       optionGroups: opusCatalog(),
     })
 
-    updateAgentSettings.mockResolvedValue({ confirmedOptions: {} })
+    updateAgentSettings.mockResolvedValue(confirmedResponse({}))
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
       // An action button (e.g. Codex "Bypass permissions") carries several axes.
-      await ops.handleAgentSettingChange('a1', { sets: { network_access: 'enabled', permissionMode: 'never' } })
+      await ops.handleAgentSettingChange('a1', {
+        sets: { network_access: 'enabled', sandbox_policy: 'danger-full-access', permissionMode: 'never' },
+      })
       dispose()
     })
 
-    // Both axes are written optimistically in one update.
+    // All axes are written optimistically in one update.
     const tab = stores.view.getAgentTab('a1')
     expect(tab?.optionValues?.network_access).toBe('enabled')
+    expect(tab?.optionValues?.sandbox_policy).toBe('danger-full-access')
     expect(tab?.optionValues?.permissionMode).toBe('never')
-    // ONE RPC carrying BOTH axes -- not one RPC per axis -- so the worker applies them
+    // One RPC carries all axes, so the worker applies them
     // atomically and can't leave the agent half-bypassed.
     expect(updateAgentSettings).toHaveBeenCalledTimes(1)
     expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
       agentId: 'a1',
-      settings: { options: { network_access: 'enabled', permissionMode: 'never' } },
+      settings: { options: { network_access: 'enabled', sandbox_policy: 'danger-full-access', permissionMode: 'never' } },
     })
   })
 
@@ -425,7 +510,7 @@ describe('useAgentOperations settings reconciliation', () => {
     })
     updateAgentSettings
       .mockReturnValueOnce(aPending)
-      .mockResolvedValueOnce({ confirmedOptions: {} })
+      .mockResolvedValueOnce(confirmedResponse({}))
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
@@ -468,7 +553,7 @@ describe('useAgentOperations settings reconciliation', () => {
 
   it('refuses a change for an agent that has reported no option catalog yet', async () => {
     // An agent mid-startup whose catalog has not arrived: optionGroups is empty. A
-    // programmatic caller (the control-request "& Bypass Permissions" button, gated on a
+    // programmatic caller (the control-request bypass switch, controlled by a
     // static provider constant rather than the live catalog) can still dispatch here.
     const stores = seedAgent({
       optionValues: { model: 'opus[1m]' },

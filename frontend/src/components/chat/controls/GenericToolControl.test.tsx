@@ -1,9 +1,8 @@
-import type { AskQuestionState } from '~/components/chat/controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { GenericToolActions } from '~/components/chat/controls/GenericToolControl'
+import { createAskQuestionState } from '~/test-support/askQuestionState'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
@@ -13,13 +12,6 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
       request: { tool_name: 'Bash', input: { command: 'ls' } },
     },
   }
-}
-
-function makeAskState(): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
 }
 
 describe('genericToolActions', () => {
@@ -33,41 +25,40 @@ describe('genericToolActions', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows Reject, Allow, and Bypass Permissions when no editor content', () => {
+  it('shows Deny, Allow, and the Bypass Permissions switch when no editor content', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={vi.fn()}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
     expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
-    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
     expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
-    expect(screen.getByTestId('control-bypass-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('control-bypass-permissions-checkbox')).toBeInTheDocument()
   })
 
-  it('shows only Send Feedback when editor has content', () => {
+  it('shows only Send feedback when editor has content', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        onPermissionModeChange={vi.fn()}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
     expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
-    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send Feedback')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send feedback')
     expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('control-bypass-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('control-bypass-permissions-checkbox')).not.toBeInTheDocument()
   })
 
   it('sends allow response with original tool input when allow is clicked', () => {
@@ -77,12 +68,11 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={request}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={vi.fn()}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
       />
     ))
 
@@ -97,26 +87,48 @@ describe('genericToolActions', () => {
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
   })
 
+  it('sends deny response when deny is clicked with an empty editor', () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <GenericToolActions
+        request={makeRequest('req-deny', 'agent-deny')}
+        askState={createAskQuestionState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+
+    fireEvent.click(screen.getByTestId('control-deny-btn'))
+
+    expect(onRespond).toHaveBeenCalledOnce()
+    const [agentId, bytes] = onRespond.mock.calls[0]
+    expect(agentId).toBe('agent-deny')
+    expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
+      response: { request_id: 'req-deny', response: { behavior: 'deny' } },
+    })
+  })
+
   it('sends allow response and changes permission mode when bypass is clicked', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    const onPermissionModeChange = vi.fn()
+    const applyBypass = vi.fn()
     const request = makeRequest('req-42', 'agent-7')
 
     render(() => (
       <GenericToolActions
         request={request}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={onPermissionModeChange}
+        bypass={{ settings: { sets: { permissionMode: 'bypassPermissions' } }, apply: applyBypass }}
       />
     ))
 
     // The handler AWAITS the allow before switching the mode, so the assertion
     // waits for that microtask -- ordering is the point of the fix.
-    await fireEvent.click(screen.getByTestId('control-bypass-btn'))
+    fireEvent.click(screen.getByTestId('control-bypass-permissions-checkbox').querySelector('input')!)
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     // Verify allow response was sent
     expect(onRespond).toHaveBeenCalledOnce()
@@ -128,28 +140,20 @@ describe('genericToolActions', () => {
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
 
     // Verify permission mode change
-    expect(onPermissionModeChange).toHaveBeenCalledOnce()
-    expect(onPermissionModeChange).toHaveBeenCalledWith('bypassPermissions')
+    expect(applyBypass).toHaveBeenCalledWith({ sets: { permissionMode: 'bypassPermissions' } })
   })
 
-  it('has a tooltip on the bypass button', () => {
+  it('does not show the bypass switch without a bypass mode', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={makeAskState()}
+        askState={createAskQuestionState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        bypassPermissionMode="bypassPermissions"
-        onPermissionModeChange={vi.fn()}
       />
     ))
 
-    const button = screen.getByTestId('control-bypass-btn')
-    fireEvent.mouseEnter(button)
-    vi.advanceTimersByTime(700)
-
-    expect(screen.getByRole('tooltip', { hidden: true }))
-      .toHaveTextContent('Allow this request and stop asking for permissions')
+    expect(screen.queryByTestId('control-bypass-permissions-checkbox')).not.toBeInTheDocument()
   })
 })

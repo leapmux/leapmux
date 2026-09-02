@@ -1125,7 +1125,7 @@ func TestModelGroupDefault_ClaudeDefaultSentinel(t *testing.T) {
 // pushing an unresolvable "default" model through apply_flag_settings.
 func TestUpdateSettings_SwitchToDefaultRestarts(t *testing.T) {
 	a := &ClaudeCodeAgent{model: "claude-fable-5[1m]", effort: EffortHigh}
-	assert.False(t, a.UpdateSettings(map[string]string{OptionIDModel: DefaultModelSentinel}))
+	assert.False(t, a.UpdateSettings(map[string]string{OptionIDModel: DefaultModelSentinel}).AppliedLive)
 }
 
 // TestClaudeOptionGroups_HiddenModelEffortUISurfacesReadOnly verifies a third-party

@@ -128,6 +128,20 @@ func boundStrings(set *listenerSet) []string {
 	return out
 }
 
+func requireBoundFailure(t *testing.T, bound []BoundAddress, address string) BoundAddress {
+	t.Helper()
+	for _, candidate := range bound {
+		if candidate.Addr.String() != address {
+			continue
+		}
+		require.NotEmpty(t, candidate.Err, "the refused address must include the operating system's bind error")
+		assert.Contains(t, candidate.Err, address, "the bind error must identify its refused address")
+		return candidate
+	}
+	t.Fatalf("the refused address %s is absent from the listener status", address)
+	return BoundAddress{}
+}
+
 func TestListenerSet_AppliesAnExtraAddressWhileServing(t *testing.T) {
 	ports := freePorts(t, 2)
 	basePort, extraPort := ports[0], ports[1]
@@ -240,15 +254,8 @@ func TestListenerSet_ApplyBestEffortKeepsTheUsableAddresses(t *testing.T) {
 
 	// The failure is reported against its own address rather than dropped, so
 	// the panel can print the operating system's reason beside it.
-	var failed *BoundAddress
-	for i, b := range set.Bound() {
-		if b.Err != "" {
-			failed = &set.Bound()[i]
-		}
-	}
-	require.NotNil(t, failed, "an address that could not bind must be reported, not silently absent")
-	assert.Equal(t, "127.0.0.1:"+strconv.Itoa(occupiedPort), failed.Addr.String())
-	assert.Contains(t, failed.Err, "address already in use")
+	occupied := "127.0.0.1:" + strconv.Itoa(occupiedPort)
+	requireBoundFailure(t, set.Bound(), occupied)
 }
 
 // A best-effort apply must still REMOVE the addresses the new configuration

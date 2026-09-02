@@ -2,15 +2,13 @@ import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps } from '../../controls/types'
 import { createMemo, Match, Show, Switch } from 'solid-js'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { ExitPlanModeActions } from '../../controls/ExitPlanModeControl'
 import { GenericToolActions, GenericToolContent } from '../../controls/GenericToolControl'
 import { MarkdownText } from '../../messageRenderers'
-import { zcodePlanText, zcodeQuestionsFromPayload } from './askUserQuestion'
+import { zcodePlanText } from './askUserQuestion'
 
 /**
  * ZCode multiplexes three prompts over two RPCs, and the worker records which one
@@ -75,15 +73,6 @@ export const ZCodeControlContent: Component<ContentProps> = (props) => {
       <Match when={kind() === ZCODE_TOOL.ExitPlanMode}>
         <ZCodePlanContent payload={props.request.payload} />
       </Match>
-      <Match when={kind() === ZCODE_TOOL.AskUserQuestion}>
-        <AskUserQuestionContent
-          request={props.request}
-          askState={props.askState}
-          optionsDisabled={props.optionsDisabled}
-          agentProvider={AgentProvider.ZCODE}
-          questions={zcodeQuestionsFromPayload(props.request.payload)}
-        />
-      </Match>
     </Switch>
   )
 }
@@ -102,13 +91,6 @@ export const ZCodeControlActions: Component<ActionsProps> = (props) => {
     <Switch fallback={<GenericToolActions {...props} />}>
       <Match when={kind() === ZCODE_TOOL.ExitPlanMode}>
         <ExitPlanModeActions {...props} />
-      </Match>
-      <Match when={kind() === ZCODE_TOOL.AskUserQuestion}>
-        <AskUserQuestionActions
-          {...props}
-          agentProvider={AgentProvider.ZCODE}
-          questions={zcodeQuestionsFromPayload(props.request.payload)}
-        />
       </Match>
     </Switch>
   )

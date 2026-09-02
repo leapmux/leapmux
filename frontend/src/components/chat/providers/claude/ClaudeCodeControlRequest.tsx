@@ -3,7 +3,6 @@ import type { ActionsProps, ContentProps } from '../../controls/types'
 
 import { Match, Switch } from 'solid-js'
 import { getToolName } from '~/utils/controlResponse'
-import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { ExitPlanModeActions, ExitPlanModeContent } from '../../controls/ExitPlanModeControl'
 import { GenericToolActions, GenericToolContent } from '../../controls/GenericToolControl'
 
@@ -14,9 +13,6 @@ export const ClaudeCodeControlContent: Component<ContentProps> = (props) => {
     <Switch fallback={<GenericToolContent request={props.request} />}>
       <Match when={toolName() === 'ExitPlanMode'}>
         <ExitPlanModeContent request={props.request} />
-      </Match>
-      <Match when={toolName() === 'AskUserQuestion' || toolName() === 'request_user_input'}>
-        <AskUserQuestionContent request={props.request} askState={props.askState} optionsDisabled={props.optionsDisabled} />
       </Match>
     </Switch>
   )
@@ -29,9 +25,6 @@ export const ClaudeCodeControlActions: Component<ActionsProps> = (props) => {
     <Switch fallback={<GenericToolActions {...props} />}>
       <Match when={toolName() === 'ExitPlanMode'}>
         <ExitPlanModeActions {...props} />
-      </Match>
-      <Match when={toolName() === 'AskUserQuestion' || toolName() === 'request_user_input'}>
-        <AskUserQuestionActions {...props} />
       </Match>
     </Switch>
   )

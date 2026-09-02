@@ -14,7 +14,7 @@ describe('goose provider', () => {
   describeACPStubBasics(plugin, { text: true, image: true, pdf: true, binary: true })
 
   it('uses auto as bypass permission mode', () => {
-    expect(plugin.bypassPermissionMode).toBe(MODE_AUTO)
+    expect(plugin.bypassSettings?.sets.permissionMode).toBe(MODE_AUTO)
   })
 
   it('has no plan mode', () => {

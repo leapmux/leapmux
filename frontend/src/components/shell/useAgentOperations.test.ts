@@ -116,6 +116,8 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     setMessageError: vi.fn(),
     removeMessage: vi.fn(),
     forgetAgent: vi.fn(),
+    clearToolProgress: vi.fn(),
+    streamingText: { clear: vi.fn() },
   } as any
 
   const repoGitStore = createRepoGitStore()
@@ -434,10 +436,10 @@ describe('useAgentOperations', () => {
   })
 
   describe('handleInterrupt', () => {
-    it('calls the worker-side InterruptAgent RPC', async () => {
+    it('leaves live state to the authoritative completion event', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { ops, add } = setup()
+          const { ops, add, agentSessionStore, chatStore } = setup()
           const agent = create(AgentInfoSchema, {
             id: 'codex-1',
             workerId: 'w-1',
@@ -446,12 +448,44 @@ describe('useAgentOperations', () => {
           })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockResolvedValue({})
+          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
 
           await ops.handleInterrupt('codex-1')
 
           expect(mockInterruptAgent).toHaveBeenCalledWith('w-1', {
             agentId: 'codex-1',
           })
+          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
+          expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
+          expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
+          expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('keeps live state when the worker rejects the interrupt', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add, agentSessionStore, chatStore } = setup()
+          const agent = create(AgentInfoSchema, {
+            id: 'codex-1',
+            workerId: 'w-1',
+            agentProvider: AgentProvider.CODEX,
+            agentSessionId: 'thread-1',
+          })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          mockInterruptAgent.mockRejectedValue(new Error('interrupt failed'))
+          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
+
+          await ops.handleInterrupt('codex-1')
+
+          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
+          expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
+          expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
+          expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
         }
         finally {
           dispose()
@@ -995,7 +1029,7 @@ describe('useAgentOperations', () => {
           vi.mocked(workerRpc.sendControlResponse).mockClear()
           controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'instance-token-1' })
 
-          await ops.handleControlResponse('a1', answer('r1'))
+          await ops.handleControlResponse('a1', 'r1', answer('r1'))
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
@@ -1015,7 +1049,7 @@ describe('useAgentOperations', () => {
           vi.mocked(workerRpc.sendControlResponse).mockClear()
 
           // No control request in the store for r-missing and no threaded token -> the echoed token is ''.
-          await ops.handleControlResponse('a1', answer('r-missing'))
+          await ops.handleControlResponse('a1', 'r-missing', answer('r-missing'))
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
@@ -1038,7 +1072,7 @@ describe('useAgentOperations', () => {
           // lookup would miss and fall back to ''. The token captured at the answer site is threaded in
           // and is authoritative, so the worker still claims on the answered INSTANCE rather than dropping
           // to an empty-token key (which could double-win or drop the answer).
-          await ops.handleControlResponse('a1', answer('r-gone'), 'threaded-token-9')
+          await ops.handleControlResponse('a1', 'r-gone', answer('r-gone'), 'threaded-token-9')
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
@@ -1058,12 +1092,28 @@ describe('useAgentOperations', () => {
           vi.mocked(workerRpc.sendControlResponse).mockClear()
           controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'stale-store-token' })
 
-          await ops.handleControlResponse('a1', answer('r1'), 'fresh-answer-token')
+          await ops.handleControlResponse('a1', 'r1', answer('r1'), 'fresh-answer-token')
 
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(
             expect.any(String),
             expect.objectContaining({ agentId: 'a1', claimToken: 'fresh-answer-token' }),
           )
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('rejects after reporting a transport failure', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          const failure = new Error('send failed')
+          vi.mocked(workerRpc.sendControlResponse).mockRejectedValueOnce(failure)
+
+          await expect(ops.handleControlResponse('a1', 'r1', answer('r1'))).rejects.toBe(failure)
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to send response', failure)
         }
         finally {
           dispose()

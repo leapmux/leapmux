@@ -33,10 +33,10 @@ test.describe('Markdown Editor', () => {
     await editor.click()
     await page.keyboard.type('some code')
 
-    // Select all text, then apply inline code. The formatting toolbar is gone,
-    // so this drives the markdown input rule that replaced it.
+    // Select all text, then type the supported mark-toggle character. Typing a
+    // complete Markdown string arrives as one input event and does not invoke it.
     await page.keyboard.press('Meta+a')
-    await page.keyboard.type('`some code`')
+    await page.keyboard.type('`')
 
     // Check that the code element's computed font-family includes the fallback
     const fontFamily = await editor.locator('code').evaluate(
@@ -302,8 +302,8 @@ test.describe('Code Language Label', () => {
   })
 })
 
-test.describe('Send Feedback Button Labels', () => {
-  test('ExitPlanMode banner shows Reject when editor is empty, Send Feedback when typing', async ({ page, authenticatedWorkspace }) => {
+test.describe('send feedback button labels', () => {
+  test('ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace }) => {
     // Enter plan mode, write a dummy plan, and exit
     const banner = await enterAndExitPlanMode(page)
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
@@ -313,11 +313,11 @@ test.describe('Send Feedback Button Labels', () => {
     // With empty editor, button should say "Reject"
     await expect(rejectBtn).toHaveText('Reject')
 
-    // Type feedback into the editor — button should switch to "Send Feedback"
+    // Type feedback into the editor. The button must switch to "Send feedback".
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('Please reconsider this approach')
-    await expect(rejectBtn).toHaveText('Send Feedback')
+    await expect(rejectBtn).toHaveText('Send feedback')
   })
 })
 

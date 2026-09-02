@@ -206,7 +206,7 @@ func (a *PiAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 
 // UpdateSettings applies model, thinking-level, and provider changes live so
 // the next prompt picks them up without a restart.
-func (a *PiAgent) UpdateSettings(options optionmap.Map) bool {
+func (a *PiAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	a.mu.Lock()
 	curEffort := a.thinkingLevel
 	curModel := a.model
@@ -217,7 +217,7 @@ func (a *PiAgent) UpdateSettings(options optionmap.Map) bool {
 	// pick its own default" — the wire protocol has no equivalent, so a
 	// restart is required (return false to signal the caller to restart).
 	if IsEffortAutoTransition(options[OptionIDEffort], curEffort) {
-		return false
+		return restartRequiredSettings(options)
 	}
 
 	timeout := a.APITimeout()
@@ -262,7 +262,7 @@ func (a *PiAgent) UpdateSettings(options optionmap.Map) bool {
 		a.mu.Lock()
 		a.model, a.thinkingLevel, a.provider = curModel, curEffort, curProvider
 		a.mu.Unlock()
-		return false
+		return restartRequiredSettings(options)
 	}
 
 	a.mu.Lock()
@@ -274,5 +274,14 @@ func (a *PiAgent) UpdateSettings(options optionmap.Map) bool {
 		OptionIDEffort:   eff,
 		PiOptionProvider: prov,
 	})
-	return true
+	return a.SettingsSnapshot()
+}
+
+func (a *PiAgent) SettingsSnapshot() SettingsApplyResult {
+	result := confirmedSettings(CurrentOptions(a.OptionGroups()))
+	a.mu.Lock()
+	provider := a.provider
+	a.mu.Unlock()
+	result.Settlements[PiOptionProvider] = OptionSettlement{State: OptionSettlementConfirmed, Value: &provider}
+	return result
 }

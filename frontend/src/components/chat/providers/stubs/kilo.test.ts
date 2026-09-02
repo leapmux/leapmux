@@ -369,7 +369,7 @@ describe('kilo isAskUserQuestion', () => {
       type: 'question.asked',
       properties: { questions: [] },
     }
-    expect(plugin.isAskUserQuestion!(payload)).toBe(true)
+    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(true)
   })
 
   it('returns false for permission requests', () => {
@@ -377,21 +377,11 @@ describe('kilo isAskUserQuestion', () => {
       method: 'requestPermission',
       params: { toolCall: { toolCallId: 'tc-1' } },
     }
-    expect(plugin.isAskUserQuestion!(payload)).toBe(false)
+    expect(plugin.askUserQuestion!.isRequest(payload)).toBe(false)
   })
 
   it('returns false for regular messages', () => {
-    expect(plugin.isAskUserQuestion!({})).toBe(false)
-  })
-})
-
-describe('kilo buildInterruptContent', () => {
-  const plugin = providerFor(AgentProvider.KILO)!
-
-  // The happy-path cancel request is covered by describeACPStubBasics above; this guards the
-  // empty-session edge that the shared helper does not exercise.
-  it('returns null for empty session id', () => {
-    expect(plugin.buildInterruptContent!('')).toBeNull()
+    expect(plugin.askUserQuestion!.isRequest({})).toBe(false)
   })
 })
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,38 +63,41 @@ func TestSplitKV_EmptyStringRejected(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestAppliedFromConfirmed_FiltersToRequestedKeys is the regression guard for the `applied`
-// report: the worker's confirmed map is the FULL option set, so the CLI must project it onto
-// ONLY the axes the user requested. A requested axis the provider did not apply (here effort,
-// baked into the new model id and therefore absent from confirmed) is reported under notApplied
-// -- not as an `applied` entry with a cryptic "" -- so the user plainly sees it did not take;
-// inherited axes the user never set (permission mode, a provider-default sandbox) must NOT leak
-// into either list.
-func TestAppliedFromConfirmed_FiltersToRequestedKeys(t *testing.T) {
-	requested := map[string]string{optionids.Model: "sonnet", optionids.Effort: "high"}
-	confirmed := map[string]string{
-		optionids.Model: "sonnet",
-		// effort is absent: the settled model bakes its effort into the id, so the worker
-		// stripped the requested tier.
-		optionids.PermissionMode: "plan",            // inherited, never requested
-		"sandbox":                "workspace-write", // a provider default, never requested
+func TestAppliedFromSettlements_ClassifiesRequestedKeys(t *testing.T) {
+	model := "sonnet"
+	requested := map[string]string{
+		optionids.Model:  "sonnet",
+		optionids.Effort: "high",
+		"service_tier":   "fast",
+	}
+	settlements := map[string]*leapmuxv1.AgentOptionSettlement{
+		optionids.Model: {
+			State: leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_CONFIRMED,
+			Value: &model,
+		},
+		optionids.Effort: {
+			State: leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_CONFIRMED,
+		},
+		"service_tier": {
+			State: leapmuxv1.AgentOptionSettlementState_AGENT_OPTION_SETTLEMENT_STATE_UNRESOLVED,
+		},
 	}
 
-	applied, notApplied := appliedFromConfirmed(requested, confirmed)
+	applied, notApplied, unresolved := appliedFromSettlements(requested, settlements)
 
 	assert.Equal(t, map[string]string{
 		optionids.Model: "sonnet", // settled value reported
-	}, applied, "only the requested axes that settled are reported; inherited ones don't leak")
+	}, applied)
 	assert.Equal(t, []string{optionids.Effort}, notApplied,
-		"a requested axis absent from confirmed is reported as not-applied, not as an empty applied value")
+		"a confirmed removal is reported as not applied")
+	assert.Equal(t, []string{"service_tier"}, unresolved)
 }
 
-// TestAppliedFromConfirmed_EmptyRequestReportsNothing pins the trivial edge: with no requested
-// axes both lists are empty regardless of how full the worker's confirmed map is.
-func TestAppliedFromConfirmed_EmptyRequestReportsNothing(t *testing.T) {
-	applied, notApplied := appliedFromConfirmed(map[string]string{}, map[string]string{optionids.Model: "sonnet"})
+func TestAppliedFromSettlements_EmptyRequestReportsNothing(t *testing.T) {
+	applied, notApplied, unresolved := appliedFromSettlements(map[string]string{}, nil)
 	assert.Empty(t, applied)
 	assert.Empty(t, notApplied)
+	assert.Empty(t, unresolved)
 }
 
 // TestStringSliceFlag_AccumulatesValues is the multi-pass `flag.Value`

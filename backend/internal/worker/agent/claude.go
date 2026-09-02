@@ -120,6 +120,9 @@ type ClaudeCodeAgent struct {
 	// mode. Tracking only the latest (a later toggle overwrites it) means a superseded toggle's
 	// ack is ignored, leaving the mode the user last asked for. Empty when nothing is pending.
 	deferredPermissionModeReqID string
+	// unresolvedSettings records flag axes whose last write had no successful
+	// get_settings readback.
+	unresolvedSettings map[string]struct{}
 
 	// Settings state from initialize response and runtime updates.
 	outputStyle           string
@@ -383,7 +386,12 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	// with --effort omitted because LeapMux resolved the effort option to
 	// "auto"). Run even if apply_flag_settings failed so the DB mirrors
 	// the CLI's actual state rather than what we tried to set.
-	a.refreshSettingsFromAgent(timeout)
+	observedSettings := a.refreshSettingsFromAgent(timeout)
+	for _, id := range claudeFlagOptionIDs {
+		if _, observed := observedSettings[id]; !observed {
+			a.markSettingsUnresolved(id)
+		}
+	}
 	a.ensureSettledModelListed()
 	return nil
 }
@@ -1039,10 +1047,9 @@ func (r effortResolver) trustCLIUltracodeReport(model string, known bool) bool {
 	return model != DefaultModelSentinel && (!known || r.supportsUltracode(model))
 }
 
-// UpdateSettings applies settings changes via the apply_flag_settings control
-// request, avoiding a process restart. Returns true if the update was handled
-// (or nothing changed), false if a restart is needed.
-func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) bool {
+// UpdateSettings applies settings through live control requests when possible.
+// The result identifies values that need a restart or a later readback.
+func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	a.mu.Lock()
 	curModel, curEffort := a.model, a.effort
 	curPermissionMode := a.confirmedPermissionMode
@@ -1064,7 +1071,7 @@ func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) bool {
 	// back to "let Claude pick" is to re-launch without --effort. Signal
 	// the caller to restart instead.
 	if IsEffortAutoTransition(reqEffort, curEffort) {
-		return false
+		return restartRequiredSettings(options)
 	}
 
 	// Switching to the account-default sentinel can't be done live either:
@@ -1073,13 +1080,15 @@ func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) bool {
 	// would strand the session on a bogus "default" model. Re-launch so startup
 	// resolves it to the concrete model, mirroring the EffortAuto restart above.
 	if reqModel == DefaultModelSentinel && reqModel != curModel {
-		return false
+		return restartRequiredSettings(options)
 	}
 
 	flagSettings := map[string]interface{}{}
+	changedFlagOptionIDs := make([]string, 0, len(claudeFlagOptionIDs))
 
 	if reqModel != "" && reqModel != curModel {
 		flagSettings["model"] = reqModel
+		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionIDModel)
 	}
 	// Resolve the requested effort against the model it will run under (the new model
 	// when this update also switches model) so a combined model+effort change can't
@@ -1091,31 +1100,41 @@ func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) bool {
 	if reqModel != "" {
 		targetModel = reqModel
 	}
-	maps.Copy(flagSettings, a.effortResolver().updateFlagSettings(targetModel, reqEffort, curEffort))
+	effortSettings := a.effortResolver().updateFlagSettings(targetModel, reqEffort, curEffort)
+	if len(effortSettings) > 0 {
+		maps.Copy(flagSettings, effortSettings)
+		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionIDEffort)
+	}
 
 	if v := options[ClaudeOptionOutputStyle]; v != "" && v != curOutputStyle {
 		if !slices.Contains(availStyles, v) {
-			return false
+			return restartRequiredSettings(options)
 		}
 		flagSettings[ClaudeOptionOutputStyle] = v
+		changedFlagOptionIDs = append(changedFlagOptionIDs, ClaudeOptionOutputStyle)
 	}
 	if v := options[ClaudeOptionFastMode]; v != "" && v != curFastMode {
 		flagSettings[ClaudeOptionFastMode] = flagSettingOnOff(v)
+		changedFlagOptionIDs = append(changedFlagOptionIDs, ClaudeOptionFastMode)
 	}
 	if v := options[ClaudeOptionAlwaysThinking]; v != "" && v != curThinking {
 		flagSettings[ClaudeOptionAlwaysThinking] = flagSettingThinking(v)
+		changedFlagOptionIDs = append(changedFlagOptionIDs, ClaudeOptionAlwaysThinking)
 	}
 
 	if len(flagSettings) > 0 {
 		if err := a.sendApplyFlagSettings(a.ctx, flagSettings, a.APITimeout()); err != nil {
 			slog.Error("apply_flag_settings failed", "agent_id", a.agentID, "error", err)
-			return false
+			return restartRequiredSettings(options)
 		}
 	}
 
+	permissionConfirmed := true
 	if mode := options[OptionIDPermissionMode]; mode != "" && mode != curPermissionMode {
-		if !a.applyPermissionModeLive(mode) {
-			return false
+		var applied bool
+		applied, permissionConfirmed = a.applyPermissionModeLive(mode)
+		if !applied {
+			return restartRequiredSettings(options)
 		}
 	}
 
@@ -1125,27 +1144,81 @@ func (a *ClaudeCodeAgent) UpdateSettings(options optionmap.Map) bool {
 	// half-applied model/effort is broadcast (or folded into a.model/a.effort) first. The flag
 	// settings were already pushed to the CLI; deferring only their read-back/broadcast leaves the
 	// in-memory state consistent on the failure path, and the restart supersedes the live apply.
+	var observedSettings map[string]struct{}
 	if len(flagSettings) > 0 {
-		a.refreshSettingsFromAgent(a.APITimeout())
+		observedSettings = a.refreshSettingsFromAgent(a.APITimeout())
 	}
-	return true
+
+	if len(flagSettings) > 0 {
+		unresolved := make([]string, 0, len(changedFlagOptionIDs))
+		for _, id := range changedFlagOptionIDs {
+			if _, observed := observedSettings[id]; !observed {
+				unresolved = append(unresolved, id)
+			}
+		}
+		a.markSettingsUnresolved(unresolved...)
+	}
+	result := a.SettingsSnapshot()
+	if !permissionConfirmed {
+		result.Settlements[OptionIDPermissionMode] = OptionSettlement{State: OptionSettlementUnresolved}
+	}
+	return result
+}
+
+var claudeFlagOptionIDs = []string{
+	OptionIDModel,
+	OptionIDEffort,
+	ClaudeOptionOutputStyle,
+	ClaudeOptionFastMode,
+	ClaudeOptionAlwaysThinking,
+}
+
+func (a *ClaudeCodeAgent) markSettingsUnresolved(ids ...string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.unresolvedSettings == nil {
+		a.unresolvedSettings = make(map[string]struct{})
+	}
+	for _, id := range ids {
+		a.unresolvedSettings[id] = struct{}{}
+	}
+}
+
+func (a *ClaudeCodeAgent) SettingsSnapshot() SettingsApplyResult {
+	result := confirmedSettings(CurrentOptions(a.OptionGroups()))
+	a.mu.Lock()
+	unresolved := make([]string, 0, len(a.unresolvedSettings))
+	for id := range a.unresolvedSettings {
+		unresolved = append(unresolved, id)
+	}
+	permissionPending := a.deferredPermissionModeReqID != ""
+	a.mu.Unlock()
+	for _, id := range unresolved {
+		result.Settlements[id] = OptionSettlement{State: OptionSettlementUnresolved}
+	}
+	if permissionPending {
+		result.Settlements[OptionIDPermissionMode] = OptionSettlement{State: OptionSettlementUnresolved}
+	}
+	return result
 }
 
 // applyPermissionModeLive applies a permission-mode change to the running CLI via
-// set_permission_mode, returning false (the caller must restart) only on a hard failure. Caller
-// holds NO lock. Extracted from UpdateSettings so the model/effort flag-settings build is no
-// longer interleaved with the permission-mode RPC's three-way ack handling.
+// set_permission_mode. The first result reports whether the caller can keep the process. The
+// second result reports whether the command acknowledged the value. The caller holds no lock.
 //
 // The control request is capped well below APITimeout: idle, the CLI acks set_permission_mode in
 // well under a second, but while a turn is streaming it defers the ack until the turn ends, so
 // holding the caller (and the per-agent lifecycle lock) for the full APITimeout and then restarting
 // would needlessly kill the in-flight turn.
-func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) bool {
+func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) (applied, confirmed bool) {
 	resp, err := a.sendSetPermissionMode(a.ctx, mode, min(permissionModeApplyTimeout, a.APITimeout()))
 	switch {
 	case err == nil:
 		a.mu.Lock()
 		a.confirmedPermissionMode = resp.Mode
+		// This acknowledged request supersedes any older deferred toggle. Its
+		// late response must not keep the current value unresolved.
+		a.deferredPermissionModeReqID = ""
 		// A live switch that LANDED on auto proves the session can enter it, so clear a stale
 		// autoModeAvailable=false a transient startup probe failure may have left behind. Without
 		// this, OptionGroups would keep filtering "auto" out of the picker even though the session
@@ -1155,6 +1228,7 @@ func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) bool {
 			a.autoModeAvailable = true
 		}
 		a.mu.Unlock()
+		confirmed = true
 	case errors.Is(err, errControlTimeout):
 		// The ack is deferred because a turn is in progress, but the CLI still queues
 		// and applies the mode. Treat it as accepted-pending: record the requested mode
@@ -1170,30 +1244,30 @@ func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) bool {
 		a.mu.Unlock()
 	default:
 		slog.Error("set_permission_mode failed", "agent_id", a.agentID, "mode", mode, "error", err)
-		return false
+		return false, false
 	}
-	return true
+	return true, confirmed
 }
 
 // refreshSettingsFromAgent sends get_settings and updates internal state with
 // the actual applied values from Claude Code.
-func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
+func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) map[string]struct{} {
 	resp, err := a.sendControlAndWait(a.ctx, `{"subtype":"get_settings"}`, timeout)
 	if err != nil {
 		slog.Warn("get_settings failed", "agent_id", a.agentID, "error", err)
-		return
+		return nil
 	}
 	if len(resp.RawResponse) == 0 {
-		return
+		return nil
 	}
 
 	var settings struct {
-		Effective struct {
+		Effective *struct {
 			OutputStyle           string `json:"outputStyle"`
 			FastMode              *bool  `json:"fastMode"`
 			AlwaysThinkingEnabled *bool  `json:"alwaysThinkingEnabled"`
 		} `json:"effective"`
-		Applied struct {
+		Applied *struct {
 			Model     string  `json:"model"`
 			Effort    *string `json:"effort"`
 			Ultracode *bool   `json:"ultracode"`
@@ -1201,11 +1275,30 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 	}
 	if err := json.Unmarshal(resp.RawResponse, &settings); err != nil {
 		slog.Warn("get_settings response parse failed", "agent_id", a.agentID, "error", err)
-		return
+		return nil
+	}
+	observed := make(map[string]struct{}, len(claudeFlagOptionIDs))
+	if settings.Applied != nil {
+		if settings.Applied.Effort != nil || settings.Applied.Ultracode != nil {
+			observed[OptionIDEffort] = struct{}{}
+		}
+		if settings.Applied.Model != "" {
+			observed[OptionIDModel] = struct{}{}
+		}
+	}
+	if settings.Effective != nil {
+		observed[ClaudeOptionFastMode] = struct{}{}
+		observed[ClaudeOptionAlwaysThinking] = struct{}{}
+		if settings.Effective.OutputStyle != "" {
+			observed[ClaudeOptionOutputStyle] = struct{}{}
+		}
 	}
 
 	a.mu.Lock()
-	if settings.Applied.Model != "" {
+	for id := range observed {
+		delete(a.unresolvedSettings, id)
+	}
+	if settings.Applied != nil && settings.Applied.Model != "" {
 		// Settle a.model onto the concrete model the CLI resolved. Once the concrete
 		// identity is known it -- not the "default" sentinel -- is what the tab selects,
 		// persists, broadcasts, and resolves effort/window against: the sentinel is only
@@ -1231,8 +1324,10 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 	// gate inside effortFromApplied sees the model the CLI actually applied.
 	// effortResolver reads a.availableModels lock-free, so it is safe to call here
 	// while a.mu is held.
-	a.effort = a.effortResolver().effortFromApplied(settings.Applied.Effort, settings.Applied.Ultracode, a.effort, a.model)
-	if settings.Effective.OutputStyle != "" {
+	if _, effortObserved := observed[OptionIDEffort]; effortObserved {
+		a.effort = a.effortResolver().effortFromApplied(settings.Applied.Effort, settings.Applied.Ultracode, a.effort, a.model)
+	}
+	if settings.Effective != nil && settings.Effective.OutputStyle != "" {
 		a.outputStyle = settings.Effective.OutputStyle
 	}
 	// get_settings' `effective` is the CLI's MERGED settings map (verified by
@@ -1246,14 +1341,14 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 	// prior setting, which then persists -- desyncing the settings-changed baseline
 	// from the running session, so a later toggle compares against the wrong stored
 	// value and its notification silently no-ops or shows a reversed transition.
-	if settings.Effective.FastMode != nil && *settings.Effective.FastMode {
+	if settings.Effective != nil && settings.Effective.FastMode != nil && *settings.Effective.FastMode {
 		a.fastMode = FastModeOn
-	} else {
+	} else if settings.Effective != nil {
 		a.fastMode = FastModeOff // nil == cleared to the CLI default (off)
 	}
-	if settings.Effective.AlwaysThinkingEnabled != nil && !*settings.Effective.AlwaysThinkingEnabled {
+	if settings.Effective != nil && settings.Effective.AlwaysThinkingEnabled != nil && !*settings.Effective.AlwaysThinkingEnabled {
 		a.alwaysThinking = AlwaysThinkingOff
-	} else {
+	} else if settings.Effective != nil {
 		a.alwaysThinking = AlwaysThinkingOn // nil == cleared to the CLI default (on)
 	}
 	model, effort := a.model, a.effort
@@ -1280,6 +1375,7 @@ func (a *ClaudeCodeAgent) refreshSettingsFromAgent(timeout time.Duration) {
 		ClaudeOptionFastMode:       fastMode,
 		ClaudeOptionAlwaysThinking: thinking,
 	})
+	return observed
 }
 
 // flagSettingOnOff maps an "on"/"off" string to a boolean flag setting value

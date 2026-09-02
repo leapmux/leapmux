@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { codexTest, expect } from './codex-fixtures'
-import { expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { expectSettingsChip, openSettingsMenu, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
 
@@ -18,7 +18,7 @@ async function configureCodexPlanMode(page: Page) {
 }
 
 codexTest.describe('Codex Plan Mode Prompt', () => {
-  codexTest('feedback revises the plan and accept switches back to default mode', async ({ authenticatedCodexWorkspace, page }) => {
+  codexTest('feedback revises the plan and approval can clear context', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace
 
     await configureCodexPlanMode(page)
@@ -33,12 +33,19 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
 
     const firstBanner = await waitForControlBanner(page)
     await expect(firstBanner.getByText('Implement the proposed plan?')).toBeVisible()
+    await expect(page.getByTestId('control-deny-btn')).toHaveText('Reject')
+    await expect(page.getByTestId('control-allow-btn')).toHaveText('Approve')
+    await expect(page.getByTestId('plan-clear-context-checkbox')).toBeVisible()
+    await expect(page.getByTestId('plan-bypass-permissions-checkbox')).toBeVisible()
 
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
     await page.keyboard.type(REVISE_PLAN_PROMPT, { delay: 50 })
-    await expect(page.locator('[data-testid="control-deny-btn"]')).toHaveText('Send Feedback')
+    await expect(page.locator('[data-testid="control-deny-btn"]')).toHaveText('Send feedback')
+    await expect(page.locator('[data-testid="control-allow-btn"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="plan-bypass-permissions-checkbox"]')).not.toBeVisible()
     await page.locator('[data-testid="control-deny-btn"]').click()
 
     await waitForAgentIdle(page)
@@ -51,8 +58,12 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     const revisedBanner = await waitForControlBanner(page)
     await expect(revisedBanner.getByText('Implement the proposed plan?')).toBeVisible()
 
+    const clearContextSwitch = page.getByTestId('plan-clear-context-checkbox').locator('input[type="checkbox"]')
+    await expect(clearContextSwitch).not.toBeChecked()
+    await clearContextSwitch.check()
     await page.getByTestId('control-allow-btn').click()
-    await expectSettingsChip(page, 'Suggest & Approve')
-    await expect(page.getByText('Implement the plan.')).toBeVisible()
+    await expectSettingsChip(page, 'Default')
+    await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
+    await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
   })
 })

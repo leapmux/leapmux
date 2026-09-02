@@ -75,6 +75,26 @@ type optionState struct {
 	// change happened during it (a reader-only change merely fires a harmless idempotent broadcast,
 	// as it did before). Bumped under the owning acpBase.mu, like the rest of optionState.
 	structureGen uint64
+	// unresolved records axes whose successful write returned no authoritative
+	// config-options snapshot. A later complete snapshot clears the set.
+	unresolved *boundedIDSet
+}
+
+func (g *optionState) markUnresolved(id string) {
+	if g.unresolved == nil {
+		g.unresolved = newBoundedIDSet()
+	}
+	g.unresolved.add(id, nil)
+}
+
+func (g *optionState) markKnownUnresolved() {
+	for _, id := range g.known.keys() {
+		g.markUnresolved(id)
+	}
+}
+
+func (g *optionState) clearUnresolved() {
+	g.unresolved = nil
 }
 
 // maxOptionStateIDs caps the known/surfaced config-option id sets. The ids are a tiny fixed

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-bypass.schema.json",
+  "title": "Codex bypass settings contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "settings"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "settings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "value", "planOption"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "value": { "type": "string", "minLength": 1 },
+          "planOption": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

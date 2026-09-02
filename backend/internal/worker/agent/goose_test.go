@@ -186,7 +186,7 @@ func TestGooseUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 		OptionIDModel:          "fast-model",
 		OptionIDPermissionMode: GooseCLIModeApprove,
 	})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 	assert.Equal(t, "fast-model", agent.model)
 	assert.Equal(t, GooseCLIModeApprove, agent.permissionMode)
 

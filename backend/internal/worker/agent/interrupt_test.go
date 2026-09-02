@@ -169,15 +169,19 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 
 // --- Codex ---
 
-// codexInterruptRig captures every JSON-RPC frame Codex writes to
-// stdin without bothering to round-trip a response (turn/interrupt
-// is a fire-and-forget notification per the JSON-RPC spec).
+// codexInterruptRig captures every JSON-RPC frame Codex writes to stdin and
+// supplies the delayed response for a turn/interrupt request.
 type codexInterruptRig struct {
-	agent    *CodexAgent
-	captured func() []map[string]any
+	agent          *CodexAgent
+	responseBodies chan json.RawMessage
+	captured       func() []map[string]any
 }
 
 func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
+	return newCodexInterruptRigWithAutoResponse(t, true)
+}
+
+func newCodexInterruptRigWithAutoResponse(t *testing.T, autoRespond bool) *codexInterruptRig {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -201,17 +205,35 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 		mu       sync.Mutex
 		captured []map[string]any
 	)
+	responseBodies := make(chan json.RawMessage, 1)
 	go func() {
 		scanner := bufio.NewScanner(readPipe)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			var frame map[string]any
+			var frame struct {
+				ID     int64          `json:"id"`
+				Method string         `json:"method"`
+				Params map[string]any `json:"params"`
+			}
 			if err := json.Unmarshal(scanner.Bytes(), &frame); err != nil {
 				continue
 			}
 			mu.Lock()
-			captured = append(captured, frame)
+			captured = append(captured, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      frame.ID,
+				"method":  frame.Method,
+				"params":  frame.Params,
+			})
 			mu.Unlock()
+			if frame.ID != 0 && autoRespond {
+				body := json.RawMessage(`{}`)
+				select {
+				case body = <-responseBodies:
+				default:
+				}
+				a.deliver(frame.ID, body)
+			}
 		}
 	}()
 
@@ -222,7 +244,8 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 	})
 
 	return &codexInterruptRig{
-		agent: a,
+		agent:          a,
+		responseBodies: responseBodies,
 		captured: func() []map[string]any {
 			mu.Lock()
 			defer mu.Unlock()
@@ -233,18 +256,71 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 	}
 }
 
-func TestCodexAgent_Interrupt_SendsTurnInterruptNotification(t *testing.T) {
+func TestCodexAgent_Interrupt_TimesOutWhenCodexDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRigWithAutoResponse(t, false)
+	rig.agent.threadID = "thread-A"
+	rig.agent.turnID = "turn-42"
+	rig.agent.apiTimeout = 20 * time.Millisecond
+
+	err := rig.agent.Interrupt()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout waiting for turn/interrupt response")
+	require.Len(t, rig.captured(), 1)
+}
+
+func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRigWithAutoResponse(t, false)
+	rig.agent.threadID = "thread-A"
+	rig.agent.turnID = "turn-42"
+	rig.agent.apiTimeout = time.Second
+
+	results := make(chan error, 2)
+	go func() { results <- rig.agent.Interrupt() }()
+	go func() { results <- rig.agent.Interrupt() }()
+
+	require.Eventually(t, func() bool { return len(rig.captured()) == 1 }, time.Second, 5*time.Millisecond)
+	frames := rig.captured()
+	require.Len(t, frames, 1, "concurrent calls must share one request")
+	requestID, ok := frames[0]["id"].(int64)
+	require.True(t, ok)
+	require.True(t, rig.agent.deliver(requestID, json.RawMessage(`{}`)))
+	require.NoError(t, <-results)
+	require.NoError(t, <-results)
+	assert.Len(t, rig.captured(), 1)
+}
+
+func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRig(t)
+	rig.agent.threadID = "thread-A"
+	rig.agent.turnID = "turn-42"
+	rig.responseBodies <- json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)
+
+	err := rig.agent.Interrupt()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "turn is not active")
+}
+
+func TestCodexAgent_Interrupt_SendsTurnInterruptRequest(t *testing.T) {
 	t.Parallel()
 
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
 	rig.agent.turnID = "turn-42"
 
-	require.NoError(t, rig.agent.Interrupt())
+	interruptDone := make(chan error, 1)
+	go func() {
+		interruptDone <- rig.agent.Interrupt()
+	}()
 
-	// Notifications are sent without waiting; allow the writer goroutine
-	// to drain. The pipe is synchronous — a second-long bound is
-	// generous for CI noise.
+	// The response arrives after Codex aborts the turn. The test rig sends that
+	// response as soon as it captures the request.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if len(rig.captured()) > 0 {
@@ -252,20 +328,61 @@ func TestCodexAgent_Interrupt_SendsTurnInterruptNotification(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	select {
+	case err := <-interruptDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("turn/interrupt did not receive a response")
+	}
 	frames := rig.captured()
 	require.Len(t, frames, 1)
 	assert.Equal(t, "2.0", frames[0]["jsonrpc"])
 	assert.Equal(t, "turn/interrupt", frames[0]["method"])
-	// Notifications must NOT carry an id field per JSON-RPC 2.0 — the
-	// running turn ends with its normal turn/completed and Codex
-	// would log an error if our notification tried to elicit a reply.
-	_, hasID := frames[0]["id"]
-	assert.False(t, hasID, "notification frames must not carry id")
+	assert.NotZero(t, frames[0]["id"], "turn/interrupt must be a request")
 
 	params, ok := frames[0]["params"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "thread-A", params["threadId"])
 	assert.Equal(t, "turn-42", params["turnId"])
+}
+
+func TestCodexAgent_InterruptChild_SendsTurnInterruptRequest(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRig(t)
+	rig.agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	rig.agent.childTurnIDs = map[string]string{"child-thread": "child-turn"}
+
+	interruptDone := make(chan error, 1)
+	go func() {
+		interruptDone <- rig.agent.InterruptChild("child-thread")
+	}()
+	select {
+	case err := <-interruptDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("child turn/interrupt did not receive a response")
+	}
+
+	frames := rig.captured()
+	require.Len(t, frames, 1)
+	assert.NotZero(t, frames[0]["id"], "child turn/interrupt must be a request")
+	assert.Equal(t, "turn/interrupt", frames[0]["method"])
+	params, ok := frames[0]["params"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "child-thread", params["threadId"])
+	assert.Equal(t, "child-turn", params["turnId"])
+}
+
+func TestCodexAgent_InterruptChild_NoActiveTurnIsNoop(t *testing.T) {
+	t.Parallel()
+
+	rig := newCodexInterruptRig(t)
+	rig.agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+
+	require.NoError(t, rig.agent.InterruptChild("child-thread"))
+	time.Sleep(50 * time.Millisecond)
+	assert.Empty(t, rig.captured(), "an idle child must not send turn/interrupt without a turn ID")
 }
 
 func TestCodexAgent_Interrupt_UsesMainTurnAfterChildTurnStarted(t *testing.T) {

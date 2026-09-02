@@ -101,7 +101,6 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
           handleDeleteMessage: () => {},
           handleControlResponse: () => {},
           handleAgentSettingChange: () => {},
-          handlePermissionModeChange: () => {},
           handleInterrupt: () => {},
         } as any,
         termOps: {

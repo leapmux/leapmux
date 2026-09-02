@@ -75,8 +75,8 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
     if (!allowOptionId)
       return
     await sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
-    if (props.bypassPermissionMode)
-      props.onPermissionModeChange?.(props.bypassPermissionMode)
+    if (props.bypass)
+      await props.bypass.apply(props.bypass.settings)
   }
 
   return (
@@ -94,7 +94,7 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
               </button>
             )}
           </For>
-          <Show when={props.bypassPermissionMode && defaultAllowOptionId(props.request.payload)}>
+          <Show when={props.bypass && defaultAllowOptionId(props.request.payload)}>
             <Tooltip text="Allow this request and stop asking for permissions">
               <button
                 data-variant="secondary"

@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ProviderSettingChange } from '~/components/chat/providers/registry'
+import type { ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
@@ -18,7 +18,7 @@ export interface ComposerStatusBarProps {
   /** Optimistic option-value map keyed by group id. */
   optionValues: Record<string, string>
   /** Dispatch a settings change for the model/effort/mode chips. Optional to match the panel's `onChange?`. */
-  onSettingChange?: (change: ProviderSettingChange) => void
+  onSettingChange?: ProviderSettingChangeHandler
   /**
    * The checkout the branch chip names, resolved from {@link repoGitView}.
    *

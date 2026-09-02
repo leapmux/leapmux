@@ -3,16 +3,43 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 import { feedback, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
 
-/** A Codex approval decision: a bare string (`accept`, `decline`, ...) or an amendment object. */
-export type CodexDecision = string | Record<string, unknown>
+export type CodexDecision
+  = | 'accept'
+    | 'acceptForSession'
+    | 'decline'
+    | 'cancel'
+    | { acceptWithExecpolicyAmendment: { execpolicy_amendment: string[] } }
+    | { applyNetworkPolicyAmendment: { network_policy_amendment: { host: string, action: 'allow' | 'deny' } } }
 
-/**
- * The human label for a Codex decision. The SINGLE source of truth for these labels: the live
- * approval buttons (CodexControlRequest) and the persisted-row derivation
- * ({@link codexControlResponseDisplay}) both call it, so a rendered answer reads identically to the
- * button the user clicked.
- */
-export function codexDecisionLabel(decision: CodexDecision): string {
+/** Parses one exact decision variant from provider data. */
+export function parseCodexDecision(value: unknown): CodexDecision | null {
+  if (value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel')
+    return value
+  if (!isObject(value) || Object.keys(value).length !== 1)
+    return null
+  if ('acceptWithExecpolicyAmendment' in value) {
+    const body = value.acceptWithExecpolicyAmendment
+    if (isObject(body) && Array.isArray(body.execpolicy_amendment) && body.execpolicy_amendment.every(part => typeof part === 'string'))
+      return value as CodexDecision
+    return null
+  }
+  if ('applyNetworkPolicyAmendment' in value) {
+    const body = value.applyNetworkPolicyAmendment
+    const amendment = isObject(body) ? body.network_policy_amendment : undefined
+    if (isObject(amendment)
+      && typeof amendment.host === 'string'
+      && (amendment.action === 'allow' || amendment.action === 'deny')) {
+      return value as CodexDecision
+    }
+  }
+  return null
+}
+
+/** Gives the shared live-action and persisted-response label for a Codex decision. */
+export function codexDecisionLabel(value: unknown): string {
+  const decision = parseCodexDecision(value)
+  if (!decision)
+    return 'Unknown decision'
   if (typeof decision === 'string') {
     switch (decision) {
       case 'accept': return 'Allow'
@@ -22,32 +49,21 @@ export function codexDecisionLabel(decision: CodexDecision): string {
       default: return decision
     }
   }
-  // Guard the `in` reads with isObject: `decision` is typed string | object, but the live-button
-  // path casts it straight from wire bytes (`params.availableDecisions as CodexDecision[]`), so a
-  // malformed entry (null / a number) would make `'x' in decision` throw a TypeError and crash the
-  // control banner render. Any non-string, non-amendment value falls through to the neutral "Allow".
-  if (isObject(decision)) {
-    if ('acceptWithExecpolicyAmendment' in decision)
-      return 'Allow & Remember'
-    if ('applyNetworkPolicyAmendment' in decision)
-      return 'Apply Network Policy'
-  }
-  return 'Allow'
+  if ('acceptWithExecpolicyAmendment' in decision)
+    return 'Allow & Remember'
+  return decision.applyNetworkPolicyAmendment.network_policy_amendment.action === 'allow'
+    ? 'Allow Host & Remember'
+    : 'Block Host & Remember'
 }
 
-/**
- * The stable `data-testid` key for a Codex decision button: the decision string, or the first key of
- * an amendment object. Total like {@link codexDecisionLabel} -- the live-button path casts
- * `decision` straight from wire bytes (`params.availableDecisions as CodexDecision[]`), so a
- * malformed entry (null / a number / an empty object) must degrade to 'unknown' rather than throw a
- * TypeError on `Object.keys(null)` and crash the control-banner render.
- */
-export function codexDecisionKey(decision: CodexDecision): string {
+/** Gives a stable test key for a Codex decision button. */
+export function codexDecisionKey(value: unknown): string {
+  const decision = parseCodexDecision(value)
+  if (!decision)
+    return 'unknown'
   if (typeof decision === 'string')
     return decision
-  if (isObject(decision))
-    return Object.keys(decision)[0] ?? 'unknown'
-  return 'unknown'
+  return Object.keys(decision)[0]
 }
 
 /**
@@ -108,16 +124,18 @@ function codexUserInputAnswers(
  * the native decision without deriving a label). Null for a missing/null/empty decision so the
  * caller degrades gracefully.
  */
-function codexDecisionText(response: Record<string, unknown> | undefined): string | null {
+function codexDecisionText(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): string | null {
   const result = pickObject(response, 'result', undefined)
   const decision = result?.decision
   if (typeof decision === 'string') {
     const trimmed = decision.trim()
-    return trimmed ? codexDecisionLabel(trimmed) : null
+    if (trimmed === 'decline' && pickString(request, 'method', '').endsWith('/requestApproval'))
+      return 'Deny'
+    const parsed = parseCodexDecision(trimmed)
+    return parsed ? codexDecisionLabel(parsed) : null
   }
-  if (isObject(decision))
-    return Object.keys(decision).length > 0 ? codexDecisionLabel(decision) : null
-  return null
+  const parsed = parseCodexDecision(decision)
+  return parsed ? codexDecisionLabel(parsed) : null
 }
 
 /**
@@ -136,5 +154,5 @@ export function codexControlResponseDisplay(cr: PersistedControlResponse): Contr
   const env = decodeControlBehaviorEnvelope(cr.response)
   if (env?.message)
     return feedback(env.message)
-  return labelOrNull(codexDecisionText(cr.response))
+  return labelOrNull(codexDecisionText(cr.request, cr.response))
 }

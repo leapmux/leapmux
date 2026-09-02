@@ -8,16 +8,6 @@ import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/con
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { extractAgentText } from './renderers/helpers'
 
-export function buildACPInterruptContent(agentSessionId: string): string | null {
-  if (!agentSessionId)
-    return null
-  return JSON.stringify({
-    jsonrpc: '2.0',
-    method: 'session/cancel',
-    params: { sessionId: agentSessionId },
-  })
-}
-
 /**
  * Build the wire-format control-response for an ACP-style control request.
  * Deny when the user provided text feedback, allow otherwise (echoing back

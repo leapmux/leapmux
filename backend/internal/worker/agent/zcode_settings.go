@@ -366,7 +366,10 @@ func (a *zcodeAgent) applyZCodeModel(modelID string, timeout time.Duration) erro
 	a.mu.Lock()
 	a.model = resolved
 	a.mu.Unlock()
-	a.applyStateSnapshot(raw)
+	snapshot, observed := a.applyStateSnapshot(raw)
+	if !observed || snapshot.Settings == nil || snapshot.Settings.Model == nil || snapshot.Settings.Model.Current.ModelID == "" {
+		a.markSettingUnresolved(OptionIDModel)
+	}
 	return nil
 }
 
@@ -396,7 +399,11 @@ func (a *zcodeAgent) applyZCodeThoughtLevel(level string, timeout time.Duration)
 	// stands where the snapshot states nothing.
 	a.thoughtLevel = level
 	a.mu.Unlock()
-	a.applyStateSnapshot(raw)
+	snapshot, observed := a.applyStateSnapshot(raw)
+	if !observed || snapshot.Settings == nil || snapshot.Settings.ThoughtLevel == nil ||
+		(snapshot.Settings.ThoughtLevel.Enabled && snapshot.Settings.ThoughtLevel.Current == "") {
+		a.markSettingUnresolved(OptionIDEffort)
+	}
 	return nil
 }
 
@@ -417,7 +424,10 @@ func (a *zcodeAgent) applyZCodeMode(mode string, timeout time.Duration) error {
 	}
 	// The snapshot carries settings.mode.current, which is the only field that tracks
 	// a switch, so no local assignment happens here.
-	a.applyStateSnapshot(raw)
+	snapshot, observed := a.applyStateSnapshot(raw)
+	if !observed || snapshot.Settings == nil || snapshot.Settings.Mode == nil || snapshot.Settings.Mode.Current == "" {
+		a.markSettingUnresolved(OptionIDPermissionMode)
+	}
 	return nil
 }
 
@@ -426,7 +436,7 @@ func (a *zcodeAgent) applyZCodeMode(mode string, timeout time.Duration) error {
 // Returning false asks the caller to RESTART the agent with the requested values as
 // launch options. That is the honest answer for any failed apply: reporting success
 // would strand the picker on a value the running session does not have.
-func (a *zcodeAgent) UpdateSettings(options optionmap.Map) bool {
+func (a *zcodeAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	a.mu.Lock()
 	curModel, curEffort, curMode := a.model, a.thoughtLevel, a.mode
 	a.mu.Unlock()
@@ -434,7 +444,7 @@ func (a *zcodeAgent) UpdateSettings(options optionmap.Map) bool {
 	// Switching effort to Auto means "let the app-server pick", which the wire cannot
 	// express: setThoughtLevel requires a level. A restart re-resolves the default.
 	if IsEffortAutoTransition(options[OptionIDEffort], curEffort) {
-		return false
+		return restartRequiredSettings(options)
 	}
 
 	timeout := a.APITimeout()
@@ -474,7 +484,7 @@ func (a *zcodeAgent) UpdateSettings(options optionmap.Map) bool {
 		// to prevent, one layer down. The file's own rule decides it -- each setter
 		// reports the OBSERVED value, never the requested one -- so the mirror keeps what
 		// the app-server settled on until the restart re-derives every axis.
-		return false
+		return restartRequiredSettings(options)
 	}
 
 	a.mu.Lock()
@@ -485,7 +495,21 @@ func (a *zcodeAgent) UpdateSettings(options optionmap.Map) bool {
 		OptionIDEffort:         effort,
 		OptionIDPermissionMode: mode,
 	})
-	return true
+	return a.SettingsSnapshot()
+}
+
+func (a *zcodeAgent) SettingsSnapshot() SettingsApplyResult {
+	result := confirmedSettings(CurrentOptions(a.OptionGroups()))
+	a.mu.Lock()
+	unresolved := make([]string, 0, len(a.unresolvedSettings))
+	for id := range a.unresolvedSettings {
+		unresolved = append(unresolved, id)
+	}
+	a.mu.Unlock()
+	for _, id := range unresolved {
+		result.Settlements[id] = OptionSettlement{State: OptionSettlementUnresolved}
+	}
+	return result
 }
 
 // zcodeStatePatch is the top-level state.updated notification.

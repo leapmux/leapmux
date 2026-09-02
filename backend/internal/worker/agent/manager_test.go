@@ -20,7 +20,8 @@ import (
 )
 
 type stubProvider struct {
-	groups []*leapmuxv1.AvailableOptionGroup
+	groups         []*leapmuxv1.AvailableOptionGroup
+	clearContextFn func() (string, bool)
 }
 
 func (s *stubProvider) AgentID() string                                 { return "stub" }
@@ -29,13 +30,23 @@ func (s *stubProvider) SendRawInput([]byte) error                       { return
 func (s *stubProvider) Stop()                                           {}
 func (s *stubProvider) IsStopped() bool                                 { return false }
 func (s *stubProvider) DiscardOutput()                                  {}
-func (s *stubProvider) ClearContext() (string, bool)                    { return "", false }
+func (s *stubProvider) ClearContext() (string, bool) {
+	if s.clearContextFn != nil {
+		return s.clearContextFn()
+	}
+	return "", false
+}
 func (s *stubProvider) Wait() error                                     { return nil }
 func (s *stubProvider) Stderr() string                                  { return "" }
 func (s *stubProvider) HandleOutput([]byte)                             {}
 func (s *stubProvider) OptionGroups() []*leapmuxv1.AvailableOptionGroup { return s.groups }
-func (s *stubProvider) UpdateSettings(optionmap.Map) bool               { return true }
-func (s *stubProvider) Interrupt() error                                { return nil }
+func (s *stubProvider) SettingsSnapshot() SettingsApplyResult {
+	return confirmedSettings(CurrentOptions(s.groups))
+}
+func (s *stubProvider) UpdateSettings(options optionmap.Map) SettingsApplyResult {
+	return confirmedSettings(options)
+}
+func (s *stubProvider) Interrupt() error { return nil }
 
 // startMockAgent wraps mockStart to satisfy the startFunc signature.
 func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
@@ -98,6 +109,39 @@ func TestManager_StartAndStop(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		return !m.HasAgent("s1")
 	}, "expected HasAgent(s1) = false after stop")
+}
+
+func TestManager_ClearContextWaitsForLifecycleLock(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil)
+	entered := make(chan struct{}, 1)
+	m.agents["locked"] = &stubProvider{clearContextFn: func() (string, bool) {
+		entered <- struct{}{}
+		return "thread-new", true
+	}}
+
+	unlock := m.LockAgent("locked")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.ClearContext("locked")
+	}()
+
+	premature := false
+	select {
+	case <-entered:
+		premature = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ClearContext did not continue after the lifecycle lock was released")
+	}
+	assert.False(t, premature, "ClearContext entered the provider while another lifecycle operation held the lock")
 }
 
 func TestManager_SendInput(t *testing.T) {
@@ -687,11 +731,10 @@ func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {
 	assert.Equal(t, OpenCodePrimaryAgentBuild, staticGroups[0].Options[0].Id)
 }
 
-func TestManager_CurrentOptions(t *testing.T) {
+func TestManager_CurrentSettings(t *testing.T) {
 	m := NewManager(nil)
 
-	// No agent registered → nil, so callers fall back to their own value.
-	assert.Nil(t, m.CurrentOptions("missing-agent"))
+	assert.Nil(t, m.CurrentSettings("missing-agent").SurfacedOptions)
 
 	// Registered agent → the provider's in-memory confirmed option values, letting
 	// callers read back the effort the agent actually confirmed (e.g. an
@@ -702,9 +745,10 @@ func TestManager_CurrentOptions(t *testing.T) {
 	}}
 	m.mu.Unlock()
 
-	got := m.CurrentOptions("running-agent")
-	require.NotNil(t, got)
-	assert.Equal(t, "xhigh", got[OptionIDEffort])
+	got := m.CurrentSettings("running-agent")
+	require.NotNil(t, got.SurfacedOptions)
+	assert.Equal(t, "xhigh", got.SurfacedOptions[OptionIDEffort])
+	assert.Equal(t, OptionSettlementConfirmed, got.Settlements[OptionIDEffort].State)
 }
 
 func TestManager_PreloadCache(t *testing.T) {

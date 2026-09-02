@@ -191,7 +191,7 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	agent.currentPrimaryAgent = KiloPrimaryAgentCode
 
 	updated := agent.UpdateSettings(map[string]string{OptionIDPrimaryAgent: OpenCodePrimaryAgentPlan})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	recorded := requests()
 	require.Len(t, recorded, 1)

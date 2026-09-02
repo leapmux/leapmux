@@ -131,7 +131,7 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
 
 	updated := agent.UpdateSettings(map[string]string{OptionIDPrimaryAgent: OpenCodePrimaryAgentPlan})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 	require.Equal(t, OpenCodePrimaryAgentPlan, agent.currentPrimaryAgent)
 	recorded := requests()
 	require.Len(t, recorded, 1)
@@ -244,7 +244,7 @@ func TestOpenCodeModelSwitchRaisesNoneEffortToHigh(t *testing.T) {
 	// The prior model surfaced no effort axis.
 	require.Nil(t, optionids.GroupByID(agent.OptionGroups(), OptionIDEffort))
 
-	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}))
+	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}).AppliedLive)
 
 	// The "none" default was raised by a real set_config_option(effort=high) write.
 	writes := openCodeEffortWrites(requests())
@@ -287,7 +287,7 @@ func TestOpenCodeModelSwitchRaisesNoneEffortByIDWithoutCategory(t *testing.T) {
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
 
-	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}))
+	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}).AppliedLive)
 
 	// The "none" default was raised via exactly one effort write even though the axis carried
 	// no thought_level category -- matched by id alone.
@@ -312,7 +312,7 @@ func TestOpenCodeModelSwitchKeepsReportedEffort(t *testing.T) {
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
 
-	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}))
+	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}).AppliedLive)
 
 	assert.Empty(t, openCodeEffortWrites(requests()),
 		"a real reported level is the daemon's choice and must not trigger an override write")
@@ -335,7 +335,7 @@ func TestOpenCodeModelSwitchLeavesNoneWhenNoRealLevel(t *testing.T) {
 	agent.model = "anthropic/claude-sonnet-4"
 	agent.sink = &testSink{}
 
-	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}))
+	require.True(t, agent.UpdateSettings(map[string]string{OptionIDModel: "openai/gpt-5.5"}).AppliedLive)
 
 	assert.Empty(t, openCodeEffortWrites(requests()),
 		"no ranked level above none means nothing to install -- no override write")
@@ -364,7 +364,7 @@ func TestOpenCodeExplicitNoneEffortNotRaised(t *testing.T) {
 	}})
 	agent.mu.Unlock()
 
-	require.True(t, agent.UpdateSettings(map[string]string{OptionIDEffort: "none"}))
+	require.True(t, agent.UpdateSettings(map[string]string{OptionIDEffort: "none"}).AppliedLive)
 
 	assert.Equal(t, "none", CurrentOptions(agent.OptionGroups())[OptionIDEffort],
 		"a deliberate effort selection must be honored")

@@ -1,14 +1,15 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
+import type { ActionsProps, ContentProps } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
-import type { AttachmentCapabilities, Provider } from '../registry'
+import type { ProviderBypassSettings } from '../../providerSettings'
+import type { AttachmentCapabilities, Provider, ProviderAskUserQuestion } from '../registry'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { buildPlanMode, OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { ACPControlActions, ACPControlContent } from './ACPControlRequest'
-import { acpBuildControlResponse, acpExtractQuotableText, buildACPInterruptContent, classifyACPMessage } from './classification'
+import { acpBuildControlResponse, acpExtractQuotableText, classifyACPMessage } from './classification'
 import { acpControlResponseDisplay } from './controlResponse'
 import { acpResultDivider } from './renderers'
 import { renderACPMessage } from './rendering'
@@ -35,17 +36,7 @@ export type ACPSettingsPanelConfig
  * to the shared ACP path leave this unset; OpenCode/Kilo/Cursor each plug in
  * their own payload sniffer + extractor + responder.
  */
-export interface ACPQuestionHandling {
-  isAskUserQuestion: NonNullable<Provider['isAskUserQuestion']>
-  extractAskUserQuestions: NonNullable<Provider['extractAskUserQuestions']>
-  sendAskUserQuestionResponse: (
-    agentId: string,
-    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
-    requestId: string,
-    questions: Question[],
-    askState: AskQuestionState,
-  ) => Promise<void>
-}
+export type ACPQuestionHandling = ProviderAskUserQuestion
 
 /**
  * Options accepted by {@link registerACPProvider}. Every value beyond
@@ -73,8 +64,8 @@ export interface ACPProviderOptions {
    * Omit to disable plan-mode wiring (e.g. Goose has no plan mode).
    */
   planValue?: string
-  /** Identifier of the bypass mode for the "& Bypass Permissions" button. */
-  bypassPermissionMode?: PermissionMode
+  /** Complete settings change for the Bypass Permissions switch. */
+  bypassSettings?: ProviderBypassSettings
   /** Question-handling hooks for providers that override the default ACP path. */
   questionHandling?: ACPQuestionHandling
   /**
@@ -160,7 +151,6 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     // `control_response` and resolves through controlResponseDisplay (below), not here.
     previewText: defaultMarkPreview,
     controlResponseDisplay: opts.controlResponseDisplay ?? acpControlResponseDisplay,
-    buildInterruptContent: buildACPInterruptContent,
     buildControlResponse: acpBuildControlResponse,
 
     // Default to the shared ACP control UI; a provider whose payload is shaped
@@ -169,8 +159,8 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     ControlActions: opts.ControlActions ?? ACPControlActions,
   }
 
-  if (opts.bypassPermissionMode !== undefined)
-    plugin.bypassPermissionMode = opts.bypassPermissionMode
+  if (opts.bypassSettings !== undefined)
+    plugin.bypassSettings = opts.bypassSettings
   if (opts.planValue !== undefined)
     plugin.planMode = planModeFromConfig(sc, opts.planValue)
   const triggerModeGroupKey = triggerModeGroupKeyForConfig(sc)
@@ -178,9 +168,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     plugin.triggerModeGroupKey = triggerModeGroupKey
 
   if (opts.questionHandling) {
-    plugin.isAskUserQuestion = opts.questionHandling.isAskUserQuestion
-    plugin.extractAskUserQuestions = opts.questionHandling.extractAskUserQuestions
-    plugin.sendAskUserQuestionResponse = opts.questionHandling.sendAskUserQuestionResponse
+    plugin.askUserQuestion = opts.questionHandling
   }
 
   registerProvider(opts.provider, plugin)

@@ -6,13 +6,13 @@ import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.stor
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
-import { randomUUID } from '~/lib/idGenerator'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage, messageUsage } from '~/lib/messageParser'
 import { truncatePreview } from '~/lib/textTruncate'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
+import { sendResponse } from '../../controls/types'
 import { defaultMarkPreview } from '../../markPreviewShared'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { controlBehaviorDisplay } from '../../persistedControlResponse'
@@ -24,14 +24,6 @@ import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
 import { claudeResultDivider } from './resultDivider'
 import { claudeToolResultMeta } from './toolResult'
-
-function buildInterruptRequest(): string {
-  return JSON.stringify({
-    type: 'control_request',
-    request_id: randomUUID(),
-    request: { subtype: 'interrupt' },
-  })
-}
 
 /** Extra notification types for Claude Code (plan_execution, system subtypes). */
 const CLAUDE_EXTRA_TYPES = new Set([NOTIFICATION_TYPE.PlanExecution])
@@ -373,7 +365,7 @@ function claudeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsa
 }
 
 const claudeCodePlugin: Provider = {
-  bypassPermissionMode: 'bypassPermissions',
+  bypassSettings: { sets: { permissionMode: 'bypassPermissions' } },
   contextBufferPct: CLAUDE_AUTOCOMPACT_BUFFER_PCT,
   attachments: {
     text: true,
@@ -407,19 +399,19 @@ const claudeCodePlugin: Provider = {
   notificationThreadEntry: claudeNotificationThreadEntry,
   resultDivider: claudeResultDivider,
 
-  isAskUserQuestion(payload) {
-    const tool = getToolName(payload)
-    return tool === CLAUDE_TOOL.ASK_USER_QUESTION || tool === 'request_user_input'
-  },
-
-  extractAskUserQuestions(payload) {
-    const input = getToolInput(payload) as { questions?: unknown }
-    return Array.isArray(input.questions) ? input.questions as Question[] : []
-  },
-
-  async sendAskUserQuestionResponse(agentId, sendControlResponse, requestId, questions, askState, payload) {
-    const response = buildAskAnswers(askState, questions, getToolInput(payload), requestId)
-    await sendControlResponse(agentId, new TextEncoder().encode(JSON.stringify(response)))
+  askUserQuestion: {
+    isRequest(payload) {
+      const tool = getToolName(payload)
+      return tool === CLAUDE_TOOL.ASK_USER_QUESTION || tool === 'request_user_input'
+    },
+    extractQuestions(payload) {
+      const input = getToolInput(payload) as { questions?: unknown }
+      return Array.isArray(input.questions) ? input.questions as Question[] : []
+    },
+    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState, payload) =>
+      sendResponse(agentId, sendControlResponse, buildAskAnswers(askState, questions, getToolInput(payload), requestId)),
+    sendReject: (agentId, sendControlResponse, requestId, message) =>
+      sendResponse(agentId, sendControlResponse, buildDenyResponse(requestId, message)),
   },
 
   buildControlResponse(payload, content, requestId) {
@@ -431,10 +423,6 @@ const claudeCodePlugin: Provider = {
     return content
       ? buildDenyResponse(requestId, content)
       : buildAllowResponse(requestId, getToolInput(payload))
-  },
-
-  buildInterruptContent(): string | null {
-    return buildInterruptRequest()
   },
 
   ControlContent: ClaudeCodeControlContent,

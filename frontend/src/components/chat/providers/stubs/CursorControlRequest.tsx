@@ -5,7 +5,6 @@ import { Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
@@ -38,16 +37,6 @@ export function getCursorQuestions(payload: Record<string, unknown>): Question[]
       label: (option.label as string | undefined) ?? (option.id as string | undefined) ?? '',
     })),
   }))
-}
-
-function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...payload,
-    request: {
-      tool_name: 'AskUserQuestion',
-      input: { questions: getCursorQuestions(payload) },
-    },
-  }
 }
 
 export function sendCursorQuestionResponse(
@@ -108,13 +97,6 @@ export const CursorControlContent: Component<ContentProps> = (props) => {
     <Switch
       fallback={<div class={styles.controlBannerTitle}>Cursor Request</div>}
     >
-      <Match when={isCursorAskQuestionPayload(props.request.payload)}>
-        <AskUserQuestionContent
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          askState={props.askState}
-          optionsDisabled={props.optionsDisabled}
-        />
-      </Match>
       <Match when={isCursorCreatePlanPayload(props.request.payload)}>
         <div class={styles.controlBannerTitle}>
           {planName() ? `Create Plan: ${planName()}` : 'Create Plan'}
@@ -128,8 +110,6 @@ export const CursorControlContent: Component<ContentProps> = (props) => {
 }
 
 export const CursorControlActions: Component<ActionsProps> = (props) => {
-  const questions = () => getCursorQuestions(props.request.payload)
-
   const createPlanAllow = () => sendResponse(
     props.request.agentId,
     props.onRespond,
@@ -144,35 +124,14 @@ export const CursorControlActions: Component<ActionsProps> = (props) => {
     buildDenyResponse(props.request.requestId),
   )
 
-  const userInputOnRespond = async (_agentId: string, content: Uint8Array) => {
-    const parsed = JSON.parse(new TextDecoder().decode(content))
-    if (parsed?.response?.response?.behavior === 'deny') {
-      await sendCursorQuestionRejectResponse(props.request.agentId, props.onRespond, props.request.requestId, parsed?.response?.response?.message as string | undefined)
-      return
-    }
-    await sendCursorQuestionResponse(props.request.agentId, props.onRespond, props.request.requestId, questions(), props.askState)
-  }
-
   return (
-    <Switch
-      fallback={(
-        <ControlActionRow
-          primary={(
-            <ButtonGroup>
-              <button class="outline" onClick={createPlanReject} data-testid="control-deny-btn">Reject</button>
-              <button onClick={createPlanAllow} data-testid="control-allow-btn">Allow</button>
-            </ButtonGroup>
-          )}
-        />
+    <ControlActionRow
+      primary={(
+        <ButtonGroup>
+          <button class="outline" onClick={createPlanReject} data-testid="control-deny-btn">Reject</button>
+          <button onClick={createPlanAllow} data-testid="control-allow-btn">Allow</button>
+        </ButtonGroup>
       )}
-    >
-      <Match when={isCursorAskQuestionPayload(props.request.payload)}>
-        <AskUserQuestionActions
-          {...props}
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          onRespond={userInputOnRespond}
-        />
-      </Match>
-    </Switch>
+    />
   )
 }

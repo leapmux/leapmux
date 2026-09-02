@@ -213,7 +213,7 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const [, , bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'control_response',
@@ -251,7 +251,64 @@ describe('handleControlSend', () => {
       // The 3rd arg is the answered instance's claim token, captured from the active request so the
       // worker's idempotency claim keys on THIS instance (not a store re-derivation that can miss).
       expect(onControlResponse).toHaveBeenCalledOnce()
-      expect(onControlResponse.mock.calls[0][2]).toBe('instance-token-7')
+      expect(onControlResponse.mock.calls[0][3]).toBe('instance-token-7')
+      dispose()
+    })
+  })
+
+  it('sends Codex approval feedback after the native cancel response', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        let finishResponse!: () => void
+        const onControlResponse = vi.fn().mockReturnValue(new Promise<void>((resolve) => {
+          finishResponse = resolve
+        }))
+        const onSendMessage = vi.fn()
+        const props: ControlResponseHandlingProps = {
+          agentId: 'test-agent',
+          agent: { agentProvider: AgentProvider.CODEX },
+          controlRequests: [makeControlRequest('7', 'test-agent', {
+            method: 'item/commandExecution/requestApproval',
+            params: { availableDecisions: ['accept', 'cancel'] },
+          })],
+          onControlResponse,
+          onSendMessage,
+        }
+        const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+
+        result.handleControlSend('Use a safer command')
+
+        const [, , bytes] = onControlResponse.mock.calls[0]
+        expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({ result: { decision: 'cancel' } })
+        expect(onSendMessage).not.toHaveBeenCalled()
+        finishResponse()
+        await vi.waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('Use a safer command'))
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('does not duplicate Codex plan feedback that the worker forwards', async () => {
+    await createRoot(async (dispose) => {
+      const onControlResponse = vi.fn().mockResolvedValue(undefined)
+      const onSendMessage = vi.fn()
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        agent: { agentProvider: AgentProvider.CODEX },
+        controlRequests: [makeControlRequest('plan-7', 'test-agent', {
+          request: { tool_name: 'CodexPlanModePrompt', input: {} },
+        })],
+        onControlResponse,
+        onSendMessage,
+      }
+      const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+
+      result.handleControlSend('Revise the plan')
+
+      await vi.waitFor(() => expect(onControlResponse).toHaveBeenCalledOnce())
+      expect(onSendMessage).not.toHaveBeenCalled()
       dispose()
     })
   })
@@ -325,7 +382,7 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const [, , bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'extension_ui_response',
@@ -365,7 +422,7 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const [, , bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
@@ -446,7 +503,7 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, bytes] = onControlResponse.mock.calls[0]
+      const [, , bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',

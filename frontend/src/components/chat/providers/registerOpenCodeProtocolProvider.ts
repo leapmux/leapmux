@@ -1,6 +1,6 @@
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from './acp/registerACPProvider'
-import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionResponse } from './opencode/OpenCodeControlRequest'
+import { extractOpenCodeQuestions, OpenCodeControlActions, OpenCodeControlContent, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './opencode/OpenCodeControlRequest'
 import { opencodeControlResponseDisplay } from './opencode/questionAnswers'
 
 interface OpenCodeProtocolOptions {
@@ -32,9 +32,12 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     // (mirroring the backend's questionRequestContext hook), so it can't drift per provider.
     controlResponseDisplay: opencodeControlResponseDisplay,
     questionHandling: {
-      isAskUserQuestion: payload => payload?.type === 'question.asked',
-      extractAskUserQuestions: extractOpenCodeQuestions,
-      sendAskUserQuestionResponse: sendOpenCodeQuestionResponse,
+      isRequest: payload => payload?.type === 'question.asked',
+      extractQuestions: extractOpenCodeQuestions,
+      sendAnswer: (agentId, sendControlResponse, requestId, questions, askState) =>
+        sendOpenCodeQuestionResponse(agentId, sendControlResponse, requestId, questions, askState),
+      sendReject: (agentId, sendControlResponse, requestId) =>
+        sendOpenCodeQuestionRejectResponse(agentId, sendControlResponse, requestId),
     },
   })
 }

@@ -57,7 +57,7 @@ const (
 // How long a `turn/start` waits for its `turn/started` ack before it reports
 // the delivery unconfirmed.
 //
-// Bounds the DELIVERY, not the turn. Codex emits `turn/started` as soon as it
+// This timeout limits the DELIVERY, not the turn. Codex emits `turn/started` as soon as it
 // accepts the request, so this only has to cover the process being busy, not
 // any model work. It is well inside the client's own RPC deadline, so an
 // unacknowledged send surfaces as a stated failure rather than as the client
@@ -127,6 +127,20 @@ type CodexAgent struct {
 	// childTurnIDs records the active turn id per child thread (for steering).
 	// Guarded by mu. Cleared on child turn/completed.
 	childTurnIDs map[string]string
+	// interruptCalls coalesces concurrent interrupts for one Codex turn. A
+	// successful call stays cached until the turn ends, so a late retry cannot
+	// send another request for an already interrupted turn. Guarded by mu.
+	interruptCalls map[codexInterruptKey]*codexInterruptCall
+}
+
+type codexInterruptKey struct {
+	threadID string
+	turnID   string
+}
+
+type codexInterruptCall struct {
+	done chan struct{}
+	err  error
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
@@ -230,117 +244,241 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		threadMethod = "thread/resume"
 	}
 
-	threadID, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
+	thread, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError(threadMethod, err)
 	}
-	a.threadID = threadID
+	a.applyThreadResult(thread)
+	a.threadID = thread.ID
 	sink.UpdateSessionID(a.threadID)
 	sink.BroadcastStatusActive(a.threadID)
 
 	// 5. Query available models (best-effort; don't fail startup if this fails).
 	a.availableModels = a.queryAvailableModels(timeout)
 
-	// 6. Refresh from the CLI so the persisted effort reflects the value
-	// Codex actually applied — especially important when LeapMux resolved
-	// the effort option to "auto" and sent thread/start without the field.
-	// The readback broadcasts through the sink, which writes back to the
-	// agents table.
-	a.refreshSettingsFromAgent()
+	// 6. Publish the active thread settings. The lifecycle response owns the
+	// settings that thread/start accepts. Turn-only settings keep their requested
+	// values, and an automatic effort resolves from the model catalog.
+	a.publishSettings()
 
 	return a, nil
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
-// carries a stored thread ID. A resume that does not hold fails the whole
-// start; see resumeFailedError.
+// carries a stored thread ID. It returns the thread ID and effective model
+// reported by Codex. A resume that does not hold fails the whole start; see
+// resumeFailedError.
 func (a *CodexAgent) startOrResumeThread(
 	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
-) (string, error) {
+) (codexThreadResult, error) {
 	if resumeSessionID != "" {
 		threadParams["threadId"] = resumeSessionID
 		return a.resumeThread(threadParams, resumeSessionID, timeout)
 	}
-	threadID, err := a.startThread(threadParams, timeout)
+	thread, err := a.startThread(threadParams, timeout)
 	if err != nil {
-		return "", err
+		return codexThreadResult{}, err
 	}
-	if threadID == "" {
-		return "", fmt.Errorf("codex thread/start: response did not contain a thread ID")
+	if thread.ID == "" {
+		return codexThreadResult{}, fmt.Errorf("codex thread/start: response did not contain a thread ID")
 	}
-	return threadID, nil
+	return thread, nil
 }
 
-// resumeThread sends `thread/resume` and returns the thread ID that Codex
-// reopened. An RPC error, a response that does not parse, and a response that
-// carries no thread ID all fail: none of the three reopens the conversation.
+type codexThreadResult struct {
+	ID       string
+	settings map[string]*string
+}
+
+type codexLifecyclePolicy uint8
+
+const (
+	codexLifecycleIgnored codexLifecyclePolicy = iota
+	codexLifecycleAuthoritative
+	codexLifecycleWhenAutomatic
+)
+
+func (a *CodexAgent) applyThreadResult(result codexThreadResult) {
+	for _, axis := range codexAxes {
+		value, present := result.settings[axis.id]
+		if !present || axis.lifecyclePolicy == codexLifecycleIgnored {
+			continue
+		}
+		if axis.lifecyclePolicy == codexLifecycleWhenAutomatic {
+			current := axis.get(a)
+			if current != "" && current != EffortAuto {
+				continue
+			}
+		}
+		if value == nil {
+			if axis.lifecycleDefault != "" {
+				axis.set(a, axis.lifecycleDefault)
+			}
+			continue
+		}
+		if *value != "" {
+			axis.set(a, *value)
+		}
+	}
+}
+
+type codexThreadResponse struct {
+	Thread struct {
+		ID string `json:"id"`
+	} `json:"thread"`
+	Model          string          `json:"model"`
+	Effort         json.RawMessage `json:"reasoningEffort"`
+	ServiceTier    json.RawMessage `json:"serviceTier"`
+	ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
+	Sandbox        json.RawMessage `json:"sandbox"`
+}
+
+// resumeThread sends `thread/resume` and returns the thread ID and effective
+// model that Codex reported. An RPC error, a response that does not parse, and
+// a response that carries no required field all fail: none of the three
+// reopens the conversation.
 func (a *CodexAgent) resumeThread(
 	threadParams map[string]interface{}, resumeSessionID string, timeout time.Duration,
-) (string, error) {
+) (codexThreadResult, error) {
 	paramsJSON, err := json.Marshal(threadParams)
 	if err != nil {
-		return "", resumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
+		return codexThreadResult{}, resumeFailedError(resumeSessionID, fmt.Errorf("marshal thread/resume params: %w", err))
 	}
 	resp, err := a.sendRequest("thread/resume", paramsJSON, timeout)
-	if err == nil {
-		// An RPC error arrives as a delivered body, not as a transport error, so
-		// the agent's own message is here and nowhere else. Without this test it
-		// falls through to the "carried no thread ID" case below, which reports
-		// the symptom and hides the reason.
-		err = jsonRPCResultError(resp)
-	}
 	if err != nil {
-		return "", resumeFailedError(resumeSessionID, err)
+		return codexThreadResult{}, resumeFailedError(resumeSessionID, err)
 	}
-	var result struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
+	threadResult, err := parseCodexThreadResponse("thread/resume", resp)
+	if err != nil {
+		return codexThreadResult{}, resumeFailedError(resumeSessionID, err)
 	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return "", resumeFailedError(resumeSessionID,
-			fmt.Errorf("failed to parse response %q: %w", string(resp), err))
-	}
-	if result.Thread.ID == "" {
-		return "", resumeFailedError(resumeSessionID,
-			fmt.Errorf("response %q carried no thread ID", string(resp)))
-	}
-	return result.Thread.ID, nil
+	return threadResult, nil
 }
 
-// startThread sends `thread/start` and returns the new thread id.
-func (a *CodexAgent) startThread(threadParams map[string]interface{}, timeout time.Duration) (string, error) {
+// startThread sends `thread/start` and returns the new thread's effective model.
+func (a *CodexAgent) startThread(threadParams map[string]interface{}, timeout time.Duration) (codexThreadResult, error) {
 	paramsJSON, err := json.Marshal(threadParams)
 	if err != nil {
-		return "", fmt.Errorf("marshal thread/start params: %w", err)
+		return codexThreadResult{}, fmt.Errorf("marshal thread/start params: %w", err)
 	}
 	resp, err := a.sendRequest("thread/start", paramsJSON, timeout)
 	if err != nil {
-		return "", err
+		return codexThreadResult{}, err
 	}
-	var result struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		return "", fmt.Errorf("codex thread/start: failed to parse response: %w", err)
-	}
-	return result.Thread.ID, nil
+	return parseCodexThreadResponse("thread/start", resp)
 }
 
-// Interrupt aborts the active Codex turn by sending the
-// `turn/interrupt` JSON-RPC notification with the current threadId
-// and turnId. This matches the wire format the frontend's
-// buildCodexInterruptRequest produced before the dedicated RPC, and
-// the codexProvider.IsInterrupt classifier detects.
+func parseCodexThreadResponse(method string, raw json.RawMessage) (codexThreadResult, error) {
+	var response codexThreadResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return codexThreadResult{}, fmt.Errorf("codex %s: failed to parse response %q: %w", method, string(raw), err)
+	}
+	if response.Thread.ID == "" {
+		return codexThreadResult{}, fmt.Errorf("codex %s: response %q carried no thread ID", method, string(raw))
+	}
+	if response.Model == "" {
+		return codexThreadResult{}, fmt.Errorf("codex %s: response %q carried no effective model", method, string(raw))
+	}
+	return newCodexThreadResult(response)
+}
+
+func newCodexThreadResult(response codexThreadResponse) (codexThreadResult, error) {
+	model := response.Model
+	result := codexThreadResult{
+		ID:       response.Thread.ID,
+		settings: map[string]*string{OptionIDModel: &model},
+	}
+	for _, target := range []struct {
+		raw   json.RawMessage
+		id    string
+		label string
+	}{
+		{response.Effort, OptionIDEffort, "reasoningEffort"},
+		{response.ServiceTier, CodexOptionServiceTier, "serviceTier"},
+		{response.ApprovalPolicy, OptionIDPermissionMode, "approvalPolicy"},
+	} {
+		if len(target.raw) == 0 {
+			continue
+		}
+		if string(target.raw) == "null" {
+			result.settings[target.id] = nil
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(target.raw, &value); err != nil {
+			// Codex can return granular approval policy as an object. LeapMux stores
+			// the simple policy string, so preserve the prior value for that form.
+			if target.label == "approvalPolicy" {
+				continue
+			}
+			return codexThreadResult{}, fmt.Errorf("codex thread response field %s was not a string: %w", target.label, err)
+		}
+		result.settings[target.id] = &value
+	}
+	sandboxSettings, err := decodeCodexThreadSandbox(response.Sandbox)
+	if err != nil {
+		return codexThreadResult{}, err
+	}
+	for id, value := range sandboxSettings {
+		result.settings[id] = value
+	}
+	return result, nil
+}
+
+// decodeCodexThreadSandbox accepts the legacy string and the current tagged
+// object. The current object also reports the effective network access.
+func decodeCodexThreadSandbox(raw json.RawMessage) (map[string]*string, error) {
+	settings := make(map[string]*string)
+	if len(raw) == 0 {
+		return settings, nil
+	}
+	if string(raw) == "null" {
+		settings[CodexOptionSandboxPolicy] = nil
+		return settings, nil
+	}
+
+	var policy string
+	if json.Unmarshal(raw, &policy) == nil {
+		settings[CodexOptionSandboxPolicy] = &policy
+		return settings, nil
+	}
+
+	var sandbox struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &sandbox); err != nil {
+		return nil, fmt.Errorf("codex thread response field sandbox was invalid: %w", err)
+	}
+
+	switch sandbox.Type {
+	case "dangerFullAccess":
+		policy = CodexSandboxDangerFullAccess
+		network := CodexNetworkEnabled
+		settings[CodexOptionNetworkAccess] = &network
+	case "workspaceWrite":
+		policy = CodexSandboxWorkspaceWrite
+	case "readOnly":
+		policy = CodexSandboxReadOnly
+	case "externalSandbox":
+		// LeapMux has no external-sandbox option. Preserve the requested values.
+		return settings, nil
+	default:
+		// Preserve both stored values for a future Codex sandbox variant.
+		return settings, nil
+	}
+	settings[CodexOptionSandboxPolicy] = &policy
+	return settings, nil
+}
+
+// Interrupt aborts the active Codex turn by sending a `turn/interrupt`
+// JSON-RPC request with the current threadId and turnId. Codex responds to
+// this request only after it emits TurnAborted, so this method waits for the
+// response that confirms the turn stopped. A notification is ignored by
+// Codex because the app server handles this method only as a request.
 //
-// Notification (not request) — Codex doesn't ack `turn/interrupt`;
-// the running turn ends with its normal `turn/completed` once the
-// model has acknowledged. Returns nil when there's nothing to
-// interrupt (no active turn) so callers don't need to track turn
-// lifecycle to invoke this safely.
+// Returns nil when there's nothing to interrupt (no active turn) so callers
+// can invoke this safely without tracking turn lifecycle.
 func (a *CodexAgent) Interrupt() error {
 	a.mu.Lock()
 	stopped := a.stopped
@@ -356,17 +494,54 @@ func (a *CodexAgent) Interrupt() error {
 		// probing turn state.
 		return nil
 	}
-	params, err := json.Marshal(map[string]any{
-		"threadId": threadID,
-		"turnId":   turnID,
-	})
+	return a.interruptCodexTurn(threadID, turnID)
+}
+
+func (a *CodexAgent) interruptCodexTurn(threadID, turnID string) error {
+	if threadID == "" || turnID == "" {
+		return nil
+	}
+	key := codexInterruptKey{threadID: threadID, turnID: turnID}
+	a.mu.Lock()
+	if a.interruptCalls == nil {
+		a.interruptCalls = make(map[codexInterruptKey]*codexInterruptCall)
+	}
+	if existing := a.interruptCalls[key]; existing != nil {
+		done := existing.done
+		a.mu.Unlock()
+		<-done
+		return existing.err
+	}
+	call := &codexInterruptCall{done: make(chan struct{})}
+	a.interruptCalls[key] = call
+	a.mu.Unlock()
+
+	params, err := json.Marshal(map[string]string{"threadId": threadID, "turnId": turnID})
+	if err == nil {
+		_, err = a.sendRequest("turn/interrupt", params, a.APITimeout())
+	}
 	if err != nil {
-		return fmt.Errorf("marshal turn/interrupt params: %w", err)
+		err = fmt.Errorf("turn/interrupt: %w", err)
 	}
-	if err := a.sendNotification("turn/interrupt", json.RawMessage(params)); err != nil {
-		return fmt.Errorf("turn/interrupt: %w", err)
+
+	a.mu.Lock()
+	call.err = err
+	close(call.done)
+	if err != nil {
+		delete(a.interruptCalls, key)
 	}
-	return nil
+	a.mu.Unlock()
+	return err
+}
+
+func (a *CodexAgent) clearInterruptCallsForThread(threadID string) {
+	a.mu.Lock()
+	for key := range a.interruptCalls {
+		if key.threadID == threadID {
+			delete(a.interruptCalls, key)
+		}
+	}
+	a.mu.Unlock()
 }
 
 // ClearContext sends a new thread/start on the running Codex process,
@@ -381,15 +556,19 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.mu.Unlock()
 
 	threadParams := codexThreadParams(model, workingDir, approvalPolicy, sandboxPolicy, serviceTier)
+	// Codex uses this source to distinguish a deliberate context clear from an
+	// unrelated new conversation. Both sources start with empty model history.
+	threadParams["sessionStartSource"] = "clear"
 
-	threadID, err := a.startThread(threadParams, a.APITimeout())
-	if err != nil || threadID == "" {
+	thread, err := a.startThread(threadParams, a.APITimeout())
+	if err != nil || thread.ID == "" {
 		slog.Error("codex ClearContext: thread/start failed", "agent_id", a.agentID, "error", err)
 		return "", false
 	}
 
 	a.mu.Lock()
-	a.threadID = threadID
+	a.applyThreadResult(thread)
+	a.threadID = thread.ID
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
@@ -410,8 +589,8 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	// clear consistent rather than relying on that follow-up.
 	a.thinkingTokens.reset()
 
-	a.sink.UpdateSessionID(threadID)
-	return threadID, true
+	a.sink.UpdateSessionID(thread.ID)
+	return thread.ID, true
 }
 
 // SendInput writes a user message to the agent. If a turn is already in
@@ -689,50 +868,40 @@ func codexServiceTierValue(tier string) *string {
 	return nil
 }
 
-// codexAxis describes one Codex configuration axis. The settings-refresh map, the
-// OptionGroups current-value map, and the provider defaults all drive off this single
-// table, so adding a Codex axis is one row instead of three coordinated edits that can
-// silently drift (a missed one drops the axis from persistence or the picker).
+// codexAxis describes one Codex configuration axis. Lifecycle responses,
+// OptionGroups, live updates, and provider defaults use this table.
 type codexAxis struct {
-	id string
-	// configKey is the axis's key under the "config" object in a config/read response,
-	// so refreshSettingsFromAgent can reconcile every axis from one table loop.
-	configKey string
-	get       func(*CodexAgent) string // reads the live value from agent state; call under a.mu
+	id  string
+	get func(*CodexAgent) string // reads the live value from agent state; call under a.mu
 	// set writes a (non-empty) requested value into agent state; call under a.mu. Having
 	// it on the table means "add a Codex axis = one table row" holds for the live-update
 	// writes too, so a new axis can't be silently dropped from UpdateSettings while still
 	// appearing in the picker via get.
 	set func(*CodexAgent, string)
-	// refreshFallback, when set, runs during refreshSettingsFromAgent ONLY if config/read
-	// did not report this axis (its config value was null/absent), to derive a value the
-	// CLI computes implicitly. Call under a.mu. Only effort has one (Codex omits
-	// model_reasoning_effort when unset, falling back to the model preset's default at
-	// inference time); every other axis simply keeps its prior value on an unreported field.
+	// refreshFallback derives a value that Codex computes implicitly. Call under a.mu.
 	refreshFallback func(*CodexAgent)
 	// defaultValue is the Codex-specific default resolveProviderDefaults stamps for an
 	// provider option axis (sandbox/network/collaboration/service-tier). Empty for model, effort,
 	// and approval, which are defaulted by the shared model/effort/permission logic.
 	defaultValue string
+	// lifecyclePolicy states whether thread/start and thread/resume own this axis.
+	// Effort is authoritative only while its requested value is automatic.
+	lifecyclePolicy  codexLifecyclePolicy
+	lifecycleDefault string
 }
 
 var codexAxes = []codexAxis{
-	{id: OptionIDModel, configKey: "model", get: func(a *CodexAgent) string { return a.model }, set: func(a *CodexAgent, v string) { a.model = v }},
-	{id: OptionIDEffort, configKey: "model_reasoning_effort", get: func(a *CodexAgent) string { return a.effort }, set: func(a *CodexAgent, v string) { a.effort = v }, refreshFallback: codexEffortRefreshFallback},
-	{id: OptionIDPermissionMode, configKey: "approval_policy", get: func(a *CodexAgent) string { return a.approvalPolicy }, set: func(a *CodexAgent, v string) { a.approvalPolicy = v }},
-	{id: CodexOptionSandboxPolicy, configKey: "sandbox_mode", get: func(a *CodexAgent) string { return a.sandboxPolicy }, set: func(a *CodexAgent, v string) { a.sandboxPolicy = v }, defaultValue: CodexDefaultSandboxPolicy},
-	{id: CodexOptionNetworkAccess, configKey: "network_access", get: func(a *CodexAgent) string { return a.networkAccess }, set: func(a *CodexAgent, v string) { a.networkAccess = v }, defaultValue: CodexDefaultNetworkAccess},
-	{id: CodexOptionCollaborationMode, configKey: "collaboration_mode", get: func(a *CodexAgent) string { return a.collaborationMode }, set: func(a *CodexAgent, v string) { a.collaborationMode = v }, defaultValue: CodexDefaultCollaborationMode},
-	{id: CodexOptionServiceTier, configKey: "service_tier", get: func(a *CodexAgent) string { return a.serviceTier }, set: func(a *CodexAgent, v string) { a.serviceTier = v }, defaultValue: CodexDefaultServiceTier},
+	{id: OptionIDModel, get: func(a *CodexAgent) string { return a.model }, set: func(a *CodexAgent, v string) { a.model = v }, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: OptionIDEffort, get: func(a *CodexAgent) string { return a.effort }, set: func(a *CodexAgent, v string) { a.effort = v }, refreshFallback: codexEffortRefreshFallback, lifecyclePolicy: codexLifecycleWhenAutomatic, lifecycleDefault: EffortAuto},
+	{id: OptionIDPermissionMode, get: func(a *CodexAgent) string { return a.approvalPolicy }, set: func(a *CodexAgent, v string) { a.approvalPolicy = v }, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: CodexOptionSandboxPolicy, get: func(a *CodexAgent) string { return a.sandboxPolicy }, set: func(a *CodexAgent, v string) { a.sandboxPolicy = v }, defaultValue: CodexDefaultSandboxPolicy, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: CodexOptionNetworkAccess, get: func(a *CodexAgent) string { return a.networkAccess }, set: func(a *CodexAgent, v string) { a.networkAccess = v }, defaultValue: CodexDefaultNetworkAccess, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: CodexOptionCollaborationMode, get: func(a *CodexAgent) string { return a.collaborationMode }, set: func(a *CodexAgent, v string) { a.collaborationMode = v }, defaultValue: CodexDefaultCollaborationMode},
+	{id: CodexOptionServiceTier, get: func(a *CodexAgent) string { return a.serviceTier }, set: func(a *CodexAgent, v string) { a.serviceTier = v }, defaultValue: CodexDefaultServiceTier, lifecyclePolicy: codexLifecycleAuthoritative, lifecycleDefault: CodexDefaultServiceTier},
 }
 
-// codexEffortRefreshFallback mirrors the CLI's implicit effort default when config/read
-// omits model_reasoning_effort: Codex only populates it when the user has explicitly set
-// it (config.toml, per-session override, ...); when unset, the CLI falls back to the
-// model preset's default_reasoning_level at inference time, which config/read does not
-// reflect. Applied only when the current effort is still EffortAuto, so a concrete prior
-// selection is never overwritten. Caller holds a.mu (model is reconciled before effort,
-// so a.model already reflects this refresh).
+// codexEffortRefreshFallback mirrors the model preset's implicit effort default.
+// It applies only while the requested value is automatic. Caller holds a.mu.
 func codexEffortRefreshFallback(a *CodexAgent) {
 	if a.effort != EffortAuto {
 		return
@@ -787,9 +956,8 @@ func (a *CodexAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return groups
 }
 
-// UpdateSettings stores new settings so the next turn/start picks them up,
-// then refreshes from the Codex server to confirm the effective state.
-func (a *CodexAgent) UpdateSettings(options optionmap.Map) bool {
+// UpdateSettings stores new settings so the next turn/start picks them up.
+func (a *CodexAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	a.mu.Lock()
 	curEffort := a.effort
 	// Switching to EffortAuto can't be done live: Codex's session config
@@ -799,7 +967,7 @@ func (a *CodexAgent) UpdateSettings(options optionmap.Map) bool {
 	// CLI's own default.
 	if IsEffortAutoTransition(options[OptionIDEffort], curEffort) {
 		a.mu.Unlock()
-		return false
+		return restartRequiredSettings(options)
 	}
 	// Table-driven so every axis applies the same "non-empty value overwrites" rule and
 	// a newly-added axis can't be forgotten here. The effort-auto guard above stays out
@@ -818,46 +986,27 @@ func (a *CodexAgent) UpdateSettings(options optionmap.Map) bool {
 	}
 	a.mu.Unlock()
 
-	a.refreshSettingsFromAgent()
-	return true
+	a.publishSettings()
+	return a.SettingsSnapshot()
 }
 
-// refreshSettingsFromAgent sends a config/read RPC to the Codex server and
-// updates internal state with the effective config values.
-func (a *CodexAgent) refreshSettingsFromAgent() {
-	resp, err := a.sendRequest("config/read", json.RawMessage(`{"includeLayers":false}`), a.APITimeout())
-	if err != nil {
-		slog.Warn("codex config/read failed", "agent_id", a.agentID, "error", err)
-		return
-	}
+func (a *CodexAgent) SettingsSnapshot() SettingsApplyResult {
+	return confirmedSettings(CurrentOptions(a.OptionGroups()))
+}
 
-	var result struct {
-		Config map[string]json.RawMessage `json:"config"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		slog.Warn("codex config/read unmarshal failed", "agent_id", a.agentID, "error", err)
-		return
-	}
-
+// publishSettings broadcasts the active thread and turn settings. config/read
+// reports global layers and cannot confirm active overrides.
+func (a *CodexAgent) publishSettings() {
 	a.mu.Lock()
-	// Reconcile every axis from one table loop (the same table that drives the picker and
-	// the live-update writes, so an axis can't be reconciled here but dropped elsewhere).
-	// Each config field may be null or a string; jsonString returns "" for null/absent/
-	// non-string (e.g. approval_policy reported as a {"granular":...} object), so an
-	// unreported axis keeps its prior value -- except effort, whose refreshFallback then
-	// mirrors the CLI's implicit model-preset default. Model is reconciled before effort
-	// (table order), so effort's fallback sees this refresh's model.
 	for _, ax := range codexAxes {
-		if s := jsonString(result.Config[ax.configKey]); s != "" {
-			ax.set(a, s)
-		} else if ax.refreshFallback != nil {
+		if ax.refreshFallback != nil {
 			ax.refreshFallback(a)
 		}
 	}
 	vals := a.codexAxisValuesLocked()
 	a.mu.Unlock()
 
-	slog.Info("codex agent settings refreshed",
+	slog.Info("codex agent settings published",
 		"agent_id", a.agentID,
 		"model", vals[OptionIDModel],
 		"effort", vals[OptionIDEffort],
@@ -868,21 +1017,7 @@ func (a *CodexAgent) refreshSettingsFromAgent() {
 		"serviceTier", vals[CodexOptionServiceTier],
 	)
 
-	// Codex reports every axis it manages at a concrete value, so all upsert.
 	a.sink.PersistSettingsRefresh(vals)
-}
-
-// jsonString attempts to unmarshal a JSON value as a plain string.
-// Returns "" if the value is null, not a string, or empty.
-func jsonString(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return ""
-	}
-	return s
 }
 
 // queryAvailableModels sends a model/list request and converts the response.

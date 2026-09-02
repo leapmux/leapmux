@@ -139,7 +139,7 @@ func TestCursorUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 		OptionIDModel:          "auto",
 		OptionIDPermissionMode: CursorCLIModePlan,
 	})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 	assert.Equal(t, "auto", agent.model)
 	assert.Equal(t, CursorCLIModePlan, agent.permissionMode)
 
@@ -175,7 +175,7 @@ func TestCursorUpdateSettingsSkipsUnchangedModelAndMode(t *testing.T) {
 		OptionIDModel:          requestedModel,
 		OptionIDPermissionMode: CursorCLIModePlan,
 	})
-	require.True(t, updated)
+	require.True(t, updated.AppliedLive)
 	assert.Empty(t, requests(), "an unchanged model/mode issues no redundant set_config_option/set_mode RPC")
 }
 

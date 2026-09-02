@@ -369,6 +369,52 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 		"the auto-injected prompt is not the user's own answer")
 }
 
+func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		Options: marshalOptions(map[string]string{
+			agent.OptionIDPermissionMode:       agent.CodexDefaultApprovalPolicy,
+			agent.CodexOptionSandboxPolicy:     agent.CodexSandboxWorkspaceWrite,
+			agent.CodexOptionNetworkAccess:     agent.CodexNetworkRestricted,
+			agent.CodexOptionCollaborationMode: agent.CodexCollaborationPlan,
+		}),
+	}))
+	require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+		AgentID:   "agent-1",
+		RequestID: "plan-1",
+		Payload:   []byte(`{"request":{"tool_name":"CodexPlanModePrompt"}}`),
+	}))
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "gpt-5.6-sol"}, WorkingDir: t.TempDir(),
+	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	require.NoError(t, err)
+	defer svc.Agents.StopAgent("agent-1")
+
+	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+		AgentId: "agent-1",
+		Content: []byte(`{
+			"permissionMode":"never",
+			"response":{"request_id":"plan-1","response":{"behavior":"allow"}}
+		}`),
+	}, w)
+	require.Empty(t, w.errors)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	options := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	assert.Equal(t, "never", options[agent.OptionIDPermissionMode])
+	assert.Equal(t, agent.CodexNetworkEnabled, options[agent.CodexOptionNetworkAccess])
+	assert.Equal(t, agent.CodexSandboxDangerFullAccess, options[agent.CodexOptionSandboxPolicy])
+	assert.Equal(t, agent.CodexCollaborationDefault, options[agent.CodexOptionCollaborationMode])
+}
+
 // TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce pins the plan-prompt side of
 // the idempotency claim: a plan-prompt answer processed twice -- with the request re-stored so BOTH
 // answers resolve as a LOADED plan-prompt, mirroring a true concurrent retry rather than the
@@ -973,7 +1019,7 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 }
 
 // TestSendControlResponse_DuplicateAnswerDeletesRequestOnce pins the delete-gating half of the
-// idempotency claim: deleteControlRequest is gated on firstAnswer, so ONLY the claim winner deletes
+// idempotency claim: firstAnswer controls deleteControlRequest, so ONLY the claim winner deletes
 // the pending request and broadcasts its cancel. A duplicate answer (an RPC retry / a second window)
 // therefore draws exactly ONE ControlCancel and one row -- never a second delete. Gating the delete
 // on the winner is also what keeps the winner's request read while-present, so a concurrent duplicate
@@ -1581,7 +1627,7 @@ func TestNeedsStructuredRow(t *testing.T) {
 func TestExitPlanClearingContext(t *testing.T) {
 	t.Parallel()
 
-	// The single triple that needsStructuredRow keys the mark-carrying row off (and that gates the
+	// The single triple that needsStructuredRow keys the mark-carrying row off (and that controls the
 	// once-only initiatePlanExecution): an APPROVED ExitPlanMode that ALSO clears context (the
 	// transcript row is wiped, so the structured row carries the mark and the approval is not
 	// forwarded). It is the loaded-answer equivalent of the request-independent withholdsForward.

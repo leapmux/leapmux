@@ -1,14 +1,13 @@
 import type { Component } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
-import type { ProviderSettingChange } from './providers/registry'
+import type { BypassController, ProviderSettingChangeHandler } from './providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab } from '~/stores/tab.types'
-import type { PermissionMode } from '~/utils/controlResponse'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
@@ -63,15 +62,9 @@ export interface AgentEditorPanelProps {
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
-  onControlResponse?: (agentId: string, content: Uint8Array, claimToken?: string) => Promise<void>
+  onControlResponse?: (agentId: string, requestId: string, content: Uint8Array, claimToken?: string) => Promise<void>
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
-  onSettingChange?: (change: ProviderSettingChange) => void
-  /**
-   * Bypass-permission shortcut from control-request actions. Stays separate
-   * from `onSettingChange` because control approval has different semantics
-   * (it's tied to an active control request, not a free-form settings edit).
-   */
-  onPermissionModeChange?: (mode: PermissionMode) => void
+  onSettingChange?: ProviderSettingChangeHandler
   onInterrupt?: () => void
   /**
    * Whether Interrupt can target this agent alone. Omit (or pass true) for a
@@ -229,6 +222,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Every axis's confirmed value as one generic map keyed by group id, derived from
   // the catalog (the proto AgentInfo carries no scalar model/effort/permission fields).
   const currentOptionValues = () => optionValuesFromGroups(props.agent?.optionGroups)
+  const bypass = createMemo<BypassController | undefined>(() => {
+    const settings = props.agent?.agentProvider
+      ? providerFor(props.agent.agentProvider)?.bypassSettings
+      : undefined
+    return settings && props.onSettingChange
+      ? { settings, apply: props.onSettingChange }
+      : undefined
+  })
 
   // The plan-mode toggle reads the current option values from its `agent` view,
   // derived here from the option groups.
@@ -540,13 +541,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         if (active?.requestId)
                           ctrl.cleanupControlRequestDrafts(active.requestId)
                         editorHeight.resetEditorHeight()
-                        return props.onControlResponse?.(agentId, content, active?.claimToken) ?? Promise.resolve()
+                        return props.onControlResponse?.(agentId, active?.requestId ?? '', content, active?.claimToken) ?? Promise.resolve()
                       }}
                       hasEditorContent={hasContent()}
                       onTriggerSend={() => triggerSend?.()}
                       editorContentRef={() => editorContentRef}
-                      bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
-                      onPermissionModeChange={props.onPermissionModeChange}
+                      bypass={bypass()}
                       contextUsage={props.agentSessionInfo?.contextUsage}
                       modelContextWindow={modelContextWindow()}
                     />

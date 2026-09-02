@@ -13,41 +13,37 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
+import type { ProviderBypassSettings, ProviderSettingsAction } from '../providerSettings'
 import type { AgentInfo, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
-import type { PermissionMode } from '~/utils/controlResponse'
-
-/**
- * An agent-settings change emitted by the (generic) settings panel: a map of
- * option-group id -> new value. A single option pick carries one entry; an action
- * button (e.g. Codex's "Bypass permissions") carries several. The host
- * (`AgentEditorPanel` → `useAgentOperations`) applies them in ONE RPC so a
- * multi-axis change is atomic; it routes by well-known group id and is otherwise
- * provider-agnostic.
- */
-export interface ProviderSettingChange {
-  sets: Record<string, string>
-}
-
-/**
- * A declarative "action" button a provider can surface in the settings panel
- * that sets several option groups at once (e.g. Codex's "Bypass permissions",
- * which sets network/sandbox/approval together). Rendered generically.
- */
-export interface ProviderSettingsAction {
-  label: string
-  testId: string
-  /** Option-group id -> value to apply, all in one atomic change. */
-  sets: Record<string, string>
-}
 
 export interface AttachmentCapabilities {
   text: boolean
   image: boolean
   pdf: boolean
   binary: boolean
+}
+
+export interface ProviderAskUserQuestion {
+  isRequest: (payload: Record<string, unknown>) => boolean
+  extractQuestions: (payload: Record<string, unknown>) => Question[]
+  sendAnswer: (
+    agentId: string,
+    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
+    requestId: string,
+    questions: Question[],
+    askState: AskQuestionState,
+    payload: Record<string, unknown>,
+  ) => Promise<void>
+  sendReject: (
+    agentId: string,
+    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
+    requestId: string,
+    message: string,
+    payload: Record<string, unknown>,
+  ) => Promise<void>
 }
 
 export interface ClassificationInput extends ParsedMessageContent {
@@ -304,17 +300,8 @@ export interface Provider {
    */
   controlResponseDisplay?: ControlResponseDeriver
 
-  /**
-   * Build the wire-format content string to interrupt the agent.
-   * Returns null if interrupt is not supported or not applicable.
-   */
-  buildInterruptContent?: (agentSessionId: string, codexTurnId?: string) => string | null
-
-  /**
-   * Returns true when the given control request payload represents an
-   * "ask user question" interaction for this provider.
-   */
-  isAskUserQuestion?: (payload: Record<string, unknown>) => boolean
+  /** Complete support for the shared question UI. */
+  askUserQuestion?: ProviderAskUserQuestion
 
   /**
    * Convert one message inside a notification_thread wrapper into thread
@@ -406,28 +393,6 @@ export interface Provider {
   commandStreamSegmentKind?: (method: string) => CommandStreamSegment['kind'] | null
 
   /**
-   * Extract `Question[]` from an `AskUserQuestion` control request payload.
-   * Each provider's payload shape differs (Codex `params.questions`,
-   * OpenCode `properties.questions`, Cursor's custom shape, Claude's
-   * `getToolInput(payload).questions`).
-   */
-  extractAskUserQuestions?: (payload: Record<string, unknown>) => Question[]
-
-  /**
-   * Send the user's answers back as a control response. Receives the original
-   * `payload` so providers that need echo fields off it (Claude reads them
-   * via `getToolInput`) can access them without a separate API.
-   */
-  sendAskUserQuestionResponse?: (
-    agentId: string,
-    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
-    requestId: string,
-    questions: Question[],
-    askState: AskQuestionState,
-    payload: Record<string, unknown>,
-  ) => Promise<void>
-
-  /**
    * Build the wire-format control-response object for a *non-AskUserQuestion*
    * control request. The shared layer serializes the result and ships it.
    *
@@ -446,12 +411,11 @@ export interface Provider {
     requestId: string,
   ) => unknown
 
-  /**
-   * The permission mode value that disables all approval prompts.
-   * Used by the "& Bypass Permissions" button in approval controls.
-   * E.g. "bypassPermissions" for Claude Code, "never" for Codex.
-   */
-  bypassPermissionMode?: PermissionMode
+  /** Reports whether typed feedback needs a separate user message. */
+  controlFeedbackAsFollowUpMessage?: (payload: Record<string, unknown>) => boolean
+
+  /** The complete settings change that disables permission prompts. */
+  bypassSettings?: ProviderBypassSettings
 
   /**
    * Plan mode toggle configuration. Providers define which option group +
@@ -472,7 +436,7 @@ export interface Provider {
 
   /**
    * The option-group id whose current value labels the settings-trigger's third
-   * (mode) segment, after model and effort. Each provider names its single
+   * (mode) segment, after model and effort. Each provider identifies its single
    * mode-like axis -- permissionMode for Claude/Cursor/Copilot/Goose, the
    * collaboration_mode "Workflow" group for Codex, primaryAgent for OpenCode/Kilo
    * -- so the trigger renders ONE group's value rather than fusing several. Omit

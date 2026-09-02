@@ -160,16 +160,7 @@ func TestServer_AStoredAddressThatCannotBindDoesNotStopTheHub(t *testing.T) {
 	requireAnswers(t, base)
 	// Reported against its own address, with the operating system's reason, so
 	// the panel can print it rather than showing the address as simply absent.
-	var failed *BoundAddress
-	status := srv.listeners.Bound()
-	for i := range status {
-		if status[i].Err != "" {
-			failed = &status[i]
-		}
-	}
-	require.NotNil(t, failed, "an address that could not bind must be reported")
-	assert.Equal(t, occupied, failed.Addr.String())
-	assert.Contains(t, failed.Err, "address already in use")
+	requireBoundFailure(t, srv.listeners.Bound(), occupied)
 }
 
 // An unrelated settings write must not close and rebind every socket: the

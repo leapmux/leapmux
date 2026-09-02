@@ -50,7 +50,7 @@ func codexCollabStatusToRegistry(s string) (status bgtask.Status, finished bool,
 // collabAgentsStatesToRegistry walks a collab item's agentsStates and upserts/
 // closes the registry rows for each child thread. The child threadId is the
 // registry row_key; when the thread is known to the child index it is also the
-// EnsureChildAgent providerChildKey (linking the row to a transcript). Terminal
+// EnsureChildAgent providerChildKey (linking the row to a transcript). Final
 // states close the row AND remove the child-index entry; interrupted updates
 // without closing (resumable).
 func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCall) {
@@ -312,15 +312,7 @@ func (a *CodexAgent) InterruptChild(childKey string) error {
 		return fmt.Errorf("%w: unknown codex subagent thread %q", ErrChildNotSteerableYet, childKey)
 	}
 	turnID := a.childTurnID(threadID)
-	params := map[string]any{"threadId": threadID}
-	if turnID != "" {
-		params["turnId"] = turnID
-	}
-	paramsJSON, err := json.Marshal(params)
-	if err != nil {
-		return fmt.Errorf("marshal turn/interrupt params: %w", err)
-	}
-	return a.sendNotification("turn/interrupt", paramsJSON)
+	return a.interruptCodexTurn(threadID, turnID)
 }
 
 // sendTurnStartChild starts a new turn on a child thread. Mirrors sendTurnStart
@@ -378,8 +370,9 @@ func (a *CodexAgent) setChildTurnID(threadID, turnID string) {
 
 func (a *CodexAgent) clearChildTurnID(threadID string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.childTurnIDs != nil {
 		delete(a.childTurnIDs, threadID)
 	}
+	a.mu.Unlock()
+	a.clearInterruptCallsForThread(threadID)
 }

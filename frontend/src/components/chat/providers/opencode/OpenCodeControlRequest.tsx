@@ -1,11 +1,10 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
 
-import { For, Match, Show, Switch } from 'solid-js'
+import { For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from '../../ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
@@ -47,16 +46,6 @@ export function extractOpenCodeQuestions(payload: Record<string, unknown>): Ques
     ...question,
     multiSelect: (question.multiSelect as boolean | undefined) ?? (question.multiple as boolean | undefined),
   })) as Question[]
-}
-
-function wrapAsAskUserQuestion(payload: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...payload,
-    request: {
-      tool_name: 'AskUserQuestion',
-      input: { questions: extractOpenCodeQuestions(payload) },
-    },
-  }
 }
 
 /**
@@ -117,31 +106,18 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
   const kind = () => toolCall()?.kind as string | undefined
 
   return (
-    <Switch
-      fallback={(
-        <>
-          <div class={styles.controlBannerTitle}>{title()}</div>
-          <Show when={kind()}>
-            <div class={styles.bannerHint}>{kind()}</div>
-          </Show>
-        </>
-      )}
-    >
-      <Match when={isOpenCodeQuestionPayload(props.request.payload)}>
-        <AskUserQuestionContent
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          askState={props.askState}
-          optionsDisabled={props.optionsDisabled}
-        />
-      </Match>
-    </Switch>
+    <>
+      <div class={styles.controlBannerTitle}>{title()}</div>
+      <Show when={kind()}>
+        <div class={styles.bannerHint}>{kind()}</div>
+      </Show>
+    </>
   )
 }
 
 /** OpenCode-specific control request action buttons. */
 export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   const options = () => getOptions(props.request.payload)
-  const questions = () => extractOpenCodeQuestions(props.request.payload)
 
   const handleOption = (optionId: string) => {
     sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
@@ -153,80 +129,51 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   // un-awaited allow reaches it.
   const handleBypassPermissions = async () => {
     await sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, 'once')
-    if (props.bypassPermissionMode)
-      props.onPermissionModeChange?.(props.bypassPermissionMode)
-  }
-
-  const userInputOnRespond = async (_agentId: string, content: Uint8Array) => {
-    const parsed = JSON.parse(new TextDecoder().decode(content))
-    if (parsed?.response?.response?.behavior === 'deny') {
-      await sendOpenCodeQuestionRejectResponse(props.request.agentId, props.onRespond, props.request.requestId)
-      return
-    }
-    await sendOpenCodeQuestionResponse(props.request.agentId, props.onRespond, props.request.requestId, questions(), props.askState)
+    if (props.bypass)
+      await props.bypass.apply(props.bypass.settings)
   }
 
   return (
-    <Switch
-      fallback={(
-        <ControlActionRow
-          primary={(
-            <Show
-              when={options().length > 0}
-              fallback={(
-                <ButtonGroup>
-                  <button class="outline" onClick={() => handleOption('reject')} data-testid="control-deny-btn">Reject</button>
-                  <button onClick={() => handleOption('once')} data-testid="control-allow-btn">Allow once</button>
-                  <Show when={props.bypassPermissionMode}>
-                    <Tooltip text="Allow this request and stop asking for permissions">
-                      <button
-                        data-variant="secondary"
-                        onClick={handleBypassPermissions}
-                        data-testid="control-bypass-btn"
-                      >
-                        & Bypass Permissions
-                      </button>
-                    </Tooltip>
-                  </Show>
-                </ButtonGroup>
-              )}
-            >
-              <ButtonGroup>
-                <For each={options()}>
-                  {option => (
-                    <button
-                      class={option.kind === 'reject_once' ? 'outline' : undefined}
-                      onClick={() => handleOption(option.optionId)}
-                      data-testid={`control-decision-${option.optionId}`}
-                    >
-                      {option.name}
-                    </button>
-                  )}
-                </For>
-                <Show when={props.bypassPermissionMode}>
-                  <Tooltip text="Allow this request and stop asking for permissions">
-                    <button
-                      data-variant="secondary"
-                      onClick={handleBypassPermissions}
-                      data-testid="control-bypass-btn"
-                    >
-                      & Bypass Permissions
-                    </button>
-                  </Tooltip>
-                </Show>
-              </ButtonGroup>
-            </Show>
+    <ControlActionRow
+      primary={(
+        <Show
+          when={options().length > 0}
+          fallback={(
+            <ButtonGroup>
+              <button class="outline" onClick={() => handleOption('reject')} data-testid="control-deny-btn">Reject</button>
+              <button onClick={() => handleOption('once')} data-testid="control-allow-btn">Allow once</button>
+              <Show when={props.bypass}>
+                <Tooltip text="Allow this request and stop asking for permissions">
+                  <button data-variant="secondary" onClick={handleBypassPermissions} data-testid="control-bypass-btn">
+                    & Bypass Permissions
+                  </button>
+                </Tooltip>
+              </Show>
+            </ButtonGroup>
           )}
-        />
+        >
+          <ButtonGroup>
+            <For each={options()}>
+              {option => (
+                <button
+                  class={option.kind === 'reject_once' ? 'outline' : undefined}
+                  onClick={() => handleOption(option.optionId)}
+                  data-testid={`control-decision-${option.optionId}`}
+                >
+                  {option.name}
+                </button>
+              )}
+            </For>
+            <Show when={props.bypass}>
+              <Tooltip text="Allow this request and stop asking for permissions">
+                <button data-variant="secondary" onClick={handleBypassPermissions} data-testid="control-bypass-btn">
+                  & Bypass Permissions
+                </button>
+              </Tooltip>
+            </Show>
+          </ButtonGroup>
+        </Show>
       )}
-    >
-      <Match when={isOpenCodeQuestionPayload(props.request.payload)}>
-        <AskUserQuestionActions
-          {...props}
-          request={{ ...props.request, payload: wrapAsAskUserQuestion(props.request.payload) }}
-          onRespond={userInputOnRespond}
-        />
-      </Match>
-    </Switch>
+    />
   )
 }

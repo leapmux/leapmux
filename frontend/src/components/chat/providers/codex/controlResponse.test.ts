@@ -21,20 +21,18 @@ describe('codexdecisionlabel', () => {
     expect(codexDecisionLabel('cancel')).toBe('Cancel')
   })
 
-  it('passes an unknown string through and maps amendment objects', () => {
-    expect(codexDecisionLabel('somethingElse')).toBe('somethingElse')
-    expect(codexDecisionLabel({ acceptWithExecpolicyAmendment: { match: 'npm test' } })).toBe('Allow & Remember')
-    expect(codexDecisionLabel({ applyNetworkPolicyAmendment: true })).toBe('Apply Network Policy')
-    expect(codexDecisionLabel({ other: 1 })).toBe('Allow')
+  it('maps exact amendment objects and refuses unknown variants', () => {
+    expect(codexDecisionLabel('somethingElse')).toBe('Unknown decision')
+    expect(codexDecisionLabel({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['npm', 'test'] } })).toBe('Allow & Remember')
+    expect(codexDecisionLabel({ applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } })).toBe('Allow Host & Remember')
+    expect(codexDecisionLabel({ other: 1 })).toBe('Unknown decision')
   })
 
-  it('is total: a malformed non-string, non-object decision degrades to "Allow" without throwing', () => {
-    // The live-button path (CodexControlRequest) casts params.availableDecisions straight from wire
-    // bytes, so a malformed entry (null / a number) must NOT make the `in` reads throw a TypeError
-    // and crash the control banner -- the isObject guard degrades it to the neutral "Allow".
+  it('is total: a malformed decision is not actionable', () => {
+    // Persisted provider data can contain a malformed decision.
     expect(() => codexDecisionLabel(null as unknown as CodexDecision)).not.toThrow()
-    expect(codexDecisionLabel(null as unknown as CodexDecision)).toBe('Allow')
-    expect(codexDecisionLabel(3 as unknown as CodexDecision)).toBe('Allow')
+    expect(codexDecisionLabel(null as unknown as CodexDecision)).toBe('Unknown decision')
+    expect(codexDecisionLabel(3 as unknown as CodexDecision)).toBe('Unknown decision')
   })
 })
 
@@ -42,13 +40,11 @@ describe('codexdecisionkey', () => {
   it('returns the string decision or the first key of an amendment object', () => {
     expect(codexDecisionKey('accept')).toBe('accept')
     expect(codexDecisionKey('decline')).toBe('decline')
-    expect(codexDecisionKey({ acceptWithExecpolicyAmendment: { match: 'npm test' } })).toBe('acceptWithExecpolicyAmendment')
+    expect(codexDecisionKey({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['npm', 'test'] } })).toBe('acceptWithExecpolicyAmendment')
   })
 
   it('is total: a malformed non-string, non-object (or empty-object) decision degrades to "unknown" without throwing', () => {
-    // Sibling of codexDecisionLabel's totality: the data-testid interpolation used to call
-    // Object.keys(decision)[0] directly, which throws TypeError on a null/number entry cast straight
-    // from wire bytes (params.availableDecisions) and crashes the whole control-banner <For> render.
+    // The key helper must also accept malformed persisted provider data.
     expect(() => codexDecisionKey(null as unknown as CodexDecision)).not.toThrow()
     expect(codexDecisionKey(null as unknown as CodexDecision)).toBe('unknown')
     expect(codexDecisionKey(3 as unknown as CodexDecision)).toBe('unknown')
@@ -59,14 +55,14 @@ describe('codexdecisionkey', () => {
 describe('codexcontrolresponsedisplay', () => {
   it('labels string decisions', () => {
     expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('accept')))).toEqual({ kind: 'label', text: 'Allow' })
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('decline')))).toEqual({ kind: 'label', text: 'Reject' })
+    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision('decline')))).toEqual({ kind: 'label', text: 'Deny' })
   })
 
   it('labels amendment-object decisions', () => {
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({ acceptWithExecpolicyAmendment: { match: 'touch' } }))))
+    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }))))
       .toEqual({ kind: 'label', text: 'Allow & Remember' })
-    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({ applyNetworkPolicyAmendment: true }))))
-      .toEqual({ kind: 'label', text: 'Apply Network Policy' })
+    expect(codexControlResponseDisplay(cr(APPROVAL_REQUEST, decision({ applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }))))
+      .toEqual({ kind: 'label', text: 'Allow Host & Remember' })
   })
 
   it('returns null for a missing/empty decision (caller degrades)', () => {

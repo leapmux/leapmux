@@ -3,7 +3,7 @@ import { createMemo, Show } from 'solid-js'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ACPControlActions, ACPControlContent } from '../acp/ACPControlRequest'
 import { registerACPProvider } from '../acp/registerACPProvider'
-import { CursorControlActions, CursorControlContent, getCursorQuestions, isCursorAskQuestionPayload, isCursorControlPayload, sendCursorQuestionResponse } from './CursorControlRequest'
+import { CursorControlActions, CursorControlContent, getCursorQuestions, isCursorAskQuestionPayload, isCursorControlPayload, sendCursorQuestionRejectResponse, sendCursorQuestionResponse } from './CursorControlRequest'
 import { cursorControlResponseDisplay } from './cursorControlResponse'
 
 registerACPProvider({
@@ -30,8 +30,11 @@ registerACPProvider({
   },
   planValue: 'plan',
   questionHandling: {
-    isAskUserQuestion: payload => !!payload && isCursorAskQuestionPayload(payload),
-    extractAskUserQuestions: payload => getCursorQuestions(payload),
-    sendAskUserQuestionResponse: sendCursorQuestionResponse,
+    isRequest: payload => !!payload && isCursorAskQuestionPayload(payload),
+    extractQuestions: payload => getCursorQuestions(payload),
+    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState) =>
+      sendCursorQuestionResponse(agentId, sendControlResponse, requestId, questions, askState),
+    sendReject: (agentId, sendControlResponse, requestId, message) =>
+      sendCursorQuestionRejectResponse(agentId, sendControlResponse, requestId, message),
   },
 })

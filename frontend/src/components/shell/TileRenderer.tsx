@@ -1196,7 +1196,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
         controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
-        onPermissionModeChange={mode => agentOps.handlePermissionModeChange(agentId(), mode)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
         canInterrupt={!subagentReadOnly()}
         settingsLoading={settingsLoading.loading()}
