@@ -90,6 +90,79 @@ func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T)
 		"the local socket is the one exception, and the desktop app cannot present a password")
 }
 
+// The login budget is keyed by the CALLER'S ADDRESS, and that address reaches
+// the limiter only through the http.Server's ConnContext.
+//
+// ratelimit's own tests build the marked context by hand, so a missing
+// ConnContext leaves every one of them green while every anonymous caller on
+// the hub collapses into the single `anonymous:unknown` budget. The rate limit
+// still fires, so a test that only counted refusals would not notice -- and the
+// result is a hub where ten wrong passwords from anywhere stop everyone else
+// signing in, which is worse than the unlimited Login this budget replaced.
+//
+// Two transports stand in for two addresses, because one machine has one usable
+// loopback address on macOS. They land in different budgets when the stamp
+// works and in the same one when it does not, which is the whole assertion.
+func TestServer_TheLoginBudgetIsKeyedByTheCallersAddress(t *testing.T) {
+	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
+	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	requireAnswers(t, base)
+
+	overTCP := tcpAuthClient(base)
+	overIPC := localIPCAuthClient(t, srv)
+
+	// Spend the TCP address's whole budget: ten refused passwords.
+	for i := range loginBudgetAttempts {
+		err := attemptLogin(overTCP)
+		require.Error(t, err, "attempt %d must be refused", i+1)
+		require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+			"a wrong password is a credential failure, attempt %d", i+1)
+	}
+
+	// The next one from THAT address is stopped by the budget rather than by
+	// the password check.
+	err := attemptLogin(overTCP)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"the eleventh attempt from one address must exhaust its budget")
+
+	// A caller reaching the hub another way still has its own attempts. Without
+	// the stamp it would be refused here by a budget it never spent.
+	err = attemptLogin(overIPC)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+		"a second address must hold its own budget; a shared one locks out everybody")
+}
+
+// loginBudgetAttempts is the default rate_limit.login_anonymous allowance.
+const loginBudgetAttempts = 10
+
+// attemptLogin presents a password the solo account does not have.
+func attemptLogin(c leapmuxv1connect.AuthServiceClient) error {
+	_, err := c.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+		Username: usernames.Solo, Password: "not-the-password",
+	}))
+	return err
+}
+
+func tcpAuthClient(addr string) leapmuxv1connect.AuthServiceClient {
+	return leapmuxv1connect.NewAuthServiceClient(
+		&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second},
+		"http://"+addr)
+}
+
+func localIPCAuthClient(t *testing.T, srv *Server) leapmuxv1connect.AuthServiceClient {
+	t.Helper()
+	dial, err := locallisten.Dialer(srv.listenURL)
+	require.NoError(t, err)
+	return leapmuxv1connect.NewAuthServiceClient(
+		&http.Client{
+			Transport: &http.Transport{DialContext: locallisten.HTTPDialContext(dial)},
+			Timeout:   10 * time.Second,
+		},
+		locallisten.LocalConnectURL)
+}
+
 // setSoloPasswordDirect stores a usable hash on the solo account, bypassing
 // ChangePassword: this test is about the TRANSPORT rule, and the RPC would drag
 // in the session handover that has tests of its own.

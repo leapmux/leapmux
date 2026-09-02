@@ -193,6 +193,32 @@ func TestServer_AnUnrelatedSettingsWriteLeavesTheListenersAlone(t *testing.T) {
 	assert.ElementsMatch(t, []string{base, extra}, servingAddresses(srv))
 }
 
+// The key must CARRY its validator, so the settings write path refuses what
+// the address picker cannot produce.
+//
+// validateExtraListen has thorough unit tests, and not one of them would notice
+// `.WithValidate(...)` going missing from the key. That gap is the exposure the
+// validator exists to prevent: `leapmux control admin settings set` writes this
+// row without ever meeting the picker, and a stored HOST NAME binds whatever it
+// resolves to AT BIND TIME -- so a name that answers loopback today answers a
+// public address after a DNS change nobody made here.
+func TestServer_ASettingsWriteRefusesAHostName(t *testing.T) {
+	ports := freePorts(t, 2)
+	base := "127.0.0.1:" + strconv.Itoa(ports[0])
+	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	requireAnswers(t, base)
+
+	doc := json.RawMessage(`{"addresses":["hub.example:` + strconv.Itoa(ports[1]) + `"]}`)
+	err := srv.SettingsManager().Update(context.Background(), settings.KeyExtraListenAddresses, doc)
+	require.Error(t, err, "the key must carry its validator, or the CLI can store an address the picker refuses")
+	assert.Contains(t, err.Error(), "host name")
+
+	// A refused write leaves the sockets exactly as they were: the subscriber
+	// runs on a committed snapshot, so a rejected value must never reach it.
+	requireAnswers(t, base)
+	assert.Equal(t, []string{base}, servingAddresses(srv))
+}
+
 // The stored addresses are bound again on the NEXT start. "Persisted across
 // restarts" is the requirement's own headline, and the live-apply tests above
 // cannot see it: they all run inside one process.
