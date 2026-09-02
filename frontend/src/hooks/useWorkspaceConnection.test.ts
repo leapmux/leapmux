@@ -11,7 +11,7 @@ import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, handleTurnEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
-import { collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
@@ -1635,34 +1635,54 @@ describe('agentMessage sub-handlers', () => {
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
   }
 
+  /** The two stores handleAgentSessionInfo writes to. */
+  function sessionInfoStores() {
+    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore() }
+  }
+
   it('handleAgentSessionInfo consumes an agent_session_info message and applies its updates', () => {
     createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
+      const stores = sessionInfoStores()
       const msg = agentMessage({ type: 'agent_session_info', info: { total_cost_usd: 1.5 } })
-      const handled = handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)
+      const handled = handleAgentSessionInfo('a1', parseMessageContent(msg), stores)
       // Returning true is the early-break signal: the caller must NOT persist it.
       expect(handled).toBe(true)
-      expect(agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
+      expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
       dispose()
     })
   })
 
   it('handleAgentSessionInfo returns false for a persisted message (caller keeps processing it)', () => {
     createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
       const msg = agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })
-      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)).toBe(false)
+      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), sessionInfoStores())).toBe(false)
       dispose()
     })
   })
 
   it('handleAgentSessionInfo clears a stale thinking-token estimate on a 0 (per-phase reset)', () => {
     createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
+      const stores = sessionInfoStores()
+      stores.agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
       const msg = agentMessage({ type: 'agent_session_info', info: { thinking_tokens: 0 } })
-      handleAgentSessionInfo('a1', parseMessageContent(msg), agentSessionStore)
-      expect(agentSessionStore.getInfo('a1').thinkingTokens).not.toBe(500)
+      handleAgentSessionInfo('a1', parseMessageContent(msg), stores)
+      expect(stores.agentSessionStore.getInfo('a1').thinkingTokens).not.toBe(500)
+      dispose()
+    })
+  })
+
+  it('handleAgentSessionInfo routes running_tool to the chat store, not the session store', () => {
+    createRoot((dispose) => {
+      const stores = sessionInfoStores()
+      const msg = agentMessage({
+        type: 'agent_session_info',
+        info: { running_tool: { span_id: 'toolu_A', tool_name: 'Bash', elapsed_seconds: 30 } },
+      })
+      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), stores)).toBe(true)
+      expect(stores.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
+      // It is span-keyed state, so it must not leak into AgentSessionInfo (which is
+      // persisted to localStorage minus its ephemeral keys).
+      expect(stores.agentSessionStore.getInfo('a1')).toEqual({})
       dispose()
     })
   })
@@ -2345,6 +2365,84 @@ describe('wireSessionInfoToUpdates', () => {
     expect(updates.rateLimits).toEqual({ five_hour: { status: 'allowed', utilization: 0.5 } })
   })
 
+  // All eight tier fields, so a translation that drops one is caught here rather
+  // than by a blank cell in the rate-limit popover. Only two of the eight had any
+  // coverage before.
+  it('translates every rate_limits tier field to its camelCase name', () => {
+    const updates = wireSessionInfoToUpdates({
+      rate_limits: {
+        five_hour: {
+          rate_limit_type: 'five_hour',
+          status: 'allowed_warning',
+          utilization: 0.87,
+          resets_at: 1_700_000_000,
+          surpassed_threshold: 0.8,
+          overage_status: 'allowed',
+          overage_resets_at: 1_700_003_600,
+          is_using_overage: true,
+        },
+      },
+    })
+    expect(updates.rateLimits).toEqual({
+      five_hour: {
+        rateLimitType: 'five_hour',
+        status: 'allowed_warning',
+        utilization: 0.87,
+        resetsAt: 1_700_000_000,
+        surpassedThreshold: 0.8,
+        overageStatus: 'allowed',
+        overageResetsAt: 1_700_003_600,
+        isUsingOverage: true,
+      },
+    })
+  })
+
+  /**
+   * A field the tier does not carry is ABSENT from the result, not present and
+   * undefined. That is load-bearing and `toEqual` cannot see it: `toEqual`
+   * ignores an undefined-valued key, but `agentSession.store.ts` decides whether
+   * a tier changed with `shallowEqual`, which compares key COUNTS first. A tier
+   * rehydrated from localStorage has lost its undefined keys (JSON.stringify
+   * drops them), so a translation that emitted all eight keys would compare
+   * unequal on every broadcast and write the store each time.
+   *
+   * Asserted on Object.keys for exactly that reason.
+   */
+  it('omits a tier field the payload does not carry, rather than setting it undefined', () => {
+    const updates = wireSessionInfoToUpdates({
+      rate_limits: { five_hour: { status: 'allowed', is_using_overage: false } },
+    })
+    const tier = (updates.rateLimits as Record<string, Record<string, unknown>>).five_hour
+    expect(Object.keys(tier).sort()).toEqual(['isUsingOverage', 'status'])
+    // A real `false` still lands -- only an ABSENT key is dropped.
+    expect(tier.isUsingOverage).toBe(false)
+
+    const sparse = wireSessionInfoToUpdates({ rate_limits: { five_hour: { status: 'allowed' } } })
+    expect(Object.keys((sparse.rateLimits as Record<string, object>).five_hour)).toEqual(['status'])
+  })
+
+  it('drops a tier field whose wire value is the wrong type', () => {
+    const updates = wireSessionInfoToUpdates({
+      rate_limits: {
+        five_hour: {
+          status: 'allowed',
+          utilization: '0.5',
+          resets_at: '1700000000',
+          is_using_overage: 'true',
+          surpassed_threshold: null,
+        },
+      },
+    })
+    expect(Object.keys((updates.rateLimits as Record<string, object>).five_hour)).toEqual(['status'])
+  })
+
+  it('skips a tier that is not an object at all', () => {
+    const updates = wireSessionInfoToUpdates({
+      rate_limits: { five_hour: { status: 'allowed' }, weekly: 'nonsense', monthly: null },
+    })
+    expect(updates.rateLimits).toEqual({ five_hour: { status: 'allowed' } })
+  })
+
   it('only forwards a positive numeric thinking_tokens estimate', () => {
     expect(wireSessionInfoToUpdates({ thinking_tokens: 230 }).thinkingTokens).toBe(230)
     // 0 (the zero-estimate first delta), NaN, and non-numbers are all dropped,
@@ -2455,6 +2553,66 @@ describe('collectWorkerOfflineTargets', () => {
     const { terminals, agents } = collectWorkerOfflineTargets([tab({ workerId: 'w1' })], 'w-unknown')
     expect(agents).toEqual([])
     expect(terminals.size).toBe(0)
+  })
+})
+
+/**
+ * What the offline sweep actually reclaims, per agent.
+ *
+ * A dropped link ends the turn silently: the worker sends no result row, no
+ * turn-end divider and no INACTIVE status change, and every other reclamation
+ * site in the app runs off one of those three. So each live indicator this sweep
+ * forgets stays frozen on screen for the whole outage -- and the sweep is the
+ * only place that can catch it.
+ */
+describe('clearOfflineAgentState', () => {
+  function seededStores() {
+    const chatStore = createChatStore()
+    const agentSessionStore = createAgentSessionStore()
+    chatStore.streamingText.set('a1', 'half a sentence')
+    chatStore.appendCommandStream('a1', 'toolu_A', 'output', 'mid-line')
+    chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
+    chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 90 })
+    agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
+    return { chatStore, agentSessionStore }
+  }
+
+  it('drops every live indicator the outage would otherwise freeze', () => {
+    createRoot((dispose) => {
+      const s = seededStores()
+      clearOfflineAgentState('a1', s)
+
+      expect(s.chatStore.streamingText.get('a1')).toBe('')
+      expect(s.chatStore.getCommandStream('a1', 'toolu_A')).toHaveLength(0)
+      // The two the sweep used to miss. Each badge would otherwise read "30s" /
+      // "1m 30s" for as long as the worker stayed away.
+      expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', 'toolu_B')).toBeUndefined()
+      expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()
+      dispose()
+    })
+  })
+
+  it('leaves another agent on a healthy worker untouched', () => {
+    createRoot((dispose) => {
+      const s = seededStores()
+      s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', elapsedSeconds: 60 })
+      s.agentSessionStore.updateInfo('a2', { thinkingTokens: 700 })
+
+      clearOfflineAgentState('a1', s)
+
+      expect(s.chatStore.getToolProgress('a2', 'toolu_A')?.elapsedSeconds).toBe(60)
+      expect(s.agentSessionStore.getInfo('a2').thinkingTokens).toBe(700)
+      dispose()
+    })
+  })
+
+  it('is safe for an agent that has nothing live', () => {
+    createRoot((dispose) => {
+      const s = { chatStore: createChatStore(), agentSessionStore: createAgentSessionStore() }
+      expect(() => clearOfflineAgentState('never-ran', s)).not.toThrow()
+      dispose()
+    })
   })
 })
 

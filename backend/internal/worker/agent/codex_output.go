@@ -165,7 +165,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			"codex_turn_id": notif.Turn.ID,
+			contracts.SessionInfoKeyCodexTurnId: notif.Turn.ID,
 		})
 	}
 }
@@ -289,7 +289,7 @@ func (a *CodexAgent) handlePlanDelta(params json.RawMessage) {
 			a.streamingPlan = true
 			a.mu.Unlock()
 			a.sink.BroadcastSessionInfo(map[string]interface{}{
-				"streaming_type": "plan",
+				contracts.SessionInfoKeyStreamingType: "plan",
 			})
 		} else {
 			a.mu.Unlock()
@@ -476,7 +476,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		if wasStreamingPlan {
 			a.sink.BroadcastSessionInfo(map[string]interface{}{
-				"streaming_type": "",
+				contracts.SessionInfoKeyStreamingType: "",
 			})
 		}
 
@@ -651,7 +651,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 
 	// Clear the turn ID in session info.
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		"codex_turn_id": "",
+		contracts.SessionInfoKeyCodexTurnId: "",
 	})
 }
 
@@ -687,19 +687,20 @@ func (a *CodexAgent) handleTokenUsageUpdated(content []byte, params json.RawMess
 		slog.Error("codex persist tokenUsage", "agent_id", a.agentID, "error", err)
 	}
 
-	usage := map[string]interface{}{
-		"input_tokens":                max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
-		"cache_creation_input_tokens": int64(0),
-		"cache_read_input_tokens":     notif.TokenUsage.Last.CachedInputTokens,
-		"output_tokens":               notif.TokenUsage.Last.OutputTokens,
-	}
+	// Codex reports the cached part inside InputTokens, so the uncached remainder
+	// is the input the other providers report.
+	usage := contextUsageMap(contextTokenCounts{
+		Input:     max(notif.TokenUsage.Last.InputTokens-notif.TokenUsage.Last.CachedInputTokens, 0),
+		CacheRead: notif.TokenUsage.Last.CachedInputTokens,
+		Output:    notif.TokenUsage.Last.OutputTokens,
+	})
 	if notif.TokenUsage.ModelContextWindow != nil {
-		usage["context_window"] = *notif.TokenUsage.ModelContextWindow
+		usage[contracts.ContextUsageFieldContextWindow] = *notif.TokenUsage.ModelContextWindow
 	} else if cw := modelContextWindow(a.availableModels, a.model); cw > 0 {
-		usage["context_window"] = cw
+		usage[contracts.ContextUsageFieldContextWindow] = cw
 	}
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		"context_usage": usage,
+		contracts.SessionInfoKeyContextUsage: usage,
 	})
 }
 
@@ -789,7 +790,7 @@ func (a *CodexAgent) handleRateLimitsUpdated(content []byte, params json.RawMess
 
 	if len(summary.rateLimits) > 0 {
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			"rate_limits": summary.rateLimits,
+			contracts.SessionInfoKeyRateLimits: summary.rateLimits,
 		})
 	}
 
@@ -845,15 +846,15 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 			anyExceeded = true
 		}
 		info := map[string]interface{}{
-			"rate_limit_type": rlType,
-			"utilization":     float64(tier.UsedPercent) / 100,
-			"status":          status,
+			contracts.RateLimitFieldRateLimitType: rlType,
+			contracts.RateLimitFieldUtilization:   float64(tier.UsedPercent) / 100,
+			contracts.RateLimitFieldStatus:        status,
 		}
 		var tierReset *time.Time
 		if tier.ResetsAt != nil {
 			resetAt := time.Unix(*tier.ResetsAt, 0).UTC()
 			tierReset = &resetAt
-			info["resets_at"] = *tier.ResetsAt
+			info[contracts.RateLimitFieldResetsAt] = *tier.ResetsAt
 			if s.latestReset == nil || resetAt.After(*s.latestReset) {
 				s.latestReset = &resetAt
 			}
@@ -877,10 +878,12 @@ func summarizeCodexRateLimits(tiers []*codexRateLimitTier, reachedType string) c
 	// window already exceeded" (status >=100), NOT on "no exceeded window carries a
 	// reset": a window at >=100% without a reset already reads as exceeded, so
 	// elevating a DIFFERENT binding window there would disagree with the frontend
-	// replay path, which gates purely on the per-window status (extractRateLimitInfo).
+	// replay path, which depends only on the per-window status
+	// (codexRateLimitsFromMessage, via codexTierToRateLimitInfo in
+	// lib/rateLimitUtils.ts).
 	if reachedType == codexRateLimitReachedTimeWindow && !anyExceeded && bindingTierKey != "" {
 		if info, ok := s.rateLimits[bindingTierKey].(map[string]interface{}); ok {
-			info["status"] = codexRateLimitStatusExceeded
+			info[contracts.RateLimitFieldStatus] = codexRateLimitStatusExceeded
 		}
 	}
 	return s

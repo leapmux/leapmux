@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -1391,7 +1392,7 @@ func sessionInfoValues(sink *testSink, key string) []interface{} {
 // or -1 when none has been broadcast yet. -1 (not 0) is the sentinel so a test
 // can tell "never broadcast" apart from a real 0.
 func lastThinkingTokens(sink *testSink) int64 {
-	if v, ok := lastSessionInfoValue(sink, SessionInfoKeyThinkingTokens); ok {
+	if v, ok := lastSessionInfoValue(sink, contracts.SessionInfoKeyThinkingTokens); ok {
 		return v.(int64)
 	}
 	return -1

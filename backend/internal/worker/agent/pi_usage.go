@@ -80,23 +80,23 @@ func piSessionStatsTimeout(base time.Duration) time.Duration {
 // (snapshotLocked already isolates the map from the agent's state).
 func mutatePiUsageFields(obj map[string]any, snap piUsageSnapshot) {
 	if snap.HasTotalCost {
-		obj["total_cost_usd"] = snap.TotalCostUsd
+		obj[contracts.SessionInfoKeyTotalCostUsd] = snap.TotalCostUsd
 	}
 	if len(snap.ContextUsage) > 0 {
-		obj["context_usage"] = snap.ContextUsage
+		obj[contracts.SessionInfoKeyContextUsage] = snap.ContextUsage
 	}
 }
 
 func (s piUsageSnapshot) sessionInfo() map[string]interface{} {
 	info := map[string]interface{}{}
 	if s.HasTotalCost {
-		info["total_cost_usd"] = s.TotalCostUsd
+		info[contracts.SessionInfoKeyTotalCostUsd] = s.TotalCostUsd
 	}
 	if len(s.ContextUsage) > 0 {
 		// Single-use snapshot: hand the ContextUsage map directly to
 		// the broadcast payload. The snapshot was built from a cloned
 		// map, so the agent's latestContextUsage stays isolated.
-		info["context_usage"] = s.ContextUsage
+		info[contracts.SessionInfoKeyContextUsage] = s.ContextUsage
 	}
 	return info
 }
@@ -105,14 +105,14 @@ func piContextUsageFromAssistantUsage(usage piAssistantUsage, contextWindow int6
 	if usage.Input == 0 && usage.Output == 0 && usage.CacheRead == 0 && usage.CacheWrite == 0 {
 		return nil
 	}
-	ctx := map[string]any{
-		"input_tokens":                usage.Input,
-		"cache_creation_input_tokens": usage.CacheWrite,
-		"cache_read_input_tokens":     usage.CacheRead,
-		"output_tokens":               usage.Output,
-	}
+	ctx := contextUsageMap(contextTokenCounts{
+		Input:      usage.Input,
+		CacheWrite: usage.CacheWrite,
+		CacheRead:  usage.CacheRead,
+		Output:     usage.Output,
+	})
 	if contextWindow > 0 {
-		ctx["context_window"] = contextWindow
+		ctx[contracts.ContextUsageFieldContextWindow] = contextWindow
 	}
 	return ctx
 }
@@ -124,15 +124,13 @@ func piSnapshotFromStats(stats piSessionStats) piUsageSnapshot {
 		snap.HasTotalCost = true
 	}
 	if stats.ContextUsage != nil && stats.ContextUsage.Tokens != nil && *stats.ContextUsage.Tokens > 0 {
-		ctx := map[string]any{
-			"input_tokens":                int64(0),
-			"cache_creation_input_tokens": int64(0),
-			"cache_read_input_tokens":     int64(0),
-			"output_tokens":               int64(0),
-			"context_tokens":              *stats.ContextUsage.Tokens,
-		}
+		// The session stats give the total the context holds and no per-request
+		// breakdown, so the four counts stay zero and the popover shows a row
+		// rather than a blank.
+		ctx := contextUsageMap(contextTokenCounts{})
+		ctx[contracts.ContextUsageFieldContextTokens] = *stats.ContextUsage.Tokens
 		if stats.ContextUsage.ContextWindow > 0 {
-			ctx["context_window"] = stats.ContextUsage.ContextWindow
+			ctx[contracts.ContextUsageFieldContextWindow] = stats.ContextUsage.ContextWindow
 		}
 		snap.ContextUsage = ctx
 	}
@@ -194,7 +192,7 @@ func (a *PiAgent) currentPiUsageSnapshot() piUsageSnapshot {
 func (a *PiAgent) currentPiContextWindow() int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if cw, _ := a.latestContextUsage["context_window"].(int64); cw > 0 {
+	if cw, _ := a.latestContextUsage[contracts.ContextUsageFieldContextWindow].(int64); cw > 0 {
 		return cw
 	}
 	for _, model := range a.availableModels {

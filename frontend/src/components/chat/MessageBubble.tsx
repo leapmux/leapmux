@@ -9,6 +9,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
+import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 
 import Check from 'lucide-solid/icons/check'
@@ -148,6 +149,12 @@ export interface MessageBubbleHost {
    * renderer reads it.
    */
   commandStream?: () => CommandStreamSegment[] | undefined
+  /**
+   * Live tool progress for this message's span, as a thunk for the same reason
+   * commandStream is one -- and additionally so no reader above the badge
+   * subscribes to it. See RenderContext.toolProgress.
+   */
+  toolProgress?: () => ToolProgressEntry | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
   localDiffView?: 'unified' | 'split'
   /** Set the per-message diff view override. */
@@ -320,6 +327,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
     commandStream: () => props.host?.commandStream?.(),
+    toolProgress: () => props.host?.toolProgress?.(),
     get getMessageUiState() { return props.host?.getMessageUiState },
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },

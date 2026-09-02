@@ -267,6 +267,98 @@ export function checkRetry(r) {
 }
 
 // ---------------------------------------------------------------------------
+// session-info: the agent_session_info wire vocabulary
+// ---------------------------------------------------------------------------
+
+/**
+ * The tables of contracts/session-info.json, each with the prefix its Go
+ * constants take and the name of its TS object. Ordered as the file is, so the
+ * generated output reads in the same order as the source.
+ *
+ * The JSON key IS the name (like worker-vocab's notificationTypes), so there is
+ * no separate name table to keep in step -- the schema's propertyNames pattern
+ * already limits a key to the PascalCase a Go identifier and a TS property both
+ * accept.
+ */
+export const SESSION_INFO_TABLES = [
+  { json: 'keys', goPrefix: 'SessionInfoKey', ts: 'SESSION_INFO_KEY', tsType: 'SessionInfoKey', what: 'top-level `info` keys' },
+  { json: 'contextUsageFields', goPrefix: 'ContextUsageField', ts: 'CONTEXT_USAGE_FIELD', tsType: 'ContextUsageField', what: 'fields of the context_usage object' },
+  { json: 'rateLimitFields', goPrefix: 'RateLimitField', ts: 'RATE_LIMIT_FIELD', tsType: 'RateLimitField', what: 'fields of one rate_limits tier' },
+  { json: 'runningToolFields', goPrefix: 'RunningToolField', ts: 'RUNNING_TOOL_FIELD', tsType: 'RunningToolField', what: 'fields of the running_tool object' },
+  { json: 'runningToolRetryFields', goPrefix: 'RunningToolRetryField', ts: 'RUNNING_TOOL_RETRY_FIELD', tsType: 'RunningToolRetryField', what: 'fields of running_tool.retry' },
+]
+
+export function checkSessionInfo(v) {
+  // Biject the JSON's own tables with SESSION_INFO_TABLES. Without this, a table
+  // added to session-info.json and to its schema emits no Go and no TS, and says
+  // nothing: the emitters below iterate the descriptor list alone, so the first
+  // report is an undefined-constant build failure that never names the contract.
+  checkTableCoverage('session-info.json', 'session-info', Object.keys(v), [
+    ['SESSION_INFO_TABLES', Object.fromEntries(SESSION_INFO_TABLES.map(t => [t.json, t]))],
+  ])
+  for (const table of SESSION_INFO_TABLES) {
+    const entries = Object.entries(v[table.json])
+    mustBe(entries.length > 0, 'session-info.json', `${table.json} must hold at least one entry`)
+    const tokens = entries.map(([, token]) => token)
+    // Per TABLE, not across tables: two different objects may legitimately carry
+    // a field of the same name, but one object cannot carry the same field twice
+    // -- the second name would generate a constant nothing can distinguish.
+    mustBe(new Set(tokens).size === tokens.length, 'session-info.json', `two ${table.json} entries share one wire token`)
+  }
+  // Claude Code writes `total_cost_usd` on its own `result` line, and the worker
+  // persists that line unchanged. The browser reads the persisted row through
+  // SESSION_INFO_KEY.TotalCostUsd (extractResultMetadata in messageParser.ts), and
+  // claude_output.go decodes the same field through a struct tag, which must be a
+  // literal and cannot follow a rename. Anthropic owns this spelling, so LeapMux
+  // cannot change it: a rename would generate cleanly, pass every test, and blank
+  // the per-turn cost on every Claude result divider. Pi and ZCode inject the same
+  // key under the generated constant, so the read cannot go back to a literal.
+  mustBe(v.keys.TotalCostUsd === 'total_cost_usd', 'session-info.json', 'keys.TotalCostUsd must stay "total_cost_usd" -- Claude Code writes that spelling on its own result line, and the browser reads the persisted row through this constant, so a rename blanks the per-turn cost with no build failure')
+  return {}
+}
+
+export function emitGoSessionInfo(v) {
+  const blocks = SESSION_INFO_TABLES.map((table) => {
+    const decls = Object.entries(v[table.json])
+      .map(([name, token]) => ({ name: `${table.goPrefix}${name}`, value: jsonString(token) }))
+    return `// ${table.goPrefix}* are the ${table.what}.
+const (
+${goConstBlock(decls)}
+)`
+  })
+  return `${GO_HEADER('session-info.json')}package contracts
+
+// The agent_session_info wire vocabulary: the keys of the ephemeral info map
+// the Worker broadcasts, and the nested field names of its object-valued keys.
+// The browser's SESSION_INFO_KEY and friends are generated from the same
+// contracts/session-info.json.
+
+${blocks.join('\n\n')}
+`
+}
+
+export function emitTsSessionInfo(v) {
+  const blocks = SESSION_INFO_TABLES.map((table) => {
+    const rows = Object.entries(v[table.json])
+      .map(([name, token]) => `  ${name}: ${jsonString(token)},`)
+      .join('\n')
+    return `/** The ${table.what}. */
+export const ${table.ts} = {
+${rows}
+} as const
+
+export type ${table.tsType} = typeof ${table.ts}[keyof typeof ${table.ts}]`
+  })
+  return `${TS_HEADER('session-info.json')}
+// The agent_session_info wire vocabulary, generated from
+// contracts/session-info.json (the Go worker's SessionInfoKey* constants and
+// friends read the same tables).
+
+${blocks.join('\n\n')}
+`
+}
+
+// ---------------------------------------------------------------------------
 // worker-vocab: the worker's wire vocabulary
 // ---------------------------------------------------------------------------
 
@@ -1701,6 +1793,15 @@ const DOMAINS = [
       checkRetry(r)
       out['backend/generated/contracts/retry.go'] = emitGoRetry(r)
       out['frontend/src/generated/contracts/retry.ts'] = emitTsRetry(r)
+    },
+  },
+  {
+    name: 'session-info',
+    emit(out, read) {
+      const s = read('session-info')
+      checkSessionInfo(s)
+      out['backend/generated/contracts/session-info.go'] = emitGoSessionInfo(s)
+      out['frontend/src/generated/contracts/session-info.ts'] = emitTsSessionInfo(s)
     },
   },
   {

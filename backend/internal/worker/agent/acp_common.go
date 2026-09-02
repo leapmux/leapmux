@@ -16,6 +16,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -1896,17 +1897,15 @@ func (b *acpBase) handleUsageUpdate(update json.RawMessage) {
 		return
 	}
 
+	// ACP reports one used-token total and no breakdown, so it lands on Input and
+	// the other three counts stay zero.
+	contextUsage := contextUsageMap(contextTokenCounts{Input: usage.Used})
+	contextUsage[contracts.ContextUsageFieldContextWindow] = usage.Size
 	info := map[string]interface{}{
-		"context_usage": map[string]interface{}{
-			"input_tokens":                usage.Used,
-			"cache_creation_input_tokens": int64(0),
-			"cache_read_input_tokens":     int64(0),
-			"output_tokens":               int64(0),
-			"context_window":              usage.Size,
-		},
+		contracts.SessionInfoKeyContextUsage: contextUsage,
 	}
 	if usage.Cost.Amount > 0 {
-		info["total_cost_usd"] = usage.Cost.Amount
+		info[contracts.SessionInfoKeyTotalCostUsd] = usage.Cost.Amount
 	}
 	b.sink.BroadcastSessionInfo(info)
 }

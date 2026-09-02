@@ -784,6 +784,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               getToolResultContentVersionBySpanId: spanId => chatStore.getToolResultContentVersionBySpanId(agentId, spanId),
               getToolResultRevisionBySpanId: spanId => chatStore.getToolResultRevisionBySpanId(agentId, spanId),
               getCommandStreamBySpanId: spanId => chatStore.getCommandStream(agentId, spanId),
+              getToolProgressBySpanId: spanId => chatStore.getToolProgress(agentId, spanId),
               hasRenderableCommandStreamBySpanId: spanId => chatStore.hasRenderableCommandStream(agentId, spanId),
               getMessageContentVersion: id => chatStore.getMessageContentVersion(id),
               getTodoById: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),

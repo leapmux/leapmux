@@ -8,6 +8,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import type { TodoItem } from '~/stores/chatTodos'
+import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import type { CommandStreamSegment, SpanMessageRevision } from '~/stores/chatTypes'
 
 import ArrowDown from 'lucide-solid/icons/arrow-down'
@@ -147,6 +148,13 @@ export interface ChatMessageLookups {
   getToolResultRevisionBySpanId?: (spanId: string) => SpanMessageRevision | undefined
   /** Look up live Codex span stream segments by span id, for the bubble renderers. */
   getCommandStreamBySpanId?: (spanId: string) => CommandStreamSegment[]
+  /**
+   * Look up a still-running tool's live progress by span id. Read ONLY by the
+   * leaf badge in the tool card's header, never by the classified-entry cache:
+   * the value changes while the row is on screen, and re-classifying (or
+   * re-rendering) the row would drop a text selection held across it.
+   */
+  getToolProgressBySpanId?: (spanId: string) => ToolProgressEntry | undefined
   /**
    * Whether a span's command stream has renderable content to show. MUST read
    * REACTIVELY (e.g. the command-stream store's `hasRenderableContent`): the
@@ -653,6 +661,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const buildMessageHost = (entry: ClassifiedEntry): MessageBubbleHost => ({
     ...hostLookups(),
     commandStream: () => props.lookups?.getCommandStreamBySpanId?.(entry.msg.spanId),
+    toolProgress: () => props.lookups?.getToolProgressBySpanId?.(entry.msg.spanId),
     localDiffView: getLocalDiffView(entry.msg.id),
     // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
     // being scrolled away by the geometry re-pin (which otherwise holds the viewport-

@@ -553,12 +553,20 @@ func (a *zcodeAgent) recordZCodeToolStarted(payload zcodeToolUpdated) {
 	// separately, so both are dropped.
 	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStdout))
 	a.clearCumulativeDelta(zcodeProgressKey(payload.ToolCallID, zcodeStreamStderr))
-	a.sink.BroadcastSessionInfo(map[string]any{
-		"zcode_running_tool": map[string]any{
-			"tool_call_id": payload.ToolCallID,
-			"tool_name":    a.zcodeToolCallName(payload.ToolCallID),
-		},
-	})
+	// This used to broadcast a `zcode_running_tool` session-info key that nothing
+	// read. The shared channel for "which tool is running" is now
+	// contracts.SessionInfoKeyRunningTool, which the tool card renders as a live
+	// badge. ZCode does not feed it yet: the badge shows an elapsed time or a
+	// retry state, and the app-server reports neither for a tool call, so an entry
+	// from here would render nothing. Broadcast one from this site (span_id =
+	// payload.ToolCallID) once ZCode reports either. The clear needs no code --
+	// the frontend drops a span's entry when its result row lands, and
+	// closeZCodeToolCall already persists that row with Closing: true.
+	//
+	// The other route to a ZCode badge needs nothing from the app-server: the
+	// browser can count from the tool_use row's own timestamp, which would give
+	// every provider a badge at once.
+	// https://github.com/leapmux/leapmux/issues/439
 }
 
 // streamZCodeToolProgress ships the new output of a running tool.

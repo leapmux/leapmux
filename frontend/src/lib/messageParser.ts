@@ -1,5 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
+import { CONTEXT_USAGE_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { decompressContentToString } from '~/lib/decompress'
 import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
@@ -179,15 +180,17 @@ export function normalizeContextUsage(value: unknown): ContextUsageInfo | undefi
   if (!isObject(value))
     return undefined
 
-  const inputTokens = pickNumber(value, 'input_tokens', 0)
-  const cacheCreationInputTokens = pickNumber(value, 'cache_creation_input_tokens', 0)
-  const cacheReadInputTokens = pickNumber(value, 'cache_read_input_tokens', 0)
-  const outputTokens = pickNumber(value, 'output_tokens', undefined)
+  const inputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.InputTokens, 0)
+  const cacheCreationInputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.CacheCreationInputTokens, 0)
+  const cacheReadInputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.CacheReadInputTokens, 0)
+  const outputTokens = pickNumber(value, CONTEXT_USAGE_FIELD.OutputTokens, undefined)
   // Pi's native RPC shape calls this `tokens`; LeapMux-normalized payloads use
   // `context_tokens` so the grid can distinguish authoritative totals from the
-  // Claude-style input/cache component fields.
-  const contextTokens = pickFirstNumber(value, ['context_tokens', 'tokens'])
-  const contextWindow = pickNumber(value, 'context_window', undefined)
+  // Claude-style input/cache component fields. Only the LeapMux spelling comes
+  // from the contract -- `tokens` is Pi's own protocol token, which LeapMux does
+  // not own (see the _readme in contracts/session-info.json).
+  const contextTokens = pickFirstNumber(value, [CONTEXT_USAGE_FIELD.ContextTokens, 'tokens'])
+  const contextWindow = pickNumber(value, CONTEXT_USAGE_FIELD.ContextWindow, undefined)
 
   const hasTokenData = inputTokens > 0
     || cacheCreationInputTokens > 0
@@ -235,11 +238,11 @@ export function extractContextUsage(
     return null
   const result: { totalCostUsd?: number, contextUsage?: ContextUsageInfo } = {}
 
-  const totalCostUsd = pickNumber(inner, 'total_cost_usd', undefined)
+  const totalCostUsd = pickNumber(inner, SESSION_INFO_KEY.TotalCostUsd, undefined)
   if (totalCostUsd !== undefined)
     result.totalCostUsd = totalCostUsd
 
-  const normalizedContextUsage = normalizeContextUsage(inner.context_usage)
+  const normalizedContextUsage = normalizeContextUsage(inner[SESSION_INFO_KEY.ContextUsage])
   if (normalizedContextUsage) {
     result.contextUsage = normalizedContextUsage
   }
@@ -477,11 +480,11 @@ export function extractResultMetadata(
       result.contextWindow = cw
   }
 
-  const normalizedContextUsage = normalizeContextUsage(inner.context_usage)
+  const normalizedContextUsage = normalizeContextUsage(inner[SESSION_INFO_KEY.ContextUsage])
   if (normalizedContextUsage)
     result.contextUsage = normalizedContextUsage
 
-  const totalCostUsd = pickNumber(inner, 'total_cost_usd', undefined)
+  const totalCostUsd = pickNumber(inner, SESSION_INFO_KEY.TotalCostUsd, undefined)
   if (totalCostUsd !== undefined)
     result.totalCostUsd = totalCostUsd
 

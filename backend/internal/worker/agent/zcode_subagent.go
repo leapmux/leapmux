@@ -384,7 +384,11 @@ func (a *zcodeAgent) closeZCodeToolCallInto(sink OutputSink, event zcodeEventEnv
 	// subagent made no tool call of its own returns before that function's own lookup.
 	a.children.forgetTitle(payload.ToolCallID)
 	a.toolCallPrompts.take(payload.ToolCallID)
-	a.sink.BroadcastSessionInfo(map[string]any{"zcode_running_tool": nil})
+	// No running-tool clear is broadcast here. The `zcode_running_tool` key this
+	// site used to clear had no reader; its replacement,
+	// contracts.SessionInfoKeyRunningTool, is cleared by the frontend when the
+	// result row above lands, so a provider never sends an end message. See
+	// recordZCodeToolStarted for what ZCode must report before it broadcasts one.
 }
 
 // zcodeSpawnTitle labels the subagent an `Agent` call starts: the description the

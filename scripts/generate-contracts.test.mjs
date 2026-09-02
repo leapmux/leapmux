@@ -24,6 +24,7 @@ import {
   checkProviders,
   checkRetry,
   checkScopes,
+  checkSessionInfo,
   checkTabNames,
   checkTheme,
   checkValidate,
@@ -35,6 +36,7 @@ import {
   emitGoDesktop,
   emitGoHeaders,
   emitGoRetry,
+  emitGoSessionInfo,
   emitGoValidate,
   emitGoWire,
   emitRsDesktop,
@@ -42,6 +44,7 @@ import {
   emitTsHeaders,
   emitTsProviders,
   emitTsRetry,
+  emitTsSessionInfo,
   emitTsValidate,
   emitTsWire,
   enumValues,
@@ -51,6 +54,7 @@ import {
   nameStripClass,
   RETRY_GO_NAMES,
   RETRY_TS_NAMES,
+  SESSION_INFO_TABLES,
   WIRE_GO_NAMES,
   WIRE_TS_NAMES,
 } from './generate-contracts.mjs'
@@ -462,6 +466,7 @@ describe('generate', () => {
       'backend/generated/contracts/providers.go',
       'backend/generated/contracts/retry.go',
       'backend/generated/contracts/scopes.go',
+      'backend/generated/contracts/session-info.go',
       'backend/generated/contracts/tab-names.go',
       'backend/generated/contracts/theme.go',
       'backend/generated/contracts/validate.go',
@@ -476,6 +481,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/providers.ts',
       'frontend/src/generated/contracts/retry.ts',
       'frontend/src/generated/contracts/scopes.ts',
+      'frontend/src/generated/contracts/session-info.ts',
       'frontend/src/generated/contracts/tab-names.ts',
       'frontend/src/generated/contracts/theme-default.ts',
       'frontend/src/generated/contracts/validate.ts',
@@ -782,6 +788,115 @@ describe('subtractRanges / nameStripClass', () => {
     const ts = emitTsValidate(v)
     expect(ts).toContain('SYSTEM_RESERVED_USERNAMES: readonly string[] = ["solo"]')
     expect(ts).toContain('PUBLIC_RESERVED_USERNAMES: readonly string[] = ["admin"]')
+  })
+})
+
+describe('checkSessionInfo', () => {
+  /** A minimal but complete contract; each test perturbs one table. */
+  function sessionInfo(overrides = {}) {
+    return {
+      keys: { TotalCostUsd: 'total_cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
+      contextUsageFields: { InputTokens: 'input_tokens' },
+      rateLimitFields: { Status: 'status' },
+      runningToolFields: { SpanId: 'span_id' },
+      runningToolRetryFields: { Attempt: 'attempt' },
+      ...overrides,
+    }
+  }
+
+  it('accepts the shipped contract', () => {
+    expect(() => checkSessionInfo(readContract('session-info'))).not.toThrow()
+  })
+
+  it('rejects two entries of one table sharing a wire token', () => {
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({ keys: { A: 'same_token', B: 'same_token' } })),
+      'two keys entries share one wire token',
+    )
+  })
+
+  it('rejects a duplicate token in a NESTED table too', () => {
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({ rateLimitFields: { A: 'status', B: 'status' } })),
+      'two rateLimitFields entries share one wire token',
+    )
+  })
+
+  it('accepts the same token in two DIFFERENT tables', () => {
+    // running_tool.tool_name and a hypothetical future tier field of the same
+    // name are fields of different objects; only a repeat WITHIN one object is
+    // ambiguous. The check must not over-reach into a cross-table ban.
+    expect(() => checkSessionInfo(sessionInfo({
+      runningToolFields: { ToolName: 'tool_name' },
+      rateLimitFields: { ToolName: 'tool_name' },
+    }))).not.toThrow()
+  })
+
+  it('rejects an empty table rather than emitting an empty const block', () => {
+    // goConstBlock takes Math.max of an empty list, which is -Infinity: the
+    // emitter would produce unparseable Go instead of failing here.
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({ contextUsageFields: {} })),
+      'contextUsageFields must hold at least one entry',
+    )
+  })
+
+  // The one token LeapMux does not own. Claude Code writes `total_cost_usd` on
+  // its own `result` line, the worker persists that line unchanged, and the
+  // browser reads the persisted row through this constant -- while the Go
+  // decoder reads it through a struct tag, which takes a literal and cannot
+  // follow a rename. Without this pin a rename generates cleanly, passes every
+  // test, and blanks the per-turn cost on every Claude result divider.
+  it('rejects a rename of the cost token Claude Code itself writes', () => {
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({
+        keys: { TotalCostUsd: 'cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
+      })),
+      'Claude Code writes that spelling on its own result line',
+    )
+  })
+
+  // A table added to the JSON and to its schema, but forgotten in
+  // SESSION_INFO_TABLES, emits no Go and no TS and says nothing -- the first
+  // report would be an undefined-constant build failure that never names the
+  // contract.
+  it('rejects a contract table that no SESSION_INFO_TABLES entry renders', () => {
+    expectContractError(
+      () => checkSessionInfo(sessionInfo({ compactionFields: { PreTokens: 'pre_tokens' } })),
+      'compactionFields has no SESSION_INFO_TABLES entry',
+    )
+  })
+
+  it('emits one Go constant and one TS entry per table entry', () => {
+    const s = readContract('session-info')
+    const go = emitGoSessionInfo(s)
+    const ts = emitTsSessionInfo(s)
+    for (const table of SESSION_INFO_TABLES) {
+      for (const [name, token] of Object.entries(s[table.json])) {
+        expect(go).toContain(`${table.goPrefix}${name}`)
+        expect(go).toContain(JSON.stringify(token))
+        expect(ts).toContain(`${name}: ${JSON.stringify(token)},`)
+      }
+      expect(ts).toContain(`export const ${table.ts} = {`)
+      expect(ts).toContain(`export type ${table.tsType} =`)
+    }
+  })
+
+  it('emits the running_tool vocabulary the Claude tool_progress path needs', () => {
+    // The badge reads these names off the wire. A rename that reached only one
+    // side used to be invisible until the badge stopped updating. Matched with
+    // a regex because goConstBlock pads the `=` to the widest name in the
+    // block, so the exact spacing shifts whenever a sibling entry is added.
+    const go = emitGoSessionInfo(readContract('session-info'))
+    for (const [name, token] of [
+      ['SessionInfoKeyRunningTool', 'running_tool'],
+      ['RunningToolFieldSpanId', 'span_id'],
+      ['RunningToolFieldElapsedSeconds', 'elapsed_seconds'],
+      ['RunningToolFieldRetry', 'retry'],
+      ['RunningToolRetryFieldMaxRetries', 'max_retries'],
+    ]) {
+      expect(go).toMatch(new RegExp(`\\b${name} += "${token}"$`, 'm'))
+    }
   })
 })
 

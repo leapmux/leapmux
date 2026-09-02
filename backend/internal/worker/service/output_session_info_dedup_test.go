@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -247,25 +251,63 @@ func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
 	sink, mock := newSessionInfoFixture(t)
 
 	// Two byte-identical thinking_tokens broadcasts both ship -- no dedup.
-	sink.BroadcastSessionInfo(map[string]interface{}{"thinking_tokens": int64(230)})
-	sink.BroadcastSessionInfo(map[string]interface{}{"thinking_tokens": int64(230)})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: int64(230)})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: int64(230)})
 	require.Len(t, mock.snapshot(), 2, "an equal thinking_tokens repeat re-ships (exempt from dedup)")
 
 	// A non-thinking key is still deduped: an unchanged repeat is dropped.
-	sink.BroadcastSessionInfo(map[string]interface{}{"total_cost_usd": float64(0.5)})
-	sink.BroadcastSessionInfo(map[string]interface{}{"total_cost_usd": float64(0.5)})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyTotalCostUsd: float64(0.5)})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyTotalCostUsd: float64(0.5)})
 	assert.Len(t, mock.snapshot(), 3, "a non-thinking key remains deduped")
 
 	// In a mixed payload, only the non-thinking key dedups: an unchanged
 	// thinking_tokens alongside an unchanged cost still ships (carrying just the
 	// estimate), and the cost is filtered out as a no-op delta.
-	sink.BroadcastSessionInfo(map[string]interface{}{"thinking_tokens": int64(230), "total_cost_usd": float64(0.5)})
+	sink.BroadcastSessionInfo(map[string]interface{}{contracts.SessionInfoKeyThinkingTokens: int64(230), contracts.SessionInfoKeyTotalCostUsd: float64(0.5)})
 	infos := mock.snapshot()
 	require.Len(t, infos, 4, "a mixed payload re-ships because thinking_tokens is never deduped")
 	// The capturing writer round-trips through JSON, so the count returns as float64.
-	assert.Equal(t, float64(230), infos[3]["thinking_tokens"])
-	_, hasCost := infos[3]["total_cost_usd"]
+	assert.Equal(t, float64(230), infos[3][contracts.SessionInfoKeyThinkingTokens])
+	_, hasCost := infos[3][contracts.SessionInfoKeyTotalCostUsd]
 	assert.False(t, hasCost, "the unchanged cost is still deduped out of the mixed payload")
+}
+
+// TestBroadcastSessionInfo_RunningToolNeverDeduped: running_tool joins
+// thinking_tokens in the exemption, and for the same reason. The frontend drops
+// a span's entry when the tool's result row lands and at every turn/agent
+// boundary -- none of which the worker observes -- so an identical repeat must
+// still ship. A resolved-retry update is the case this exemption exists for: its
+// payload can equal the previous one byte for byte, and a dedup would leave the
+// badge stuck on the last attempt for as long as the tool runs.
+func TestBroadcastSessionInfo_RunningToolNeverDeduped(t *testing.T) {
+	t.Parallel()
+
+	sink, mock := newSessionInfoFixture(t)
+
+	running := func() map[string]interface{} {
+		return map[string]interface{}{
+			contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+				contracts.RunningToolFieldSpanId:         "toolu_A",
+				contracts.RunningToolFieldElapsedSeconds: int64(30),
+			},
+		}
+	}
+	sink.BroadcastSessionInfo(running())
+	sink.BroadcastSessionInfo(running())
+	require.Len(t, mock.snapshot(), 2, "an equal running_tool repeat re-ships (exempt from dedup)")
+
+	// A nested value change ships the whole sub-map, as it does for every key.
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+			contracts.RunningToolFieldSpanId:         "toolu_A",
+			contracts.RunningToolFieldElapsedSeconds: int64(60),
+		},
+	})
+	infos := mock.snapshot()
+	require.Len(t, infos, 3)
+	update, ok := infos[2][contracts.SessionInfoKeyRunningTool].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(60), update[contracts.RunningToolFieldElapsedSeconds])
 }
 
 // TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree drives many
@@ -288,4 +330,60 @@ func TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestSessionInfoKeysStateTheirDedupPolicy pins the seam between
+// contracts/session-info.json and dedupExemptSessionInfoKeys. The contract owns
+// the top-level agent_session_info vocabulary; this file owns which of those keys
+// skip the per-key dedup. Nothing else compiles the two together, so a key added
+// to the contract and forgotten in the exemption set takes the dedup in silence --
+// the exact failure the exemption exists to prevent, where a counter or a badge
+// stays hidden until a strictly different value arrives. Every contract key must
+// appear in exactly one of the two sets, and every exempt key must still be a
+// contract key, so a rename cannot leave a stale exemption behind.
+//
+// The contract holds the keys the BROWSER reads. A Go-only ephemeral key (the
+// pi_* family, zcode_api_retry) is outside it and outside this guard, which is
+// the right boundary: a key that drives a badge or a counter is browser-read by
+// definition, so it is in the contract.
+func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
+	t.Parallel()
+
+	// The keys that carry meaningfully across turns, so the dedup is correct for
+	// them. A new contract key belongs here or in dedupExemptSessionInfoKeys.
+	deduped := map[string]struct{}{
+		contracts.SessionInfoKeyTotalCostUsd:  {},
+		contracts.SessionInfoKeyContextUsage:  {},
+		contracts.SessionInfoKeyRateLimits:    {},
+		contracts.SessionInfoKeyCodexTurnId:   {},
+		contracts.SessionInfoKeyStreamingType: {},
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	contractPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..",
+		"contracts", "session-info.json")
+	raw, err := os.ReadFile(contractPath)
+	require.NoError(t, err, "the session-info contract must stay readable at %s", contractPath)
+
+	var contract struct {
+		Keys map[string]string `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &contract))
+	require.NotEmpty(t, contract.Keys, "contracts/session-info.json must list its top-level keys")
+
+	tokens := make(map[string]struct{}, len(contract.Keys))
+	for name, token := range contract.Keys {
+		tokens[token] = struct{}{}
+		_, exempt := dedupExemptSessionInfoKeys[token]
+		_, dedup := deduped[token]
+		assert.True(t, exempt != dedup,
+			"session-info key %s (%q) must be listed exactly once: in dedupExemptSessionInfoKeys, for live per-turn state the frontend drops, or in this test's deduped set, for state that carries across turns",
+			name, token)
+	}
+	for token := range dedupExemptSessionInfoKeys {
+		_, known := tokens[token]
+		assert.True(t, known,
+			"dedupExemptSessionInfoKeys holds %q, which contracts/session-info.json no longer lists -- a stale exemption exempts nothing", token)
+	}
 }

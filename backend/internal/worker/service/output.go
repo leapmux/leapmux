@@ -1318,21 +1318,34 @@ func (s *agentOutputSink) BroadcastGitStatus() {
 	})
 }
 
-// thinkingTokensSessionInfoKey is the agent_session_info key carrying Claude's
-// per-turn thinking-token estimate. Unlike cost/rate-limit/context-usage keys
-// (which carry meaningfully across turns and benefit from dedup), this is a
-// per-turn running count the frontend clears at several boundaries the worker
-// can't all observe (the turn-end divider, each interleaved thinking phase, a
-// pause for input). Deduping it here would suppress a re-broadcast of a value
-// the frontend already cleared -- leaving the counter hidden until a strictly
-// different estimate arrives. It streams unique monotonic values normally and
-// the frontend store dedups identical updates itself, so BroadcastSessionInfo
-// skips the dedup cache for this one key entirely (always ship, never cache).
+// dedupExemptSessionInfoKeys are the agent_session_info keys that
+// BroadcastSessionInfo broadcasts unconditionally -- always broadcast, never
+// cache.
 //
-// Sourced from the agent package's broadcast key so the exemption keys off the
-// exact same string the Claude handler ships, instead of a hand-copied literal
-// that could silently drift and re-enable the dedup.
-const thinkingTokensSessionInfoKey = agent.SessionInfoKeyThinkingTokens
+// The rest of the vocabulary (cost, rate limits, context usage) carries
+// meaningfully across turns and benefits from the dedup. These two do not. They
+// are live per-turn state, and the FRONTEND drops them at boundaries the worker
+// cannot all observe.
+//
+//   - thinking_tokens: a per-turn running count the frontend drops at the
+//     turn-end divider, at each interleaved thinking phase, and when the agent
+//     pauses for input.
+//   - running_tool: a per-span record the frontend drops when the tool's result
+//     row lands, and at every turn boundary and agent boundary.
+//
+// A dedup on either one suppresses a re-broadcast of a value that the frontend
+// already dropped, and the counter or the badge then stays hidden until a
+// strictly different value arrives. Both carry unique values in normal
+// operation, and the frontend stores drop an identical update themselves, so
+// the exemption costs nothing.
+//
+// The generated contract supplies the strings, so the exemption uses the exact
+// strings that the handlers broadcast. Hand-copied literals could drift and
+// re-enable the dedup without a word.
+var dedupExemptSessionInfoKeys = map[string]struct{}{
+	contracts.SessionInfoKeyThinkingTokens: {},
+	contracts.SessionInfoKeyRunningTool:    {},
+}
 
 // BroadcastSessionInfo emits an ephemeral agent_session_info update,
 // but only for keys whose values changed since the previous broadcast.
@@ -1360,10 +1373,10 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 	}
 	changed := make(map[string]interface{}, len(info))
 	for k, v := range info {
-		// thinking_tokens is exempt from dedup -- always ship it and never cache
-		// it, so a re-broadcast after a frontend-side clear is never suppressed.
-		// See thinkingTokensSessionInfoKey.
-		if k == thinkingTokensSessionInfoKey {
+		// An exempt key always broadcasts and is never cached, so nothing
+		// suppresses a re-broadcast after the frontend drops the value. See
+		// dedupExemptSessionInfoKeys.
+		if _, exempt := dedupExemptSessionInfoKeys[k]; exempt {
 			changed[k] = v
 			continue
 		}

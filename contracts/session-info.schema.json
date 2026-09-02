@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "session-info.schema.json",
+  "title": "agent_session_info wire vocabulary contract",
+  "description": "One table per object on the agent_session_info wire. Each entry maps a PascalCase contract name (the generated Go suffix and TS object key) to the snake_case token that travels on the wire. The generator additionally checks that no two entries in one table share a token.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "keys",
+    "contextUsageFields",
+    "rateLimitFields",
+    "runningToolFields",
+    "runningToolRetryFields"
+  ],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "keys": { "$ref": "#/$defs/table" },
+    "contextUsageFields": { "$ref": "#/$defs/table" },
+    "rateLimitFields": { "$ref": "#/$defs/table" },
+    "runningToolFields": { "$ref": "#/$defs/table" },
+    "runningToolRetryFields": { "$ref": "#/$defs/table" }
+  },
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/wireToken" },
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" }
+    },
+    "wireToken": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+    }
+  }
+}

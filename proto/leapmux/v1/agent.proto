@@ -336,7 +336,11 @@ message AgentChatMessage {
 
 message AgentStreamChunk {
   string message_id = 1;
-  bytes delta = 2; // Verbatim NDJSON line (stream_event from Claude Code)
+  // The provider's own streamed delta. Codex sends plain text; an ACP provider
+  // sends its extracted text. No provider sends a raw envelope: a chunk with no
+  // span_id is appended verbatim to the chat's free-form streaming text, so an
+  // unextracted line prints into the transcript as JSON.
+  bytes delta = 2;
   AgentProvider agent_provider = 3; // Provider that produced this chunk
   string span_id = 4; // Optional target tool/item span for inline streaming
   string method = 5; // Original provider notification method for classifying the stream

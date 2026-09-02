@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCompactNumber, formatDuration, formatTokenCount, joinMetaParts } from './rendererUtils'
+import { formatCompactNumber, formatDuration, formatSecondsParts, formatTokenCount, joinMetaParts } from './rendererUtils'
 
 describe('formatCompactNumber', () => {
   it('numbers below 1000 are returned as-is', () => {
@@ -160,5 +160,51 @@ describe('formatDuration', () => {
   it('rounds a fractional millisecond count', () => {
     expect(formatDuration(0.4)).toBe('0ms')
     expect(formatDuration(999.6)).toBe('1000ms')
+  })
+
+  // The extraction must leave every answer of ten seconds and above unchanged;
+  // only the entry point differs.
+  it('agrees with formatSecondsParts at and above ten seconds', () => {
+    for (const seconds of [10, 65, 3600, 90_061])
+      expect(formatDuration(seconds * 1000)).toBe(formatSecondsParts(seconds))
+  })
+})
+
+describe('formatSecondsParts', () => {
+  /**
+   * The whole-seconds entry point, for a caller whose source counts in seconds
+   * rather than measuring in milliseconds. It never takes formatDuration's
+   * sub-ten-second decimal branch: the running-tool badge shows the agent's own
+   * integer count, and "5.0s" beside "30s" and "1m 30s" reads as another unit.
+   */
+  it('renders a short duration in whole seconds, with no decimal', () => {
+    expect(formatSecondsParts(1)).toBe('1s')
+    expect(formatSecondsParts(5)).toBe('5s')
+    expect(formatSecondsParts(9)).toBe('9s')
+    // The value formatDuration would render as "5.0s".
+    expect(formatDuration(5000)).toBe('5.0s')
+  })
+
+  it('composes whole units, exactly as formatDuration does above ten seconds', () => {
+    expect(formatSecondsParts(10)).toBe('10s')
+    expect(formatSecondsParts(30)).toBe('30s')
+    expect(formatSecondsParts(60)).toBe('1m')
+    expect(formatSecondsParts(90)).toBe('1m 30s')
+    expect(formatSecondsParts(3600)).toBe('1h')
+    expect(formatSecondsParts(3690)).toBe('1h 1m 30s')
+    expect(formatSecondsParts(90_061)).toBe('1d 1h 1m 1s')
+  })
+
+  it('reads zero as "0s" rather than an empty string', () => {
+    // The parts list is empty for a zero, so the seconds part is unconditional.
+    expect(formatSecondsParts(0)).toBe('0s')
+  })
+
+  it('rounds a fractional count and floors a negative one at zero', () => {
+    expect(formatSecondsParts(29.4)).toBe('29s')
+    expect(formatSecondsParts(29.6)).toBe('30s')
+    // A negative duration is not a duration. The worker already refuses one, so
+    // this is the second line of defence rather than the first.
+    expect(formatSecondsParts(-5)).toBe('0s')
   })
 })

@@ -9,6 +9,7 @@ import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
+import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 import Brain from 'lucide-solid/icons/brain'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -115,6 +116,15 @@ export interface RenderContext {
   spanId?: string
   /** Live streamed Codex span content for command, fileChange, and reasoning items. */
   commandStream?: () => CommandStreamSegment[] | undefined
+  /**
+   * Live progress for THIS row's still-running tool (elapsed time, subagent
+   * retry), as a thunk. A caller must pass the thunk on WITHOUT invoking it:
+   * reading it here would subscribe the whole renderer to a value that changes
+   * while the row is on screen, and re-rendering the row drops any text
+   * selection the user holds across it. Only the leaf that displays it
+   * calls it -- see ToolRunningBadge.
+   */
+  toolProgress?: () => ToolProgressEntry | undefined
   /** Stable per-message UI state getter for remount-sensitive renderers. */
   getMessageUiState?: (key: MessageUiKey) => boolean | undefined
   /** Stable per-message UI state setter for remount-sensitive renderers. */
