@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { menuOptions, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'
+import { clippedText } from '~/styles/shared.css'
+import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
+import { menuOptionLabels, menuOptions, menuOptionValues, menuTrigger, menuTriggerText, openMenu, pickMenuValue } from '~/test-support/menu'
 import { LoadingMenu } from './LoadingMenu'
 
 afterEach(() => {
@@ -208,6 +210,142 @@ describe('the one-of-N menu (LoadingMenu)', () => {
       pickMenuValue(MENU, 'ab')
       expect(onChange).toHaveBeenCalledWith('ab')
     })
+  })
+
+  describe('the detail column', () => {
+    const dated = [
+      { value: 'a', label: 'Alpha', detail: { text: () => '3d ago' } },
+      { value: 'b', label: 'Beta' },
+    ]
+
+    // The reason the detail is a slot and not text appended to the label: the
+    // label clips, so anything inside it goes with the ellipsis.
+    it('draws the detail outside the label, so a clipped label cannot take it', () => {
+      renderMenu({ options: dated })
+      const label = screen.getByTestId('loading-menu-option-a-label')
+      expect(label.textContent).toBe('Alpha')
+      expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
+    })
+
+    it('draws nothing beside a label with no detail', () => {
+      renderMenu({ options: dated })
+      expect(screen.getByTestId('loading-menu-option-b').textContent?.trim()).toBe('Beta')
+    })
+
+    // The caller's element wins over its text, and both name the same thing.
+    // `SessionSelect` supplies a live `RelativeTime` here.
+    it('prefers the caller-rendered detail over its text', () => {
+      renderMenu({
+        options: [{ value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: () => <em>three days</em> } }],
+      })
+      // The renderer is deferred to the first OPEN; the text stands until then.
+      expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
+      openMenu(MENU)
+      const row = screen.getByTestId('loading-menu-option-a')
+      expect(row.querySelector('em')?.textContent).toBe('three days')
+      expect(row.textContent).not.toContain('3d ago')
+    })
+
+    // A renderer that ran once per row would put one DOM node in two places,
+    // and the trigger and the row both draw the detail.
+    it('runs the renderer again for the trigger, rather than moving one node', () => {
+      const drawDetail = vi.fn(() => <em>three days</em>)
+      renderMenu({
+        value: 'a',
+        options: [{ value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: drawDetail } }],
+      })
+      // ONCE while closed: the trigger is always on screen, and the row's own
+      // copy waits for the open that reveals it.
+      expect(drawDetail).toHaveBeenCalledTimes(1)
+      openMenu(MENU)
+      // Twice: the row and the trigger. Once would mean one DOM node asked to
+      // sit in two places, and it would appear in whichever drew it last.
+      expect(drawDetail).toHaveBeenCalledTimes(2)
+      expect(menuTrigger(MENU).querySelector('em')?.textContent).toBe('three days')
+      expect(screen.getByTestId('loading-menu-option-a').querySelector('em')?.textContent).toBe('three days')
+    })
+
+    // Picking a session must not drop its age from the field. The three other
+    // trigger states describe the LIST, so no option's detail belongs there.
+    it('shows the selected option detail on the trigger, and only for a real match', () => {
+      const { unmount } = renderMenu({ value: 'a', options: dated })
+      expect(menuTriggerText(MENU)).toContain('3d ago')
+      unmount()
+
+      renderMenu({ value: 'a', options: dated, loadingLabel: 'Loading things...' })
+      expect(menuTriggerText(MENU)).not.toContain('3d ago')
+    })
+
+    // The label alone is not the row. `SessionSelect` moved the age of a
+    // session out of the label, and a filter that read the label alone would
+    // have dropped the "sessions from days ago" search with it.
+    it('filters on the detail as well as the label', () => {
+      renderMenu({ options: dated, filter: true })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: '3d' } })
+      expect(menuOptionValues(MENU)).toEqual(['a'])
+    })
+  })
+
+  // Every row holds whatever the user's data is long enough to be -- a branch
+  // name, a session title -- so a clipped label needs a route back to the rest.
+  it('gives the whole label on hover once a row clips it', () => {
+    vi.useFakeTimers()
+    try {
+      renderMenu({ options: [{ value: 'a', label: 'A label far wider than the row that holds it' }] })
+      openMenu(MENU)
+      const label = screen.getByTestId('loading-menu-option-a-label')
+      stubClipped(label)
+      expect(hoverForTooltip(label)?.textContent).toBe('A label far wider than the row that holds it')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The TRIGGER clips too, and it is the narrower of the two: the field is one
+  // row of a dialog, so the picked option's label is the one a user is most
+  // likely to be unable to read in full.
+  it('gives the whole trigger label on hover once the field clips it', () => {
+    vi.useFakeTimers()
+    try {
+      renderMenu({ value: 'a', options: [{ value: 'a', label: 'A picked option far wider than the field' }] })
+      const label = menuTrigger(MENU).querySelector<HTMLElement>(`.${clippedText}`)!
+      stubClipped(label)
+      expect(hoverForTooltip(label)?.textContent).toBe('A picked option far wider than the field')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // What a menu nobody opened must NOT allocate. `DropdownMenu` mounts its
+  // children eagerly, so the per-row cost is paid by every mounted menu at rest
+  // -- fifty rows for a full session list, and `BranchSelect`'s list has no
+  // upper limit. A row is still mounted and still readable; only the parts that
+  // exist for an interaction wait for one.
+  it('allocates no per-row tooltip or live detail until it is opened', () => {
+    const drawDetail = vi.fn(() => <em>three days</em>)
+    renderMenu({
+      options: [
+        { value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: drawDetail } },
+        { value: 'b', label: 'Beta', detail: { text: () => '5d ago', render: drawDetail } },
+      ],
+    })
+
+    // The rows ARE there, so every closed-menu assertion still holds.
+    expect(menuOptionValues(MENU)).toEqual(['a', 'b'])
+    expect(menuOptionLabels(MENU)).toEqual(['Alpha', 'Beta'])
+    // ...but no row drew the caller's element, and no row's label owns a
+    // tooltip: a Tooltip renders a wrapper around its target, and the plain
+    // branch renders the bare span instead.
+    expect(drawDetail).not.toHaveBeenCalled()
+    expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
+
+    openMenu(MENU)
+
+    expect(drawDetail).toHaveBeenCalled()
+    expect(screen.getByTestId('loading-menu-option-a').querySelector('em')?.textContent)
+      .toBe('three days')
   })
 
   it('warms its caller through onOpen, the seam focus used to be', () => {

@@ -154,7 +154,9 @@ func (svc *Service) remintAgentControlIPC(opts agent.Options, phase string) ([]s
 type agentLauncher func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
 
 // startPriority states whether a user is waiting on a cold start. It decides
-// one thing: whether the spawn draws on the manager's startup permit pool.
+// two things: whether the spawn draws on the manager's startup permit pool
+// (see launcher), and whether the caller joins a startup that already holds the
+// agent instead of refusing (see joinsInFlightStartup).
 //
 // It is a type rather than a bare bool so the four ensureAgentRunning call
 // sites read as what they are. Three of them answer a request the user is
@@ -166,7 +168,9 @@ const (
 	// interactiveStart is a spawn a user is waiting on. It takes no permit and
 	// never queues: the send path calls the cold start INLINE, and the client
 	// gives that RPC about fifteen seconds, so a wait would fail a send whose
-	// message row is already durable.
+	// message row is already durable. The one wait it does take -- joining a
+	// startup that is already producing the process this caller needs -- is
+	// limited by that same client budget, not by the process startup budget.
 	interactiveStart startPriority = iota
 	// backgroundStart is a spawn nobody is waiting on. It draws on the permit
 	// pool, so the boot sweep cannot run more handshakes at once than the
@@ -180,6 +184,18 @@ func (p startPriority) launcher(svc *Service) agentLauncher {
 		return svc.startBackgroundAgent
 	}
 	return svc.startAgent
+}
+
+// joinsInFlightStartup answers whether this priority WAITS for a startup that
+// already holds the agent, instead of refusing at once.
+//
+// Only an interactive caller waits. It holds a user's message and has nowhere
+// to put it, so the wait is what keeps that message. The resume sweep has
+// nothing to lose: the startup it would wait for produces the very process the
+// sweep wants, so skipping is the same outcome sooner -- and a sweep worker
+// parked on that wait would hold up the Shutdown that joins the sweep.
+func (p startPriority) joinsInFlightStartup() bool {
+	return p == interactiveStart
 }
 
 // mintAndLaunch mints the relaunch's control socket, hands the env vars to the

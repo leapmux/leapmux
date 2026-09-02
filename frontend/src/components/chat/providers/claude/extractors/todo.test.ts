@@ -33,9 +33,9 @@ describe('claudeTodoWriteFromInput', () => {
       toolName: 'TodoWrite',
       title: '3 tasks',
       todos: [
-        { content: 'Do A', status: 'pending', activeForm: 'Doing A' },
-        { content: 'Do B', status: 'in_progress', activeForm: 'Doing B' },
-        { content: 'Do C', status: 'completed', activeForm: 'Doing C' },
+        { rowKey: '0:Do A', content: 'Do A', status: 'pending', activeForm: 'Doing A' },
+        { rowKey: '1:Do B', content: 'Do B', status: 'in_progress', activeForm: 'Doing B' },
+        { rowKey: '2:Do C', content: 'Do C', status: 'completed', activeForm: 'Doing C' },
       ],
     })
   })
@@ -52,7 +52,7 @@ describe('claudeTodoWriteFromInput', () => {
       todos: [{ status: 'unknown' }],
     })
     expect(source?.todos).toEqual([
-      { content: '', status: 'pending', activeForm: '' },
+      { rowKey: '0:', content: '', status: 'pending', activeForm: '' },
     ])
   })
 })

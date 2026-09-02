@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import type { SessionIdState } from '~/hooks/createSessionIdState'
-import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
+import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL, resumeHandlePlaceholder } from '~/components/shell/resumeSession'
 
 interface SessionIdInputProps {
   state: SessionIdState
@@ -17,7 +17,9 @@ interface SessionIdInputProps {
  * The placeholder states both shapes for a provider whose session is a FILE,
  * because such a provider takes either one and the field used to invite the
  * wrong one: it said "Session ID" for every provider, and the worker then
- * refused a Pi session ID with "path must be absolute".
+ * refused a Pi session ID with "path must be absolute". It comes from
+ * `resumeHandlePlaceholder`, which is declared beside the menu row that opens
+ * this box so the two cannot name different sets of shapes.
  *
  * `LabeledField`'s label is a plain `div`, so the input has no accessible name
  * of its own and carries an explicit `aria-label`. Without it the PLACEHOLDER
@@ -33,6 +35,6 @@ export const SessionIdInput: Component<SessionIdInputProps> = props => (
     aria-describedby={props.state.error() ? RESUME_SESSION_ERROR_ID : undefined}
     value={props.state.value()}
     onInput={e => props.state.setValue(e.currentTarget.value)}
-    placeholder={props.state.isFilePath() ? 'Session ID or file path' : 'Session ID'}
+    placeholder={resumeHandlePlaceholder(props.state.isFilePath())}
   />
 )

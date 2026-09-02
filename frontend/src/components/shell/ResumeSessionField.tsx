@@ -2,7 +2,9 @@ import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SessionIdState } from '~/hooks/createSessionIdState'
 import type { UseResumableSessionsArgs } from '~/hooks/useResumableSessions'
+import List from 'lucide-solid/icons/list'
 import { createEffect, createSignal, on, Show } from 'solid-js'
+import { IconButton } from '~/components/common/IconButton'
 import { LabeledField } from '~/components/common/LabeledField'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { RESUME_SESSION_ERROR_ID, RESUME_SESSION_LABEL } from '~/components/shell/resumeSession'
@@ -89,6 +91,22 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
   // typing. `settled()` distinguishes the two.
   const showMenu = () => !typing() && (!settled() || sessions().length > 0)
 
+  /**
+   * Whether the field offers a way back to the menu.
+   *
+   * The route in is a row of the menu, so the route out cannot be. Without this
+   * a user who picked "Enter a session ID…" -- to read a handle off another
+   * machine, or by mistake -- was left in the text box for as long as the
+   * dialog stayed open: nothing else clears `typing`, and the effect above
+   * fires only when the worker, the directory or the provider CHANGES. Changing
+   * the directory and changing it back was the whole way out.
+   *
+   * Offered only while a list exists to return to. With none, `showMenu()`
+   * would put the text input straight back and the button would do nothing
+   * visible.
+   */
+  const canReturnToMenu = () => typing() && sessions().length > 0
+
   return (
     <LabeledField
       label={RESUME_SESSION_LABEL}
@@ -114,12 +132,35 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
         know all three -- pressing it then would do nothing at all.
       */
       actions={(
-        <RefreshButton
-          onClick={() => void refresh()}
-          disabled={loading() || source() === null}
-          title="Refresh sessions"
-          data-testid="session-field-refresh"
-        />
+        <>
+          {/*
+            The way back out of the text box; see `canReturnToMenu`.
+
+            It clears the value, exactly as the row that switches TO the text
+            box does. A handle typed by hand is not one the menu can offer, so
+            carrying it back would leave the trigger showing raw text the list
+            does not hold -- and, for a handle that fails validation, the error
+            underneath with no control to correct it.
+          */}
+          <Show when={canReturnToMenu()}>
+            <IconButton
+              icon={List}
+              size="sm"
+              onClick={() => {
+                props.state.setValue('')
+                setTyping(false)
+              }}
+              title="Pick from the session list"
+              data-testid="session-field-pick-from-list"
+            />
+          </Show>
+          <RefreshButton
+            onClick={() => void refresh()}
+            disabled={loading() || source() === null}
+            title="Refresh sessions"
+            data-testid="session-field-refresh"
+          />
+        </>
       )}
     >
       <Show when={showMenu()} fallback={<SessionIdInput state={props.state} />}>
@@ -138,6 +179,7 @@ export const ResumeSessionField: Component<ResumeSessionFieldProps> = (props) =>
           sessions={sessions()}
           loading={loading()}
           invalid={props.state.error() !== null}
+          isFilePath={props.state.isFilePath()}
         />
       </Show>
     </LabeledField>

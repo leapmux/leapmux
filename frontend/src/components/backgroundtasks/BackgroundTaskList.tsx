@@ -47,8 +47,9 @@ interface BackgroundTaskListProps {
  * subset, which let a new kind ship reachable only through All -- the tab list
  * and the empty messages have to be one declaration for that to be impossible.
  *
- * A new kind still needs two things this cannot force: an arm in
- * `protoBackgroundTaskToStore`, and an icon in `kindIcon` below.
+ * A new kind still needs two things this cannot force: a case in
+ * `protoBackgroundTaskToStore`, and a case in the kind-icon `Show` inside
+ * `rowBody` below.
  */
 const KIND_TABS_META: Record<BackgroundTaskKindFilter, { label: string, empty: string }> = {
   all: { label: 'All', empty: 'No background tasks' },
@@ -218,65 +219,87 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // Memoized so a broadcast tick re-runs sort+group once (not twice, once per
   // JSX read of `.ungrouped`/`.groups`), and only when the visible rows change.
   const grouped = createMemo(() => groupBackgroundTasks(sortBackgroundTasks(visible())))
-
-  // Status reads as COLOR on one constant dot, not as a different glyph per
-  // state. Six shapes made the column a legend to memorize; one dot in the
-  // status palette (in progress / succeeded / failed) is legible at a glance,
-  // and an in-progress dot pulses so activity is visible without a spinner.
-  // The exact state stays available as the dot's accessible name and tooltip,
-  // and as the row's `data-status`, which is what tests and E2E select on.
-  //
-  // Rendered at the right end of the title line, as a flex sibling of the
-  // title -- see titleRow in the stylesheet.
-  const renderStatusDot = (item: BackgroundTaskItem): JSX.Element => (
-    <StatusDot
-      class={statusDotClass(item.status)}
-      label={backgroundTaskStatusLabel(item.status)}
-      tooltip
-      testId="bg-task-status-dot"
-    />
+  // The keys alone, so the group `For` below reconciles on a primitive that
+  // survives the memo rebuilding its group objects. Its own memo, so a recompute
+  // that leaves the set of groups unchanged does not re-run the `For` at all.
+  const groupKeys = createMemo(
+    () => grouped().groups.map(g => g.key),
+    undefined,
+    { equals: (a, b) => a.length === b.length && a.every((k, i) => k === b[i]) },
   )
 
-  const kindIcon = (item: BackgroundTaskItem): JSX.Element => {
-    if (item.kind === 'shell')
-      return <Terminal class={styles.taskIcon} size={14} />
-    return <Bot class={styles.taskIcon} size={14} />
-  }
-
-  // The line is clipped to one line, so ClippedText offers the full string on
-  // hover. An explanatory tip is passed as the DETAIL, so it stands under the
-  // label rather than in its place -- a clipped label keeps its route back even
-  // when the row also has an explanation. A detail also shows while the label
-  // fits, because it carries what the label cannot.
-  const renderSecondary = (item: BackgroundTaskItem, title: string): JSX.Element => {
-    const text = secondary(item, title)
-    if (!text)
-      return null
-    return (
-      <ClippedText
-        text={text}
-        class={styles.taskSecondary}
-        detail={secondaryTooltip(item)}
-      />
-    )
-  }
-
-  // The row's inner content and its data attributes are identical for both
-  // element kinds; only the tag and the click handler differ. Building them once
-  // keeps the clickable and static rows from drifting apart.
+  /**
+   * The row's inner content and its data attributes are identical for both
+   * element kinds; only the tag and the click handler differ. Building them once
+   * keeps the clickable and static rows from drifting apart.
+   *
+   * Every part of it is a reactive EXPRESSION on one field, never a helper that
+   * returns an element. That distinction is the whole point of this shape. A
+   * `{renderStatusDot(item)}` re-runs its whole body whenever any field it reads
+   * changes and puts a NEW element in place of the old one, so a task that
+   * reported progress lost the tooltip under the pointer and restarted the pulse
+   * on its status dot. A prop getter updates one attribute of an element that
+   * stays.
+   *
+   * `~/stores/chatPerAgentStore`'s `setReconciled` is the other half: without a
+   * store that keeps a row's identity across a broadcast, `<For>` would rebuild
+   * the row before any of this could matter.
+   */
   const rowBody = (item: BackgroundTaskItem): JSX.Element => {
-    // Cleaned once per row: the title line renders it and the echo guard in
-    // `secondary` compares against it.
-    const title = rowTitle(item)
+    // A memo, because two bindings read it -- the title line, and the echo guard
+    // in `secondary` -- and a row must not clean its title twice per update or
+    // let the two reads disagree.
+    const title = createMemo(() => rowTitle(item))
+    const secondaryText = createMemo(() => secondary(item, title()))
     return (
       <>
-        {kindIcon(item)}
+        {/* `Show`, not a function that returns one icon or the other: a kind
+            that changed would otherwise replace the element rather than swap
+            the branch. */}
+        <Show
+          when={item.kind === 'shell'}
+          fallback={<Bot class={styles.taskIcon} size={14} />}
+        >
+          <Terminal class={styles.taskIcon} size={14} />
+        </Show>
         <div class={styles.taskBody}>
           <div class={styles.titleRow}>
-            <ClippedText text={title} class={titleClass(item)} />
-            {renderStatusDot(item)}
+            <ClippedText text={title()} class={titleClass(item)} />
+            {/* Status reads as COLOR on one constant dot, not as a different
+                glyph per state. Six shapes made the column a legend to
+                memorize; one dot in the status palette (in progress /
+                succeeded / failed) is legible at a glance, and an in-progress
+                dot pulses so activity is visible without a spinner. The exact
+                state stays available as the dot's accessible name and tooltip,
+                and as the row's `data-status`, which is what tests and E2E
+                select on.
+
+                At the right end of the title line, as a flex sibling of the
+                title -- see titleRow in the stylesheet. */}
+            <StatusDot
+              class={statusDotClass(item.status)}
+              label={backgroundTaskStatusLabel(item.status)}
+              tooltip
+              testId="bg-task-status-dot"
+            />
           </div>
-          {renderSecondary(item, title)}
+          {/* The line is clipped to one line, so ClippedText offers the full
+              string on hover. An explanatory tip is passed as the DETAIL, so it
+              stands under the label rather than in its place -- a clipped label
+              keeps its route back even when the row also has an explanation. A
+              detail also shows while the label fits, because it carries what
+              the label cannot.
+
+              `Show` compares its condition by TRUTHINESS, so an activity string
+              that changes from one non-empty value to another updates the text
+              in place and never rebuilds the label. */}
+          <Show when={secondaryText()}>
+            <ClippedText
+              text={secondaryText()}
+              class={styles.taskSecondary}
+              detail={secondaryTooltip(item)}
+            />
+          </Show>
         </div>
       </>
     )
@@ -284,26 +307,57 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
 
   // `extraClass` carries taskRowStatic for the non-clickable row, which drops
   // the pointer cursor taskRow sets for the clickable one.
-  const rowAttrs = (item: BackgroundTaskItem, extraClass?: string) => ({
-    'class': extraClass ? `${styles.taskRow} ${extraClass}` : styles.taskRow,
-    'classList': { [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) },
+  //
+  // GETTERS, because Solid spreads this object inside a render effect and reads
+  // each property there: a plain value is read once and then never again. Every
+  // field that can change while the row lives is one -- the status a task
+  // finishes with, and the child agent id a subagent gets only once it spawns.
+  // A frozen `data-status` would be invisible on screen and wrong for every E2E
+  // locator that selects on it.
+  const rowAttrs = (item: BackgroundTaskItem, clickable?: () => boolean) => ({
+    'class': styles.taskRow,
+    get 'classList'() {
+      return {
+        [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status),
+        // taskRowStatic drops the pointer cursor taskRow sets. A getter, because
+        // a subagent row becomes clickable mid-life -- see renderRow.
+        [styles.taskRowStatic]: clickable ? !clickable() : true,
+      }
+    },
     'data-testid': 'bg-task-row',
-    'data-status': item.status,
-    'data-kind': item.kind,
-    'data-child-agent-id': item.childAgentId ?? '',
+    get 'data-status'() { return item.status },
+    get 'data-kind'() { return item.kind },
+    get 'data-child-agent-id'() { return item.childAgentId ?? '' },
   })
 
   const renderRow = (item: BackgroundTaskItem): JSX.Element => {
-    const clickable = opensSubagentTranscript(item) && !!props.onOpenSubagent
+    // The TAG is decided by fields that never change over a row's life, so the
+    // element survives every broadcast. `childAgentId` is not one of them: the
+    // worker reports it a broadcast or two after the row itself, and a `Show`
+    // keyed on it swapped a <div> for a <button> at exactly the moment the user
+    // is watching that row -- rebuilding its whole body, closing the title
+    // tooltip under the pointer and restarting the status dot's pulse. That is
+    // the flicker the rest of this component exists to remove.
+    //
+    // So a subagent row that the caller can open is ALWAYS a <button>, and the
+    // arrival of the id only flips one attribute on it.
+    const openable = item.kind === 'subagent' && !!props.onOpenSubagent
+    const clickable = () => opensSubagentTranscript(item) && !!props.onOpenSubagent
+    if (!openable)
+      return <div {...rowAttrs(item)}>{rowBody(item)}</div>
     return (
-      <Show
-        when={clickable}
-        fallback={<div {...rowAttrs(item, styles.taskRowStatic)}>{rowBody(item)}</div>}
+      <button
+        type="button"
+        {...rowAttrs(item, clickable)}
+        // aria-disabled, never the `disabled` attribute: a disabled control
+        // dispatches no pointer event of its own OR to its descendants, which
+        // would kill the row's own title tooltip for as long as the subagent is
+        // still spawning.
+        aria-disabled={clickable() ? undefined : 'true'}
+        onClick={() => clickable() && props.onOpenSubagent?.(item)}
       >
-        <button type="button" {...rowAttrs(item)} onClick={() => props.onOpenSubagent?.(item)}>
-          {rowBody(item)}
-        </button>
-      </Show>
+        {rowBody(item)}
+      </button>
     )
   }
 
@@ -345,13 +399,25 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
           )}
         >
           <For each={grouped().ungrouped}>{item => renderRow(item)}</For>
-          <For each={grouped().groups}>
-            {group => (
-              <>
-                <ClippedText text={groupHeading(group.label)} class={styles.groupHeader} />
-                <For each={group.items}>{item => renderRow(item)}</For>
-              </>
-            )}
+          {/* Keyed by the group KEY, not by the group object. `groupBackgroundTasks`
+              builds fresh `{key, label, items}` objects on every run and `For`
+              reconciles by reference, so iterating the objects tore down and
+              rebuilt every grouped row whenever the memo re-ran -- which any
+              status change does, because the sort reads `status`. That is the
+              same flicker `setReconciled` removes for the ungrouped rows, and it
+              reached every row of a Claude workflow, which groups its subagents.
+              `For` compares primitives by value, and a group key is unique by
+              construction. */}
+          <For each={groupKeys()}>
+            {(key) => {
+              const group = createMemo(() => grouped().groups.find(g => g.key === key))
+              return (
+                <>
+                  <ClippedText text={groupHeading(group()?.label ?? key)} class={styles.groupHeader} />
+                  <For each={group()?.items ?? []}>{item => renderRow(item)}</For>
+                </>
+              )
+            }}
           </For>
         </Show>
       </div>

@@ -23,7 +23,7 @@ describe('chatTodoStore', () => {
       store.replace('a1', [protoTodo('t1', 'Run tests', TodoStatus.IN_PROGRESS)])
       store.replace('a2', [protoTodo('t2', 'Write docs')])
       expect(store.get('a1')).toEqual([
-        { id: 't1', content: 'Run tests', status: 'in_progress', activeForm: '', description: undefined },
+        { id: 't1', rowKey: 't1', content: 'Run tests', status: 'in_progress', activeForm: '', description: undefined },
       ])
       expect(store.getById('a1', 't1')?.status).toBe('in_progress')
       expect(store.get('a2').map(t => t.id)).toEqual(['t2'])
@@ -40,9 +40,14 @@ describe('chatTodoStore', () => {
       // stored array reference is preserved (reactive consumers don't re-run).
       store.replace('a1', [protoTodo('t1', 'Run tests')])
       expect(store.get('a1')).toBe(first)
-      // A genuine change replaces the list (new reference).
+      // A genuine change RECONCILES: the row keeps its identity, and only the
+      // field that changed changes. A whole-array replace handed `<For>` a new
+      // object for every row, so one to-do finishing rebuilt the whole list --
+      // closing the tooltip under the pointer and restarting the in-progress
+      // row's animation.
+      const firstRow = first[0]
       store.replace('a1', [protoTodo('t1', 'Run tests', TodoStatus.COMPLETED)])
-      expect(store.get('a1')).not.toBe(first)
+      expect(store.get('a1')[0]).toBe(firstRow)
       expect(store.getById('a1', 't1')?.status).toBe('completed')
       dispose()
     }))

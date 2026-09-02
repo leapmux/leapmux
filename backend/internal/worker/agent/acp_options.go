@@ -359,7 +359,7 @@ func buildOptionGroup(option acpConfigOption, current string) *leapmuxv1.Availab
 	option.Options = appendConfigOptionValueIfMissing(option.Options, current)
 	opts := buildOptionValues(option, nil)
 	if isEffortConfigOption(option) {
-		sortEffortOptionsDescending(opts)
+		sortEffortsDescending(opts)
 	}
 	return &leapmuxv1.AvailableOptionGroup{
 		Id:           option.ID,

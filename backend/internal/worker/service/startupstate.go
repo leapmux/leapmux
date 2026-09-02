@@ -8,11 +8,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// failedEntryTTL bounds how long a terminal-state failure entry lingers
-// in the registry after fail() so long-lived workers with user churn
-// don't accumulate entries for never-closed failed tabs. The DB
+// failedEntryTTL limits how long a FINISHED failure entry stays in the
+// registry after fail(), so a long-lived worker with user churn does not
+// accumulate entries for failed tabs that nobody closes. The DB
 // startup_error column is the authoritative source across restarts, so
-// expiry just evicts the in-memory copy; subsequent reads fall back to
+// expiry only evicts the in-memory copy; a later read falls back to
 // the DB path.
 const failedEntryTTL = 5 * time.Minute
 
@@ -76,6 +76,51 @@ type startupEntry struct {
 	// goroutine is reading.
 	closeDisposition closeWorktreeDisposition
 	closeRaced       bool
+	// done is closed when this startup stops being IN FLIGHT -- when succeed,
+	// fail or cancelAndClear takes the entry out of the map. awaitInFlight
+	// waits on it, so a caller that finds the id claimed can wait for the claim
+	// holder instead of refusing.
+	//
+	// Only an entry that begin created carries one. The entry fail installs is a
+	// finished record with no goroutine behind it, and awaitInFlight skips a
+	// failed entry for the same reason begin does not refuse on one.
+	done chan struct{}
+}
+
+// release closes e.done, so every awaitInFlight waiting on this startup stops
+// waiting. The caller holds r.mu and has already taken the entry out of the
+// map, which is what makes the close happen exactly once: begin is the only
+// writer of an in-flight entry, and one entry leaves the map one time.
+func (e *startupEntry) release() {
+	if e != nil && e.done != nil {
+		close(e.done)
+	}
+}
+
+// startupTimerClock is the time source awaitInFlight limits its wait with.
+// Production uses systemStartupClock; the registry's tests substitute a fake
+// that fires on demand, so a test about the give-up path spends no wall time
+// and a test about the wait NOT giving up cannot lose to a real timer on a
+// loaded machine.
+//
+// It mirrors streamevents.retryClock deliberately: the same two-value
+// NewTimer, so the codebase has one shape for "a timer a test can drive".
+// The two are byte-for-byte the same type and could share one; see
+// https://github.com/leapmux/leapmux/issues/437.
+type startupTimerClock interface {
+	// NewTimer starts a timer for d, returning the channel it delivers on and a
+	// stop func that releases it -- time.Timer's C/Stop pair without the
+	// concrete type. The caller must call stop exactly once, whether or not it
+	// consumed the delivery.
+	NewTimer(d time.Duration) (<-chan time.Time, func())
+}
+
+// systemStartupClock is the production startupTimerClock: a plain time.NewTimer.
+type systemStartupClock struct{}
+
+func (systemStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -92,10 +137,14 @@ type startupCore struct {
 	mu      sync.Mutex
 	entries map[string]*startupEntry
 	wg      sync.WaitGroup
+	// clock is the time source awaitInFlight limits its wait with. Set once by
+	// newStartupCore and never reassigned in production, so a waiter reads it
+	// without the mutex; a test substitutes a fake before it starts one.
+	clock startupTimerClock
 }
 
 func newStartupCore() startupCore {
-	return startupCore{entries: make(map[string]*startupEntry)}
+	return startupCore{entries: make(map[string]*startupEntry), clock: systemStartupClock{}}
 }
 
 // begin records an entry in STARTING state, adds one to the in-flight counter,
@@ -126,10 +175,68 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 	if existing, busy := r.entries[id]; busy && !existing.failed {
 		return nil
 	}
-	entry := &startupEntry{cancel: cancel, resizeSignal: make(chan struct{}, 1)}
+	entry := &startupEntry{
+		cancel:       cancel,
+		resizeSignal: make(chan struct{}, 1),
+		done:         make(chan struct{}),
+	}
 	r.entries[id] = entry
 	r.wg.Add(1)
 	return entry
+}
+
+// startupWait is what awaitInFlight learned about the startup it waited for.
+type startupWait struct {
+	// settled is false when the wait reached its limit while the startup still
+	// held the id. The caller then knows nothing about that startup's outcome.
+	settled bool
+	// closed reports that a CLOSE ended the startup, rather than a success or a
+	// failure of its own. A caller must not start a replacement process on this
+	// outcome: the tab is going away, and the DB row that says so is written
+	// several steps later, so the closed_at guard downstream still reads false.
+	closed bool
+}
+
+// awaitInFlight blocks until no startup for id is in flight, and reports what
+// ended it. It settles at once when the id is unclaimed, and when the entry
+// holding it already FAILED -- the two states in which begin hands out the
+// claim.
+//
+// It exists so a caller that must have a running process can wait for the
+// startup that is already producing one, rather than refuse. The refusal is
+// what a user saw as a message that vanished: a message sent inside the open
+// path's startup window reached ensureAgentRunning, which found the id claimed
+// and reported "not running", and nothing ever handed that message to the
+// process the open path then started.
+//
+// The wait has a LIMIT because a startup goroutine can stop on a provider that
+// never answers, and the caller answers a user. On a timeout the caller keeps
+// whatever it does today for a startup it cannot join.
+func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait {
+	// Take the entry under the lock and read only its done channel here: every
+	// other field belongs to the goroutine that owns the entry or to a caller
+	// holding r.mu, and the one field this function needs afterwards --
+	// closeRaced -- it reads back through dispositionOf, which takes r.mu.
+	r.mu.Lock()
+	var entry *startupEntry
+	if e, busy := r.entries[id]; busy && !e.failed {
+		entry = e
+	}
+	r.mu.Unlock()
+	if entry == nil {
+		return startupWait{settled: true}
+	}
+	expired, stop := r.clock.NewTimer(limit)
+	defer stop()
+	select {
+	case <-entry.done:
+		// cancelAndClear stamps closeRaced on this same entry BEFORE it closes
+		// done, so the read below sees the close that woke this waiter.
+		_, closed := r.dispositionOf(entry)
+		return startupWait{settled: true, closed: closed}
+	case <-expired:
+		return startupWait{}
+	}
 }
 
 // finish marks one startup goroutine as returned. Always called via `defer` at
@@ -171,6 +278,7 @@ func (r *startupCore) succeed(id string) {
 	r.mu.Lock()
 	entry := r.entries[id]
 	delete(r.entries, id)
+	entry.release()
 	r.mu.Unlock()
 	if entry != nil && entry.evictTimer != nil {
 		entry.evictTimer.Stop()
@@ -191,9 +299,14 @@ func (r *startupCore) fail(id, startupError string) {
 		}
 	})
 	r.mu.Lock()
-	// Stop any prior pending eviction if fail is called twice.
-	if prev, ok := r.entries[id]; ok && prev.evictTimer != nil {
-		prev.evictTimer.Stop()
+	// Stop any prior pending eviction if fail is called twice, and release the
+	// startup this failure replaces: an awaited startup that FAILS has stopped
+	// being in flight just as surely as one that succeeded.
+	if prev, ok := r.entries[id]; ok {
+		if prev.evictTimer != nil {
+			prev.evictTimer.Stop()
+		}
+		prev.release()
 	}
 	r.entries[id] = entry
 	r.mu.Unlock()
@@ -217,6 +330,7 @@ func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposi
 	if entry != nil {
 		entry.closeDisposition = disposition
 		entry.closeRaced = true
+		entry.release()
 	}
 	r.mu.Unlock()
 	if entry == nil {
@@ -270,7 +384,7 @@ func (r *startupCore) takePendingResize(id string) (cols, rows uint16, ok bool) 
 	return cols, rows, true
 }
 
-// waitForPendingResize is takePendingResize with a bounded wait. Used
+// waitForPendingResize is takePendingResize with a limited wait. Used
 // before the shell is spawned so the PTY can be sized correctly on the
 // first call to cmd.Start — otherwise the shell paints its first prompt
 // at the placeholder 80x24 and zsh's SIGWINCH handler leaves a

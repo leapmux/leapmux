@@ -218,7 +218,7 @@ export const taskTitleCommand = style({
 // One clipped line, like the title. The activity text a provider reports
 // ("Running <what>", a tool name, a token tally) is often longer than the
 // sidebar is wide, so the full string is on the tooltip that ClippedText
-// attaches -- see renderSecondary in the component.
+// attaches -- see the secondary line in `rowBody` in the component.
 export const taskSecondary = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',

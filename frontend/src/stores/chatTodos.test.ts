@@ -2,7 +2,7 @@ import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress, todoRowKey } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {
   describe('normalizeTodoStatus', () => {
@@ -49,23 +49,54 @@ describe('chatTodos', () => {
     })
   })
 
+  // The key a UI reconciles a to-do row by. An incremental provider gives an
+  // id; a snapshot-only one gives none and re-sends the whole list, so there
+  // POSITION is the identity.
+  describe('todoRowKey', () => {
+    it('takes the provider id when there is one, whatever the position', () => {
+      expect(todoRowKey('t1', 0, 'Run tests')).toBe('t1')
+      expect(todoRowKey('t1', 7, 'Run tests')).toBe('t1')
+    })
+
+    it('pairs the position with the content when the provider gives no id', () => {
+      expect(todoRowKey(undefined, 0, 'Run tests')).toBe('0:Run tests')
+      expect(todoRowKey(undefined, 2, 'Run tests')).toBe('2:Run tests')
+    })
+
+    // The property the reconcile needs: two rows of one list never collide, so
+    // no row can take another's identity and its content with it.
+    it('separates two rows that differ only in position, or only in content', () => {
+      expect(todoRowKey(undefined, 0, 'Same')).not.toBe(todoRowKey(undefined, 1, 'Same'))
+      expect(todoRowKey(undefined, 0, 'A')).not.toBe(todoRowKey(undefined, 0, 'B'))
+    })
+
+    // An empty content is a real case -- `rawTodosToItems` coerces a missing
+    // field to '' -- and it must still produce a key that separates rows.
+    it('still separates rows whose content is empty', () => {
+      expect(todoRowKey(undefined, 0, '')).toBe('0:')
+      expect(todoRowKey(undefined, 0, '')).not.toBe(todoRowKey(undefined, 1, ''))
+    })
+  })
+
   describe('protoTodoToStore', () => {
     it('maps the proto enum to the canonical string union', () => {
       const t = create(TodoItemSchema, { id: 't1', content: 'c', status: TodoStatus.IN_PROGRESS, activeForm: 'doing c', description: 'why c' })
-      expect(protoTodoToStore(t)).toEqual({ id: 't1', content: 'c', status: 'in_progress', activeForm: 'doing c', description: 'why c' })
+      expect(protoTodoToStore(t, 0)).toEqual({ id: 't1', rowKey: 't1', content: 'c', status: 'in_progress', activeForm: 'doing c', description: 'why c' })
     })
 
     it('coerces empty id/description to undefined', () => {
       const t = create(TodoItemSchema, { id: '', content: 'c', status: TodoStatus.COMPLETED, activeForm: '', description: '' })
-      const out = protoTodoToStore(t)
+      const out = protoTodoToStore(t, 3)
       expect(out.id).toBeUndefined()
+      // No id, so the key is the row's position paired with its content.
+      expect(out.rowKey).toBe('3:c')
       expect(out.description).toBeUndefined()
       expect(out.status).toBe('completed')
     })
 
     it('defaults an unspecified status to pending', () => {
       const t = create(TodoItemSchema, { content: 'c', status: TodoStatus.UNSPECIFIED, activeForm: '' })
-      expect(protoTodoToStore(t).status).toBe('pending')
+      expect(protoTodoToStore(t, 0).status).toBe('pending')
     })
   })
 
@@ -77,22 +108,22 @@ describe('chatTodos', () => {
 
     it('coerces fields and normalizes status', () => {
       expect(rawTodosToItems([{ content: 'a', status: 'inProgress', activeForm: 'doing a' }])).toEqual([
-        { content: 'a', status: 'in_progress', activeForm: 'doing a' },
+        { rowKey: '0:a', content: 'a', status: 'in_progress', activeForm: 'doing a' },
       ])
     })
 
     it('tolerates missing fields with empty-string defaults', () => {
-      expect(rawTodosToItems([{}])).toEqual([{ content: '', status: 'pending', activeForm: '' }])
+      expect(rawTodosToItems([{}])).toEqual([{ rowKey: '0:', content: '', status: 'pending', activeForm: '' }])
     })
   })
 
   describe('todoProgress', () => {
     it('counts completed vs total excluding deleted', () => {
       const todos = [
-        { content: 'a', status: 'completed' as const, activeForm: '' },
-        { content: 'b', status: 'in_progress' as const, activeForm: 'doing b' },
-        { content: 'c', status: 'pending' as const, activeForm: '' },
-        { content: 'd', status: 'deleted' as const, activeForm: '' },
+        { rowKey: '0:a', content: 'a', status: 'completed' as const, activeForm: '' },
+        { rowKey: 'b', content: 'b', status: 'in_progress' as const, activeForm: 'doing b' },
+        { rowKey: 'c', content: 'c', status: 'pending' as const, activeForm: '' },
+        { rowKey: 'd', content: 'd', status: 'deleted' as const, activeForm: '' },
       ]
       expect(todoProgress(todos)).toEqual({ done: 1, total: 3 })
     })
@@ -103,8 +134,8 @@ describe('chatTodos', () => {
 
     it('counts all-non-deleted as done when all completed', () => {
       const todos = [
-        { content: 'a', status: 'completed' as const, activeForm: '' },
-        { content: 'b', status: 'completed' as const, activeForm: '' },
+        { rowKey: '0:a', content: 'a', status: 'completed' as const, activeForm: '' },
+        { rowKey: 'b', content: 'b', status: 'completed' as const, activeForm: '' },
       ]
       expect(todoProgress(todos)).toEqual({ done: 2, total: 2 })
     })
@@ -113,7 +144,7 @@ describe('chatTodos', () => {
 
 describe('sortTodos', () => {
   const todo = (content: string, status: TodoItem['status']): TodoItem =>
-    ({ content, status, activeForm: '' })
+    ({ rowKey: content, content, status, activeForm: '' })
 
   it('puts in-progress first, then what is left, then what is done', () => {
     const sorted = sortTodos([

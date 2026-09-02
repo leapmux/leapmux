@@ -19,15 +19,60 @@ import { fireEvent, screen, within } from '@solidjs/testing-library'
  *     `hidden: true`. The role is still asserted -- these have to be
  *     `menuitemradio`, which is what makes the group a one-of-N choice.
  */
+/**
+ * The selector that finds an option's LABEL inside its row.
+ *
+ * `DropdownMenuCheckableItem` derives the label's test id from the row's own by
+ * appending this suffix; the Playwright counterpart is `menuOptionLabel` in
+ * `tests/e2e/helpers/ui.ts`. Spelled once on each side.
+ */
+export const MENU_LABEL_SELECTOR = '[data-testid$="-label"]'
+
 function popover(testId: string): HTMLElement {
   return screen.getByTestId(testId)
 }
 
+/**
+ * Every option row one menu offers, in order.
+ *
+ * The one place the role that makes this group a one-of-N choice is spelled, so
+ * the three readers below cannot disagree about what an option IS.
+ */
+function menuItems(testId: string): HTMLElement[] {
+  return within(popover(testId)).queryAllByRole('menuitemradio', { hidden: true })
+}
+
 /** The option labels one menu offers, in order. */
 export function menuOptions(testId: string): string[] {
-  return within(popover(testId))
-    .queryAllByRole('menuitemradio', { hidden: true })
-    .map(el => el.textContent?.trim() ?? '')
+  return menuItems(testId).map(el => el.textContent?.trim() ?? '')
+}
+
+/**
+ * The option LABELS one menu offers, in order.
+ *
+ * Distinct from {@link menuOptions}, which reads the whole row: a row that
+ * carries a DETAIL -- the age of a session -- holds that text as well, and an
+ * age is a moving target. Use this whenever the assertion is about the label.
+ *
+ * `DropdownMenuCheckableItem` derives the label's test id from the row's own,
+ * which is what makes one suffix match every menu.
+ */
+export function menuOptionLabels(testId: string): string[] {
+  return menuItems(testId).map(el => el.querySelector(MENU_LABEL_SELECTOR)?.textContent?.trim() ?? '')
+}
+
+/**
+ * Open one menu, as a user does, by clicking its trigger.
+ *
+ * Required before an assertion about what a ROW draws. `LoadingMenu` defers the
+ * expensive part of a row -- its label tooltip, and a caller's live detail
+ * element -- to the first open, because `DropdownMenu` mounts its children
+ * eagerly and a menu nobody opened would otherwise allocate one Tooltip per
+ * option. The rows themselves are always mounted, so `menuOptions`,
+ * `menuOptionLabels` and `menuOptionValues` need no open.
+ */
+export function openMenu(testId: string): void {
+  fireEvent.click(menuTrigger(testId))
 }
 
 /** Activate the option with this exact label. */
@@ -54,7 +99,5 @@ export function menuTriggerText(testId: string): string {
 
 /** The option VALUES one menu offers, for a caller that asserted on `<option value>`. */
 export function menuOptionValues(testId: string): string[] {
-  return within(popover(testId))
-    .queryAllByRole('menuitemradio', { hidden: true })
-    .map(el => el.getAttribute('data-testid')?.replace(/^loading-menu-option-/, '') ?? '')
+  return menuItems(testId).map(el => el.getAttribute('data-testid')?.replace(/^loading-menu-option-/, '') ?? '')
 }

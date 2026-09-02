@@ -417,6 +417,26 @@ describe('tooltip on a disabled control', () => {
     expect(description?.textContent).toBe('Open the hub over HTTPS to add a passkey.')
   })
 
+  // A disabled control is inert for its whole SUBTREE, so a target INSIDE one
+  // is as unreachable as the control itself. `ClippedText` puts its target
+  // exactly there -- the label inside a control -- so a clipped value inside a
+  // disabled menu trigger had no route back at all until the ancestor counted.
+  it('describes a target that sits inside a disabled control', () => {
+    render(() => (
+      <button type="button" disabled>
+        <Tooltip text="feature/a-branch-name-far-wider-than-the-field">
+          <span>feature/a-branch-name…</span>
+        </Tooltip>
+      </button>
+    ))
+
+    const label = screen.getByText('feature/a-branch-name…')
+    const describedBy = label.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy!)?.textContent)
+      .toBe('feature/a-branch-name-far-wider-than-the-field')
+  })
+
   // A dialog that greys out a destructive action states WHY in its body, and
   // wraps the control so a reader who hovers learns it too. Without
   // `describedBy` the same sentence reaches the accessibility tree twice, and

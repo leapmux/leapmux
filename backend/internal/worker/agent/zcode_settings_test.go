@@ -79,11 +79,41 @@ func TestApplySettingsSnapshot_ReadsTheAuthoritativeCurrentFields(t *testing.T) 
 	assert.Equal(t, "high", a.thoughtLevel)
 	assert.Equal(t, "low", a.observedThoughtDefault)
 
-	ids := []string{}
-	for _, level := range a.observedThoughtLevels {
-		ids = append(ids, level.GetId())
+	ids := effortIDs(a.observedThoughtLevels)
+	assert.Equal(t, []string{EffortAuto, "high", "low"}, ids,
+		"auto leads the list as the send-nothing sentinel, then the levels strongest first -- the same order the configured catalog uses, so the menu does not reorder itself when the first snapshot lands")
+}
+
+// The two lists of levels are built in two places -- the configured catalog
+// (zcodeModelInfo) and this snapshot -- and the second REPLACES the first for the
+// running model. Ordered differently, the menu would reorder itself the moment
+// the agent reported its first snapshot, under a user reading it.
+func TestApplySettingsSnapshot_OrdersTheLevelsLikeTheConfiguredCatalog(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {"builtin:zai": {"kind": "openai", "options": {"apiKey": "k"},
+        "models": {"GLM-5.3": {"reasoning": {"enabled": true, "variants": ["low", "max", "high"]}}}}}
+    }`)
+	require.Len(t, catalog.Models, 1)
+	fromConfig := []string{}
+	for _, level := range catalog.Models[0].SupportedEfforts {
+		fromConfig = append(fromConfig, level.GetId())
 	}
-	assert.Equal(t, []string{EffortAuto, "low", "high"}, ids, "auto leads the list as the send-nothing sentinel")
+
+	a := newZCodeTestAgent(t, &recordingControlSink{})
+	// The app-server reports the levels in the model's own configured order, which
+	// is exactly the order that states no ladder.
+	zcodeApplySettings(t, a, `{
+      "thoughtLevel": {"enabled": true, "current": "high",
+                       "available": [{"value":"low"},{"value":"max"},{"value":"high"}]}
+    }`)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	fromSnapshot := effortIDs(a.observedThoughtLevels)
+	assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, fromSnapshot)
+	assert.Equal(t, fromConfig, fromSnapshot, "the live list must not reorder the menu")
 }
 
 // A patch carries only the axes that changed. An absent axis must leave the agent's
@@ -278,10 +308,7 @@ func TestZCodeOptionGroups_ExposesModelThoughtLevelAndMode(t *testing.T) {
 
 	modelGroup := optionids.GroupByID(groups, OptionIDModel)
 	require.NotNil(t, modelGroup)
-	modelIDs := []string{}
-	for _, option := range modelGroup.GetOptions() {
-		modelIDs = append(modelIDs, option.GetId())
-	}
+	modelIDs := effortIDs(modelGroup.GetOptions())
 	assert.Contains(t, modelIDs, "builtin:zai/GLM-5.3")
 	assert.Contains(t, modelIDs, "acme/acme-1")
 	assert.Equal(t, "builtin:zai/GLM-5.3", modelGroup.GetCurrentValue())
@@ -320,10 +347,7 @@ func TestZCodeModelsForUI_OverridesOnlyTheCurrentModelsEfforts(t *testing.T) {
 
 	live := byID["builtin:zai/GLM-5.3"]
 	require.NotNil(t, live)
-	liveIDs := []string{}
-	for _, e := range live.SupportedEfforts {
-		liveIDs = append(liveIDs, e.GetId())
-	}
+	liveIDs := effortIDs(live.SupportedEfforts)
 	assert.Equal(t, []string{EffortAuto, "turbo"}, liveIDs)
 	assert.Equal(t, "turbo", live.DefaultEffort)
 
@@ -336,11 +360,8 @@ func TestZCodeModelsForUI_OverridesOnlyTheCurrentModelsEfforts(t *testing.T) {
 	// fallback the picker shows before an agent runs.
 	for _, m := range a.catalog.Models {
 		if m.GetId() == "builtin:zai/GLM-5.3" {
-			ids := []string{}
-			for _, e := range m.SupportedEfforts {
-				ids = append(ids, e.GetId())
-			}
-			assert.Equal(t, []string{EffortAuto, "low", "high", "max"}, ids,
+			ids := effortIDs(m.SupportedEfforts)
+			assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, ids,
 				"the shared catalog entry must not be mutated")
 		}
 	}

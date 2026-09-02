@@ -49,6 +49,29 @@ var zcodeAutoEffort = &EffortInfo{
 	Description: "Use ZCode's default thought level for the model",
 }
 
+// zcodeEffortsWithAuto orders a model's thought levels for the menu: Auto first,
+// then the rest strongest first. It sorts `levels` in place and returns the new
+// slice.
+//
+// One function for the two places that build such a list -- the configured
+// catalog (zcodeModelInfo) and the live snapshot that REPLACES it for the
+// running model (applySettingsSnapshotLocked). Built separately, the two ordered
+// the same levels differently and the menu reordered itself under the reader the
+// moment the first snapshot landed.
+//
+// It also discharges sortEffortsDescending's one caller obligation. Auto is not
+// a strength -- it means "send no level at all" -- so it must not reach the
+// sort, and putting it back afterwards is the step a caller can forget.
+func zcodeEffortsWithAuto(levels []*EffortInfo) []*EffortInfo {
+	sortEffortsDescending(levels)
+	// A fresh slice with room for both, rather than a prepend onto the caller's:
+	// `append` to a one-element literal reallocates anyway, and a caller sized
+	// for the levels alone.
+	out := make([]*EffortInfo, 0, len(levels)+1)
+	out = append(out, zcodeAutoEffort)
+	return append(out, levels...)
+}
+
 // zcodeEffortTier builds the display entry for one ZCode thought level.
 //
 // ZCode spells a level as a bare id ("low", "max", "enabled") and repeats that id as
@@ -191,10 +214,23 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 		}
 	}
 	if tl := snap.ThoughtLevel; tl != nil {
-		// Auto leads the list: it is LeapMux's "send no level" sentinel, and every
-		// model accepts it because it produces no RPC at all.
-		levels := make([]*EffortInfo, 0, len(tl.Available)+1)
-		levels = append(levels, zcodeAutoEffort)
+		// The model offers no thought level at all. Auto alone keeps the axis
+		// selectable-but-inert rather than showing a level the model would refuse.
+		//
+		// Checked BEFORE the list is built, because this branch discards it: the
+		// build, the sort and the prepend all ran under a.mu for a result nothing
+		// read. The `available` half cannot move up with it -- it counts the
+		// non-empty values, which only the loop knows.
+		offAxis := func() {
+			a.observedThoughtLevels = []*EffortInfo{zcodeAutoEffort}
+			a.observedThoughtDefault = EffortAuto
+			a.thoughtLevel = EffortAuto
+		}
+		if !tl.Enabled {
+			offAxis()
+			return
+		}
+		levels := make([]*EffortInfo, 0, len(tl.Available))
 		available := make(map[string]bool, len(tl.Available))
 		for _, l := range tl.Available {
 			if l.Value == "" {
@@ -203,15 +239,16 @@ func (a *zcodeAgent) applySettingsSnapshotLocked(snap *zcodeSettingsSnapshot) {
 			available[l.Value] = true
 			levels = append(levels, zcodeEffortTier(l.Value, l.Label, l.Description))
 		}
-		if !tl.Enabled || len(available) == 0 {
-			// The model offers no thought level at all. Auto alone keeps the axis
-			// selectable-but-inert rather than showing a level the model would refuse.
-			a.observedThoughtLevels = []*EffortInfo{zcodeAutoEffort}
-			a.observedThoughtDefault = EffortAuto
-			a.thoughtLevel = EffortAuto
+		if len(available) == 0 {
+			offAxis()
 			return
 		}
-		a.observedThoughtLevels = levels
+		// Auto first, then the levels strongest first, exactly as the configured
+		// catalog orders them (zcodeModelInfo). The app-server reports the levels
+		// in the order the model's own configuration lists them, which is the
+		// order this replaces -- so without the same sort the menu reordered
+		// itself the moment the agent reported its first snapshot.
+		a.observedThoughtLevels = zcodeEffortsWithAuto(levels)
 		a.observedThoughtDefault = tl.DefaultLevel
 		if a.observedThoughtDefault == "" {
 			a.observedThoughtDefault = EffortAuto

@@ -119,7 +119,19 @@ export const menuItemContent = style({
   minWidth: 0,
 })
 
-export const menuItemShortcut = style({
+/**
+ * The slot at the RIGHT end of a menu item: a short note that the row keeps
+ * whole while the label beside it clips.
+ *
+ * Two kinds of note go in it -- a keyboard shortcut, and the age of the thing
+ * the row names. It is named for the SLOT rather than for either one, because a
+ * class called `menuItemShortcut` on a timestamp makes every reader decide
+ * which meaning applies.
+ *
+ * `flex-shrink: 0` is the whole point. The label takes the squeeze and ends in
+ * an ellipsis; the note stays readable at any label length.
+ */
+export const menuItemDetail = style({
   marginLeft: 'auto',
   flexShrink: 0,
   color: 'var(--muted-foreground)',

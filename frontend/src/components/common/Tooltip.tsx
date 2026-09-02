@@ -78,21 +78,58 @@ type TooltipTarget = Element & {
 }
 
 /**
- * True when the browser will not dispatch a pointer event to this element.
+ * Every element type that can carry `disabled`. A `<span>` cannot, so its own
+ * disabled state is always the state of the control that ENCLOSES it.
+ */
+const DISABLEABLE = 'button, input, select, textarea, fieldset, optgroup, option'
+
+/**
+ * The control whose disabled state governs `el`: `el` itself when it can be
+ * disabled, otherwise the nearest one that encloses it, or null when none does.
+ *
+ * It matches on element TYPE rather than on `:disabled` deliberately. jsdom
+ * resolves the `:disabled` pseudo-class through the element's own window and
+ * throws for a node that is not in a document yet -- which is every node before
+ * SolidJS inserts the tree it just built.
+ */
+function disablingHost(el: Element): Element | null {
+  return el.closest(DISABLEABLE)
+}
+
+/**
+ * True when the browser will not dispatch a pointer event to this element
+ * ITSELF, which is the question the wrapper's box answers.
  *
  * `:disabled` rather than the `disabled` property, so a control disabled by an
  * enclosing `<fieldset>` counts as well. `aria-disabled` is the other half: it
  * looks disabled and takes pointer events, so a tooltip on it needs no wrapper
  * -- but this component still owes the description below, because a screen
  * reader reads it as unavailable and the reader deserves the reason either way.
+ *
+ * Deliberately NOT an ancestor test, although a disabled control is inert for
+ * its whole subtree. The wrapper this drives sits INSIDE that subtree too, so a
+ * box there catches nothing -- it would only add a layout box to every label
+ * inside every disabled control, for a hover that still cannot happen. The
+ * description below is the route that does work, and it does use the ancestor.
  */
 function targetRefusesPointerEvents(el: Element): boolean {
   return el.matches(':disabled')
 }
 
-/** True when the element presents itself as unavailable, by either mechanism. */
+/**
+ * True when the element presents itself as unavailable, by any mechanism.
+ *
+ * The ENCLOSING control counts. A disabled form control is inert for its whole
+ * subtree, so a `<span>` inside a disabled `<button>` is as unhoverable as the
+ * button -- and `ClippedText` puts its target exactly there, on the label
+ * INSIDE a control. Without the ancestor, a clipped value inside a disabled
+ * control had no route back at all: no hover, and no description either.
+ */
 function targetIsDisabled(el: Element): boolean {
-  return targetRefusesPointerEvents(el) || el.getAttribute('aria-disabled') === 'true'
+  if (el.getAttribute('aria-disabled') === 'true')
+    return true
+  const host = disablingHost(el)
+  return host !== null && host.matches(':disabled')
 }
 
 /** True if the element's computed overflow on either axis clips its content. */
@@ -322,6 +359,13 @@ export function Tooltip(props: TooltipProps) {
     sync()
     const observer = new MutationObserver(sync)
     observer.observe(target, { attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
+    // The ENCLOSING control too, when the target is not one itself: a label
+    // inside a button is disabled by that button, so watching only the label
+    // would leave the description missing for as long as the control stays
+    // disabled -- exactly the window the description exists to cover.
+    const host = disablingHost(target)
+    if (host && host !== target)
+      observer.observe(host, { attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
     onCleanup(() => observer.disconnect())
   })
 

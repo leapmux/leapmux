@@ -2880,6 +2880,12 @@ func (svc *Service) resolveResumeSessionID(agentID, currentSessionID string, res
 // Shutdown's WaitForInFlight drains it. Registering at one call site left the
 // three message-driven callers without any of them.
 //
+// An INTERACTIVE caller does not race a startup that is already in flight for
+// the same tab: it waits for that startup and reports its outcome. The wait is
+// what keeps a message sent inside the open path's startup window; see the
+// comment on it below. It is limited by the budget the CLIENT gives the RPC,
+// because every interactive caller holds its response open across it.
+//
 // It takes no context. The startup context is rooted at bgCtx() and created
 // here, because it is the agent PROCESS's lifetime -- the provider builds its
 // exec.CommandContext from it -- and a caller's context is the wrong lifetime
@@ -2890,6 +2896,56 @@ func (svc *Service) resolveResumeSessionID(agentID, currentSessionID string, res
 func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionID *string, priority startPriority) error {
 	if svc.Agents.HasAgent(agentID) {
 		return nil
+	}
+
+	// Join a startup that is ALREADY producing the process this caller needs,
+	// rather than race it and then refuse.
+	//
+	// The open path holds no manager entry until its final handoff, so HasAgent
+	// stays false for the whole of it -- and a message that lands in that window
+	// takes this path. Without the wait, begin below finds the id claimed and
+	// this returns an error, which SendAgentMessage records on the row as
+	// "agent is not running": the user's first message never reaches the CLI
+	// that the open path brings up a second later, and nothing retries it.
+	//
+	// Only an INTERACTIVE caller waits; see startPriority.joinsInFlightStartup.
+	//
+	// Before the lifecycle lock, because the wait is long compared with
+	// everything under it and a CloseAgent for this same tab needs that lock to
+	// tear the startup down. Re-check HasAgent after: a startup that this caller
+	// waited for and that succeeded is exactly the outcome to report.
+	//
+	// The LIMIT is the caller's budget, not the process's. agentStartupTimeout
+	// is what the spawned CLI gets to come up (five minutes by default); the
+	// client gives this RPC roughly 1.5x agentAPITimeout and gives up there, and
+	// every one of these callers holds the response until this returns. Waiting
+	// past that point converts a message this worker DOES deliver into a send
+	// the sender is told failed, under a Retry button that sends it twice. So
+	// the wait ends inside the client's own budget and the caller reports what
+	// it always reported for a startup it cannot join.
+	//
+	// A wait that a CLOSE ended is not an outcome to start a replacement on.
+	// cancelAndClear wakes this waiter as its FIRST teardown step, several
+	// steps before the close stamps closed_at -- so the closed-tab guard below
+	// would still read an open row and this would spawn a process for a tab the
+	// user just closed, which nothing would ever stop.
+	//
+	// The claim below still stands on its own. A startup that begins between
+	// this wait and that claim is refused as before -- a window of microseconds
+	// where there was one of seconds.
+	if priority.joinsInFlightStartup() {
+		limit := svc.agentAPITimeout()
+		wait := svc.AgentStartup.awaitInFlight(agentID, limit)
+		switch {
+		case wait.closed:
+			return fmt.Errorf("agent %s was closed while its startup was in flight", agentID)
+		case !wait.settled:
+			slog.Warn("ensureAgentRunning: a startup already in flight did not finish in time",
+				"agent_id", agentID, "limit", limit)
+		}
+		if svc.Agents.HasAgent(agentID) {
+			return nil
+		}
 	}
 
 	// Serialize this cold-start against any concurrent auto-start or restart for the same

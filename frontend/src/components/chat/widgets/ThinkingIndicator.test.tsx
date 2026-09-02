@@ -284,9 +284,9 @@ describe('thinking indicator chips', () => {
 
   it('renders the todos counter as done/total plus a noun', () => {
     const todos: TodoItem[] = [
-      { content: 'a', status: 'completed', activeForm: '' },
-      { content: 'b', status: 'in_progress', activeForm: 'doing b' },
-      { content: 'c', status: 'pending', activeForm: '' },
+      { rowKey: 'a', content: 'a', status: 'completed', activeForm: '' },
+      { rowKey: 'b', content: 'b', status: 'in_progress', activeForm: 'doing b' },
+      { rowKey: 'c', content: 'c', status: 'pending', activeForm: '' },
     ]
     const { getByTestId } = renderChips({ todos })
     expect(getByTestId('thinking-todos-chip')).toHaveTextContent('1/3 to-dos')
@@ -294,14 +294,14 @@ describe('thinking indicator chips', () => {
   })
 
   it('uses the singular noun for a one-item to-do list', () => {
-    const todos: TodoItem[] = [{ content: 'a', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
     const { getByTestId } = renderChips({ todos })
     expect(getByTestId('thinking-todos-chip')).toHaveTextContent('0/1 to-do')
   })
 
   it('hides the todos chip when all todos are deleted', () => {
     const todos: TodoItem[] = [
-      { content: 'a', status: 'deleted', activeForm: '' },
+      { rowKey: 'a', content: 'a', status: 'deleted', activeForm: '' },
     ]
     const { queryByTestId } = renderChips({ todos })
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
@@ -316,7 +316,7 @@ describe('thinking indicator chips', () => {
   // rotating verb leads, and the counters trail it, middot-separated. The verb
   // is outside the separator chain, so leading it adds no middot of its own.
   it('orders the verb before the counters, separated by middots', () => {
-    const todos: TodoItem[] = [{ content: 'a', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
     const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })
     // The odometer is aria-hidden; getByText finds the screen-reader copy.
     const tokens = getByText('500 tokens')

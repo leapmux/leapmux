@@ -24,18 +24,18 @@ describe('acpPlanFromEntries', () => {
       { content: 'five', status: 'unknown' },
     ])
     expect(source?.todos).toEqual([
-      { content: 'one', status: 'pending', activeForm: '' },
-      { content: 'two', status: 'completed', activeForm: '' },
-      { content: 'three', status: 'in_progress', activeForm: '' },
-      { content: 'four', status: 'pending', activeForm: '' },
-      { content: 'five', status: 'pending', activeForm: '' },
+      { rowKey: '0:one', content: 'one', status: 'pending', activeForm: '' },
+      { rowKey: '1:two', content: 'two', status: 'completed', activeForm: '' },
+      { rowKey: '2:three', content: 'three', status: 'in_progress', activeForm: '' },
+      { rowKey: '3:four', content: 'four', status: 'pending', activeForm: '' },
+      { rowKey: '4:five', content: 'five', status: 'pending', activeForm: '' },
     ])
   })
 
   it('coerces missing content to empty string', () => {
     const source = acpPlanFromEntries([{ status: 'completed' } as never])
     expect(source?.todos).toEqual([
-      { content: '', status: 'completed', activeForm: '' },
+      { rowKey: '0:', content: '', status: 'completed', activeForm: '' },
     ])
   })
 })
