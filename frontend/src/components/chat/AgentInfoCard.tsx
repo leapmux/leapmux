@@ -7,6 +7,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { WorkingTreeIcon, workingTreeKindLabel } from '~/components/common/WorkingTree'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { basename, tildify } from '~/lib/paths'
 import { formatCountdown, formatResetTimestamp, getResetsAt, pickUrgentRateLimit, RATE_LIMIT_POPOVER_LABELS } from '~/lib/rateLimitUtils'
@@ -158,8 +159,18 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
       </Show>
       <Show when={branchLabel()} keyed>
         {name => (
-          <div class={styles.infoRow}>
-            <span class={styles.infoLabel}>Branch</span>
+          <div class={styles.infoRow} data-testid="info-row-working-tree">
+            {/* Named for what it IS: a linked worktree deletes as a directory,
+                a main-repo branch does not, and this card is where a user
+                checks which one the agent runs in. The icon repeats the label
+                because it is the same glyph the sidebar row and the composer
+                chip carry -- this is where a reader connects the three. */}
+            <span class={styles.infoLabel}>{workingTreeKindLabel(gitView()?.isWorktree ?? false)}</span>
+            {/* A direct child of the row, not a child of the value span: the
+                row is the flex container with `align-items: center`, so the
+                glyph centres against the text for free. Inside the value span
+                it would sit on the text baseline instead. */}
+            <WorkingTreeIcon isWorktree={gitView()?.isWorktree ?? false} size="xs" />
             <span class={styles.infoValue}>
               {name}
               {(() => {

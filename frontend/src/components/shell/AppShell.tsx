@@ -185,6 +185,7 @@ export const AppShell: Component = () => {
     workerId: ref.workerId,
     gitToplevel: ref.gitToplevel,
     branchName: ref.branchName,
+    isWorktree: ref.isWorktree,
     tabs: ref.tabs,
   })
   // Set to a `missing` / `mismatch` status when the macOS PATH check should

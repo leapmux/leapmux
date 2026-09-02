@@ -244,6 +244,7 @@ describe('appShellDialogs branch dialogs', () => {
       workerId: 'w1',
       gitToplevel: '/repo',
       branchName: 'doomed',
+      isWorktree: false,
       tabs: [makeTab()],
     })
 
@@ -254,6 +255,27 @@ describe('appShellDialogs branch dialogs', () => {
     expect(showWarnToast).not.toHaveBeenCalled()
     // The dialog still closes: the notify must not prevent the close.
     await waitFor(() => expect(dialogs.deleteBranch.value()).toBeNull())
+  })
+
+  // The payload's `isWorktree` has to REACH the dialog, and only a test that
+  // drives it through this component covers that hop -- the dialog's own suite
+  // passes the prop itself, so it stays green even when the parent drops it.
+  //
+  // Asserted with the inspect RPC still PENDING, because that is the only
+  // window in which the seed is the sole source: once the response lands it
+  // answers for itself, and a dropped payload field would go unnoticed.
+  it('delete branch: seeds the dialog from the payload before the inspect lands', async () => {
+    vi.mocked(workerRpc.inspectBranchDeletion).mockReturnValue(new Promise(() => {}))
+    const { dialogs } = renderDialogs()
+    dialogs.deleteBranch.open({
+      workerId: 'w1',
+      gitToplevel: '/repo-worktrees/doomed',
+      branchName: 'doomed',
+      isWorktree: true,
+      tabs: [makeTab()],
+    })
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument())
   })
 
   it('delete branch: a reopen with a different repo uses the NEW identity', async () => {
@@ -267,6 +289,7 @@ describe('appShellDialogs branch dialogs', () => {
       workerId: 'w1',
       gitToplevel: '/repo',
       branchName: 'doomed',
+      isWorktree: false,
       tabs: [makeTab()],
     })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
@@ -276,6 +299,7 @@ describe('appShellDialogs branch dialogs', () => {
       workerId: 'w9',
       gitToplevel: '/second-repo',
       branchName: 'doomed',
+      isWorktree: false,
       tabs: [makeTab()],
     })
     await chooseSwitchToAndConfirm('main')
@@ -295,6 +319,7 @@ describe('appShellDialogs branch dialogs', () => {
       workerId: 'w1',
       gitToplevel: '/repo',
       branchName: 'doomed',
+      isWorktree: false,
       tabs: [makeTab()],
     })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
@@ -304,6 +329,7 @@ describe('appShellDialogs branch dialogs', () => {
       workerId: 'w9',
       gitToplevel: '/second-repo',
       branchName: 'doomed',
+      isWorktree: false,
       tabs: [makeTab()],
     })
     await chooseSwitchToAndConfirm('main')
@@ -326,11 +352,12 @@ describe('appShellDialogs branch dialogs', () => {
       workerId: 'w1',
       gitToplevel: '/repo',
       branchName: 'doomed',
+      isWorktree: true,
       tabs,
     })
 
-    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Delete branch' }))
+    await waitFor(() => expect(screen.getByTestId('working-tree-rows')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete worktree' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm?' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 

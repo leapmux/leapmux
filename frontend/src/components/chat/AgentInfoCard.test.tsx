@@ -1,7 +1,7 @@
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { RepoGitView } from '~/stores/repoGit'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCard'
@@ -217,6 +217,56 @@ describe('agent info card branch row', () => {
     ))
 
     expect(screen.getByText('main')).toBeInTheDocument()
+  })
+
+  // The card is where a user checks which checkout the agent runs in, and a
+  // worktree deletes as a whole directory while a main-repo branch does not.
+  it('labels the row Worktree and marks it with the worktree glyph', () => {
+    const { container } = render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="feature"
+        gitView={{ isWorktree: true } as RepoGitView}
+      />
+    ))
+
+    const row = screen.getByTestId('info-row-working-tree')
+    expect(within(row).getByText('Worktree')).toBeInTheDocument()
+    expect(container.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
+  })
+
+  it('labels the row Branch and marks it with the branch glyph', () => {
+    const { container } = render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="main"
+        gitView={{ isWorktree: false } as RepoGitView}
+      />
+    ))
+
+    const row = screen.getByTestId('info-row-working-tree')
+    expect(within(row).getByText('Branch')).toBeInTheDocument()
+    expect(container.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
+  })
+
+  // A branch stamped onto a tab before its first status push has no git view.
+  // "Branch" is the safe reading: it claims nothing about a directory.
+  it('falls back to Branch when the checkout kind is not known yet', () => {
+    render(() => <InfoCardContent agent={withGit({})} branchName="main" />)
+
+    expect(within(screen.getByTestId('info-row-working-tree')).getByText('Branch')).toBeInTheDocument()
+  })
+
+  it('still copies the branch name from the renamed row', () => {
+    render(() => (
+      <InfoCardContent
+        agent={withGit({})}
+        branchName="feature"
+        gitView={{ isWorktree: true } as RepoGitView}
+      />
+    ))
+
+    expect(screen.getByRole('button', { name: 'Copy branch name' })).toBeInTheDocument()
   })
 })
 

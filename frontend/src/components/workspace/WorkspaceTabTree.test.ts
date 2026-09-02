@@ -635,6 +635,82 @@ describe('buildTree', () => {
   })
 })
 
+// The row's tooltip states the directory on EVERY hover, but the row itself has
+// no route to a worker's home dir — only `buildTree` holds `workerInfoFn`. So
+// the shortening happens here, once, and by the same rule the collision suffix
+// above uses. A second rule would let one row read `~/repos/foo` while its own
+// tooltip read `/home/u/repos/foo`.
+describe('buildTree branch displayPath', () => {
+  const posixLookup = () => ({
+    name: 'worker-a',
+    os: 'linux',
+    arch: 'arm64',
+    homeDir: '/home/u',
+    version: '0',
+    commitHash: '',
+    buildTime: '',
+    updatedAt: 0,
+  })
+
+  it('tilde-compresses the toplevel against the worker home dir', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: posixLookup, repoSeeds })
+
+    expect(tree.groups[0].branches[0].displayPath).toBe('~/Workspaces/r')
+  })
+
+  // The label stays bare when the branch name is unique in its repo. The path
+  // must still resolve, because the tooltip shows it either way.
+  it('resolves even when the label carries no path suffix', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: posixLookup, repoSeeds })
+
+    expect(tree.groups[0].branches[0].displayLabel).toBe('main')
+    expect(tree.groups[0].branches[0].displayPath).toBe('~/Workspaces/r')
+  })
+
+  it('uses the worker OS flavor, so a win32 home strips with backslashes', () => {
+    const lookup = () => ({
+      name: 'w-win',
+      os: 'windows',
+      arch: 'x86_64',
+      homeDir: 'C:\\Users\\u',
+      version: '0',
+      commitHash: '',
+      buildTime: '',
+      updatedAt: 0,
+    })
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: 'C:\\Users\\u\\Workspaces\\r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: lookup, repoSeeds })
+
+    expect(tree.groups[0].branches[0].displayPath).toBe('~\\Workspaces\\r')
+  })
+
+  it('keeps the path absolute when the worker system info has not landed', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { repoSeeds })
+
+    expect(tree.groups[0].branches[0].displayPath).toBe('/home/u/Workspaces/r')
+  })
+
+  it('keeps a path outside the home dir absolute', () => {
+    const { tabs, repoSeeds } = tabsWithSeeds([
+      { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/srv/repos/r' },
+    ])
+    const tree = buildTreeForTabs(tabs, { tileOrder: undefined, workerInfoFn: posixLookup, repoSeeds })
+
+    expect(tree.groups[0].branches[0].displayPath).toBe('/srv/repos/r')
+  })
+})
+
 describe('buildTree branchByKey', () => {
   // The per-RepoGroup branchByKey Map is built once during buildTree
   // (vs. the previous per-row inner memo that rebuilt one Map per

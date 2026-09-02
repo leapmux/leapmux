@@ -1,13 +1,14 @@
 import type { Component } from 'solid-js'
 import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
-import { createMemo, createSignal, createUniqueId, Show } from 'solid-js'
+import { createMemo, createSignal, createUniqueId, onMount, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
+import { workingTreeKindLabel } from '~/components/common/WorkingTree'
 import { WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSelect'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
@@ -20,6 +21,7 @@ import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { errorText, warningText } from '~/styles/shared.css'
 
 const log = createLogger('DeleteBranchDialog')
@@ -53,6 +55,13 @@ interface DeleteBranchDialogProps {
    * `null` for the sidebar's "(no branch)" group.
    */
   branchName: string | null
+  /**
+   * True iff `gitToplevel` resolves to a linked worktree, as the row that
+   * opened the dialog understands it. It SEEDS the title, the submit label and
+   * the status rows so the first paint does not say "branch" about a worktree;
+   * `inspectBranchDeletion` overrules it the moment it lands.
+   */
+  isWorktree: boolean
   /** Snapshot of tabs in the branch group at dialog-open time. */
   tabs: Tab[]
   /**
@@ -118,6 +127,22 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   /* eslint-enable solid/reactivity */
   const info = inspect.info
   const [switchTo, setSwitchTo] = createSignal('')
+
+  // The worktree disposition the whole dialog reads. The inspect response is
+  // authoritative once it lands; until then the row's seed answers, so the
+  // title and the submit button never name the wrong kind on the first paint.
+  const isWorktree = () => info()?.isWorktree ?? props.isWorktree
+  // The noun for the title and the submit button: "worktree" or "branch".
+  const kindLabel = () => workingTreeKindLabel(isWorktree())
+
+  // The home dir behind the status block's tilde path. The store is process-
+  // wide and usually already warm (the sidebar and the tile renderer both read
+  // it), but a dialog opened before anything else touched this worker would
+  // find it empty -- and `tildify` then shows the absolute path, which is
+  // correct but long. One fetch closes that gap; the store enforces its own
+  // freshness TTL, so a warm entry costs no round trip.
+  onMount(() => void workerInfoStore.fetchWorkerInfo(props.workerId))
+  const homeDir = () => workerInfoStore.getHomeDir(props.workerId)
 
   // Selectable branches exclude the one being deleted. The inspect RPC
   // returns the candidate list directly (only populated server-side when
@@ -323,7 +348,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
 
   return (
     <WorkerDialogShell
-      title="Delete branch"
+      title={`Delete ${kindLabel().toLowerCase()}`}
       // Drives the busy overlay for both delete paths while their `run`
       // is in flight (worktree: the removal preflight only; branch: the
       // whole DeleteBranch RPC). The inspect RPC's error sink also
@@ -382,9 +407,9 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
               disabled={!canSubmit()}
               onClick={handleDelete}
             >
-              <Show when={submitting.loading()} fallback="Delete branch">
+              <Show when={submitting.loading()} fallback={`Delete ${kindLabel().toLowerCase()}`}>
                 <Spinner />
-                {info()?.isWorktree ? 'Checking...' : 'Deleting...'}
+                {isWorktree() ? 'Checking...' : 'Deleting...'}
               </Show>
             </ConfirmButton>
           </Tooltip>
@@ -395,7 +420,16 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
         {i => (
           <>
             <BranchStatusInfo
-              branch={i()}
+              branch={{
+                isWorktree: i().isWorktree,
+                branchName: i().branchName,
+                // The worktree dir for a worktree, and the repo root this
+                // dialog is locked to otherwise. `worktreePath` is populated
+                // only on the worktree path, so it cannot serve both.
+                directory: i().isWorktree ? i().worktreePath : props.gitToplevel,
+                homeDir: homeDir(),
+                gitState: i().gitState,
+              }}
               affectedTabs={{
                 agents: isOnlyBranch() ? 0 : tabCounts.agents,
                 terminals: isOnlyBranch() ? 0 : tabCounts.terminals,
@@ -403,6 +437,21 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 willStop: i().isWorktree,
               }}
             />
+            {/* What Delete actually does, which is the one fact that separates
+                the two paths and the one the old copy never stated: a worktree
+                delete destroys a directory, a branch delete moves this one to
+                another branch. The "only branch" case offers no delete at all,
+                so it states nothing here and lets the error below speak. */}
+            <Show when={!isOnlyBranch()}>
+              <div data-testid="branch-delete-consequence">
+                <Show
+                  when={i().isWorktree}
+                  fallback="Deleting removes the branch. This working directory switches to the branch you pick below."
+                >
+                  Deleting removes this directory and the branch.
+                </Show>
+              </div>
+            </Show>
             {/* Why the Delete button is unavailable. Visible text, not the
                 button's tooltip alone, because a greyed-out destructive
                 option with no stated reason looks like a defect.

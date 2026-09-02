@@ -5,6 +5,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
 import { PillGroup } from '~/components/common/PillGroup'
+import { WorkingTreeRows } from '~/components/common/WorkingTree'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
 import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isChangeBranchSubmitDisabled } from '~/components/shell/dialogValidation'
@@ -305,6 +306,19 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
       )}
     >
       <BlockedReasonNotice reason={worktreeBlockedReason()} />
+      {/* WHICH checkout this dialog acts on. The mode block below states the
+          current branch for the switch picker alone; nothing stated the kind
+          or the directory, so a user with the same branch name in a worktree
+          and in the main repo could not tell the two dialogs apart.
+          `useChangeBranchInspect` seeds both fields from the row that opened
+          the dialog and replaces them when the inspect RPC lands, so this row
+          is correct from the first paint. */}
+      <WorkingTreeRows
+        isWorktree={pathInfo.info().isWorktreeRoot}
+        name={pathInfo.info().currentBranch}
+        directory={props.gitToplevel}
+        homeDir={worker.getHomeDir()}
+      />
       <GitOptionsLoader gitInfo={pathInfo}>
         {() => (
           <>

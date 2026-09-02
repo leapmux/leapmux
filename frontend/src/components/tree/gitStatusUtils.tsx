@@ -80,13 +80,25 @@ export const LabelWithDiffStats: Component<{ label: string, stats: DiffStats | n
 export const RowLabelWithStats: Component<{
   label: JSX.Element
   tooltipLabel?: string
+  /**
+   * Replaces the default label+stats tooltip body.
+   *
+   * The tooltip then opens on EVERY hover instead of only when the row clips,
+   * because a body passed here states facts that are nowhere else on the row —
+   * the sidebar's branch row names the kind of checkout and its directory, and
+   * a clipped-only tooltip would hide both whenever the label happens to fit.
+   *
+   * Pass no interactive element and no nested `Tooltip`: a tooltip's portal is
+   * `pointer-events: none`, so nothing inside it can be reached.
+   */
+  tooltipContent?: JSX.Element
   stats: DiffStats | null | undefined
 }> = (props) => {
   const tooltipText = () => props.tooltipLabel ?? (typeof props.label === 'string' ? props.label : '')
   return (
     <Tooltip
-      content={<LabelWithDiffStats label={tooltipText()} stats={props.stats} />}
-      showWhen="clipped"
+      content={props.tooltipContent ?? <LabelWithDiffStats label={tooltipText()} stats={props.stats} />}
+      showWhen={props.tooltipContent ? 'always' : 'clipped'}
     >
       <span class={labelWithStats}>
         {props.label}

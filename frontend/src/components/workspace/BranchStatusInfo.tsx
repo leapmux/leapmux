@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { BranchGitState } from '~/generated/proto/leapmux/v1/git_pb'
 import { Show } from 'solid-js'
+import { WorkingTreeRows } from '~/components/common/WorkingTree'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { pluralize } from '~/lib/plural'
 import { diffStatsFromRepo } from '~/stores/repoGit.store'
@@ -9,8 +10,18 @@ import * as css from './BranchStatusInfo.css'
 export interface BranchSnapshot {
   /** Worktree disposition — true when the branch is a linked worktree. */
   isWorktree: boolean
-  worktreePath: string
   branchName: string
+  /**
+   * The working-tree root this snapshot describes: the worktree directory
+   * when `isWorktree`, the main repo root otherwise.
+   *
+   * It is stated for BOTH kinds. A dialog that named the directory only for a
+   * worktree left the reader of a branch dialog with no way to tell which of
+   * two clones it was about to act on.
+   */
+  directory: string
+  /** The worker's home directory, for the tilde compression. */
+  homeDir?: string
   /**
    * Shared diff/push snapshot. Undefined when the caller's RPC took a
    * fast path that skipped the snapshot — the component renders the
@@ -69,18 +80,16 @@ export function hasPushableWork(gs: BranchGitState | undefined): boolean {
 export const BranchStatusInfo: Component<BranchStatusInfoProps> = (props) => {
   return (
     <div class={css.statusLines}>
-      <Show when={props.branch.isWorktree}>
-        <div>
-          Worktree:
-          {' '}
-          <code>{props.branch.worktreePath}</code>
-        </div>
-      </Show>
-      <div>
-        Branch:
-        {' '}
-        <code>{props.branch.branchName}</code>
-      </div>
+      {/* The kind and the directory, in the same two labelled rows the sidebar
+          row and the composer chip show on hover. One component for all three,
+          so a dialog cannot call a worktree a branch while the row that opened
+          it does not. */}
+      <WorkingTreeRows
+        isWorktree={props.branch.isWorktree}
+        name={props.branch.branchName}
+        directory={props.branch.directory}
+        homeDir={props.branch.homeDir}
+      />
       <Show when={props.branch.gitState}>
         {gs => (
           <>

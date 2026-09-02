@@ -4,6 +4,7 @@ import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
+import { hoverForTooltip } from '~/test-support/clipStub'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import '~/components/chat/providers'
 
@@ -29,6 +30,10 @@ function renderMenu(opts: {
   settingsLoading?: boolean
   branchName?: string
   branchDisabledReason?: string
+  isWorktree?: boolean
+  directory?: string
+  homeDir?: string
+  branchStats?: { added: number, deleted: number, untracked: number }
 } = {}) {
   const onSettingChange = vi.fn()
   const onAttachFile = vi.fn()
@@ -47,6 +52,10 @@ function renderMenu(opts: {
       disabledReason={opts.disabledReason}
       settingsLoading={opts.settingsLoading}
       branchName={opts.branchName}
+      isWorktree={opts.isWorktree}
+      directory={opts.directory}
+      homeDir={opts.homeDir}
+      branchStats={opts.branchStats}
       onChangeBranch={onChangeBranch}
       onDeleteBranch={onDeleteBranch}
       branchDisabledReason={opts.branchDisabledReason}
@@ -447,5 +456,67 @@ describe('composerPlusMenu', () => {
 
     expect(screen.getByRole('menuitemcheckbox', { name: /Show status bar/, hidden: true }))
       .toHaveAttribute('aria-checked', 'true')
+  })
+
+  // This menu exists because the status bar is a preference the user can switch
+  // off, so it has to name the checkout exactly as the status-bar chip does.
+  describe('naming the checkout', () => {
+    it('marks a worktree with the worktree glyph and renames the delete item', () => {
+      renderMenu({ branchName: 'feature', isWorktree: true })
+
+      const trigger = screen.getByTestId('composer-plus-branch')
+      expect(trigger.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
+      expect(screen.getByRole('menuitem', { name: /Delete worktree/, hidden: true })).toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeNull()
+    })
+
+    it('marks a main-repo checkout with the branch glyph', () => {
+      renderMenu({ branchName: 'main', isWorktree: false })
+
+      const trigger = screen.getByTestId('composer-plus-branch')
+      expect(trigger.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
+      expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeInTheDocument()
+    })
+
+    it('states the kind, the directory and the diff stats on hover', () => {
+      vi.useFakeTimers()
+      try {
+        renderMenu({
+          branchName: 'feature',
+          isWorktree: true,
+          directory: '/home/dev/repos/leapmux-worktrees/feature',
+          homeDir: '/home/dev',
+          branchStats: { added: 38, deleted: 12, untracked: 0 },
+        })
+
+        const tooltip = hoverForTooltip(screen.getByTestId('composer-plus-branch'))
+        expect(tooltip).not.toBeNull()
+        expect(tooltip!.textContent).toContain('Worktree')
+        expect(tooltip!.textContent).toContain('~/repos/leapmux-worktrees/feature')
+        expect(tooltip!.textContent).toContain('+38')
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('replaces the rows with the reason when the actions are unusable', () => {
+      vi.useFakeTimers()
+      try {
+        renderMenu({
+          branchName: 'feature',
+          isWorktree: true,
+          directory: '/home/dev/repos/leapmux-worktrees/feature',
+          branchDisabledReason: 'This Worker is offline.',
+        })
+
+        const tooltip = hoverForTooltip(screen.getByTestId('composer-plus-branch'))
+        expect(tooltip!.textContent).toBe('This Worker is offline.')
+        expect(tooltip!.querySelector('[data-testid="working-tree-rows"]')).toBeNull()
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })

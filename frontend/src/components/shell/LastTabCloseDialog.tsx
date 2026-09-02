@@ -13,6 +13,7 @@ import { PushBranchButton } from '~/components/workspace/PushBranchButton'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
+import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
 
 const log = createLogger('LastTabCloseDialog')
@@ -56,6 +57,17 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   const removalBlockedReason = createMemo(() =>
     props.state.target === LastTabCloseTarget.WORKTREE ? props.state.worktreeRemovalBlockedReason : '',
   )
+
+  const isWorktree = () => props.state.target === LastTabCloseTarget.WORKTREE
+  // The directory the prompt is about. `worktreePath` carries it on the
+  // worktree target; on the branch target the checkout IS the main repo, so
+  // `repoRoot` is the same directory. `workingDir` is NOT interchangeable --
+  // the worker resolves it per tab and it can sit in a subdirectory.
+  const directory = () => (isWorktree() ? props.state.worktreePath : props.state.repoRoot)
+  // The worker's home dir, for the tilde path. The store is process-wide and
+  // this dialog only ever opens on a worker the user is already working on, so
+  // the entry is warm; an empty answer leaves the path absolute, not wrong.
+  const homeDir = () => workerInfoStore.getHomeDir(props.state.workerId)
 
   const handleCancel = () => {
     props.state.resolve('cancel')
@@ -101,29 +113,24 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
   return (
     <Dialog title="Close last tab" onClose={handleCancel}>
       <section>
+        {/* The lead sentence states WHICH KIND of checkout this is about and
+            nothing else. The rows below name it and give its directory, so an
+            inline path here only printed the same string twice -- raw both
+            times, because a sentence has no room to tilde-compress it. */}
         <p>
           <Show
-            when={props.state.target === LastTabCloseTarget.WORKTREE}
-            fallback={(
-              <>
-                This closes the last non-worktree tab for branch
-                {' '}
-                <code>{props.state.branchName}</code>
-                .
-              </>
-            )}
+            when={isWorktree()}
+            fallback="This closes the last non-worktree tab for this branch."
           >
-            This closes the last tab for worktree
-            {' '}
-            <code>{props.state.worktreePath}</code>
-            .
+            This closes the last tab for this worktree.
           </Show>
         </p>
         <BranchStatusInfo
           branch={{
-            isWorktree: props.state.target === LastTabCloseTarget.WORKTREE,
-            worktreePath: props.state.worktreePath,
+            isWorktree: isWorktree(),
             branchName: props.state.branchName,
+            directory: directory(),
+            homeDir: homeDir(),
             gitState: props.state.gitState,
           }}
           affectedTabs={{
@@ -176,7 +183,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             onPushed={refreshStatus}
           />
         </Show>
-        <Show when={props.state.target === LastTabCloseTarget.WORKTREE}>
+        <Show when={isWorktree()}>
           {/* Disabled when git refuses the removal. "Close anyway" stays
               available, so the user still closes the tab -- only the
               removal is refused.
@@ -192,7 +199,7 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
               disabled={Boolean(removalBlockedReason())}
               onClick={handleScheduleDelete}
             >
-              Delete
+              Delete worktree
             </ConfirmButton>
           </Tooltip>
         </Show>

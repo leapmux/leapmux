@@ -3,11 +3,21 @@ import type { ContextMenuTargetProps, DropdownTriggerProps } from '~/components/
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { Tooltip } from '~/components/common/Tooltip'
+import { workingTreeKindLabel } from '~/components/common/WorkingTree'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface BranchContextMenuProps extends ContextMenuTargetProps {
   'onChangeBranch': () => void
   'onDeleteBranch': () => void
+  /**
+   * True iff the row's checkout is a linked worktree. It names the DELETE item
+   * only: deleting a worktree removes a whole directory, and calling that
+   * "Delete branch..." is how a user destroys a directory they meant to keep.
+   *
+   * The CHANGE item keeps its name either way, because a worktree has a branch
+   * checked out and the dialog still changes that branch.
+   */
+  'isWorktree': boolean
   /**
    * Why both items are unusable, or undefined when they are usable. Both
    * actions need the Worker -- one to read the branch state, the other to
@@ -72,7 +82,7 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = props => (
         disabled={Boolean(props.disabledReason)}
         onClick={() => props.onDeleteBranch()}
       >
-        Delete branch...
+        {`Delete ${workingTreeKindLabel(props.isWorktree).toLowerCase()}...`}
       </button>
     </Tooltip>
   </DropdownMenu>

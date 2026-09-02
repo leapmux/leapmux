@@ -377,8 +377,10 @@ test.describe('Worktree Lifecycle', () => {
     // Dialog should show the branch name
     await expect(closeDialog.getByText('cancel-branch', { exact: true })).toBeVisible()
 
-    // Click "Delete" once — should arm the button (show "Confirm?"), not remove
-    await closeDialog.getByRole('button', { name: 'Delete' }).click()
+    // Click "Delete worktree" once — should arm the button (show "Confirm?"),
+    // not remove. The button names what it destroys, so a worktree prompt
+    // spells it out rather than offering a bare "Delete".
+    await closeDialog.getByRole('button', { name: 'Delete worktree' }).click()
     await expect(closeDialog.getByRole('button', { name: 'Confirm?' })).toBeVisible()
 
     // Dialog should still be open, tab should still be present
@@ -428,18 +430,21 @@ test.describe('Worktree Lifecycle', () => {
 
     // Dialog appears BEFORE tab closes
     await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible()
-    // `.first()`: the dialog renders the worktree path TWICE -- once in the
-    // "This closes the last tab for worktree <path>." sentence and once in
-    // BranchStatusInfo's "Worktree: <path>" line -- so a bare locator is a
-    // strict-mode violation. Either occurrence proves the dialog is showing
-    // this worktree, which is all this assertion is for.
-    await expect(page.getByRole('dialog').getByText('test-repo-dialog-worktrees/dialog-branch').first()).toBeVisible()
+    // The path renders ONCE now, in the status block's Directory row. The lead
+    // sentence used to print it too, raw and unabbreviated, so this locator
+    // needed a `.first()` to survive strict mode.
+    await expect(
+      page.getByRole('dialog').getByTestId('working-tree-directory'),
+    ).toHaveText(/test-repo-dialog-worktrees\/dialog-branch$/)
+    // ...and the dialog says WHICH KIND of checkout it is about, which is the
+    // difference between closing a tab and destroying a directory.
+    await expect(page.getByRole('dialog').getByText('Worktree', { exact: true })).toBeVisible()
 
     // Dialog should show the branch name
-    await expect(page.getByRole('dialog').getByText('dialog-branch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByTestId('working-tree-name')).toHaveText('dialog-branch')
 
     // Click the dangerous action once — should arm the button (show "Confirm?")
-    await page.getByRole('button', { name: 'Delete' }).click()
+    await page.getByRole('button', { name: 'Delete worktree' }).click()
     await expect(page.getByRole('button', { name: 'Confirm?' })).toBeVisible()
 
     // Click "Confirm?" to actually remove

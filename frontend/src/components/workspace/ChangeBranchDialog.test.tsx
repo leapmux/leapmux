@@ -543,6 +543,51 @@ describe('changeBranchDialog', () => {
   })
 })
 
+// WHICH checkout the dialog acts on. Nothing stated it before: the mode block
+// names the current branch for the switch picker alone, so a user with the same
+// branch name in a worktree and in the main repo could not tell two open
+// dialogs apart.
+describe('changeBranchDialog header', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupRpcMocks()
+  })
+
+  it('names the checkout and its directory', async () => {
+    renderDialog({ gitToplevel: '/repo' })
+    await awaitFormReady()
+
+    expect(screen.getByText('Branch')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo')
+  })
+
+  it('calls a worktree a worktree once the inspect RPC lands', async () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockResolvedValue({
+      $typeName: 'leapmux.v1.InspectBranchChangeResponse',
+      repoRoot: '/repo',
+      toplevel: '/repo-worktrees/feature',
+      isWorktree: true,
+      currentBranch: 'feature',
+      isDirty: false,
+      branches,
+    })
+    renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true })
+    await awaitFormReady()
+
+    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-directory').textContent).toBe('/repo-worktrees/feature')
+  })
+
+  // The row is seeded from the sidebar, so it is right before the RPC answers.
+  it('seeds the kind from the row that opened it', () => {
+    vi.mocked(workerRpc.inspectBranchChange).mockReturnValue(new Promise(() => {}))
+    renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true, branchName: 'feature' })
+
+    expect(screen.getByText('Worktree')).toBeInTheDocument()
+    expect(screen.getByTestId('working-tree-name').textContent).toBe('feature')
+  })
+})
+
 // The Title field belongs to create-worktree only, the one mode that opens a
 // tab. Its generator reads the Open-as toggle, which is what makes this more
 // than a copy of the other dialogs' field.

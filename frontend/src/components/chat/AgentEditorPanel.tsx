@@ -286,6 +286,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     return repoGitView(tab, props.repoGitStore, tab)
   })
   const branchName = () => branchGitView()?.branchLabel
+  // What the branch chip and the `[+]` menu's branch row need to name the
+  // checkout: the kind, its directory and the diff badge. Both surfaces read
+  // the SAME four accessors, because a user switches between them with one
+  // preference toggle and must not read two different answers.
+  const isWorktree = () => branchGitView()?.isWorktree ?? false
+  const branchDirectory = () => branchGitView()?.toplevel ?? ''
+  const branchStats = () => branchGitView()?.diffStats
+  // The agent carries its worker's home dir already (the same field the info
+  // card tildifies its Directory row with), so this needs no worker lookup.
+  const branchHomeDir = () => props.agent?.homeDir
   const info = useAgentInfoCard({
     get agent() { return props.agent },
     get agentSessionInfo() { return props.agentSessionInfo },
@@ -468,6 +478,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
               branchName={branchName()}
+              isWorktree={isWorktree()}
+              directory={branchDirectory()}
+              homeDir={branchHomeDir()}
+              branchStats={branchStats()}
               onChangeBranch={() => props.onChangeBranch?.()}
               onDeleteBranch={() => props.onDeleteBranch?.()}
               branchDisabledReason={props.branchDisabledReason}
@@ -568,6 +582,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         <ComposerStatusBar
           agent={props.agent}
           branchName={branchName()}
+          isWorktree={isWorktree()}
+          directory={branchDirectory()}
+          homeDir={branchHomeDir()}
+          branchStats={branchStats()}
           optionValues={currentOptionValues()}
           onSettingChange={props.onSettingChange}
           onChangeBranch={() => props.onChangeBranch?.()}

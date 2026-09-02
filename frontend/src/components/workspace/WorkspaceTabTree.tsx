@@ -5,7 +5,6 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
-import GitBranch from 'lucide-solid/icons/git-branch'
 import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, on, Show, useContext } from 'solid-js'
 import { DragHandle } from '~/components/common/DragHandle'
@@ -14,6 +13,7 @@ import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { WorkingTreeIcon, WorkingTreeRows } from '~/components/common/WorkingTree'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
@@ -581,9 +581,27 @@ const BranchGroupRow: Component<{
           size={14}
           class={`${shared.chevron} ${!sel.isCollapsed(collapseKey()) ? shared.chevronExpanded : ''}`}
         />
-        <GitBranch size={14} class={css.groupIcon} />
+        <WorkingTreeIcon isWorktree={props.branch().isWorktree} size="sm" class={css.groupIcon} />
         <RowLabelWithStats
           label={props.branch().displayLabel}
+          // The kind of checkout and its directory are nowhere else on this
+          // row, so the tooltip states both -- and states them on every hover,
+          // not only when the label clips. `displayPath` is already tilde-
+          // compressed against the row's worker (see `buildTree`), so this
+          // passes no `homeDir`.
+          //
+          // The BRANCH NAME here, not `displayLabel`. The visible label appends
+          // `(worker, ~/path)` when the name collides inside its repo, and the
+          // Directory row below already carries that path -- so the label would
+          // print it twice in a tooltip two lines tall.
+          tooltipContent={(
+            <WorkingTreeRows
+              isWorktree={props.branch().isWorktree}
+              name={props.branch().branchName ?? NO_BRANCH_LABEL}
+              directory={props.branch().displayPath}
+              stats={branchStats()}
+            />
+          )}
           stats={branchStats()}
         />
         {/* Hide the Change/Delete menu on the synthetic "(no branch)"
@@ -603,6 +621,7 @@ const BranchGroupRow: Component<{
           <div class={sidebarActions}>
             <BranchContextMenu
               contextMenuFor={rowEl}
+              isWorktree={props.branch().isWorktree}
               disabledReason={menuDisabledReason()}
               onChangeBranch={() => actions.onChangeBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
               onDeleteBranch={() => actions.onDeleteBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
@@ -754,13 +773,22 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     [],
     { equals: shallowEqualArrays },
   )
-  // workerInfoFn affects the display label of cross-worker branches and
-  // the sort within a branch; project by every worker id referenced in
-  // the tabs, mapped through the lookup. When zero or one distinct
-  // worker is referenced, every branch's `workerCount` collapses to ≤ 1
-  // — `computeBranchDisplayLabel` never reads the worker name in that
-  // regime, so we can skip both the sort and the per-id lookup and
-  // return a stable empty array (the common single-worker case).
+  // workerInfoFn affects the cross-worker display label, the sort within a
+  // branch, and every branch's `displayPath`; project by every worker id
+  // referenced in the tabs, mapped through the lookup.
+  //
+  // THREE fields per worker, and `homeDir` is the one that decides the size of
+  // this projection. It used to carry the name alone and to return a stable
+  // empty array whenever the tabs referenced one worker or none: with a single
+  // worker every `workerCount` collapses to ≤ 1, and the name is then the only
+  // thing the label reads. `displayPath` reads `homeDir` on EVERY row, single
+  // worker included, and the worker's system info arrives on its own RPC after
+  // the first paint. Keeping the shortcut froze the tree at the build that ran
+  // before that answer landed, so each row's tooltip showed an absolute path
+  // until some unrelated tab change happened to invalidate the projection.
+  //
+  // The cost is one Map lookup per distinct worker, and the tabs of one
+  // workspace reference very few.
   const workersProjection = createMemo<readonly string[]>(
     () => {
       const fn = props.workerInfoFn
@@ -771,11 +799,10 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
         if (t.workerId)
           ids.add(t.workerId)
       }
-      if (ids.size <= 1)
-        return []
       const out: string[] = []
       for (const id of [...ids].sort()) {
-        out.push(id, fn(id)?.name ?? '')
+        const info = fn(id)
+        out.push(id, info?.name ?? '', info?.homeDir ?? '', info?.os ?? '')
       }
       return out
     },
@@ -946,6 +973,14 @@ export interface BranchGroup {
    * which dimensions vary between the colliding groups.
    */
   displayLabel: string
+  /**
+   * `gitToplevel`, tilde-compressed against the owning worker's home
+   * directory. Resolved in `buildTree` because only that function holds
+   * `workerInfoFn`; the row itself has no route to a worker's home dir.
+   * Equal to `gitToplevel` when the worker's system info has not landed
+   * yet or the path is not under home.
+   */
+  displayPath: string
   tabs: Tab[]
   diffAdded: number
   diffDeleted: number
@@ -1208,6 +1243,7 @@ export function buildTree(
         gitToplevel,
         isWorktree,
         displayLabel,
+        displayPath: tildifyForWorker(gitToplevel, workerInfoFn?.(workerId)),
         tabs: sort(branchTabs),
         diffAdded,
         diffDeleted,
@@ -1239,6 +1275,20 @@ export function buildTree(
 }
 
 /**
+ * Tilde-compress a worker-side absolute path for display.
+ *
+ * One spelling of the rule for the whole tree: the branch row's `displayPath`
+ * and the collision suffix inside `computeBranchDisplayLabel` must shorten the
+ * same path the same way, or one row shows `~/repos/foo` while its own tooltip
+ * shows `/Users/x/repos/foo`. Returns the path unchanged when the worker's
+ * system info has not landed yet — `tildify` already does that for an empty
+ * home dir, and a correct long path beats a wrong short one.
+ */
+function tildifyForWorker(path: string, info: WorkerInfo | null | undefined): string {
+  return info?.homeDir ? tildify(path, info.homeDir, flavorFromOs(info.os)) : path
+}
+
+/**
  * Build the visible branch label, appending disambiguating context only
  * when the same branch name appears in more than one group inside the
  * same repo. `workerCount` and `toplevelCount` are computed across the
@@ -1262,10 +1312,8 @@ function computeBranchDisplayLabel(
     const name = info?.name
     parts.push(name && name.length > 0 ? name : workerId)
   }
-  if (toplevelCount > 1) {
-    const homeDir = info?.homeDir
-    parts.push(homeDir ? tildify(gitToplevel, homeDir, flavorFromOs(info?.os)) : gitToplevel)
-  }
+  if (toplevelCount > 1)
+    parts.push(tildifyForWorker(gitToplevel, info))
   if (parts.length === 0)
     return labelBase
   return `${labelBase} (${parts.join(', ')})`

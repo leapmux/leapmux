@@ -64,6 +64,14 @@ export interface DeleteBranchState extends RepoRef {
    * tab group has no current branch (sidebar's "(no branch)" bucket).
    */
   branchName: string | null
+  /**
+   * True iff `gitToplevel` resolves to a linked worktree (mirrors the sidebar's
+   * BranchGroup.isWorktree, exactly as `ChangeBranchState.isWorktree` does).
+   * The dialog seeds its title, its submit label and its status rows from it,
+   * so the first paint never calls a worktree a branch — a delete that removes
+   * a whole directory must not announce itself as a branch delete.
+   */
+  isWorktree: boolean
   tabs: Tab[]
 }
 
@@ -412,6 +420,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             workerId={state.workerId}
             gitToplevel={state.gitToplevel}
             branchName={state.branchName}
+            isWorktree={state.isWorktree}
             tabs={state.tabs}
             closeWorktreeTabs={props.tabOps.closeWorktreeTabsAndReport}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}

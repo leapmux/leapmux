@@ -1,12 +1,13 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChange } from '~/components/chat/providers/registry'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { DiffStats } from '~/stores/repoGit'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { groupHasOptions, OPTION_ID_EFFORT, OPTION_ID_MODEL } from '~/components/chat/settingsGroups'
 import * as styles from './composer.css'
-import { GitBranchChip } from './GitBranchChip'
 import { OptionAxisChip } from './OptionAxisChip'
+import { WorkingTreeChip } from './WorkingTreeChip'
 
 /**
  * Props for the composer status bar.
@@ -20,6 +21,14 @@ export interface ComposerStatusBarProps {
   onSettingChange?: (change: ProviderSettingChange) => void
   /** Branch label from {@link repoGitView}. */
   branchName?: string
+  /** True iff the agent's checkout is a linked worktree ({@link repoGitView}). */
+  isWorktree?: boolean
+  /** Absolute working-tree root ({@link repoGitView}'s `toplevel`). */
+  directory?: string
+  /** The agent's worker home directory, for the chip tooltip's tilde path. */
+  homeDir?: string
+  /** Diff stats for the chip tooltip's badge. */
+  branchStats?: DiffStats | null
   /** Branch chip callbacks. */
   onChangeBranch: () => void
   onDeleteBranch: () => void
@@ -53,8 +62,8 @@ function hasGroup(agent: AgentInfo | undefined, id: string): boolean {
 }
 
 /**
- * The slim status bar beneath the composer box: left cluster = GitBranch chip
- * + Model/Effort/Mode chips; right cluster = the session info trigger
+ * The slim status bar beneath the composer box: left cluster = working-tree
+ * chip + Model/Effort/Mode chips; right cluster = the session info trigger
  * (ContextUsage + RateLimit). Each chip is hidden when its underlying group is
  * absent (pre-handshake model, a provider without effort, etc.), mirroring the
  * fused trigger label's `hasGroup` test.
@@ -68,8 +77,12 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
   return (
     <div class={styles.statusBar} data-testid="composer-status-bar">
       <div class={styles.statusBarLeft}>
-        <GitBranchChip
+        <WorkingTreeChip
           branchName={props.branchName}
+          isWorktree={props.isWorktree ?? false}
+          directory={props.directory ?? ''}
+          homeDir={props.homeDir}
+          stats={props.branchStats}
           disabledReason={props.branchDisabledReason}
           onChangeBranch={props.onChangeBranch}
           onDeleteBranch={props.onDeleteBranch}

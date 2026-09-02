@@ -2,9 +2,10 @@ import { mkdirSync } from 'node:fs'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { branchGroupRow, loginViaToken, openWorkspace } from './helpers/ui'
 import {
   createGitRepo,
+  createWorkspaceWithWorktreeViaAPI,
   openNewAgentDialog,
   openNewWorkspaceDialog,
   setWorkingDir,
@@ -203,6 +204,58 @@ test.describe('Worktree Detection', () => {
     await expect(page.getByText('Create new worktree')).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
+  })
+
+  // The two kinds used to render the same glyph and the same tooltip, so the
+  // sidebar could not say which rows delete as a directory. Against the real
+  // worker, because `isWorktree` travels the whole way from `git rev-parse` to
+  // the row -- a fixture proves only the last hop.
+  test('sidebar tells a worktree row from a main-repo branch row', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-row-icons')
+
+    const branchWs = await createWorkspaceViaAPI(hubUrl, adminToken, 'Main Repo WS')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, branchWs, repoDir)
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, branchWs)
+
+    const branchRow = branchGroupRow(page)
+    await expect(branchRow.getByTestId('branch-icon')).toBeVisible()
+    await expect(branchRow.getByTestId('worktree-icon')).toHaveCount(0)
+
+    // The tooltip states the kind and the directory on every hover, because
+    // neither fact is anywhere else on the row. Hover the LABEL, which is the
+    // element the tooltip listens on -- its wrapper is `display: contents` and
+    // therefore has no box to hover.
+    await branchRow.getByText('main', { exact: true }).hover()
+    const branchTip = page.getByRole('tooltip')
+    await expect(branchTip).toContainText('Branch')
+    await expect(branchTip.getByTestId('working-tree-directory')).toContainText('test-repo-row-icons')
+
+    // Now the same repo through a linked worktree.
+    const worktreeWs = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Worktree WS',
+      repoDir,
+      'row-icon-branch',
+    )
+    await openWorkspace(page, worktreeWs)
+
+    const worktreeRow = branchGroupRow(page)
+    await expect(worktreeRow.getByTestId('worktree-icon')).toBeVisible()
+    await expect(worktreeRow.getByTestId('branch-icon')).toHaveCount(0)
+
+    await worktreeRow.getByText('row-icon-branch', { exact: true }).hover()
+    const worktreeTip = page.getByRole('tooltip')
+    await expect(worktreeTip).toContainText('Worktree')
+    await expect(worktreeTip.getByTestId('working-tree-directory'))
+      .toContainText('test-repo-row-icons-worktrees/row-icon-branch')
   })
 
   test('dirty warning appears when source working copy has uncommitted changes', async ({

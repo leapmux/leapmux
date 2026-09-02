@@ -27,7 +27,14 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
 
 function renderBar(
   a: AgentInfo | undefined,
-  extra: { disabledReason?: string, branchDisabledReason?: string, branchName?: string } = {},
+  extra: {
+    disabledReason?: string
+    branchDisabledReason?: string
+    branchName?: string
+    isWorktree?: boolean
+    directory?: string
+    homeDir?: string
+  } = {},
 ) {
   return render(() => (
     <ComposerStatusBar
@@ -148,5 +155,22 @@ describe('composerStatusBar', () => {
     renderBar(agent(), { branchName: '' })
     expect(screen.queryByTestId('composer-branch-trigger')).toBeNull()
     expect(screen.queryByText('main')).toBeNull()
+  })
+
+  // The bar owns no git state of its own: it forwards what the panel resolved
+  // from the repo store, so the chip can name the kind of checkout. Dropping
+  // one of these silently repaints every worktree chip as a branch.
+  it('forwards the checkout kind to the chip', () => {
+    renderBar(agent(), { branchName: 'feature', isWorktree: true, directory: '/home/dev/wt' })
+
+    const chip = screen.getByTestId('composer-branch-trigger')
+    expect(chip.querySelector('[data-testid="worktree-icon"]')).not.toBeNull()
+  })
+
+  it('defaults the chip to a branch when the kind is not known yet', () => {
+    renderBar(agent(), { branchName: 'feature' })
+
+    const chip = screen.getByTestId('composer-branch-trigger')
+    expect(chip.querySelector('[data-testid="branch-icon"]')).not.toBeNull()
   })
 })

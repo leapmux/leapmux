@@ -2,8 +2,8 @@ import type { JSX } from 'solid-js'
 import type { ProviderSettingChange, ProviderSettingsAction } from '~/components/chat/providers/registry'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EnterKeyMode } from '~/lib/browserStorage'
+import type { DiffStats } from '~/stores/repoGit'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import GitBranch from 'lucide-solid/icons/git-branch'
 import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, For, Show } from 'solid-js'
@@ -13,6 +13,7 @@ import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/Dro
 import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
+import { WorkingTreeIcon, WorkingTreeRows } from '~/components/common/WorkingTree'
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { formatShortcut } from '~/lib/shortcuts/display'
@@ -70,9 +71,17 @@ export interface ComposerPlusMenuProps {
    * branch submenu renders only when it is set, matching the status-bar chip.
    */
   branchName?: string
+  /** True iff the agent's checkout is a linked worktree ({@link repoGitView}). */
+  isWorktree?: boolean
+  /** Absolute working-tree root ({@link repoGitView}'s `toplevel`). */
+  directory?: string
+  /** The agent's worker home directory, for the submenu tooltip's tilde path. */
+  homeDir?: string
+  /** Diff stats for the submenu tooltip's badge. */
+  branchStats?: DiffStats | null
   /** Open the "Change branch..." dialog. */
   onChangeBranch?: () => void
-  /** Open the "Delete branch..." dialog. */
+  /** Open the "Delete branch..." / "Delete worktree..." dialog. */
   onDeleteBranch?: () => void
   /** Why both branch actions are unusable (e.g. the Worker is offline). */
   branchDisabledReason?: string
@@ -275,6 +284,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       <Show when={branchName()}>
         {branch => (
           <BranchContextMenu
+            isWorktree={props.isWorktree ?? false}
             onChangeBranch={props.onChangeBranch ?? (() => {})}
             onDeleteBranch={props.onDeleteBranch ?? (() => {})}
             disabledReason={props.branchDisabledReason}
@@ -282,7 +292,24 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             trigger={triggerProps => (
               // The trigger stays enabled — the two items inside it are what the
               // Worker guard disables — so the reason needs a real tooltip here.
-              <Tooltip text={props.branchDisabledReason}>
+              // Absent a reason it carries what the status-bar chip carries: the
+              // kind of checkout and its directory. This menu exists because the
+              // status bar is a preference the user can switch off, so it has to
+              // state everything the bar states.
+              <Tooltip
+                text={props.branchDisabledReason}
+                content={props.branchDisabledReason
+                  ? undefined
+                  : (
+                      <WorkingTreeRows
+                        isWorktree={props.isWorktree ?? false}
+                        name={branch()}
+                        directory={props.directory ?? ''}
+                        homeDir={props.homeDir}
+                        stats={props.branchStats}
+                      />
+                    )}
+              >
                 <button
                   role="menuitem"
                   class={styles.subTrigger}
@@ -290,7 +317,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
                   {...triggerProps}
                 >
                   <span class={styles.subTriggerLabel}>
-                    <Icon icon={GitBranch} size="xs" />
+                    <WorkingTreeIcon isWorktree={props.isWorktree ?? false} size="xs" />
                     {branch()}
                   </span>
                   <Icon icon={ChevronRight} size="xs" />
