@@ -141,6 +141,49 @@ describe('toolRunningBadge', () => {
     expect(container.textContent).toBe('Retrying 3/5')
   })
 
+  /**
+   * The two production teardown paths, driven reactively. `drop` runs when the
+   * tool's result row lands and `clearAgent` at every turn/agent boundary; both
+   * delete a key out from under a badge that is subscribed through it. A
+   * non-reactive `get` returning undefined does not prove the mounted badge ever
+   * hears about it -- the store must notify through the deleted parent.
+   */
+  it('disappears when the span is dropped, as it is when the result row lands', () => {
+    const store = createToolProgressStore()
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+    const { container } = render(() => (
+      <ToolRunningBadge progress={() => store.get('a1', 'toolu_A')} />
+    ))
+    expect(container.textContent).toBe('30s')
+    store.drop('a1', 'toolu_A')
+    expect(container.textContent).toBe('')
+  })
+
+  it('disappears when the agent is cleared, as it is at every turn boundary', () => {
+    const store = createToolProgressStore()
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+    const { container } = render(() => (
+      <ToolRunningBadge progress={() => store.get('a1', 'toolu_A')} />
+    ))
+    expect(container.textContent).toBe('30s')
+    store.clearAgent('a1')
+    expect(container.textContent).toBe('')
+  })
+
+  it('reappears when the same span starts running again', () => {
+    // A second tool call can reuse a span id after a clear. The badge must come
+    // back rather than stay dead because its subscription was torn down.
+    const store = createToolProgressStore()
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 30 })
+    const { container } = render(() => (
+      <ToolRunningBadge progress={() => store.get('a1', 'toolu_A')} />
+    ))
+    store.clearAgent('a1')
+    expect(container.textContent).toBe('')
+    store.apply('a1', { spanId: 'toolu_A', toolName: 'Bash', elapsedSeconds: 60 })
+    expect(container.textContent).toBe('1m')
+  })
+
   it('holds a badge that would have disappeared, until the selection ends', () => {
     const { container, setProgress, setSelecting } = renderBadge({ toolName: 'Bash', elapsedSeconds: 30 })
     setSelecting(true)

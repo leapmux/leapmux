@@ -115,12 +115,19 @@ describe('toolUseLayout running-tool badge', () => {
     const badge = getByTestId('tool-running-badge')
     expect(badge.textContent).toBe('30s')
 
+    const badgeTextNode = badge.firstChild
+
     store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 60 })
     expect(badge.textContent).toBe('1m')
     expect(getByText('npm run build')).toBe(title)
     expect(getByTestId('summary')).toBe(summary)
     // Even the badge's own element survives: only its text node is rewritten.
     expect(getByTestId('tool-running-badge')).toBe(badge)
+    // And that text node is MUTATED, not replaced. A replacement is what would
+    // collapse a real browser selection that spans the badge, so this is the
+    // mechanical reason the card is safe to update at all -- the freeze covers
+    // the case where the user is mid-drag, and this covers every other update.
+    expect(badge.firstChild).toBe(badgeTextNode)
 
     setSelecting(true)
     store.apply('a1', { spanId: 'toolu_A', elapsedSeconds: 90 })
