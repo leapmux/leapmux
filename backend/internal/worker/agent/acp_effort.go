@@ -10,10 +10,7 @@ package agent
 import (
 	"maps"
 	"slices"
-	"sort"
 	"strings"
-
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // acpEffortConfigOptionIDs are the well-known ids ACP providers use for a reasoning-effort
@@ -45,21 +42,32 @@ func acpEffortConfigOption(options []acpConfigOption) (acpConfigOption, bool) {
 }
 
 // effortRank ranks reasoning-effort option values by intensity (higher = more effort),
-// so a thought_level select can be ordered strongest-first. Covers the standard CLI
-// names plus their common separator/spelling variants; a value absent here sorts after
-// every ranked value (see sortEffortOptionsDescending). Keys are lowercase; lookups go
+// so a thought_level select can be ordered strongest-first. A value absent here sorts
+// after every ranked value (see sortEffortsDescending). Keys are lowercase; lookups go
 // through effortRankOf, which lowercases first so a server reporting "High"/"LOW" is
 // still ranked rather than dumped into the unranked tail.
-var effortRank = map[string]int{
-	"off": 0, "none": 0,
-	"minimal": 1, "min": 1,
-	"low":    2,
-	"medium": 3, "med": 3, "moderate": 3, "balanced": 3, "standard": 3,
-	"high":  4,
-	"xhigh": 5, "x-high": 5, "very-high": 5, "very_high": 5, "extra-high": 5,
-	"max":       6,
-	"ultra":     7,
-	"ultracode": 8,
+//
+// DERIVED from effortLadder, which is the one declaration of the axis -- so a level
+// added there is ranked, labelled and placed in Codex's menu by that one edit, and no
+// second table can fall behind. It ranks every provider's levels: ZCode's sort through
+// it too (zcodeEffortsWithAuto).
+//
+// Rank 0 is the ladder's LAST rung and means "thinking off". Two call sites depend on
+// that: chooseDefaultEffort skips it, and raiseEffortOffNone treats it as the state to
+// replace. So a level that IS thinking must not sit on that rung -- which is why
+// `enabled`, ZCode's on/off toggle, shares the `minimal` rung instead.
+var effortRank = buildEffortRank()
+
+func buildEffortRank() map[string]int {
+	ranks := make(map[string]int)
+	// The ladder is strongest first and rank counts UP, so the last rung is 0.
+	top := len(effortLadder) - 1
+	for i, rung := range effortLadder {
+		for _, level := range rung {
+			ranks[level.ID] = top - i
+		}
+	}
+	return ranks
 }
 
 // effortRankOf looks up a value's intensity rank case-insensitively. Returns
@@ -67,29 +75,6 @@ var effortRank = map[string]int{
 func effortRankOf(id string) (int, bool) {
 	r, ok := effortRank[strings.ToLower(id)]
 	return r, ok
-}
-
-// sortEffortOptionsDescending reorders effort options in place strongest-first by
-// effortRank. A value absent from effortRank (e.g. a provider-specific variant like
-// "default") sorts after every ranked value, preserving its order among other
-// unranked values.
-//
-// The comparator is a strict weak ordering -- ranked-before-unranked is decided
-// directly rather than via "incomparable" -- so an unranked value sitting between two
-// ranked ones can no longer act as a barrier that leaves the ranked pair mis-ordered
-// (e.g. [low, default, high] now yields [high, low, default], not [low, default, high]).
-func sortEffortOptionsDescending(opts []*leapmuxv1.AvailableOption) {
-	sort.SliceStable(opts, func(i, j int) bool {
-		ri, oki := effortRankOf(opts[i].GetId())
-		rj, okj := effortRankOf(opts[j].GetId())
-		if oki != okj {
-			return oki // a ranked value sorts before an unranked one
-		}
-		if !oki {
-			return false // both unranked: keep their relative (server-reported) order
-		}
-		return ri > rj // both ranked: strongest first
-	})
 }
 
 // chooseDefaultEffort picks the reasoning-effort value to install when a model first

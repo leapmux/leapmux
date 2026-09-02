@@ -213,10 +213,7 @@ func TestZCodeModelInfo_OrdersAToggleModelAndNamesItByItsID(t *testing.T) {
 	require.Len(t, catalog.Models, 1)
 	model := catalog.Models[0]
 	assert.Equal(t, "GLM-5-Turbo (Z.ai - API Key)", model.DisplayName)
-	efforts := []string{}
-	for _, e := range model.SupportedEfforts {
-		efforts = append(efforts, e.GetId())
-	}
+	efforts := effortIDs(model.SupportedEfforts)
 	assert.Equal(t, []string{EffortAuto, "enabled", "off"}, efforts,
 		"thinking on must not sort under thinking off")
 	assert.Equal(t, "enabled", model.DefaultEffort)
@@ -252,16 +249,17 @@ func TestZCodeModelInfo_EffortsComeFromTheModelsOwnVariants(t *testing.T) {
 
 	reasoning := byID["builtin:zai/GLM-5.3"]
 	require.NotNil(t, reasoning)
-	assert.Equal(t, "GLM-5.3 (Z.ai - API Key)", reasoning.DisplayName,
+	// "Z.ai" is what this provider is CONFIGURED as, it names no other provider,
+	// and it claims no plan its id contradicts -- so it stands. LeapMux composes
+	// a label from the id only where the configured name is unusable; see
+	// TestZCodeProviderLabel_CorrectsTheCLIsOwnBuiltins.
+	assert.Equal(t, "GLM-5.3 (Z.ai)", reasoning.DisplayName,
 		"the provider is part of the NAME: three ZCode providers offer this model id, and a description renders only as a tooltip")
 	assert.Empty(t, reasoning.Description,
 		"the provider moved into the name, so a description repeating it would be a tooltip that says the label again")
 	assert.Equal(t, int64(200000), reasoning.GetContextWindow())
 	assert.Equal(t, "high", reasoning.DefaultEffort)
-	efforts := []string{}
-	for _, e := range reasoning.SupportedEfforts {
-		efforts = append(efforts, e.GetId())
-	}
+	efforts := effortIDs(reasoning.SupportedEfforts)
 	assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, efforts,
 		"auto leads, then the model's own variants strongest first -- config order states no ladder")
 
@@ -270,7 +268,7 @@ func TestZCodeModelInfo_EffortsComeFromTheModelsOwnVariants(t *testing.T) {
 	plain := byID["builtin:zai/GLM-5.3-Flash"]
 	require.NotNil(t, plain)
 	assert.Empty(t, plain.SupportedEfforts)
-	assert.Equal(t, "GLM-5.3 Flash (Z.ai - API Key)", plain.DisplayName)
+	assert.Equal(t, "GLM-5.3 Flash (Z.ai)", plain.DisplayName)
 }
 
 // ZCode ships GLM-5-Turbo with `"name": "glm-5-turbo"` while its id -- the
@@ -288,36 +286,103 @@ func TestZCodeModelName_PrefersTheIDOverACaseVariantOfIt(t *testing.T) {
 	assert.Equal(t, "GLM-5.3 Flash", zcodeModelName("GLM-5.3-Flash", zcodeConfigModel{Name: "GLM-5.3 Flash"}))
 }
 
-// The CLI writes these six providers itself, and it writes two of their names
-// wrong: an installation logged into both Z.ai plans holds the coding plan and
-// the start plan under one name, so the model list offered two rows that read
-// identically and resumed different plans.
+// The CLI creates these providers itself and writes two of their names wrong:
+// an installation logged into both Z.ai plans holds the coding plan and the
+// start plan under ONE name, so the model list offered two rows that read
+// identically and resumed different plans; and the BigModel start plan arrives
+// named for the coding plan.
 func TestZCodeProviderLabel_CorrectsTheCLIsOwnBuiltins(t *testing.T) {
 	t.Parallel()
 
+	// A name two providers share names neither of them.
 	assert.Equal(t, "Z.ai - Start Plan",
-		zcodeProviderLabel("builtin:zai-start-plan", "Z.ai - Coding Plan"))
+		zcodeProviderLabel("builtin:zai-start-plan", "Z.ai - Coding Plan", true))
 	assert.Equal(t, "Z.ai - Coding Plan",
-		zcodeProviderLabel("builtin:zai-coding-plan", "Z.ai - Coding Plan"))
+		zcodeProviderLabel("builtin:zai-coding-plan", "Z.ai - Coding Plan", true))
+	// A name that claims a plan the id contradicts is wrong even when it is
+	// unique -- an installation holding only the BigModel start plan hits this.
 	assert.Equal(t, "BigModel - Start Plan",
-		zcodeProviderLabel("builtin:bigmodel-start-plan", "BigModel- Coding Plan"))
-	assert.Equal(t, "Z.ai - API Key", zcodeProviderLabel("builtin:zai", ""))
+		zcodeProviderLabel("builtin:bigmodel-start-plan", "BigModel- Coding Plan", false))
+	assert.Equal(t, "Z.ai - API Key", zcodeProviderLabel("builtin:zai", "", false))
+}
 
-	// A provider the USER added keeps the name the user gave it, and falls back to
-	// its id when it has none.
-	assert.Equal(t, "My Gateway", zcodeProviderLabel("my-gateway", "My Gateway"))
-	assert.Equal(t, "my-gateway", zcodeProviderLabel("my-gateway", "   "))
+// The user's own edit of a built-in's name STANDS. LeapMux never writes
+// `config.json`, so a rename is deliberate -- and discarding it leaves a user
+// holding two accounts with no way to tell them apart and no message saying why.
+func TestZCodeProviderLabel_KeepsARenamedBuiltin(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "Work account", zcodeProviderLabel("builtin:zai", "Work account", false))
+	assert.Equal(t, "Personal", zcodeProviderLabel("builtin:zai-coding-plan", "Personal", false))
+	// Until it collides, at which point it names neither provider.
+	assert.Equal(t, "Z.ai - Coding Plan", zcodeProviderLabel("builtin:zai-coding-plan", "Work account", true))
+}
+
+// The ids are a CROSS PRODUCT the CLI composes, so LeapMux states the two axes
+// rather than the products. A plan the CLI adds later is named from its own
+// suffix instead of falling through to whatever the CLI called it.
+func TestZCodeBuiltinProviderLabel_ComposesTheIDRatherThanListingProducts(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "Z.ai - API Key", zcodeBuiltinProviderLabel("builtin:zai"))
+	assert.Equal(t, "Z.ai - Coding Plan", zcodeBuiltinProviderLabel("builtin:zai-coding-plan"))
+	assert.Equal(t, "BigModel - Start Plan", zcodeBuiltinProviderLabel("builtin:bigmodel-start-plan"))
+	// The seventh built-in, which a table of six literals would have missed.
+	assert.Equal(t, "Z.ai - Pro Plan", zcodeBuiltinProviderLabel("builtin:zai-pro-plan"))
+	assert.Equal(t, "BigModel - Team Plan", zcodeBuiltinProviderLabel("builtin:bigmodel-team-plan"))
+
+	// A family LeapMux does not know has no label to compose, so the CLI's own
+	// name is still the best answer.
+	assert.Empty(t, zcodeBuiltinProviderLabel("builtin:someone-else"))
+	assert.Empty(t, zcodeBuiltinProviderLabel("my-gateway"))
+}
+
+// A provider the USER added keeps the name the user gave it, and falls back to
+// its id when it has none.
+func TestZCodeProviderLabel_LeavesAUserAddedProviderAlone(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "My Gateway", zcodeProviderLabel("my-gateway", "My Gateway", false))
+	assert.Equal(t, "my-gateway", zcodeProviderLabel("my-gateway", "   ", false))
+	// Even a collision leaves it alone: LeapMux has no better name for it.
+	assert.Equal(t, "My Gateway", zcodeProviderLabel("my-gateway", "My Gateway", true))
 }
 
 // The provider is part of the model's NAME because three ZCode providers offer
 // the same model id, and a description renders only as a tooltip.
-func TestZCodeModelDisplayName_NamesTheProviderThatServesTheModel(t *testing.T) {
+func TestZCodeModelDisplayName_LabelsTheProviderThatServesTheModel(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, "GLM-5.3-Flash (Z.ai - Start Plan)",
 		zcodeModelDisplayName("GLM-5.3-Flash", "Z.ai - Start Plan"))
 	assert.Equal(t, "GLM-5.3-Flash", zcodeModelDisplayName("GLM-5.3-Flash", ""),
 		"no provider to name draws no empty brackets")
+}
+
+// The user's rename survives the whole catalog build, not just the unit below
+// it. This is the half the collision test cannot show: `buildZCodeCatalog`
+// decides "collides" from every candidate's name, so a rename that names one
+// provider only has to reach the row.
+func TestBuildZCodeCatalog_KeepsAUserRenamedBuiltin(t *testing.T) {
+	t.Parallel()
+
+	catalog := zcodeTestCatalog(t, `{
+      "provider": {
+        "builtin:zai": {"name": "Work account", "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "k"}, "models": {"GLM-5.3-Flash": {}}},
+        "builtin:zai-coding-plan": {"name": "Z.ai - Coding Plan", "kind": "anthropic", "enabled": true,
+          "options": {"apiKey": "k"}, "models": {"GLM-5.3-Flash": {}}}
+      }
+    }`)
+
+	names := []string{}
+	for _, m := range catalog.Models {
+		names = append(names, m.DisplayName)
+	}
+	assert.ElementsMatch(t, []string{
+		"GLM-5.3-Flash (Work account)",
+		"GLM-5.3-Flash (Z.ai - Coding Plan)",
+	}, names, "a rename that names ONE provider is the user's own and must stand")
 }
 
 // The two plans a user is most likely to hold at once, end to end: the rows must

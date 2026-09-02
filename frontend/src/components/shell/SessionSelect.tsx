@@ -75,8 +75,9 @@ export function sessionOptionLabel(session: AgentSessionSummary): string {
  *
  * `text` keeps the filter working over the age. `LoadingMenu` matches the
  * detail beside the label, so typing `d` still narrows to sessions from days
- * ago. It is a plain string measured against ONE instant, which is what a
- * substring filter can match; the element beside it is what the reader sees.
+ * ago. It is read at FILTER time and against the same clock the element draws
+ * from, so the two can never state different ages; the element beside it is
+ * what the reader sees.
  *
  * `RelativeTimeAgo` supplies that element, so a row states the age in the form
  * every timestamp in the app takes, and hovering it gives the full local date
@@ -86,13 +87,17 @@ export function sessionOptionLabel(session: AgentSessionSummary): string {
  */
 export function sessionOptionDetail(
   session: AgentSessionSummary,
-  now: Date,
 ): LoadingMenuOptionDetail | undefined {
   const updated = session.updatedAt ? new Date(session.updatedAt) : null
   if (updated === null || Number.isNaN(updated.getTime()))
     return undefined
   return {
-    text: `${formatCompactAge(updated, now)} ago`,
+    // Read fresh at filter time, against the SAME clock the element beside it
+    // draws from: `formatCompactAge`'s own default `new Date()`. As a frozen
+    // string it was measured at whatever instant the options memo last ran,
+    // while `RelativeTimeAgo` kept ticking -- so a row that read "4h ago" was
+    // matched against "3h ago" and typing what was on screen emptied the list.
+    text: () => `${formatCompactAge(updated)} ago`,
     render: () => <RelativeTimeAgo timestamp={session.updatedAt} />,
   }
 }
@@ -111,14 +116,13 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
   // reference, so a plain `.map()` here would rebuild every row per keystroke.
   // `BranchSelect` documents the same constraint.
   const options = createMemo(() => {
-    // One instant for the whole list, so two rows recorded a second apart
-    // cannot be measured against two different "now"s.
-    const now = new Date()
     return [
       // A real, selectable choice — not the synthetic prompt row `BranchSelect`
       // was corrected for injecting. `placeholder` covers the untouched state;
       // this is how a user takes a pick BACK.
-      { value: '', label: NEW_SESSION_LABEL },
+      // `pinned`, like the row below it: both are ways to LEAVE the list, so a
+      // query that narrows the list must not take them with it.
+      { value: '', label: NEW_SESSION_LABEL, pinned: true },
       // Second, beside the other row that is not a session. The two of them are
       // the ways to leave the list, and the list itself runs to the worker's
       // cap: at the bottom this row sat under a scroll the user had to reach the
@@ -126,11 +130,11 @@ export const SessionSelect: Component<SessionSelectProps> = (props) => {
       // here". It is needed exactly because the list holds only what this worker
       // can enumerate — a handle from another machine, one already open in a
       // tab, and one past the cap are all missing from it.
-      { value: TYPE_A_HANDLE_VALUE, label: typeAHandleLabel(props.isFilePath) },
+      { value: TYPE_A_HANDLE_VALUE, label: typeAHandleLabel(props.isFilePath), pinned: true },
       ...props.sessions.map(session => ({
         value: session.sessionId,
         label: sessionOptionLabel(session),
-        detail: sessionOptionDetail(session, now),
+        detail: sessionOptionDetail(session),
       })),
     ]
   })

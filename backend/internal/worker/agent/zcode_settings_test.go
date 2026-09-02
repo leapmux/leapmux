@@ -79,10 +79,7 @@ func TestApplySettingsSnapshot_ReadsTheAuthoritativeCurrentFields(t *testing.T) 
 	assert.Equal(t, "high", a.thoughtLevel)
 	assert.Equal(t, "low", a.observedThoughtDefault)
 
-	ids := []string{}
-	for _, level := range a.observedThoughtLevels {
-		ids = append(ids, level.GetId())
-	}
+	ids := effortIDs(a.observedThoughtLevels)
 	assert.Equal(t, []string{EffortAuto, "high", "low"}, ids,
 		"auto leads the list as the send-nothing sentinel, then the levels strongest first -- the same order the configured catalog uses, so the menu does not reorder itself when the first snapshot lands")
 }
@@ -114,10 +111,7 @@ func TestApplySettingsSnapshot_OrdersTheLevelsLikeTheConfiguredCatalog(t *testin
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	fromSnapshot := []string{}
-	for _, level := range a.observedThoughtLevels {
-		fromSnapshot = append(fromSnapshot, level.GetId())
-	}
+	fromSnapshot := effortIDs(a.observedThoughtLevels)
 	assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, fromSnapshot)
 	assert.Equal(t, fromConfig, fromSnapshot, "the live list must not reorder the menu")
 }
@@ -314,10 +308,7 @@ func TestZCodeOptionGroups_ExposesModelThoughtLevelAndMode(t *testing.T) {
 
 	modelGroup := optionids.GroupByID(groups, OptionIDModel)
 	require.NotNil(t, modelGroup)
-	modelIDs := []string{}
-	for _, option := range modelGroup.GetOptions() {
-		modelIDs = append(modelIDs, option.GetId())
-	}
+	modelIDs := effortIDs(modelGroup.GetOptions())
 	assert.Contains(t, modelIDs, "builtin:zai/GLM-5.3")
 	assert.Contains(t, modelIDs, "acme/acme-1")
 	assert.Equal(t, "builtin:zai/GLM-5.3", modelGroup.GetCurrentValue())
@@ -356,10 +347,7 @@ func TestZCodeModelsForUI_OverridesOnlyTheCurrentModelsEfforts(t *testing.T) {
 
 	live := byID["builtin:zai/GLM-5.3"]
 	require.NotNil(t, live)
-	liveIDs := []string{}
-	for _, e := range live.SupportedEfforts {
-		liveIDs = append(liveIDs, e.GetId())
-	}
+	liveIDs := effortIDs(live.SupportedEfforts)
 	assert.Equal(t, []string{EffortAuto, "turbo"}, liveIDs)
 	assert.Equal(t, "turbo", live.DefaultEffort)
 
@@ -372,10 +360,7 @@ func TestZCodeModelsForUI_OverridesOnlyTheCurrentModelsEfforts(t *testing.T) {
 	// fallback the picker shows before an agent runs.
 	for _, m := range a.catalog.Models {
 		if m.GetId() == "builtin:zai/GLM-5.3" {
-			ids := []string{}
-			for _, e := range m.SupportedEfforts {
-				ids = append(ids, e.GetId())
-			}
+			ids := effortIDs(m.SupportedEfforts)
 			assert.Equal(t, []string{EffortAuto, "max", "high", "low"}, ids,
 				"the shared catalog entry must not be mutated")
 		}

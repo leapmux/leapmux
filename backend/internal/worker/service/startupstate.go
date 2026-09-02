@@ -8,11 +8,11 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// failedEntryTTL bounds how long a terminal-state failure entry lingers
-// in the registry after fail() so long-lived workers with user churn
-// don't accumulate entries for never-closed failed tabs. The DB
+// failedEntryTTL limits how long a FINISHED failure entry stays in the
+// registry after fail(), so a long-lived worker with user churn does not
+// accumulate entries for failed tabs that nobody closes. The DB
 // startup_error column is the authoritative source across restarts, so
-// expiry just evicts the in-memory copy; subsequent reads fall back to
+// expiry only evicts the in-memory copy; a later read falls back to
 // the DB path.
 const failedEntryTTL = 5 * time.Minute
 
@@ -97,7 +97,7 @@ func (e *startupEntry) release() {
 	}
 }
 
-// startupTimerClock is the time source awaitInFlight bounds its wait with.
+// startupTimerClock is the time source awaitInFlight limits its wait with.
 // Production uses systemStartupClock; the registry's tests substitute a fake
 // that fires on demand, so a test about the give-up path spends no wall time
 // and a test about the wait NOT giving up cannot lose to a real timer on a
@@ -105,6 +105,8 @@ func (e *startupEntry) release() {
 //
 // It mirrors streamevents.retryClock deliberately: the same two-value
 // NewTimer, so the codebase has one shape for "a timer a test can drive".
+// The two are byte-for-byte the same type and could share one; see
+// https://github.com/leapmux/leapmux/issues/437.
 type startupTimerClock interface {
 	// NewTimer starts a timer for d, returning the channel it delivers on and a
 	// stop func that releases it -- time.Timer's C/Stop pair without the
@@ -135,7 +137,7 @@ type startupCore struct {
 	mu      sync.Mutex
 	entries map[string]*startupEntry
 	wg      sync.WaitGroup
-	// clock is the time source awaitInFlight bounds its wait with. Set once by
+	// clock is the time source awaitInFlight limits its wait with. Set once by
 	// newStartupCore and never reassigned in production, so a waiter reads it
 	// without the mutex; a test substitutes a fake before it starts one.
 	clock startupTimerClock
@@ -183,10 +185,22 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 	return entry
 }
 
-// awaitInFlight blocks until no startup for id is in flight, and reports
-// whether it reached that state inside `within`. It returns true at once when
-// the id is unclaimed, and when the entry holding it already FAILED -- the two
-// states in which begin hands out the claim.
+// startupWait is what awaitInFlight learned about the startup it waited for.
+type startupWait struct {
+	// settled is false when the wait reached its limit while the startup still
+	// held the id. The caller then knows nothing about that startup's outcome.
+	settled bool
+	// closed reports that a CLOSE ended the startup, rather than a success or a
+	// failure of its own. A caller must not start a replacement process on this
+	// outcome: the tab is going away, and the DB row that says so is written
+	// several steps later, so the closed_at guard downstream still reads false.
+	closed bool
+}
+
+// awaitInFlight blocks until no startup for id is in flight, and reports what
+// ended it. It settles at once when the id is unclaimed, and when the entry
+// holding it already FAILED -- the two states in which begin hands out the
+// claim.
 //
 // It exists so a caller that must have a running process can wait for the
 // startup that is already producing one, rather than refuse. The refusal is
@@ -195,30 +209,33 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 // and reported "not running", and nothing ever handed that message to the
 // process the open path then started.
 //
-// The wait is bounded because a startup goroutine can be stuck on a provider
-// that never answers, and the caller is answering a user. On a timeout the
-// caller keeps whatever it does today for a startup it cannot join.
-func (r *startupCore) awaitInFlight(id string, within time.Duration) bool {
-	// Take the channel itself under the lock, not the entry: every other field
-	// of an entry belongs to the goroutine that owns it or to a caller holding
-	// r.mu, and reading one out here would be the one place that reads an entry
-	// unguarded.
+// The wait has a LIMIT because a startup goroutine can stop on a provider that
+// never answers, and the caller answers a user. On a timeout the caller keeps
+// whatever it does today for a startup it cannot join.
+func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait {
+	// Take the entry under the lock and read only its done channel here: every
+	// other field belongs to the goroutine that owns the entry or to a caller
+	// holding r.mu, and the one field this function needs afterwards --
+	// closeRaced -- it reads back through dispositionOf, which takes r.mu.
 	r.mu.Lock()
-	var done chan struct{}
-	if entry, busy := r.entries[id]; busy && !entry.failed {
-		done = entry.done
+	var entry *startupEntry
+	if e, busy := r.entries[id]; busy && !e.failed {
+		entry = e
 	}
 	r.mu.Unlock()
-	if done == nil {
-		return true
+	if entry == nil {
+		return startupWait{settled: true}
 	}
-	expired, stop := r.clock.NewTimer(within)
+	expired, stop := r.clock.NewTimer(limit)
 	defer stop()
 	select {
-	case <-done:
-		return true
+	case <-entry.done:
+		// cancelAndClear stamps closeRaced on this same entry BEFORE it closes
+		// done, so the read below sees the close that woke this waiter.
+		_, closed := r.dispositionOf(entry)
+		return startupWait{settled: true, closed: closed}
 	case <-expired:
-		return false
+		return startupWait{}
 	}
 }
 
@@ -367,7 +384,7 @@ func (r *startupCore) takePendingResize(id string) (cols, rows uint16, ok bool) 
 	return cols, rows, true
 }
 
-// waitForPendingResize is takePendingResize with a bounded wait. Used
+// waitForPendingResize is takePendingResize with a limited wait. Used
 // before the shell is spawned so the PTY can be sized correctly on the
 // first call to cmd.Start — otherwise the shell paints its first prompt
 // at the placeholder 80x24 and zsh's SIGWINCH handler leaves a

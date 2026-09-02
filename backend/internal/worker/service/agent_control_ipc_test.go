@@ -733,8 +733,15 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	errCh := make(chan error, 1)
 	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
 
-	assert.Equal(t, svc.agentStartupTimeout(), clock.waitArmed(t),
-		"the wait must be armed for the same budget the startup it waits on has")
+	// The CLIENT's budget, not the process's. Every interactive caller holds
+	// its RPC response open across this wait, and the client abandons that RPC
+	// at roughly 1.5x the API timeout -- so a wait armed for the five-minute
+	// startup timeout would report a send as failed that this worker goes on to
+	// deliver, under a Retry button that then sends it twice.
+	assert.Equal(t, svc.agentAPITimeout(), clock.waitArmed(t),
+		"the wait must end inside the budget the client gives the RPC that holds it")
+	assert.Less(t, svc.agentAPITimeout(), svc.agentStartupTimeout(),
+		"a wait as long as the whole startup budget is the defect this assertion exists to prevent")
 	select {
 	case <-errCh:
 		require.FailNow(t, "refused while the startup was still in flight; the user's message had a process coming")
@@ -747,7 +754,7 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 		require.Error(t, err,
 			"a cold start ran while another startup held the agent; that spawns a second process for one tab")
 	case <-time.After(10 * time.Second):
-		require.FailNow(t, "the wait outlived its own bound")
+		require.FailNow(t, "the wait outlived its own limit")
 	}
 	assert.Empty(t, rec.ids())
 
@@ -823,6 +830,49 @@ func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testi
 	clock.mu.Lock()
 	defer clock.mu.Unlock()
 	assert.Empty(t, clock.timers, "the sweep must not wait on a startup that is already doing its work")
+}
+
+// TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor pins the
+// one outcome of the wait that must NOT produce a process.
+//
+// cancelAndClear wakes every waiter as its FIRST teardown step -- several steps
+// before the close stamps closed_at. A waiter that read only "the startup
+// settled" therefore found HasAgent false, read a row whose ClosedAt is still
+// NULL, and cold-started a tab the user had just closed. Nothing stops such a
+// process: the close it raced already ran its own teardown.
+func TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-1", true)
+	clock := newFakeStartupClock()
+	svc.AgentStartup.clock = clock
+
+	// Stand in for the open path's in-flight startup.
+	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
+	t.Cleanup(func() { svc.AgentStartup.finish() })
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+	clock.waitArmed(t)
+
+	// The user closes the tab. The row still reads OPEN at this point, exactly
+	// as it does for the whole of the close's own teardown.
+	svc.AgentStartup.cancelAndClear("agent-1", keepWorktreeOnClose)
+	row := requireAgentRow(t, svc, "agent-1")
+	require.False(t, row.ClosedAt.Valid,
+		"the premise: the close has not stamped closed_at yet, so that guard cannot carry this")
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err, "a close ended the startup, so there is no process to wait for and none to start")
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the caller never resumed after the close released it")
+	}
+	assert.Empty(t, rec.ids(),
+		"it started a process for a tab the user closed; the close already ran its teardown, so nothing stops it")
 }
 
 // requireAgentRow is a small readability helper for the tests above.

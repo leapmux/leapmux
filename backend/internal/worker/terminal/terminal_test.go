@@ -202,6 +202,75 @@ func TestTerminal_StopAfterANaturalExitIsSafe(t *testing.T) {
 	assert.True(t, term.IsExited())
 }
 
+// TestTerminal_ResizeRacingANaturalExitIsSafe drives the window the pty lock
+// exists for.
+//
+// A shell that exits on its own tears its pty down from waitForExit, and that
+// path holds neither t.mu nor the `stopped` flag Resize and SendInput check --
+// only Stop sets `stopped`, and a naturally-exited tab stays in the manager
+// until the user closes it. So a resize the user fires as the shell ends runs
+// against a pty another goroutine is closing. On Windows that is
+// ClosePseudoConsole against ResizePseudoConsole on ONE raw handle, and go-pty
+// takes its own mutex around that pair for exactly this reason -- which the
+// per-platform close bypasses, so Terminal.ptyMu is what serializes them.
+//
+// WHERE IT BITES is Windows, and this says so because the test passes on Unix
+// either way: there the close takes the slave and the resize takes the master,
+// two different descriptors and no shared state, so even `-race` reports
+// nothing with the lock removed. On the windows-latest CI job the same run
+// drives two console APIs at one handle. Read a Unix pass as a smoke test --
+// no panic, no hang, and the exit still lands -- and the Windows job as the
+// assertion.
+func TestTerminal_ResizeRacingANaturalExitIsSafe(t *testing.T) {
+	term, err := Start(context.Background(), Options{
+		ID:         "test-resize-race-natural-exit",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func([]byte, int64, []Signal) {})
+	require.NoError(t, err, "Start")
+	t.Cleanup(term.Stop)
+
+	// Keep resizing and writing for the whole of the exit, so at least one call
+	// lands inside the teardown however the scheduler orders them. Errors are
+	// expected once the pty is gone; a PANIC is not, and neither is a hang.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := range 4 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			assert.NotPanics(t, func() {
+				for n := 0; ; n++ {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					_ = term.Resize(uint16(80+(n+i)%20), 24)
+					_ = term.SendInput([]byte(""))
+				}
+			}, "a pty call that straddled the natural-exit teardown panicked")
+		}(i)
+	}
+
+	require.NoError(t, term.SendInput([]byte("exit"+testutil.TestShellEnter())), "SendInput")
+	term.Wait()
+	select {
+	case <-term.readDoneCh:
+	case <-time.After(30 * time.Second):
+		require.FailNow(t, "the reader never ended after the shell exited on its own")
+	}
+	close(stop)
+	wg.Wait()
+
+	assert.True(t, term.IsExited())
+	// And the close that follows still runs, on a pty one of those calls may
+	// have been inside.
+	assert.NotPanics(t, term.Stop)
+}
+
 func TestTerminal_IsExited(t *testing.T) {
 	term, err := Start(context.Background(), Options{
 		ID:         "test-exited",
@@ -323,24 +392,27 @@ func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
 	m := NewManager()
 	const id = "tm-exit-order"
 
-	// No PTY: only the two channels installTerminal orders against.
+	// No PTY: only the channels installTerminal orders against.
 	term := &Terminal{
-		id:         id,
-		exitCh:     make(chan struct{}),
-		readDoneCh: make(chan struct{}),
-		screenBuf:  NewScreenBuffer(),
+		id:                id,
+		exitCh:            make(chan struct{}),
+		readDoneCh:        make(chan struct{}),
+		childSideClosedCh: make(chan struct{}),
+		screenBuf:         NewScreenBuffer(),
 	}
 	ran := make(chan struct{})
 	m.installTerminal(id, term, func(string, int) { close(ran) },
 		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
 
-	// The child is reaped, and the reader has not finished.
+	// The child is reaped and the child side of the pty is closed, in the order
+	// waitForExit performs them. The reader has not finished.
 	close(term.exitCh)
+	close(term.childSideClosedCh)
 	select {
 	case <-ran:
 		require.Fail(t, "the exit handler ran while the reader could still write the screen it persists")
 	case <-time.After(100 * time.Millisecond):
-		// The window only bounds a "has not happened yet" claim, so a slow
+		// The window only limits a "has not happened yet" claim, so a slow
 		// machine can only make this case weaker, never make it fail wrongly.
 		// Without the wait the handler runs at once and this fails every run.
 	}
@@ -354,7 +426,7 @@ func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
 	m.WaitForExit(id)
 }
 
-// TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains pins the bound
+// TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains pins the limit
 // on that wait. A tty can outlive the kill group that this worker can reach --
 // a setsid descendant that inherited it keeps every descriptor for it open --
 // and the reader for such a pty never returns. The handler is the only persist
@@ -368,17 +440,20 @@ func TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains(t *testing.T
 	const id = "tm-exit-stuck-reader"
 
 	term := &Terminal{
-		id:         id,
-		exitCh:     make(chan struct{}),
-		readDoneCh: make(chan struct{}),
-		screenBuf:  NewScreenBuffer(),
+		id:                id,
+		exitCh:            make(chan struct{}),
+		readDoneCh:        make(chan struct{}),
+		childSideClosedCh: make(chan struct{}),
+		screenBuf:         NewScreenBuffer(),
 	}
 	ran := make(chan struct{})
 	m.installTerminal(id, term, func(string, int) { close(ran) },
 		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
 
-	// The child is reaped and the reader never finishes.
+	// The child is reaped, the child side is closed, and the reader never
+	// finishes.
 	close(term.exitCh)
+	close(term.childSideClosedCh)
 	select {
 	case <-ran:
 	case <-time.After(10 * time.Second):
@@ -387,7 +462,56 @@ func TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains(t *testing.T
 	m.WaitForExit(id)
 }
 
-// readerEnded reports whether the terminal's read goroutine has returned. It
+// TestInstallTerminal_TheGraceStartsAtTheChildSideClose pins WHERE the drain
+// grace begins, which is the difference between the grace measuring what its
+// own comment claims and measuring something else entirely.
+//
+// waitForExit closes exitCh FIRST and the child side of the pty after it, and
+// installTerminal's goroutine wakes on exitCh. On Windows the close between the
+// two blocks until the console host flushes -- so a grace started at the exit
+// would spend itself on that flush and give up before the reader was ever
+// scheduled, losing the shell's last output on the one platform this whole path
+// exists for.
+func TestInstallTerminal_TheGraceStartsAtTheChildSideClose(t *testing.T) {
+	m := NewManager()
+	// Each phase below takes well under the grace on its own, and their SUM
+	// takes well over it -- so this passes only if the two phases hold separate
+	// budgets, and fails for one shared budget started at the exit.
+	m.readDrainGrace = 500 * time.Millisecond
+	const phase = 300 * time.Millisecond
+	const id = "tm-exit-late-child-close"
+
+	term := &Terminal{
+		id:                id,
+		exitCh:            make(chan struct{}),
+		readDoneCh:        make(chan struct{}),
+		childSideClosedCh: make(chan struct{}),
+		screenBuf:         NewScreenBuffer(),
+	}
+	drained := make(chan bool, 1)
+	m.installTerminal(id, term, func(string, int) { drained <- readerEnded(m, id) },
+		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
+
+	// The child is reaped. The close that ends the reader takes a while --
+	// stand in for the console-host flush.
+	close(term.exitCh)
+	time.Sleep(phase)
+	close(term.childSideClosedCh)
+	// Only NOW does the reader wake, and it takes a while of its own.
+	time.Sleep(phase)
+	close(term.readDoneCh)
+
+	select {
+	case ok := <-drained:
+		assert.True(t, ok,
+			"the flush before the child-side close spent the reader's own grace; the two need separate budgets")
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "the exit handler never ran")
+	}
+	m.WaitForExit(id)
+}
+
+// readerEnded reports whether the terminal's read goroutine returned. It
 // reaches into the manager because the drain signal is what the assertion is
 // about and no exported call answers it without blocking.
 func readerEnded(m *Manager, id string) bool {
@@ -418,6 +542,11 @@ func readerEnded(m *Manager, id string) bool {
 // revokes the tty when the session leader exits.
 func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	m := NewManager()
+	// A LONGER grace than production's, because this test asserts that the
+	// reader drained and the production value is what decides that on a loaded
+	// runner. Shortening it would make the flake worse, and zero would remove
+	// the limit entirely, which turns `drained` into a tautology.
+	m.readDrainGrace = 30 * time.Second
 	const id = "tm-natural-exit"
 	const marker = "natural_exit_marker"
 	const lastMarker = "natural_exit_last_write"
@@ -440,7 +569,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 		// what the tab keeps.
 		screen, _, _ := m.ScreenSnapshotSince(tid, 0)
 		// Read the drain signal HERE, not after: the handler runs either
-		// because the reader ended or because the bound expired, and only this
+		// because the reader ended or because the grace expired, and only this
 		// point tells the two apart. Asserting on the handler alone would pass
 		// on the give-up path and hide the very defect this test covers.
 		exited <- exitReport{code: code, screen: screen, drained: readerEnded(m, tid)}
@@ -480,7 +609,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	}
 
 	require.True(t, got.drained,
-		"the natural exit must end the reader; the handler only ran because the bound expired")
+		"the natural exit must end the reader; the handler only ran because the grace expired")
 
 	if runtime.GOOS != "windows" {
 		assert.Equal(t, 7, got.code, "the handler must carry the shell's own exit code")

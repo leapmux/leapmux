@@ -19,6 +19,19 @@ export interface TodoItem {
    * this undefined.
    */
   id?: string
+  /**
+   * The identity a UI reconciles this row by across a rebroadcast.
+   *
+   * `id` when the provider gives one. A snapshot-only provider gives none, and
+   * for such a list POSITION is the identity -- the provider re-sends the whole
+   * list and row 3 is row 3 -- so the key pairs the position with the content.
+   * A row whose content is unchanged at its position then keeps its DOM through
+   * a status change, which is the common update; a row whose content changed is
+   * a different task and correctly replaces it.
+   *
+   * Derived, never sent: {@link todoRowKey} is its one writer.
+   */
+  rowKey: string
   content: string
   status: 'pending' | 'in_progress' | 'completed' | 'deleted'
   activeForm: string
@@ -89,11 +102,24 @@ export function todoDisplayLabel(todo: { status: TodoItem['status'], content: st
 }
 
 /**
+ * The reconciliation key for one to-do row; see {@link TodoItem.rowKey}.
+ *
+ * `index` is the row's position in the list the provider sent, which is the only
+ * identity a snapshot-only provider offers.
+ */
+export function todoRowKey(id: string | undefined, index: number, content: string): string {
+  return id || `${index}:${content}`
+}
+
+/**
  * Convert a server-authoritative proto TodoItem (delivered via
  * ListAgentMessages or AgentTodosChanged) into the store shape. Maps
  * the proto TodoStatus enum to the canonical string union.
+ *
+ * `index` is the row's position in the list, which {@link todoRowKey} needs for
+ * a provider that sends no id.
  */
-export function protoTodoToStore(t: ProtoTodoItem): TodoItem {
+export function protoTodoToStore(t: ProtoTodoItem, index: number): TodoItem {
   let status: TodoItem['status'] = 'pending'
   if (t.status === TodoStatus.IN_PROGRESS)
     status = 'in_progress'
@@ -103,6 +129,7 @@ export function protoTodoToStore(t: ProtoTodoItem): TodoItem {
     status = 'deleted'
   return {
     id: t.id || undefined,
+    rowKey: todoRowKey(t.id || undefined, index, t.content),
     content: t.content,
     status,
     activeForm: t.activeForm,
@@ -118,11 +145,15 @@ export function protoTodoToStore(t: ProtoTodoItem): TodoItem {
 export function rawTodosToItems(raw: unknown): TodoItem[] {
   if (!Array.isArray(raw))
     return []
-  return raw.map((t: Record<string, unknown>) => ({
-    content: String(t.content || ''),
-    status: normalizeTodoStatus(t.status),
-    activeForm: String(t.activeForm || ''),
-  }))
+  return raw.map((t: Record<string, unknown>, i: number) => {
+    const content = String(t.content || '')
+    return {
+      rowKey: todoRowKey(undefined, i, content),
+      content,
+      status: normalizeTodoStatus(t.status),
+      activeForm: String(t.activeForm || ''),
+    }
+  })
 }
 
 /**

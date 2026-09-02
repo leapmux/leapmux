@@ -1765,3 +1765,16 @@ export async function menuOptionTexts(scope: Locator, base: string): Promise<str
   await openMenu(scope, base)
   return scope.getByTestId(base).getByRole('menuitemradio').allTextContents()
 }
+
+/**
+ * One option row's LABEL, which is not the same as its text.
+ *
+ * A row also carries its DETAIL -- the age of a session -- and an age is a
+ * moving target: read the whole row and an assertion can lose to the clock
+ * between the read and the compare. `DropdownMenuCheckableItem` derives this
+ * test id from the row's own, and `src/test-support/menu.ts` spells the same
+ * suffix for the vitest side.
+ */
+export function menuOptionLabel(row: Locator): Locator {
+  return row.locator('[data-testid$="-label"]')
+}

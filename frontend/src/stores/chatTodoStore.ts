@@ -1,7 +1,7 @@
 import type { TodoItem } from './chatTodos'
 import type { TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
-import { createPerAgentStore } from './chatPerAgentStore'
+import { createPerAgentListStore } from './chatPerAgentStore'
 import { protoTodoToStore } from './chatTodos'
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,12 @@ import { protoTodoToStore } from './chatTodos'
 // ---------------------------------------------------------------------------
 
 export function createTodoStore() {
-  const base = createPerAgentStore<TodoItem[]>([])
+  // A LIST store: the rows are rendered as rows, so they reconcile by key. A
+  // plain replace handed `<For>` all-new objects on every broadcast, which tore
+  // down and rebuilt every row -- closing the tooltip under the pointer and
+  // restarting the in-progress row's animation, exactly as the background-task
+  // rows did before `setReconciled`.
+  const base = createPerAgentListStore<TodoItem>('rowKey')
   return {
     get: base.get,
     /** Lookup a todo by id within an agent's list, or undefined if none matches. */
@@ -37,7 +42,7 @@ export function createTodoStore() {
       const prev = base.byAgent[agentId]
       if (prev && shallowEqualArraysDeep(prev, next))
         return
-      base.set(agentId, next)
+      base.setReconciled(agentId, next)
     },
   }
 }

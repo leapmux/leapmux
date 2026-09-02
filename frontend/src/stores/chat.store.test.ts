@@ -4395,8 +4395,10 @@ describe('createChatStore', () => {
 
         await store.loadInitialMessages('w1', 'a1')
         expect(store.todos.get('a1')).toEqual([
-          { id: undefined, content: 'Write tests', status: 'completed', activeForm: 'Writing tests', description: undefined },
-          { id: undefined, content: 'Deploy', status: 'in_progress', activeForm: 'Deploying', description: undefined },
+          // No id from this provider, so the reconciliation key is the row's
+          // position paired with its content -- see TodoItem.rowKey.
+          { id: undefined, rowKey: '0:Write tests', content: 'Write tests', status: 'completed', activeForm: 'Writing tests', description: undefined },
+          { id: undefined, rowKey: '1:Deploy', content: 'Deploy', status: 'in_progress', activeForm: 'Deploying', description: undefined },
         ])
         dispose()
       })

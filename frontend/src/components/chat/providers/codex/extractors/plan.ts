@@ -2,18 +2,23 @@ import type { TodoListSource } from '../../../todoListMessage'
 import type { TodoItem } from '~/stores/chatTodos'
 import { pickString } from '~/lib/jsonPick'
 import { pluralize } from '~/lib/plural'
-import { normalizeTodoStatus } from '~/stores/chatTodos'
+import { normalizeTodoStatus, todoRowKey } from '~/stores/chatTodos'
 import { CODEX_ITEM } from '~/types/toolMessages'
 
 /** Convert a Codex plan array (from turn/plan/updated) to TodoItem[]. */
 function codexPlanToTodos(plan: unknown[]): TodoItem[] {
-  return plan.flatMap((entry) => {
+  return plan.flatMap((entry, i) => {
     if (typeof entry !== 'object' || entry === null)
       return []
     const step = String((entry as Record<string, unknown>).step || '')
     if (!step)
       return []
     return [{
+      // Codex re-sends the whole plan with no ids, so position plus content is
+      // the identity -- see TodoItem.rowKey. The index is the entry's place in
+      // the RAW plan, which is stable across a re-send even where a skipped
+      // entry makes it differ from the output index.
+      rowKey: todoRowKey(undefined, i, step),
       content: step,
       status: normalizeTodoStatus((entry as Record<string, unknown>).status),
       activeForm: step,

@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from 'solid-js'
+import { createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -19,8 +19,15 @@ export interface LoadingMenuOptionDetail {
   /**
    * The text form. The filter matches it beside the label, and it is what the
    * row shows unless {@link LoadingMenuOptionDetail.render} replaces it.
+   *
+   * A FUNCTION, read at FILTER time, because a detail can be a moving value.
+   * `SessionSelect` draws a live `RelativeTime` and its text is that same age:
+   * held as a plain string, the string froze at whatever instant the option
+   * list was last built while the element beside it kept ticking, so a row
+   * that read "4h ago" was matched against "3h ago" and typing what was on
+   * screen emptied the list.
    */
-  text: string
+  text: () => string
   /**
    * Draws the detail in place of {@link LoadingMenuOptionDetail.text} -- a live
    * `RelativeTime`, whose own tooltip states the full timestamp.
@@ -39,6 +46,15 @@ export interface LoadingMenuOption {
   label: string
   group?: string
   detail?: LoadingMenuOptionDetail
+  /**
+   * This row survives the filter, whatever the query.
+   *
+   * For a row that is not one of the things the list holds but a way OUT of it:
+   * `SessionSelect`'s "Start a new session" and "Enter a session ID...". A query
+   * that matches no session is exactly when a user needs those, and filtering
+   * them left an empty menu whose only escape was to clear the query.
+   */
+  pinned?: boolean
 }
 
 export interface LoadingMenuProps {
@@ -129,16 +145,27 @@ export interface LoadingMenuProps {
 const FILTER_MIN_OPTIONS = 12
 
 /**
- * Draw one option's detail: the caller's own element when it gave a renderer,
- * and the plain text otherwise.
+ * The renderer for one option's detail: the caller's own element when it gave
+ * one, and the plain text otherwise. Undefined for an option with no detail.
  *
  * One function for the two sites that draw a detail -- the row and the trigger
- * -- so neither can forget that `render` takes precedence over `text`.
+ * -- so neither can forget that `render` takes precedence over `text`. It hands
+ * back a FUNCTION rather than an element, so the element is built where it is
+ * drawn: the trigger and the row each need their own, and one DOM node cannot
+ * sit in two places.
+ *
+ * `live` false takes the TEXT even when a renderer exists. A caller's element
+ * can be expensive -- `SessionSelect`'s is a live `RelativeTime` that subscribes
+ * to the shared ticker -- and a row inside a menu nobody has opened should not
+ * pay for it. The two read the same, because the text IS what the element draws.
  */
-function renderDetail(detail: LoadingMenuOptionDetail | undefined): JSX.Element | undefined {
+function detailRenderer(
+  detail: LoadingMenuOptionDetail | undefined,
+  live = true,
+): (() => JSX.Element) | undefined {
   if (detail === undefined)
     return undefined
-  return detail.render ? detail.render() : detail.text
+  return () => (live && detail.render ? detail.render() : detail.text())
 }
 
 /**
@@ -159,10 +186,11 @@ function renderDetail(detail: LoadingMenuOptionDetail | undefined): JSX.Element 
  */
 export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
   const [query, setQuery] = createSignal('')
-  // Signals, not plain `let`s: the effect that caps the popover at the trigger's
-  // width needs both elements, and it must run when the second one arrives.
+  // Whether the menu has ever been opened; see `items`. One-way: it never goes
+  // back to false, so a reopen mounts nothing again.
+  const [everOpened, setEverOpened] = createSignal(false)
+  // A signal, not a plain `let`: `select` reads it to dismiss a filtered menu.
   const [popoverEl, setPopoverEl] = createSignal<HTMLElement>()
-  const [triggerEl, setTriggerEl] = createSignal<HTMLElement>()
   let filterEl: HTMLInputElement | undefined
 
   const testId = () => props['data-testid'] ?? 'loading-menu'
@@ -208,57 +236,26 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
     // The DETAIL matches too, and it has to: the age of a session moved out of
     // the label and into that slot, so a filter that read the label alone would
     // silently drop the "sessions from days ago" search the label used to serve.
+    //
+    // A PINNED option survives every query. Such a row is not one of the things
+    // the list holds -- it is a way OUT of the list, and `SessionSelect` marks
+    // both of its own that way. Filtering them removed the escape hatch at the
+    // one moment it is needed: a user whose session is not here types its title,
+    // gets "No matches", and now has neither "Enter a session ID..." nor "Start
+    // a new session" to reach. Clearing the query was the only route back.
     return props.options.filter(o =>
-      o.label.toLowerCase().includes(q) || (o.detail?.text.toLowerCase().includes(q) ?? false),
+      o.pinned === true
+      || o.label.toLowerCase().includes(q)
+      || (o.detail?.text().toLowerCase().includes(q) ?? false),
     )
   })
 
-  /**
-   * Cap the popover at the trigger's width and at the height of the dialog that
-   * holds it; see `popover` in `./LoadingMenu.css.ts`.
-   *
-   * Measured rather than inherited, because the popover is in the top layer:
-   * it is positioned against the viewport and its size answers to nothing in
-   * the form the trigger sits in.
-   *
-   * The dialog is found from the TRIGGER, not passed in: the app renders a real
-   * `<dialog>`, so the box a menu belongs to is a fact about where the trigger
-   * sits and not something each of the six call sites should have to declare. A
-   * menu no dialog holds -- a sidebar selector, a toolbar -- writes nothing, and
-   * the stylesheet's fallback leaves it the viewport clamp.
-   *
-   * The observer keeps both caps correct after that first measurement. A dialog
-   * that relayouts under a phone's keyboard, or a window the user drags
-   * smaller, changes either measurement with no event of its own -- and a stale
-   * cap is invisible until the day it is wrong. `apply()` runs once outside the
-   * observer as well, because an observer reports the first size on its own
-   * schedule and a stub reports nothing at all.
-   *
-   * `on`, so the two elements arrive as arguments: the effect re-runs when
-   * either changes, and its cleanup disconnects the observer that holds the
-   * pair it replaced.
-   */
-  createEffect(on([triggerEl, popoverEl], ([trigger, popover]) => {
-    if (!trigger || !popover)
-      return
-    const dialog = trigger.closest('dialog')
-    const apply = () => {
-      popover.style.setProperty(styles.TRIGGER_WIDTH_VAR, `${trigger.getBoundingClientRect().width}px`)
-      if (dialog)
-        popover.style.setProperty(styles.DIALOG_HEIGHT_VAR, `${dialog.getBoundingClientRect().height}px`)
-    }
-    apply()
-    if (typeof ResizeObserver === 'undefined')
-      return
-    const observer = new ResizeObserver(apply)
-    observer.observe(trigger)
-    if (dialog)
-      observer.observe(dialog)
-    onCleanup(() => observer.disconnect())
-  }))
+  /** The option the value names, or undefined when the list does not hold it. */
+  const selected = () => props.options.find(o => o.value === props.value)
 
   /**
-   * The label on the trigger. Four states, not three.
+   * What the trigger shows: its label, and the detail beside it. Four states,
+   * not three.
    *
    * A value that matches NO option is its own case, and it is not the empty
    * list: falling through to `emptyLabel` made the trigger read "No workers
@@ -269,40 +266,25 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
    *
    * `placeholder` stays for the genuinely EMPTY value -- the "pick one" prompt
    * that `BranchSelect` and `WorktreeSelect` render before a choice is made.
+   *
+   * ONE accessor for both, because they are one decision. The trigger is the
+   * closed form of the selected ROW, so it carries the same two columns -- and
+   * a detail belongs beside a REAL match only, since the other three states
+   * describe the LIST rather than a row. Derived twice, a fifth state added to
+   * the label would reach the detail's guard silently or not at all.
    */
-  /** The option the value names, or undefined when the list does not hold it. */
-  const selected = () => props.options.find(o => o.value === props.value)
-
-  const triggerText = () => {
+  const triggerState = (): { label: string, detail?: LoadingMenuOptionDetail } => {
     const loadingLabel = props.loadingLabel
     if (loadingLabel !== undefined)
-      return loadingLabel
+      return { label: loadingLabel }
     if (isEmpty())
-      return props.emptyLabel
+      return { label: props.emptyLabel }
     const match = selected()
     if (match)
-      return match.label
+      return { label: match.label, detail: match.detail }
     if (props.value === '')
-      return props.placeholder ?? props.emptyLabel
-    return props.value
-  }
-
-  /**
-   * The detail of the selected option, which the trigger draws beside its label.
-   *
-   * The trigger is the closed form of the ROW, so it carries the same two
-   * columns. Without it, picking a session replaced "Build the thing, 4 hours
-   * ago" with the title alone -- and the age is half of what tells two attempts
-   * at one task apart.
-   *
-   * Only for a REAL match: the other three trigger states draw a message about
-   * the list (loading, empty, a value the list lost), and no option's detail
-   * belongs beside any of them.
-   */
-  const triggerDetail = (): LoadingMenuOptionDetail | undefined => {
-    if (props.loadingLabel !== undefined || isEmpty())
-      return undefined
-    return selected()?.detail
+      return { label: props.placeholder ?? props.emptyLabel }
+    return { label: props.value }
   }
 
   const select = (value: string) => {
@@ -356,8 +338,21 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
                 // whatever the user's data is long enough to be: a branch name,
                 // a session title. Clipped with no route back is the state a
                 // tooltip exists to prevent.
-                revealClippedLabel
-                detail={renderDetail(option.detail)}
+                //
+                // Deferred to the first OPEN, and that is the whole reason this
+                // is a prop rather than always-on. `DropdownMenu` renders its
+                // children on MOUNT, and `ClippedText` wraps every instance in
+                // a `Tooltip` -- a MutationObserver and listeners on two
+                // elements, per row. Paid eagerly that is one such allocation
+                // per option of every menu on screen, open or not: fifty for a
+                // full session list, and `BranchSelect`'s list has no upper
+                // limit at all. A row nobody has seen needs no route back.
+                revealClippedLabel={everOpened()}
+                // Same deferral, same reason: `SessionSelect`'s detail is a live
+                // `RelativeTime` that subscribes to the shared ticker, so an
+                // unopened picker held one subscriber per session. The text form
+                // renders until then, so the row reads the same either way.
+                detail={detailRenderer(option.detail, everOpened())}
                 checked={option.value === props.value}
                 data-testid={`loading-menu-option-${option.value}`}
                 onSelect={() => select(option.value)}
@@ -373,10 +368,13 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
     <DropdownMenu
       aria-label={props.ariaLabel}
       as={filtering() ? 'div' : 'menu'}
-      class={styles.popover}
+      // This menu's trigger IS a field -- it is shaped like the input it
+      // replaces -- so the popover follows its width. See the prop.
+      matchTriggerWidth
       popoverRef={setPopoverEl}
       onToggle={(open) => {
         if (open) {
+          setEverOpened(true)
           props.onOpen?.()
           // Put the caret in the filter box. `popover="auto"` moves focus
           // nowhere on its own, so without this the filter buys back none of
@@ -394,15 +392,6 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
       trigger={triggerProps => (
         <button
           {...triggerProps}
-          // Both refs run, and the order does not matter: `DropdownMenu`
-          // positions the popover against this element, and this component
-          // measures it for the width cap. Solid merges the spread with the
-          // attribute and the attribute wins, so dropping the first call here
-          // would leave the menu anchored to nothing.
-          ref={(el) => {
-            triggerProps.ref(el)
-            setTriggerEl(el)
-          }}
           type="button"
           class={styles.trigger}
           aria-label={props.ariaLabel}
@@ -419,11 +408,11 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
               hover once the field is too narrow to hold it. The trigger's own
               `aria-label` names the control, so the tooltip adds the value and
               never renames the button. */}
-          <ClippedText text={triggerText()} class={styles.triggerLabel} />
-          <Show when={triggerDetail()}>
+          <ClippedText text={triggerState().label} class={styles.triggerLabel} />
+          <Show when={triggerState().detail}>
             {/* The row's own class, because the trigger IS the closed form of
                 the selected row: the same label, the same trailing note. */}
-            {detail => <span class={menuItemDetail}>{renderDetail(detail())}</span>}
+            {detail => <span class={menuItemDetail}>{detailRenderer(detail())?.()}</span>}
           </Show>
           <Icon icon={ChevronDown} size="xs" aria-hidden="true" />
         </button>

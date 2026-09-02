@@ -401,6 +401,16 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 	// the user inside an error string.
 	sort.Slice(skipped, func(i, j int) bool { return skipped[i].ProviderID < skipped[j].ProviderID })
 
+	// Which configured names more than one candidate carries. A name that names
+	// two providers names neither, so zcodeProviderLabel replaces it with the
+	// label the id composes -- see it for the CLI defect this repairs.
+	nameCount := map[string]int{}
+	for _, c := range candidates {
+		if name := strings.TrimSpace(c.provider.Name); name != "" {
+			nameCount[name]++
+		}
+	}
+
 	catalog := zcodeCatalog{
 		modalities: map[string][]string{},
 		refs:       map[string]zcodeModelRef{},
@@ -412,7 +422,7 @@ func buildZCodeCatalog(cfg zcodeConfigFile) (zcodeCatalog, []zcodeProviderSkip) 
 			Kind:       kind,
 			APIFormat:  zcodeAPIFormat(c.provider.Kind),
 			BaseURL:    c.baseURL,
-			Label:      zcodeProviderLabel(c.providerID, c.provider.Name),
+			Label:      zcodeProviderLabel(c.providerID, c.provider.Name, nameCount[strings.TrimSpace(c.provider.Name)] > 1),
 			Source:     zcodeRegistrySource(c.provider.Source),
 			APIKey:     &zcodeRegistryAPIKey{Source: zcodeAPIKeySourceInline, Value: c.apiKey},
 			// An empty slice, never nil: the app-server's schema requires the
@@ -480,47 +490,144 @@ func zcodeModelOrder(models map[string]zcodeConfigModel) []string {
 //
 // A name that differs by more than case DOES carry something the id cannot, so
 // it wins. That is the same rule zcodeEffortTier applies to a level's label.
+//
+// The "no name given" half routes through nameOrID, which every other naming
+// helper in this file already uses, so this states ONE added rule on top of the
+// shared one rather than a second answer to the same question.
 func zcodeModelName(modelID string, model zcodeConfigModel) string {
-	name := strings.TrimSpace(model.Name)
-	if name == "" || strings.EqualFold(name, modelID) {
+	name := nameOrID(model.Name, modelID)
+	if strings.EqualFold(name, modelID) {
 		return modelID
 	}
 	return name
 }
 
-// zcodeBuiltinProviderLabels names the providers the ZCode CLI creates itself.
+// zcodeBuiltinPrefix marks a provider the ZCode CLI created itself. The CLI
+// composes such an id as `builtin:<family>[-<kind>]`.
+const zcodeBuiltinPrefix = "builtin:"
+
+// zcodeProviderFamilies and zcodeProviderPlans decompose a built-in provider id.
 //
-// The CLI writes these six entries into `config.json`, and it writes their names
-// WRONG: an installation that has logged into both Z.ai plans holds
-// `builtin:zai-coding-plan` and `builtin:zai-start-plan` under the SAME name,
-// "Z.ai - Coding Plan", and the BigModel start plan arrives as
-// "BigModel- Coding Plan". A model list that took those names verbatim offered
-// two rows that read identically and resumed different plans.
+// The CLI's own ids are that cross product (`gs` in its bundle: the Z.ai and
+// BigModel families crossed with the API-key, Coding Plan and Start Plan kinds),
+// so LeapMux states the two axes rather than the six products they make. A
+// seventh built-in the CLI adds -- `builtin:zai-pro-plan` -- is then named
+// correctly with no change here, where a table of six literals would have let it
+// fall through to the CLI's own name.
 //
-// The ids are the CLI's own constants (`gs` in its bundle: the Z.ai and BigModel
-// families crossed with the API-key, Coding Plan and Start Plan kinds), so this
-// table can be exact about which provider each one IS. Every other provider id
-// -- one the user added -- keeps the name the user gave it.
-var zcodeBuiltinProviderLabels = map[string]string{
-	"builtin:zai":                  "Z.ai - API Key",
-	"builtin:zai-coding-plan":      "Z.ai - Coding Plan",
-	"builtin:zai-start-plan":       "Z.ai - Start Plan",
-	"builtin:bigmodel":             "BigModel - API Key",
-	"builtin:bigmodel-coding-plan": "BigModel - Coding Plan",
-	"builtin:bigmodel-start-plan":  "BigModel - Start Plan",
+// Neither axis is derivable from its id: "Z.ai" is not a case fold of `zai`, and
+// "API Key" is not a fold of the empty suffix.
+var (
+	zcodeProviderFamilies = map[string]string{
+		"zai":      "Z.ai",
+		"bigmodel": "BigModel",
+	}
+	zcodeProviderPlans = map[string]string{
+		"":             "API Key",
+		"coding-plan":  "Coding Plan",
+		"start-plan":   "Start Plan",
+		"pro-plan":     "Pro Plan",
+		"lite-plan":    "Lite Plan",
+		"max-plan":     "Max Plan",
+		"free-plan":    "Free Plan",
+		"api-key":      "API Key",
+		"subscription": "Subscription",
+	}
+)
+
+// zcodeBuiltinProviderLabel composes the display label for a provider the CLI
+// created, or "" for an id it did not.
+//
+// An unknown FAMILY returns "": LeapMux has nothing to call it, so the CLI's own
+// name is still the best answer. An unknown PLAN is title-cased from its own
+// suffix, which reads correctly for anything the CLI is likely to add.
+func zcodeBuiltinProviderLabel(providerID string) string {
+	rest, ok := strings.CutPrefix(providerID, zcodeBuiltinPrefix)
+	if !ok {
+		return ""
+	}
+	family, plan, _ := strings.Cut(rest, "-")
+	familyLabel, known := zcodeProviderFamilies[family]
+	if !known {
+		return ""
+	}
+	planLabel, known := zcodeProviderPlans[plan]
+	if !known {
+		planLabel = titleCaseHyphenated(plan)
+	}
+	return familyLabel + " - " + planLabel
 }
 
-// zcodeProviderLabel names one provider, correcting the CLI's own built-ins.
+// titleCaseHyphenated turns `pro-plan` into `Pro Plan`.
+func titleCaseHyphenated(s string) string {
+	words := strings.Split(s, "-")
+	for i, w := range words {
+		words[i] = capitalizeFirst(w)
+	}
+	return strings.Join(words, " ")
+}
+
+// zcodeProviderLabel returns the display label for one provider, correcting the
+// CLI's own built-ins where their names are unusable.
+//
+// The CLI writes a built-in's name WRONG in two ways. An installation logged
+// into both Z.ai plans holds `builtin:zai-coding-plan` and
+// `builtin:zai-start-plan` under the SAME name, "Z.ai - Coding Plan"; and the
+// BigModel start plan arrives as "BigModel- Coding Plan", which is simply
+// incorrect. A model list that took those verbatim offered rows that read
+// identically and resumed different plans.
+//
+// `collides` says another enabled provider carries this same name, which is the
+// first of those two. The composed label ALSO wins when the id's own plan
+// disagrees with the configured name, which is the second: the CLI names the
+// plan in the id, and an id that says `start-plan` beside a name that says
+// "Coding Plan" cannot both be right, and the id is the one the CLI resolves by.
+//
+// Otherwise the configured name stands. A user who renames `builtin:zai` to
+// "Work account" in their own `config.json` means it, and LeapMux never writes
+// that file -- so discarding the rename would leave a user with no way to tell
+// two accounts apart and no message saying why.
 //
 // ONE label serves both the registry push and LeapMux's catalog. The registry's
 // copy is display-only -- the app-server resolves a model by the composite
 // `providerID/modelID`, never by a label -- so a second, uncorrected spelling
 // would only be a copy that can disagree with what the user sees.
-func zcodeProviderLabel(providerID, configuredName string) string {
-	if label, ok := zcodeBuiltinProviderLabels[providerID]; ok {
-		return label
+func zcodeProviderLabel(providerID, configuredName string, collides bool) string {
+	builtin := zcodeBuiltinProviderLabel(providerID)
+	if builtin == "" {
+		return nameOrID(configuredName, providerID)
 	}
-	return nameOrID(configuredName, providerID)
+	name := strings.TrimSpace(configuredName)
+	if name == "" || collides || zcodeNameContradictsPlan(providerID, name) {
+		return builtin
+	}
+	return name
+}
+
+// zcodeNameContradictsPlan reports that a built-in's configured name claims a
+// DIFFERENT plan from the one its id states.
+//
+// The check is on the plan words alone, so a genuine rename ("Work account")
+// keeps its name: it claims no plan at all. It catches exactly the CLI's own
+// defect, where `builtin:bigmodel-start-plan` arrives named "BigModel- Coding
+// Plan".
+func zcodeNameContradictsPlan(providerID, configuredName string) bool {
+	rest, ok := strings.CutPrefix(providerID, zcodeBuiltinPrefix)
+	if !ok {
+		return false
+	}
+	_, plan, _ := strings.Cut(rest, "-")
+	mine := zcodeProviderPlans[plan]
+	lower := strings.ToLower(configuredName)
+	for suffix, label := range zcodeProviderPlans {
+		if suffix == plan || label == mine {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(label)) {
+			return true
+		}
+	}
+	return false
 }
 
 // zcodeRegistryModelFor translates one configured model into its registry entry.
@@ -574,7 +681,7 @@ const (
 //
 // A provider label is never empty in practice -- zcodeProviderLabel falls back
 // to the provider id -- so the guard is for a caller that has no provider to
-// name at all, and it produces the bare model name rather than empty brackets.
+// label at all, and it produces the bare model name rather than empty brackets.
 func zcodeModelDisplayName(modelName, providerLabel string) string {
 	if providerLabel == "" {
 		return modelName
@@ -607,19 +714,16 @@ func zcodeModelInfo(composite, providerLabel, modelID string, model zcodeConfigM
 		info.ContextWindow = model.Limit.Context
 	}
 	if r := model.Reasoning; r != nil && r.Enabled && len(r.Variants) > 0 {
-		efforts := make([]*EffortInfo, 0, len(r.Variants)+1)
+		efforts := make([]*EffortInfo, 0, len(r.Variants))
 		for _, v := range r.Variants {
 			efforts = append(efforts, zcodeEffortTier(v, "", ""))
 		}
-		// Strongest first, because `config.json` states the variants in no order at
-		// all: ZCode ships GLM-5.3 as `["low", "max", "high"]`, and a menu built in
-		// that order led with the weakest level. See sortEffortsByStrength.
-		sortEffortsByStrength(efforts)
-		// Auto is LeapMux's sentinel for "do not send setThoughtLevel at all", so a
-		// user can keep whatever default the app-server resolves for the model. It
-		// leads the list, and it is not a strength, so it joins AFTER the sort.
-		efforts = append([]*EffortInfo{zcodeAutoEffort}, efforts...)
-		info.SupportedEfforts = efforts
+		// Auto first -- LeapMux's sentinel for "do not send setThoughtLevel at
+		// all", so a user can keep whatever default the app-server resolves --
+		// then the variants strongest first, because `config.json` states them in
+		// no order at all: ZCode ships GLM-5.3 as `["low", "max", "high"]`, and a
+		// menu built in that order led with the weakest level.
+		info.SupportedEfforts = zcodeEffortsWithAuto(efforts)
 		info.DefaultEffort = r.DefaultVariant
 		if info.DefaultEffort == "" {
 			info.DefaultEffort = EffortAuto

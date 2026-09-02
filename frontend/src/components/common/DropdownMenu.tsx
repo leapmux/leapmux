@@ -4,7 +4,8 @@ import type { PopoverAnchor, PopoverPositionOptions } from '~/lib/popoverPositio
 import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
-import { popoverCard } from '~/styles/popover.css'
+import { createRafResizeObserver } from '~/lib/resizeObserver'
+import { DIALOG_HEIGHT_VAR, popoverCard, popoverFieldMenuClamp, popoverMenuClamp, TRIGGER_WIDTH_VAR } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemDetail } from '~/styles/shared.css'
 import { ClippedText } from './ClippedText'
 import { attachContextMenuGesture, holdIsOverMenu, pressAnchorRect } from './contextMenuGesture'
@@ -209,6 +210,23 @@ export interface DropdownMenuProps {
   /** CSS class on the popover element. */
   'class'?: string
 
+  /**
+   * The trigger is a FIELD, so the menu is capped at its width.
+   *
+   * A field's menu is the open form of the control the user clicked: the two
+   * read as one control when their edges line up, and a row longer than the
+   * field clips instead of pushing the box out over the page.
+   *
+   * Opt-in, because a trigger is not always a field. A kebab is a 24px icon
+   * button, and a menu capped at that leaves a column too narrow to read a
+   * single row. Only a caller that knows the shape of its own trigger asks --
+   * `LoadingMenu` does, and nothing else should without being one.
+   *
+   * The HEIGHT clamp needs no flag: it follows the dialog, and every menu
+   * belongs inside whatever box holds it.
+   */
+  'matchTriggerWidth'?: boolean
+
   /** data-testid on the popover element. */
   'data-testid'?: string
 
@@ -278,8 +296,16 @@ export interface DropdownMenuCheckableItemProps {
    * Content, not decoration, so it is NOT `aria-hidden`: a screen reader reads
    * it as part of the item, which is what `leading` deliberately withholds for
    * a colour swatch.
+   *
+   * An ACCESSOR, not an element. A JSX prop compiles to a getter, so a caller
+   * whose detail is an expression rebuilds it on every read -- and a presence
+   * test plus a draw is two reads, which produced one element to test and a
+   * different one on screen. A function reference is free to read, so presence
+   * is `!== undefined` and the element is built exactly once, where it is drawn.
+   * That also lets a detail be a legitimately falsy `0` or `''`, which a
+   * truthiness gate would have dropped.
    */
-  'detail'?: JSXElement
+  'detail'?: () => JSXElement
   /**
    * Show the whole `label` in a tooltip once the row clips it.
    *
@@ -367,8 +393,8 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
             second element -- one to test for presence and a different one on
             screen. An empty detail draws nothing, which is what an option with
             no note wants. */}
-        <Show when={props.detail}>
-          {detail => <span class={menuItemDetail}>{detail()}</span>}
+        <Show when={props.detail !== undefined}>
+          <span class={menuItemDetail}>{props.detail?.()}</span>
         </Show>
       </span>
     </button>
@@ -431,6 +457,43 @@ export function DropdownMenu(props: DropdownMenuProps) {
   const getAnchorElement = (): Element | undefined => {
     const anchor = getAnchor()
     return anchor instanceof Element ? anchor : undefined
+  }
+
+  /**
+   * Whether this popover is MENU-shaped: a list of rows, sized to follow the
+   * control it opens from.
+   *
+   * A card popover is not. It carries its own content and its own width, so
+   * capping it at the trigger would squeeze an agent-info card into a kebab.
+   */
+  const isMenuShaped = () => props.as === undefined || props.as === 'menu' || props.as === 'div'
+
+  /**
+   * Measure the caps a menu popover follows: the trigger's width, and the height
+   * of the dialog that holds it. See `popoverMenuClamp`.
+   *
+   * Measured rather than inherited, because the popover is in the top layer: it
+   * is positioned against the viewport and its size answers to nothing in the
+   * form the trigger sits in. The dialog is found FROM the trigger, so the box a
+   * menu belongs to is a fact about where that trigger sits and not something
+   * each call site has to declare -- and a menu no dialog holds writes nothing,
+   * leaving the stylesheet's viewport fallback.
+   */
+  const applyCaps = () => {
+    if (!popoverEl || !isMenuShaped())
+      return
+    const anchor = getAnchorElement()
+    if (!anchor)
+      return
+    // The width only where the caller says its trigger is a FIELD. A kebab is a
+    // 24px icon button, and capping its menu at that leaves every row
+    // unreadable -- so this is not something a menu may assume about its own
+    // trigger.
+    if (props.matchTriggerWidth)
+      popoverEl.style.setProperty(TRIGGER_WIDTH_VAR, `${anchor.getBoundingClientRect().width}px`)
+    const dialog = anchor.closest('dialog')
+    if (dialog)
+      popoverEl.style.setProperty(DIALOG_HEIGHT_VAR, `${dialog.getBoundingClientRect().height}px`)
   }
 
   const reposition = () => {
@@ -640,11 +703,31 @@ export function DropdownMenu(props: DropdownMenuProps) {
       // ResizeObserver fires once on observe() with the current size, then on
       // every change -- reposition() only moves the popover, never resizes it,
       // so this can't loop.
-      if (typeof ResizeObserver !== 'undefined' && popoverEl) {
+      if (popoverEl) {
         resizeObserver?.disconnect()
-        resizeObserver = new ResizeObserver(() => reposition())
-        resizeObserver.observe(popoverEl)
+        // The SAME observer measures the caps below, so one delivery does one
+        // read-and-write pass. `createRafResizeObserver`, because `applyCaps`
+        // writes onto the popover this same observer watches: a write made
+        // inside the delivery phase resizes an observed element, which is the
+        // "ResizeObserver loop completed with undelivered notifications" case
+        // that helper defers a frame to avoid.
+        resizeObserver = createRafResizeObserver(() => {
+          applyCaps()
+          reposition()
+        })
+        resizeObserver?.observe(popoverEl)
+        // The anchor and the dialog that holds it, because a cap that is
+        // measured once at open is wrong the moment either changes -- a window
+        // dragged narrower, a dialog that relayouts under a phone's keyboard --
+        // and a stale cap is invisible until the day it is wrong.
+        const anchor = getAnchorElement()
+        if (anchor)
+          resizeObserver?.observe(anchor)
+        const dialog = anchor?.closest('dialog')
+        if (dialog)
+          resizeObserver?.observe(dialog)
       }
+      applyCaps()
 
       getAnchorElement()?.setAttribute('aria-expanded', 'true')
 
@@ -852,6 +935,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
     return null
   }
 
+  const popoverClass = () => {
+    const shape = props.as === 'card'
+      ? popoverCard
+      : (props.matchTriggerWidth ? popoverFieldMenuClamp : popoverMenuClamp)
+    return props.class ? `${shape} ${props.class}` : shape
+  }
+
   // `data-headless` marks a dropdown with no trigger -- one opened only by
   // right-click or long press. The host then collapses to `display: contents` and
   // adds no flex item to the row that mounts it; see ~/styles/popover.css.ts.
@@ -872,7 +962,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
         popover="auto"
         id={menuId}
         ref={popoverRefCallback}
-        class={props.as === 'card' ? (props.class ? `${popoverCard} ${props.class}` : popoverCard) : props.class}
+        // A card takes `popoverCard`; every other shape is a MENU and takes the
+        // menu clamp, which is what stops a long list running off the bottom of
+        // the screen with the rows past the edge unreachable. Before it, only
+        // the card branch was clamped at all.
+        class={popoverClass()}
         data-testid={props['data-testid']}
         aria-label={props['aria-label']}
         // `tabIndex` so the popover itself can hold focus. That is what makes

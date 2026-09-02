@@ -89,8 +89,8 @@ describe('claude TodoWrite renders via shared TodoListMessage', () => {
   it('renders the pluralized title and todo content', () => {
     const { container } = renderClaudeToolUse('TodoWrite', {
       todos: [
-        { content: 'first task', status: 'pending', activeForm: 'doing first' },
-        { content: 'second task', status: 'in_progress', activeForm: 'doing second' },
+        { rowKey: 'first task', content: 'first task', status: 'pending', activeForm: 'doing first' },
+        { rowKey: 'second task', content: 'second task', status: 'in_progress', activeForm: 'doing second' },
       ],
     })
     const text = container.textContent ?? ''
@@ -152,7 +152,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
       taskId: '42',
       status: 'completed',
     }, {
-      getTodoById: id => id === '42' ? { id: '42', content: 'Stored subject', status: 'pending', activeForm: '' } : undefined,
+      getTodoById: id => id === '42' ? { id: '42', rowKey: '42', content: 'Stored subject', status: 'pending', activeForm: '' } : undefined,
     })
     const text = container.textContent ?? ''
     expect(text).toContain('Stored subject')
@@ -166,7 +166,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
       subject: 'Fresh subject from this patch',
       status: 'in_progress',
     }, {
-      getTodoById: id => id === '7' ? { id: '7', content: 'Stale stored subject', status: 'pending', activeForm: '' } : undefined,
+      getTodoById: id => id === '7' ? { id: '7', rowKey: '7', content: 'Stale stored subject', status: 'pending', activeForm: '' } : undefined,
     })
     const text = container.textContent ?? ''
     expect(text).toContain('Fresh subject from this patch')
@@ -178,7 +178,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
       taskId: '8',
       status: 'deleted',
     }, {
-      getTodoById: id => id === '8' ? { id: '8', content: 'Will be removed', status: 'completed', activeForm: '' } : undefined,
+      getTodoById: id => id === '8' ? { id: '8', rowKey: '8', content: 'Will be removed', status: 'completed', activeForm: '' } : undefined,
     })
     const text = container.textContent ?? ''
     expect(text).toContain('Will be removed')
@@ -339,8 +339,8 @@ describe('opencode plan renders via shared TodoListMessage', () => {
     const { container } = renderOpenCodePlan({
       sessionUpdate: 'plan',
       entries: [
-        { content: 'opencode entry one', status: 'pending' },
-        { content: 'opencode entry two', status: 'completed' },
+        { rowKey: 'opencode entry one', content: 'opencode entry one', status: 'pending' },
+        { rowKey: 'opencode entry two', content: 'opencode entry two', status: 'completed' },
       ],
     })
     const text = container.textContent ?? ''

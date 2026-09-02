@@ -16,6 +16,7 @@ import {
   menuOptions,
   menuOptionValues,
   menuTriggerText,
+  openMenu,
   pickMenuValue,
 } from '~/test-support/menu'
 
@@ -75,14 +76,40 @@ describe('sessionOptionLabel', () => {
 
 describe('sessionOptionDetail', () => {
   it('states how long ago the session ran, as text the filter can match', () => {
-    expect(sessionOptionDetail(summary(), NOW)?.text).toBe('1h ago')
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(NOW)
+      expect(sessionOptionDetail(summary())?.text()).toBe('1h ago')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The whole point of the accessor: it is read at FILTER time, so it states the
+  // age the row is SHOWING rather than the one it showed when the option list
+  // was built. Frozen, it drifted away from the live `RelativeTime` beside it,
+  // and typing the age on screen emptied the list.
+  it('re-reads the clock on every call, so it cannot drift from the drawn age', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(NOW)
+      const detail = sessionOptionDetail(summary())!
+      expect(detail.text()).toBe('1h ago')
+
+      vi.setSystemTime(new Date(NOW.getTime() + 3 * 60 * 60 * 1000))
+      expect(detail.text()).toBe('4h ago')
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   // No time, no column: an empty detail would draw a gap at the right end of
   // the row and give the filter an empty string to match everything with.
   it('gives no detail when the store recorded no time', () => {
-    expect(sessionOptionDetail(summary({ updatedAt: '' }), NOW)).toBeUndefined()
-    expect(sessionOptionDetail(summary({ updatedAt: 'not a timestamp' }), NOW)).toBeUndefined()
+    expect(sessionOptionDetail(summary({ updatedAt: '' }))).toBeUndefined()
+    expect(sessionOptionDetail(summary({ updatedAt: 'not a timestamp' }))).toBeUndefined()
   })
 
   // The rendered form is `RelativeTime`, not the plain text: that is what puts
@@ -91,7 +118,7 @@ describe('sessionOptionDetail', () => {
   it('renders the age as a timestamp whose hover states the full date', () => {
     vi.useFakeTimers()
     try {
-      const detail = sessionOptionDetail(summary(), NOW)
+      const detail = sessionOptionDetail(summary())
       const { container } = render(() => <>{detail!.render!()}</>)
 
       // Wrapper -> the span Tooltip resolves as its target.
@@ -200,8 +227,23 @@ describe('sessionSelect', () => {
     const filter = screen.getByTestId('loading-menu-filter')
     expect(filter).toBeInTheDocument()
 
+    // The two rows that are not sessions survive: they are the ways OUT of the
+    // list, and a query is exactly when a user reaches for one. See below.
     fireEvent.input(filter, { target: { value: 'flaky' } })
-    expect(menuOptionValues(MENU)).toEqual(['ses_b'])
+    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_b'])
+  })
+
+  // The moment those two rows matter most is the moment a filter would hide
+  // them: a user whose session is not here types its title, sees nothing match,
+  // and needs "Enter a session ID..." right then. Filtered away, the only route
+  // back was to clear the query first.
+  it('keeps the rows that leave the list, whatever the query matches', () => {
+    renderSelect({ sessions: [summary({ sessionId: 'ses_a', title: 'Refactor the parser' })] })
+
+    fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'zzz no match' } })
+
+    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE])
+    expect(menuOptionLabels(MENU)).toEqual([NEW_SESSION_LABEL, typeAHandleLabel(false)])
   })
 
   // The age left the label for a column of its own. The filter reads both, so
@@ -214,7 +256,7 @@ describe('sessionSelect', () => {
       ],
     })
     fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'y ago' } })
-    expect(menuOptionValues(MENU)).toEqual(['ses_ancient'])
+    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_ancient'])
   })
 
   // The requirement the two columns exist for: a title with no length limit
@@ -239,6 +281,7 @@ describe('sessionSelect', () => {
     try {
       const title = 'Teach the parser to accept a trailing comma in every list'
       renderSelect({ sessions: [summary({ sessionId: 'ses_long', title })] })
+      openMenu(MENU)
 
       const label = screen.getByTestId('loading-menu-option-ses_long-label')
       stubClipped(label)

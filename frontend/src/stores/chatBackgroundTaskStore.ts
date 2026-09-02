@@ -2,7 +2,7 @@ import type { BackgroundTaskItem } from './chatBackgroundTasks'
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
 import { protoBackgroundTaskToStore } from './chatBackgroundTasks'
-import { createPerAgentStore } from './chatPerAgentStore'
+import { createPerAgentListStore, createPerAgentStore } from './chatPerAgentStore'
 
 // ---------------------------------------------------------------------------
 // Background-task registry slice
@@ -21,7 +21,9 @@ import { createPerAgentStore } from './chatPerAgentStore'
 // ---------------------------------------------------------------------------
 
 export function createBackgroundTaskStore() {
-  const base = createPerAgentStore<BackgroundTaskItem[]>([])
+  // A LIST store, so the row key that identifies a row across broadcasts is
+  // declared once here rather than at each write. See createPerAgentListStore.
+  const base = createPerAgentListStore<BackgroundTaskItem>('rowKey')
   const failed = createPerAgentStore<boolean>(false)
   return {
     get: base.get,
@@ -60,7 +62,7 @@ export function createBackgroundTaskStore() {
      * DOM alone. The broadcast that carries one subagent's new activity string
      * carries the whole registry with it, so a plain replace rebuilt every row
      * on screen: the tooltip under the pointer closed and reopened, and every
-     * status dot restarted its pulse. See `PerAgentStore.setReconciled`.
+     * status dot restarted its pulse. See `PerAgentListStore.setReconciled`.
      */
     replace(agentId: string, protoTasks: ProtoBackgroundTaskItem[]) {
       if (failed.get(agentId))
@@ -69,7 +71,7 @@ export function createBackgroundTaskStore() {
       const prev = base.byAgent[agentId]
       if (prev && shallowEqualArraysDeep(prev, next))
         return
-      base.setReconciled(agentId, next, 'rowKey')
+      base.setReconciled(agentId, next)
     },
     /** Record that the worker could not answer for this agent's registry. */
     markLoadFailed(agentId: string) {

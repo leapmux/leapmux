@@ -28,9 +28,9 @@ describe('codexTurnPlanFromParams', () => {
       ],
     })
     expect(source?.todos).toEqual([
-      { content: 'one', status: 'pending', activeForm: 'one' },
-      { content: 'two', status: 'in_progress', activeForm: 'two' },
-      { content: 'three', status: 'completed', activeForm: 'three' },
+      { rowKey: '0:one', content: 'one', status: 'pending', activeForm: 'one' },
+      { rowKey: '1:two', content: 'two', status: 'in_progress', activeForm: 'two' },
+      { rowKey: '2:three', content: 'three', status: 'completed', activeForm: 'three' },
     ])
     expect(source?.title).toBe('3 tasks')
   })

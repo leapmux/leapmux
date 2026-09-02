@@ -1,10 +1,12 @@
 /// <reference types="vitest/globals" />
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
-import { popoverCard } from '~/styles/popover.css'
+import { beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { DIALOG_HEIGHT_VAR, popoverCard, popoverFieldMenuClamp, popoverMenuClamp, TRIGGER_WIDTH_VAR } from '~/styles/popover.css'
 import { motion } from '~/styles/tokens'
-import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
+import { hoverForTooltip, stubClipped, stubRect } from '~/test-support/clipStub'
+import { classSelector } from '~/test-support/composedClass'
 import { pointerEvent } from '~/test-support/pointer'
+import { installControllableResizeObserver, triggerResizeObserverForSync } from '~/test-support/resizeObserverStub'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 import { Tooltip } from './Tooltip'
 
@@ -725,7 +727,7 @@ describe('dropdownMenuCheckableItem', () => {
       <DropdownMenuCheckableItem
         kind="radio"
         label="Build the thing"
-        detail="4h ago"
+        detail={() => '4h ago'}
         checked={false}
         data-testid="row"
         onSelect={() => {}}
@@ -808,5 +810,137 @@ describe('dropdownMenuCheckableItem', () => {
     ))
 
     expect(document.querySelector('[data-testid$="-label"]')).toBeNull()
+  })
+})
+
+// A popover is in the top layer: it is positioned against the viewport and
+// inherits no width from the form its trigger sits in. Left uncapped, one long
+// option made a menu wider than the dialog that opened it, and a list of fifty
+// ran off the bottom of the screen with the rows past the edge unreachable --
+// `calcPopoverPosition` clamps where a popover STARTS, not how large it grows.
+describe('dropdownMenu size caps', () => {
+  const MENU = 'sized-menu'
+
+  beforeAll(() => {
+    installControllableResizeObserver()
+  })
+
+  function renderMenu(opts: { container?: HTMLElement, matchTriggerWidth?: boolean } = {}) {
+    return render(
+      () => (
+        <DropdownMenu
+          aria-label="Things"
+          data-testid={MENU}
+          matchTriggerWidth={opts.matchTriggerWidth}
+          trigger={p => <button {...p} type="button">Open</button>}
+        >
+          <li>Alpha</li>
+        </DropdownMenu>
+      ),
+      opts.container ? { container: opts.container } : undefined,
+    )
+  }
+
+  // `hidden: true`, because the dialog case below renders into a `<dialog>`
+  // that is not `open`, which puts its whole subtree outside the accessibility
+  // tree.
+  const triggerButton = () => screen.getByRole('button', { name: 'Open', hidden: true })
+
+  function openMenu() {
+    fireEvent.click(triggerButton())
+  }
+
+  // The clamp is what makes a row past the bottom edge REACHABLE. Before it,
+  // only an `as="card"` popover carried one, so every list-shaped menu in the
+  // app -- ThemeChooser's palette among them -- could not be scrolled to.
+  it('clamps a menu-shaped popover, and a card keeps its own class', () => {
+    renderMenu()
+    expect(screen.getByTestId(MENU).matches(classSelector(popoverMenuClamp))).toBe(true)
+    // The width cap is NOT part of it. A kebab is a 24px icon button, and a
+    // menu capped at that leaves a column too narrow to read a row.
+    expect(screen.getByTestId(MENU).matches(classSelector(popoverFieldMenuClamp))).toBe(false)
+    cleanup()
+
+    renderMenu({ matchTriggerWidth: true })
+    expect(screen.getByTestId(MENU).matches(classSelector(popoverFieldMenuClamp))).toBe(true)
+    cleanup()
+
+    render(() => (
+      <DropdownMenu as="card" aria-label="Card" data-testid="card-menu" trigger={p => <button {...p} type="button">Open</button>}>
+        <div>Body</div>
+      </DropdownMenu>
+    ))
+    const card = screen.getByTestId('card-menu')
+    expect(card.matches(classSelector(popoverCard))).toBe(true)
+  })
+
+  // The regression this split exists to prevent: a kebab is a ~24px icon button,
+  // and a menu capped at its trigger is a 24px column with every row
+  // unreadable. Every context menu in the app has such a trigger.
+  it('does not cap a kebab-triggered menu at its trigger', () => {
+    renderMenu()
+    openMenu()
+    const popover = screen.getByTestId(MENU)
+    // Neither the class that reads the property nor a value for it to read.
+    expect(popover.matches(classSelector(popoverFieldMenuClamp))).toBe(false)
+    expect(popover.style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('')
+    // ...while the clamp it DOES take is the one that makes a long list
+    // reachable, which is universal.
+    expect(popover.matches(classSelector(popoverMenuClamp))).toBe(true)
+    expect(popover.style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('')
+  })
+
+  // A menu that did not ask to follow its trigger must not be measured against
+  // it either: a stray custom property is a cap waiting to be applied.
+  it('writes no trigger width unless the caller asked to follow it', () => {
+    renderMenu()
+    openMenu()
+    expect(screen.getByTestId(MENU).style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('')
+  })
+
+  it('writes the trigger width onto the popover, and follows it when it changes', () => {
+    renderMenu({ matchTriggerWidth: true })
+    const trigger = triggerButton()
+    const popover = screen.getByTestId(MENU)
+
+    // Nothing while closed: a cap only matters for a popover on screen, and
+    // measuring at mount is what made it go stale.
+    expect(popover.style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('')
+
+    openMenu()
+    // jsdom measures every box as zero, so this pass proves only that the
+    // component measured the trigger and wrote the result.
+    expect(popover.style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('0px')
+
+    // A window is dragged narrower with no event of its own. A cap measured
+    // once at open would be wrong from then on, and silently.
+    stubRect(trigger, { width: 317 })
+    triggerResizeObserverForSync(trigger)
+    expect(popover.style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('317px')
+  })
+
+  // A menu taller than the dialog it opens in reads as a second window over the
+  // page rather than as the open form of a field inside it.
+  it('caps the height at the dialog that holds the trigger', () => {
+    const dialog = document.createElement('dialog')
+    document.body.append(dialog)
+    onTestFinished(() => dialog.remove())
+
+    renderMenu({ container: dialog })
+    openMenu()
+    const popover = screen.getByTestId(MENU)
+    expect(popover.style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('0px')
+
+    stubRect(dialog, { height: 480 })
+    triggerResizeObserverForSync(dialog)
+    expect(popover.style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('480px')
+  })
+
+  // A menu no dialog holds writes nothing, so the stylesheet's fallback leaves
+  // it the viewport clamp: a sidebar selector must not be capped at zero.
+  it('writes no dialog height for a menu outside one', () => {
+    renderMenu()
+    openMenu()
+    expect(screen.getByTestId(MENU).style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('')
   })
 })

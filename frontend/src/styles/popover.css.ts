@@ -44,6 +44,14 @@ globalStyle('ot-dropdown[data-headless]', {
  * Single-sourced here so a new popover can't re-discover the "stays visible after close" /
  * "margin:auto re-centers" / "eats the next click while closing" bugs the hard way.
  */
+/**
+ * How close a popover may come to the edge of the screen. Written once, because
+ * `popoverColumnClamp` and `popoverMenuClamp` both state it and a menu's own
+ * clamp is the viewport term of a `min()`.
+ */
+const VIEWPORT_MAX_WIDTH = 'calc(100vw - var(--space-4) * 2)'
+const VIEWPORT_MAX_HEIGHT = 'calc(100vh - var(--space-6) * 2)'
+
 export const popoverBase = style({
   position: 'fixed',
   margin: 0,
@@ -75,9 +83,70 @@ export const popoverBase = style({
  */
 export const popoverColumnClamp = style([popoverBase, {
   flexDirection: 'column',
-  maxWidth: 'calc(100vw - var(--space-4) * 2)',
-  maxHeight: 'calc(100vh - var(--space-6) * 2)',
+  maxWidth: VIEWPORT_MAX_WIDTH,
+  maxHeight: VIEWPORT_MAX_HEIGHT,
   overflowY: 'auto',
+}])
+
+/**
+ * The custom properties `DropdownMenu` measures onto its popover, so a MENU can
+ * follow the control it opens from instead of the whole viewport.
+ *
+ * The names are spelled here and read through these constants at the one place
+ * that writes them, so the stylesheet and the component cannot drift.
+ */
+export const TRIGGER_WIDTH_VAR = '--dropdown-trigger-width'
+export const DIALOG_HEIGHT_VAR = '--dropdown-dialog-height'
+
+/**
+ * The clamp EVERY menu popover takes: `popoverColumnClamp`, with the dialog that
+ * holds the trigger as a tighter height limit than the viewport.
+ *
+ * `calcPopoverPosition` clamps where a popover STARTS, not how large it grows,
+ * so a menu of fifty rows ran off the bottom of the screen and the rows past the
+ * bottom edge could not be reached at all. A dialog is also a box the reader
+ * takes in as one thing, and a menu taller than it reads as a second window over
+ * the page rather than as the open form of a field inside it. The viewport stays
+ * as the outer term, for a menu no dialog holds.
+ *
+ * `overflow` on BOTH axes, where `popoverColumnClamp` scrolls only vertically:
+ * the horizontal half is the swipe that reaches a row too wide to fit, on a
+ * narrow field where the checked-state radio and a detail take room the label
+ * cannot give up.
+ *
+ * Deliberately NO width rule. See `popoverFieldMenuClamp`.
+ */
+const triggerWidth = `var(${TRIGGER_WIDTH_VAR}, 100vw)`
+const dialogHeight = `var(${DIALOG_HEIGHT_VAR}, 100vh)`
+
+export const popoverMenuClamp = style([popoverColumnClamp, {
+  maxHeight: `min(${dialogHeight}, ${VIEWPORT_MAX_HEIGHT})`,
+  overflow: 'auto',
+  // A swipe that reaches the end of the list must not carry on into whatever
+  // sits behind the menu.
+  overscrollBehavior: 'contain',
+}])
+
+/**
+ * The extra clamp a FIELD-shaped menu takes: never wider than its own trigger.
+ *
+ * A field's menu is the open form of the control the user clicked, so the two
+ * read as one control when their edges line up, and a row longer than the field
+ * clips instead of pushing the box out over the page.
+ *
+ * OPT-IN, and that is the whole point of the split. A menu's trigger is not
+ * always a field: a kebab is a 24px icon button, and capping its menu at its
+ * trigger leaves a 24px column with every row unreadable. Only a caller that
+ * knows its trigger is field-shaped asks for this -- `DropdownMenu`'s
+ * `matchTriggerWidth`, which `LoadingMenu` sets and nothing else does.
+ *
+ * `min-width` is restated because Oat's own `ot-dropdown [popover]` rule sets
+ * `min-width: 12rem`, and a min-width ALWAYS beats a max-width -- a trigger
+ * narrower than 12rem would otherwise keep a popover wider than itself.
+ */
+export const popoverFieldMenuClamp = style([popoverMenuClamp, {
+  maxWidth: `min(${triggerWidth}, ${VIEWPORT_MAX_WIDTH})`,
+  minWidth: `min(12rem, ${triggerWidth})`,
 }])
 
 /**

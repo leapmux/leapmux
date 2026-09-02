@@ -983,26 +983,34 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 // so Codex applies its own default.
 //
 // The slice order IS the menu order: optionGroupsForAgent maps it into the
-// option group unchanged, and the frontend renders the options in order. Add a
-// new tier at its rank, never at the end -- codexEffortName looks an entry up
-// by id, so appending satisfies the label lookup while putting the tier in the
-// wrong place in every picker. TestCodexDefaultEffortsRankOrder enforces this
-// against the shared effortRank table, so a misplaced tier fails the build.
+// option group unchanged, and the frontend renders the options in order. It is
+// DERIVED from effortLadder rather than written out, so a tier cannot be put in
+// the wrong place: this file states only WHICH tiers Codex offers, and the
+// ladder states what comes before what.
 //
 // Every tier the live CLI reports should appear here, so the static fallback
 // offers the same menu the running session does. A tier that is absent is no
 // longer a labeling hazard: both paths resolve their label through effortLabel,
 // so an unlisted id renders capitalized like its siblings rather than raw.
-var codexDefaultEfforts = []*EffortInfo{
-	codexAutoEffort(),
-	effortTier("ultra"),
-	effortTier("max"),
-	effortTier(EffortXHigh),
-	effortTier(EffortHigh),
-	effortTier("medium"),
-	effortTier("low"),
-	effortTier("minimal"),
-	effortTier("none"),
+var codexDefaultEfforts = buildCodexDefaultEfforts()
+
+// codexEffortIDs is WHICH levels Codex offers. The ORDER comes from
+// effortLadder, so this states membership only: Codex has no `ultracode` rung
+// and no separate `off`, and listing it here in ladder order would be a second
+// statement of the ordering that a level moved in the ladder could fall behind.
+var codexEffortIDs = map[string]bool{
+	"ultra": true, "max": true, EffortXHigh: true, EffortHigh: true,
+	"medium": true, "low": true, "minimal": true, "none": true,
+}
+
+func buildCodexDefaultEfforts() []*EffortInfo {
+	efforts := []*EffortInfo{codexAutoEffort()}
+	for _, id := range effortLadderIDs() {
+		if codexEffortIDs[id] {
+			efforts = append(efforts, effortTier(id))
+		}
+	}
+	return efforts
 }
 
 // codexAutoEffort is the LeapMux-side "auto" sentinel. The CLI never reports it,

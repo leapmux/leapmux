@@ -47,8 +47,9 @@ interface BackgroundTaskListProps {
  * subset, which let a new kind ship reachable only through All -- the tab list
  * and the empty messages have to be one declaration for that to be impossible.
  *
- * A new kind still needs two things this cannot force: an arm in
- * `protoBackgroundTaskToStore`, and an icon in `kindIcon` below.
+ * A new kind still needs two things this cannot force: a case in
+ * `protoBackgroundTaskToStore`, and a case in the kind-icon `Show` inside
+ * `rowBody` below.
  */
 const KIND_TABS_META: Record<BackgroundTaskKindFilter, { label: string, empty: string }> = {
   all: { label: 'All', empty: 'No background tasks' },
@@ -218,6 +219,14 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // Memoized so a broadcast tick re-runs sort+group once (not twice, once per
   // JSX read of `.ungrouped`/`.groups`), and only when the visible rows change.
   const grouped = createMemo(() => groupBackgroundTasks(sortBackgroundTasks(visible())))
+  // The keys alone, so the group `For` below reconciles on a primitive that
+  // survives the memo rebuilding its group objects. Its own memo, so a recompute
+  // that leaves the set of groups unchanged does not re-run the `For` at all.
+  const groupKeys = createMemo(
+    () => grouped().groups.map(g => g.key),
+    undefined,
+    { equals: (a, b) => a.length === b.length && a.every((k, i) => k === b[i]) },
+  )
 
   /**
    * The row's inner content and its data attributes are identical for both
@@ -228,9 +237,9 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
    * returns an element. That distinction is the whole point of this shape. A
    * `{renderStatusDot(item)}` re-runs its whole body whenever any field it reads
    * changes and puts a NEW element in place of the old one, so a task that
-   * reported progress lost the tooltip the pointer was resting on and restarted
-   * the pulse on its status dot. A prop getter updates one attribute of an
-   * element that stays.
+   * reported progress lost the tooltip under the pointer and restarted the pulse
+   * on its status dot. A prop getter updates one attribute of an element that
+   * stays.
    *
    * `~/stores/chatPerAgentStore`'s `setReconciled` is the other half: without a
    * store that keeps a row's identity across a broadcast, `<For>` would rebuild
@@ -305,9 +314,16 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // finishes with, and the child agent id a subagent gets only once it spawns.
   // A frozen `data-status` would be invisible on screen and wrong for every E2E
   // locator that selects on it.
-  const rowAttrs = (item: BackgroundTaskItem, extraClass?: string) => ({
-    'class': extraClass ? `${styles.taskRow} ${extraClass}` : styles.taskRow,
-    get 'classList'() { return { [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) } },
+  const rowAttrs = (item: BackgroundTaskItem, clickable?: () => boolean) => ({
+    'class': styles.taskRow,
+    get 'classList'() {
+      return {
+        [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status),
+        // taskRowStatic drops the pointer cursor taskRow sets. A getter, because
+        // a subagent row becomes clickable mid-life -- see renderRow.
+        [styles.taskRowStatic]: clickable ? !clickable() : true,
+      }
+    },
     'data-testid': 'bg-task-row',
     get 'data-status'() { return item.status },
     get 'data-kind'() { return item.kind },
@@ -315,19 +331,33 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   })
 
   const renderRow = (item: BackgroundTaskItem): JSX.Element => {
-    // An accessor, not a value: a subagent row becomes clickable only once the
-    // worker reports the child agent id, which arrives in a later broadcast --
-    // and the row now survives that broadcast instead of being rebuilt by it.
+    // The TAG is decided by fields that never change over a row's life, so the
+    // element survives every broadcast. `childAgentId` is not one of them: the
+    // worker reports it a broadcast or two after the row itself, and a `Show`
+    // keyed on it swapped a <div> for a <button> at exactly the moment the user
+    // is watching that row -- rebuilding its whole body, closing the title
+    // tooltip under the pointer and restarting the status dot's pulse. That is
+    // the flicker the rest of this component exists to remove.
+    //
+    // So a subagent row that the caller can open is ALWAYS a <button>, and the
+    // arrival of the id only flips one attribute on it.
+    const openable = item.kind === 'subagent' && !!props.onOpenSubagent
     const clickable = () => opensSubagentTranscript(item) && !!props.onOpenSubagent
+    if (!openable)
+      return <div {...rowAttrs(item)}>{rowBody(item)}</div>
     return (
-      <Show
-        when={clickable()}
-        fallback={<div {...rowAttrs(item, styles.taskRowStatic)}>{rowBody(item)}</div>}
+      <button
+        type="button"
+        {...rowAttrs(item, clickable)}
+        // aria-disabled, never the `disabled` attribute: a disabled control
+        // dispatches no pointer event of its own OR to its descendants, which
+        // would kill the row's own title tooltip for as long as the subagent is
+        // still spawning.
+        aria-disabled={clickable() ? undefined : 'true'}
+        onClick={() => clickable() && props.onOpenSubagent?.(item)}
       >
-        <button type="button" {...rowAttrs(item)} onClick={() => props.onOpenSubagent?.(item)}>
-          {rowBody(item)}
-        </button>
-      </Show>
+        {rowBody(item)}
+      </button>
     )
   }
 
@@ -369,13 +399,25 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
           )}
         >
           <For each={grouped().ungrouped}>{item => renderRow(item)}</For>
-          <For each={grouped().groups}>
-            {group => (
-              <>
-                <ClippedText text={groupHeading(group.label)} class={styles.groupHeader} />
-                <For each={group.items}>{item => renderRow(item)}</For>
-              </>
-            )}
+          {/* Keyed by the group KEY, not by the group object. `groupBackgroundTasks`
+              builds fresh `{key, label, items}` objects on every run and `For`
+              reconciles by reference, so iterating the objects tore down and
+              rebuilt every grouped row whenever the memo re-ran -- which any
+              status change does, because the sort reads `status`. That is the
+              same flicker `setReconciled` removes for the ungrouped rows, and it
+              reached every row of a Claude workflow, which groups its subagents.
+              `For` compares primitives by value, and a group key is unique by
+              construction. */}
+          <For each={groupKeys()}>
+            {(key) => {
+              const group = createMemo(() => grouped().groups.find(g => g.key === key))
+              return (
+                <>
+                  <ClippedText text={groupHeading(group()?.label ?? key)} class={styles.groupHeader} />
+                  <For each={group()?.items ?? []}>{item => renderRow(item)}</For>
+                </>
+              )
+            }}
           </For>
         </Show>
       </div>

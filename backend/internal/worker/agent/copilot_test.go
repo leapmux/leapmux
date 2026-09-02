@@ -575,7 +575,7 @@ func TestACPConfigOption_EffortSortedStrongestFirst(t *testing.T) {
 // (low ahead of high); the strict-weak-ordering comparator now sorts the ranked pair.
 func TestSortEffortOptionsDescending_RanksUnrankedLast(t *testing.T) {
 	opts := []*leapmuxv1.AvailableOption{{Id: "low"}, {Id: "default"}, {Id: "high"}}
-	sortEffortOptionsDescending(opts)
+	sortEffortsDescending(opts)
 	ids := func() []string {
 		out := make([]string, len(opts))
 		for i, o := range opts {
@@ -591,7 +591,7 @@ func TestSortEffortOptionsDescending_RanksUnrankedLast(t *testing.T) {
 // values keep their relative (server-reported) order while sorting after ranked ones.
 func TestSortEffortOptionsDescending_StableAmongUnranked(t *testing.T) {
 	opts := []*leapmuxv1.AvailableOption{{Id: "alpha"}, {Id: "high"}, {Id: "beta"}, {Id: "low"}}
-	sortEffortOptionsDescending(opts)
+	sortEffortsDescending(opts)
 	ids := make([]string, len(opts))
 	for i, o := range opts {
 		ids[i] = o.GetId()
@@ -605,7 +605,7 @@ func TestSortEffortOptionsDescending_StableAmongUnranked(t *testing.T) {
 // tail -- effortRankOf lowercases before the lookup.
 func TestSortEffortOptionsDescending_CaseInsensitive(t *testing.T) {
 	opts := []*leapmuxv1.AvailableOption{{Id: "LOW"}, {Id: "High"}, {Id: "Medium"}}
-	sortEffortOptionsDescending(opts)
+	sortEffortsDescending(opts)
 	ids := make([]string, len(opts))
 	for i, o := range opts {
 		ids[i] = o.GetId()
@@ -619,7 +619,7 @@ func TestSortEffortOptionsDescending_CaseInsensitive(t *testing.T) {
 // mid-tier synonym is not stranded after every ranked value.
 func TestSortEffortOptionsDescending_KnownSynonyms(t *testing.T) {
 	opts := []*leapmuxv1.AvailableOption{{Id: "moderate"}, {Id: "very_high"}, {Id: "minimal"}}
-	sortEffortOptionsDescending(opts)
+	sortEffortsDescending(opts)
 	ids := make([]string, len(opts))
 	for i, o := range opts {
 		ids[i] = o.GetId()

@@ -302,10 +302,40 @@ type Terminal struct {
 	// cmd.Wait() in a separate goroutine, so a closed exitCh does NOT
 	// imply screenBuf writes have stopped — wait on this instead.
 	readDoneCh chan struct{}
+	// childSideClosedCh is closed once the natural-exit path finished closing
+	// the child side of the pty, which is the act that ends the reader.
+	//
+	// It exists so a caller that waits for the drain measures only the
+	// READER's own scheduling, as the drain grace claims to. exitCh closes
+	// first, and on Windows the close between the two blocks until the console
+	// host flushes -- so a grace started at exitCh would spend itself on that
+	// flush and give up before the reader ever ran.
+	//
+	// Only waitForExit closes it. Stop's own close does not, because Stop
+	// discards the unread output by design and nothing waits for its drain.
+	childSideClosedCh chan struct{}
 	// childSideOnce guards closePTYChildSide. Both the natural-exit path and
 	// Stop reach it, and on Windows it must run exactly once — see the Windows
 	// implementation for what a second call closes.
 	childSideOnce sync.Once
+	// ptyMu serializes a pty TEARDOWN against a pty CALL. Resize and SendInput
+	// take it for reading; closeChildSide and closeWorkerSide take it for
+	// writing.
+	//
+	// It exists because a natural exit now tears the pty down, and that path
+	// holds neither t.mu nor the `stopped` flag those two methods check: only
+	// Stop sets `stopped`, and a terminal that exits on its own stays in the
+	// manager until the user closes the tab. On Windows the teardown is
+	// ClosePseudoConsole on a raw handle that go-pty never clears, and go-pty's
+	// conPty takes its OWN mutex around both Close and Resize for exactly this
+	// reason -- so a resize that straddles the close would call
+	// ResizePseudoConsole on a handle another goroutine is closing.
+	//
+	// readOutput stays OUTSIDE it. Its Read blocks until the teardown ends it,
+	// so a reader holding this lock would deadlock the writer that must run to
+	// wake it. That is safe: on Windows Read uses the output pipe, which
+	// ClosePseudoConsole does not touch.
+	ptyMu sync.RWMutex
 }
 
 // Options configures a new Terminal.
@@ -432,14 +462,15 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 	}
 
 	t := &Terminal{
-		id:         opts.ID,
-		cmd:        cmd,
-		ptmx:       ptmx,
-		jobObject:  jobObject,
-		outputFn:   wrappedOutput,
-		screenBuf:  screenBuf,
-		exitCh:     make(chan struct{}),
-		readDoneCh: make(chan struct{}),
+		id:                opts.ID,
+		cmd:               cmd,
+		ptmx:              ptmx,
+		jobObject:         jobObject,
+		outputFn:          wrappedOutput,
+		screenBuf:         screenBuf,
+		exitCh:            make(chan struct{}),
+		readDoneCh:        make(chan struct{}),
+		childSideClosedCh: make(chan struct{}),
 	}
 
 	go func() {
@@ -461,12 +492,16 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 // SendInput writes data to the PTY.
 func (t *Terminal) SendInput(data []byte) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.stopped {
+		t.mu.Unlock()
 		return fmt.Errorf("terminal is stopped")
 	}
+	t.mu.Unlock()
 
+	// ptyMu, not t.mu: `stopped` covers only a Stop, and a terminal that exited
+	// on its own tore its child side down without setting it. See ptyMu.
+	t.ptyMu.RLock()
+	defer t.ptyMu.RUnlock()
 	_, err := t.ptmx.Write(data)
 	return err
 }
@@ -474,12 +509,14 @@ func (t *Terminal) SendInput(data []byte) error {
 // Resize changes the terminal dimensions.
 func (t *Terminal) Resize(cols, rows uint16) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.stopped {
+		t.mu.Unlock()
 		return fmt.Errorf("terminal is stopped")
 	}
+	t.mu.Unlock()
 
+	t.ptyMu.RLock()
+	defer t.ptyMu.RUnlock()
 	return t.ptmx.Resize(int(cols), int(rows))
 }
 
@@ -491,14 +528,21 @@ func (t *Terminal) Resize(cols, rows uint16) error {
 // Both pty ends close here, child side first. A forced stop discards whatever
 // the child wrote and nobody read yet, which is the point: the caller wants the
 // session gone, not drained.
+//
+// `stopped` is claimed under t.mu and the lock is RELEASED before the closes.
+// On Windows the child-side close blocks until the console host flushes, and a
+// natural exit can already be inside that call -- so holding t.mu across it
+// would stall every SendInput and Resize for the length of a flush this
+// terminal is not even performing. The claim is what makes the early return
+// above correct; the closes need only ptyMu, which they take themselves.
 func (t *Terminal) Stop() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.stopped {
+		t.mu.Unlock()
 		return
 	}
 	t.stopped = true
+	t.mu.Unlock()
 
 	t.closeChildSide()
 	t.closeWorkerSide()
@@ -521,36 +565,55 @@ func (t *Terminal) Wait() int {
 	return t.exitCode
 }
 
-// WaitForReadDrained blocks until readOutput has returned, after which
-// the screen buffer's cumulative offset is stable. Only returns once
-// the PTY is closed (via Stop or natural child exit).
-func (t *Terminal) WaitForReadDrained() {
-	<-t.readDoneCh
-}
-
-// waitForReadDrained is WaitForReadDrained with a bound, and reports whether
-// the reader finished inside it.
+// waitForReadDrained blocks until readOutput returns, after which the screen
+// buffer's cumulative offset is stable, and reports whether the reader finished
+// inside `within`. A non-positive `within` waits with no limit.
 //
-// The bound exists for a pty this worker cannot end. The natural-exit path
+// The limit exists for a pty this worker cannot end. The natural-exit path
 // closes the child side, and on a Unix tty that ends the reader only once the
 // LAST descriptor for it is gone -- so a descendant that escaped the shell's
 // kill group (a setsid daemon that inherited the tty) holds the reader open,
-// and this process cannot reach that descendant. On Windows the close itself
-// waits on the console host, which a parked output handler holds up. An
-// unbounded wait would strand the caller for ever in both cases. Giving up
-// returns a screen that can be one chunk short of the shell's last write, which
-// is what the caller received before the drain wait existed at all.
+// and this process cannot reach that descendant. A wait with no limit would
+// strand the caller for ever. Giving up returns a screen that can be one chunk
+// short of the shell's last write, which is what the caller received before the
+// drain wait existed at all.
+//
+// `within` is spent TWICE at most: once waiting for the child side to close --
+// the act that ends the reader, and not instant on Windows -- and once waiting
+// for the reader itself. Measured as one budget from the exit, the flush would
+// consume the grace and it would expire before the reader was ever scheduled.
+// Stop never closes childSideClosedCh, so a caller that stopped the terminal
+// takes the direct path below -- it discards the unread output by design.
 func (t *Terminal) waitForReadDrained(within time.Duration) bool {
 	if within <= 0 {
 		<-t.readDoneCh
 		return true
 	}
-	timer := time.NewTimer(within)
-	defer timer.Stop()
+	// TWO waits, each with its OWN budget of `within`, because each can hang for
+	// a different reason and neither may spend the other's budget.
+	//
+	// The close is itself a wait: on Windows ClosePseudoConsole blocks until the
+	// console host drains the output pipe, which a parked output handler can
+	// hold up for ever. One shared timer would put that flush inside the
+	// reader's grace and give up before the reader was ever scheduled -- on the
+	// one platform this whole path exists for. No timer at all would strand the
+	// caller there instead, which loses the exit outright.
+	closed := time.NewTimer(within)
+	defer closed.Stop()
+	select {
+	case <-t.childSideClosedCh:
+	case <-t.readDoneCh:
+		// Already finished, by Stop's close or by the child's own EOF.
+		return true
+	case <-closed.C:
+		return false
+	}
+	drained := time.NewTimer(within)
+	defer drained.Stop()
 	select {
 	case <-t.readDoneCh:
 		return true
-	case <-timer.C:
+	case <-drained.C:
 		return false
 	}
 }
@@ -558,10 +621,16 @@ func (t *Terminal) waitForReadDrained(within time.Duration) bool {
 // closeChildSide closes the pty end the child process wrote through, at most
 // once per terminal. The reader then drains what the child left behind and
 // returns; see closePTYChildSide for the per-platform mechanism.
+//
+// Under ptyMu, so no Resize or SendInput is inside a pty call while the handle
+// under it closes. The Once is INSIDE the lock, so a second caller waits for
+// the first close rather than returning while it is still in flight.
 func (t *Terminal) closeChildSide() {
 	if t.ptmx == nil {
 		return
 	}
+	t.ptyMu.Lock()
+	defer t.ptyMu.Unlock()
 	t.childSideOnce.Do(func() { closePTYChildSide(t.ptmx) })
 }
 
@@ -572,6 +641,8 @@ func (t *Terminal) closeWorkerSide() {
 	if t.ptmx == nil {
 		return
 	}
+	t.ptyMu.Lock()
+	defer t.ptyMu.Unlock()
 	closePTYWorkerSide(t.ptmx)
 }
 
@@ -686,12 +757,18 @@ func (t *Terminal) waitForExit() {
 	// Buffered output survives: both platforms hand the reader what is already
 	// there before they end the read.
 	//
-	// It runs AFTER exitCh, so no waiter on the exit is gated on it. On Windows
-	// this closes the pseudoconsole, which blocks until the console host
-	// flushes; a handler that parks the reader mid-chunk therefore parks this
-	// call too. Exiting is the fact the child established, and it is reported
-	// either way -- only the drain waits, and that wait is bounded.
+	// It runs AFTER exitCh, so nothing that waits on the exit has to wait for
+	// it. On Windows this closes the pseudoconsole, which blocks until the
+	// console host flushes; a handler that parks the reader mid-chunk therefore
+	// parks this call too. Exiting is the fact the child established, and it is
+	// reported either way -- only the drain waits, and that wait has a limit.
+	//
+	// childSideClosedCh is what keeps that limit measuring what it claims to.
+	// installTerminal's exit goroutine wakes on exitCh, so without this signal
+	// its grace would start HERE and the console-host flush would run inside
+	// it -- on the one platform this whole path exists for.
 	t.closeChildSide()
+	close(t.childSideClosedCh)
 
 	slog.Info("terminal exited",
 		"terminal_id", t.id,

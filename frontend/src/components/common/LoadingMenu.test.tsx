@@ -1,11 +1,9 @@
 import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-library'
-import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clippedText } from '~/styles/shared.css'
-import { hoverForTooltip, stubClipped, stubRect } from '~/test-support/clipStub'
-import { menuOptions, menuOptionValues, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'
-import { installControllableResizeObserver, triggerResizeObserverForSync } from '~/test-support/resizeObserverStub'
+import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
+import { menuOptionLabels, menuOptions, menuOptionValues, menuTrigger, menuTriggerText, openMenu, pickMenuValue } from '~/test-support/menu'
 import { LoadingMenu } from './LoadingMenu'
-import { DIALOG_HEIGHT_VAR, TRIGGER_WIDTH_VAR } from './LoadingMenu.css'
 
 afterEach(() => {
   cleanup()
@@ -216,7 +214,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
 
   describe('the detail column', () => {
     const dated = [
-      { value: 'a', label: 'Alpha', detail: { text: '3d ago' } },
+      { value: 'a', label: 'Alpha', detail: { text: () => '3d ago' } },
       { value: 'b', label: 'Beta' },
     ]
 
@@ -238,8 +236,11 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     // `SessionSelect` supplies a live `RelativeTime` here.
     it('prefers the caller-rendered detail over its text', () => {
       renderMenu({
-        options: [{ value: 'a', label: 'Alpha', detail: { text: '3d ago', render: () => <em>three days</em> } }],
+        options: [{ value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: () => <em>three days</em> } }],
       })
+      // The renderer is deferred to the first OPEN; the text stands until then.
+      expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
+      openMenu(MENU)
       const row = screen.getByTestId('loading-menu-option-a')
       expect(row.querySelector('em')?.textContent).toBe('three days')
       expect(row.textContent).not.toContain('3d ago')
@@ -251,8 +252,12 @@ describe('the one-of-N menu (LoadingMenu)', () => {
       const drawDetail = vi.fn(() => <em>three days</em>)
       renderMenu({
         value: 'a',
-        options: [{ value: 'a', label: 'Alpha', detail: { text: '3d ago', render: drawDetail } }],
+        options: [{ value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: drawDetail } }],
       })
+      // ONCE while closed: the trigger is always on screen, and the row's own
+      // copy waits for the open that reveals it.
+      expect(drawDetail).toHaveBeenCalledTimes(1)
+      openMenu(MENU)
       // Twice: the row and the trigger. Once would mean one DOM node asked to
       // sit in two places, and it would appear in whichever drew it last.
       expect(drawDetail).toHaveBeenCalledTimes(2)
@@ -287,6 +292,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     vi.useFakeTimers()
     try {
       renderMenu({ options: [{ value: 'a', label: 'A label far wider than the row that holds it' }] })
+      openMenu(MENU)
       const label = screen.getByTestId('loading-menu-option-a-label')
       stubClipped(label)
       expect(hoverForTooltip(label)?.textContent).toBe('A label far wider than the row that holds it')
@@ -312,6 +318,36 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     }
   })
 
+  // What a menu nobody opened must NOT allocate. `DropdownMenu` mounts its
+  // children eagerly, so the per-row cost is paid by every mounted menu at rest
+  // -- fifty rows for a full session list, and `BranchSelect`'s list has no
+  // upper limit. A row is still mounted and still readable; only the parts that
+  // exist for an interaction wait for one.
+  it('allocates no per-row tooltip or live detail until it is opened', () => {
+    const drawDetail = vi.fn(() => <em>three days</em>)
+    renderMenu({
+      options: [
+        { value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: drawDetail } },
+        { value: 'b', label: 'Beta', detail: { text: () => '5d ago', render: drawDetail } },
+      ],
+    })
+
+    // The rows ARE there, so every closed-menu assertion still holds.
+    expect(menuOptionValues(MENU)).toEqual(['a', 'b'])
+    expect(menuOptionLabels(MENU)).toEqual(['Alpha', 'Beta'])
+    // ...but no row drew the caller's element, and no row's label owns a
+    // tooltip: a Tooltip renders a wrapper around its target, and the plain
+    // branch renders the bare span instead.
+    expect(drawDetail).not.toHaveBeenCalled()
+    expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
+
+    openMenu(MENU)
+
+    expect(drawDetail).toHaveBeenCalled()
+    expect(screen.getByTestId('loading-menu-option-a').querySelector('em')?.textContent)
+      .toBe('three days')
+  })
+
   it('warms its caller through onOpen, the seam focus used to be', () => {
     // `WorkerSelector` prefetches the metadata for the workers it is about to
     // list. The `<select>` hung that on `focus`; a menu has only the open.
@@ -320,69 +356,6 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     expect(onOpen).not.toHaveBeenCalled()
     fireEvent.click(menuTrigger(MENU))
     expect(onOpen).toHaveBeenCalledTimes(1)
-  })
-})
-
-// The popover is in the top layer: it is positioned against the viewport and
-// inherits no width from the form its trigger sits in. Left uncapped, one long
-// option made the menu wider than the dialog that opened it, and a list of
-// fifty ran off the bottom of the screen.
-describe('loadingMenu width cap', () => {
-  beforeAll(() => {
-    installControllableResizeObserver()
-  })
-
-  it('writes the trigger width onto the popover, and follows it when it changes', () => {
-    renderMenu()
-    const trigger = menuTrigger(MENU)
-    const popover = screen.getByTestId(MENU)
-
-    // jsdom measures every box as zero, so the first pass proves only that the
-    // component measured the trigger and wrote the result.
-    expect(popover.style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('0px')
-
-    // A dialog relayouts under a phone's keyboard and a window is dragged
-    // narrower, both with no event of their own. A cap measured once at mount
-    // would be wrong from then on, and silently.
-    stubRect(trigger, { width: 317 })
-    triggerResizeObserverForSync(trigger)
-    expect(popover.style.getPropertyValue(TRIGGER_WIDTH_VAR)).toBe('317px')
-  })
-
-  // A menu taller than the dialog it opens in reads as a second window over the
-  // page rather than as the open form of a field inside it.
-  it('caps the height at the dialog that holds the trigger', () => {
-    const dialog = document.createElement('dialog')
-    document.body.append(dialog)
-    onTestFinished(() => dialog.remove())
-
-    const onChange = vi.fn()
-    render(
-      () => (
-        <LoadingMenu
-          ariaLabel="Thing"
-          value=""
-          onChange={onChange}
-          emptyLabel="No things"
-          options={[{ value: 'a', label: 'Alpha' }]}
-          data-testid={MENU}
-        />
-      ),
-      { container: dialog },
-    )
-    const popover = screen.getByTestId(MENU)
-    expect(popover.style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('0px')
-
-    stubRect(dialog, { height: 480 })
-    triggerResizeObserverForSync(dialog)
-    expect(popover.style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('480px')
-  })
-
-  // A menu no dialog holds writes nothing, so the stylesheet's fallback leaves
-  // it the viewport clamp: a sidebar selector must not be capped at zero.
-  it('writes no dialog height for a menu outside one', () => {
-    renderMenu()
-    expect(screen.getByTestId(MENU).style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('')
   })
 })
 

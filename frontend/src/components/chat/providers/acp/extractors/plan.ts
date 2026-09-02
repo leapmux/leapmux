@@ -1,6 +1,6 @@
 import type { TodoListSource } from '../../../todoListMessage'
 import type { TodoItem } from '~/stores/chatTodos'
-import { normalizeTodoStatus } from '~/stores/chatTodos'
+import { normalizeTodoStatus, todoRowKey } from '~/stores/chatTodos'
 
 interface AcpPlanEntry {
   priority?: string
@@ -19,11 +19,17 @@ export function acpPlanFromEntries(
   if (!entries)
     return null
 
-  const todos: TodoItem[] = entries.map(e => ({
-    content: e?.content ?? '',
-    status: normalizeTodoStatus(e?.status),
-    activeForm: '',
-  }))
+  const todos: TodoItem[] = entries.map((e, i) => {
+    const content = e?.content ?? ''
+    return {
+      // ACP sends a whole plan with no ids, so position plus content is the
+      // identity -- see TodoItem.rowKey.
+      rowKey: todoRowKey(undefined, i, content),
+      content,
+      status: normalizeTodoStatus(e?.status),
+      activeForm: '',
+    }
+  })
 
   return {
     toolName: 'Plan',

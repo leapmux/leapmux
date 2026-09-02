@@ -646,8 +646,8 @@ describe('backgroundTaskList load failure', () => {
  * The registry arrives whole on every broadcast, so a subagent that reports
  * progress every few seconds redraws the section that often. A row rebuilt from
  * scratch takes its tooltip and its animations with it: the full-title tooltip
- * the pointer was resting on closed and reopened, and the status dot restarted
- * its pulse -- both under a cursor that never moved.
+ * under the pointer closed and reopened, and the status dot restarted its pulse
+ * -- both under a cursor that never moved.
  *
  * The store half is `setReconciled` in `~/stores/chatPerAgentStore`, which is
  * what keeps a row's identity across the broadcast. These cases hold the
@@ -710,21 +710,129 @@ describe('backgroundTaskList in-place updates', () => {
   })
 
   // The row becomes clickable only once the worker reports the child agent id,
-  // which arrives in a later broadcast than the row itself.
-  it('turns into a button once the child agent id arrives', () => {
+  // which arrives in a later broadcast than the row itself -- so the TAG cannot
+  // depend on it. A `Show` keyed on the id swapped a <div> for a <button> and
+  // rebuilt the whole row body at exactly the moment the user is watching that
+  // row spawn: the title tooltip closed and the status dot's pulse restarted,
+  // which is the flicker every other case here exists to prevent.
+  it('becomes clickable without rebuilding the row when the child agent id arrives', () => {
     const [tasks, setTasks] = createStore<BackgroundTaskItem[]>([
       row({ rowKey: 't1', title: 'Review the diff', status: 'running' }),
+    ])
+    const onOpenSubagent = vi.fn()
+    const { container } = render(() => (
+      <BackgroundTaskList variant="sidebar" tasks={tasks} onOpenSubagent={onOpenSubagent} />
+    ))
+    const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    const dotBefore = container.querySelector('[data-testid="bg-task-status-dot"]')!
+    // Always a button, so nothing about the id can change the element.
+    expect(rowBefore.tagName).toBe('BUTTON')
+    // ...but not yet an ENABLED one: there is no transcript to open.
+    expect(rowBefore.getAttribute('aria-disabled')).toBe('true')
+    expect(classes(rowBefore)).toContain(styles.taskRowStatic)
+    fireEvent.click(rowBefore)
+    expect(onOpenSubagent).not.toHaveBeenCalled()
+
+    setTasks(0, 'childAgentId', 'c1')
+
+    expect(container.querySelector('[data-testid="bg-task-row"]')).toBe(rowBefore)
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dotBefore)
+    expect(rowBefore.dataset.childAgentId).toBe('c1')
+    expect(rowBefore.getAttribute('aria-disabled')).toBeNull()
+    expect(classes(rowBefore)).not.toContain(styles.taskRowStatic)
+    fireEvent.click(rowBefore)
+    expect(onOpenSubagent).toHaveBeenCalledTimes(1)
+  })
+
+  // `aria-disabled`, never the `disabled` attribute. A disabled control
+  // dispatches no pointer event of its own OR to its descendants, so the row's
+  // own title tooltip would be unreachable for as long as the subagent spawns --
+  // and that tooltip is the only route to a clipped title.
+  it('leaves a not-yet-openable row able to show its own title tooltip', () => {
+    vi.useFakeTimers()
+    try {
+      const long = 'A title far wider than the row that holds it'
+      const [tasks] = createStore<BackgroundTaskItem[]>([
+        row({ rowKey: 't1', title: long, status: 'running' }),
+      ])
+      const { container } = render(() => (
+        <BackgroundTaskList variant="sidebar" tasks={tasks} onOpenSubagent={() => {}} />
+      ))
+      const el = container.querySelector<HTMLButtonElement>('[data-testid="bg-task-row"]')!
+      expect(el.getAttribute('aria-disabled')).toBe('true')
+      expect(el.disabled).toBe(false)
+
+      const title = titles(container)[0]!
+      stubClipped(title)
+      expect(hoverForTooltip(title)?.textContent).toBe(long)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A shell row can never open a transcript, so it is not a button at all --
+  // the tag still follows the one field that cannot change over a row's life.
+  it('draws a shell row as a plain element', () => {
+    const [tasks] = createStore<BackgroundTaskItem[]>([
+      row({ rowKey: 't1', title: 'npm test', kind: 'shell', status: 'running' }),
     ])
     const { container } = render(() => (
       <BackgroundTaskList variant="sidebar" tasks={tasks} onOpenSubagent={() => {}} />
     ))
     expect(container.querySelector('[data-testid="bg-task-row"]')!.tagName).toBe('DIV')
+  })
 
-    setTasks(0, 'childAgentId', 'c1')
+  /**
+   * The same guarantee for a GROUPED row, which is where a real Claude workflow
+   * puts every subagent it spawns.
+   *
+   * `groupBackgroundTasks` builds fresh group objects on every run, and the
+   * memo it feeds re-runs on any status change, because the sort reads
+   * `status`. Iterating those objects with `For` -- which reconciles by
+   * reference -- therefore tore down and rebuilt every row of the section
+   * whenever ANY row in the list changed status, however well the store
+   * reconciled the items underneath. Every other case in this describe uses an
+   * ungrouped fixture and passes either way.
+   */
+  it('keeps a grouped row and its dot across a status change elsewhere in the group', () => {
+    const { container, setTasks } = renderLiveList([
+      row({ rowKey: 't1', title: 'Review the diff', status: 'running', groupKey: 'wf:x', groupLabel: 'Workflow' }),
+      row({ rowKey: 't2', title: 'Write the tests', status: 'pending', groupKey: 'wf:x', groupLabel: 'Workflow' }),
+    ])
+    const rowsBefore = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const dotsBefore = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
+    expect(rowsBefore).toHaveLength(2)
 
-    const el = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
-    expect(el.tagName).toBe('BUTTON')
-    expect(el.dataset.childAgentId).toBe('c1')
+    // The SECOND row finishes. The first one did not change at all.
+    setTasks(1, 'status', 'completed')
+
+    const rowsAfter = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    expect(rowsAfter[0]).toBe(rowsBefore[0])
+    expect([...container.querySelectorAll('[data-testid="bg-task-status-dot"]')][0]).toBe(dotsBefore[0])
+    expect(rowsAfter.map(el => (el as HTMLElement).dataset.status)).toEqual(['running', 'completed'])
+  })
+
+  it('keeps a hovered tooltip on a grouped row across a rebroadcast', () => {
+    vi.useFakeTimers()
+    try {
+      const long = 'A grouped title far wider than the row that holds it'
+      const { container, setTasks } = renderLiveList([
+        row({ rowKey: 't1', title: long, status: 'running', groupKey: 'wf:x', groupLabel: 'Workflow' }),
+        row({ rowKey: 't2', title: 'Write the tests', status: 'pending', groupKey: 'wf:x', groupLabel: 'Workflow' }),
+      ])
+      const title = titles(container)[0]!
+      stubClipped(title)
+      expect(hoverForTooltip(title)?.textContent).toBe(long)
+
+      setTasks(1, 'status', 'running')
+
+      expect(titles(container)[0]).toBe(title)
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(long)
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   /**

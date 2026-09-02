@@ -283,7 +283,7 @@ func (c *fakeStartupClock) fire(t *testing.T) {
 // TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID pins the two
 // states in which begin hands out the claim: an id nobody holds, and one whose
 // entry already FAILED. A wait in either is a wait for a startup that is not
-// running, and the caller would pay the whole bound for nothing.
+// running, and the caller would pay the whole limit for nothing.
 func TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID(t *testing.T) {
 	t.Parallel()
 
@@ -291,10 +291,10 @@ func TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID(t *testing.
 	clock := newFakeStartupClock()
 	core.clock = clock
 
-	assert.True(t, core.awaitInFlight("tab-unclaimed", time.Hour))
+	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-unclaimed", time.Hour))
 
 	core.fail("tab-failed", "claude: command not found")
-	assert.True(t, core.awaitInFlight("tab-failed", time.Hour))
+	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-failed", time.Hour))
 
 	clock.mu.Lock()
 	defer clock.mu.Unlock()
@@ -307,13 +307,23 @@ func TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID(t *testing.
 func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T) {
 	t.Parallel()
 
+	// `closed` tells the three transitions apart, and it is the whole reason the
+	// wait reports more than "it settled": a caller that must have a process
+	// starts one on a startup that ENDED, and must not on one a close TORE
+	// DOWN -- the tab is going away, and the row that says so is not written
+	// yet.
 	for _, tc := range []struct {
 		name string
 		end  func(core *startupCore)
+		want startupWait
 	}{
-		{"succeed", func(core *startupCore) { core.succeed("tab-1") }},
-		{"fail", func(core *startupCore) { core.fail("tab-1", "boom") }},
-		{"cancelAndClear", func(core *startupCore) { core.cancelAndClear("tab-1", keepWorktreeOnClose) }},
+		{"succeed", func(core *startupCore) { core.succeed("tab-1") }, startupWait{settled: true}},
+		{"fail", func(core *startupCore) { core.fail("tab-1", "boom") }, startupWait{settled: true}},
+		{
+			"cancelAndClear",
+			func(core *startupCore) { core.cancelAndClear("tab-1", keepWorktreeOnClose) },
+			startupWait{settled: true, closed: true},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -323,7 +333,7 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 			core.clock = clock
 			require.NotNil(t, core.begin("tab-1", func() {}))
 
-			done := make(chan bool, 1)
+			done := make(chan startupWait, 1)
 			go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
 
 			clock.waitArmed(t)
@@ -335,8 +345,8 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 
 			tc.end(&core)
 			select {
-			case ok := <-done:
-				assert.True(t, ok, "the holder finished, so the wait must report success")
+			case got := <-done:
+				assert.Equal(t, tc.want, got, "the holder finished, so the wait must report how")
 			case <-time.After(10 * time.Second):
 				require.FailNow(t, "the wait never returned after the holder finished")
 			}
@@ -346,10 +356,10 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 	}
 }
 
-// TestStartupCore_AwaitInFlightGivesUpOnTheBound pins the bound. A startup
-// goroutine can be stuck on a provider that never answers, and the caller is
-// answering a user; an unbounded wait would hold that answer for ever.
-func TestStartupCore_AwaitInFlightGivesUpOnTheBound(t *testing.T) {
+// TestStartupCore_AwaitInFlightGivesUpOnItsLimit pins the limit. A startup
+// goroutine can stop on a provider that never answers, and the caller answers a
+// user; a wait with no limit would hold that answer for ever.
+func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 	t.Parallel()
 
 	core := newStartupCore()
@@ -357,16 +367,17 @@ func TestStartupCore_AwaitInFlightGivesUpOnTheBound(t *testing.T) {
 	core.clock = clock
 	require.NotNil(t, core.begin("tab-1", func() {}))
 
-	done := make(chan bool, 1)
+	done := make(chan startupWait, 1)
 	go func() { done <- core.awaitInFlight("tab-1", 90*time.Second) }()
 
-	assert.Equal(t, 90*time.Second, clock.waitArmed(t), "the wait must be armed for the bound it was given")
+	assert.Equal(t, 90*time.Second, clock.waitArmed(t), "the wait must be armed for the limit it was given")
 	clock.fire(t)
 	select {
-	case ok := <-done:
-		assert.False(t, ok, "a wait that expired must report that it did")
+	case got := <-done:
+		assert.Equal(t, startupWait{}, got,
+			"a wait that expired must report that it settled nothing, and must not claim a close")
 	case <-time.After(10 * time.Second):
-		require.FailNow(t, "the wait outlived its own bound")
+		require.FailNow(t, "the wait outlived its own limit")
 	}
 
 	core.cancelAndClear("tab-1", keepWorktreeOnClose)
@@ -386,7 +397,7 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	require.NotNil(t, core.begin("tab-1", func() {}))
 
 	const waiters = 8
-	done := make(chan bool, waiters)
+	done := make(chan startupWait, waiters)
 	for range waiters {
 		go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
 	}
@@ -395,8 +406,8 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	core.succeed("tab-1")
 	for range waiters {
 		select {
-		case ok := <-done:
-			assert.True(t, ok)
+		case got := <-done:
+			assert.Equal(t, startupWait{settled: true}, got)
 		case <-time.After(10 * time.Second):
 			require.FailNow(t, "a waiter was left behind by the wake-up")
 		}
@@ -443,9 +454,12 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 
 			tc.first(&core)
 			assert.NotPanics(t, func() { tc.then(&core) })
-			// Whatever the pair did, the id must be waitable again without a
-			// wait: nothing is in flight for it any more.
-			assert.True(t, core.awaitInFlight("tab-1", time.Hour))
+			// Whatever the pair did, the id must settle again without a wait:
+			// nothing is in flight for it any more. It settles as UNCLAIMED
+			// rather than as closed, because the entry the close stamped is
+			// out of the map -- a later caller sees a free id, not a stale
+			// close.
+			assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-1", time.Hour))
 
 			core.finish()
 			core.WaitForInFlight()

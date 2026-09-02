@@ -1,9 +1,11 @@
+import { typeAHandleLabel } from '../../src/components/shell/resumeSession'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import {
   ARITHMETIC_PROMPT,
   expectAssistantAnswer,
   loginViaToken,
+  menuOptionLabel,
   openMenu,
   openWorkspace,
   sendMessage,
@@ -19,7 +21,9 @@ import {
 
 const SESSION_MENU = 'session-select-menu'
 const NEW_SESSION_ROW = 'Start a new session'
-const TYPE_A_HANDLE_ROW = 'Enter a session ID…'
+// From the app's own declaration, so the row's wording and this locator cannot
+// drift. `false`: the Claude provider's session is an id, not a file path.
+const TYPE_A_HANDLE_ROW = typeAHandleLabel(false)
 
 /**
  * The resume field's session picker, end to end.
@@ -113,9 +117,25 @@ test.describe('Session picker in the New Agent dialog', () => {
     // The menu opens over a dialog, so it must not outgrow the control it
     // belongs to or the dialog that holds it. One long session title used to
     // make it wider than the dialog, and a long list made it taller.
+    //
+    // The assertions read the resolved CAPS, not the drawn box. This menu holds
+    // three short rows, so its box is well inside both limits whether or not any
+    // limit exists -- a measurement alone would pass against an uncapped
+    // popover and state nothing. The caps are the thing under test: they are
+    // what a fifty-session list and a title wider than the field run into.
+    const menu = dialog.getByTestId(SESSION_MENU)
     const triggerBox = await trigger.boundingBox()
     const dialogBox = await dialog.boundingBox()
-    const menuBox = await dialog.getByTestId(SESSION_MENU).boundingBox()
+    const caps = await menu.evaluate((el) => {
+      const s = getComputedStyle(el)
+      return { maxWidth: s.maxWidth, maxHeight: s.maxHeight, overflow: s.overflowY }
+    })
+    expect(Number.parseFloat(caps.maxWidth)).toBeLessThanOrEqual(triggerBox!.width + 1)
+    expect(Number.parseFloat(caps.maxHeight)).toBeLessThanOrEqual(dialogBox!.height + 1)
+    // The cap only makes the rows past it UNREACHABLE unless the box scrolls.
+    expect(caps.overflow).toBe('auto')
+
+    const menuBox = await menu.boundingBox()
     expect(menuBox!.width).toBeLessThanOrEqual(triggerBox!.width + 1)
     expect(menuBox!.height).toBeLessThanOrEqual(dialogBox!.height + 1)
 
@@ -126,9 +146,7 @@ test.describe('Session picker in the New Agent dialog', () => {
     // is a live relative time and can tick between this read and the assertion
     // below. Every row states one beside its title, and it stays put however
     // long that title is.
-    const sessionTitle = (await sessionRow
-      .getByTestId(`loading-menu-option-${sessionValue}-label`)
-      .textContent())?.trim() ?? ''
+    const sessionTitle = (await menuOptionLabel(sessionRow).textContent())?.trim() ?? ''
     await expect(sessionRow).toContainText('ago')
 
     await sessionRow.click()

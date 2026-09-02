@@ -47,8 +47,13 @@ type TerminalSnapshot struct {
 // defaultReadDrainGrace is how long the exit goroutine waits for the reader to
 // finish before it runs the exit handler anyway. Reaching it means a process
 // this worker could not kill still holds the tty open, and a longer wait does
-// not change that. The value only has to cover the scheduling of a reader the
-// kernel already woke.
+// not change that.
+//
+// The value only has to cover the scheduling of a reader the kernel already
+// woke, because waitForReadDrained starts it only after the child side of the
+// pty is closed -- the act that wakes that reader. Measured from the exit
+// instead, this grace would also have to absorb the Windows console-host
+// flush, which happens between the two.
 const defaultReadDrainGrace = 2 * time.Second
 
 // Manager tracks active terminal sessions.
@@ -56,12 +61,16 @@ type Manager struct {
 	mu        sync.RWMutex
 	terminals map[string]*Terminal     // terminalID -> Terminal
 	meta      map[string]TerminalMeta  // terminalID -> metadata
-	exitDone  map[string]chan struct{} // terminalID -> closed when the exit-handler goroutine has finished
+	exitDone  map[string]chan struct{} // terminalID -> closed once the exit-handler goroutine returned
 	// readDrainGrace limits the exit goroutine's wait for the reader. A field
 	// rather than a constant so a test can drive the give-up path without
 	// spending the real grace on it. Written only at construction -- by
 	// NewManager, or by a test before it installs a terminal -- so no lock
 	// guards it.
+	//
+	// A test reaching into an unexported field, and a REAL timer deciding what
+	// a deterministic clock should: startupCore.clock does the same job the
+	// other way. See https://github.com/leapmux/leapmux/issues/437.
 	readDrainGrace time.Duration
 }
 
@@ -121,7 +130,7 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 // Notify when the terminal exits but keep it in the map so that
 // ScreenSnapshot and ListTerminals still work. The entry is removed by
 // RemoveTerminal (explicit close). The freshly-allocated exitDone chan
-// is closed once the exit handler has finished, so WaitForExit callers
+// is closed once the exit handler returned, so WaitForExit callers
 // observe a definitive "the exit goroutine is done" signal.
 func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, composeMeta func(prev TerminalMeta) TerminalMeta) {
 	done := make(chan struct{})
@@ -148,9 +157,9 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 		// which it does right after it closes exitCh. The reaped child does not
 		// end it: this process holds the child side too, and on Linux a master
 		// read ends only when the last descriptor for the tty is gone. The
-		// bound covers the holders this worker cannot reach -- see
-		// Terminal.waitForReadDrained. A shell that leaves none behind never
-		// reaches it.
+		// grace covers the holders this worker cannot reach -- see
+		// Terminal.waitForReadDrained, which starts it only once that close
+		// finished. A shell that leaves no such holder behind never reaches it.
 		if !t.waitForReadDrained(m.readDrainGrace) {
 			slog.Warn("terminal reader did not drain after the shell exited; "+
 				"persisting the screen without its last output",
@@ -253,6 +262,20 @@ func (m *Manager) RestartTerminal(
 		if !prev.IsExited() {
 			return fmt.Errorf("%w: %s", ErrTerminalStillRunning, opts.ID)
 		}
+		// Release the pty this restart REPLACES, before the new one takes its
+		// place in the map. Nothing else ever does: installTerminal overwrites
+		// the entry, and RemoveTerminal only ever stops whichever terminal is
+		// current by then, so every restart used to leave the old master (and
+		// on Windows the old ConPTY pipes) open for the life of the Worker.
+		//
+		// It also ends a reader that the drain grace gave up on. Such a reader
+		// still holds the screen buffer that Respawn hands to the NEW terminal,
+		// so without this Stop the dead shell's last bytes could land in the
+		// restarted session's screen -- at an offset the client already read.
+		// Stop closes the master, which ends that parked Read at once, and
+		// ScreenBuffer.WriteAndDeliver serializes whatever chunk is in flight
+		// ahead of the new reader's first write.
+		prev.Stop()
 		t, err = prev.Respawn(ctx, opts, outputFn)
 	} else {
 		t, err = startWithScreenBuffer(ctx, opts, NewScreenBufferWithOffset(fallbackOffset), outputFn)
@@ -345,9 +368,12 @@ func (m *Manager) IsExited(terminalID string) bool {
 	return t.IsExited()
 }
 
-// WaitForReadDrained blocks until the terminal's read goroutine has
-// drained (see Terminal.WaitForReadDrained). Returns false if the
-// terminal is unknown.
+// WaitForReadDrained blocks until the terminal's read goroutine drained (see
+// Terminal.waitForReadDrained). Returns false if the terminal is unknown.
+//
+// It waits with NO limit, which is why it is a test-only entry point: every
+// caller of it stops the terminal first, so the reader is already ending.
+// Production waits through installTerminal, which passes the manager's grace.
 func (m *Manager) WaitForReadDrained(terminalID string) bool {
 	m.mu.RLock()
 	t, ok := m.terminals[terminalID]
@@ -356,7 +382,7 @@ func (m *Manager) WaitForReadDrained(terminalID string) bool {
 	if !ok {
 		return false
 	}
-	t.WaitForReadDrained()
+	t.waitForReadDrained(0)
 	return true
 }
 
