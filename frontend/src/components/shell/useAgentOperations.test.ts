@@ -391,44 +391,73 @@ describe('useAgentOperations', () => {
       })
     })
 
+    /**
+     * `useAgentOperations` over a tab context the caller states, with a spy for
+     * the dialog. `setup()` above pins its context at w-1 / /tmp, and both
+     * dialog cases below need one that resolves no complete pair.
+     */
+    function opsWithContext(ctx: { workerId: string, workingDir: string }) {
+      const newAgentDialog = { open: vi.fn(), close: vi.fn(), value: () => null }
+      installTestBridge({ workspaceId: 'ws-1' })
+      const stores = createTestTabStores('ws-1')
+      const chatStore = {
+        getMessages: vi.fn().mockReturnValue([]),
+        clearMessageError: vi.fn(),
+        setMessageError: vi.fn(),
+        removeMessage: vi.fn(),
+        forgetAgent: vi.fn(),
+      } as any
+
+      const ops = useAgentOperations({
+        agentSessionStore: createAgentSessionStore(),
+        chatStore,
+        controlStore: createControlStore(),
+        view: stores.view,
+        metadata: stores.metadata,
+        selection: stores.selection,
+        getActiveWorkspaceId: () => 'ws-1',
+        layoutStore: stores.layoutStore,
+        settingsLoading: { start: vi.fn(), stop: vi.fn() },
+        isActiveWorkspaceMutatable: () => true,
+        activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
+        getCurrentTabContext: () => ctx,
+        newAgentDialog,
+        setNewAgentLoadingProvider: vi.fn(),
+        repoGitStore: createRepoGitStore(),
+      })
+      return { ops, newAgentDialog }
+    }
+
     it('opens the dialog when the working directory is unknown', async () => {
       await createRoot(async (dispose) => {
         try {
-          const newAgentDialog = { open: vi.fn(), close: vi.fn(), value: () => null }
-          const agentSessionStore = createAgentSessionStore()
-          const controlStore = createControlStore()
-          installTestBridge({ workspaceId: 'ws-1' })
-          const stores = createTestTabStores('ws-1')
-          const chatStore = {
-            getMessages: vi.fn().mockReturnValue([]),
-            clearMessageError: vi.fn(),
-            setMessageError: vi.fn(),
-            removeMessage: vi.fn(),
-            forgetAgent: vi.fn(),
-          } as any
-
-          const ops = useAgentOperations({
-            agentSessionStore,
-            chatStore,
-            controlStore,
-            view: stores.view,
-            metadata: stores.metadata,
-            selection: stores.selection,
-            getActiveWorkspaceId: () => 'ws-1',
-            layoutStore: stores.layoutStore,
-            settingsLoading: { start: vi.fn(), stop: vi.fn() },
-            isActiveWorkspaceMutatable: () => true,
-            activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
-            getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '' }),
-            newAgentDialog,
-            setNewAgentLoadingProvider: vi.fn(),
-            repoGitStore: createRepoGitStore(),
-          })
+          const { ops, newAgentDialog } = opsWithContext({ workerId: 'w-1', workingDir: '' })
 
           await ops.handleOpenAgent()
 
           expect(newAgentDialog.open).toHaveBeenCalled()
           expect(mockOpenAgent).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The dialog is the fallback when neither the target nor the context
+    // resolves a whole (worker, directory) pair -- and it has to open ON the
+    // target. An `open({})` here would drop what the caller did know and ask
+    // the user for a Worker and a path the branch row already named.
+    it('opens the dialog on the target when the pair is incomplete', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, newAgentDialog } = opsWithContext({ workerId: '', workingDir: '' })
+
+          await ops.handleOpenAgent(undefined, { workingDir: '/other/worktree' })
+
+          expect(mockOpenAgent).not.toHaveBeenCalled()
+          expect(newAgentDialog.open).toHaveBeenCalledTimes(1)
+          expect(newAgentDialog.open.mock.calls[0][0]).toEqual({ workingDir: '/other/worktree' })
         }
         finally {
           dispose()

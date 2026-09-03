@@ -416,6 +416,21 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
     expect(openTerminalMock.mock.calls[0][0]).toBe('worker-1')
     expect(openTerminalMock.mock.calls[0][1]).toMatchObject({ workingDir: '/tmp' })
   })
+
+  // The dialog is the fallback when neither the target nor the context resolves
+  // a whole (worker, directory) pair -- and it has to open ON the target. An
+  // `open({})` here would drop what the caller did know and ask the user for a
+  // Worker and a path the branch row already named.
+  it('opens the dialog on the target when the pair is incomplete', async () => {
+    const dialogOpen = vi.fn()
+    const { ops } = setupForOpen({ ctx: { workerId: '', workingDir: '' }, dialogOpen })
+
+    await ops.handleOpenTerminalWithShell('/bin/zsh', { workingDir: '/other/worktree' })
+
+    expect(openTerminalMock).not.toHaveBeenCalled()
+    expect(dialogOpen).toHaveBeenCalledTimes(1)
+    expect(dialogOpen.mock.calls[0][0]).toEqual({ workingDir: '/other/worktree' })
+  })
 })
 
 describe('useterminaloperations.handleterminalinput', () => {

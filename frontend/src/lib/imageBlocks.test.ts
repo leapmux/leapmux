@@ -74,6 +74,24 @@ describe('parseimageblock', () => {
     expect(parseImageBlock('image' as never)).toBeNull()
   })
 
+  // An empty `data` is no payload, not an empty payload: the arms below it must
+  // still get their turn, and the source must end up renderable-as-nothing
+  // rather than as a zero-length base64 the renderer would build a data URL out
+  // of.
+  it('treats an empty data string as no payload', () => {
+    expect(parseImageBlock({ type: 'image', data: '', mimeType: 'image/png' }))
+      .toEqual({ mimeType: 'image/png' })
+  })
+
+  // A server that sends a number where the spec says string states nothing this
+  // parser can use. Dropping the field beats coercing it: `String(123)` would
+  // become a MIME type the allowlist then has to reject by accident.
+  it('ignores non-string payload and mime fields', () => {
+    expect(parseImageBlock({ type: 'image', data: 123, mimeType: 456 })).toEqual({})
+    expect(parseImageBlock({ type: 'image', url: null, mimeType: 'image/png' }))
+      .toEqual({ mimeType: 'image/png' })
+  })
+
   it('returns an empty source for an inputImage with no url', () => {
     expect(parseImageBlock({ type: 'inputImage' })).toEqual({})
   })
