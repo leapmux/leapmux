@@ -48,7 +48,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 	t.Run("a blank creator is unrepresentable and a zero caller reaches nothing", func(t *testing.T) {
 		require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: "", Username: "regkey-blank-id-user",
-			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
+			PasswordHash: "h", DisplayName: "Blank", FirstCredentialExempt: true,
 		}), store.ErrInvalidArgument,
 			"a blank users.id is the parent key every blank-created_by row needs")
 

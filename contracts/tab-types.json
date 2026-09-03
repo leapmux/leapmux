@@ -1,0 +1,25 @@
+{
+  "_readme": "Single source of truth for the TabType proto enum's wire vocabulary: the lowercase token the CLI accepts on --type / --tab-type and emits in every JSON envelope, and the same token the browser writes to data-tab-type and keys its shortcut context by. task generate-contracts cross-checks the keys against the proto enum (every value MUST appear here, no extras) and emits the Go tables (resolve.ParseTabType / TabTypeWireName, cmd and controlipc project through them) plus the TS record. Adding a tab kind is now: add the enum value, add this entry, run task generate -- a value without a token fails the build instead of printing an empty string on one of the eight surfaces that used to hand-write it.",
+  "tabTypes": {
+    "TAB_TYPE_UNSPECIFIED": {
+      "wireToken": "",
+      "parseAliases": []
+    },
+    "TAB_TYPE_AGENT": {
+      "wireToken": "agent",
+      "parseAliases": []
+    },
+    "TAB_TYPE_TERMINAL": {
+      "wireToken": "terminal",
+      "parseAliases": []
+    },
+    "TAB_TYPE_FILE": {
+      "wireToken": "file",
+      "parseAliases": []
+    },
+    "TAB_TYPE_IMAGE": {
+      "wireToken": "image",
+      "parseAliases": []
+    }
+  }
+}

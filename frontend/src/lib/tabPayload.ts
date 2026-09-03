@@ -28,7 +28,7 @@ export type TabPayloadView
 
 /**
  * Decode a wire payload. Returns null for an absent payload and for one whose
- * oneof arm this client does not know — a tab kind added by a newer peer, which
+ * oneof case this client does not know — a tab kind added by a newer peer, which
  * must render as "not supported" rather than as a broken FILE tab.
  */
 export function tabPayloadView(payload: TabPayload | undefined): TabPayloadView | null {
@@ -51,12 +51,12 @@ export function tabPayloadView(payload: TabPayload | undefined): TabPayloadView 
   return null
 }
 
-/** Build the FILE arm for `registerTabPayload`. */
+/** Build the FILE case for `registerTabPayload`. */
 export function fileTabPayload(filePath: string, workingDir: string): MessageInitShape<typeof TabPayloadSchema> {
   return { workingDir, kind: { case: 'file', value: { filePath } } }
 }
 
-/** Build the IMAGE arm for `registerTabPayload`. */
+/** Build the IMAGE case for `registerTabPayload`. */
 export function imageTabPayload(image: {
   agentId: string
   seq: bigint

@@ -71,7 +71,7 @@ export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimension
  *   - `{type:'inputImage', imageUrl}` -- Codex `dynamicToolCall.contentItems`.
  *   - `{type:'image', mediaType, dataUrl}` -- ZCode's internal part shape.
  *     ZCode's app-server text-ifies images before they reach LeapMux, so this
- *     arm is defensive: it costs two lines and means a future app-server that
+ *     branch is defensive: it costs two lines and means a future app-server that
  *     forwards the part renders instead of printing a data URL.
  */
 export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
@@ -83,7 +83,7 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
 
   const filePath = imageBlockFilePath(block)
   const withPath = (source: ImageBlockSource): ImageBlockSource =>
-    filePath ? { ...source, filePath } : source
+    withFallbackFilePath(source, filePath)
 
   // Codex `dynamicToolCall` content item: a URL, usually already a data URL.
   if (type === 'inputImage') {
@@ -96,9 +96,14 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   // MCP / ACP / Pi flat shape. `mimeType` is required by all three specs but
   // read separately, so a payload with no type still reaches the renderer and
   // surfaces as "unsupported format" rather than vanishing.
+  // `data` is base64 by spec, but a server that puts a whole `data:` URL there is
+  // common enough that the old reader sniffed for it. Without the sniff the
+  // renderer builds `data:<mime>;base64,data:<mime>;base64,...` -- a broken image
+  // with no placeholder, and a tab whose decode throws. `:` is not in the base64
+  // alphabet, so this can never misread a real payload.
   const data = pickString(block, 'data', undefined)
   if (data)
-    return withPath({ data, mimeType })
+    return withPath(isRenderableUrl(data) ? { url: data, mimeType } : { data, mimeType })
 
   // MCP `url` variant: a server may state a fetchable URL instead of inlining.
   const url = pickString(block, 'url', undefined)
@@ -137,9 +142,53 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
   return withPath({ mimeType })
 }
 
+/**
+ * MIME types LeapMux renders inline. SVG is excluded deliberately: an SVG can
+ * carry script, and although a browser refuses to run it inside `<img>`, the
+ * allowlist is what keeps that guarantee from resting on the mount point a
+ * future caller happens to pick.
+ */
+export const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+])
+
+/**
+ * Cap on the base64-encoded length of an inline image. 7 MB base64 is about
+ * 5 MB raw, which comfortably covers a screenshot.
+ *
+ * It lives here, beside {@link parseImageBlock}, because BOTH consumers of a
+ * parsed source have to honour it: the component that mounts an `<img>`, and
+ * {@link imageBlockToMarkdown}, which builds a data URL for a text destination.
+ * The wire allows a far larger message than this cap, so an uncapped path can
+ * put megabytes of base64 into an `src` attribute or a clipboard.
+ */
+export const MAX_INLINE_IMAGE_BASE64_LEN = 7 * 1024 * 1024
+
 /** True for the URL schemes the image renderer knows how to act on. */
 function isRenderableUrl(value: string): boolean {
   return value.startsWith('data:') || value.startsWith('http://') || value.startsWith('https://')
+}
+
+/**
+ * Fill `filePath` from the caller's fallback, unless the block already stated
+ * one.
+ *
+ * The block's own path always wins. It names the file the agent actually read,
+ * where a fallback names only the file the tool was ASKED for -- and a tool that
+ * was asked for one file and returned another is exactly the case the two can
+ * disagree on.
+ *
+ * Every provider that can carry an image needs this same merge, and each one
+ * spelled it differently until they shared it: `parseImageBlock` for an
+ * in-band `file://` uri, and the Claude, ACP and Pi extractors for a path that
+ * the tool INPUT states rather than the result.
+ */
+export function withFallbackFilePath<T extends ImageBlockSource>(source: T, filePath: string | undefined): T {
+  return filePath && !source.filePath ? { ...source, filePath } : source
 }
 
 /**
@@ -155,7 +204,18 @@ function imageBlockFilePath(block: Record<string, unknown>): string | undefined 
   if (!uri || !uri.startsWith('file://'))
     return undefined
   try {
-    return decodeURIComponent(new URL(uri).pathname) || undefined
+    const parsed = new URL(uri)
+    const path = decodeURIComponent(parsed.pathname)
+    // `pathname` alone is not a local path on two shapes a worker really sends.
+    // A Windows `file:///C:/x` gives `/C:/x`: the URL API keeps the slash before
+    // the drive letter, and the worker cannot resolve that. A UNC
+    // `file://server/share/x` puts `server` in the HOST, which the pathname drops
+    // entirely. Node's `fileURLToPath` is not the answer -- it resolves against the
+    // platform this code runs on, and the path belongs to the worker's platform.
+    const host = decodeURIComponent(parsed.host)
+    if (host)
+      return `//${host}${path}` || undefined
+    return (/^\/[a-z]:/i.test(path) ? path.slice(1) : path) || undefined
   }
   catch {
     return undefined
@@ -172,10 +232,20 @@ function imageBlockFilePath(block: Record<string, unknown>): string | undefined 
  * third-party host.
  */
 export function imageBlockToMarkdown(source: ImageBlockSource): string | null {
-  if (source.data && source.mimeType)
+  if (source.data && source.mimeType) {
+    if (source.data.length > MAX_INLINE_IMAGE_BASE64_LEN)
+      return `[image: ${source.mimeType} — too large to embed]`
     return `![image](data:${source.mimeType};base64,${source.data})`
+  }
   const url = source.url
   if (!url)
     return null
-  return url.startsWith('data:') ? `![image](${url})` : `[image](${url})`
+  if (!url.startsWith('data:'))
+    return `[image](${url})`
+  // The same cap on an already-formed data URL. Measured past the comma, so it
+  // compares the payload and not the `data:<mime>;base64,` preamble.
+  const comma = url.indexOf(',')
+  if (comma >= 0 && url.length - comma - 1 > MAX_INLINE_IMAGE_BASE64_LEN)
+    return '[image: too large to embed]'
+  return `![image](${url})`
 }

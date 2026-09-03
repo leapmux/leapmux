@@ -69,11 +69,11 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	// Users().Create has no sections at all, and every assertion below would be
 	// measuring the wrong thing.
 	user, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
-		Username:     "testuser",
-		PasswordHash: hash,
-		DisplayName:  "Test",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		Username:              "testuser",
+		PasswordHash:          hash,
+		DisplayName:           "Test",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	})
 	require.NoError(t, err)
 	userID := user.ID
@@ -199,11 +199,11 @@ func TestSectionService_ListSections_NeverWrites(t *testing.T) {
 	require.NoError(t, err)
 	bareID := id.Generate()
 	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID:           bareID,
-		Username:     "unseeded",
-		PasswordHash: hash,
-		DisplayName:  "Unseeded",
-		PasswordSet:  true,
+		ID:                    bareID,
+		Username:              "unseeded",
+		PasswordHash:          hash,
+		DisplayName:           "Unseeded",
+		FirstCredentialExempt: true,
 	}))
 	bareToken, _, _, err := auth.Login(ctx, env.store, "unseeded", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
@@ -732,7 +732,7 @@ func TestMoveSectionDeniesZeroCallerOnBlankOwnedSection(t *testing.T) {
 
 	require.ErrorIs(t, env.store.Users().Create(ctx, store.CreateUserParams{
 		ID: "", Username: "blank-id-user", PasswordHash: "h",
-		DisplayName: "Blank", PasswordSet: true,
+		DisplayName: "Blank", FirstCredentialExempt: true,
 	}), store.ErrInvalidArgument,
 		"the parent key a blank-owner section would need must stay unwritable")
 

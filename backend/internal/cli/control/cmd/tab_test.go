@@ -1016,3 +1016,19 @@ func TestTerminalOpenRequest_EmptyTitleMeansTheWorkerPicks(t *testing.T) {
 	req := terminalOpenRequest(openTerminalArgs{WorkerID: "w-1", WorkingDir: "/src"})
 	assert.Empty(t, req.GetTitle())
 }
+
+// The envelope's tab_type is the CANONICAL name, whatever spelling the flag
+// used. `ParseTabType` accepts the proto form so a value can be pasted straight
+// back from JSON, and that tolerance is exactly what makes echoing the raw flag
+// wrong: `tab list` and `tab get` project through `tabTypeName`, so a script
+// comparing tab_type across commands would stop matching for one caller's
+// spelling and not another's.
+func TestTabOpenEnvelope_TabTypeIsCanonicalWhateverTheFlagSpelling(t *testing.T) {
+	for _, spelling := range []string{"file", "TAB_TYPE_FILE"} {
+		tt, ok := resolve.ParseTabType(spelling)
+		require.True(t, ok, "ParseTabType must accept %q", spelling)
+		out := tabOpenEnvelope("tab-1", resolve.TabTypeWireName(tt), "ws-1", "w-1", "tile-1", "p1")
+		assert.Equal(t, "file", out["tab_type"],
+			"the envelope must not echo the %q the user typed", spelling)
+	}
+}

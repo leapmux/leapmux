@@ -156,8 +156,8 @@ Click one to open it in its own tab, where you can zoom it (fit, 100%, or any st
 Not every image renders inline:
 
 - **SVG** is never rendered. An SVG can carry script, and the transcript does not sandbox it.
-- **Images above about 5 MB** show a placeholder rather than being inlined.
-- **An image the agent named by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
+- **Images above about 5 MB** show a placeholder instead of the picture.
+- **An image the agent gives by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
 
 Which providers can return an image at all depends on the provider — Claude Code, Codex, Pi, OpenCode, Kilo, and Goose all can.
 

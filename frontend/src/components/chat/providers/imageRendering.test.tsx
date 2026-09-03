@@ -87,6 +87,24 @@ describe('claude Read on an image', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
   })
 
+  // A per-tool entry renders TEXT and never pixels, and `splitToolResultContent`
+  // takes the images out of that text. Before the split they travelled inside it
+  // as `![image](data:...)` and each entry's Markdown body drew them; afterwards
+  // only the catch-all read `images`, so every tool with its own renderer --
+  // Task/Agent, TaskOutput, WebFetch and nine more -- dropped the picture with no
+  // placeholder and no log. Pi's renderer mounts the list beside its dispatch for
+  // exactly this reason; Claude now does too.
+  it('renders an image a subagent returned, whose tool has its own renderer', () => {
+    // `Agent` has an entry in TOOL_RESULT_ENTRIES and `AgentResultView` renders
+    // text only, so this is the path the catch-all never reaches.
+    const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
+      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
+      { status: 'completed', description: 'screenshot the page', content: 'done' },
+    ), { spanType: 'Agent' } as RenderContext)
+    expect(container.textContent ?? '').toContain('screenshot the page')
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
+  })
+
   it('renders text and image together when a tool returns both', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'text', text: 'captured the page' },

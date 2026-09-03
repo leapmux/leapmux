@@ -1069,7 +1069,7 @@ func TestCreateTableBodies_ReadsEveryDialectsTerminator(t *testing.T) {
 		})
 	}
 
-	// A key that is composite but names no owner, and an owner column that is
+	// A key that is composite but specifies no owner, and an owner column that is
 	// the WHOLE key, are both outside the population: neither lets one user's
 	// predicate reach another user's row through the non-owner half.
 	bodies, _ := createTableBodies("CREATE TABLE t (\n    agent_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    PRIMARY KEY (agent_id, request_id)\n);")

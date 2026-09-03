@@ -43,11 +43,11 @@ func setupAdminWorkerTest(t *testing.T) *adminWorkerEnv {
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
 	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
-		Username:     "admin",
-		PasswordHash: hash,
-		DisplayName:  "Admin",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		Username:              "admin",
+		PasswordHash:          hash,
+		DisplayName:           "Admin",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	})
 	require.NoError(t, err)
 	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)

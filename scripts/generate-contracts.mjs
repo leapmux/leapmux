@@ -720,6 +720,102 @@ function AgentProviderKey(name) {
 }
 
 // ---------------------------------------------------------------------------
+// tab-types: the TabType wire vocabulary
+//
+// One token per enum value, consumed by the CLI (--type, --tab-type, the JSON
+// envelopes and $LEAPMUX_CONTROL_TAB_TYPE) and by the browser (data-tab-type,
+// the shortcut context). It was hand-written on eight surfaces before this
+// contract, and adding a kind meant finding all eight.
+
+export function checkTabTypes(t, tabEnumValues) {
+  const present = Object.keys(t.tabTypes)
+  for (const name of tabEnumValues)
+    mustBe(t.tabTypes[name] != null, 'tab-types.json', `proto enum value ${name} has no entry -- a new tab kind must land here in the same change, or the CLI prints an empty --type and the browser writes an empty data-tab-type`)
+  for (const name of present)
+    mustBe(tabEnumValues.includes(name), 'tab-types.json', `entry ${name} matches no TabType enum value (removed from the proto?)`)
+  // UNSPECIFIED is the one empty token: the CLI reads it as "no --type given".
+  mustBe(t.tabTypes.TAB_TYPE_UNSPECIFIED?.wireToken === '', 'tab-types.json', 'TAB_TYPE_UNSPECIFIED must map to the empty token, which is what an omitted --type parses to')
+  const seen = new Map()
+  for (const [name, m] of Object.entries(t.tabTypes)) {
+    if (name !== 'TAB_TYPE_UNSPECIFIED')
+      mustBe(m.wireToken !== '', 'tab-types.json', `${name} must carry a non-empty token, or it cannot be named on the command line`)
+    for (const token of [m.wireToken, ...m.parseAliases]) {
+      if (token === '')
+        continue
+      const owner = seen.get(token)
+      mustBe(owner === undefined, 'tab-types.json', `token ${JSON.stringify(token)} is claimed by both ${owner} and ${name}`)
+      seen.set(token, name)
+    }
+  }
+  return {}
+}
+
+export function emitGoTabTypes(t, tabEnumValues) {
+  const goEnum = name => `leapmuxv1.TabType_${name}`
+  const entries = tabEnumValues.map(name => [name, t.tabTypes[name]])
+  const tokens = goMapBlock(entries.map(([name, m]) => ({ key: `${goEnum(name)}:`, value: jsonString(m.wireToken) })))
+  // Both spellings parse: the short token and the proto-canonical name, so a
+  // value pasted back out of a JSON envelope round-trips into a flag.
+  const parseRows = []
+  for (const [name, m] of entries) {
+    for (const token of [m.wireToken, ...m.parseAliases])
+      parseRows.push([token, name])
+    parseRows.push([name, name])
+  }
+  const parse = goMapBlock(parseRows.sort(byFirstString).map(([token, name]) => ({ key: `${jsonString(token)}:`, value: goEnum(name) })))
+  const named = tabEnumValues.filter(n => n !== 'TAB_TYPE_UNSPECIFIED')
+  const accepted = named.map(n => jsonString(t.tabTypes[n].wireToken)).join(', ')
+  return `${GO_HEADER('tab-types.json')}package contracts
+
+import leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+
+// The TabType wire vocabulary: the lowercase token the CLI accepts and emits,
+// and the reverse parse table. Keyed by the generated proto enum so an entry for
+// a value the proto no longer carries fails to compile rather than answering "".
+
+// TabTypeWireToken is enum -> the token every surface spells it with.
+// TAB_TYPE_UNSPECIFIED maps to "", which is what an omitted --type parses to.
+var TabTypeWireToken = map[leapmuxv1.TabType]string{
+${tokens}
+}
+
+// TabTypeParseAliases is token -> enum. It carries the short token and the
+// proto-canonical name for every value, so a tab_type read out of a JSON
+// envelope can be handed straight back as a flag.
+var TabTypeParseAliases = map[string]leapmuxv1.TabType{
+${parse}
+}
+
+// TabTypeAcceptedTokens lists the non-empty tokens, for an error message that
+// must name what it accepts. Derived, so it cannot fall behind the table.
+const TabTypeAcceptedTokens = ${jsonString(accepted)}
+`
+}
+
+export function emitTsTabTypes(t, tabEnumValues) {
+  const rows = tabEnumValues
+    .map(name => `  [${TabTypeKey(name)}]: ${jsonString(t.tabTypes[name].wireToken)},`)
+    .join('\n')
+  return `${TS_HEADER('tab-types.json')}
+// The TabType wire vocabulary, generated from contracts/tab-types.json (the Go
+// twin reads the same table). The browser writes these tokens to data-tab-type,
+// which the E2E locators address rows by, and keys the shortcut context on them.
+// Parsing stays with the Go twin, which owns the command line.
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+
+/** enum -> the token every surface spells it with. UNSPECIFIED is the empty string. */
+export const TAB_TYPE_WIRE_TOKEN: Readonly<Record<TabType, string>> = {
+${rows}
+}
+`
+}
+
+function TabTypeKey(name) {
+  // TAB_TYPE_FILE -> TabType.FILE
+  return `TabType.${name.replace(/^TAB_TYPE_/, '')}`
+}
+
+// ---------------------------------------------------------------------------
 // scopes: the OAuth scope vocabulary
 // ---------------------------------------------------------------------------
 
@@ -2208,6 +2304,17 @@ const DOMAINS = [
       checkProviders(p, agentEnumValues)
       out['backend/generated/contracts/providers.go'] = emitGoProviders(p, agentEnumValues)
       out['frontend/src/generated/contracts/providers.ts'] = emitTsProviders(p, agentEnumValues)
+    },
+  },
+  {
+    name: 'tab-types',
+    requiresDescriptor: true,
+    emit(out, read, descriptorSet) {
+      const tabEnumValues = enumValues(descriptorSet, 'leapmux/v1/workspace.proto', 'TabType')
+      const t = read('tab-types')
+      checkTabTypes(t, tabEnumValues)
+      out['backend/generated/contracts/tab-types.go'] = emitGoTabTypes(t, tabEnumValues)
+      out['frontend/src/generated/contracts/tab-types.ts'] = emitTsTabTypes(t, tabEnumValues)
     },
   },
   {

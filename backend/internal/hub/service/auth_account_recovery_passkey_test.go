@@ -57,13 +57,13 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "pkrecover",
-		PasswordHash:  hash,
-		DisplayName:   "PK Recover",
-		Email:         "pkrecover@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "pkrecover",
+		PasswordHash:          hash,
+		DisplayName:           "PK Recover",
+		Email:                 "pkrecover@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 	uid := userid.MustNew(userID)
 	oldSession, _, err := auth.CreateSession(context.Background(), env.store, uid, auth.DefaultSessionDuration)
@@ -94,7 +94,7 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	assert.EqualValues(t, 1, count)
 	row, err := env.store.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	assert.False(t, row.PasswordSet)
+	assert.False(t, row.FirstCredentialExempt)
 	assert.Equal(t, password.PlaceholderHash, row.PasswordHash)
 	_, _, _, err = auth.Login(context.Background(), env.store, "pkrecover", "oldpass123", auth.DefaultSessionDuration)
 	assert.Error(t, err, "the old password must not sign in after a passkey recovery")
@@ -167,13 +167,13 @@ func TestFinishAccountRecoveryPasskey_TokenSpentByPassword(t *testing.T) {
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "racespend",
-		PasswordHash:  hash,
-		DisplayName:   "Race Spend",
-		Email:         "racespend@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "racespend",
+		PasswordHash:          hash,
+		DisplayName:           "Race Spend",
+		Email:                 "racespend@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	token := requestRecoveryLinkFor(t, env, sender, "racespend")

@@ -72,7 +72,7 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	if opts.TabGrace == 0 {
 		opts.TabGrace = -1
 	}
-	rec := service.NewOrphanReconciler(q, files, listFn, opts)
+	rec := service.NewOrphanReconciler(q, listFn, opts)
 	setFake := func(ownerUserID string, tabs []*leapmuxv1.OwnedTab, err error) {
 		fakeMu.Lock()
 		defer fakeMu.Unlock()
@@ -529,7 +529,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 }
 
 // TestOrphanReconciler_UndeclaredScopeReapsNothing covers the degenerate case:
-// a response that names no owner is authoritative for nobody, so an empty tab
+// a response that specifies no owner is authoritative for nobody, so an empty tab
 // list must not be read as "every local tab is an orphan". Fail closed -- a
 // missed reap is a leak, an unfounded reap is data loss.
 func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {

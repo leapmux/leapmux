@@ -618,3 +618,35 @@ func TestResolve_HasNoWorkerExistenceCheck(t *testing.T) {
 		assert.False(t, found, "Deps must not carry a %s field", name)
 	}
 }
+
+// Every value the proto enum carries must have a wire token, and every token
+// must parse back to it.
+//
+// This is what the contract buys and what eight hand-written tables kept
+// losing: FILE sat in the enum unnamed, IMAGE joined it, and the gap surfaced
+// as `--tab-type "" contradicts this command's implicit type ""`. The table is
+// generated from contracts/tab-types.json now, and generate-contracts fails the
+// build for an enum value with no entry -- so this test walks the ENUM rather
+// than a list a reader has to remember to extend.
+func TestTabTypeVocabularyCoversEveryEnumValue(t *testing.T) {
+	for value, name := range leapmuxv1.TabType_name {
+		kind := leapmuxv1.TabType(value)
+		token := resolve.TabTypeWireName(kind)
+
+		if kind == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			assert.Empty(t, token, "the zero value stays empty: it is how an omitted --type reads")
+		} else {
+			assert.NotEmpty(t, token, "%s has no wire token, so no user can name it on the command line", name)
+		}
+
+		parsed, ok := resolve.ParseTabType(token)
+		require.True(t, ok, "the token for %s must parse back", name)
+		assert.Equal(t, kind, parsed, "%s must round trip through its token", name)
+
+		// The proto-canonical spelling parses too, so a tab_type read out of a
+		// JSON envelope goes straight back into a flag.
+		canonical, ok := resolve.ParseTabType(name)
+		require.True(t, ok, "%s must parse in its canonical spelling", name)
+		assert.Equal(t, kind, canonical)
+	}
+}

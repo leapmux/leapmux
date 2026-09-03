@@ -46,12 +46,12 @@ func createTestUser(t *testing.T, dir, username string) gendb.User {
 	_, q := openTestDB(t, dir)
 	id := id.Generate()
 	require.NoError(t, q.CreateUser(context.Background(), gendb.CreateUserParams{
-		ID:                id,
-		Username:          username,
-		PasswordHash:      "placeholder",
-		DisplayName:       username,
-		DisplayNameFolded: username,
-		PasswordSet:       1,
+		ID:                    id,
+		Username:              username,
+		PasswordHash:          "placeholder",
+		DisplayName:           username,
+		DisplayNameFolded:     username,
+		FirstCredentialExempt: 1,
 	}))
 	user, err := q.GetUserByUsername(context.Background(), username)
 	require.NoError(t, err)

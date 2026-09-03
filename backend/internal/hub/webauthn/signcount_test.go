@@ -38,11 +38,11 @@ func newSignCountTestService(t *testing.T) (*Service, store.Store, string, strin
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "scuser" + userID[:8],
-		PasswordHash: "hash",
-		DisplayName:  "SC User",
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              "scuser" + userID[:8],
+		PasswordHash:          "hash",
+		DisplayName:           "SC User",
+		FirstCredentialExempt: true,
 	}))
 	rowID := id.Generate()
 	credID := []byte("cred-" + rowID)

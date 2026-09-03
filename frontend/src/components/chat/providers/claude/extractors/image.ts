@@ -1,6 +1,7 @@
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
+import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickFirstNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { extractToolUseInfo, getMessageContentArray } from './assistantContent'
 
@@ -34,11 +35,11 @@ interface ClaudeImageArgs {
 export function claudeImagesFromToolResult(args: ClaudeImageArgs): ImageResultSource[] {
   const filePath = pickString(args.toolInput, 'file_path', undefined)
   const withPath = (source: ImageResultSource): ImageResultSource =>
-    filePath && !source.filePath ? { ...source, filePath } : source
+    withFallbackFilePath(source, filePath)
 
   // The structured payload describes ONE image, so it can only stand in for
   // the blocks when the blocks are that same one. A result carrying several
-  // images is never the `Read`-on-an-image shape this arm exists for, and
+  // images is never the `Read`-on-an-image shape this branch exists for, and
   // collapsing it to one would drop images the row renders -- and shift every
   // index an image tab addresses.
   const structured = args.blockImages.length <= 1 ? claudeStructuredImage(args.toolUseResult) : null

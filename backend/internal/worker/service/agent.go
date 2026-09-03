@@ -1209,7 +1209,16 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				TabID:   r.GetTabId(),
 				Payload: r.GetPayload(),
 			}); err != nil {
-				sendInvalidArgument(sender, err.Error())
+				// A caller fault is INVALID_ARGUMENT; anything else is the
+				// worker's own. A locked database and a full disk both fail the
+				// upsert, and reporting those as a bad request tells the caller
+				// to correct a request that was correct, and tells a script
+				// branching on the code to stop retrying something a retry fixes.
+				if errors.Is(err, ErrInvalidTabPayload) {
+					sendInvalidArgument(sender, err.Error())
+				} else {
+					sendInternalError(sender, err.Error())
+				}
 				return
 			}
 			sendProtoResponse(sender, &leapmuxv1.RegisterTabPayloadResponse{})
@@ -1271,16 +1280,25 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// (and any user-requested `git worktree remove`) is handled
 		// identically to CloseAgent / CloseTerminal. It is idempotent: a
 		// tab already revoked (or one this caller never owned) drops through
-		// RevokeRow's ErrTabPayloadNotFound arm and still clears any
+		// RevokeRow's ErrTabPayloadNotFound branch and still clears any
 		// worktree link, so no pre-flight existence read is needed.
 		// The stored kind decides which worktree_tabs link to drop -- the link
 		// row carries the tab type, so closing an IMAGE tab with FILE would
-		// leave its link behind. A tab whose row is already gone has no kind to
-		// read; FILE is the fallback, and it costs nothing because such a link
-		// is already dead to worktree_tab_liveness (no backing row means
-		// is_live = 0) and the worktree GC reaps it either way.
+		// leave its link behind.
+		//
+		// Only an ABSENT row may fall back. Such a link is already dead to
+		// worktree_tab_liveness (no backing row means is_live = 0) and the
+		// worktree GC reaps it either way, so either kind drops the same
+		// nothing. A read that FAILED is different: the row may well be an
+		// IMAGE, and guessing FILE makes GetWorktreeForTab miss, so a requested
+		// REMOVE degrades to KEEP with nothing reported while the link outlives
+		// the payload row it described.
 		tabType, err := svc.TabPayloads.TabTypeOf(bgCtx(), caller.UserID.String(), r.GetTabId())
 		if err != nil {
+			if !errors.Is(err, ErrTabPayloadNotFound) {
+				sendInternalError(sender, err.Error())
+				return
+			}
 			tabType = leapmuxv1.TabType_TAB_TYPE_FILE
 		}
 		result := svc.closePayloadTabCommon(caller.UserID.String(), r.GetTabId(), tabType, r.GetWorktreeAction(), dropWorktreeLink)
@@ -3636,7 +3654,7 @@ type messagePagePlan struct {
 // AgentWatchEntry (which maps the resume cursor to the replay mode). AFTER_CURSOR with
 // a real (positive) cursor pages forward (AFTER seq > cursor); everything else -- a
 // fresh LATEST/UNSPECIFIED subscribe, OR an AFTER_CURSOR whose cursor is non-positive
-// (a malformed client: seqs are assigned from 1, so "after <= 0" names no resume
+// (a malformed client: seqs are assigned from 1, so "after <= 0" specifies no resume
 // point) -- replays the LATEST page. Mapping a non-positive AFTER_CURSOR to AFTER
 // instead would scan seq > 0 and return the OLDEST page, splicing the first messages
 // in front of the latest window. Pure, so the routing is unit-testable.

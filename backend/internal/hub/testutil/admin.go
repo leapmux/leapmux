@@ -76,13 +76,13 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 	userID := id.Generate()
 
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:           userID,
-		Username:     TestAdminUsername,
-		PasswordHash: hash,
-		DisplayName:  "Admin",
-		Email:        "",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		ID:                    userID,
+		Username:              TestAdminUsername,
+		PasswordHash:          hash,
+		DisplayName:           "Admin",
+		Email:                 "",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	}))
 	seedDefaultSections(t, st, userID)
 }
@@ -119,11 +119,11 @@ func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string
 	userID := id.Generate()
 
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:           userID,
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  username,
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              username,
+		PasswordHash:          hash,
+		DisplayName:           username,
+		FirstCredentialExempt: true,
 	}))
 	seedDefaultSections(t, st, userID)
 	return userID

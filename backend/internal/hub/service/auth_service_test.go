@@ -234,7 +234,7 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "oauthonly", PasswordHash: password.PlaceholderHash,
-		DisplayName: "OAuth Only", PasswordSet: false,
+		DisplayName: "OAuth Only", FirstCredentialExempt: false,
 	}))
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
@@ -320,7 +320,7 @@ func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCou
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "passkeyonly", PasswordHash: password.PlaceholderHash,
-		DisplayName: "Passkey Only", PasswordSet: false,
+		DisplayName: "Passkey Only", FirstCredentialExempt: false,
 	}))
 	require.NoError(t, st.PasskeyCredentials().Create(ctx, store.CreatePasskeyCredentialParams{
 		ID: id.Generate(), UserID: userID, CredentialID: []byte("cred"), PublicKey: []byte("pub"),
@@ -364,7 +364,7 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "haslink", PasswordHash: password.PlaceholderHash,
-		DisplayName: "Has Link", PasswordSet: true,
+		DisplayName: "Has Link", FirstCredentialExempt: true,
 	}))
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
@@ -653,13 +653,13 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           id.Generate(),
-		Username:     "emailuser",
-		PasswordHash: hash,
-		DisplayName:  "Email User",
-		Email:        "taken@example.com",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    id.Generate(),
+		Username:              "emailuser",
+		PasswordHash:          hash,
+		DisplayName:           "Email User",
+		Email:                 "taken@example.com",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	require.NoError(t, err)
 
@@ -686,13 +686,13 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 		require.NoError(t, err)
 		userID := id.Generate()
 		err = st.Users().Create(ctx, store.CreateUserParams{
-			ID:           userID,
-			Username:     username,
-			PasswordHash: hash,
-			DisplayName:  username,
-			Email:        "",
-			PasswordSet:  true,
-			IsAdmin:      false,
+			ID:                    userID,
+			Username:              username,
+			PasswordHash:          hash,
+			DisplayName:           username,
+			Email:                 "",
+			FirstCredentialExempt: true,
+			IsAdmin:               false,
 		})
 		require.NoError(t, err)
 		_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
@@ -748,13 +748,13 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	require.NoError(t, err)
 	userAID := id.Generate()
 	err = st.Users().Create(ctx, store.CreateUserParams{
-		ID:           userAID,
-		Username:     "racer",
-		PasswordHash: hash,
-		DisplayName:  "Racer",
-		Email:        "",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userAID,
+		Username:              "racer",
+		PasswordHash:          hash,
+		DisplayName:           "Racer",
+		Email:                 "",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	require.NoError(t, err)
 	_, err = st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
@@ -869,13 +869,13 @@ func TestEmailVerificationRule_UnverifiedBlocked(t *testing.T) {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "unverified",
-		PasswordHash: hash,
-		DisplayName:  "Unverified User",
-		Email:        "unverified@example.com",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "unverified",
+		PasswordHash:          hash,
+		DisplayName:           "Unverified User",
+		Email:                 "unverified@example.com",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	// email_verified defaults to 0 in the DB.
 
@@ -918,13 +918,13 @@ func TestEmailVerificationRule_ConfigOff_NotBlocked(t *testing.T) {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "nogate",
-		PasswordHash: hash,
-		DisplayName:  "No Gate User",
-		Email:        "nogate@example.com",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "nogate",
+		PasswordHash:          hash,
+		DisplayName:           "No Gate User",
+		Email:                 "nogate@example.com",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	// email_verified defaults to 0 — but the restriction is OFF.
 
@@ -1028,13 +1028,13 @@ func TestEmailVerificationRule_LogoutAllowed(t *testing.T) {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "logoutgating",
-		PasswordHash: hash,
-		DisplayName:  "Logout Gating",
-		Email:        "logoutgating@example.com",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "logoutgating",
+		PasswordHash:          hash,
+		DisplayName:           "Logout Gating",
+		Email:                 "logoutgating@example.com",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	// email_verified defaults to 0.
 
@@ -1059,13 +1059,13 @@ func TestEmailVerificationRule_RequestEmailChangeAllowed(t *testing.T) {
 	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "emailchangegate",
-		PasswordHash: hash,
-		DisplayName:  "Email Change Gating",
-		Email:        "emailchangegate@example.com",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "emailchangegate",
+		PasswordHash:          hash,
+		DisplayName:           "Email Change Gating",
+		Email:                 "emailchangegate@example.com",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	// email_verified defaults to 0.
 
@@ -1800,7 +1800,7 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 	// Nobody chose a password, so nothing may claim somebody did: the account
 	// signs in with its passkey until the owner adds a password from
 	// Preferences.
-	assert.False(t, dbUser.PasswordSet)
+	assert.False(t, dbUser.FirstCredentialExempt)
 
 	// Setup is over, so the hub withdraws /setup.
 	infoResp, err = env.client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
@@ -2080,12 +2080,12 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:           userID,
-		Username:     "mistyped",
-		PasswordHash: hash,
-		DisplayName:  "Mistyped",
-		Email:        "mistpyed@example.com",
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              "mistyped",
+		PasswordHash:          hash,
+		DisplayName:           "Mistyped",
+		Email:                 "mistpyed@example.com",
+		FirstCredentialExempt: true,
 	}))
 	token, _, _, err := auth.Login(ctx, st, "mistyped", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)

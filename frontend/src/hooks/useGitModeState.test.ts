@@ -540,7 +540,7 @@ describe('toGitFields projects every active mode onto the RPC field set', () => 
   })
 
   it('current mode returns a fresh empty object (not the shared singleton)', () => {
-    // Regression guard for the EMPTY_GIT_FIELDS-shared-reference footgun.
+    // Regression guard for the shared EMPTY_GIT_FIELDS reference.
     // Mutating one returned object must NOT leak into the next call.
     const s = useGitModeState()
     const first = s.toGitFields()

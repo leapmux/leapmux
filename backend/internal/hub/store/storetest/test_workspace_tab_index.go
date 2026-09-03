@@ -185,7 +185,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 		// setup silently -- this is the assertion that fails if the seam reopens.
 		require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: "", Username: "tabidx-blank-id-user",
-			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
+			PasswordHash: "h", DisplayName: "Blank", FirstCredentialExempt: true,
 		}), store.ErrInvalidArgument,
 			"a blank users.id is the only parent a blank-owner tab row could hang off")
 

@@ -62,11 +62,11 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
 	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
-		Username:     "admin",
-		PasswordHash: hash,
-		DisplayName:  "Admin",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		Username:              "admin",
+		PasswordHash:          hash,
+		DisplayName:           "Admin",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	})
 	require.NoError(t, err)
 	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
@@ -292,10 +292,10 @@ func linkUser(t *testing.T, env *adminOAuthEnv, username string, passwordSet boo
 		require.NoError(t, err)
 	}
 	user, err := service.CreateUser(ctx, env.st, service.CreateUserParams{
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  username,
-		PasswordSet:  passwordSet,
+		Username:              username,
+		PasswordHash:          hash,
+		DisplayName:           username,
+		FirstCredentialExempt: passwordSet,
 	})
 	require.NoError(t, err)
 	for _, providerID := range providerIDs {

@@ -154,7 +154,16 @@ interface TileRendererOpts {
    * belongs to plus the message identity the bubble stamped; the shell resolves
    * it to either a FILE tab (when the provider named a file) or an IMAGE tab.
    */
-  onOpenChatImage?: (image: { agentId: string, seq: bigint, index: number, filePath?: string, title: string }) => void
+  onOpenChatImage?: (image: {
+    agentId: string
+    seq: bigint
+    index: number
+    filePath?: string
+    title: string
+    /** The agent's own Worker and checkout, not the focused tile's. */
+    workerId: string
+    workingDir: string
+  }) => void
   /**
    * Branch-menu callbacks for the composer's branch chip. Each receives a
    * fully-built `BranchRef` (the focused agent's repo + the tabs on its
@@ -865,8 +874,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get backgroundTasks() { return chipTasks() },
               get registryRows() { return rootTasks() },
               onOpenSubagent: onOpenBackgroundTask,
+              // The WORKER travels with the agent, from the tab that owns this
+              // transcript. Reading it from the focused tile instead would take
+              // it from a different tab: a click lands on this button before the
+              // tile's own `onFocus` runs, because that handler sits on the tile
+              // and fires on the bubble. The image would then be registered
+              // against a worker that has no such agent.
               onOpenImage: onOpenChatImage
-                ? image => onOpenChatImage({ ...image, agentId })
+                // eslint-disable-next-line solid/reactivity -- read at CLICK time on purpose: this closure is an event handler, so the worker must be the one the tab holds when the user clicks, not the one it held when the row rendered
+                ? image => onOpenChatImage({
+                  ...image,
+                  agentId,
+                  workerId: agent()?.workerId ?? '',
+                  workingDir: agent()?.workingDir ?? '',
+                })
                 : undefined,
               get todos() { return todosFor(agentId) },
             }
@@ -1065,7 +1086,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const it = createMemo(() => view.getImageTab(imageTabId))
             return (
               <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: imageTab()?.id !== imageTabId }}>
-                <Show when={it()?.imageAgentId && it()?.imageSeq !== undefined}>
+                {/* A fallback, because every other pane kind states something
+                    while it waits. `ChatImageViewer` owns the right sentence
+                    already, but the payload has to arrive before it can mount:
+                    the reference IS its input. Without this the pane is an empty
+                    rectangle for as long as the tab's worker is unreachable. */}
+                <Show
+                  when={it()?.imageAgentId && it()?.imageSeq !== undefined}
+                  fallback={<div class={styles.placeholder}>Loading image…</div>}
+                >
                   <ChatImageViewer
                     workerId={it()?.workerId ?? ''}
                     agentId={it()?.imageAgentId ?? ''}

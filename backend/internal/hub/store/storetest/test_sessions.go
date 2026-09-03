@@ -275,14 +275,14 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		userID := id.Generate()
 		err := st.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			Username:      "validate-user",
-			PasswordHash:  "hash",
-			DisplayName:   "Val User",
-			Email:         "val@example.com",
-			EmailVerified: true,
-			PasswordSet:   true,
-			IsAdmin:       true,
+			ID:                    userID,
+			Username:              "validate-user",
+			PasswordHash:          "hash",
+			DisplayName:           "Val User",
+			Email:                 "val@example.com",
+			EmailVerified:         true,
+			FirstCredentialExempt: true,
+			IsAdmin:               true,
 		})
 		require.NoError(t, err)
 

@@ -67,8 +67,13 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
       <Show when={props.availableProviders?.length}>
         <li class={styles.providerIconsRow}>
           <For each={props.availableProviders}>
+            {/* `ariaLabel`, because the button holds a glyph and no text.
+                Without it a screen reader announces an unnamed button, and a
+                `getByRole('button', { name })` lookup cannot address it -- which
+                is why the tests here reach these four by test id alone. */}
             {provider => (
               <Tooltip
+                ariaLabel
                 text={props.disabledReason ?? (
                   props.shortcuts
                     ? shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')

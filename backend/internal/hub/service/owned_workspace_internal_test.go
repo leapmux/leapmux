@@ -39,7 +39,7 @@ func TestZeroCallerCannotLoadBlankOwnedWorkspace(t *testing.T) {
 	// empty-vs-empty pairing would be back in play.
 	require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: "", Username: "owned-ws-blank-user", PasswordHash: "h",
-		DisplayName: "Blank", PasswordSet: true,
+		DisplayName: "Blank", FirstCredentialExempt: true,
 	}), store.ErrInvalidArgument)
 	require.Error(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID: "ws-blank-owner-loader", OwnerUserID: userid.UserID{}, Title: "blank-owner",

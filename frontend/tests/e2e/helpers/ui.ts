@@ -616,7 +616,7 @@ const LOGIN_ATTEMPTS = 3
  * timeout. Without an explicit slice the URL assertion inherits
  * `expect.timeout` (120s) and the shell wait inherits `actionTimeout` (30s):
  * two attempts already exceed the test budget, and the third can never run —
- * the test dies with a bare "Test timeout" that names no assertion.
+ * the test dies with a bare "Test timeout" that specifies no assertion.
  */
 const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
 

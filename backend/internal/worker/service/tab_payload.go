@@ -44,16 +44,16 @@ func NewTabPayloadStore(q *db.Queries, events *PrivateEventsBus) *TabPayloadStor
 func (s *TabPayloadStore) Register(ctx context.Context, p RegisterTabPayloadParams) error {
 	owner, ok := userid.New(p.UserID)
 	if !ok || p.TabID == "" || p.Payload == nil {
-		return fmt.Errorf("register tab payload: required field empty")
+		return fmt.Errorf("register tab payload: required field empty: %w", ErrInvalidTabPayload)
 	}
 	tabType, err := tabPayloadType(p.Payload)
 	if err != nil {
-		return fmt.Errorf("register tab payload: %w", err)
+		return fmt.Errorf("register tab payload: %w: %w", ErrInvalidTabPayload, err)
 	}
 	stored := proto.Clone(p.Payload).(*leapmuxv1.TabPayload)
 	workingDir, err := resolveTabPayloadWorkingDir(stored)
 	if err != nil {
-		return fmt.Errorf("register tab payload: %w", err)
+		return fmt.Errorf("register tab payload: %w: %w", ErrInvalidTabPayload, err)
 	}
 	stored.WorkingDir = workingDir
 	blob, err := proto.Marshal(stored)
@@ -88,8 +88,8 @@ func (s *TabPayloadStore) Register(ctx context.Context, p RegisterTabPayloadPara
 	return nil
 }
 
-// tabPayloadType maps a payload's oneof arm to the TabType it belongs to, and
-// validates the arm's own required fields.
+// tabPayloadType maps a payload's oneof case to the TabType it belongs to, and
+// validates that case's own required fields.
 //
 // The type is stored in its own column rather than re-derived per read: SQL
 // needs it (tab_locations projects it), and a row whose payload a future binary
@@ -132,7 +132,7 @@ func tabPayloadType(payload *leapmuxv1.TabPayload) (leapmuxv1.TabType, error) {
 		}
 		return leapmuxv1.TabType_TAB_TYPE_IMAGE, nil
 	default:
-		return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, errors.New("payload names no tab kind")
+		return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, errors.New("payload specifies no tab kind")
 	}
 }
 
@@ -155,11 +155,11 @@ func tabPayloadLinkDir(payload *leapmuxv1.TabPayload) string {
 
 // resolveTabPayloadWorkingDir picks the working dir a tab is stored with: the
 // originating tab's, or -- for a FILE tab only -- the file's own directory when
-// the caller has no originating tab to name. The UI always names one; `leapmux
-// control tab open --type=file` names the spawning tab's dir when it runs inside
+// the caller has no originating tab to give. The UI always gives one; `leapmux
+// control tab open --type=file` gives the spawning tab's dir when it runs inside
 // one ($LEAPMUX_CONTROL_WORKING_DIR) and nothing when run from a plain shell,
 // which is the case the fallback exists for. An IMAGE tab has no file to fall
-// back to, so an unnamed one stays blank and simply joins no branch group.
+// back to, so an unspecified one stays blank and simply joins no branch group.
 //
 // Normalizing HERE, once at write time, is what lets every reader --
 // getTabWorkingDir, linkTabToWorktree, the branch-sibling scan -- just read the
@@ -462,3 +462,11 @@ type RegisterTabPayloadParams struct {
 // ErrTabPayloadNotFound is returned when the requested tab has no row in
 // worker_tab_payloads.
 var ErrTabPayloadNotFound = errors.New("tab_payload: not found")
+
+// ErrInvalidTabPayload marks a Register refusal the CALLER caused: a missing
+// required field, a payload whose oneof states no kind, or a working directory
+// that is not absolute. Every other Register failure is a worker-side fault --
+// a marshal error or a failed upsert -- and the handler must not report those
+// as a bad request, because the caller has nothing to correct and a retry is
+// exactly what it should do.
+var ErrInvalidTabPayload = errors.New("tab_payload: invalid")

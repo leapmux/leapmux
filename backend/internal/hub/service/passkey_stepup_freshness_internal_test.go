@@ -144,16 +144,16 @@ func TestStepUpMutationAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:            userID,
-		Username:      "oauthonly",
-		DisplayName:   "OAuth Only",
-		Email:         "oauthonly@example.com",
-		EmailVerified: true,
-		PasswordSet:   false,
+		ID:                    userID,
+		Username:              "oauthonly",
+		DisplayName:           "OAuth Only",
+		Email:                 "oauthonly@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: false,
 	}))
 	user, err := st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
-	require.False(t, user.PasswordSet)
+	require.False(t, user.FirstCredentialExempt)
 
 	svc := &UserService{store: st}
 	info := func(authenticatedAt time.Time) *auth.UserInfo {
@@ -233,13 +233,13 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:            userID,
-		Username:      "haspassword",
-		DisplayName:   "Has Password",
-		Email:         "haspassword@example.com",
-		EmailVerified: true,
-		PasswordHash:  "hash",
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "haspassword",
+		DisplayName:           "Has Password",
+		Email:                 "haspassword@example.com",
+		EmailVerified:         true,
+		PasswordHash:          "hash",
+		FirstCredentialExempt: true,
 	}))
 	user, err := st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
@@ -335,12 +335,12 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	// have. assertFirstCredentialAuthIsFresh is the refusal.
 	shell := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:            shell,
-		Username:      "nocredential",
-		DisplayName:   "No Credential",
-		Email:         "nocredential@example.com",
-		EmailVerified: true,
-		PasswordSet:   false,
+		ID:                    shell,
+		Username:              "nocredential",
+		DisplayName:           "No Credential",
+		Email:                 "nocredential@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: false,
 	}))
 	shellUser, err := st.Users().GetByID(ctx, shell)
 	require.NoError(t, err)
@@ -424,7 +424,7 @@ func TestElevationAdmittedAtBeginSurvivesFinish(t *testing.T) {
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "ceremonygrace", DisplayName: "Ceremony Grace",
 		Email: "ceremonygrace@example.com", EmailVerified: true,
-		PasswordHash: "hash", PasswordSet: true,
+		PasswordHash: "hash", FirstCredentialExempt: true,
 	}))
 	user, err := st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)

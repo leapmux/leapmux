@@ -363,7 +363,6 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// cancelled on ctx done.
 	reconciler := service.NewOrphanReconciler(
 		queries,
-		svc.TabPayloads,
 		func(rctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 			return p.Client.ListOwnedTabsForWorker(rctx)
 		},
@@ -484,9 +483,9 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 	// One default-less switch over every TabType, so `exhaustive` (enabled in
 	// .golangci.yml) fails the BUILD when a type is added. That matters more here
 	// than almost anywhere: the hub tombstones every owned tab this report omits,
-	// so a forgotten arm silently deletes the user's tabs of that type on every
+	// so a forgotten case silently deletes the user's tabs of that type on every
 	// reconnect. Three hand-written loops with nothing tying them to the enum is
-	// exactly how the FILE arm came to be missing.
+	// exactly how the FILE case came to be missing.
 	for _, tabType := range []leapmuxv1.TabType{
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		leapmuxv1.TabType_TAB_TYPE_TERMINAL,
@@ -508,7 +507,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 			// stamps ctx.workerId and the validator rejects a live tab without
 			// one), so it lands in workspace_tab_owned and comes back from
 			// ListOwnedByWorker, which applies no tab-type filter. Omitting this
-			// arm tombstoned every file tab on the worker on every single
+			// case tombstoned every file tab on the worker on every single
 			// reconnect.
 			//
 			// Scoped to the owner, unlike the two above: worker_tab_payloads is PK'd on
@@ -538,7 +537,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 
 // payloadTabIDsForOwner returns owner's tab ids of one payload-backed kind,
 // dropping any row belonging to a different user or a different kind. See the
-// FILE/IMAGE arm of BuildTabSync for why both filters matter.
+// FILE/IMAGE case of BuildTabSync for why both filters matter.
 func payloadTabIDsForOwner(ctx context.Context, queries *db.Queries, owner userid.UserID, tabType leapmuxv1.TabType) ([]string, error) {
 	rows, err := queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {

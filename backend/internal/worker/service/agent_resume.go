@@ -319,7 +319,7 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 // anybody asks of this feature.
 type resumeSkipReason string
 
-// There is deliberately no arm for an ARCHIVED workspace, and today there
+// There is deliberately no case for an ARCHIVED workspace, and today there
 // cannot be one: a Worker stores no workspace (see OpenAgentRequest in
 // agent.proto). Archiving a workspace also stops none of its agents, so their
 // rows stay open and this sweep starts every one of them again after a restart.

@@ -166,11 +166,11 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
 	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
-		Username:     "admin",
-		PasswordHash: hash,
-		DisplayName:  "Admin",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		Username:              "admin",
+		PasswordHash:          hash,
+		DisplayName:           "Admin",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 		// VERIFIED, because the issuance notice is silent to an address
 		// nobody confirmed -- an account notice to an unconfirmed address is
 		// a delivery to a stranger.
@@ -527,7 +527,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
 	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
-		Username: "admin", PasswordHash: hash, DisplayName: "Admin", PasswordSet: true, IsAdmin: true,
+		Username: "admin", PasswordHash: hash, DisplayName: "Admin", FirstCredentialExempt: true, IsAdmin: true,
 	})
 	require.NoError(t, err)
 	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
@@ -1779,9 +1779,9 @@ func TestAdminUserService_ResetPassword_SetsAPasswordForAnOAuthOnlyUser(t *testi
 	ctx := context.Background()
 
 	oauthUser, err := service.CreateUser(ctx, env.st, service.CreateUserParams{
-		Username:    "dave",
-		DisplayName: "Dave",
-		PasswordSet: false,
+		Username:              "dave",
+		DisplayName:           "Dave",
+		FirstCredentialExempt: false,
 	})
 	require.NoError(t, err)
 
@@ -1793,7 +1793,7 @@ func TestAdminUserService_ResetPassword_SetsAPasswordForAnOAuthOnlyUser(t *testi
 
 	updated, err := env.st.Users().GetByID(ctx, oauthUser.ID)
 	require.NoError(t, err)
-	assert.True(t, updated.PasswordSet, "the reset must mark the account as having a password")
+	assert.True(t, updated.FirstCredentialExempt, "the reset must mark the account as having a password")
 	_, _, _, err = auth.Login(ctx, env.st, "dave", "first-password", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }

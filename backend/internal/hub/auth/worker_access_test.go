@@ -45,7 +45,7 @@ func TestWorkerCanUse_ZeroUserIDDenies(t *testing.T) {
 	ctx := context.Background()
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID: userID, Username: "owner", PasswordHash: "h", DisplayName: "O", PasswordSet: true,
+		ID: userID, Username: "owner", PasswordHash: "h", DisplayName: "O", FirstCredentialExempt: true,
 	}))
 	worker := storetest.SeedWorker(t, st, userID)
 

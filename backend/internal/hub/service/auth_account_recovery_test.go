@@ -117,13 +117,13 @@ func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "resetme",
-		PasswordHash:  hash,
-		DisplayName:   "Reset Me",
-		Email:         "resetme@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "resetme",
+		PasswordHash:          hash,
+		DisplayName:           "Reset Me",
+		Email:                 "resetme@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -150,7 +150,7 @@ func TestRequestAccountRecovery_KnownUser_SendsMail(t *testing.T) {
 
 	user, err = st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	assert.True(t, user.PasswordSet)
+	assert.True(t, user.FirstCredentialExempt)
 	match, err := password.Verify(user.PasswordHash, "newpass123")
 	require.NoError(t, err)
 	assert.True(t, match)
@@ -166,13 +166,13 @@ func TestRequestAccountRecovery_MailFailure_ClearsToken(t *testing.T) {
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "mailfail",
-		PasswordHash:  hash,
-		DisplayName:   "Mail Fail",
-		Email:         "mailfail@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "mailfail",
+		PasswordHash:          hash,
+		DisplayName:           "Mail Fail",
+		Email:                 "mailfail@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -194,10 +194,10 @@ func TestCompleteAccountRecoveryPassword_InvalidToken_NotFound(t *testing.T) {
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "badtoken",
-		PasswordHash: hash,
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              "badtoken",
+		PasswordHash:          hash,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
@@ -237,12 +237,12 @@ func TestCompleteAccountRecoveryPassword_WeakPasswordDoesNotCharge(t *testing.T)
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "weakpw",
-		PasswordHash:  hash,
-		Email:         "weakpw@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "weakpw",
+		PasswordHash:          hash,
+		Email:                 "weakpw@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -282,13 +282,13 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "wipeme",
-		PasswordHash:  hash,
-		DisplayName:   "Wipe Me",
-		Email:         "wipeme@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "wipeme",
+		PasswordHash:          hash,
+		DisplayName:           "Wipe Me",
+		Email:                 "wipeme@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 	seedPasskeyCredential(t, st, userID, "Laptop")
 	uid := userid.MustNew(userID)
@@ -348,13 +348,13 @@ func TestRequestAccountRecovery_PasswordlessAccount_SendsLink(t *testing.T) {
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "passkeyonly",
-		PasswordHash:  password.PlaceholderHash,
-		DisplayName:   "Passkey Only",
-		Email:         "passkeyonly@example.com",
-		EmailVerified: true,
-		PasswordSet:   false,
+		ID:                    userID,
+		Username:              "passkeyonly",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "Passkey Only",
+		Email:                 "passkeyonly@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: false,
 	}))
 
 	_, err := client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -383,13 +383,13 @@ func TestCompleteAccountRecoveryPassword_SetsFirstPassword(t *testing.T) {
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "recoverless",
-		PasswordHash:  password.PlaceholderHash,
-		DisplayName:   "Recover Less",
-		Email:         "recoverless@example.com",
-		EmailVerified: true,
-		PasswordSet:   false,
+		ID:                    userID,
+		Username:              "recoverless",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "Recover Less",
+		Email:                 "recoverless@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: false,
 	}))
 	seedPasskeyCredential(t, st, userID, "Lost Laptop")
 
@@ -409,7 +409,7 @@ func TestCompleteAccountRecoveryPassword_SetsFirstPassword(t *testing.T) {
 
 	row, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
-	assert.True(t, row.PasswordSet, "recovery must set the account's first password")
+	assert.True(t, row.FirstCredentialExempt, "recovery must set the account's first password")
 	match, err := password.Verify(row.PasswordHash, "firstpass123")
 	require.NoError(t, err)
 	assert.True(t, match)
@@ -432,12 +432,12 @@ func TestCompleteAccountRecoveryPassword_ExpiredToken_NotFound(t *testing.T) {
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "expired",
-		PasswordHash:  hash,
-		Email:         "expired@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "expired",
+		PasswordHash:          hash,
+		Email:                 "expired@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -480,12 +480,12 @@ func TestCompleteAccountRecoveryPassword_AttemptLimitBlocksBeforeArgon2(t *testi
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "attemptcap",
-		PasswordHash:  hash,
-		Email:         "attemptcap@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "attemptcap",
+		PasswordHash:          hash,
+		Email:                 "attemptcap@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -545,13 +545,13 @@ func TestRequestAccountRecovery_UsernameIsSanitized(t *testing.T) {
 	hash, err := password.Hash("oldpass123")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "resetme",
-		PasswordHash:  hash,
-		DisplayName:   "Reset Me",
-		Email:         "resetme@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "resetme",
+		PasswordHash:          hash,
+		DisplayName:           "Reset Me",
+		Email:                 "resetme@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -576,13 +576,13 @@ func TestRequestAccountRecovery_CooldownKeepsPreviousLink(t *testing.T) {
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "cooldown-user",
-		PasswordHash:  password.PlaceholderHash,
-		DisplayName:   "Cooldown User",
-		Email:         "cooldown@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "cooldown-user",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "Cooldown User",
+		Email:                 "cooldown@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	for i := 0; i < 2; i++ {
@@ -616,13 +616,13 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:            userID,
-		Username:      "burned-budget",
-		PasswordHash:  password.PlaceholderHash,
-		DisplayName:   "Burned Budget",
-		Email:         "burned@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
+		ID:                    userID,
+		Username:              "burned-budget",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "Burned Budget",
+		Email:                 "burned@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
 	}))
 
 	_, err := client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -660,14 +660,14 @@ func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 	// A user must exist so the sign-up takes the public path, not the
 	// first-admin setup path (which verifies nothing and sends no mail).
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            id.Generate(),
-		Username:      "existing-admin",
-		PasswordHash:  password.PlaceholderHash,
-		DisplayName:   "Existing Admin",
-		Email:         "admin@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
-		IsAdmin:       true,
+		ID:                    id.Generate(),
+		Username:              "existing-admin",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "Existing Admin",
+		Email:                 "admin@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	}))
 
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -718,7 +718,7 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: unconfirmed, Username: "unconfirmedadmin", PasswordHash: hash,
 		DisplayName: "Unconfirmed", Email: "unconfirmed@example.com",
-		EmailVerified: false, PasswordSet: true, IsAdmin: true,
+		EmailVerified: false, FirstCredentialExempt: true, IsAdmin: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -737,7 +737,7 @@ func TestRequestAccountRecovery_AdminUnconfirmedAddressGetsNoLink(t *testing.T) 
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: confirmed, Username: "confirmedadmin", PasswordHash: hash,
 		DisplayName: "Confirmed", Email: "confirmed@example.com",
-		EmailVerified: true, PasswordSet: true, IsAdmin: true,
+		EmailVerified: true, FirstCredentialExempt: true, IsAdmin: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(ctx, connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
@@ -771,7 +771,7 @@ func TestRequestAccountRecovery_UsesTheServiceClock(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "clocked", PasswordHash: hash, DisplayName: "Clocked",
-		Email: "clocked@example.com", EmailVerified: true, PasswordSet: true,
+		Email: "clocked@example.com", EmailVerified: true, FirstCredentialExempt: true,
 	}))
 
 	_, err = client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{

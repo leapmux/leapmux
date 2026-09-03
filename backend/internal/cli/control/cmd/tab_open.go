@@ -144,7 +144,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 			}
 			return err
 		}
-		out := tabOpenEnvelope(result.Agent.GetId(), tabType, workspaceID, workerID, result.TileID, result.Position)
+		out := tabOpenEnvelope(result.Agent.GetId(), resolve.TabTypeWireName(tt), workspaceID, workerID, result.TileID, result.Position)
 		if result.InitialMsgWarn != "" {
 			out["initial_message_warning"] = result.InitialMsgWarn
 		}
@@ -182,7 +182,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 			}
 			return err
 		}
-		return control.EmitData(tabOpenEnvelope(result.TerminalID, tabType, workspaceID, workerID, result.TileID, result.Position))
+		return control.EmitData(tabOpenEnvelope(result.TerminalID, resolve.TabTypeWireName(tt), workspaceID, workerID, result.TileID, result.Position))
 
 	case leapmuxv1.TabType_TAB_TYPE_FILE:
 		// FILE flow: tab is created entirely inside the CLI handler
@@ -237,7 +237,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := cc.submitOps(ops); err != nil {
 			return err
 		}
-		out := tabOpenEnvelope(tabID, tabType, workspaceID, workerID, resolvedTileID, resolvedPos)
+		out := tabOpenEnvelope(tabID, resolve.TabTypeWireName(tt), workspaceID, workerID, resolvedTileID, resolvedPos)
 		out["path"] = filePath
 		return control.EmitData(out)
 	default:
@@ -250,6 +250,14 @@ func RunTabOpen(rawCtx any, args []string) error {
 // Each per-type branch then layers on its own warnings / extras
 // (the agent branch's initial_message_warning, the file branch's path)
 // instead of repeating the struct-literal in three places.
+// tabOpenEnvelope builds the success envelope every `tab open` arm emits.
+//
+// tabType is the CANONICAL wire name, not the string the user typed.
+// `ParseTabType` accepts "TAB_TYPE_FILE" as well as "file", so echoing the flag
+// would make this command answer "TAB_TYPE_FILE" for a tab that `tab list` and
+// `tab get` both call "file" -- and a script that compares the two fields across
+// commands would silently stop matching. See enums.go, which states that the
+// envelope strings and the flag values are one vocabulary.
 func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position string) map[string]any {
 	return map[string]any{
 		"tab_id":       tabID,

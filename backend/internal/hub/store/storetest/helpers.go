@@ -83,14 +83,14 @@ func SeedUser(t *testing.T, st store.Store, username string) *store.User {
 	t.Helper()
 	userID := id.Generate()
 	err := st.Users().Create(ctx, store.CreateUserParams{
-		ID:            userID,
-		Username:      username,
-		PasswordHash:  "hash-" + username,
-		DisplayName:   "Display " + username,
-		Email:         username + "@example.com",
-		EmailVerified: true,
-		PasswordSet:   true,
-		IsAdmin:       false,
+		ID:                    userID,
+		Username:              username,
+		PasswordHash:          "hash-" + username,
+		DisplayName:           "Display " + username,
+		Email:                 username + "@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	require.NoError(t, err)
 
@@ -107,12 +107,12 @@ func SeedPasswordlessUser(t *testing.T, st store.Store, username string) *store.
 	t.Helper()
 	userID := id.Generate()
 	err := st.Users().Create(ctx, store.CreateUserParams{
-		ID:            userID,
-		Username:      username,
-		DisplayName:   "Display " + username,
-		Email:         username + "@example.com",
-		EmailVerified: true,
-		PasswordSet:   false,
+		ID:                    userID,
+		Username:              username,
+		DisplayName:           "Display " + username,
+		Email:                 username + "@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: false,
 	})
 	require.NoError(t, err)
 

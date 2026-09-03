@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/optionids"
@@ -24,19 +25,11 @@ import (
 // callers don't have to special-case zero-valued fields when they
 // build an output map.
 
+// tabTypeName projects a TabType to the token every envelope spells it with.
+// The table is generated from contracts/tab-types.json, so this projection and
+// the `--type` flag the same script emits cannot name a kind differently.
 func tabTypeName(t leapmuxv1.TabType) string {
-	switch t {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		return "agent"
-	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return "terminal"
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		return "file"
-	case leapmuxv1.TabType_TAB_TYPE_IMAGE:
-		return "image"
-	default:
-		return ""
-	}
+	return contracts.TabTypeWireToken[t]
 }
 
 func agentProviderName(p leapmuxv1.AgentProvider) string {

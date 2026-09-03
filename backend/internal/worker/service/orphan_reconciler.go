@@ -31,7 +31,6 @@ import (
 // explicit Trigger() calls (e.g. on worker reconnect).
 type OrphanReconciler struct {
 	queries  *db.Queries
-	files    *TabPayloadStore
 	listFn   func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error)
 	now      func() time.Time
 	interval time.Duration
@@ -124,16 +123,15 @@ type OrphanReconcilerOptions struct {
 	OnConverged func()
 }
 
-// NewOrphanReconciler binds a reconciler to the worker's local DB
-// queries plus the TabPayloadStore for path mutations. listFn is
-// the hub-side ListOwnedTabsForWorker call (injected so tests can
-// substitute a fake).
+// NewOrphanReconciler binds a reconciler to the worker's local DB queries.
+// listFn is the hub-side ListOwnedTabsForWorker call (injected so tests can
+// substitute a fake); every teardown goes through the injected CloseTab.
 //
 // listFn hands back the WHOLE response, not just its tabs: the reap decision
 // needs the owner the response declares (see reconcileTabPayloads), and a
 // signature that returned the tab list alone would let a caller drop that owner
 // on the floor and turn a narrow list into a universal absence.
-func NewOrphanReconciler(queries *db.Queries, files *TabPayloadStore, listFn func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error), opts OrphanReconcilerOptions) *OrphanReconciler {
+func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error), opts OrphanReconcilerOptions) *OrphanReconciler {
 	if opts.Interval <= 0 {
 		opts.Interval = time.Hour
 	}
@@ -156,7 +154,6 @@ func NewOrphanReconciler(queries *db.Queries, files *TabPayloadStore, listFn fun
 	}
 	return &OrphanReconciler{
 		queries:             queries,
-		files:               files,
 		listFn:              listFn,
 		now:                 opts.Now,
 		interval:            opts.Interval,
@@ -428,7 +425,7 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 		return true, true
 	}
 	ok = true
-	fileTabs, err := r.queries.ListAllWorkerTabPayloads(ctx)
+	payloadRows, err := r.queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: probe worker_tab_payloads", "err", err)
 		ok = false
@@ -443,7 +440,7 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 		r.logger.Warn("orphan reconciler: probe terminals", "err", err)
 		ok = false
 	}
-	return len(fileTabs) > 0 || len(agentIDs) > 0 || len(terminalIDs) > 0, ok
+	return len(payloadRows) > 0 || len(agentIDs) > 0 || len(terminalIDs) > 0, ok
 }
 
 // reconcileWorktrees reclaims worktrees whose tab links are all
@@ -564,20 +561,23 @@ func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey ma
 			if !r.reapDue(k, now, next) {
 				continue
 			}
-			// Route through the SAME teardown the AGENT and TERMINAL cases use,
-			// with the keep-the-link policy.
-			//
-			// This case used to repeat the teardown by hand and DROP the
-			// worktree_tabs link first. That looked like the safe order, but a
+			// Route through the SAME teardown the AGENT and TERMINAL cases use.
+			// r.closeTab is (*Service).CloseTabForReconcile, which DROPS the
+			// worktree_tabs link -- and dropping it is how KEEP is expressed. A
 			// zero-link worktree is excluded from ListOrphanCandidateWorktrees
-			// forever (it requires EXISTS at least one link), so dropping the
-			// last link did not reclaim the directory late -- it stranded it
-			// PERMANENTLY. The shape is reachable whenever the FILE tab holds
-			// the worktree's only remaining link: open a file inside a worktree
-			// with no agent or terminal, then close it offline or let the
-			// reconciler reap it. Keeping the link is what leaves the worktree a
-			// GC candidate for reapWorktree to reclaim under its unsaved-work
-			// probe.
+			// (that query requires at least one link), so the directory survives
+			// until the user removes it. A reconciler reap is the OFFLINE half of
+			// the user's own tab close, and an offline close pins KEEP, so
+			// honouring it here is what stops this path from destroying a clean
+			// worktree that the identical online close keeps.
+			//
+			// The opposite policy, keepWorktreeLinkForReconciler, belongs to
+			// closeTabForDeletedWorkspace alone: there the workspace is gone, so
+			// no user intent for the directory survives, and the strand is what
+			// leaves it a GC candidate for reapWorktree.
+			//
+			// Pinned by
+			// TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep.
 			r.closeTab(tabType, row.UserID, row.TabID)
 		}
 	}

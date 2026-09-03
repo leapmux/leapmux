@@ -594,8 +594,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   }
 
   const generateFileTabId = makeIdGenerator('file')
-  const handleFileOpen = (path: string, openSource?: FileOpenSource) => {
-    const ctx = getCurrentTabContext()
+  const handleFileOpen = (
+    path: string,
+    openSource?: FileOpenSource,
+    /**
+     * The Worker and checkout to open against. The file tree omits it and gets
+     * the focused tile's context, which is what it means. A chat row supplies
+     * the agent's own, because the file it names lives on that agent's machine.
+     */
+    at?: { workerId: string, workingDir: string },
+  ) => {
+    const ctx = at ?? getCurrentTabContext()
     if (!ctx.workerId)
       return
 
@@ -713,8 +722,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * instead (see `ImageResultView`'s click handler): the file on disk is the
    * same picture at full resolution, and it costs no new tab.
    */
-  const handleImageOpen = (image: { agentId: string, seq: bigint, imageIndex: number, title: string }) => {
-    const ctx = getCurrentTabContext()
+  const handleImageOpen = (
+    image: { agentId: string, seq: bigint, imageIndex: number, title: string },
+    /**
+     * The Worker and checkout to open against. The caller supplies it because
+     * the caller knows which transcript was clicked; falling back to the focused
+     * tile would stamp the tab with a different tab's Worker (see
+     * `handleChatImageOpen`).
+     */
+    at?: { workerId: string, workingDir: string },
+  ) => {
+    const ctx = at ?? getCurrentTabContext()
     if (!ctx.workerId)
       return
 
@@ -801,9 +819,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     index: number
     filePath?: string
     title: string
+    /**
+     * The agent's own Worker and checkout. Both destinations need it: the file
+     * lives on the machine the agent runs on, and the image tab resolves its
+     * reference through that same Worker.
+     */
+    workerId: string
+    workingDir: string
   }) => {
+    const at = { workerId: image.workerId, workingDir: image.workingDir }
     if (image.filePath) {
-      handleFileOpen(image.filePath)
+      handleFileOpen(image.filePath, undefined, at)
       return
     }
     handleImageOpen({
@@ -811,7 +837,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       seq: image.seq,
       imageIndex: image.index,
       title: image.title,
-    })
+    }, at)
   }
 
   return {
@@ -822,7 +848,11 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     closeTabWithAction,
     closeWorktreeTabsAndReport,
     handleFileOpen,
-    handleImageOpen,
+    // `handleImageOpen` is deliberately NOT exported. `handleChatImageOpen` is
+    // the entry point, and the file-vs-image decision it makes is the reason
+    // this module owns the pair -- a caller that reached the image opener
+    // directly would route an image the agent read from disk to a tab that
+    // shows the downsample it sent its model.
     handleChatImageOpen,
     setIsTabEditing: (fn: () => boolean) => { isTabEditing = fn },
   }

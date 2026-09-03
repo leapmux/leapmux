@@ -37,7 +37,7 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
 		_ = q.DeleteWorktree(rctx, wt.ID)
 		_ = q.DeleteWorktreeTabsByWorktreeID(rctx, wt.ID)
 	}
-	rec := NewOrphanReconciler(q, svc.TabPayloads, nil, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
 		Now:          func() time.Time { return clock },
 		ReapWorktree: reap,
 		CloseTab:     svc.CloseTabForReconcile,
@@ -96,7 +96,7 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 	clock := time.Now()
 	var reaped []string
 	reap := func(_ context.Context, wt db.Worktree) { reaped = append(reaped, wt.ID) }
-	rec := NewOrphanReconciler(q, svc.TabPayloads, nil, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
 		Now:          func() time.Time { return clock },
 		ReapWorktree: reap,
 		CloseTab:     svc.CloseTabForReconcile,
@@ -260,7 +260,7 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	}
 	// TabGrace -1: this test asserts WHAT the teardown does, not when it is due.
 	// TestReconcileTabs_* below covers the grace itself.
-	rec := NewOrphanReconciler(q, svc.TabPayloads, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		TabGrace: -1,
 	})
@@ -365,7 +365,7 @@ func TestReconcileOnce_LocalProbeFailureIsNotConvergence(t *testing.T) {
 		listCalls++
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
-	rec := NewOrphanReconciler(q, svc.TabPayloads, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 	})
 
@@ -409,7 +409,7 @@ func TestReconcileTabs_DefersTheReapUntilTheGraceElapses(t *testing.T) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
 	clock := time.Now()
-	rec := NewOrphanReconciler(q, svc.TabPayloads, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		Now:      func() time.Time { return clock },
 		TabGrace: 10 * time.Second,
@@ -453,7 +453,7 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 		return resp, nil
 	}
 	clock := time.Now()
-	rec := NewOrphanReconciler(q, svc.TabPayloads, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		Now:      func() time.Time { return clock },
 		TabGrace: 10 * time.Second,
@@ -496,7 +496,7 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
 	clock := time.Now()
-	rec := NewOrphanReconciler(q, svc.TabPayloads, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		Now:      func() time.Time { return clock },
 		TabGrace: 10 * time.Second,

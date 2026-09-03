@@ -5,6 +5,7 @@ import type { CommandStreamSegment, SavedViewportScroll, SpanMessageRevision } f
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { toBinary } from '@bufbuild/protobuf'
+import { untrack } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
 import { getAgentMessage } from '~/api/workerRpc'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
@@ -1573,23 +1574,33 @@ export function createChatStore() {
      * The loaded message at `seq`, or undefined when it isn't in the current window.
      * Used by the scroll rail's hover preview to extract a mark's preview WITHOUT a
      * fetch when the marked message is already loaded. Optimistic locals (seq 0n) are
-     * skipped -- a real mark's seq never matches them. Non-reactive: called imperatively
-     * on hover, not inside a tracking scope.
+     * skipped -- a real mark's seq never matches them.
+     *
+     * Non-reactive, and `untrack` is what MAKES it so rather than asking callers to
+     * be careful. The body walks `messagesByAgent`, so a caller inside a tracking
+     * scope would subscribe to every message of that agent and re-run on each row
+     * the agent appends. Both callers read imperatively -- the scroll rail's hover
+     * preview from an event handler, an IMAGE tab's resolve from an `on()` effect --
+     * but the second one reached here through an async function whose body runs
+     * synchronously as far as its first `await`, which is exactly how a "call it
+     * imperatively" contract gets broken without anybody writing a store read.
      */
     getLoadedMessageBySeq(agentId: string, seq: bigint): AgentChatMessage | undefined {
-      if (isOptimisticLocalSeq(seq))
-        return undefined
-      const messages = state.messagesByAgent[agentId]
-      if (!messages)
-        return undefined
-      // Server rows occupy [0, serverMessageEnd) ascending by unique seq (optimistic locals,
-      // seq 0n, trail after and are excluded by the guard above), so binary-search that region
-      // instead of a linear .find: a marked message is usually OUTSIDE the loaded window, so the
-      // old scan traversed the whole ~1200-row window fruitlessly for every hovered/scrubbed dot.
-      const end = serverMessageEnd(messages)
-      const idx = lowerBoundBySeq(messages, seq, end)
-      const hit = messages[idx]
-      return hit?.seq === seq ? hit : undefined
+      return untrack(() => {
+        if (isOptimisticLocalSeq(seq))
+          return undefined
+        const messages = state.messagesByAgent[agentId]
+        if (!messages)
+          return undefined
+        // Server rows occupy [0, serverMessageEnd) ascending by unique seq (optimistic locals,
+        // seq 0n, trail after and are excluded by the guard above), so binary-search that region
+        // instead of a linear .find: a marked message is usually OUTSIDE the loaded window, so the
+        // old scan traversed the whole ~1200-row window fruitlessly for every hovered/scrubbed dot.
+        const end = serverMessageEnd(messages)
+        const idx = lowerBoundBySeq(messages, seq, end)
+        const hit = messages[idx]
+        return hit?.seq === seq ? hit : undefined
+      })
     },
     /**
      * Fetch a SINGLE message by its per-agent seq, for a reader that addresses a

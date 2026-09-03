@@ -26,8 +26,8 @@ import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays, shallowEqualExcept } from '~/lib/shallowEqual'
 import { diffStatsFromRepo, repoGitView } from '~/stores/repoGit'
-import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
-import { isAgentTab, isPayloadBackedTabType, isTerminalTab } from '~/stores/tab.types'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import * as tabBarStyles from '../shell/TabBar.css'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
@@ -667,7 +667,7 @@ const BranchGroupRow: Component<{
           stats={branchStats()}
         />
         {/* Hide the whole menu on the synthetic "(no branch)" group:
-            branchName=null means the row's git state names no branch at
+            branchName=null means the row's git state specifies no branch at
             all -- a repository with no commits yet, or a tab LeapMux has
             not stamped yet -- so the branch actions have no target and the
             new-tab items have no checkout to open in. Keeping the menu
@@ -779,7 +779,7 @@ export interface WorkspaceTabTreeProps {
    * keeps its close -- see `canCloseTab`, which the tab bar shares.
    *
    * Named for the FACT rather than for the effect (this prop was `readOnly`).
-   * Archival is the only thing that gates mutation -- access is owner-only, and
+   * Archival is the only thing that blocks mutation -- access is owner-only, and
    * `isWorkspaceMutatable` says so outright -- so the two were one concept
    * under two names, and a flag named for the effect invites a second caller to
    * set it for some other reason and re-open that gap.
@@ -946,9 +946,10 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   let editCancelled = false
   const canClose = (tab: Tab) => canCloseTab(props.archived, tab)
 
-  // A FILE tab's title IS its path, and a read-only tree owns nothing to rename.
+  // `canRenameTab` states the rule; this surface adds only whether it HAS a
+  // rename handler. Shared with the tab strip, which renders the same tabs.
   const canRename = (tab: Tab) =>
-    !props.archived && !isPayloadBackedTabType(tab.type) && Boolean(props.tabItemOps?.onRename)
+    canRenameTab(props.archived, tab) && Boolean(props.tabItemOps?.onRename)
 
   const startEditing = (tab: Tab) => {
     if (!canRename(tab))

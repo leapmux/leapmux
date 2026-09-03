@@ -31,7 +31,7 @@ func (s *Suite) testWorkspaces(t *testing.T) {
 		// The seam, closed at its source.
 		require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: "", Username: "ws-blank-id-user",
-			PasswordHash: "h", DisplayName: "Blank", PasswordSet: true,
+			PasswordHash: "h", DisplayName: "Blank", FirstCredentialExempt: true,
 		}), store.ErrInvalidArgument,
 			"a blank users.id is the parent key every blank-owner row needs")
 

@@ -179,7 +179,7 @@ function makeDialogs(): AppShellDialogStates {
 
 function renderDialogs(
   activeWorkspace: () => { id: string } | null = () => null,
-  opts: { placementTileId?: string, mutatable?: boolean } = {},
+  opts: { placementTileId?: string, mutatable?: boolean, readyWorkspaceIds?: string[] } = {},
 ) {
   const dialogs = makeDialogs()
   const onBranchChanged = vi.fn()
@@ -193,6 +193,13 @@ function renderDialogs(
   // projected tree. `hasPlaceableTab` asks exactly this, so one knob drives
   // every guard-reason arm.
   const placementTileId = vi.fn(() => opts.placementTileId ?? '')
+  // The guard now asks PER WORKSPACE, because a branch dialog places into the
+  // branch's own workspace and not into the active one. `readyWorkspaceIds`
+  // names the workspaces whose tree has arrived; with it unset every workspace
+  // answers the way `placementTileId` does, which is what the arms that only
+  // exercise the active workspace mean.
+  const firstLeafIdFor = vi.fn((workspaceId: string) =>
+    (opts.readyWorkspaceIds ? (opts.readyWorkspaceIds.includes(workspaceId) ? 'tile-1' : null) : (opts.placementTileId || null)))
   // The branch dialogs SELECT their own workspace before they place a tab, so
   // the fixture has to supply this one -- an omitted handler used to throw out
   // of the click handler, which vitest reported as an unhandled error rather
@@ -214,7 +221,7 @@ function renderDialogs(
     activeWorkspace,
     onSelectWorkspace,
     isActiveWorkspaceMutatable: () => opts.mutatable ?? true,
-    layoutStore: { placementTileId } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
+    layoutStore: { placementTileId, firstLeafIdFor } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
     repoGitStore,
     getCurrentTabContext: () => ({
       workerId: 'w1',
@@ -224,7 +231,7 @@ function renderDialogs(
     }),
   } satisfies Partial<ComponentProps<typeof AppShellDialogs>>
   render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
-  return { dialogs, onBranchChanged, closeWorktreeTabs, placementTileId, onSelectWorkspace }
+  return { dialogs, onBranchChanged, closeWorktreeTabs, placementTileId, firstLeafIdFor, onSelectWorkspace }
 }
 
 async function chooseSwitchToAndConfirm(branch: string) {
@@ -525,8 +532,28 @@ describe('appShellDialogs branch dialogs', () => {
     expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/not ready yet/i)
   })
 
-  it('change branch: passes no reason when the dialog targets another workspace', async () => {
-    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), { placementTileId: '' })
+  // The reason answers for the workspace the dialog PLACES into, which is the
+  // branch row's own. It used to answer `undefined` for any non-active
+  // workspace, which left Create enabled over a tree the projection had not
+  // delivered -- and that refusal is silent AND late: the open RPC has already
+  // made the agent and its worktree, so what survives is a running process with
+  // no tab pointing at it.
+  it('change branch: blocks when the dialog\'s OWN workspace has no tree yet', async () => {
+    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), { readyWorkspaceIds: ['another-ws'] })
+    dialogs.changeBranch.open({
+      workerId: 'w2',
+      gitToplevel: '/other',
+      workspaceId: 'ws1',
+      branchName: 'feature',
+      isWorktree: false,
+      initialMode: GitMode.SwitchBranch,
+    })
+
+    expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/not ready yet/i)
+  })
+
+  it('change branch: passes no reason once the dialog\'s own workspace is ready', async () => {
+    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), { readyWorkspaceIds: ['another-ws', 'ws1'] })
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',

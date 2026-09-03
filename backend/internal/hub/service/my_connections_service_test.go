@@ -124,7 +124,7 @@ func TestListMyAPITokens_IsScopedToTheCaller(t *testing.T) {
 
 	otherID := id.Generate()
 	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID: otherID, Username: "other", PasswordHash: "hash", DisplayName: "Other", PasswordSet: true,
+		ID: otherID, Username: "other", PasswordHash: "hash", DisplayName: "Other", FirstCredentialExempt: true,
 	}))
 	expires := time.Now().Add(time.Hour)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
@@ -173,7 +173,7 @@ func TestRevokeMyAPIToken_RefusesAnotherUsersToken(t *testing.T) {
 
 	otherID := id.Generate()
 	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: otherID, Username: "victim", PasswordHash: "hash", DisplayName: "Victim", PasswordSet: true,
+		ID: otherID, Username: "victim", PasswordHash: "hash", DisplayName: "Victim", FirstCredentialExempt: true,
 	}))
 	victimToken := id.Generate()
 	expires := time.Now().Add(time.Hour)
@@ -292,7 +292,7 @@ func TestDisconnectApp_IsScopedToTheCaller(t *testing.T) {
 
 	otherID := id.Generate()
 	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
-		ID: otherID, Username: "victim", PasswordHash: "hash", DisplayName: "Victim", PasswordSet: true,
+		ID: otherID, Username: "victim", PasswordHash: "hash", DisplayName: "Victim", FirstCredentialExempt: true,
 	}))
 	victimToken := id.Generate()
 	require.NoError(t, env.store.APITokens().Create(ctx, store.CreateAPITokenParams{

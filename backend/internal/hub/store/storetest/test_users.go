@@ -30,7 +30,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 		require.ErrorIs(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: "", Username: "blank-id-refused", PasswordHash: "h",
-			DisplayName: "Blank", PasswordSet: true,
+			DisplayName: "Blank", FirstCredentialExempt: true,
 		}), store.ErrInvalidArgument,
 			"a blank users.id is the parent key of every blank-owner row")
 
@@ -66,14 +66,14 @@ func (s *Suite) testUsers(t *testing.T) {
 		userID := id.Generate()
 
 		err := st.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			Username:      "alice",
-			PasswordHash:  "hash123",
-			DisplayName:   "Alice Smith",
-			Email:         "alice@example.com",
-			EmailVerified: true,
-			PasswordSet:   true,
-			IsAdmin:       false,
+			ID:                    userID,
+			Username:              "alice",
+			PasswordHash:          "hash123",
+			DisplayName:           "Alice Smith",
+			Email:                 "alice@example.com",
+			EmailVerified:         true,
+			FirstCredentialExempt: true,
+			IsAdmin:               false,
 		})
 		require.NoError(t, err)
 
@@ -85,7 +85,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		assert.Equal(t, "Alice Smith", user.DisplayName)
 		assert.Equal(t, "alice@example.com", user.Email)
 		assert.True(t, user.EmailVerified)
-		assert.True(t, user.PasswordSet)
+		assert.True(t, user.FirstCredentialExempt)
 		assert.False(t, user.IsAdmin)
 		assert.False(t, user.CreatedAt.IsZero())
 		assert.False(t, user.UpdatedAt.IsZero())
@@ -251,11 +251,11 @@ func (s *Suite) testUsers(t *testing.T) {
 		// A non-ASCII, mixed-case display name. The username is a slug (ASCII), so
 		// display_name is the field that exercises the folded column.
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-			ID:          id.Generate(),
-			Username:    "olaf-user",
-			DisplayName: "Ölaf Müller",
-			Email:       "olaf@example.com",
-			PasswordSet: true,
+			ID:                    id.Generate(),
+			Username:              "olaf-user",
+			DisplayName:           "Ölaf Müller",
+			Email:                 "olaf@example.com",
+			FirstCredentialExempt: true,
 		}))
 
 		// A prefix query in any casing must match: this is the divergence the folded
@@ -283,11 +283,11 @@ func (s *Suite) testUsers(t *testing.T) {
 		// wildcard would blur; `_` is legal in an email local part.
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: id.Generate(), Username: "underscore-user",
-			Email: "a_b@example.com", PasswordSet: true,
+			Email: "a_b@example.com", FirstCredentialExempt: true,
 		}))
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: id.Generate(), Username: "literal-x-user",
-			Email: "axb@example.com", PasswordSet: true,
+			Email: "axb@example.com", FirstCredentialExempt: true,
 		}))
 
 		// `a_b` must match only the literal-underscore email: an unescaped
@@ -377,14 +377,14 @@ func (s *Suite) testUsers(t *testing.T) {
 
 		userID := id.Generate()
 		err := st.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			Username:      "unverified",
-			PasswordHash:  "hash",
-			DisplayName:   "Unverified",
-			Email:         "unverified@example.com",
-			EmailVerified: false,
-			PasswordSet:   true,
-			IsAdmin:       false,
+			ID:                    userID,
+			Username:              "unverified",
+			PasswordHash:          "hash",
+			DisplayName:           "Unverified",
+			Email:                 "unverified@example.com",
+			EmailVerified:         false,
+			FirstCredentialExempt: true,
+			IsAdmin:               false,
 		})
 		require.NoError(t, err)
 
@@ -936,12 +936,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, "unique-name")
 
 		err := st.Users().Create(ctx, store.CreateUserParams{
-			ID:           id.Generate(),
-			Username:     "unique-name",
-			PasswordHash: "hash",
-			DisplayName:  "Dup",
-			Email:        "different@example.com",
-			PasswordSet:  true,
+			ID:                    id.Generate(),
+			Username:              "unique-name",
+			PasswordHash:          "hash",
+			DisplayName:           "Dup",
+			Email:                 "different@example.com",
+			FirstCredentialExempt: true,
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})
@@ -1026,12 +1026,12 @@ func (s *Suite) testUsers(t *testing.T) {
 		SeedUser(t, st, "email-orig")
 
 		err := st.Users().Create(ctx, store.CreateUserParams{
-			ID:           id.Generate(),
-			Username:     "email-dup",
-			PasswordHash: "hash",
-			DisplayName:  "Dup Email",
-			Email:        "email-orig@example.com", // Same email as email-orig
-			PasswordSet:  true,
+			ID:                    id.Generate(),
+			Username:              "email-dup",
+			PasswordHash:          "hash",
+			DisplayName:           "Dup Email",
+			Email:                 "email-orig@example.com", // Same email as email-orig
+			FirstCredentialExempt: true,
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})
@@ -1178,7 +1178,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		err = st.Users().Create(ctx, store.CreateUserParams{
 			ID: id.Generate(), Username: "reuse-user",
 			PasswordHash: "hash", DisplayName: "Reuse", Email: "reuse-new@example.com",
-			EmailVerified: true, PasswordSet: true, IsAdmin: false,
+			EmailVerified: true, FirstCredentialExempt: true, IsAdmin: false,
 		})
 		require.NoError(t, err)
 	})
@@ -1194,7 +1194,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		err = st.Users().Create(ctx, store.CreateUserParams{
 			ID: id.Generate(), Username: "reuse-email-user2",
 			PasswordHash: "hash", DisplayName: "Reuse", Email: user.Email,
-			EmailVerified: true, PasswordSet: true, IsAdmin: false,
+			EmailVerified: true, FirstCredentialExempt: true, IsAdmin: false,
 		})
 		require.NoError(t, err)
 	})
@@ -1373,7 +1373,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		err := st.Users().Create(ctx, store.CreateUserParams{
 			ID: userID, Username: "MixedCase",
 			PasswordHash: "hash", DisplayName: "Mixed", Email: "Mixed@Example.COM",
-			EmailVerified: true, PasswordSet: true, IsAdmin: false,
+			EmailVerified: true, FirstCredentialExempt: true, IsAdmin: false,
 		})
 		require.NoError(t, err)
 
@@ -1412,7 +1412,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		err := st.Users().Create(ctx, store.CreateUserParams{
 			ID: id.Generate(), Username: "ConflictCase",
 			PasswordHash: "hash", DisplayName: "X", Email: "other@example.com",
-			EmailVerified: true, PasswordSet: true, IsAdmin: false,
+			EmailVerified: true, FirstCredentialExempt: true, IsAdmin: false,
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
 	})

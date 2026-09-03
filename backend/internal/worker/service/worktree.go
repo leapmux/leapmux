@@ -1372,13 +1372,21 @@ func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 // Normalizing here -- rather than at each call site -- means passing the
 // authenticated user for an AGENT close is harmless instead of a silent
 // no-match.
+// No `default:` case, so `exhaustive` (enabled in .golangci.yml) names this site
+// when a tab kind is added. It has to: linkTabToWorktree writes the real owner
+// for every payload-backed kind, and a new kind that silently fell to a default
+// would read back "" -- GetWorktreeForTab then misses, and a requested
+// WORKTREE_ACTION_REMOVE degrades to KEEP with nothing reported.
 func worktreeTabUserID(tabType leapmuxv1.TabType, userID string) string {
 	switch tabType {
 	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
 		return userID
-	default:
+	case leapmuxv1.TabType_TAB_TYPE_AGENT,
+		leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
 		return ""
 	}
+	return ""
 }
 
 // unregisterTab drops a tab's worktree association row. Worktree

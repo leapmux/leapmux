@@ -764,6 +764,23 @@ export function canCloseTab(archived: boolean | undefined, tab: Tab): boolean {
 }
 
 /**
+ * Whether a tab may be RENAMED from a surface that renders `archived`'s
+ * workspace.
+ *
+ * A payload-backed tab takes its title from what it SHOWS -- a file's path, or
+ * the name the image arrived under -- so a user-typed name has nothing to hold.
+ * An archived workspace takes no mutation at all.
+ *
+ * The twin of {@link canCloseTab}, and shared for the same reason: the tab bar
+ * and the sidebar tree render the same tabs and must not disagree about which of
+ * them rename. Each surface still ANDs in whether it HAS a rename handler, which
+ * is a fact about that surface rather than about the tab.
+ */
+export function canRenameTab(archived: boolean | undefined, tab: Tab): boolean {
+  return !archived && !isPayloadBackedTabType(tab.type)
+}
+
+/**
  * `protoToTerminalTabFields` mapped into `TabMetadata`'s naming.
  *
  * The metadata row is flat and shared by every tab kind, so the terminal's

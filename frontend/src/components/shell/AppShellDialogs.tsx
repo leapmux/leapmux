@@ -19,6 +19,7 @@ import type { TabView } from '~/stores/tabView'
 import { Show } from 'solid-js'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
+import { showWarnToast } from '~/components/common/Toast'
 import { ChangeBranchDialog } from '~/components/workspace/ChangeBranchDialog'
 import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
@@ -27,7 +28,7 @@ import { openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit } f
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
-import { hasPlaceableTab, openTabInFocusedTile } from './openTabInFocusedTile'
+import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { placeWorkspaceInSection } from './placeWorkspaceInSection'
 
 export interface KeyPinConfirmState {
@@ -202,9 +203,15 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       { ...seed.fields, ...openedAgentTabFields(props.repoGitStore, agent) },
     )
     // Placement can be refused, and a store entry written before it would be
-    // an orphan that no tab reads and nothing reclaims.
+    // an orphan that no tab reads and nothing reclaims. Say so: the agent
+    // already exists on the Worker by the time this runs, so a silent return
+    // leaves a running process the user was never told about. The pre-check in
+    // `newTabBlockedReason` is what usually prevents this; the toast covers the
+    // window it cannot.
     if (placedTileId)
       seed.commit()
+    else
+      showWarnToast('Cannot open the agent', new Error('The workspace is not ready for a new tab yet.'))
   }
 
   // This path seeds from `workingDir` alone. It differs from
@@ -231,8 +238,12 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
       { type: TabType.TERMINAL, id: terminalId, workerId },
       { ...seed.fields, ...openedTerminalMetadata({ title, workingDir }) },
     )
+    // See `addAgentTabToFocusedTile`: the pty is already running by now, so a
+    // refused placement has to be reported rather than swallowed.
     if (placedTileId)
       seed.commit()
+    else
+      showWarnToast('Cannot open the terminal', new Error('The workspace is not ready for a new tab yet.'))
   }
 
   /**
@@ -242,12 +253,22 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
    * dialogs disable submit on this reason instead of creating the
    * worker-side agent/pty first and orphaning it when placement refuses.
    */
-  const newTabBlockedReason = (): string | undefined => {
-    if (!props.activeWorkspace())
+  const newTabBlockedReason = (workspaceId?: string): string | undefined => {
+    const active = props.activeWorkspace()
+    if (!active)
       return 'Create a workspace first — a tab lives inside a workspace.'
-    if (!props.isActiveWorkspaceMutatable())
+    // A dialog opened from another workspace's branch row places into THAT
+    // workspace, so the readiness question has to be asked about it. Answering
+    // `undefined` for it -- which is what "no reason applies to a non-active
+    // workspace" amounted to -- left Create enabled over a tree the projection
+    // had not delivered, and the refusal that follows is silent: the RPC has
+    // already made the agent and the worktree, and nothing places a tab.
+    const target = workspaceId ?? active.id
+    if (target === active.id && !props.isActiveWorkspaceMutatable())
       return 'This workspace is archived. Unarchive it to create tabs.'
-    if (!hasPlaceableTab(props.layoutStore))
+    // `firstLeafIdFor` answers for ANY workspace and is null exactly when
+    // `placementTileId()` would be empty, which is the state this reason names.
+    if (!props.layoutStore.firstLeafIdFor(target))
       return 'The workspace view is not ready yet. Try again in a moment.'
     return undefined
   }
@@ -418,16 +439,13 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
-            // The guard reason describes the ACTIVE workspace's placement. A
-            // dialog opened against another workspace's branch row selects that
-            // workspace before it places the tab (below), and this reason
-            // cannot answer for a workspace that is not active yet — it reads
-            // the active workspace's layout. `openTabInFocusedTile` still
-            // refuses a workspace whose tree has not arrived, so the tab is
-            // never placed on a tile the hub has never heard of.
-            blockedReason={() => state.workspaceId === props.activeWorkspace()?.id
-              ? newTabBlockedReason()
-              : undefined}
+            // The reason answers for the workspace this dialog PLACES into, which
+            // is the branch row's own and not necessarily the active one.
+            // `openTabInFocusedTile` still refuses a workspace whose tree has not
+            // arrived, but that refusal comes AFTER the open RPC has made the
+            // agent or the pty -- so the pre-check is the only thing standing
+            // between a refused placement and a process with no tab to reach it.
+            blockedReason={() => newTabBlockedReason(state.workspaceId)}
             // Select the branch's workspace, THEN place. `addAgentTabToFocusedTile`
             // and `addTerminalTabToFocusedTile` place on the ACTIVE workspace's
             // focused tile, and the switch is one synchronous signal write, so

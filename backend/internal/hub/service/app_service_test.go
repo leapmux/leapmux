@@ -66,7 +66,7 @@ func setupAppService(t *testing.T) *appEnv {
 		require.NoError(t, err)
 		u, err := service.CreateUser(ctx, st, service.CreateUserParams{
 			Username: username, PasswordHash: hash, DisplayName: username,
-			PasswordSet: true, IsAdmin: isAdmin,
+			FirstCredentialExempt: true, IsAdmin: isAdmin,
 		})
 		require.NoError(t, err)
 		token, _, _, err := auth.Login(ctx, st, username, "password123", auth.DefaultSessionDuration)
@@ -691,7 +691,7 @@ func (e *appEnv) newPlainUser(t *testing.T, username string) (id, session string
 	hash, err := password.Hash("password123")
 	require.NoError(t, err)
 	u, err := service.CreateUser(ctx, e.store, service.CreateUserParams{
-		Username: username, PasswordHash: hash, DisplayName: username, PasswordSet: true,
+		Username: username, PasswordHash: hash, DisplayName: username, FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 	token, _, _, err := auth.Login(ctx, e.store, username, "password123", auth.DefaultSessionDuration)

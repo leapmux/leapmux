@@ -22,9 +22,13 @@ export enum GitMode {
  * so callers don't have to pass undefined sentinels for unrelated modes.
  *
  * Every variant is a flat object of primitive fields, so `shallowEqual`
- * works as the `equals` callback for a `createMemo<GitModeIntent>` —
- * variants with different `mode` values also have different key counts,
- * so the discriminator drop-through is handled by the key-count check.
+ * works as the `equals` callback for a `createMemo<GitModeIntent>` — `mode` is
+ * itself one of the compared keys, so two variants with different modes differ
+ * on that key whatever their shapes are.
+ *
+ * Do NOT restate that as a key-count argument. `CreateBranch` and
+ * `CreateWorktree` carry four keys each, so a reader who believes the counts
+ * discriminate would think dropping `mode` from a payload is safe. It is not.
  */
 export type GitModeIntent
   = | { mode: GitMode.Current }
@@ -178,9 +182,9 @@ export function useGitModeState(initial: GitModeIntent = { mode: GitMode.Current
     switch (i.mode) {
       case GitMode.Current:
         // Spread so callers can safely mutate the returned object —
-        // every other arm goes through a fieldsForXxx helper that
+        // every other case goes through a fieldsForXxx helper that
         // already spreads EMPTY_GIT_FIELDS, so returning the shared
-        // singleton here would be an inconsistent mutation footgun.
+        // singleton here would make mutation inconsistent.
         return { ...EMPTY_GIT_FIELDS }
       case GitMode.SwitchBranch:
         return fieldsForCheckoutBranch(i)

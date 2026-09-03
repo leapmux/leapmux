@@ -1,6 +1,7 @@
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
+import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
@@ -27,7 +28,5 @@ export function piToolResultImages(
     return []
   const images = splitToolResultContent(blocks, { text: 'text' }).images
   const filePath = pickString(pickObject(toolUseParsed?.parentObject, 'args'), 'filePath', undefined)
-  if (!filePath)
-    return images
-  return images.map(source => source.filePath ? source : { ...source, filePath })
+  return images.map(source => withFallbackFilePath(source, filePath))
 }

@@ -23,7 +23,13 @@ const WRAPPER_PADDING_TOP = 44 // matches toolbar clearance used in imageZoomWra
  */
 export function ImageRender(props: {
   content: Uint8Array
-  /** MIME type of `content`, for the blob and for the SVG branch. */
+  /**
+   * MIME type of `content`, for the blob this pane renders.
+   *
+   * It selects no render path. The SVG branch belongs to `ImageFileView`, which
+   * keys on the file's extension -- a caller that hands an SVG MIME type here
+   * gets it inside an ordinary `<img>`.
+   */
   mimeType: string
   /** Display name, used as the alt text. */
   name: string

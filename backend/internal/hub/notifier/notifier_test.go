@@ -48,7 +48,7 @@ func TestSendOrQueue_OfflineWorkerPersistsToQueue(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "owner", PasswordHash: "h",
-		DisplayName: "Owner", PasswordSet: true,
+		DisplayName: "Owner", FirstCredentialExempt: true,
 	}))
 	worker := storetest.SeedWorker(t, st, userID).ID
 
@@ -85,7 +85,7 @@ func TestSendDeregister_MarksDeregisteringAndDoesNotClear(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "owner", PasswordHash: "h",
-		DisplayName: "Owner", PasswordSet: true,
+		DisplayName: "Owner", FirstCredentialExempt: true,
 	}))
 	worker := storetest.SeedWorker(t, st, userID).ID
 

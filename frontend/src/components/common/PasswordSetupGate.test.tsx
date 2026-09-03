@@ -5,9 +5,14 @@ import { mockLoadSystemInfo } from '~/test-support/systemInfoMock'
 import { PasswordSetupGate } from './PasswordSetupGate'
 
 const mockChangePassword = vi.fn()
+const mockRefreshUser = vi.fn()
 
 vi.mock('~/api/clients', () => ({
   userClient: { changePassword: (...args: unknown[]) => mockChangePassword(...args) },
+}))
+
+vi.mock('~/context/AuthContext', () => ({
+  useAuth: () => ({ refreshUser: () => mockRefreshUser() }),
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -29,6 +34,7 @@ describe('passwordSetupGate', () => {
     // keeps the implementation, so one test's `mockRejectedValue` would
     // otherwise reject in every test after it.
     mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockRefreshUser.mockResolvedValue(undefined)
   })
 
   // A solo hub has exactly one account, named "solo", so a free field could
@@ -61,10 +67,16 @@ describe('passwordSetupGate', () => {
 
     await vi.waitFor(() => {
       expect(mockChangePassword).toHaveBeenCalledWith({ newPassword: 'correct-horse-battery-staple' })
+      // FORCED, because the gate reads exactly this snapshot: without it the
+      // screen stays up over a hub that no longer needs it.
+      expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+      // BOTH copies of "does this account hold a password". The snapshot takes
+      // this screen down; the ACCOUNT is what Preferences -> Account renders
+      // its button and its solo warning from, and nothing else re-reads it for
+      // the life of the page. Without this the operator who just set the first
+      // password finds a screen offering to set one.
+      expect(mockRefreshUser).toHaveBeenCalled()
     })
-    // FORCED, because the gate reads exactly this snapshot: without it the
-    // screen stays up over a hub that no longer needs it.
-    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
   })
 
   it('reports a refusal rather than leaving the form silent', async () => {

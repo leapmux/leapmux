@@ -1057,6 +1057,7 @@ export const AppShell: Component = () => {
     toggleRightSidebar: () => toggleRightSidebarRef()?.(),
     activeTabType,
     resolveFocusedTab: tileRenderer.resolveFocusedTab,
+    isActiveWorkspaceArchived,
     splitFocusedTile: tileRenderer.splitFocusedTile,
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,

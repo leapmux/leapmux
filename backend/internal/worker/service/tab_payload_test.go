@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"google.golang.org/protobuf/proto"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -451,9 +453,9 @@ func TestTabPayload_ImageArm(t *testing.T) {
 	}
 }
 
-// TestTabPayload_RefusesAPayloadNamingNoKind pins the default arm: a payload
-// whose oneof is unset names no tab, so there is nothing to store it as.
-func TestTabPayload_RefusesAPayloadNamingNoKind(t *testing.T) {
+// TestTabPayload_RefusesAPayloadWithNoKind pins the default arm: a payload
+// whose oneof is unset specifies no tab, so there is nothing to store it as.
+func TestTabPayload_RefusesAPayloadWithNoKind(t *testing.T) {
 	t.Parallel()
 
 	store, _, _ := newTabPayloadTestStore(t)
@@ -482,6 +484,16 @@ func TestTabPayload_ImageWorkingDirIsNotDerived(t *testing.T) {
 	assert.Empty(t, got.GetWorkingDir())
 }
 
+// mustMarshalImagePayload is the blob a raw UpsertWorkerTabPayload writes for an
+// IMAGE row, for a test that goes around the store's own validation.
+func mustMarshalImagePayload(agentID string, seq int64, imageIndex int32) []byte {
+	blob, err := proto.Marshal(imagePayload(agentID, seq, imageIndex, ""))
+	if err != nil {
+		panic(err)
+	}
+	return blob
+}
+
 func imagePayload(agentID string, seq int64, imageIndex int32, workingDir string) *leapmuxv1.TabPayload {
 	return &leapmuxv1.TabPayload{
 		WorkingDir: workingDir,
@@ -491,4 +503,86 @@ func imagePayload(agentID string, seq int64, imageIndex int32, workingDir string
 			ImageIndex: imageIndex,
 		}},
 	}
+}
+
+// The store's refusals fall into two classes, and the handler reports them with
+// two different RPC codes. A caller fault is INVALID_ARGUMENT and there is
+// something to correct; anything else is the worker's own and a retry is the
+// right response. Collapsing both onto INVALID_ARGUMENT told a script branching
+// on the code to stop retrying a locked database.
+func TestTabPayload_CallerFaultsCarryTheInvalidSentinel(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newTabPayloadTestStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name   string
+		params service.RegisterTabPayloadParams
+	}{
+		{
+			name:   "a missing required field",
+			params: service.RegisterTabPayloadParams{UserID: "user-1", TabID: "", Payload: filePayload(absTestPath("/repo/a.txt"))},
+		},
+		{
+			name:   "a payload that specifies no kind",
+			params: service.RegisterTabPayloadParams{UserID: "user-1", TabID: "t1", Payload: &leapmuxv1.TabPayload{}},
+		},
+		{
+			name:   "a relative file path",
+			params: service.RegisterTabPayloadParams{UserID: "user-1", TabID: "t1", Payload: filePayload("a.txt")},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := store.Register(ctx, tc.params)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, service.ErrInvalidTabPayload,
+				"the handler branches on this sentinel to pick invalid-argument over internal")
+		})
+	}
+}
+
+// TabTypeOf must distinguish "no such row" from "the read failed". The revoke
+// handler falls back to FILE only for the first: an absent row's worktree link
+// is already dead either way, while guessing FILE for an IMAGE tab whose read
+// merely failed makes the worktree lookup miss, so a requested REMOVE degrades
+// to KEEP with nothing reported and the link outlives its payload row.
+func TestTabPayload_TabTypeOfReportsNotFoundDistinctly(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newTabPayloadTestStore(t)
+	ctx := context.Background()
+
+	_, err := store.TabTypeOf(ctx, "user-1", "never-registered")
+	assert.ErrorIs(t, err, service.ErrTabPayloadNotFound)
+
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "img-1", Payload: imagePayload("agent-1", 7, 0, absTestPath("/repo")),
+	}))
+	got, err := store.TabTypeOf(ctx, "user-1", "img-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_IMAGE, got,
+		"an IMAGE row must report its own kind, or its worktree link is dropped as a FILE and survives")
+}
+
+// The schema's own floor under the four unchecked int64 -> TabType casts.
+// Two readers -- the orphan reconciler's key builder and the bootstrap tab
+// filter -- have no default case, so a row outside {FILE, IMAGE} would be keyed
+// against nothing in the hub's tab list and reaped as an orphan. The Go writer
+// cannot produce one today; the CHECK is what keeps that true for a hand-edited
+// database or a future kind added without its schema update.
+func TestTabPayload_SchemaRefusesATabTypeOutsideThePayloadKinds(t *testing.T) {
+	t.Parallel()
+
+	_, _, q := newTabPayloadTestStore(t)
+	err := q.UpsertWorkerTabPayload(context.Background(), db.UpsertWorkerTabPayloadParams{
+		UserID:     "user-1",
+		TabID:      "bogus",
+		TabType:    int64(leapmuxv1.TabType_TAB_TYPE_TERMINAL),
+		Payload:    mustMarshalImagePayload("agent-1", 7, 0),
+		WorkingDir: "",
+	})
+	require.Error(t, err, "a TERMINAL tab_type has no payload row to be, and the CHECK must say so")
+	assert.Contains(t, err.Error(), "CHECK")
 }

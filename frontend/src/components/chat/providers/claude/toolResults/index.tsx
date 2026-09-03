@@ -3,11 +3,13 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import type { ImageResultSource } from '~/lib/imageBlocks'
+import { Show } from 'solid-js'
 import { splitToolResultContent } from '~/lib/contentBlocks'
 import { isObject, pickObject } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { cachedRenderValue } from '../../../messageRenderCache'
 import { pickFileEditDiff } from '../../../results/fileEditDiff'
+import { ImageResultList } from '../../../results/imageResult'
 import { McpToolCallBody } from '../../../results/mcpToolCall'
 import { ReadFileResultBody } from '../../../results/readFileResult'
 import { SearchResultBody } from '../../../results/searchResult'
@@ -228,8 +230,23 @@ export function renderClaudeToolResult(
   const dispatchInfo: DispatchInfo = dispatch
   if (entry) {
     const result = entry(dispatchInfo, context)
-    if (result !== null)
-      return result
+    // Mount the images BESIDE the entry, the way Pi's tool-result renderer
+    // does. `splitToolResultContent` takes them out of `resultContent`, so a
+    // per-tool entry -- which renders text and never pixels -- drops every
+    // picture the result carried. Before that split they travelled inside the
+    // text as `![image](data:...)` and each entry's Markdown body drew them.
+    // Only the catch-all below reads `images`, and it is not reached once an
+    // entry answers.
+    if (result !== null) {
+      return (
+        <>
+          {result}
+          <Show when={dispatch.images.length > 0}>
+            <ImageResultList sources={dispatch.images} context={context} />
+          </Show>
+        </>
+      )
+    }
   }
 
   // MCP (mcp__server__tool): render args + content blocks via the shared body.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -72,19 +73,33 @@ type User struct {
 	PendingRecoveryExpiresAt   *time.Time
 	PendingRecoveryUnblockedAt *time.Time
 	PendingRecoveryAttempts    int64
-	PasswordSet                bool
-	IsAdmin                    bool
-	Prefs                      string
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
-	TokensRevokedAt            *time.Time
-	AuthGeneration             int64
-	DeletedAt                  *time.Time
+	// FirstCredentialExempt is a CLAIM the creating flow makes, not a fact about
+	// the stored hash: the solo bootstrap sets it true with an EMPTY hash, which
+	// is what routes solo past a first-credential rule no solo account could
+	// satisfy. Ask HasUsablePassword for "can this account sign in with a
+	// password?" -- the two answer differently on exactly that account.
+	FirstCredentialExempt bool
+	IsAdmin               bool
+	Prefs                 string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	TokensRevokedAt       *time.Time
+	AuthGeneration        int64
+	DeletedAt             *time.Time
 }
 
 // PageCursor returns the keyset position for user listings (ListAll/Search),
 // which order by (created_at DESC, id DESC).
 func (u User) PageCursor() (time.Time, string) { return u.CreatedAt, u.ID }
+
+// HasUsablePassword reports whether a password can actually sign this account
+// in, which is a question about the stored HASH and not about
+// FirstCredentialExempt.
+//
+// One spelling for one fact. It is what every projection reports as
+// `password_set` on the wire, and what the solo gate asks; the exempt flag
+// answers a different question and reads differently on the bootstrap account.
+func (u User) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash) }
 
 // UserSession represents an authenticated session.
 //
@@ -472,14 +487,14 @@ type PendingOAuthSignup struct {
 // --- Parameter types for create/update operations ---
 
 type CreateUserParams struct {
-	ID            string
-	Username      string
-	PasswordHash  string
-	DisplayName   string
-	Email         string
-	EmailVerified bool
-	PasswordSet   bool
-	IsAdmin       bool
+	ID                    string
+	Username              string
+	PasswordHash          string
+	DisplayName           string
+	Email                 string
+	EmailVerified         bool
+	FirstCredentialExempt bool
+	IsAdmin               bool
 }
 
 // Validate enforces two store-level invariants on the CREATE path.
@@ -1304,10 +1319,10 @@ type SetPendingRecoveryParams struct {
 }
 
 type CompleteRecoveryParams struct {
-	ID                   string
-	PasswordHash         string
-	PasswordSet          bool
-	PendingRecoveryToken string
+	ID                    string
+	PasswordHash          string
+	FirstCredentialExempt bool
+	PendingRecoveryToken  string
 }
 
 // RecoveryRevocation is returned by CompleteRecovery and carries the auth

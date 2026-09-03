@@ -6528,3 +6528,34 @@ func TestAnnotateFileStats_NoopWithoutATopLevel(t *testing.T) {
 	assert.Nil(t, files[0].Size)
 	assert.Nil(t, files[0].ModTime)
 }
+
+// An IMAGE tab opened with no originating tab to inherit a working dir from
+// stores a blank one by design (see resolveTabPayloadWorkingDir). It never
+// touched a repository, so a close that inspects nothing skipped nothing.
+//
+// Every error from loadTabGitContext used to map to the same degraded-close
+// hint, so closing such a tab warned that its "working directory is not
+// readable as a git repository" and that uncommitted changes went unchecked --
+// about a repository the tab never had. The frontend toasts that hint verbatim
+// for every tab kind, with no filter.
+func TestInspectLastTabClose_ImageTabWithNoWorkingDirIsNotADegradedClose(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID: "user-1",
+		TabID:  "img-no-dir",
+		Payload: &leapmuxv1.TabPayload{
+			Kind: &leapmuxv1.TabPayload_Image{Image: &leapmuxv1.ImageTabPayload{
+				AgentId: "agent-1", Seq: 7, ImageIndex: 0,
+			}},
+		},
+	}))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_IMAGE, "img-no-dir", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.Empty(t, resp.GetErrorHint(),
+		"a tab that never had a working dir must not be reported as one whose dir is unreadable")
+	assert.False(t, resp.GetShouldPrompt())
+}

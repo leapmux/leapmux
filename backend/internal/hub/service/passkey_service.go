@@ -550,7 +550,7 @@ func recheckStepUpUnderLock(
 	if err := recheckCredentialEpochUnderLock(locked, p.userInfo); err != nil {
 		return err
 	}
-	if locked.PasswordSet != peek.PasswordSet {
+	if locked.FirstCredentialExempt != peek.FirstCredentialExempt {
 		return stepUpStateMovedError()
 	}
 	if !admission.firstCredential {
@@ -950,7 +950,7 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 	// decision from the locked row and refuses an empty hash.
 	var hashedNewPassword string
 	prepare := func(peek *store.User) error {
-		if peek.PasswordSet {
+		if peek.FirstCredentialExempt {
 			return nil
 		}
 		count, err := s.store.PasskeyCredentials().CountByUser(ctx, peek.ID)
@@ -993,12 +993,12 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *connect.Request[le
 		// The guard used to run in one direction only. commitPasskeyDeactivation
 		// catches a FALLING count, because it refuses an empty hash; a
 		// RISING one had nothing to catch it.
-		if hashedNewPassword != "" && (user.PasswordSet || count > 1) {
+		if hashedNewPassword != "" && (user.FirstCredentialExempt || count > 1) {
 			return stepUpMutationResult{}, stepUpStateMovedError()
 		}
 		// Last passkey on a passkey-only account: delegate to the
 		// deactivation commit (plan CommitPasskeyDelete).
-		if !user.PasswordSet && count <= 1 {
+		if !user.FirstCredentialExempt && count <= 1 {
 			return s.commitPasskeyDeactivation(ctx, tx, user, hashedNewPassword, userInfo.Credential)
 		}
 		return stepUpMutationResult{}, tx.PasskeyCredentials().Delete(ctx, row.ID, user.ID)
@@ -1019,7 +1019,7 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *connect.Re
 	// one; the transaction re-derives that from the locked row.
 	var hashedNewPassword string
 	prepare := func(peek *store.User) error {
-		if peek.PasswordSet {
+		if peek.FirstCredentialExempt {
 			return nil
 		}
 		// This answers the empty string FIRST, with the rule. Straight to
@@ -1074,7 +1074,7 @@ func (s *UserService) commitPasskeyDeactivation(
 	hashedNewPassword string,
 	acting auth.CredentialIdentity,
 ) (stepUpMutationResult, error) {
-	wasPasskeyOnly := !user.PasswordSet
+	wasPasskeyOnly := !user.FirstCredentialExempt
 	if wasPasskeyOnly {
 		// DeletePasskey is the leg that reaches this: its prepare skips the
 		// hash while the account holds a second passkey, and a registration

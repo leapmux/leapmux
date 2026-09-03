@@ -34,7 +34,7 @@ export interface UseAvailableProvidersResult {
  * deliberately the same shape: `source` returns the fetch args or `null` to
  * skip, the hook fetches on the first non-null value and re-fetches only when
  * the workerId changes, and a null source keeps the cached list rather than
- * clearing it — so a caller that gates the source on "the menu is open"
+ * clearing it — so a caller that ties the source to "the menu is open"
  * re-opens without a second round trip.
  *
  * `useAgentOperations.loadAvailableProviders` is NOT this hook and does not use
@@ -68,7 +68,7 @@ export function useAvailableProviders(
   })
 
   // Track the workerId scalar, not the source accessor: caller closures build a
-  // fresh args object every tick, and only the workerId gates the fetch.
+  // fresh args object every tick, and only the workerId triggers the fetch.
   const workerIdFromSource = (): string | null => source()?.workerId ?? null
   createEffect(on(workerIdFromSource, (workerId) => {
     if (!workerId)

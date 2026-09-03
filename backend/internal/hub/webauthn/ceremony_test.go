@@ -44,11 +44,11 @@ func seedUser(t *testing.T, st store.Store) string {
 	t.Helper()
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "wauser" + userID[:8],
-		PasswordHash: "hash",
-		DisplayName:  "WebAuthn User",
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              "wauser" + userID[:8],
+		PasswordHash:          "hash",
+		DisplayName:           "WebAuthn User",
+		FirstCredentialExempt: true,
 	}))
 	return userID
 }

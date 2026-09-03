@@ -177,7 +177,7 @@ pub(crate) fn install(window: &WebviewWindow, state: Arc<TrayState>) {
         .is_err()
     {
         // Impossible: a second install finds the override on the class and
-        // returns above. The arm stays, because `OnceLock::set` reports a
+        // returns above. The branch stays, because `OnceLock::set` reports a
         // `Result` that nothing else can rule out. It returns before the method
         // goes on the class, so the window keeps the ordinary minimize.
         crate::shell_log!("a minimize override is already published; this one is dropped");

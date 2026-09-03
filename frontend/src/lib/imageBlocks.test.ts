@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { imageBlockToMarkdown, parseImageBlock } from './imageBlocks'
+import { imageBlockToMarkdown, MAX_INLINE_IMAGE_BASE64_LEN, parseImageBlock } from './imageBlocks'
 
 describe('parseimageblock', () => {
   it('parses the Anthropic base64 shape (Claude Read, MCP bridge, notebook output)', () => {
@@ -46,7 +46,7 @@ describe('parseimageblock', () => {
       .toEqual({ data: 'AAAA', mimeType: 'image/png', filePath: '/repo/a b.png' })
   })
 
-  it('ignores a non-file uri, which names no local file to open', () => {
+  it('ignores a non-file uri, which specifies no local file to open', () => {
     expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'https://example.com/x.png' }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
   })
@@ -117,5 +117,72 @@ describe('imageblocktomarkdown', () => {
     expect(imageBlockToMarkdown({ mimeType: 'image/png' })).toBeNull()
     // Base64 with no mime type cannot form a data URL at all.
     expect(imageBlockToMarkdown({ data: 'AAAA' })).toBeNull()
+  })
+})
+
+describe('imageBlockToMarkdown size cap', () => {
+  // The markdown formatter is the DEFAULT block formatter, so it reaches every
+  // text destination -- a quoted message, a subagent report card, a scroll-rail
+  // preview. The wire allows a message far larger than the inline cap, so
+  // without this an oversized screenshot became megabytes of base64 inside an
+  // `src` attribute the reader never asked for.
+  it('refuses an oversized base64 payload with a labelled placeholder', () => {
+    const oversized = 'A'.repeat(MAX_INLINE_IMAGE_BASE64_LEN + 1)
+    expect(imageBlockToMarkdown({ data: oversized, mimeType: 'image/png' }))
+      .toBe('[image: image/png — too large to embed]')
+  })
+
+  it('refuses an oversized already-formed data URL', () => {
+    const url = `data:image/png;base64,${'A'.repeat(MAX_INLINE_IMAGE_BASE64_LEN + 1)}`
+    expect(imageBlockToMarkdown({ url })).toBe('[image: too large to embed]')
+  })
+
+  // The cap measures the PAYLOAD, not the whole string, so a source just under
+  // it still embeds rather than tripping on the `data:<mime>;base64,` preamble.
+  it('still embeds a payload at the cap', () => {
+    const atCap = 'A'.repeat(MAX_INLINE_IMAGE_BASE64_LEN)
+    expect(imageBlockToMarkdown({ data: atCap, mimeType: 'image/png' }))
+      .toBe(`![image](data:image/png;base64,${atCap})`)
+  })
+})
+
+describe('parseImageBlock data-URL tolerance', () => {
+  // A server that puts a complete data: URL under `data` is off-spec but real,
+  // and the reader this parser replaced sniffed for it. Without the sniff the
+  // renderer builds `data:<mime>;base64,data:<mime>;base64,...` -- a broken
+  // image with no placeholder, and a tab whose decode throws.
+  it('routes a data: URL in the `data` key to `url`, not `data`', () => {
+    expect(parseImageBlock({ type: 'image', mimeType: 'image/png', data: 'data:image/png;base64,AAAA' }))
+      .toEqual({ url: 'data:image/png;base64,AAAA', mimeType: 'image/png' })
+  })
+
+  // `:` is not in the base64 alphabet, so the sniff can never misread a real
+  // payload as a URL.
+  it('leaves ordinary base64 in `data`', () => {
+    expect(parseImageBlock({ type: 'image', mimeType: 'image/png', data: 'AAAA' }))
+      .toEqual({ data: 'AAAA', mimeType: 'image/png' })
+  })
+})
+
+describe('imageBlockFilePath platform shapes', () => {
+  // Windows workers are supported, and `new URL(...).pathname` keeps the slash
+  // before the drive letter. The worker cannot resolve `/C:/...`, so the FILE
+  // tab this feeds opened nothing while the IMAGE tab that would have worked
+  // was skipped.
+  it('strips the leading slash from a Windows drive-letter path', () => {
+    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///C:/Users/alice/shot.png' }))
+      .toMatchObject({ filePath: 'C:/Users/alice/shot.png' })
+  })
+
+  // A UNC uri puts the host outside the pathname, so reading the pathname alone
+  // silently dropped the server the file lives on.
+  it('keeps the host of a UNC uri', () => {
+    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file://server/share/a.png' }))
+      .toMatchObject({ filePath: '//server/share/a.png' })
+  })
+
+  it('leaves a POSIX path alone, percent-decoding it', () => {
+    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///home/alice/a%20b.png' }))
+      .toMatchObject({ filePath: '/home/alice/a b.png' })
   })
 })

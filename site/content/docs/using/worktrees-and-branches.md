@@ -53,7 +53,7 @@ Each branch row has a **`...`** context menu. Right-click the row, or press and 
 | **Create new worktree...** | Opens the same dialog on **Create new worktree**. |
 | **Delete worktree...** / **Delete branch...** | Opens the [delete dialog](#deleting-a-branch-or-a-worktree) (styled in red). |
 
-The three change items open one dialog and differ only in which mode it starts on, so the item you pick names what you then see. You can still switch modes inside the dialog. They keep one set of names on both kinds of row, because a worktree has a branch checked out and the dialog changes that branch either way. The delete item is named after what it removes: **Delete worktree...** on a linked worktree, which removes a directory, and **Delete branch...** on a branch in the main checkout, which does not.
+The three change items open one dialog and differ only in which mode it starts on, so the item you pick gives what you then see. You can still switch modes inside the dialog. They keep one set of names on both kinds of row, because a worktree has a branch checked out and the dialog changes that branch either way. The delete item is named after what it removes: **Delete worktree...** on a linked worktree, which removes a directory, and **Delete branch...** on a branch in the main checkout, which does not.
 
 Below the delete item, the menu carries an **Agents** section and a **Terminals** section — the same ones the tab bar's **`+`** menu holds, acting on this branch instead of on the focused tab:
 

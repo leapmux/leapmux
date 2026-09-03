@@ -1,6 +1,6 @@
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { parseImageBlock } from '~/lib/imageBlocks'
+import { parseImageBlock, withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickFirstString, pickObject } from '~/lib/jsonPick'
 import { ACP_FILE_PATH_KEYS, flattenAcpContent } from '../rendering'
 
@@ -27,7 +27,7 @@ export function acpImagesFromToolCall(toolUse: Record<string, unknown> | null | 
     const source = parseImageBlock(block)
     if (!source)
       continue
-    images.push(fallbackPath && !source.filePath ? { ...source, filePath: fallbackPath } : source)
+    images.push(withFallbackFilePath(source, fallbackPath))
   }
   return images
 }

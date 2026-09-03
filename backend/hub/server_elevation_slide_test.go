@@ -41,7 +41,7 @@ func TestElevationSlideInterceptorIsMounted(t *testing.T) {
 	require.NoError(t, err)
 	admin, err := service.CreateUser(ctx, st, service.CreateUserParams{
 		Username: "admin", PasswordHash: hash, DisplayName: "Admin",
-		PasswordSet: true, IsAdmin: true,
+		FirstCredentialExempt: true, IsAdmin: true,
 	})
 	require.NoError(t, err)
 	token, _, _, err := auth.Login(ctx, st, "admin", "adminpass123", auth.DefaultSessionDuration)

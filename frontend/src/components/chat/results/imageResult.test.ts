@@ -130,3 +130,26 @@ describe('imagerenderinfo', () => {
       .toEqual({ src: data, via: 'inline' })
   })
 })
+
+describe('imageRenderInfo data-URL base64 marker', () => {
+  // Three readers parse this same URL and two of them REQUIRE the marker:
+  // `decodeImageBytes` (which the IMAGE tab decodes through) and
+  // `sniffImageDimensionsFromDataUrl`. Accepting a percent-encoded payload here
+  // drew a clickable image whose tab then said "This image cannot be displayed
+  // here." forever, and whose row lost its size reservation.
+  it('refuses a data: URL with no base64 marker', () => {
+    const result = imageRenderInfo({ url: 'data:image/png,%89PNG%0D%0A' })
+    expect(result.src).toBeUndefined()
+    expect(result.reason).toBe('unknown-shape')
+  })
+
+  it('still accepts a data: URL that carries the marker', () => {
+    expect(imageRenderInfo({ url: 'data:image/png;base64,AAAA' }).src)
+      .toBe('data:image/png;base64,AAAA')
+  })
+
+  // A charset parameter before the marker is legal and must survive.
+  it('accepts a marker that follows another parameter', () => {
+    expect(imageRenderInfo({ url: 'data:image/png;charset=utf-8;base64,AAAA' }).via).toBe('inline')
+  })
+})

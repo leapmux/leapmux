@@ -70,7 +70,7 @@ func TestDeletePasskey_RefusesWhenTheLockedCountNoLongerNeedsAPassword(t *testin
 	ctx := context.Background()
 	st := newStepUpTestStore(t)
 	user := stepUpUser(t, st, false)
-	require.False(t, user.PasswordSet, "precondition: the account holds no password")
+	require.False(t, user.FirstCredentialExempt, "precondition: the account holds no password")
 
 	doomed := seedRacePasskey(t, st, user.ID, "Only One")
 	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(user.ID), auth.DefaultSessionDuration)
@@ -114,7 +114,7 @@ func TestDeletePasskey_RefusesWhenTheLockedCountNoLongerNeedsAPassword(t *testin
 	// needs no replacement password at all.
 	after, err := st.Users().GetByID(ctx, user.ID)
 	require.NoError(t, err)
-	assert.False(t, after.PasswordSet, "the refused request must not leave a half-applied state")
+	assert.False(t, after.FirstCredentialExempt, "the refused request must not leave a half-applied state")
 	_, err = st.PasskeyCredentials().GetByID(ctx, doomed)
 	assert.NoError(t, err, "the passkey must survive a refused delete")
 }

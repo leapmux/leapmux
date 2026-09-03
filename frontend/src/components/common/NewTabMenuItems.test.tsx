@@ -67,6 +67,11 @@ describe('newTabMenuItems', () => {
       renderItems()
       expect(screen.getByTestId(`menu-new-agent-${AgentProvider.CLAUDE_CODE}`)).toBeInTheDocument()
       expect(screen.getByTestId(`menu-new-agent-${AgentProvider.CODEX}`)).toBeInTheDocument()
+      // Addressable BY NAME, not only by test id. The button holds a glyph and
+      // no text, so without the tooltip's `ariaLabel` a screen reader announces
+      // an unnamed button -- and this very lookup is the one a user of that
+      // reader performs.
+      expect(screen.getByRole('button', { name: 'New Claude Code agent' })).toBeInTheDocument()
     })
 
     it('opens the clicked provider directly', async () => {

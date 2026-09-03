@@ -30,7 +30,7 @@ const (
 	// OPPOSITE intents. Dropping the link means "keep the directory, hide it from
 	// GC"; keeping it means "no one wants this, reclaim it once nothing live
 	// refers to it". A reconciler reap of a closed tab is the first, not the
-	// second -- see CloseAgentTabForReconcile.
+	// second -- see CloseTabForReconcile.
 	keepWorktreeLinkForReconciler
 )
 
@@ -94,12 +94,14 @@ func closeWorktreeDispositionFor(action leapmuxv1.WorktreeAction, linkPolicy wor
 // tabType is the tab's OWN kind, not a constant: the worktree_tabs link row
 // carries it, so closing an IMAGE tab as FILE would leave the link standing.
 //
-// Two callers: the RevokeTabPayload RPC (with dropWorktreeLink) and the orphan
-// reconciler via CloseFileTabForReconcile (with keepWorktreeLinkForReconciler).
+// Three entry points, each naming its own link policy: the RevokeTabPayload RPC
+// (dropWorktreeLink), CloseTabForReconcile (dropWorktreeLink), and
+// closeTabForDeletedWorkspace (keepWorktreeLinkForReconciler). The last two
+// arrive through closeTabForConvergence.
+//
 // The reconciler used to hand-roll its own teardown here to avoid the
-// worktree-removal branch, but an UNSPECIFIED action never enters that branch
-// anyway -- and dropping the link, as the hand-rolled version did, strands the
-// worktree directory permanently.
+// worktree-removal branch. An UNSPECIFIED action never enters that branch
+// anyway, so the shared flow is correct for it.
 func (svc *Service) closePayloadTabCommon(userID, tabID string, tabType leapmuxv1.TabType, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
 	return svc.closeTabCommon(
 		tabType,
@@ -131,8 +133,8 @@ func (svc *Service) closePayloadTabCommon(userID, tabID string, tabType leapmuxv
 // past an in-flight close. closeTabCommon itself stays free of
 // Cleanup.Add to avoid the inside-goroutine-Add race the
 // dispatcher-level tracking was introduced to fix. The orphan
-// reconciler does NOT route through here (see closePayloadTabCommon): it
-// drops the worktree link directly so it never takes the
+// reconciler routes through here too, by way of closeTabForConvergence; it
+// always passes WORKTREE_ACTION_UNSPECIFIED, so it never takes the
 // worktree-removal branch below.
 //
 // On WorktreeAction_REMOVE, the worktree is resolved BEFORE the

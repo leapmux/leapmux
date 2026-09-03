@@ -204,7 +204,7 @@ When a Worker spawns an agent or terminal (and remote control is enabled on that
 | `LEAPMUX_CONTROL_USER_ID` | always | Authenticated user (informational; no flag reads it) |
 | `LEAPMUX_CONTROL_WORKER_ID` | always | The host Worker |
 | `LEAPMUX_CONTROL_TAB_ID` | when non-empty | The spawned tab's id |
-| `LEAPMUX_CONTROL_TAB_TYPE` | when non-empty | `agent`, `terminal`, or `file` |
+| `LEAPMUX_CONTROL_TAB_TYPE` | when non-empty | `agent` or `terminal` |
 | `LEAPMUX_CONTROL_WORKING_DIR` | when non-empty | Working directory at spawn time |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | agents only | The agent's provider |
 

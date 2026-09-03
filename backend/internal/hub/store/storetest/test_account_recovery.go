@@ -201,10 +201,10 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		require.True(t, minted)
 
 		revoked, err := st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
-			ID:                   user.ID,
-			PasswordHash:         hashFor("newpass"),
-			PasswordSet:          true,
-			PendingRecoveryToken: token,
+			ID:                    user.ID,
+			PasswordHash:          hashFor("newpass"),
+			FirstCredentialExempt: true,
+			PendingRecoveryToken:  token,
 		})
 		require.NoError(t, err)
 		// Exactly one bump: the post-commit lifecycle eviction targets this
@@ -215,7 +215,7 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		after, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
 		assert.Equal(t, hashFor("newpass"), after.PasswordHash)
-		assert.True(t, after.PasswordSet)
+		assert.True(t, after.FirstCredentialExempt)
 		assert.Empty(t, after.PendingRecoveryToken)
 		assert.Nil(t, after.PendingRecoveryExpiresAt)
 		assert.Nil(t, after.PendingRecoveryUnblockedAt,
@@ -224,10 +224,10 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 
 		// A replayed completion matches no row.
 		_, err = st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
-			ID:                   user.ID,
-			PasswordHash:         hashFor("replay"),
-			PasswordSet:          true,
-			PendingRecoveryToken: token,
+			ID:                    user.ID,
+			PasswordHash:          hashFor("replay"),
+			FirstCredentialExempt: true,
+			PendingRecoveryToken:  token,
 		})
 		require.ErrorIs(t, err, store.ErrNotFound)
 	})
@@ -247,10 +247,10 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		require.True(t, minted)
 
 		revoked, err := st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
-			ID:                   user.ID,
-			PasswordHash:         password.PlaceholderHash,
-			PasswordSet:          false,
-			PendingRecoveryToken: token,
+			ID:                    user.ID,
+			PasswordHash:          password.PlaceholderHash,
+			FirstCredentialExempt: false,
+			PendingRecoveryToken:  token,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, user.AuthGeneration+1, revoked.AuthGeneration)
@@ -258,7 +258,7 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		after, err := st.Users().GetByID(ctx, user.ID)
 		require.NoError(t, err)
 		assert.Equal(t, password.PlaceholderHash, after.PasswordHash)
-		assert.False(t, after.PasswordSet)
+		assert.False(t, after.FirstCredentialExempt)
 		assert.Empty(t, after.PendingRecoveryToken)
 		assert.Nil(t, after.PendingRecoveryExpiresAt)
 		assert.Nil(t, after.PendingRecoveryUnblockedAt)
@@ -267,17 +267,17 @@ func (s *Suite) testAccountRecoveryStore(t *testing.T) {
 		// A replayed completion matches no row, and neither does the
 		// password path's completion on the same spent token.
 		_, err = st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
-			ID:                   user.ID,
-			PasswordHash:         password.PlaceholderHash,
-			PasswordSet:          false,
-			PendingRecoveryToken: token,
+			ID:                    user.ID,
+			PasswordHash:          password.PlaceholderHash,
+			FirstCredentialExempt: false,
+			PendingRecoveryToken:  token,
 		})
 		require.ErrorIs(t, err, store.ErrNotFound)
 		_, err = st.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
-			ID:                   user.ID,
-			PasswordHash:         hashFor("late"),
-			PasswordSet:          true,
-			PendingRecoveryToken: token,
+			ID:                    user.ID,
+			PasswordHash:          hashFor("late"),
+			FirstCredentialExempt: true,
+			PendingRecoveryToken:  token,
 		})
 		require.ErrorIs(t, err, store.ErrNotFound)
 	})

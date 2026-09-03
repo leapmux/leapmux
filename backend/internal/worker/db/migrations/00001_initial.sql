@@ -213,7 +213,7 @@ CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS 
 -- worktree_tab_liveness): a FILE or IMAGE tab id is only unique within a user
 -- (worker_tab_payloads is keyed by (user_id, tab_id)), so the liveness view
 -- needs the user to avoid matching a different user's tab. It is left '' for
--- AGENT/TERMINAL links, whose ids are globally unique, so their liveness legs
+-- AGENT/TERMINAL links, whose ids are globally unique, so their liveness branches
 -- never need it.
 --
 -- user_id is part of the PRIMARY KEY for the same reason. Without it, two
@@ -247,7 +247,7 @@ CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id, user_id);
 -- drift apart: adding a new tab type means editing the predicate here once,
 -- not in two queries that must agree or the GC reaps a live worktree.
 --
--- The agent/terminal legs match on the globally-unique row id; the payload leg
+-- The agent/terminal branches match on the globally-unique row id; the payload branch
 -- matches on (user_id, tab_id) because worker_tab_payloads is keyed that way.
 -- That key is about ID UNIQUENESS, not tenancy: agent and terminal ids are
 -- minted server-side and are globally unique, while a FILE or IMAGE tab id is
@@ -288,7 +288,7 @@ CREATE TABLE worker_tab_payloads (
     -- refuses a blank owner in Go, but a blank row that got in any other way
     -- would be permanently unclearable -- Get/RevokeRow both refuse an
     -- unminted owner, and the reconciler's scope check skips it -- while
-    -- worktree_tab_liveness's payload leg (which matches p.user_id = t.user_id
+    -- worktree_tab_liveness's payload branch (which matches p.user_id = t.user_id
     -- and relies on '' never matching a real payload row) would start reading
     -- agent/terminal links as live and leak their worktrees.
     user_id      TEXT NOT NULL CHECK (user_id <> ''),
@@ -297,7 +297,14 @@ CREATE TABLE worker_tab_payloads (
     -- rather than derived from the payload so tab_locations can project it
     -- without decoding a blob, and so a row whose payload the running binary
     -- cannot parse still reports which kind of tab it is.
-    tab_type     INTEGER NOT NULL,
+    --
+    -- The CHECK is the floor the Go enum cannot supply, and it is the same
+    -- defence the user_id CHECK above states. Readers cast this column straight
+    -- to leapmuxv1.TabType, and two of them -- orphan_reconciler's
+    -- newOwnedTabKey and bootstrap's payload-tab filter -- have no default
+    -- case, so an out-of-range row would be keyed against nothing in the hub's
+    -- tab list and reaped as an orphan.
+    tab_type     INTEGER NOT NULL CHECK (tab_type IN (3, 4)),
     -- The serialized leapmux.v1.TabPayload. Opaque here on purpose: the shared
     -- columns beside it are exactly what shared code reads, and the kind-
     -- specific half belongs to the kind. Adding a third tab kind is a proto
@@ -402,12 +409,15 @@ CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_ag
 -- disambiguate them, while a file tab id is minted client-side as
 -- `file-<millis>-<counter>` and is unique only within the client that made it.
 -- A reader scopes with `(user_id = '' OR user_id = ?)`, and
--- worker_tab_payloads' own `CHECK (user_id <> '')` is what makes the '' arm
+-- worker_tab_payloads' own `CHECK (user_id <> '')` is what makes the '' case
 -- provably unable to match a payload-backed row.
 --
 -- Openness differs by type and is encoded here so no reader restates it: agents
 -- and terminals are closed by stamping closed_at, while a payload-backed tab is
 -- HARD DELETED on close, so its presence IS its openness.
+--
+-- The projection covers every payload-backed kind, FILE and IMAGE alike: the
+-- view reads tab_type from the row rather than stating a constant.
 CREATE VIEW tab_locations AS
 SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir
 FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL

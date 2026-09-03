@@ -937,7 +937,7 @@ func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
 }
 
 // TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch verifies the
-// IsBranchInUse guard that gates `git branch -D`: if another worktree is
+// IsBranchInUse guard that blocks `git branch -D`: if another worktree is
 // still on the branch, the branch must survive. Pins the in-use → keep
 // contract through the post-parallelization code path.
 func TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch(t *testing.T) {

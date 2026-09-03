@@ -34,7 +34,7 @@ func TestElevationColumnsAreWritableOnlyAsAPair(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "elevpair", PasswordHash: "hash",
-		DisplayName: "Elevation Pair", PasswordSet: true,
+		DisplayName: "Elevation Pair", FirstCredentialExempt: true,
 	}))
 	sessionID := id.Generate()
 	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{

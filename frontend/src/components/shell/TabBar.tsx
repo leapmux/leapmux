@@ -3,6 +3,7 @@ import type { TileActions } from './TileActionsMenu'
 import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { GuardedDragRow } from '~/lib/dragRow'
 import type { Tab } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
@@ -25,14 +26,14 @@ import { TabContextMenu } from '~/components/common/TabContextMenu'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import { shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
-import { isPayloadBackedTabType, isTerminalTab } from '~/stores/tab.types'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { isTerminalTab } from '~/stores/tab.types'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
@@ -73,14 +74,16 @@ function terminalStatusOf(tab: Tab): TerminalStatus | undefined {
   return isTerminalTab(tab) ? tab.status : undefined
 }
 
+/**
+ * The token this row publishes as `data-tab-type`.
+ *
+ * GENERATED from contracts/tab-types.json, shared with the Go side that spells
+ * the same tokens on the command line. It was a hand-written switch, and a kind
+ * missing from it does not fail to compile -- it publishes a token no E2E
+ * locator matches, which reads as a mystified selector rather than an error.
+ */
 function tabTypeLabel(type: TabType): string {
-  switch (type) {
-    case TabType.AGENT: return 'agent'
-    case TabType.TERMINAL: return 'terminal'
-    case TabType.FILE: return 'file'
-    case TabType.IMAGE: return 'image'
-    default: return 'unknown'
-  }
+  return TAB_TYPE_WIRE_TOKEN[type] || 'unknown'
 }
 
 /** New-tab actions surfaced by the Plus button and overflow menu. */
@@ -123,7 +126,7 @@ interface TabBarProps {
    * mutation: no close (except a payload-backed tab -- see `canCloseTab`), no
    * rename, and no middle-click close.
    *
-   * Was `readOnly`. Archival is the only thing that gates mutation, so the two
+   * Was `readOnly`. Archival is the only thing that blocks mutation, so the two
    * were one concept under two names; the sidebar tree carries the same flag.
    */
   archived?: boolean
@@ -331,7 +334,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const renderTabRow = (tab: () => Tab, dnd: TabRowDnd | undefined, surface: TabRowSurface) => {
     const row = dnd?.row
     const isClosing = () => props.closingTabKeys?.has(tabKey(tab())) ?? false
-    const canRename = () => !isPayloadBackedTabType(tab().type) && !props.archived
+    const canRename = () => canRenameTab(props.archived, tab())
     // Suppress the click that fires on pointerup after a drag: dropping a row
     // back on itself must not also select it (and on the sheet, close it).
     let wasDragging = false
@@ -443,7 +446,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
     onAuxClick: (e: MouseEvent) => {
       if (e.button === 1) {
         e.preventDefault()
-        if ((props.archived && !isPayloadBackedTabType(tab().type)) || props.closingTabKeys?.has(tabKey(tab())))
+        if (!canCloseTab(props.archived, tab()) || props.closingTabKeys?.has(tabKey(tab())))
           return
         props.onClose(tab())
       }
@@ -451,7 +454,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
     onDblClick: (e: MouseEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      if (!isPayloadBackedTabType(tab().type) && !props.archived)
+      if (canRenameTab(props.archived, tab()))
         startEditing(tab())
     },
   })

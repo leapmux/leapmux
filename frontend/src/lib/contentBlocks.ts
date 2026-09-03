@@ -87,8 +87,7 @@ export interface ToolResultContent {
 }
 
 /**
- * Split a content-block array into joined text plus the image blocks, in one
- * walk.
+ * Split a content-block array into the joined text plus the image blocks.
  *
  * The text half is exactly what {@link joinContentParagraphs} produces with the
  * images skipped, so a caller that switches to this loses no text.
@@ -97,14 +96,24 @@ export function splitToolResultContent(
   content: ContentBlock[] | null | undefined,
   kinds: Record<string, string>,
 ): ToolResultContent {
+  // TWO walks, deliberately, and the image walk is its own.
+  //
+  // Collecting the images inside the text formatter looked cheaper and coupled
+  // the list to the caller's `kinds`: `joinContentParagraphs` consults `kinds`
+  // FIRST and never calls the formatter for a block whose type it names, so a
+  // caller that named a type an image can also carry would drop that image from
+  // the list AND from the text, with no error. This order is the contract an
+  // image tab's `imageIndex` addresses by, so it must not depend on what a
+  // caller happened to ask for the text.
   const images: ImageResultSource[] = []
-  const text = joinContentParagraphs(content, kinds, (block) => {
+  for (const block of content ?? []) {
     const source = parseImageBlock(block)
-    if (!source)
-      return null
-    images.push(source)
-    return null
-  })
+    if (source)
+      images.push(source)
+  }
+  // The formatter answers null for every block: an image belongs to `images`,
+  // and nothing else reaches here that the text should carry.
+  const text = joinContentParagraphs(content, kinds, () => null)
   return { text, images }
 }
 

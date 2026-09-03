@@ -196,5 +196,5 @@ func TestDeactivatePasskeyAuth_FromAnElevatedSessionKeepsThatSession(t *testing.
 
 	updatedUser, err := env.store.Users().GetByID(ctx, env.userID)
 	require.NoError(t, err)
-	assert.True(t, updatedUser.PasswordSet, "the replacement password committed")
+	assert.True(t, updatedUser.FirstCredentialExempt, "the replacement password committed")
 }

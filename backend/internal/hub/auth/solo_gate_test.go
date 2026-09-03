@@ -106,7 +106,7 @@ func TestSoloGate_ReadsTheHashAndNotTheColumn(t *testing.T) {
 
 	user, err := st.Users().GetByUsername(context.Background(), usernames.Solo)
 	require.NoError(t, err)
-	require.True(t, user.PasswordSet, "precondition: the bootstrap claims a password")
+	require.True(t, user.FirstCredentialExempt, "precondition: the bootstrap claims a password")
 	require.False(t, password.IsUsable(user.PasswordHash), "precondition: no hash backs the claim")
 
 	assert.True(t, auth.NewSoloGate(true, st).CredentialFree(tcpCtx("127.0.0.1")),

@@ -31,11 +31,11 @@ func stepUpUser(t *testing.T, st store.Store, passwordSet bool) *store.User {
 	t.Helper()
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "stepup" + userID[:8],
-		PasswordHash: "hash",
-		DisplayName:  "Step Up",
-		PasswordSet:  passwordSet,
+		ID:                    userID,
+		Username:              "stepup" + userID[:8],
+		PasswordHash:          "hash",
+		DisplayName:           "Step Up",
+		FirstCredentialExempt: passwordSet,
 		// A VERIFIED address, because that is the durable identity the
 		// first-credential rule requires and the locked re-check now
 		// re-derives. A fixture without one is refused for a reason no case
@@ -113,8 +113,8 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 		user := stepUpUser(t, st, true)
 		now := time.Now().UTC()
 		info, _ := liveElevatedSession(t, st, user, now)
-		peek := &store.User{ID: user.ID, PasswordSet: true, PasswordHash: "stale-hash"}
-		locked := &store.User{ID: user.ID, PasswordSet: true, PasswordHash: "rotated-hash"}
+		peek := &store.User{ID: user.ID, FirstCredentialExempt: true, PasswordHash: "stale-hash"}
+		locked := &store.User{ID: user.ID, FirstCredentialExempt: true, PasswordHash: "rotated-hash"}
 		assert.NoError(t, recheckStepUpUnderLock(context.Background(), st, locked, peek, elevated, entryStepUp(info), now))
 	})
 
@@ -126,8 +126,8 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				peek := &store.User{PasswordSet: tc.peek}
-				locked := &store.User{PasswordSet: tc.locked}
+				peek := &store.User{FirstCredentialExempt: tc.peek}
+				locked := &store.User{FirstCredentialExempt: tc.locked}
 				// The flip is decided before any query, so no store is needed.
 				err := recheckStepUpUnderLock(context.Background(), nil, locked, peek, elevated, entryStepUp(noCredential), time.Now().UTC())
 				requireStepUpStateMoved(t, err)

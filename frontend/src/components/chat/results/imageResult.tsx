@@ -2,6 +2,7 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { MAX_INLINE_IMAGE_BASE64_LEN, RENDERABLE_IMAGE_MIME_TYPES } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
 
@@ -14,25 +15,6 @@ import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, too
  * Kilo, Goose) -- normalizes to `ImageResultSource` and mounts these
  * components. Nothing here knows which provider it is serving.
  */
-
-/**
- * MIME types we will render inline. SVG is intentionally excluded — SVGs can
- * carry script and we don't sandbox them.
- */
-const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/avif',
-])
-
-/**
- * Cap on the base64-encoded length of an inline image. Beyond this we
- * fall back to the placeholder rather than constructing a giant data URL.
- * 7 MB base64 ≈ 5 MB raw — comfortably covers screenshot-sized images.
- */
-const MAX_INLINE_IMAGE_BASE64_LEN = 7 * 1024 * 1024
 
 /** Why an image is shown as a placeholder rather than inline. */
 export type ImageSkipReason = 'no-data' | 'unsupported-mime' | 'too-large' | 'external-url' | 'unknown-shape'
@@ -62,6 +44,13 @@ export function imageRenderInfo(source: ImageResultSource): {
       if (comma < 0)
         return { reason: 'unknown-shape' }
       const meta = url.slice(DATA_URL_PREFIX.length, comma).toLowerCase()
+      // Require the base64 marker, because the two other readers of the same URL
+      // do. `decodeImageBytes` (the IMAGE tab) and `sniffImageDimensionsFromDataUrl`
+      // both refuse a percent-encoded payload, so accepting one here drew a
+      // clickable image whose tab then said "This image cannot be displayed here."
+      // and whose row lost its size reservation.
+      if (!meta.endsWith(';base64'))
+        return { reason: 'unknown-shape' }
       const semi = meta.indexOf(';')
       const mime = semi < 0 ? meta : meta.slice(0, semi)
       if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))

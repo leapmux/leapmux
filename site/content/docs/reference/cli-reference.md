@@ -327,7 +327,7 @@ The prefix strip lowercases the remainder but does **not** translate `_` into `.
 | `LEAPMUX_CONTROL_USER_ID` | spawned agents | Authenticated user ID (informational; no flag defaults from it) |
 | `LEAPMUX_CONTROL_WORKER_ID` | spawned agents | Host worker ID (default for `--worker-id`) |
 | `LEAPMUX_CONTROL_TAB_ID` | spawned agents | Spawning tab's ID (default for `--tab-id`) |
-| `LEAPMUX_CONTROL_TAB_TYPE` | spawned agents | `agent`, `terminal`, or `file` |
+| `LEAPMUX_CONTROL_TAB_TYPE` | spawned agents | `agent` or `terminal` |
 | `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
 | `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
 

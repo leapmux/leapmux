@@ -69,11 +69,11 @@ func runBootstrapCreateAdmin(cmd cmdCtx, args []string) error {
 		}
 
 		user, err := service.CreateUser(ctx, st, service.CreateUserParams{
-			Username:     slug,
-			PasswordHash: hash,
-			DisplayName:  dispName,
-			PasswordSet:  true,
-			IsAdmin:      true,
+			Username:              slug,
+			PasswordHash:          hash,
+			DisplayName:           dispName,
+			FirstCredentialExempt: true,
+			IsAdmin:               true,
 		})
 		if err != nil {
 			// The bootstrap admin carries no email, and every dialect's

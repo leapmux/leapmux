@@ -213,7 +213,7 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
           await Promise.resolve()
           expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
           const [workerId, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
@@ -243,13 +243,13 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
-          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
           await flush()
           const opened = view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)
           expect(opened).toHaveLength(1)
 
           mockRegisterTabPayload.mockClear()
-          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
           await flush()
           expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
           expect(mockRegisterTabPayload).not.toHaveBeenCalled()
@@ -264,8 +264,8 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
-          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 0, title: 'Read' })
-          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
           await flush()
           expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(2)
         }
@@ -280,7 +280,7 @@ describe('useTabOperations', () => {
         try {
           const { ops, view } = setup()
           mockRegisterTabPayload.mockRejectedValueOnce(new Error('channel closed'))
-          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 0, title: 'Read' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
           await flush()
           // Leaving it would strand a tab no peer -- and no reload -- can
           // resolve, because nothing on the worker describes it.
@@ -306,6 +306,8 @@ describe('useTabOperations', () => {
             index: 0,
             filePath: '/repo/shot.png',
             title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
           })
           await flush()
 
@@ -332,7 +334,7 @@ describe('useTabOperations', () => {
           const { ops, view } = setup()
           // No filePath: an MCP screenshot, or a Bash whose stdout was a data
           // URI. Nothing on disk to open, so the reference is the only route.
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 3, title: 'screenshot' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 3, title: 'screenshot', workerId: 'w-1', workingDir: '/tmp' })
           await flush()
 
           const tabs = view.forWorkspace('ws-test')
@@ -356,12 +358,73 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, filePath: '', title: 'shot' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, filePath: '', title: 'shot', workerId: 'w-1', workingDir: '/tmp' })
           await flush()
 
           const tabs = view.forWorkspace('ws-test')
           expect(tabs.filter(t => t.type === TabType.FILE)).toHaveLength(0)
           expect(tabs.filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The click site names the Worker, and the focused tile does not get a
+    // vote. A tile is focused by a click that BUBBLES from this very button, so
+    // on the first click into an unfocused split the focused tile is still the
+    // other one -- and registering the payload there writes it on a Worker that
+    // has no such agent, leaving a tab that can never resolve.
+    it('handleChatImageOpen registers the image on the agent\'s worker, not the focused tile\'s', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({
+            agentId: 'agent-b',
+            seq: 7n,
+            index: 1,
+            title: 'screenshot',
+            workerId: 'w-2',
+            workingDir: '/other',
+          })
+          await flush()
+
+          const images = view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)
+          expect(images).toHaveLength(1)
+          expect(images[0]).toMatchObject({ workerId: 'w-2', workingDir: '/other' })
+          const [workerId] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(workerId).toBe('w-2')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // Same rule on the FILE branch: the path the agent named lives on the
+    // agent's machine, so opening it against the focused tile's Worker asks the
+    // wrong host for a file it does not have.
+    it('handleChatImageOpen opens a named path on the agent\'s worker', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({
+            agentId: 'agent-b',
+            seq: 7n,
+            index: 0,
+            filePath: '/other/shot.png',
+            title: 'Read',
+            workerId: 'w-2',
+            workingDir: '/other',
+          })
+          await flush()
+
+          const files = view.forWorkspace('ws-test').filter(t => t.type === TabType.FILE)
+          expect(files).toHaveLength(1)
+          expect(files[0]).toMatchObject({ filePath: '/other/shot.png', workerId: 'w-2' })
+          const [workerId] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(workerId).toBe('w-2')
         }
         finally {
           dispose()

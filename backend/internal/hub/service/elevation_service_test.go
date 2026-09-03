@@ -94,7 +94,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "elevated", PasswordHash: hash,
-		DisplayName: "Elevated", PasswordSet: true, IsAdmin: true,
+		DisplayName: "Elevated", FirstCredentialExempt: true, IsAdmin: true,
 	}))
 	token, _, _, err := auth.Login(ctx, st, "elevated", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)

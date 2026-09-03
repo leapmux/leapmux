@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ChatImageDeps, ChatImageResolution } from './chatImageResolve'
 import type { ZoomMode } from '~/components/fileviewer/ImageToolbar'
-import { createEffect, createMemo, createSignal, Match, onCleanup, Switch } from 'solid-js'
+import { createEffect, createMemo, createSignal, Match, on, onCleanup, Switch } from 'solid-js'
 import * as styles from '~/components/fileviewer/FileViewer.css'
 import { ImageRender } from '~/components/fileviewer/ImageFileView'
 import { base64ToUint8Array } from '~/lib/base64'
@@ -33,25 +33,36 @@ export function ChatImageViewer(props: {
   const [resolution, setResolution] = createSignal<ChatImageResolution>({ status: 'pending' })
   const [zoom, setZoom] = createSignal<ZoomMode>('fit')
 
-  createEffect(() => {
-    const ref = {
+  // `on()`, and the four props are the WHOLE dependency list. A bare effect
+  // tracks whatever its body reads, and this body reads the chat store:
+  // `resolveChatImage` is async, so it runs synchronously as far as the first
+  // `await`, and when the message is already in the loaded window it reaches
+  // none -- `getLoadedMessageBySeq` walks `messagesByAgent` inside the effect.
+  // The effect then re-runs for every row the agent appends, and each re-run
+  // resets the resolution to `pending`: `ImageRender` unmounts, its blob URL is
+  // revoked, the pan is lost, and the image decodes again. `on()` runs the body
+  // untracked, so only a new reference resolves again.
+  createEffect(on(
+    () => ({
       workerId: props.workerId,
       agentId: props.agentId,
       seq: props.seq,
       imageIndex: props.imageIndex,
-    }
-    let live = true
-    onCleanup(() => {
-      live = false
-    })
-    setResolution({ status: 'pending' })
-    // A resolution that lands after the props moved on belongs to a reference
-    // nobody is looking at; writing it would show the previous tab's image.
-    void resolveChatImage(ref, props.deps).then((next) => {
-      if (live)
-        setResolution(next)
-    })
-  })
+    }),
+    (ref) => {
+      let live = true
+      onCleanup(() => {
+        live = false
+      })
+      setResolution({ status: 'pending' })
+      // A resolution that lands after the props moved on belongs to a reference
+      // nobody is looking at; writing it would show the previous tab's image.
+      void resolveChatImage(ref, props.deps).then((next) => {
+        if (live)
+          setResolution(next)
+      })
+    },
+  ))
 
   // A memo, not a plain accessor: an image is megabytes, and base64-decoding it
   // again on any unrelated reactive tick in this component would be the most
@@ -84,12 +95,12 @@ export function ChatImageViewer(props: {
           {(resolution() as { status: 'error', message: string }).message}
         </div>
       </Match>
-      {/* Resolved, and the bytes will not decode. `ImageResultView` renders a
-          click target only for an image it draws inline, so an image with no
-          payload -- or one the agent named by URL -- reaches no tab today and
-          this arm is unreachable. It exists because the alternative to being
-          wrong about that is the `fallback` below: "Loading image…" forever,
-          on a tab that will never load. A sentence beats a spinner. */}
+      {/* Resolved, and the bytes will not decode. This branch is REACHED, not
+          defensive: `imageRenderInfo` gates the click target on the shape of the
+          source and never on whether the payload decodes, so base64 the browser
+          refuses lands here, and so does an image block that states a MIME type
+          and carries nothing. A sentence beats the `fallback` below, which would
+          otherwise say "Loading image…" forever on a tab that will never load. */}
       <Match when={resolution().status === 'ready'}>
         <div class={styles.errorState}>
           This image cannot be displayed here.

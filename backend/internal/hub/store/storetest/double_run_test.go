@@ -60,7 +60,7 @@ func TestDoubleRunStoreCommitsExactlyOnce(t *testing.T) {
 	require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 		return tx.Users().Create(ctx, store.CreateUserParams{
 			ID: userID, Username: "doubled", PasswordHash: "hash",
-			DisplayName: "Doubled", PasswordSet: true,
+			DisplayName: "Doubled", FirstCredentialExempt: true,
 		})
 	}))
 
@@ -98,7 +98,7 @@ func TestDoubleRunStoreCoversTheUserAuthTransaction(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "locked", PasswordHash: "hash",
-		DisplayName: "Locked", PasswordSet: true,
+		DisplayName: "Locked", FirstCredentialExempt: true,
 	}))
 
 	runs := 0
