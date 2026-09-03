@@ -5,15 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
-)
-
-const (
-	GooseCLIModeAuto         = "auto"
-	GooseCLIModeApprove      = "approve"
-	GooseCLIModeSmartApprove = "smart_approve"
-	GooseCLIModeChat         = "chat"
 )
 
 // Goose's server-driven ACP config-option ids (surfaced as mutable option groups,
@@ -41,6 +35,9 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		base:         func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *GooseCLIAgent) {
 			a.modeChannel = modeChannelPermissionMode
+			// Smart Approve is Goose's safe new-session mode, so it leads every rebuilt
+			// list and is the mode the group badges as its default.
+			a.preferredFirstMode = contracts.GooseModeSmartApprove
 			// Goose's reasoning-effort axis is the convention id "thinking_effort", not the
 			// well-known "effort" -- declare it so the env-effort override maps onto it.
 			a.effortConfigID = GooseConfigThinkingEffort
@@ -53,18 +50,23 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			a.subagentFromToolCallUpdate = gooseSubagentFromToolCallUpdate
 		},
 		afterHandshake: func(a *GooseCLIAgent, handshake *acpSessionResult, opts Options) error {
-			return a.applyPermissionModeStartup(handshake, opts, GooseCLIModeAuto, opts.Model())
+			return a.applyPermissionModeStartup(handshake, opts, contracts.GooseModeAuto, opts.Model())
 		},
 	})
 }
 
+// fallbackGooseCLIModes lists Goose's modes in Goose's own order, then applies the same
+// preferred-first rule the live catalog applies. Ordering here rather than hand-writing
+// the result keeps the static fallback and every rebuilt list in agreement.
 func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
-	return []*leapmuxv1.AvailableOption{
-		{Id: GooseCLIModeAuto, Name: "Auto"},
-		{Id: GooseCLIModeApprove, Name: "Approve"},
-		{Id: GooseCLIModeSmartApprove, Name: "Smart Approve"},
-		{Id: GooseCLIModeChat, Name: "Chat"},
+	modes := []*leapmuxv1.AvailableOption{
+		{Id: contracts.GooseModeAuto, Name: "Auto"},
+		{Id: contracts.GooseModeApprove, Name: "Approve"},
+		{Id: contracts.GooseModeSmartApprove, Name: "Smart Approve"},
+		{Id: contracts.GooseModeChat, Name: "Chat"},
 	}
+	orderModesPreferredFirst(modes, contracts.GooseModeSmartApprove)
+	return modes
 }
 
 // gooseSubagentFromToolCall detects Goose's spawn tool_call by the structured
@@ -254,4 +256,11 @@ func init() {
 		"LEAPMUX_GOOSE_DEFAULT_MODEL", "goose",
 		GooseConfigThinkingEffort, GooseConfigProvider,
 	)
+	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, PermissionDefaults{
+		// Both halves are Smart Approve. The fallback must NOT be Goose's own `auto`,
+		// which is the mode its bypass shortcut selects: a resumed session with no stored
+		// mode would then open with every permission prompt disabled.
+		NewSession: map[string]string{OptionIDPermissionMode: contracts.GooseDefaultMode},
+		Fallback:   contracts.GooseDefaultMode,
+	})
 }

@@ -107,6 +107,27 @@ describe('exitPlanModeActions', () => {
     expect(decoded.permissionMode).toBe('bypassPermissions')
   })
 
+  // A preset that switches some axis OTHER than the permission mode cannot be applied
+  // through this banner at all: the approval travels as one control response, and the
+  // only part of a preset that response can carry is the mode. Copilot's bypass sets
+  // `allow_all`, so the switch must not be drawn -- drawing it produced a checkbox that
+  // silently did nothing once the preset type stopped guaranteeing a permissionMode key.
+  it('draws no bypass switch for a preset that carries no permission mode', () => {
+    render(() => (
+      <ExitPlanModeActions
+        request={makeRequest('req-77', 'agent-7')}
+        askState={createAskQuestionState()}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        bypass={{ settings: { sets: { allow_all: 'on' } }, apply: vi.fn() }}
+      />
+    ))
+
+    expect(screen.queryByTestId('plan-bypass-permissions-checkbox')).toBeNull()
+    expect(screen.getByTestId('plan-clear-context-checkbox')).toBeInTheDocument()
+  })
+
   it('sends allow response without permissionMode for normal approve', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const request = makeRequest('req-42', 'agent-5')

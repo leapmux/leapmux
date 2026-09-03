@@ -18,7 +18,7 @@ import {
   listOnlineWorkerIDsViaAPI,
   loginViaAPI,
   mintRegistrationKeyViaAPI,
-  openAgentViaAPI,
+  openPinnedModeAgentViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
   TEST_ADMIN_PASSWORD,
@@ -514,7 +514,7 @@ export const processTest = base.extend<
       adminToken,
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     )
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     await use({ workspaceId })
     // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
     // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub

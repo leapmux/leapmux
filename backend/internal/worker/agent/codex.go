@@ -1376,6 +1376,10 @@ func init() {
 	// Seed the sandbox/network/collaboration/service-tier defaults into a fresh agent's
 	// launch options; resolveProviderDefaults applies these for every provider uniformly.
 	setProviderOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexOptionDefaults())
+	// Codex has no new-session safe default: Suggest & Approve already asks.
+	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, PermissionDefaults{
+		Fallback: CodexDefaultApprovalPolicy,
+	})
 }
 
 // codexModelDisplayName generates a human-readable display name from a Codex

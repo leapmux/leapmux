@@ -367,7 +367,8 @@ describe('emitters', () => {
   })
 })
 
-// The provider-protocol domains (zcode, pi) carry an agent's OWN wire vocabulary, and
+// The provider-protocol domains (ZCode, Goose, Copilot, Pi) carry the wire vocabulary the two
+// languages dispatch on, and
 // both languages dispatch on the literals -- so the checks below are what stop a table
 // from reaching one side and not the other, or from carrying two branches the wire
 // cannot tell apart.
@@ -575,8 +576,11 @@ describe('generate', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
     expect(Object.keys(files).sort()).toEqual([
       'backend/generated/contracts/captcha.go',
+      'backend/generated/contracts/claude-protocol.go',
       'backend/generated/contracts/codex-bypass.go',
+      'backend/generated/contracts/copilot-permissions.go',
       'backend/generated/contracts/desktop.go',
+      'backend/generated/contracts/goose-protocol.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/listen.go',
       'backend/generated/contracts/pi-protocol.go',
@@ -593,8 +597,11 @@ describe('generate', () => {
       'backend/generated/contracts/zcode-protocol.go',
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/captcha.ts',
+      'frontend/src/generated/contracts/claude-protocol.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
+      'frontend/src/generated/contracts/copilot-permissions.ts',
       'frontend/src/generated/contracts/desktop.ts',
+      'frontend/src/generated/contracts/goose-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
@@ -610,6 +617,40 @@ describe('generate', () => {
       'frontend/src/generated/contracts/worker-vocab.ts',
       'frontend/src/generated/contracts/zcode-protocol.ts',
     ])
+  })
+
+  // The two domains this change added ride the shared PROVIDER_PROTOCOLS path rather than
+  // bespoke emitters, so these pin what that path gives them and the bespoke one did not.
+  it('emits the shared provider-protocol shape for the newest domains', () => {
+    const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
+
+    // A TS union type per table -- the bespoke Copilot emitter produced none.
+    const copilotTs = files['frontend/src/generated/contracts/copilot-permissions.ts']
+    expect(copilotTs).toContain('export type CopilotPermissionGroup =')
+    expect(copilotTs).toContain('export type CopilotPermissionValue =')
+    // The identifiers both languages already import must not move.
+    expect(copilotTs).toContain('export const COPILOT_PERMISSION_GROUP = {')
+    expect(files['backend/generated/contracts/copilot-permissions.go'])
+      .toContain('CopilotPermissionGroupAssistedApproval = "copilot_assisted_approval"')
+    // LeapMux owns one of the two Copilot ids, so the domain overrides the shared
+    // header rather than claiming the vendor owns every value in the file.
+    expect(files['backend/generated/contracts/copilot-permissions.go'])
+      .not
+      .toContain('vendor owns\n// the values')
+
+    // Goose's fallback mode now comes from the contract instead of being spelled in Go
+    // and in TypeScript by hand.
+    expect(files['backend/generated/contracts/goose-protocol.go'])
+      .toContain('GooseDefaultMode = GooseModeSmartApprove')
+    expect(files['frontend/src/generated/contracts/goose-protocol.ts'])
+      .toContain('export const GOOSE_DEFAULT_MODE = GOOSE_MODE.SmartApprove')
+
+    // Claude's modes are the last permission vocabulary that was spelled by hand in both
+    // languages; the plugin and the worker now read this one table.
+    expect(files['backend/generated/contracts/claude-protocol.go'])
+      .toContain('ClaudeModeBypassPermissions = "bypassPermissions"')
+    expect(files['frontend/src/generated/contracts/claude-protocol.ts'])
+      .toContain('export const CLAUDE_DEFAULT_MODE = CLAUDE_MODE.Default')
   })
 
   it('fails loudly when a registered domain is missing its contract file', () => {

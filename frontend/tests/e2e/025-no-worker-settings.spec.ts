@@ -1,4 +1,4 @@
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openPinnedModeAgentViaAPI } from './helpers/api'
 import { ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
@@ -8,7 +8,7 @@ test.describe('Settings and /clear after Worker restart', () => {
 
     const { hubUrl, adminToken, workerId } = separateHubWorker
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Worker Restart Settings Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     try {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)

@@ -1,5 +1,5 @@
 import type { JSX } from 'solid-js'
-import type { ProviderSettingChangeHandler, ProviderSettingsAction } from '~/components/chat/providerSettings'
+import type { ProviderPermissionPreset, ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -9,6 +9,7 @@ import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
+import { permissionPresetAvailable } from '~/components/chat/providerSettings'
 import { hasOptions, resolvedCurrent } from '~/components/chat/settingsGroups'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
@@ -29,7 +30,7 @@ export interface ComposerPlusMenuProps {
   optionGroups: AvailableOptionGroup[] | undefined
   /** Optimistic option-value map keyed by group id. */
   optionValues: Record<string, string>
-  /** Provider, used to resolve the mode axis label and declared actions. */
+  /** Provider, used to resolve the mode axis label and permission presets. */
   agentProvider?: AgentProvider
   /** Dispatch a settings change (any axis). Optional to match the panel's `onChange?`. */
   onSettingChange?: ProviderSettingChangeHandler
@@ -40,7 +41,7 @@ export interface ComposerPlusMenuProps {
   /**
    * Whether the composer accepts input at all (false for a non-steerable
    * subagent). Such a composer can neither send nor apply a settings change,
-   * so the settings submenus, the provider actions, and attach all honour it.
+   * so the settings submenus, the permission actions, and attach all honour it.
    * The view toggles below stay live: they are local preferences.
    */
   /**
@@ -120,7 +121,7 @@ function sortedGroups(groups: AvailableOptionGroup[] | undefined): AvailableOpti
  */
 interface MenuStructure {
   groupIds: string[]
-  actions: ProviderSettingsAction[]
+  permissionActions: PermissionAction[]
   branchName?: string
   /**
    * Frozen WITH the branch name, because it names the destructive item rather
@@ -145,12 +146,42 @@ interface MenuStructure {
 
 /** Whether `s` draws anything BETWEEN the attach item and the view toggles. */
 function hasMenuRows(s: MenuStructure): boolean {
-  return s.groupIds.length > 0 || !!s.branchName || !!s.agentInfo || s.actions.length > 0
+  return s.groupIds.length > 0 || !!s.branchName || !!s.agentInfo || s.permissionActions.length > 0
+}
+
+type PermissionActionKind = 'smart' | 'bypass'
+
+interface PermissionAction {
+  kind: PermissionActionKind
+  label: string
+  testId: string
+  preset: ProviderPermissionPreset
+}
+
+const PERMISSION_ACTIONS: ReadonlyArray<Omit<PermissionAction, 'preset'>> = [
+  { kind: 'smart', label: 'Smart permissions', testId: 'composer-smart-permissions' },
+  { kind: 'bypass', label: 'Bypass permissions', testId: 'composer-bypass-permissions' },
+]
+
+function permissionActionsFor(
+  provider: AgentProvider | undefined,
+  groups: AvailableOptionGroup[] | undefined,
+): PermissionAction[] {
+  const presets = pluginFor(provider)?.permissionPresets
+  if (!presets)
+    return []
+  const actions: PermissionAction[] = []
+  for (const action of PERMISSION_ACTIONS) {
+    const preset = presets[action.kind]
+    if (permissionPresetAvailable(preset, groups))
+      actions.push({ ...action, preset })
+  }
+  return actions
 }
 
 /**
  * The composer's `[+]` menu: attach file, settings (one submenu per option
- * group + provider actions), send-mode toggle, and status-bar toggle. This is
+ * group + permission actions), send-mode toggle, and status-bar toggle. This is
  * the single comprehensive settings surface — the status-bar chips are
  * quick-access shortcuts to the same groups via the same `onSettingChange`.
  */
@@ -162,8 +193,14 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
     equals: shallowEqualArrays,
   })
 
-  // Provider-declared action buttons (e.g. Codex "Bypass permissions").
-  const liveActions = createMemo<ProviderSettingsAction[]>(() => pluginFor(props.agentProvider)?.settingsActions ?? [])
+  // `equals` for the same reason liveGroupIds carries one: a status push re-broadcasts
+  // the whole catalog, and permissionActionsFor allocates a fresh array of fresh objects
+  // every call. Without this, an identical catalog still produced a new value, the
+  // `structure` memo re-ran, and `For` destroyed and rebuilt both permission rows.
+  const livePermissionActions = createMemo(() => permissionActionsFor(props.agentProvider, props.optionGroups), undefined, {
+    equals: (a, b) => a.length === b.length
+      && a.every((action, i) => action.kind === b[i]!.kind && action.preset === b[i]!.preset),
+  })
 
   const [open, setOpen] = createSignal(false)
 
@@ -171,7 +208,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
    * Everything that decides WHICH ROWS EXIST, held still while the menu is open.
    *
    * The menu is drawn from live props, and a status push supplies groups, a
-   * branch, agent info and provider actions -- each of which inserts rows ABOVE
+   * branch, agent info and permission actions -- each of which inserts rows ABOVE
    * the two toggles at the bottom. A pointer already aimed at "Send with Enter"
    * then lands on whatever slid into its place, and one of those is a provider
    * action that applies a setting the moment the user clicks it.
@@ -210,7 +247,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
     const branchActions = props.branchActions
     return {
       groupIds: liveGroupIds(),
-      actions: liveActions(),
+      permissionActions: livePermissionActions(),
       branchName: branchActions ? props.workingTree.name || undefined : undefined,
       isWorktree: props.workingTree.isWorktree,
       branchActions,
@@ -219,7 +256,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   })
 
   const groupIds = () => structure().groupIds
-  const actions = () => structure().actions
+  const permissionActions = () => structure().permissionActions
   const branchName = () => structure().branchName
   const agentInfo = () => structure().agentInfo
   /** The held facts of the branch submenu, or undefined when it draws none. */
@@ -231,7 +268,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   // Whether anything renders BETWEEN the attach item and the view toggles. Both
   // rules that fence that region are drawn only when it is non-empty: a fresh
   // tab before its first status push has no groups, no branch, no agent info and
-  // no provider actions, and two unconditional rules then landed side by side.
+  // no permission actions, and two unconditional rules then landed side by side.
   //
   // Derived from the HELD snapshot through the same predicate the freeze reads,
   // so the rules, the rows they fence, and the decision to hold them still
@@ -242,6 +279,11 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
     if (props.disabledReason)
       return props.disabledReason
     return props.canAttach ? undefined : 'Attach is unavailable during a control request'
+  }
+
+  const permissionActionAvailable = (action: PermissionAction) => {
+    const currentPreset = pluginFor(props.agentProvider)?.permissionPresets?.[action.kind]
+    return currentPreset === action.preset && permissionPresetAvailable(currentPreset, props.optionGroups)
   }
 
   return (
@@ -379,17 +421,17 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
         )}
       </Show>
 
-      <Show when={actions().length > 0}>
+      <Show when={permissionActions().length > 0}>
         <hr />
-        <For each={actions()}>
+        <For each={permissionActions()}>
           {action => (
             <button
               role="menuitem"
               data-testid={action.testId}
-              disabled={!!props.disabledReason || Object.entries(action.sets).every(
+              disabled={!props.onSettingChange || !!props.disabledReason || !permissionActionAvailable(action) || Object.entries(action.preset.sets).every(
                 ([k, v]) => resolvedCurrent(props.optionGroups, props.optionValues, k) === v,
               )}
-              onClick={() => props.onSettingChange?.({ sets: { ...action.sets } })}
+              onClick={() => props.onSettingChange?.({ sets: { ...action.preset.sets } })}
             >
               {action.label}
             </button>

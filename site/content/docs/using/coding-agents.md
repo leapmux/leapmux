@@ -64,7 +64,7 @@ Open the **New agent** dialog from the workspace, then fill in the fields below 
 | **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
 {{< callout type="info" >}}
-The dialog has **no model, effort, or permission-mode fields**. A new agent always starts with the provider's defaults; you change the model, reasoning effort, and permission mode afterward from the composer's status-bar chips or its **[+]** menu (see [Changing settings mid-session](#changing-settings-mid-session)).
+The dialog has **no model, effort, or permission-mode fields**. A new session uses the provider defaults and LeapMux's safe permission default. Claude Code requests Auto Mode and falls back to Default when Auto Mode is unavailable. Goose requests Smart Approve. GitHub Copilot requests Assisted Approval and disables Allow All. A resumed session keeps its stored settings. Change settings from the composer after the session starts (see [Changing settings mid-session](#changing-settings-mid-session)).
 {{< /callout >}}
 
 LeapMux remembers your most recently used provider and pre-selects it (when it is available on the chosen Worker), so you usually only have to pick a directory and click **Create**.
@@ -158,7 +158,7 @@ Not every image renders inline:
 - **Images above about 5 MB** show a placeholder instead of the picture.
 - **An image the agent gives by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
 
-Every provider except ZCode can return an image: Claude Code, Codex, Pi, and each ACP provider (OpenCode, Cursor, GitHub Copilot, Kilo, Goose, Reasonix). ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so there is no picture left to draw.
+Every provider except ZCode can return an image: Claude Code, Codex, Pi, and each Agent Client Protocol (ACP) provider (OpenCode, Cursor, GitHub Copilot, Kilo, Goose, Reasonix). ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so there is no picture left to draw.
 
 ### The todo / plan sidebar
 
@@ -227,16 +227,22 @@ Its plan prompt is titled from the **ExitPlanMode** tool and shows the plan the 
 
 ### Other providers
 
-Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner whose title comes from the tool call (default **Permission Request**) and whose buttons come from the options the agent offered. An **& Bypass Permissions** option appears only for Goose and GitHub Copilot, which declare a bypass mode; Cursor, OpenCode, Kilo, and Reasonix declare none. Cursor, OpenCode, and Kilo plug in their own richer question handling where they support it.
+Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission banner. Its title comes from the tool call, and its default title is **Permission Request**. The buttons come from the options that the agent offered. Goose and GitHub Copilot also offer **& Bypass Permissions**. That button uses the same Bypass permissions preset as the composer menu. Cursor, OpenCode, Kilo, and Reasonix have no bypass preset. Cursor, OpenCode, and Kilo use their own question controls where available.
 
 ## Changing settings mid-session
 
 Beneath the editor box is a status bar with one chip per setting axis — the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
 
-The **[+]** menu holds every axis, including the provider-specific options that get no chip, each as a submenu. It also holds **Agent info** (context usage, rate limits, session). You can hide the status bar with **[+] > Show status bar**; the **[+]** menu still reaches everything the bar shows.
+The **[+]** menu holds every axis, including provider-specific options that have no chip. Each axis has a submenu. The menu also holds **Agent info** for context usage, rate limits, and the session.
+
+Providers can add two adjacent permission shortcuts. **Smart permissions** selects the provider's safety-assisted mode. **Bypass permissions** disables permission prompts. Smart permissions is always directly above Bypass permissions. A shortcut appears only when the session offers every setting and value that the preset needs.
+
+Each safety-assisted mode approves the calls it judges safe and asks about the others. Claude Code Auto Mode uses a classifier for that decision. Goose Smart Approve and GitHub Copilot Assisted Approval do the same.
+
+You can hide the status bar with **[+] > Show status bar**. The **[+]** menu still gives access to all status bar settings.
 
 {{< callout type="info" >}}
-Most settings changes apply **live**, without a restart: a concrete model or effort change and a permission-mode change take effect in place (the change is optimistic and rolls back if it fails). A restart happens when the provider can't apply the change to the running process — typically switching effort back to **Auto** or the Claude Code model back to **Default (recommended)**, which must relaunch the CLI without the flag — and for providers that fix the model at launch (Reasonix).
+Most settings changes apply **live**. LeapMux restarts the provider when a launch flag must change. Examples include Copilot Assisted Approval, effort **Auto**, Claude Code **Default (recommended)**, and a Reasonix model change. The interface applies each change optimistically and restores the prior value after a failure.
 {{< /callout >}}
 
 A picker shows radio items for up to 7 options and switches to a searchable list above that.
@@ -257,9 +263,10 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 - Effort tiers depend on the model:
   - **Fable 5**, **Opus (1M context)**, **Sonnet**, and **Sonnet (1M context)** offer the full set: Auto, Ultracode, Max, Extra High, High, Medium, Low.
   - **Haiku** has no effort tiers at all — the effort selector is hidden entirely when Haiku is the model, and the Worker never sends an effort flag for Haiku.
-- Permission modes: **Default** (the default), **Plan Mode**, **Accept Edits**, **Bypass Permissions**, **Don't Ask**, **Auto Mode**.
+- Permission modes: **Default**, **Plan Mode**, **Accept Edits**, **Bypass Permissions**, **Don't Ask**, **Auto Mode**. A new session uses Auto Mode when the session offers it. Otherwise, it uses Default.
+- Permission shortcuts: Smart permissions selects **Auto Mode**. Bypass permissions selects **Bypass Permissions**.
 
-**Codex** — Fast Mode, Effort, Model, Workflow, Network Access, Sandbox Policy, Approval Policy, plus a **Bypass permissions** item.
+**Codex** — Fast Mode, Effort, Model, Workflow, Network Access, Sandbox Policy, Approval Policy, plus a **Bypass permissions** shortcut.
 
 - Default model **Default (recommended)** (your Codex account's own pick); also offered: GPT-5.6-Sol, GPT-5.6-Terra, GPT-5.6-Luna, GPT-5.5, GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex-Spark. A running agent lists whatever models your Codex account offers, so an account-specific model appears here too.
 - Effort tiers depend on the model:
@@ -268,7 +275,7 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
   - The other models offer Auto, Extra High, High, Medium, Low.
 - Approval Policy: **Full Auto** (`never`), **Suggest & Approve** (`on-request`, the default), **Auto-edit** (`untrusted`).
 - Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
-- The **Bypass permissions** item sets network = enabled, sandbox = full access, and approval = Full Auto in one click.
+- The **Bypass permissions** shortcut sets network to enabled, sandbox to full access, and approval to Full Auto in one change.
 
 **Pi** — **Thinking Level** (effort) and **Model**. Default model **glm-5.3**. Pi has no permission mode, no plan mode, and no bypass.
 
@@ -277,18 +284,23 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 - The models come from your own `~/.zcode/v2/config.json`, so the list is whatever that installation is signed in to. Each entry names its ZCode provider, which is what tells two rows apart when a plan and an API key both reach the same model. LeapMux orders them the way ZCode does and starts on the first — for the Z.ai plans that is **GLM-5.3**.
 - Thought levels are per model and also come from that configuration: **Low / High / Max** on GLM-5.3 and GLM-5.3-Flash, **Enabled / Off** on GLM-5-Turbo. **Auto** means the model's own default rather than no level at all.
 - Modes: **Plan**, **Build** (the default), **Edit**, **Yolo**. Shift+Tab toggles Plan, and Yolo is the bypass mode. ZCode's own `auto` mode is not offered: the shipped build denies every tool call under it.
+- Permission shortcuts: ZCode offers Bypass permissions for **Yolo**. It has no Smart permissions shortcut.
 
 **Other providers** — a single option group plus a model selector. Each axis gets its own chip, and each chip shows the current value.
 
 | Provider | Default model | Default mode | Notes |
 | --- | --- | --- | --- |
 | Cursor | `auto` | `agent` | Has plan mode. |
-| GitHub Copilot | (CLI default) | `agent` | Has plan and autopilot. |
-| Goose | (CLI default) | `auto` | Bypass = `auto` — Goose's default mode already is its bypass mode; **no plan mode**. |
+| GitHub Copilot | (CLI default) | `agent` | A new session enables Assisted Approval when the installed CLI supports it with ACP. Bypass permissions enables Allow All. Autopilot stays a permission mode, and no shortcut selects it. |
+| Goose | (CLI default) | `smart_approve` | Smart permissions selects Smart Approve. Bypass permissions selects Auto. Goose has no plan mode. |
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
 
 In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilot**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux control agent set --permission-mode`.
+
+GitHub Copilot also has **Assisted Approval** and **Allow All** option groups. Assisted Approval narrows what runs without a prompt, so turning it on turns Allow All off. The picker states that consequence on the option itself. Allow All is the broader permission and supersedes Assisted Approval, so turning Allow All on leaves Assisted Approval as it is. Assisted Approval launches Copilot with `--experimental` and `--assisted-approval`. Therefore, Assisted Approval also enables all Copilot experimental features, and a change to it restarts the CLI.
+
+Some Copilot CLI versions reject Assisted Approval with ACP mode. LeapMux retries a new session with Assisted Approval off when only the safe default caused this error. LeapMux then locks the option to Off for that session. An explicit Assisted Approval request still reports the error.
 
 **Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
 
@@ -312,8 +324,8 @@ Picking a session is the manual path; most resumption happens automatically. Age
 
 ## Per-provider differences worth knowing
 
-- **Defaults vary by provider.** Claude Code starts in **Default** permission mode (it will ask before risky actions); Codex starts in **Suggest & Approve**. Both ask before doing dangerous things unless you bypass.
-- **Bypass is a deliberate, sticky choice.** The "& Bypass Permissions" / "Bypass permissions" actions stop the agent asking for approval for the rest of the session (Codex's button also opens the sandbox and network). Use them only when you trust the working directory and the task.
+- **Defaults vary by provider.** A new Claude Code session requests Auto Mode. A new Goose session uses Smart Approve. A new GitHub Copilot session uses Assisted Approval. Codex starts in Suggest & Approve. Resumed sessions keep their stored settings.
+- **Bypass is a deliberate, sticky choice.** The bypass controls stop the agent from asking for approval. Codex also opens the sandbox and network. Use bypass only when you trust the working directory and the task.
 - **Attachment support differs by provider** (see the [attachments table](#attachments)) — every provider takes text, but image, PDF and other-binary support varies. Reasonix takes text only, and ZCode takes an image only on a model that declares image input.
 - **Pi is minimal** — model and thinking level only, no permission/plan/bypass controls.
 - **ZCode borrows the desktop application's account.** Its models, credentials and thought levels all come from `~/.zcode/v2/config.json`, so what an agent can run matches what the ZCode application itself can run on that machine.

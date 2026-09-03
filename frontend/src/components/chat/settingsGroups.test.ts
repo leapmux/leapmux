@@ -1,6 +1,6 @@
-import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AvailableOption, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
-import { groupHasOptions, hasOptions } from './settingsGroups'
+import { groupHasOptions, hasOptions, optionSideEffectText } from './settingsGroups'
 
 function group(id: string, optionIds: string[]): AvailableOptionGroup {
   return {
@@ -49,5 +49,41 @@ describe('groupHasOptions', () => {
     // Pre-handshake. Both composer settings surfaces read this, so neither may
     // throw on the undefined catalog.
     expect(groupHasOptions(undefined, 'model')).toBe(false)
+  })
+})
+
+describe('optionSideEffectText', () => {
+  const catalog = [
+    { id: 'allow_all', label: 'Allow All', options: [{ id: 'off', name: 'Off' }, { id: 'on', name: 'On' }] },
+    { id: 'copilot_assisted_approval', label: 'Assisted Approval', options: [] },
+  ] as unknown as AvailableOptionGroup[]
+  const option = (clears: { groupId: string, value: string }[]) =>
+    ({ id: 'on', name: 'On', clears }) as unknown as AvailableOption
+
+  it('names the group and value a selection also settles, using catalog labels', () => {
+    expect(optionSideEffectText(catalog, option([{ groupId: 'allow_all', value: 'off' }])))
+      .toBe('Also sets Allow All to Off.')
+  })
+
+  it('returns nothing for an option that settles nothing else', () => {
+    expect(optionSideEffectText(catalog, option([]))).toBeUndefined()
+  })
+
+  it('treats an absent clears field as settling nothing', () => {
+    // A catalog object does not always come from a decoded proto -- the tab store and
+    // the tests build option literals by hand, and a picker renders whatever it holds.
+    expect(optionSideEffectText(catalog, { id: 'on', name: 'On' } as unknown as AvailableOption))
+      .toBeUndefined()
+  })
+
+  it('skips a side effect whose group the catalog does not carry', () => {
+    // A worker can name a group this session never reported; describing it by its wire
+    // id would say less than saying nothing.
+    expect(optionSideEffectText(catalog, option([{ groupId: 'absent', value: 'off' }]))).toBeUndefined()
+  })
+
+  it('falls back to the wire ids when the group is present but the value is not', () => {
+    expect(optionSideEffectText(catalog, option([{ groupId: 'allow_all', value: 'unknown' }])))
+      .toBe('Also sets Allow All to unknown.')
   })
 })

@@ -34,6 +34,8 @@ before building).
   credential-rejected). `retry.json` — the events-rejection retry policy.
   `worker-vocab.json` — notification-type tokens, the notification-thread
   discriminator, the Codex rate-limit token, and the model sentinels.
+  `goose-protocol.json` — Goose permission modes. `copilot-permissions.json` —
+  the identifiers for Copilot Assisted Approval and Allow All.
   `providers.json` — AgentProvider display names / CLI aliases / parse
   aliases (agentlabels and agentProviderLabel consume the generated tables).
   `scopes.json` — the scope vocabulary: wire tokens, Preferences

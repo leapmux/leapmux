@@ -725,4 +725,8 @@ func init() {
 	// normalizer accepts a backslash spelling so a re-spelling is not read as a
 	// model switch.
 	setModelIDNormalizer(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, normalizeZCodeModelID)
+	// ZCode ships no safe-mode preset; Build is the mode a session with none takes.
+	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, PermissionDefaults{
+		Fallback: contracts.ZCodeDefaultMode,
+	})
 }

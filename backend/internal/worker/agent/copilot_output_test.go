@@ -3,21 +3,20 @@ package agent
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/stretchr/testify/require"
 )
 
 func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
-	a := &CopilotCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:      "test-agent",
-				providerName: "copilot",
-			}},
-			sink:      sink,
-			sessionID: "test-session",
-		},
-	}
+	a := newCopilotCLIAgent("", false)
+	a.jsonrpcBase = jsonrpcBase{processBase: processBase{
+		agentID:      "test-agent",
+		providerName: "copilot",
+	}}
+	a.sink = sink
+	a.sessionID = "test-session"
 	a.modeChannel = modeChannelPermissionMode
 	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a
@@ -162,11 +161,12 @@ func TestHandleCopilotOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.T
 	input := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"config_option_update","configOptions":[{"id":"thoughtLevel","category":"thought_level","name":"Thought Level","currentValue":"high","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"}]}]}}}`
 	agent.HandleOutput([]byte(input))
 
-	// The option group is surfaced after the mapped permission-mode group.
+	// The runtime option and static Assisted Approval group are both present.
 	groups := agent.OptionGroups()
-	require.Len(t, groups, 2)
-	require.Equal(t, OptionIDPermissionMode, groups[0].GetId())
-	require.Equal(t, "thoughtLevel", groups[1].GetId())
+	require.Len(t, groups, 3)
+	require.NotNil(t, optionids.GroupByID(groups, OptionIDPermissionMode))
+	require.NotNil(t, optionids.GroupByID(groups, "thoughtLevel"))
+	require.NotNil(t, optionids.GroupByID(groups, contracts.CopilotPermissionGroupAssistedApproval))
 
 	// The value persists via a settings refresh carrying the live mode (in its field)
 	// and the option value (in extras); no primaryAgent key for a permission-mode

@@ -229,6 +229,9 @@ type optDef struct {
 	Default       bool
 	ContextWindow int64
 	SubGroups     []*leapmuxv1.AvailableOptionGroup
+	// Clears names the other option values this one settles as a side effect, so the
+	// picker can say so before the click. See AvailableOption.clears in the proto.
+	Clears []*leapmuxv1.OptionSideEffect
 }
 
 // selectGroup builds a mutable (user-writable) option group from option
@@ -243,6 +246,7 @@ func selectGroup(id, label string, order int32, current string, defs []optDef) *
 			Description:   d.Description,
 			ContextWindow: d.ContextWindow,
 			SubGroups:     d.SubGroups,
+			Clears:        d.Clears,
 		})
 		if d.Default {
 			def = d.Id

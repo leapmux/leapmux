@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "copilot-permissions.schema.json",
+  "title": "GitHub Copilot permission identifiers",
+  "description": "Every table is a map from the identifier both languages spell (PascalCase, so the Go constant and the TS key derive from one name) to the literal on the wire. A table may never be empty: an empty one would emit an enum no dispatch can match, and the generator's own coverage check would have nothing to compare.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "groups", "values"],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    }
+  },
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "groups": { "$ref": "#/$defs/table" },
+    "values": { "$ref": "#/$defs/table" }
+  }
+}

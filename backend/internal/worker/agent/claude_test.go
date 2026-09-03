@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -600,7 +602,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		go a.readOutputLoop(scanner)
 
 		// Replicate the startup handshake from StartClaudeCode().
-		mode := StringOrDefault(opts.PermissionMode(), PermissionModeDefault)
+		mode := StringOrDefault(opts.PermissionMode(), contracts.ClaudeModeDefault)
 		requestID := generateRequestID()
 		ch := make(chan claudeCodeControlResult, 1)
 		a.registerPendingControl(requestID, ch)
@@ -989,55 +991,68 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 			name:      "AutoAccepted",
 			agentID:   "handshake-auto-ok",
 			script:    "success",
-			requested: PermissionModeAuto,
+			requested: contracts.ClaudeModeAuto,
 			wantAuto:  true,
-			wantMode:  PermissionModeAuto,
-			wantModes: []string{PermissionModeAuto},
+			wantMode:  contracts.ClaudeModeAuto,
+			wantModes: []string{contracts.ClaudeModeAuto},
 		},
 		{
 			name:      "AutoRejectedFallsBack",
 			agentID:   "handshake-auto-reject",
 			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
-			requested: PermissionModeAuto,
+			requested: contracts.ClaudeModeAuto,
 			wantAuto:  false,
-			wantMode:  PermissionModeDefault,
-			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+			wantMode:  contracts.ClaudeModeDefault,
+			wantModes: []string{contracts.ClaudeModeAuto, contracts.ClaudeModeDefault},
 		},
 		{
-			name:          "AutoTransientErrorPropagates",
-			agentID:       "handshake-auto-transient",
-			script:        "error:some unrelated runtime error",
-			requested:     PermissionModeAuto,
+			// EVERY new session requests auto, so a transient failure here must cost the
+			// picker one entry and not the whole tab -- the same rule NonAutoProbeTransient
+			// below already applies to the probe. A session that is genuinely broken still
+			// fails, because the fallback call's own error propagates (AutoAndFallbackFail).
+			name:      "AutoTransientErrorFallsBack",
+			agentID:   "handshake-auto-transient",
+			script:    "error:some unrelated runtime error|success",
+			requested: contracts.ClaudeModeAuto,
+			wantAuto:  false,
+			wantMode:  contracts.ClaudeModeDefault,
+			wantModes: []string{contracts.ClaudeModeAuto, contracts.ClaudeModeDefault},
+		},
+		{
+			name:          "AutoAndFallbackFail",
+			agentID:       "handshake-auto-both-fail",
+			script:        "error:some unrelated runtime error|error:transport is gone",
+			requested:     contracts.ClaudeModeAuto,
 			wantAuto:      false,
-			wantModes:     []string{PermissionModeAuto},
-			wantErrSubstr: "some unrelated runtime error",
+			wantModes:     []string{contracts.ClaudeModeAuto, contracts.ClaudeModeDefault},
+			wantErrSubstr: "transport is gone",
 		},
 		{
 			name:      "NonAutoProbesAutoAvailable",
 			agentID:   "handshake-probe-ok",
 			script:    "success|success",
-			requested: PermissionModeDefault,
+			requested: contracts.ClaudeModeDefault,
 			wantAuto:  true,
-			wantMode:  PermissionModeDefault,
-			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+			wantMode:  contracts.ClaudeModeDefault,
+			wantModes: []string{contracts.ClaudeModeAuto, contracts.ClaudeModeDefault},
 		},
 		{
 			name:      "NonAutoProbeRejected",
 			agentID:   "handshake-probe-reject",
 			script:    "error:Cannot set permission mode to auto: auto mode disabled by settings|success",
-			requested: PermissionModePlan,
+			requested: contracts.ClaudeModePlan,
 			wantAuto:  false,
-			wantMode:  PermissionModePlan,
-			wantModes: []string{PermissionModeAuto, PermissionModePlan},
+			wantMode:  contracts.ClaudeModePlan,
+			wantModes: []string{contracts.ClaudeModeAuto, contracts.ClaudeModePlan},
 		},
 		{
 			name:      "NonAutoProbeTransient",
 			agentID:   "handshake-probe-transient",
 			script:    "error:some unrelated runtime error|success",
-			requested: PermissionModeDefault,
+			requested: contracts.ClaudeModeDefault,
 			wantAuto:  false,
-			wantMode:  PermissionModeDefault,
-			wantModes: []string{PermissionModeAuto, PermissionModeDefault},
+			wantMode:  contracts.ClaudeModeDefault,
+			wantModes: []string{contracts.ClaudeModeAuto, contracts.ClaudeModeDefault},
 		},
 	}
 

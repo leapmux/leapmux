@@ -1,5 +1,5 @@
 import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
-import { ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, permissionModeOffered, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Settings', () => {
@@ -13,6 +13,31 @@ test.describe('Agent Settings', () => {
     // instant it becomes visible sees "…" and nothing else, forever.
     await expectSettingsChip(page, 'Sonnet')
     await expectSettingsChip(page, 'Default')
+  })
+
+  test('permission shortcuts use the Claude modes that the session offers', async ({ authenticatedWorkspace, page }) => {
+    void authenticatedWorkspace
+    await waitForSettingsHydrated(page)
+    // Claude's Smart preset sets permissionMode=auto, and livePermissionModeGroup drops
+    // the auto option exactly when the startup probe rejected it. So the picker decides
+    // whether the shortcut must be there -- asserted either way, rather than skipped.
+    const autoOffered = await permissionModeOffered(page, 'auto')
+
+    const menu = await openPlusMenu(page)
+    const smart = menu.getByTestId('composer-smart-permissions')
+    await expect(menu.getByTestId('composer-bypass-permissions')).toBeVisible()
+    if (autoOffered)
+      await expect(smart).toBeVisible()
+    else
+      await expect(smart).toHaveCount(0)
+
+    await applyPermissionPreset(page, 'bypass')
+    await expectSettingsChip(page, 'Bypass Permissions')
+
+    if (autoOffered) {
+      await applyPermissionPreset(page, 'smart')
+      await expectSettingsChip(page, 'Auto Mode')
+    }
   })
 
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {
@@ -577,10 +602,14 @@ test.describe('Agent Settings', () => {
     // Open a second agent tab
     await openAgentViaUI(page)
 
-    // The new tab should also start with Default mode, once its agent has
-    // reported an option catalog -- until then the trigger reads "… · Auto".
+    // A new session requests Auto Mode, and the Claude CLI decides whether it can enter
+    // it. The picker offers "auto" exactly when the startup probe accepted it, so it
+    // pins WHICH mode to expect -- an either/or regex would also pass if the safe
+    // default stopped being applied at all, and this is the only unpinned agent left in
+    // the suite.
     await waitForSettingsHydrated(page)
-    await expectSettingsChip(page, 'Default')
+    const expectedMode = await permissionModeOffered(page, 'auto') ? 'Auto Mode' : 'Default'
+    await expectSettingsChip(page, expectedMode)
 
     // Switch the new agent to Plan Mode
     await chooseSettingsOption(page, 'permissionMode-plan')
@@ -588,7 +617,7 @@ test.describe('Agent Settings', () => {
     await waitForSettingsIdle(page)
 
     // Verify the notification appears in the new agent's chat (not the first agent's)
-    await expect(visibleOnly(page.getByText('Mode (Default → Plan Mode)'))).toBeVisible()
+    await expect(visibleOnly(page.getByText(`Mode (${expectedMode} → Plan Mode)`))).toBeVisible()
 
     // Switch back to the first agent tab
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')

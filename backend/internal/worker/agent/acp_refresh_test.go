@@ -135,7 +135,7 @@ func TestCopilotClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
 
 	agent, requests := newACPAgentForRPCWithRequestResponder(t,
 		func() *CopilotCLIAgent {
-			a := &CopilotCLIAgent{}
+			a := newCopilotCLIAgent("", false)
 			a.modeChannel = modeChannelPermissionMode
 			return a
 		},

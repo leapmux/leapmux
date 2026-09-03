@@ -264,7 +264,7 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
         onSelect: () => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, '')),
       }}
       positiveAction={{ label: 'Approve', testId: 'control-allow-btn', onSelect: handleApprove }}
-      switches={() => planApprovalSwitches(planApproval, props.bypass)}
+      switches={() => planApprovalSwitches(planApproval)}
     />
   )
 }

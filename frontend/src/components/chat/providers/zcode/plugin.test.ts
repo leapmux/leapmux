@@ -45,7 +45,9 @@ describe('zcode plugin metadata', () => {
 
   it('carries its mode axis on the permission-mode channel', () => {
     expect(plugin.triggerModeGroupKey).toBe('permissionMode')
-    expect(plugin.bypassSettings?.sets.permissionMode).toBe(ZCODE_MODE.Yolo)
+    expect(plugin.permissionPresets).toEqual({
+      bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+    })
   })
 
   it('configures plan mode against the same axis, defaulting to build', () => {

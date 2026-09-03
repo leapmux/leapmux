@@ -262,6 +262,22 @@ message AvailableOption {
   // the frontend recompute those dependent groups the instant the model selection
   // changes, instead of waiting for the worker to re-emit them after a relaunch.
   repeated AvailableOptionGroup sub_groups = 5;
+  // clears carries the OTHER option values this one settles as a side effect, so the
+  // picker can say so before the click rather than leaving the user to notice afterwards
+  // that a second axis moved. GitHub Copilot's Assisted Approval "On" clears Allow All:
+  // Assisted Approval narrows what runs without a prompt, so the broader permission
+  // cannot stand beside it.
+  //
+  // It states a CONSEQUENCE, not a prohibition. The reverse selection stays legal, and
+  // the worker settles the axes either way -- this only lets the UI describe what the
+  // worker is about to do.
+  repeated OptionSideEffect clears = 6;
+}
+
+// OptionSideEffect names one option value that another option's selection settles.
+message OptionSideEffect {
+  string group_id = 1;  // The group whose value changes (e.g. "allow_all")
+  string value = 2;     // The value that group takes (e.g. "off")
 }
 
 // AvailableOptionGroup is one axis of agent configuration. ALL agent options

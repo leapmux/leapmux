@@ -13,7 +13,7 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
-import type { ProviderBypassSettings, ProviderSettingsAction } from '../providerSettings'
+import type { ProviderPermissionPresets } from '../providerSettings'
 import type { AgentInfo, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -434,8 +434,8 @@ export interface Provider {
   /** Reports whether typed feedback needs a separate user message. */
   controlFeedbackAsFollowUpMessage?: (payload: Record<string, unknown>) => boolean
 
-  /** The complete settings change that disables permission prompts. */
-  bypassSettings?: ProviderBypassSettings
+  /** Provider-native presets for standard permission actions. */
+  permissionPresets?: ProviderPermissionPresets
 
   /**
    * Plan mode toggle configuration. Providers define which option group +
@@ -468,13 +468,6 @@ export interface Provider {
    * wasn't at the plan value.
    */
   triggerModeGroupKey?: string
-
-  /**
-   * Declarative action buttons surfaced in the settings panel that set several
-   * option groups at once (e.g. Codex's "Bypass permissions"). Rendered by the
-   * generic panel; each entry dispatches one change per `sets` entry.
-   */
-  settingsActions?: ProviderSettingsAction[]
 
   /** Optional control request content component for this provider. */
   ControlContent?: Component<ContentProps>

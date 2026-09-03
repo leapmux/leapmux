@@ -15,21 +15,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/util/validate"
-)
-
-// Claude Code permission mode values.
-const (
-	PermissionModeDefault           = "default"
-	PermissionModePlan              = "plan"
-	PermissionModeAcceptEdits       = "acceptEdits"
-	PermissionModeBypassPermissions = "bypassPermissions"
-	PermissionModeDontAsk           = "dontAsk"
-	PermissionModeAuto              = "auto"
 )
 
 // autoModeUnavailableErrorPrefix is the prefix of the error message Claude
@@ -368,7 +360,7 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_permission_mode")
-	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), PermissionModeDefault), timeout)
+	resp, err := a.applyStartupPermissionMode(ctx, StringOrDefault(opts.PermissionMode(), contracts.ClaudeModeDefault), timeout)
 	if err != nil {
 		return a.formatStartupError("set_permission_mode", err)
 	}
@@ -856,8 +848,14 @@ func claudeModelSubGroups(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
 // livePermissionModeGroup builds a writable permission-mode group from the
 // provider's static template, setting the confirmed current value and hiding
 // "auto" when the startup probe rejected it (so the UI can't offer a mode this
-// Claude Code instance can't enter).
+// Claude Code instance can't enter). The group's DefaultValue always comes from the
+// template -- see the comment on the branch below.
 func livePermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, current string, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
+	// DefaultValue stays the TEMPLATE's default and is never rewritten to the
+	// new-session mode. The catalog is served to resumed sessions too, which never
+	// receive that mode, and setNewAgentOptionDefaults already declares it in one
+	// place; a second, probe-conditional source would make default_value mean
+	// "the provider default" here and "what a fresh session requests" there.
 	if static != nil && !autoAvail {
 		// Hide "auto" when the startup probe rejected it: filter the template (never mutate
 		// the shared static group) so the UI can't offer a mode this Claude Code instance
@@ -872,7 +870,7 @@ func livePermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, current str
 		// the current value selectable guarantees the "current is always an option" invariant
 		// regardless of how autoAvail drifts, mirroring buildOptionGroup's injection for ACP.
 		static = filterGroupOptions(static, func(o *leapmuxv1.AvailableOption) bool {
-			return o.GetId() != PermissionModeAuto || o.GetId() == current
+			return o.GetId() != contracts.ClaudeModeAuto || o.GetId() == current
 		})
 	}
 	return liveGroup(static, current)
@@ -1224,7 +1222,7 @@ func (a *ClaudeCodeAgent) applyPermissionModeLive(mode string) (applied, confirm
 		// this, OptionGroups would keep filtering "auto" out of the picker even though the session
 		// is running it. (livePermissionModeGroup still keeps the current value selectable as a
 		// backstop, but updating the flag makes the catalog state accurate, not just self-correcting.)
-		if resp.Mode == PermissionModeAuto {
+		if resp.Mode == contracts.ClaudeModeAuto {
 			a.autoModeAvailable = true
 		}
 		a.mu.Unlock()
@@ -1949,23 +1947,32 @@ func (a *ClaudeCodeAgent) sendApplyFlagSettings(ctx context.Context, flagSetting
 // intended state. Transient probe errors are treated as unavailable so the
 // UI does not offer a mode the agent cannot enter.
 func (a *ClaudeCodeAgent) applyStartupPermissionMode(ctx context.Context, requested string, timeout time.Duration) (claudeCodeControlResult, error) {
-	if requested == PermissionModeAuto {
-		resp, err := a.sendSetPermissionMode(ctx, PermissionModeAuto, timeout)
-		switch {
-		case err == nil:
+	if requested == contracts.ClaudeModeAuto {
+		resp, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout)
+		if err == nil {
 			a.setAutoModeAvailable(true)
 			return resp, nil
-		case isAutoModeUnavailableError(err):
+		}
+		// EVERY new session requests auto (setNewAgentOptionDefaults), so this branch
+		// decides whether a failure here costs the picker one entry or costs the user the
+		// whole tab. Fall back on ANY error, not only the CLI's own "cannot set permission
+		// mode to auto": a timeout, a transport error or a reworded refusal says just as
+		// little about whether the session can run in default. The probe branch below
+		// already treats a transient failure as unavailable for the same reason. A
+		// fallback that also fails still returns its error, so a genuinely broken session
+		// is still reported.
+		if isAutoModeUnavailableError(err) {
 			slog.Warn("requested auto permission mode is unavailable; falling back to default",
 				"agent_id", a.agentID)
-			a.setAutoModeAvailable(false)
-			return a.sendSetPermissionMode(ctx, PermissionModeDefault, timeout)
-		default:
-			return claudeCodeControlResult{}, err
+		} else {
+			slog.Warn("auto permission mode failed (transient); falling back to default",
+				"agent_id", a.agentID, "error", err)
 		}
+		a.setAutoModeAvailable(false)
+		return a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout)
 	}
 
-	if _, err := a.sendSetPermissionMode(ctx, PermissionModeAuto, timeout); err != nil {
+	if _, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout); err != nil {
 		if !isAutoModeUnavailableError(err) {
 			slog.Warn("auto-mode probe failed (transient); treating as unavailable",
 				"agent_id", a.agentID, "error", err)
@@ -2364,37 +2371,37 @@ func init() {
 		[]*leapmuxv1.AvailableOptionGroup{{
 			Id:           OptionIDPermissionMode,
 			Label:        "Permission Mode",
-			DefaultValue: PermissionModeDefault,
+			DefaultValue: contracts.ClaudeModeDefault,
 			Mutable:      true,
 			Order:        OptionOrderPermissionMode,
 			Options: []*leapmuxv1.AvailableOption{
 				{
-					Id:          PermissionModeDefault,
+					Id:          contracts.ClaudeModeDefault,
 					Name:        "Default",
 					Description: "Standard behavior, prompts for dangerous operations.",
 				},
 				{
-					Id:          PermissionModePlan,
+					Id:          contracts.ClaudeModePlan,
 					Name:        "Plan Mode",
 					Description: "Planning mode, no actual tool execution.",
 				},
 				{
-					Id:          PermissionModeAcceptEdits,
+					Id:          contracts.ClaudeModeAcceptEdits,
 					Name:        "Accept Edits",
 					Description: "Auto-accept file edit operations.",
 				},
 				{
-					Id:          PermissionModeBypassPermissions,
+					Id:          contracts.ClaudeModeBypassPermissions,
 					Name:        "Bypass Permissions",
 					Description: "Bypass all permission checks (requires allowDangerouslySkipPermissions).",
 				},
 				{
-					Id:          PermissionModeDontAsk,
+					Id:          contracts.ClaudeModeDontAsk,
 					Name:        "Don't Ask",
 					Description: "Don't prompt for permissions, deny if not pre-approved.",
 				},
 				{
-					Id:          PermissionModeAuto,
+					Id:          contracts.ClaudeModeAuto,
 					Name:        "Auto Mode",
 					Description: "Uses an AI classifier to auto-approve safe tool calls and falls back to prompting for risky ones.",
 				},
@@ -2411,4 +2418,11 @@ func init() {
 	setModelIDNormalizer(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, normalizeClaudeCodeModel)
 	// model + permissionMode (static group) + effort (built from the model catalog).
 	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, OptionIDEffort)
+	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, PermissionDefaults{
+		// A new session asks for Auto Mode; a CLI that cannot enter it degrades to
+		// Default at startup, which is also where a resumed session with no stored mode
+		// lands.
+		NewSession: map[string]string{OptionIDPermissionMode: contracts.ClaudeModeAuto},
+		Fallback:   contracts.ClaudeModeDefault,
+	})
 }

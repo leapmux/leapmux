@@ -11,7 +11,12 @@ import (
 
 // zcodeProvider is the stateless wire-format plugin for ZCode. It answers the
 // questions the service layer asks without a running agent.
-type zcodeProvider struct{}
+// zcodeProvider embeds noopProvider for the interface defaults ZCode does not override,
+// the way every other provider does. The methods below state a ZCode-specific decision;
+// a default ZCode simply takes needs no method here.
+type zcodeProvider struct {
+	noopProvider
+}
 
 // Classify groups ZCode's consolidatable notifications.
 //
@@ -57,9 +62,6 @@ func (zcodeProvider) IsInterrupt(content string) bool {
 	}
 	return msg.Method == ZCodeMethodSessionStop
 }
-
-// DefaultPermissionMode is ZCode's own default session mode.
-func (zcodeProvider) DefaultPermissionMode() string { return contracts.ZCodeDefaultMode }
 
 // IsSelfDisplayingControlTool is false: the app-server does not echo a control
 // answer into its event stream, so the service's synthetic answer row is the only

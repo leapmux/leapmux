@@ -40,6 +40,7 @@ import { ControlRequestActions, ControlRequestContent } from './ControlRequestBa
 import { useControlResponseHandling } from './controlResponseHandling'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { providerFor } from './providers/registry'
+import { permissionPresetAvailable } from './providerSettings'
 import {
   OPTION_ID_MODEL,
   optionGroup,
@@ -227,9 +228,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const currentOptionValues = () => optionValuesFromGroups(props.agent?.optionGroups)
   const bypass = createMemo<BypassController | undefined>(() => {
     const settings = props.agent?.agentProvider
-      ? providerFor(props.agent.agentProvider)?.bypassSettings
+      ? providerFor(props.agent.agentProvider)?.permissionPresets?.bypass
       : undefined
-    return settings && props.onSettingChange
+    return permissionPresetAvailable(settings, props.agent?.optionGroups) && props.onSettingChange
       ? { settings, apply: props.onSettingChange }
       : undefined
   })

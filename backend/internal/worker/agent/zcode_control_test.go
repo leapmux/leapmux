@@ -951,7 +951,8 @@ func TestZCodeProvider_TheFalseCapabilitiesAreDeliberate(t *testing.T) {
 	assert.Empty(t, provider.SyntheticInterruptNotice())
 	_, ok := provider.PermissionModeFromRawInput(`{"mode":"yolo"}`)
 	assert.False(t, ok, "ZCode's mode changes ride session/setMode, never a raw stdin frame")
-	assert.Equal(t, contracts.ZCodeDefaultMode, provider.DefaultPermissionMode())
+	assert.Equal(t, contracts.ZCodeDefaultMode,
+		FallbackPermissionMode(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE))
 }
 
 func TestZCodeProvider_IsRegistered(t *testing.T) {

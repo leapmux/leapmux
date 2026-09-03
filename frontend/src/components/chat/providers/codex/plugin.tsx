@@ -337,7 +337,7 @@ const CODEX_METHOD_TO_SEGMENT_KIND: Record<string, CommandStreamSegment['kind']>
 }
 
 const codexPlugin: Provider = {
-  bypassSettings: CODEX_BYPASS_SETTINGS,
+  permissionPresets: { bypass: CODEX_BYPASS_SETTINGS },
   // Seed a new Codex agent with its default collaboration mode.
   defaultProviderOptions: { [CODEX_OPTION_COLLABORATION_MODE]: DEFAULT_CODEX_COLLABORATION_MODE },
   // Codex accepts an option selection AND a free-text note together, so the
@@ -373,13 +373,6 @@ const codexPlugin: Provider = {
   // Codex's mode axis -- not the approval policy. It reads "Plan Mode" when the
   // workflow sits at its plan value.
   triggerModeGroupKey: CODEX_OPTION_COLLABORATION_MODE,
-  // The settings panel's declarative "Bypass permissions" button: one click
-  // sets network access, sandbox policy, and approval policy together.
-  settingsActions: [{
-    label: 'Bypass permissions',
-    testId: 'codex-bypass-permissions',
-    sets: { ...CODEX_BYPASS_SETTINGS.sets },
-  }],
   classify(input: ClassificationInput, context?: ClassificationContext): MessageCategory {
     const parent = input.parentObject
     const wrapper = input.wrapper

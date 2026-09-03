@@ -31,7 +31,7 @@ describe('pi plugin metadata', () => {
   })
 
   it('does not advertise a permission mode for Pi', () => {
-    expect(plugin.bypassSettings).toBeUndefined()
+    expect(plugin.permissionPresets).toBeUndefined()
   })
 })
 

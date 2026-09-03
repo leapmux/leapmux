@@ -1,0 +1,10 @@
+{
+  "_readme": "Goose permission modes that both the Go provider and the TypeScript plugin use. Goose owns these wire values. The key order carries no meaning: the Go provider decides the order it lists the modes in, and orderModesPreferredFirst applies it. defaultMode is the mode a session with no stored one falls back to; it is Smart Approve rather than Auto because Auto is the mode Goose's own bypass preset selects.",
+  "modes": {
+    "SmartApprove": "smart_approve",
+    "Auto": "auto",
+    "Approve": "approve",
+    "Chat": "chat"
+  },
+  "defaultMode": "SmartApprove"
+}

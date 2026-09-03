@@ -3,6 +3,7 @@ import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput, Provider, SpanRole } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
+import { CLAUDE_DEFAULT_MODE, CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
@@ -366,7 +367,10 @@ function claudeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsa
 }
 
 const claudeCodePlugin: Provider = {
-  bypassSettings: { sets: { permissionMode: 'bypassPermissions' } },
+  permissionPresets: {
+    smart: { sets: { permissionMode: CLAUDE_MODE.Auto } },
+    bypass: { sets: { permissionMode: CLAUDE_MODE.BypassPermissions } },
+  },
   contextBufferPct: CLAUDE_AUTOCOMPACT_BUFFER_PCT,
   attachments: {
     text: true,
@@ -374,7 +378,7 @@ const claudeCodePlugin: Provider = {
     pdf: true,
     binary: false,
   },
-  planMode: buildPlanMode('permissionMode', 'plan', 'default'),
+  planMode: buildPlanMode('permissionMode', CLAUDE_MODE.Plan, CLAUDE_DEFAULT_MODE),
   // The trigger's mode segment shows the permission mode (which is also Claude's
   // plan axis, so it naturally reads "Plan Mode" when in plan).
   triggerModeGroupKey: 'permissionMode',

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
@@ -74,10 +75,11 @@ type Provider interface {
 	// IsInterrupt reports whether raw input contains a provider interrupt
 	// frame. The normal frontend path uses the InterruptAgent RPC instead.
 	IsInterrupt(content string) bool
-	// DefaultPermissionMode returns the provider-native default permission
-	// mode/approval policy -- the value stamped under the "permissionMode"
-	// option id when the agent carries no explicit selection.
-	DefaultPermissionMode() string
+	// ResolveOptionConflicts merges requested values over current values and
+	// settles any pair of this provider's own option values that cannot hold at
+	// once. The service calls it before it writes the optimistic option map, on
+	// both the launch path and the settings-edit path.
+	ResolveOptionConflicts(current, requested optionmap.Map) optionmap.Map
 	// PlanModePermissionMode returns the permission mode an APPROVED plan-mode
 	// transition of the given kind switches the agent to, when the user selected
 	// none in the approval banner.
@@ -293,7 +295,11 @@ func (noopProvider) ListStoredSessions(context.Context, StoredSessionQuery) ([]S
 	return nil, nil
 }
 
-func (noopProvider) DefaultPermissionMode() string { return "" }
+// ResolveOptionConflicts defaults to a plain merge: a provider whose option axes are
+// independent has no conflict to settle.
+func (noopProvider) ResolveOptionConflicts(current, requested optionmap.Map) optionmap.Map {
+	return current.Merge(requested)
+}
 
 // IsSelfDisplayingControlTool defaults to false: a provider that doesn't echo control
 // answers into its own transcript relies on the service layer's synthetic display row.
@@ -404,12 +410,20 @@ func IsInterruptRequest(provider leapmuxv1.AgentProvider, content string) bool {
 // PermissionModeOrDefault normalizes an empty permission mode to the
 // provider-native default. It also treats the historical DB schema default
 // "default" as unset for providers whose native default is different.
+// PermissionModeStoredSentinel is the literal an OLDER agents.options row can carry for a
+// provider that never had a mode named "default". It is a cross-provider DB value, so it
+// is spelled here and NOT as contracts.ClaudeModeDefault: that constant means Claude
+// Code's own Default mode, and reading it while deciding about a Codex or ZCode row would
+// claim Claude's vocabulary governs a provider that never used it. The two strings
+// coincide, and that coincidence is not a shared meaning.
+const PermissionModeStoredSentinel = "default"
+
 func PermissionModeOrDefault(provider leapmuxv1.AgentProvider, mode string) string {
-	defaultMode := ProviderFor(provider).DefaultPermissionMode()
+	defaultMode := FallbackPermissionMode(provider)
 	if mode == "" {
 		return defaultMode
 	}
-	if mode == PermissionModeDefault && defaultMode != "" && defaultMode != PermissionModeDefault {
+	if mode == PermissionModeStoredSentinel && defaultMode != "" && defaultMode != PermissionModeStoredSentinel {
 		return defaultMode
 	}
 	return mode
@@ -500,8 +514,6 @@ func (codexProvider) IsInterrupt(content string) bool {
 	}
 	return msg.Method == "turn/interrupt"
 }
-
-func (codexProvider) DefaultPermissionMode() string { return CodexDefaultApprovalPolicy }
 
 // Codex consumes control responses internally (only a serverRequest/resolved
 // metadata notification returns), so it never self-displays the answer.
@@ -616,8 +628,6 @@ func (claudeProvider) IsInterrupt(content string) bool {
 	return msg.Request.Subtype == "interrupt"
 }
 
-func (claudeProvider) DefaultPermissionMode() string { return PermissionModeDefault }
-
 // Claude re-emits AskUserQuestion / ExitPlanMode answers as a user-envelope
 // tool_result in its own transcript, so the rail marks that ingested row directly
 // (claudeUserEnvelopeMarkType) and no synthetic display row is persisted for them. The single
@@ -643,9 +653,9 @@ func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
 func (claudeProvider) PlanModePermissionMode(kind PlanModeControlKind) string {
 	switch kind {
 	case PlanModeControlEnter:
-		return PermissionModePlan
+		return contracts.ClaudeModePlan
 	case PlanModeControlExit:
-		return PermissionModeAcceptEdits
+		return contracts.ClaudeModeAcceptEdits
 	case PlanModeControlNone, PlanModeControlPrompt:
 		return ""
 	}
@@ -828,8 +838,6 @@ func (piProvider) IsInterrupt(content string) bool {
 	return msg.Type == "abort"
 }
 
-func (piProvider) DefaultPermissionMode() string { return "" }
-
 // Pi consumes extension_ui_response on stdin without echoing the answer to stdout,
 // so it never self-displays a control answer.
 func (piProvider) IsSelfDisplayingControlTool(string) bool { return false }
@@ -853,8 +861,7 @@ func (piProvider) PermissionModeFromRawInput(string) (string, bool) { return "",
 // the no-op embedding.
 type acpProvider struct {
 	noopProvider
-	provider              leapmuxv1.AgentProvider
-	defaultPermissionMode string
+	provider leapmuxv1.AgentProvider
 	// questionRequestContext prunes an OpenCode-protocol `question.asked` request to the minimal
 	// context persisted alongside the native answer (the question headers the frontend labels its
 	// values with). Non-nil ONLY for the ACP providers that speak that question protocol (OpenCode,
@@ -874,6 +881,12 @@ type acpProvider struct {
 	// lives in that provider's own file and is wired here at registration, the
 	// way validateAttachment already is. Nil lists nothing.
 	listStoredSessions func(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
+	// resolveOptionConflicts settles this provider's own mutually exclusive option
+	// values. Non-nil ONLY for Copilot, whose Assisted Approval and Allow All axes
+	// exclude each other; nil merges with no conflict rule. The rule reads that
+	// provider's own vocabulary, so the function lives in that provider's file and is
+	// wired here at registration, the way listStoredSessions above already is.
+	resolveOptionConflicts func(current, requested optionmap.Map) optionmap.Map
 }
 
 // ListStoredSessions dispatches to the reader the registration supplied. The
@@ -896,19 +909,22 @@ func (acpProvider) IsInterrupt(content string) bool {
 	return msg.Method == "session/cancel" || msg.Method == "cancel"
 }
 
-func (p acpProvider) DefaultPermissionMode() string {
-	return p.defaultPermissionMode
+func (p acpProvider) ResolveOptionConflicts(current, requested optionmap.Map) optionmap.Map {
+	if p.resolveOptionConflicts != nil {
+		return p.resolveOptionConflicts(current, requested)
+	}
+	return p.noopProvider.ResolveOptionConflicts(current, requested)
 }
 
 func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, defaultPermissionMode: CursorCLIModeAgent, listStoredSessions: cursorStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent, listStoredSessions: copilotStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, listStoredSessions: cursorStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, listStoredSessions: copilotStoredSessions, resolveOptionConflicts: resolveCopilotOptionConflicts})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: kiloStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: opencodeStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto, listStoredSessions: gooseStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, listStoredSessions: gooseStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, validateAttachment: reasonixValidateAttachment, listStoredSessions: reasonixStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, zcodeProvider{})
 }

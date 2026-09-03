@@ -141,10 +141,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// (model/effort/permissionMode/provider options), filled with provider
 			// defaults for any missing well-known and provider-specific ids.
 			requested := mergeOptions(nil, r.GetOptions())
-			options := resolveProviderDefaults(requested, agentProvider)
-			if options[agent.OptionIDPermissionMode] == "" {
-				options[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(agentProvider, "")
-			}
+			launch := resolveLaunchOptions(requested, agentProvider, r.GetAgentSessionId() != "")
+			options := launch.Options
 			// Reject a spawn whose EXPLICITLY-requested permission mode isn't valid for the provider, so a
 			// typo'd --permission-mode fails fast with a clear error instead of reaching the provider and
 			// dying at startup (Claude fails startup on a bad set_permission_mode). Model and effort are
@@ -271,6 +269,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			agentOpts := svc.baseAgentOptions(agentID, plan.PlannedWorkingDir, agentProvider)
 			agentOpts.ResumeSessionID = r.GetAgentSessionId()
 			agentOpts.Options = options
+			agentOpts.NewSessionDefaultOptionIDs = launch.DefaultedIDs
 			agentOpts.ExtraEnv = remoteEnvs
 
 			agent.TraceStartupPhase(agentID, "before_response")
@@ -1040,7 +1039,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// confirmed settlements and keeps its optimistic value for unresolved axes.
 			sendProtoResponse(sender, &leapmuxv1.UpdateAgentSettingsResponse{
 				OptionSettlements: protoOptionSettlements(settingsResponseSettlements(
-					r.GetSettings().GetOptions(), newOptions, settledOptions, applyResult,
+					oldOptions, r.GetSettings().GetOptions(), newOptions, settledOptions, applyResult,
 				)),
 			})
 		})
@@ -2062,12 +2061,19 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 	return active, true
 }
 
+// applyDBSettingsToAgentOptions overlays the row's stored settings onto launch options.
+// Every relaunch -- a settings restart, a clear-context, a cold start, a plan-execution
+// relaunch -- funnels through here, so this is also where the defaulted-id set is
+// rebuilt: it is derived from the OpenAgent request, which no relaunch has, and a stale
+// or absent set silently disables a provider's launch fallback (Copilot then fails every
+// restart on a CLI that rejects --assisted-approval).
 func applyDBSettingsToAgentOptions(opts agent.Options, dbAgent *db.Agent) agent.Options {
 	o := loadOptions(dbAgent.Options, dbAgent.AgentProvider)
 	if o[agent.OptionIDPermissionMode] == "" {
 		o[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(dbAgent.AgentProvider, "")
 	}
 	opts.Options = o
+	opts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(o, dbAgent.AgentProvider)
 	return opts
 }
 
@@ -2353,12 +2359,16 @@ func applyConfirmedSettlements(options OptionMap, result agent.SettingsApplyResu
 // settingsResponseSettlements returns each requested axis and each axis that
 // changed as a result of the request.
 func settingsResponseSettlements(
+	prior OptionMap,
 	requested map[string]string,
 	optimistic, settled OptionMap,
 	result agent.SettingsApplyResult,
 ) agent.OptionSettlements {
 	ids := make(map[string]struct{}, len(requested))
 	for id := range requested {
+		ids[id] = struct{}{}
+	}
+	for id := range optionsChangeDelta(prior, optimistic) {
 		ids[id] = struct{}{}
 	}
 	for id := range optionsChangeDelta(optimistic, settled) {
@@ -2539,7 +2549,7 @@ func (svc *Service) sanitizeIncomingOptions(agentID string, provider leapmuxv1.A
 	catalog := svc.Agents.OptionGroups(agentID, provider, newModel)
 
 	accepted := svc.acceptExposedOptions(agentID, provider, incoming, catalog)
-	newOptions := mergeOptions(oldOptions, accepted)
+	newOptions := agent.ProviderFor(provider).ResolveOptionConflicts(oldOptions, accepted)
 	resetEffortToAutoIfUnsupported(provider, newOptions, catalog, oldModel, newModel, accepted[agent.OptionIDEffort])
 
 	// Stamp the provider's default permission mode only when it actually has one.
@@ -2630,6 +2640,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
 	agentOpts.ResumeSessionID = resumeSessionID
 	agentOpts.Options = newOptions
+	agentOpts.NewSessionDefaultOptionIDs = defaultSourcedOptionIDs(newOptions, provider)
 
 	sink := svc.Output.NewSink(agentID, provider)
 

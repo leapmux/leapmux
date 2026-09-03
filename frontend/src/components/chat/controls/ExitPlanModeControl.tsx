@@ -95,7 +95,7 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
       onSendFeedback={handleReject}
       negativeAction={{ label: 'Reject', testId: 'plan-reject-btn', onSelect: handleReject }}
       positiveAction={{ label: 'Approve', testId: 'plan-approve-btn', onSelect: handleApprove }}
-      switches={() => planApprovalSwitches(planApproval, props.bypass)}
+      switches={() => planApprovalSwitches(planApproval)}
     />
   )
 }
