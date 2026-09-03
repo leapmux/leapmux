@@ -423,7 +423,7 @@ impl SaveStreamRegistry {
             // branches below.
             Err(err) if err.kind() == io::ErrorKind::NotFound => return,
             Err(err) => {
-                eprintln!("leapmux: sweep read dir {}: {err}", dir.display());
+                crate::shell_log!("sweep read dir {}: {err}", dir.display());
                 return;
             }
         };
@@ -435,7 +435,7 @@ impl SaveStreamRegistry {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
-                    eprintln!("leapmux: sweep read dir entry in {}: {err}", dir.display());
+                    crate::shell_log!("sweep read dir entry in {}: {err}", dir.display());
                     continue;
                 }
             };
@@ -448,7 +448,7 @@ impl SaveStreamRegistry {
             let ft = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(err) => {
-                    eprintln!("leapmux: sweep file type {}: {err}", entry.path().display());
+                    crate::shell_log!("sweep file type {}: {err}", entry.path().display());
                     continue;
                 }
             };
@@ -460,10 +460,7 @@ impl SaveStreamRegistry {
                 continue;
             }
             if let Err(err) = std::fs::remove_file(&path) {
-                eprintln!(
-                    "leapmux: sweep orphan save partial {}: {err}",
-                    path.display()
-                );
+                crate::shell_log!("sweep orphan save partial {}: {err}", path.display());
             }
         }
     }

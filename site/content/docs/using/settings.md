@@ -188,8 +188,6 @@ What LeapMux does when you close the last window: **Hide to the tray** (**Hide t
 
 What LeapMux does when you minimize a window: **Hide to the tray**, or **Keep in the taskbar**. On macOS the two options read **Hide to the menu bar** and **Keep in the Dock**. The built-in default keeps it in the taskbar.
 
-On macOS the window plays its minimize animation into the Dock before the tile disappears. macOS gives an application no way to intercept a minimize before it happens. Every Mac app with this feature shows the same behaviour.
-
 ### Start at login
 
 Registers LeapMux with your operating system's login items, so it starts when you sign in to the computer. Off by default. Some systems ask you to approve the login item the first time. A system that declines it reports so on this row.

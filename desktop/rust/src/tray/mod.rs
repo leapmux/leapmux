@@ -9,9 +9,10 @@
 //! can decide before the webview exists.
 //!
 //! Everything that DECIDES lives in the pure functions below -- `window_action`,
-//! `must_reveal_window`, `launch_visibility`, `is_autostart_launch` -- so the
-//! policy is unit-testable without an `AppHandle` or a real window. The rest of
-//! this module is the adapter that calls them.
+//! `must_reveal_window`, `launch_visibility`, `reachable_visibility`,
+//! `launch_is_applied`, `is_autostart_launch` -- so the policy is unit-testable
+//! without an `AppHandle` or a real window. The rest of this module is the
+//! adapter that calls them.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -373,13 +374,50 @@ pub(crate) fn must_reveal_window(
 /// `launch_visibility` already applies this rule when it decides; the startup
 /// safety net applies it again, because the tray can fail to build between the
 /// decision and the deadline.
-pub(crate) fn reachable_visibility(
-    visibility: LaunchVisibility,
-    tray_enabled: bool,
-) -> LaunchVisibility {
+fn reachable_visibility(visibility: LaunchVisibility, tray_enabled: bool) -> LaunchVisibility {
     match visibility {
         LaunchVisibility::Hidden if !tray_enabled => LaunchVisibility::Normal,
         other => other,
+    }
+}
+
+/// Where the main window sits right now, as the startup safety net reads it.
+///
+/// A struct of NAMED fields rather than two `bool` parameters. The one call
+/// site passes two probes of the same type, and swapped they would compile,
+/// pass every test, and make the net raise a window that is already up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowPlacement {
+    visible: bool,
+    minimized: bool,
+}
+
+/// Whether the window already sits where `visibility` asks, so the startup
+/// safety net has nothing to repair.
+///
+/// A miniaturized macOS window reports `is_visible() == false`. So a bare
+/// visibility probe read a `Minimized` launch as a frontend that never ran, and
+/// the net showed the window and minimized it again. That raised it in front of
+/// the user five seconds into a login they asked to start out of the way. On
+/// macOS the second minimize also runs through the live policy, so a tray icon
+/// that the first push created hid the window instead.
+///
+/// Windows and Linux report an ordinary minimized window as VISIBLE, so they
+/// never reached that fault. They do reach one state that changes here. A
+/// window can be both hidden and minimized on both platforms, because `SW_HIDE`
+/// leaves `WS_MINIMIZE` set and tao's Linux flag survives a hide. The net now
+/// leaves that window alone too.
+///
+/// A probe that fails reads as NOT applied, and the net applies the launch
+/// again. That direction costs one raised window, and the other one costs an
+/// application that the user cannot see. `Hidden` needs no repair, because
+/// `apply_launch_visibility` performs nothing for it, and `reachable_visibility`
+/// already downgraded a launch that no tray icon can undo.
+fn launch_is_applied(visibility: LaunchVisibility, placement: WindowPlacement) -> bool {
+    match visibility {
+        LaunchVisibility::Normal => placement.visible,
+        LaunchVisibility::Minimized => placement.visible || placement.minimized,
+        LaunchVisibility::Hidden => true,
     }
 }
 
@@ -569,6 +607,17 @@ pub(crate) struct TrayState {
     enabled: AtomicBool,
     on_close: AtomicU8,
     on_minimize: AtomicU8,
+    /// Whether the policy hid the window since the process started.
+    ///
+    /// The startup safety net exists for a frontend that never ran, and it
+    /// reads "no window on screen" as that failure. A close or a minimize that
+    /// went to the tray produces the same observation for the opposite reason,
+    /// so the net must leave it alone -- otherwise a user who reaches the tray
+    /// inside the five-second deadline watches the window come straight back.
+    ///
+    /// Only the two policy hides set it, and nothing clears it: once the user
+    /// put the window away, they own it for the rest of the session.
+    hid_to_tray: AtomicBool,
     /// Built at most once and never dropped; visibility is toggled instead.
     icon: Mutex<Option<TrayIcon<tauri::Wry>>>,
     /// Serializes `set_desktop_behavior`. Tauri gives each invocation its own
@@ -589,6 +638,7 @@ impl TrayState {
             enabled: AtomicBool::new(false),
             on_close: AtomicU8::new(defaults.tray_on_close.code()),
             on_minimize: AtomicU8::new(defaults.tray_on_minimize.code()),
+            hid_to_tray: AtomicBool::new(false),
             icon: Mutex::new(None),
             push_lock: tokio::sync::Mutex::new(()),
         }
@@ -597,6 +647,16 @@ impl TrayState {
     /// Whether an icon exists right now.
     pub(crate) fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// Record that the policy put the window in the tray. See `hid_to_tray`.
+    pub(crate) fn record_hide_to_tray(&self) {
+        self.hid_to_tray.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the policy put the window in the tray at any point.
+    fn hid_to_tray(&self) -> bool {
+        self.hid_to_tray.load(Ordering::SeqCst)
     }
 
     fn on_close(&self) -> TrayOnClose {
@@ -784,7 +844,7 @@ fn build_tray(app: &AppHandle) -> Result<TrayIcon<tauri::Wry>, String> {
 pub(crate) fn show_main_window(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        let Some(window) = handle.get_webview_window("main") else {
+        let Some(window) = handle.get_webview_window(crate::MAIN_WINDOW_LABEL) else {
             return;
         };
         let _ = window.unminimize();
@@ -818,7 +878,7 @@ pub(crate) fn apply_launch_visibility(
     visibility: LaunchVisibility,
     geometry: Option<&proto::DesktopConfig>,
 ) {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_webview_window(crate::MAIN_WINDOW_LABEL) else {
         return;
     };
     // No geometry means the safety net, which repairs the visibility alone and
@@ -857,16 +917,32 @@ pub(crate) fn apply_launch_visibility(
 
 /// The policy answer for a minimize, and the hide it may call for.
 ///
-/// The three platform hooks funnel here so the decision is made once.
-pub(crate) fn handle_minimize(state: &TrayState, window: &tauri::WebviewWindow) {
+/// The three platform hooks funnel here, so this function makes the decision
+/// once. Linux and Windows REACT to a minimize that the operating system
+/// already performed. macOS INTERCEPTS the request before AppKit performs it,
+/// and reads the answer to decide whether to let the ordinary minimize proceed.
+///
+/// Reports whether it hid the window.
+pub(crate) fn handle_minimize(state: &TrayState, window: &tauri::WebviewWindow) -> bool {
+    minimize_hides(state, || {
+        state.record_hide_to_tray();
+        let _ = window.hide();
+    })
+}
+
+/// `handle_minimize` with the hide injected.
+///
+/// A test supplies a closure, so both halves stay pinned: the answer that the
+/// macOS override reads to decide `super`, and the hide that the answer stands
+/// for. Tauri's mock runtime pins neither, because its `hide` does nothing and
+/// its `is_visible` always reports `true`. `handle_minimize` therefore keeps no
+/// branch of its own. It holds the one call that no unit test can reach.
+fn minimize_hides(state: &TrayState, hide: impl FnOnce()) -> bool {
     if state.window_action(WindowIntent::Minimized) != WindowAction::HideWindow {
-        return;
+        return false;
     }
-    // macOS must leave the miniaturized state before it leaves the screen; see
-    // `minimize_macos::prepare_hide`.
-    #[cfg(target_os = "macos")]
-    minimize_macos::prepare_hide(window);
-    let _ = window.hide();
+    hide();
+    true
 }
 
 /// Build the tray from the device cache, decide the launch, and register both
@@ -887,11 +963,11 @@ pub(crate) fn install(
         // A tray that cannot be created is not a launch failure. The policy
         // records the effective state, so nothing will hide a window the user
         // could not get back.
-        eprintln!("leapmux-desktop: {err}");
+        crate::shell_log!("{err}");
     }
 
     let visibility = launch_visibility(autostart_launch, behavior.start_minimized, state.is_enabled());
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW_LABEL) {
         install_minimize_hook(&window, state.clone());
     }
     app.manage(state);
@@ -927,15 +1003,9 @@ pub(crate) const STARTUP_REVEAL_DEADLINE: std::time::Duration =
 pub(crate) fn spawn_startup_safety_net(handle: AppHandle, autostart_launch: bool) {
     std::thread::spawn(move || {
         std::thread::sleep(STARTUP_REVEAL_DEADLINE);
-        let Some(window) = handle.get_webview_window("main") else {
+        let Some(window) = handle.get_webview_window(crate::MAIN_WINDOW_LABEL) else {
             return;
         };
-        // The frontend did its job, so the net has nothing to repair. A probe
-        // that fails reads as NOT visible, which reveals: that direction costs
-        // a raised window, and the other one costs an app the user cannot see.
-        if window.is_visible().unwrap_or(false) {
-            return;
-        }
         let visibility = match handle.try_state::<Arc<LaunchState>>() {
             Some(launch) => launch.peek(),
             // `setup` has not decided yet, so this fires while a blocking call
@@ -946,15 +1016,30 @@ pub(crate) fn spawn_startup_safety_net(handle: AppHandle, autostart_launch: bool
             None if autostart_launch => return,
             None => LaunchVisibility::Normal,
         };
-        let tray_enabled = handle
-            .try_state::<Arc<TrayState>>()
-            .is_some_and(|tray| tray.is_enabled());
-        apply_launch_visibility(&handle, reachable_visibility(visibility, tray_enabled), None);
+        let tray = handle.try_state::<Arc<TrayState>>();
+        // The user reached the tray inside the deadline, so the missing window
+        // is their choice and not the failure this net repairs.
+        if tray.as_ref().is_some_and(|tray| tray.hid_to_tray()) {
+            return;
+        }
+        let tray_enabled = tray.is_some_and(|tray| tray.is_enabled());
+        let visibility = reachable_visibility(visibility, tray_enabled);
+        // The launch already arrived where it asked for, so the net has nothing
+        // to repair. This asks about the DECIDED state and not about
+        // visibility alone; see `launch_is_applied`.
+        let placement = WindowPlacement {
+            visible: window.is_visible().unwrap_or(false),
+            minimized: window.is_minimized().unwrap_or(false),
+        };
+        if launch_is_applied(visibility, placement) {
+            return;
+        }
+        apply_launch_visibility(&handle, visibility, None);
     });
 }
 
 /// Install the platform's minimize hook on the main window.
-pub(crate) fn install_minimize_hook(window: &tauri::WebviewWindow, state: Arc<TrayState>) {
+fn install_minimize_hook(window: &tauri::WebviewWindow, state: Arc<TrayState>) {
     #[cfg(target_os = "linux")]
     minimize_linux::install(window, state);
     #[cfg(target_os = "macos")]
@@ -1022,6 +1107,62 @@ mod tests {
         assert_eq!(minimize, WindowAction::LeaveMinimized);
     }
 
+    // The answer the macOS override reads at the moment of the click, from the
+    // LIVE state rather than the free function above, together with the hide
+    // that the answer stands for. The override calls `super` -- the ordinary
+    // minimize -- for every answer except `HideWindow`, so a state that reports
+    // `HideWindow` while no icon exists would hide a window with nothing to
+    // bring it back, and one that reports `LeaveMinimized` after the user chose
+    // the tray would put the window in the Dock they asked to skip.
+    //
+    // The second and third tuple fields are what no other test reaches. An
+    // inverted answer in `minimize_hides` flips the second. A hide that moves
+    // out of the `HideWindow` branch flips the third. Every assertion over
+    // `window_action` alone passes through both mistakes.
+    #[test]
+    fn the_live_state_hides_on_minimize_only_with_an_icon_and_the_tray_choice() {
+        let state = TrayState::new();
+        let choose = |tray_enabled: bool, on_minimize: TrayOnMinimize| {
+            state.enabled.store(tray_enabled, Ordering::SeqCst);
+            // `store_policy` writes the two choices and nothing else, so the
+            // icon's presence is the separate store above.
+            state.store_policy(&WindowBehavior {
+                tray_on_minimize: on_minimize,
+                ..WindowBehavior::default()
+            });
+            let mut hid = false;
+            let answer = state.window_action(WindowIntent::Minimized);
+            (answer, minimize_hides(&state, || hid = true), hid)
+        };
+
+        assert_eq!(
+            choose(true, TrayOnMinimize::Tray),
+            (WindowAction::HideWindow, true, true)
+        );
+
+        // The three answers that must leave the ordinary minimize alone. Each
+        // one reaches `super` on macOS, so the window still goes to the Dock.
+        assert_eq!(
+            choose(true, TrayOnMinimize::Taskbar),
+            (WindowAction::LeaveMinimized, false, false)
+        );
+        assert_eq!(
+            choose(false, TrayOnMinimize::Tray),
+            (WindowAction::LeaveMinimized, false, false)
+        );
+        assert_eq!(
+            choose(false, TrayOnMinimize::Taskbar),
+            (WindowAction::LeaveMinimized, false, false)
+        );
+
+        // And back, because the override reads the state on every click. A
+        // preference the user changes mid-session must reach the next minimize.
+        assert_eq!(
+            choose(true, TrayOnMinimize::Tray),
+            (WindowAction::HideWindow, true, true)
+        );
+    }
+
     #[test]
     fn disabling_the_tray_reveals_a_hidden_window() {
         assert!(must_reveal_window(false, false, false));
@@ -1071,6 +1212,98 @@ mod tests {
                 assert_eq!(reachable_visibility(launch, tray), launch);
             }
         }
+    }
+
+    fn placement(visible: bool, minimized: bool) -> WindowPlacement {
+        WindowPlacement { visible, minimized }
+    }
+
+    // The case the safety net used to get wrong. A miniaturized macOS window
+    // reports `is_visible() == false`, so a bare visibility probe read a
+    // `Minimized` launch as a frontend that never ran, and the net raised the
+    // window in front of the user and minimized it again five seconds into a
+    // login they asked to start out of the way.
+    #[test]
+    fn a_minimized_launch_that_reached_the_dock_needs_no_repair() {
+        assert!(launch_is_applied(
+            LaunchVisibility::Minimized,
+            placement(false, true)
+        ));
+    }
+
+    #[test]
+    fn a_launch_that_left_no_window_anywhere_needs_repair() {
+        assert!(!launch_is_applied(
+            LaunchVisibility::Minimized,
+            placement(false, false)
+        ));
+        assert!(!launch_is_applied(
+            LaunchVisibility::Normal,
+            placement(false, false)
+        ));
+        // A minimized window is not a `Normal` launch either: the frontend
+        // never showed it, and the net owes the user the window they asked for.
+        assert!(!launch_is_applied(
+            LaunchVisibility::Normal,
+            placement(false, true)
+        ));
+    }
+
+    #[test]
+    fn a_visible_window_satisfies_every_launch() {
+        for launch in [
+            LaunchVisibility::Normal,
+            LaunchVisibility::Minimized,
+            LaunchVisibility::Hidden,
+        ] {
+            assert!(
+                launch_is_applied(launch, placement(true, false)),
+                "{launch:?} must leave a visible window alone"
+            );
+        }
+    }
+
+    // `Hidden` survives `reachable_visibility` only with a tray icon to come
+    // back from, and `apply_launch_visibility` performs nothing for it, so the
+    // net must never touch that window whatever the probes report.
+    #[test]
+    fn a_hidden_launch_never_asks_the_net_for_anything() {
+        for visible in [true, false] {
+            for minimized in [true, false] {
+                assert!(launch_is_applied(
+                    LaunchVisibility::Hidden,
+                    placement(visible, minimized)
+                ));
+            }
+        }
+    }
+
+    // The other reason a window can be off screen inside the deadline: the user
+    // reached the tray. The net must leave that window alone, or it comes
+    // straight back and the preference reads as broken.
+    #[test]
+    fn a_hide_to_the_tray_is_recorded_for_the_startup_safety_net() {
+        let state = TrayState::new();
+        assert!(!state.hid_to_tray(), "a fresh state hid nothing");
+
+        // The choice that leaves the ordinary minimize alone records nothing.
+        state.enabled.store(true, Ordering::SeqCst);
+        state.store_policy(&WindowBehavior {
+            tray_on_minimize: TrayOnMinimize::Taskbar,
+            ..WindowBehavior::default()
+        });
+        assert!(!minimize_hides(&state, || state.record_hide_to_tray()));
+        assert!(!state.hid_to_tray());
+
+        // The choice that hides records it, and nothing clears it afterwards.
+        state.store_policy(&WindowBehavior {
+            tray_on_minimize: TrayOnMinimize::Tray,
+            ..WindowBehavior::default()
+        });
+        assert!(minimize_hides(&state, || state.record_hide_to_tray()));
+        assert!(state.hid_to_tray());
+        state.enabled.store(false, Ordering::SeqCst);
+        assert!(state.hid_to_tray(), "the user still owns the window");
     }
 
     // The stale-cache repair, which `must_reveal_window` consumes. The launch

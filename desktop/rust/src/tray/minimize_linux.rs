@@ -45,7 +45,9 @@ pub(crate) fn install(window: &WebviewWindow, state: Arc<TrayState>) {
         // main thread and unmaps the widget, and unmapping a widget from
         // inside its own state-event emission asks GTK to tear down what it is
         // still dispatching.
-        glib::idle_add_local_once(move || super::handle_minimize(&state, &webview));
+        glib::idle_add_local_once(move || {
+            super::handle_minimize(&state, &webview);
+        });
         glib::Propagation::Proceed
     });
 }

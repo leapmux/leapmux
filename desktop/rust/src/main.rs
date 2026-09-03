@@ -102,6 +102,44 @@ const SHOW_ABOUT_MENU_ID: &str = "show-about";
 const SHOW_PREFERENCES_MENU_ID: &str = "show-preferences";
 #[cfg(target_os = "macos")]
 const OPEN_WEB_INSPECTOR_MENU_ID: &str = "open-web-inspector";
+/// Write one diagnostic line from the shell to standard error.
+///
+/// ONE prefix for the whole binary, so `grep leapmux-desktop:` returns the
+/// whole log. Before this macro the same program wrote four spellings --
+/// `leapmux-desktop:`, `leapmux:`, and three lines with no prefix at all -- and
+/// `grep` on any one of them found a part of the log and hid the rest.
+///
+/// `desktop-sidecar:` in `sidecar.rs` is the deliberate exception, and it must
+/// stay: it marks a line that the SIDECAR wrote, which is another program's
+/// output that this shell only forwards.
+///
+/// A macro and not a function, because `eprintln!` takes format arguments that
+/// borrow from the call site.
+macro_rules! shell_log {
+    ($($arg:tt)*) => {
+        eprintln!("leapmux-desktop: {}", format_args!($($arg)*))
+    };
+}
+pub(crate) use shell_log;
+
+/// The label of the one window that `tauri.conf.json` declares.
+///
+/// Every lookup and every window-event filter in the shell spells it through
+/// this constant, so a typo at a call site is a compile error rather than a
+/// hook that never fires. Two JSON files hold the same text and no Rust
+/// constant can bind either: `tauri.conf.json` declares the window, and
+/// `capabilities/default.json` lists `"windows": ["main"]`, which is what gives
+/// that window its `core:window:*` permissions. A rename must edit all three,
+/// and a capability that matches no window denies every window command from
+/// the webview at run time, with nothing to see at compile time.
+///
+/// It is NOT contract material. The webview reaches its own window with
+/// `getCurrentWindow()` and spells no label, so the value crosses no language
+/// boundary.
+///
+/// Not to be confused with `tray::TRAY_ID`, which carries the same text for the
+/// tray icon.
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 pub(crate) const SIDECAR_PROTOCOL_VERSION: &str = "1";
 pub(crate) const DEV_SIDECAR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 // CONNECT_TIMEOUT is the outer loop budget for "endpoint reachable +
@@ -275,8 +313,8 @@ struct TunnelConfigInput {
 fn recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| {
         if !POISON_WARNED.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "warning: recovered a poisoned mutex; the desktop shell is in a degraded state (see issue #277)"
+            shell_log!(
+                "recovered a poisoned mutex; the desktop shell is in a degraded state (see issue #277)"
             );
         }
         e.into_inner()
@@ -339,7 +377,7 @@ fn start_sidecar_reader_thread(
                 Ok(frame) => handle_sidecar_frame(&app_handle, &pending, frame),
                 Err(err) => {
                     if err.kind() != io::ErrorKind::UnexpectedEof {
-                        eprintln!("sidecar frame read error: {err}");
+                        crate::shell_log!("sidecar frame read error: {err}");
                     }
                     recover(&pending).clear();
                     break;
@@ -367,7 +405,7 @@ fn start_sidecar_writer_thread(
         let mut writer = writer;
         while let Some(frame) = rx.blocking_recv() {
             if let Err(err) = write_frame(&mut writer, &frame) {
-                eprintln!("sidecar frame write error: {err}");
+                crate::shell_log!("sidecar frame write error: {err}");
                 break;
             }
         }
@@ -527,7 +565,7 @@ impl DesktopShell {
 
     fn set_zoom(&self, zoom: f64) -> Result<(), String> {
         let clamped = zoom.clamp(0.5, 3.0);
-        if let Some(window) = self.app_handle.get_webview_window("main") {
+        if let Some(window) = self.app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
             window
                 .set_zoom(clamped)
                 .map_err(|err| format!("set webview zoom: {err}"))?;
@@ -1366,8 +1404,8 @@ async fn set_desktop_behavior(
     let _serialized = state.push_lock.lock().await;
     let mut refusals: Vec<tray::BehaviorRefusal> = Vec::new();
     let mut record = |refusal: tray::BehaviorRefusal| {
-        eprintln!(
-            "leapmux-desktop: the system refused {}: {}",
+        shell_log!(
+            "the system refused {}: {}",
             refusal.setting, refusal.message
         );
         refusals.push(refusal);
@@ -1389,7 +1427,7 @@ async fn set_desktop_behavior(
     // the other way round leaves a user with no tray and no window, which is
     // the exact state this step exists to prevent.
     let visible = app
-        .get_webview_window("main")
+        .get_webview_window(MAIN_WINDOW_LABEL)
         .and_then(|window| window.is_visible().ok())
         .unwrap_or(false);
     let launch_was_wrong = launch.launch_was_wrong(behavior.start_minimized, state.is_enabled());
@@ -1417,7 +1455,7 @@ async fn set_desktop_behavior(
     //    `window()`, so the login item cannot reach the file even by accident:
     //    the cached type does not carry that field at all.
     if let Err(err) = shell.save_desktop_behavior(behavior.window()).await {
-        eprintln!("leapmux-desktop: cache the window behaviour: {err}");
+        crate::shell_log!("cache the window behaviour: {err}");
     }
 
     if refusals.is_empty() {
@@ -1551,7 +1589,7 @@ fn reset_webview_zoom(shell: State<'_, Arc<DesktopShell>>) -> Result<(), String>
 // --- Window/app helpers ---
 
 fn open_main_web_inspector(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         window.open_devtools();
     }
 }
@@ -1757,7 +1795,7 @@ fn main() {
             let _ = (app, event);
         })
         .on_window_event(|window, event| {
-            if window.label() != "main" {
+            if window.label() != MAIN_WINDOW_LABEL {
                 return;
             }
 
@@ -1781,6 +1819,10 @@ fn main() {
                             // HIDE, never close: closing destroys the webview
                             // and every open tab's client state with it.
                             api.prevent_close();
+                            // Recorded, so the startup safety net does not read
+                            // this window as a frontend that never ran and pull
+                            // it back five seconds in.
+                            state.record_hide_to_tray();
                             let _ = window.hide();
                             return;
                         }
@@ -1804,7 +1846,7 @@ fn main() {
             // one. Drop the native decorations so the frontend can draw its
             // own drag region and window controls end-to-end.
             #[cfg(any(target_os = "linux", target_os = "windows"))]
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 let _ = w.set_decorations(false);
             }
 
@@ -1812,7 +1854,7 @@ fn main() {
             // ProseMirror can receive Tab/Shift+Tab keydowns. See
             // `tabfix_linux.rs` for the rationale.
             #[cfg(target_os = "linux")]
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 tabfix_linux::install(&w);
             }
 
@@ -1873,7 +1915,7 @@ fn main() {
 
             let runtime_state = shell.runtime_state();
             if runtime_state.connected && runtime_state.shell_mode == ShellMode::Distributed {
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                     let target_url = Url::parse(&runtime_state.hub_url)
                         .map_err(|err| format!("parse reattach hub url: {err}"))?;
                     window
@@ -1975,16 +2017,42 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building LeapMux desktop")
         .run(|app, event| {
-            if let RunEvent::ExitRequested { api, .. } = event {
-                if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
-                    if !shell.exit_in_progress.load(Ordering::SeqCst) {
-                        // The save handles are dropped inside `handle_app_exit`,
-                        // which every exit route reaches -- including the ones
-                        // that latch `exit_in_progress` before this arm runs.
-                        api.prevent_exit();
-                        handle_app_exit(shell.inner().clone());
+            match event {
+                RunEvent::ExitRequested { api, .. } => {
+                    if let Some(shell) = app.try_state::<Arc<DesktopShell>>() {
+                        if !shell.exit_in_progress.load(Ordering::SeqCst) {
+                            // The save handles are dropped inside
+                            // `handle_app_exit`, which every exit route reaches
+                            // -- including the ones that latch
+                            // `exit_in_progress` before this arm runs.
+                            api.prevent_exit();
+                            handle_app_exit(shell.inner().clone());
+                        }
                     }
                 }
+                // macOS: a click on the Dock icon of an application with no
+                // visible window. LeapMux hides its window for a close and for
+                // a minimize, and it registers no `LSUIElement`, so the Dock
+                // icon stays. AppKit's own default does nothing for a window
+                // that `orderOut:` took off the screen list, which leaves the
+                // icon looking broken and the tray icon as the only route back.
+                //
+                // `show_main_window` is the same entry point the tray click,
+                // the tray menu item and the single-instance callback share, so
+                // every request that the operating system makes for this
+                // application reveals the window by one rule.
+                //
+                // A login launch that asked to start hidden keeps its window
+                // hidden. AppKit sends this for a RE-open and not for the first
+                // launch, which a probe confirmed: a delegate that implements
+                // `applicationShouldHandleReopen:hasVisibleWindows:` receives
+                // nothing while the application starts with no window.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } if !has_visible_windows => tray::show_main_window(app),
+                _ => {}
             }
         });
 }

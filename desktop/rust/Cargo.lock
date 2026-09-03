@@ -2149,14 +2149,11 @@ name = "leapmux-desktop"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "block2",
  "dirs 6.0.0",
  "gdk",
  "gtk",
  "libc",
  "objc2",
- "objc2-app-kit",
- "objc2-foundation",
  "prost",
  "prost-build",
  "serde",
