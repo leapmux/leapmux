@@ -33,47 +33,77 @@
 //! hides the window and skips `super`, which leaves it off screen and NOT
 //! miniaturized: no Dock tile, and no minimize animation to undo.
 //!
-//! `install` builds the subclass at RUNTIME and sets it on the one main
-//! window, so tao's own window class stays the superclass and keeps its
-//! overrides. A swizzle of `-[NSWindow miniaturize:]` on `NSWindow` itself
-//! would divert every window in the process, including the panels that AppKit
-//! opens, and would then need a check on the receiver to exclude them again.
+//! `install` adds the method to the window's OWN class -- tao's `TaoWindow`,
+//! which tao registers once for the whole process -- and the override compares
+//! the receiver against the main window, so the policy reaches that window
+//! alone. Two other places to put it look simpler and are not.
+//!
+//! A swizzle of `-[NSWindow miniaturize:]` diverts every window in the process,
+//! including the panels that AppKit opens, and needs the same receiver check
+//! anyway.
+//!
+//! A runtime SUBCLASS set on the instance with `object_setClass` crashes the
+//! process, and this module used to do exactly that. Something inside AppKit
+//! observes a key path on the main window before `tray::install` runs, so the
+//! window's live class is a generated `NSKVONotifying_TaoWindow` by then, and
+//! a subclass of it inherits `-_isKVOA`. Foundation reads that method to decide whether a class
+//! is one of its own. When it answers yes,
+//! `_NSKVONotifyingOriginalClassForIsa` takes the original class out of the
+//! class's INDEXED IVARS, which only a class that `objc_allocateClassPair`
+//! reserved the space for carries. A subclass built without them reads nil
+//! there, `-[NSKeyValueContainerClass initWithOriginalClass:]` caches
+//! `class_getMethodImplementation(nil, @selector(observationInfo))`, which is
+//! NULL, and the next observer that AppKit registers on the window calls that
+//! NULL: a jump to address 0 during the first layout of the window.
+//!
+//! A class that the window already inherits from has none of that. KVO puts its
+//! generated subclass ABOVE the override, which keeps the override reachable,
+//! and the restore that removes the generated subclass cannot take the override
+//! with it.
 
 use std::ffi::CStr;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::sync::{Arc, OnceLock};
 
-use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::ffi::class_addMethod;
+use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{msg_send, sel};
 use tauri::WebviewWindow;
 
 use super::TrayState;
 
-/// The name of the runtime subclass. An Objective-C class name is a
-/// process-wide identifier that every loaded framework shares, so it carries
-/// the product prefix.
-const SUBCLASS_NAME: &CStr = c"LeapMuxMainWindow";
-
-/// The prefix that Key-Value Observing (KVO) gives to the class it generates.
-/// See the diagnostic in `install`.
-const KVO_CLASS_PREFIX: &[u8] = b"NSKVONotifying_";
+/// The Objective-C type encoding of `-[NSWindow miniaturize:]`: no return
+/// value, an object receiver, the selector, and one object argument.
+///
+/// Spelled out because the method goes on a class that already exists, which
+/// `class_addMethod` takes an encoding for. objc2 derives one from the Rust
+/// types instead, but only inside the class builder, and a builder makes a new
+/// class. `the_override_matches_the_signature_of_nswindow_miniaturize`
+/// compares what this registers against AppKit's own encoding.
+const MINIATURIZE_TYPES: &CStr = c"v@:@";
 
 /// What the override needs to answer a minimize.
 ///
-/// A process global, because what it describes is one. `build_subclass`
-/// answers `None` for a second install, so at most one window in the process
-/// ever carries the override, and the fields below always describe THAT
-/// window.
+/// A process global, because what it describes is one. `install` returns
+/// before it publishes a second hook, so the fields always describe the one
+/// window that it hooked.
 struct MinimizeHook {
-    /// The class that the window carried before `install` replaced it, which
-    /// is the target of `super`.
+    /// Where a `super` send starts: the class ABOVE the one that carries the
+    /// override, which holds the ordinary minimize.
     ///
-    /// Recorded here, never read off the receiver. A KVO observer on the window
-    /// makes the receiver's class a further subclass of this module's own, and
-    /// `this.class().superclass()` would then answer that subclass and send
-    /// `miniaturize:` straight back into this module.
-    superclass: &'static AnyClass,
+    /// Recorded here, never read off the receiver. A KVO observer on the
+    /// window makes the receiver's live class a subclass of the one that
+    /// carries the override, and a `super` relative to the receiver's own
+    /// class sends `miniaturize:` straight back into this module.
+    super_class: &'static AnyClass,
+    /// The address of the window that the policy applies to.
+    ///
+    /// Every tao window in the process shares the class that carries the
+    /// override, so the override must recognise its own window. An address
+    /// identifies it: tauri owns the main window for the length of the
+    /// process, and `answer` holds a `WebviewWindow` for it besides.
+    window: usize,
     /// Answers one minimize on the window that `install` hooked. Reports
     /// whether it hid that window.
     ///
@@ -97,8 +127,9 @@ static HOOK: OnceLock<MinimizeHook> = OnceLock::new();
 /// MACHINE causes, which varies per user and needs the message on the
 /// Preferences row. Every branch here is impossible by construction instead:
 /// `tauri.conf.json` declares one window, `tray::install` calls this once for
-/// the process, and no test spends the class name. And the fallback strands
-/// nobody, because the ordinary minimize leaves a window in the Dock.
+/// the process, and tao's window class answers no `miniaturize:` of its own.
+/// And the fallback strands nobody, because the ordinary minimize leaves a
+/// window in the Dock.
 pub(crate) fn install(window: &WebviewWindow, state: Arc<TrayState>) {
     let Ok(ns_window) = window.ns_window() else {
         crate::shell_log!("the main window has no NSWindow; a minimize cannot hide it");
@@ -112,108 +143,156 @@ pub(crate) fn install(window: &WebviewWindow, state: Arc<TrayState>) {
     // the length of the process, and `install` runs on the main thread, where
     // every call below belongs.
     let object = unsafe { object.as_ref() };
-    let superclass = object.class();
-
-    // `AnyObject::class` is `object_getClass`, so it answers the LIVE class. A
-    // KVO observer that AppKit added before this point makes that class a
-    // generated subclass. The runtime then restores the original class when the
-    // last observer goes away, and takes this override with it.
-    //
-    // This reports the condition and installs anyway. No first-party code
-    // observes a key path on the NSWindow, the override works until that
-    // restore, and a message is the only way anybody finds the cause afterwards.
-    if superclass.name().to_bytes().starts_with(KVO_CLASS_PREFIX) {
+    let Some(target) = window_class(object) else {
+        return;
+    };
+    if defines_miniaturize(target) {
+        // Either `install` ran twice, or another party overrode the method on
+        // the same class. Either way this window keeps the ordinary minimize.
         crate::shell_log!(
-            "the main window is under Key-Value Observing as {}; \
-             a minimize stops hiding it if that observer goes away",
-            superclass.name().to_string_lossy()
+            "{} answers miniaturize: already; a minimize cannot hide the window",
+            target.name().to_string_lossy()
         );
+        return;
     }
-
-    let Some(subclass) = build_subclass(SUBCLASS_NAME, superclass) else {
-        // The name is taken, so either `install` ran twice or another bundle
-        // registered it. Either way this window keeps the ordinary minimize.
+    let Some(super_class) = target.superclass() else {
+        // Impossible: `target` inherits `miniaturize:` from AppKit, so it has
+        // a superclass. A root class would leave the override with nothing to
+        // defer to.
         crate::shell_log!(
-            "the {} class already exists; a minimize cannot hide the window",
-            SUBCLASS_NAME.to_string_lossy()
+            "{} is a root class; a minimize cannot hide the window",
+            target.name().to_string_lossy()
         );
         return;
     };
-    // `install` publishes the hook BEFORE it changes the class, so a window
-    // that carries the subclass never finds the hook missing.
-    let window = window.clone();
+    // `install` publishes the hook BEFORE it adds the method, so a minimize
+    // that reaches the override never finds the hook missing.
+    let hooked = window.clone();
     if HOOK
         .set(MinimizeHook {
-            superclass,
-            answer: Box::new(move || super::handle_minimize(&state, &window)),
+            super_class,
+            window: ptr::from_ref(object) as usize,
+            answer: Box::new(move || super::handle_minimize(&state, &hooked)),
         })
         .is_err()
     {
-        // Impossible: `build_subclass` answers `None` for a second install, so
-        // a second call returns above. The arm stays, because `OnceLock::set`
-        // reports a `Result` that nothing else can rule out. It returns before
-        // the class changes, so the window keeps the ordinary minimize.
+        // Impossible: a second install finds the override on the class and
+        // returns above. The arm stays, because `OnceLock::set` reports a
+        // `Result` that nothing else can rule out. It returns before the method
+        // goes on the class, so the window keeps the ordinary minimize.
         crate::shell_log!("a minimize override is already published; this one is dropped");
         return;
     }
-    // SAFETY: `build_subclass` built `subclass` with this window's own class as
-    // its superclass and added no instance variable, so the two classes have
-    // the same instance size and the object keeps its layout.
-    let replaced = unsafe { AnyObject::set_class(object, subclass) };
-    if !std::ptr::eq(replaced, superclass) {
-        // objc2 asks the caller to check what `set_class` replaced. A different
-        // class here means that something swizzled the window between the read
-        // above and this line. `super` then points at the class that the other
-        // party expected to keep.
+    if !add_override(target) {
+        // Impossible for the same reason: the runtime refuses `class_addMethod`
+        // only for a method that the class defines already. The published hook
+        // is inert without a method to reach it.
         crate::shell_log!(
-            "the main window changed class to {} during install; \
-             a minimize may not hide it",
-            replaced.name().to_string_lossy()
+            "the runtime refused the miniaturize: override on {}; \
+             a minimize cannot hide the window",
+            target.name().to_string_lossy()
         );
     }
 }
 
-/// Build the subclass that overrides `miniaturize:`.
+/// The class to put the override on: the class the window was CREATED as.
 ///
-/// `superclass` is the class that the window carries right now, which is tao's,
-/// so the subclass inherits every override that tao installed.
+/// `-class` and NOT `object_getClass`. AppKit observes key paths on the main
+/// window, so the live class is a subclass that Key-Value Observing generated,
+/// and the runtime removes that subclass again when the last observer goes
+/// away. `-class` answers past it, which is where an override survives.
 ///
-/// `name` is `SUBCLASS_NAME` in the shell. Each test passes its own name,
-/// because `objc_registerClassPair` cannot be undone and a name registers once
-/// for the whole process.
+/// Answers `None` when the window does not inherit from the class it names.
+/// `-class` is a method like any other, and an override that answers an
+/// unrelated class would put `miniaturize:` on a class whose own instances
+/// then run the policy for a window they are not.
+fn window_class(object: &AnyObject) -> Option<&'static AnyClass> {
+    // SAFETY: `-class` takes no argument and answers a class object, and every
+    // registered class lives for the length of the process.
+    let created: Option<&'static AnyClass> = unsafe {
+        let class: *const AnyClass = msg_send![object, class];
+        class.as_ref()
+    };
+    let Some(created) = created else {
+        crate::shell_log!("the main window answered no class; a minimize cannot hide it");
+        return None;
+    };
+    let live = object.class();
+    if !inherits_from(live, created) {
+        crate::shell_log!(
+            "the main window is a {} and answers {}, which it does not inherit from; \
+             a minimize cannot hide it",
+            live.name().to_string_lossy(),
+            created.name().to_string_lossy()
+        );
+        return None;
+    }
+    Some(created)
+}
+
+/// Whether `class` is `ancestor`, or descends from it.
+fn inherits_from(class: &AnyClass, ancestor: &AnyClass) -> bool {
+    let mut next = Some(class);
+    while let Some(class) = next {
+        if ptr::eq(class, ancestor) {
+            return true;
+        }
+        next = class.superclass();
+    }
+    false
+}
+
+/// Whether `class` defines `miniaturize:` ITSELF.
 ///
-/// Answers `None` when the runtime refuses the name, which includes a second
-/// install. That refusal is what keeps one window, and one only, carrying the
-/// override.
-fn build_subclass(name: &CStr, superclass: &AnyClass) -> Option<&'static AnyClass> {
-    let mut builder = ClassBuilder::new(name, superclass)?;
-    // SAFETY: the function has the shape that `-[NSWindow miniaturize:]` is
-    // called with -- an object receiver, the selector, one object argument, and
-    // no return value. `the_override_matches_the_signature_of_nswindow_miniaturize`
-    // compares the registered encoding against AppKit's own, because objc2
-    // cannot: wry turns on `objc2/disable-encoding-assertions`, and cargo
-    // unifies that feature onto the one objc2 build that this crate links, so
-    // `add_method` checks the argument COUNT and nothing else.
-    //
-    // The argument types are placeholders on purpose. The receiver spelled
-    // `&AnyObject` makes the cast a `for<'a>` function pointer, and
-    // `MethodImplementation` is implemented for one specific lifetime, so the
-    // named form fails to compile with "not general enough".
+/// `instance_method` is `class_getInstanceMethod`, which searches the
+/// superclasses too, and every window class inherits AppKit's own
+/// implementation. `instance_methods` is `class_copyMethodList`, which lists
+/// the class's own methods alone.
+fn defines_miniaturize(class: &AnyClass) -> bool {
+    class
+        .instance_methods()
+        .iter()
+        .any(|method| method.name() == sel!(miniaturize:))
+}
+
+/// Add the `miniaturize:` override to `class`. Reports whether the runtime
+/// accepted it, which it refuses for a class that defines the method already.
+fn add_override(class: &AnyClass) -> bool {
+    // SAFETY: `class` is a registered class, and `MINIATURIZE_TYPES` states
+    // the arguments and the return value that `miniaturize` takes.
     unsafe {
-        builder.add_method(
+        class_addMethod(
+            ptr::from_ref(class).cast_mut(),
             sel!(miniaturize:),
-            miniaturize as extern "C-unwind" fn(_, _, _),
-        );
+            miniaturize_imp(),
+            MINIATURIZE_TYPES.as_ptr(),
+        )
     }
-    Some(builder.register())
+    .as_bool()
 }
 
-/// `-[NSWindow miniaturize:]` on the main window.
+/// The override, as the untyped function pointer that `class_addMethod` takes.
 ///
-/// `super` runs for every answer except "hide". The preference keeps the window
-/// in the Dock, the tray failed to build, or the answer itself failed. Each one
-/// means the ordinary minimize, which is the safe direction, because the user
-/// keeps a window they can reach.
+/// objc2 builds one from a typed function inside its class builder, and that
+/// path is closed here: a builder makes a new class, and this method goes on a
+/// class that exists.
+fn miniaturize_imp() -> Imp {
+    // SAFETY: `Imp` is the same `extern "C-unwind"` function pointer with its
+    // signature erased. The runtime calls it with the arguments that
+    // `MINIATURIZE_TYPES` declares, and those are the ones `miniaturize` takes.
+    unsafe {
+        std::mem::transmute::<extern "C-unwind" fn(&AnyObject, Sel, *mut AnyObject), Imp>(
+            miniaturize,
+        )
+    }
+}
+
+/// `-[NSWindow miniaturize:]` on tao's window class.
+///
+/// `super` runs for every answer except "hide". The receiver is another
+/// window, the preference keeps the window in the Dock, the tray failed to
+/// build, or the answer itself failed. Each one means the ordinary minimize,
+/// which is the safe direction, because the user keeps a window they can reach.
 ///
 /// The answer runs inside `catch_unwind`, because a panic that unwinds into the
 /// AppKit frame that sent `miniaturize:` skips every Objective-C cleanup on the
@@ -221,43 +300,45 @@ fn build_subclass(name: &CStr, superclass: &AnyClass) -> Option<&'static AnyClas
 /// same barrier at each of its own callbacks (`stop_app_on_panic`). A panic
 /// reads as "not hidden", so the ordinary minimize proceeds.
 extern "C-unwind" fn miniaturize(this: &AnyObject, _cmd: Sel, sender: *mut AnyObject) {
-    let hook = HOOK.get();
-    let hidden = hook.is_some_and(|hook| {
-        catch_unwind(AssertUnwindSafe(|| (hook.answer)())).unwrap_or_else(|_| {
-            crate::shell_log!("the minimize policy panicked; the window minimizes as usual");
-            false
-        })
-    });
-    if hidden {
-        return;
-    }
-    // The hook holds the class that `install` replaced. `install` publishes the
-    // hook before it changes the class, so no window can carry this override
-    // without one -- but a missing hook must still reach `super`, and the
-    // registered subclass knows the same class by name.
-    let Some(superclass) = hook
-        .map(|hook| hook.superclass)
-        .or_else(|| AnyClass::get(SUBCLASS_NAME).and_then(AnyClass::superclass))
-    else {
+    let Some(hook) = HOOK.get() else {
+        // Impossible: `install` publishes the hook before it adds the method,
+        // and a `OnceLock` never empties. Without one there is no class to
+        // send `super` to, so this window does not minimize at all.
+        crate::shell_log!("a minimize arrived before the override was published; it does nothing");
         return;
     };
-    // SAFETY: `superclass` is the class that the window carried before
-    // `install` replaced it, and `miniaturize:` takes one object and returns
-    // nothing.
-    let _: () = unsafe { msg_send![super(this, superclass), miniaturize: sender] };
+    // Every tao window in the process shares the class that carries this
+    // override. The main window is the one with a policy, so the rest fall
+    // through to the ordinary minimize.
+    if ptr::from_ref(this) as usize == hook.window {
+        let hidden = catch_unwind(AssertUnwindSafe(|| (hook.answer)())).unwrap_or_else(|_| {
+            crate::shell_log!("the minimize policy panicked; the window minimizes as usual");
+            false
+        });
+        if hidden {
+            return;
+        }
+    }
+    // SAFETY: the lookup starts at `super_class`, which is above the class
+    // that carries this method, so it finds the ordinary minimize and not this
+    // function again. `miniaturize:` takes one object and returns nothing.
+    let _: () = unsafe { msg_send![super(this, hook.super_class), miniaturize: sender] };
 }
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CStr;
+    use std::ffi::{c_void, CStr};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use objc2::rc::Retained;
-    use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, NSObject, Sel};
+    use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Method, NSObject, Sel};
     use objc2::{msg_send, sel, ClassType};
 
-    use super::{build_subclass, MinimizeHook, HOOK, SUBCLASS_NAME};
+    use super::{add_override, defines_miniaturize, window_class, MinimizeHook, HOOK};
+
+    /// The prefix that Key-Value Observing gives to the class it generates.
+    const KVO_CLASS_PREFIX: &[u8] = b"NSKVONotifying_";
 
     /// How many times a stand-in superclass answered `miniaturize:`.
     static SUPER_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -270,78 +351,179 @@ mod tests {
         SUPER_CALLS.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// A stand-in for tao's window class: it answers `miniaturize:` and counts.
+    extern "C-unwind" fn nil_value(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+        ptr::null_mut()
+    }
+
+    /// A stand-in for AppKit's `NSWindow`: it answers `miniaturize:` and counts,
+    /// and it answers the key path `foo`, which Key-Value Observing needs to
+    /// observe an instance.
     ///
     /// Rooted at `NSObject` rather than `NSWindow`, so a test can create an
     /// instance of a subclass without a window server.
     fn stub_window_class(name: &CStr) -> &'static AnyClass {
         let mut builder =
             ClassBuilder::new(name, NSObject::class()).expect("the stand-in class must register");
-        // SAFETY: the same shape as the override under test.
+        // SAFETY: the shapes that `miniaturize:` and a key-path getter are
+        // called with.
         unsafe {
             builder.add_method(
                 sel!(miniaturize:),
                 count_miniaturize as extern "C-unwind" fn(_, _, _),
             );
+            builder.add_method(sel!(foo), nil_value as extern "C-unwind" fn(_, _) -> _);
         }
         builder.register()
     }
 
-    /// Whether `class` defines `miniaturize:` ITSELF.
+    /// A stand-in for tao's `TaoWindow`: it adds nothing, so `miniaturize:`
+    /// reaches it only through the override that a test installs.
     ///
-    /// `instance_method` is `class_getInstanceMethod`, which searches the
-    /// superclasses too. Every superclass in this module answers
-    /// `miniaturize:`, so that call reports `Some` for a subclass that adds
-    /// nothing at all. `instance_methods` is `class_copyMethodList`, which
-    /// lists the class's own methods alone.
-    fn defines_miniaturize(class: &AnyClass) -> bool {
+    /// Each test names its own classes, because `objc_registerClassPair` cannot
+    /// be undone and a name registers once for the whole process.
+    fn stub_subclass(name: &CStr, superclass: &AnyClass) -> &'static AnyClass {
+        ClassBuilder::new(name, superclass)
+            .expect("the stand-in subclass must register")
+            .register()
+    }
+
+    fn nsstring(text: &CStr) -> Retained<AnyObject> {
+        let class = AnyClass::get(c"NSString").expect("Foundation must register NSString");
+        // SAFETY: `stringWithUTF8String:` takes a C string and answers an
+        // autoreleased NSString.
+        unsafe { msg_send![class, stringWithUTF8String: text.as_ptr()] }
+    }
+
+    /// Register `observer` on the key path of `key`, the way AppKit registers
+    /// its own observers on the main window.
+    fn observe(object: &AnyObject, observer: &NSObject, key: &AnyObject) {
+        // SAFETY: NSObject's own registration: an observer, a key path, no
+        // options and no context.
+        unsafe {
+            let _: () = msg_send![
+                object,
+                addObserver: observer,
+                forKeyPath: key,
+                options: 0_usize,
+                context: ptr::null_mut::<c_void>(),
+            ];
+        }
+    }
+
+    fn unobserve(object: &AnyObject, observer: &NSObject, key: &AnyObject) {
+        // SAFETY: the pair of `observe`. An object that deallocates with an
+        // observer still registered raises.
+        unsafe {
+            let _: () = msg_send![object, removeObserver: observer, forKeyPath: key];
+        }
+    }
+
+    /// The `miniaturize:` that the runtime dispatches for `class`.
+    ///
+    /// `class_getInstanceMethod` searches the superclasses and answers the
+    /// method it found there, so an inherited method compares equal to the one
+    /// on the class that defines it.
+    fn miniaturize_method(class: &AnyClass) -> &Method {
         class
-            .instance_methods()
-            .iter()
-            .any(|method| method.name() == sel!(miniaturize:))
+            .instance_method(sel!(miniaturize:))
+            .expect("the class must answer miniaturize:")
     }
 
-    // The class that `install` builds: it registers, it carries the override,
-    // and the class that the window arrived with stays its superclass, so tao's
-    // own overrides survive.
+    // Where the override lands: on the class itself, so every instance of it
+    // reaches the override and no instance changes class.
     #[test]
-    fn the_subclass_keeps_the_window_class_as_its_superclass() {
-        let superclass = stub_window_class(c"LeapMuxSubclassShapeBase");
-        let subclass = build_subclass(c"LeapMuxSubclassShape", superclass)
-            .expect("the runtime must accept the subclass");
-
-        assert_eq!(subclass.name().to_bytes(), b"LeapMuxSubclassShape");
+    fn the_override_goes_on_the_window_class() {
+        let base = stub_window_class(c"LeapMuxOverrideBase");
+        let target = stub_subclass(c"LeapMuxOverride", base);
         assert!(
-            defines_miniaturize(subclass),
-            "the override must be on the subclass and not inherited"
+            !defines_miniaturize(target),
+            "the stand-in must inherit miniaturize: and not define it"
         );
-        assert_eq!(
-            subclass.superclass().map(AnyClass::name),
-            Some(superclass.name()),
-            "the window's own class must stay the superclass"
+
+        assert!(add_override(target), "the runtime must accept the override");
+
+        assert!(
+            defines_miniaturize(target),
+            "the override must be on the class itself and not inherited"
+        );
+        assert!(
+            !add_override(target),
+            "a second install on the same class must be refused"
         );
     }
 
-    // A second build under the same name must REFUSE. `install` sets the class
-    // only when the build succeeds, so a name that silently produced a second
-    // class would let a repeat install make the subclass its own superclass --
-    // and would let a second window carry the override, which every field of
-    // `MinimizeHook` assumes cannot happen.
+    // The class that the override goes on, for a window that AppKit already
+    // observes. THE regression: the live class of such a window is a class that
+    // Key-Value Observing generated, and a class built under one crashes the
+    // process on the next observer. See the module documentation.
     #[test]
-    fn a_second_build_under_the_same_name_is_refused() {
-        let superclass = stub_window_class(c"LeapMuxSecondBuildBase");
-        assert!(build_subclass(c"LeapMuxSecondBuild", superclass).is_some());
-        assert!(build_subclass(c"LeapMuxSecondBuild", superclass).is_none());
+    fn an_observed_window_takes_the_override_on_the_class_it_was_created_as() {
+        let base = stub_window_class(c"LeapMuxObservedBase");
+        let created = stub_subclass(c"LeapMuxObserved", base);
+        // SAFETY: `created` descends from `NSObject`, which answers `new`.
+        let window: Retained<AnyObject> = unsafe { msg_send![created, new] };
+        let observer = NSObject::new();
+        let key = nsstring(c"foo");
+
+        observe(&window, &observer, &key);
+        assert!(
+            window.class().name().to_bytes().starts_with(KVO_CLASS_PREFIX),
+            "the first observer must leave a generated class on the window"
+        );
+
+        assert!(
+            ptr::eq(
+                window_class(&window).expect("the window must answer its own class"),
+                created
+            ),
+            "the override must go on the class the window was created as, \
+             and not on the generated one"
+        );
+        assert!(add_override(created));
+
+        // The call that crashed. A class built under the generated one leaves
+        // Foundation a NULL `observationInfo` implementation to call here.
+        observe(&window, &observer, &key);
+
+        assert!(
+            ptr::eq(
+                miniaturize_method(window.class()),
+                miniaturize_method(created)
+            ),
+            "an observed window must still dispatch miniaturize: to the override"
+        );
+        unobserve(&window, &observer, &key);
+        unobserve(&window, &observer, &key);
+    }
+
+    // A window that answers a class it does not inherit from takes no override.
+    // The method would land on a class whose own instances then run the policy
+    // for a window they are not.
+    #[test]
+    fn a_window_that_answers_an_unrelated_class_takes_no_override() {
+        extern "C-unwind" fn unrelated_class(_this: &AnyObject, _cmd: Sel) -> *const AnyClass {
+            AnyClass::get(c"NSString").expect("Foundation must register NSString")
+        }
+        let mut builder = ClassBuilder::new(c"LeapMuxLyingWindow", NSObject::class())
+            .expect("the stand-in class must register");
+        // SAFETY: `-class` takes no argument and answers a class.
+        unsafe {
+            builder.add_method(sel!(class), unrelated_class as extern "C-unwind" fn(_, _) -> _);
+        }
+        let class = builder.register();
+        // SAFETY: `class` descends from `NSObject`, which answers `new`.
+        let window: Retained<AnyObject> = unsafe { msg_send![class, new] };
+
+        assert!(window_class(&window).is_none());
     }
 
     // The Objective-C signature of the override, against AppKit's own.
     //
-    // objc2 verifies this itself, but not here: wry turns on
-    // `objc2/disable-encoding-assertions`, and cargo unifies that feature onto
-    // the one objc2 build that this crate links, so `add_method` checks the
-    // argument COUNT alone. A changed argument type or return type would
-    // register a method whose encoding contradicts the way AppKit calls it, and
-    // the first real minimize would read its arguments from the wrong place.
+    // objc2 verifies this itself for a class that its builder makes, and this
+    // method goes on a class that exists, so `add_override` states the encoding
+    // as text instead. A wrong encoding registers a method that contradicts the
+    // way AppKit calls it, and the first real minimize reads its arguments from
+    // the wrong place.
     //
     // `NSWindow` resolves in any process that links AppKit, and the test
     // creates no window, so this needs no window server.
@@ -351,15 +533,15 @@ mod tests {
         let appkit = nswindow
             .instance_method(sel!(miniaturize:))
             .expect("NSWindow must answer miniaturize:");
-        let subclass = build_subclass(c"LeapMuxSignatureShape", nswindow)
-            .expect("the runtime must accept the subclass");
+        let target = stub_subclass(c"LeapMuxSignatureShape", nswindow);
+        assert!(add_override(target), "the runtime must accept the override");
+        let ours = target
+            .instance_method(sel!(miniaturize:))
+            .expect("the override must be on the class");
         assert!(
-            defines_miniaturize(subclass),
+            defines_miniaturize(target),
             "without its own method the comparison below reads NSWindow twice"
         );
-        let ours = subclass
-            .instance_method(sel!(miniaturize:))
-            .expect("the override must be on the subclass");
 
         assert_eq!(
             ours.return_type().to_bytes(),
@@ -382,7 +564,8 @@ mod tests {
 
     // The whole dispatch, end to end: the Objective-C runtime calls the
     // override, the override reads the live answer, and `super` runs for every
-    // answer except "hide". It also pins the barrier that keeps a panic out of
+    // answer except "hide". It pins the receiver check that leaves every other
+    // window on the same class alone, and the barrier that keeps a panic out of
     // the AppKit frame that sent `miniaturize:`.
     //
     // ONE test, because `HOOK` publishes once for the process. It drives every
@@ -390,11 +573,15 @@ mod tests {
     // the way the real one reads `TrayState`.
     #[test]
     fn the_override_calls_super_unless_the_answer_hides_the_window() {
-        let superclass = stub_window_class(c"LeapMuxDispatchBase");
-        let subclass = build_subclass(c"LeapMuxDispatch", superclass)
-            .expect("the runtime must accept the subclass");
+        let base = stub_window_class(c"LeapMuxDispatchBase");
+        let installed_class = stub_subclass(c"LeapMuxDispatch", base);
+        // SAFETY: `installed_class` descends from `NSObject`, which answers
+        // `new`.
+        let window: Retained<AnyObject> = unsafe { msg_send![installed_class, new] };
+        let other: Retained<AnyObject> = unsafe { msg_send![installed_class, new] };
         HOOK.set(MinimizeHook {
-            superclass,
+            super_class: base,
+            window: ptr::from_ref(&*window) as usize,
             answer: Box::new(|| {
                 assert!(
                     !HOOK_PANICS.load(Ordering::SeqCst),
@@ -404,29 +591,40 @@ mod tests {
             }),
         })
         .unwrap_or_else(|_| panic!("only this test publishes the hook"));
-        // SAFETY: `subclass` descends from `NSObject`, which answers `new`.
-        let window: Retained<AnyObject> = unsafe { msg_send![subclass, new] };
-        let minimize = || {
+        assert!(add_override(installed_class));
+        let minimize = |receiver: &AnyObject| {
             // SAFETY: the receiver carries the override, and `miniaturize:`
             // takes one object and returns nothing.
-            let _: () = unsafe { msg_send![&*window, miniaturize: ptr::null_mut::<AnyObject>()] };
+            let _: () = unsafe { msg_send![receiver, miniaturize: ptr::null_mut::<AnyObject>()] };
             SUPER_CALLS.load(Ordering::SeqCst)
         };
 
         // "Keep in the Dock": the ordinary minimize must proceed.
         HOOK_HIDES.store(false, Ordering::SeqCst);
-        assert_eq!(minimize(), 1, "super must run when the answer does not hide");
+        assert_eq!(
+            minimize(&window),
+            1,
+            "super must run when the answer does not hide"
+        );
 
         // "Hide to the menu bar": the window must never reach `super`, or it
         // enters the miniaturized state that this module exists to prevent.
         HOOK_HIDES.store(true, Ordering::SeqCst);
-        assert_eq!(minimize(), 1, "super must not run when the answer hides");
+        assert_eq!(minimize(&window), 1, "super must not run when the answer hides");
+
+        // Another window on the same class carries no policy, so it minimizes
+        // even while the answer hides the main window.
+        assert_eq!(
+            minimize(&other),
+            2,
+            "a window that the hook does not name must reach super"
+        );
 
         // And back, because the override reads the answer on every click. A
         // preference that the user changes mid-session must reach the next
         // minimize.
         HOOK_HIDES.store(false, Ordering::SeqCst);
-        assert_eq!(minimize(), 2, "the answer is read on every call");
+        assert_eq!(minimize(&window), 3, "the answer is read on every call");
 
         // A panic must stop at the override. Without `catch_unwind` it unwinds
         // through the Objective-C frames that dispatched the selector, and this
@@ -438,22 +636,8 @@ mod tests {
         // failure in one of them. libtest captures the expected report instead,
         // and prints it only when THIS test fails.
         HOOK_PANICS.store(true, Ordering::SeqCst);
-        let calls = minimize();
+        let calls = minimize(&window);
         HOOK_PANICS.store(false, Ordering::SeqCst);
-        assert_eq!(calls, 3, "a panic must leave the ordinary minimize alone");
-    }
-
-    // No test may register the name that `install` passes: `install` reaches
-    // `set_class` only when the build succeeds, so a test that spent the name
-    // would disable the override for the whole process.
-    //
-    // The guard is one-directional. `objc_registerClassPair` cannot be undone
-    // and libtest fixes no order, so an offending test is caught only on the
-    // runs where this one starts first. Each test above therefore also names
-    // its own class, which is what makes the collision impossible rather than
-    // merely detected.
-    #[test]
-    fn no_test_spends_the_class_name_that_the_shell_installs_under() {
-        assert!(AnyClass::get(SUBCLASS_NAME).is_none());
+        assert_eq!(calls, 4, "a panic must leave the ordinary minimize alone");
     }
 }
