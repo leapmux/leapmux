@@ -107,7 +107,7 @@ One named thing an app may do, such as `file:read` or `terminal:write`. A grant 
 
 ### Permission mode
 
-A per-agent setting that controls when the agent asks before it acts. Examples include Claude Code Auto Mode, Goose Smart Approve, GitHub Copilot Assisted Approval, and provider bypass modes. The composer's **[+]** menu offers Smart permissions and Bypass permissions shortcuts when the current session supports them. See [Coding Agents](/docs/using/coding-agents/).
+A per-agent setting that controls when the agent asks before it acts. Examples include Claude Code Auto Mode, Goose Smart Approve, and each provider's bypass mode. Change it from the composer's mode chip or its **[+]** menu. That menu also offers the Smart permissions and Bypass permissions shortcuts, which select these values for you when the session supports them. A provider can carry a separate permission option group beside this axis, such as GitHub Copilot Assisted Approval. See [Coding Agents](/docs/using/coding-agents/).
 
 ### Post-quantum encryption
 

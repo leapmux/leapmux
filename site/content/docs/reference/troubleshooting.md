@@ -435,7 +435,7 @@ Changing a setting from a composer chip or the **[+]** menu restarts the agent.
 **Cause**
 Most settings changes apply **live**. Some settings control process launch arguments and require a restart. Copilot Assisted Approval is one example. LeapMux adds `--experimental` and `--assisted-approval` when this option is on. This option also enables all Copilot experimental features.
 
-Some Copilot CLI versions reject Assisted Approval with Agent Client Protocol (ACP) mode. LeapMux retries a new session with the safe default switched off. It hides Assisted Approval for that session. An explicit request still fails and shows the startup error.
+Some Copilot CLI versions reject Assisted Approval with Agent Client Protocol (ACP) mode. LeapMux retries a new session with the safe default switched off, and locks Assisted Approval to Off for that session. It also remembers that this CLI refuses the flag, so every later session and every restart starts with the flag off. An explicit request still fails and shows the startup error.
 
 An effort change to **Auto** also requires a restart because LeapMux must remove the `--effort` argument. A model change can reset effort to Auto. Reasonix also fixes its model at process launch.
 

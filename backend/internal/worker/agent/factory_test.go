@@ -140,14 +140,19 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		mode     string
 		want     string
 	}{
-		{"claude empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "", PermissionModeDefault},
-		{"claude default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, PermissionModeDefault, PermissionModeDefault},
+		{"claude empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "", contracts.ClaudeModeDefault},
+		{"claude default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, contracts.ClaudeModeDefault, contracts.ClaudeModeDefault},
 		{"codex empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "", CodexDefaultApprovalPolicy},
-		{"codex legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, PermissionModeDefault, CodexDefaultApprovalPolicy},
+		{"codex legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.ClaudeModeDefault, CodexDefaultApprovalPolicy},
 		{"codex explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "never", "never"},
-		{"cursor legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, PermissionModeDefault, CursorCLIModeAgent},
-		{"copilot legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, PermissionModeDefault, CopilotCLIModeAgent},
-		{"goose legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, PermissionModeDefault, GooseCLIModeAuto},
+		{"cursor legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, contracts.ClaudeModeDefault, CursorCLIModeAgent},
+		{"copilot legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.ClaudeModeDefault, CopilotCLIModeAgent},
+		// Goose's fallback is Smart Approve, never Auto: Auto is the value Goose's own
+		// BYPASS preset selects, so a resumed session with no stored mode would otherwise
+		// open with every permission prompt disabled.
+		{"goose empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, "", contracts.GooseModeSmartApprove},
+		{"goose legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, contracts.ClaudeModeDefault, contracts.GooseModeSmartApprove},
+		{"goose explicit auto", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, contracts.GooseModeAuto, contracts.GooseModeAuto},
 		{"opencode no top-level default", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "", ""},
 		{"reasonix no permission mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, "", ""},
 		{"zcode empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "", contracts.ZCodeDefaultMode},
@@ -279,7 +284,7 @@ func TestKnownOptionIDs(t *testing.T) {
 	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
 	assert.True(t, has(copilot, OptionIDPermissionMode))
 	assert.True(t, has(copilot, CopilotConfigReasoningEffort))
-	assert.True(t, has(copilot, CopilotConfigAllowAll))
+	assert.True(t, has(copilot, contracts.CopilotPermissionGroupAllowAll))
 	assert.True(t, has(copilot, contracts.CopilotPermissionGroupAssistedApproval))
 	assert.False(t, has(copilot, OptionIDEffort), "copilot uses reasoning_effort, not the well-known effort")
 
@@ -324,19 +329,90 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.Equal(t, map[string]bool{OptionIDModel: true}, unknown)
 }
 
-func TestNewAgentOptionDefaults(t *testing.T) {
+// A provider's SAFE new-session mode must never be the mode its own bypass preset
+// selects, and neither must its fallback for a session that stored none. Goose shipped
+// exactly that: its fallback was `auto`, which is also its declared bypass, so every
+// resumed Goose session opened with permission prompts disabled.
+//
+// The bypass values are the frontend plugins' (providers/*/plugin.tsx and stubs/*.tsx),
+// which Go cannot import, so they are restated here. That is the point: this test is the
+// thing that fails when the two drift.
+func TestSafePermissionDefaultsAreNeverAProviderBypassMode(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, map[string]string{OptionIDPermissionMode: PermissionModeAuto},
-		NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
-	assert.Equal(t, map[string]string{OptionIDPermissionMode: contracts.GooseModeSmartApprove},
-		NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE))
-	assert.Equal(t, map[string]string{
-		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
-		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
-	}, NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT))
-	assert.Empty(t, NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
-	assert.Empty(t, NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE))
+	bypassModes := map[leapmuxv1.AgentProvider]string{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE: contracts.ClaudeModeBypassPermissions,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE:       contracts.GooseModeAuto,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       contracts.ZCodeModeYolo,
+	}
+	for provider, bypass := range bypassModes {
+		t.Run(provider.String(), func(t *testing.T) {
+			if safe := NewAgentOptionDefaults(provider)[OptionIDPermissionMode]; safe != "" {
+				assert.NotEqual(t, bypass, safe,
+					"a new session must not open in the mode the bypass shortcut selects")
+			}
+			assert.NotEqual(t, bypass, FallbackPermissionMode(provider),
+				"a session that stored no mode must not fall back to the bypass mode")
+		})
+	}
+}
+
+// Both halves of every provider's PermissionDefaults, asserted side by side. They live in
+// one struct so a reader sees them together; pinning them in one test is the same idea,
+// and it is what shows that Claude ASKS for one mode and FALLS BACK to another.
+func TestPermissionDefaults(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		provider     leapmuxv1.AgentProvider
+		wantNew      map[string]string
+		wantFallback string
+	}{
+		{
+			// Claude asks for Auto and falls back to Default: a CLI that cannot enter Auto
+			// must still start.
+			provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			wantNew:      map[string]string{OptionIDPermissionMode: contracts.ClaudeModeAuto},
+			wantFallback: contracts.ClaudeModeDefault,
+		},
+		{
+			// Goose uses Smart Approve for both. The fallback must never be its `auto`,
+			// which is the mode its bypass shortcut selects.
+			provider:     leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+			wantNew:      map[string]string{OptionIDPermissionMode: contracts.GooseDefaultMode},
+			wantFallback: contracts.GooseDefaultMode,
+		},
+		{
+			// Copilot's safe defaults name two axes that are NOT the permission mode, so
+			// its fallback covers a third axis entirely.
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+			wantNew: map[string]string{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+			},
+			wantFallback: CopilotCLIModeAgent,
+		},
+		// A provider whose starting policy already asks before acting declares no safe
+		// default, and only a fallback.
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, wantFallback: CodexDefaultApprovalPolicy},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, wantFallback: contracts.ZCodeDefaultMode},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, wantFallback: CursorCLIModeAgent},
+		// A provider with no permission-mode axis at all declares neither half, and the
+		// option is left unset rather than stamped with a value it cannot accept.
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider.String(), func(t *testing.T) {
+			if tc.wantNew == nil {
+				assert.Empty(t, NewAgentOptionDefaults(tc.provider))
+			} else {
+				assert.Equal(t, tc.wantNew, NewAgentOptionDefaults(tc.provider))
+			}
+			assert.Equal(t, tc.wantFallback, FallbackPermissionMode(tc.provider))
+		})
+	}
 }
 
 // TestRegisteredSecondaryFallback verifies acpStart's secondary-fallback seeding sources the SAME

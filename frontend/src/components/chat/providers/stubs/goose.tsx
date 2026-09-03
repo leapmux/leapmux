@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../../messageClassification'
-import { GOOSE_MODE } from '~/generated/contracts/goose-protocol'
+import { GOOSE_DEFAULT_MODE, GOOSE_MODE } from '~/generated/contracts/goose-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { isGooseSubagentToolRequest } from './gooseShape'
@@ -22,7 +22,7 @@ function classifyGooseToolCallUpdate(parent: Record<string, unknown>): MessageCa
 
 registerACPProvider({
   provider: AgentProvider.GOOSE,
-  defaultPermissionMode: GOOSE_MODE.Auto,
+  defaultPermissionMode: GOOSE_DEFAULT_MODE,
   permissionPresets: {
     smart: { sets: { permissionMode: GOOSE_MODE.SmartApprove } },
     bypass: { sets: { permissionMode: GOOSE_MODE.Auto } },

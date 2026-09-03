@@ -16,7 +16,7 @@ import {
   getUserId,
   getWorkerId,
   loginViaAPI,
-  openAgentViaAPI,
+  openPinnedModeAgentViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
   TEST_ADMIN_PASSWORD,
@@ -225,9 +225,7 @@ export const test = base.extend<
     )
     // Open an initial agent — workspace creation on the hub no longer
     // auto-creates one (that was the old worker behavior).
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
-      optionValues: { permissionMode: 'default' },
-    })
+    await openPinnedModeAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
     await use({ workspaceId })
 
     // Teardown (best effort): stop the workspace's agents on the worker, THEN

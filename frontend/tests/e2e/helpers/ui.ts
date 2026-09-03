@@ -1186,6 +1186,27 @@ async function ensureExpanded(trigger: Locator) {
   await expect(trigger).toHaveAttribute('aria-expanded', 'true')
 }
 
+/**
+ * Whether the agent's permission-mode picker currently offers one option id.
+ *
+ * A permission shortcut is drawn only when the session offers every value its preset
+ * sets, so a spec that must know which shortcut to expect asks the picker rather than
+ * guessing from the provider. Leaves every composer menu closed.
+ */
+export async function permissionModeOffered(page: Page, modeId: string): Promise<boolean> {
+  const group = await openSettingsMenu(page, 'permissionMode')
+  const offered = await group.locator(`[data-testid="permissionMode-${modeId}"]`).count() > 0
+  await closeComposerMenus(page)
+  return offered
+}
+
+/** Apply one composer permission preset and wait for the settings round-trip. */
+export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass') {
+  const menu = await openPlusMenu(page)
+  await menu.getByTestId(`composer-${kind}-permissions`).click()
+  await waitForSettingsIdle(page)
+}
+
 /** Open the composer's `[+]` menu and leave it open. */
 export async function openPlusMenu(page: Page): Promise<Locator> {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')

@@ -1281,7 +1281,7 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	got := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	assert.Equal(t, agent.PermissionModePlan, got[agent.OptionIDPermissionMode],
+	assert.Equal(t, contracts.ClaudeModePlan, got[agent.OptionIDPermissionMode],
 		"a whitespace-padded request_id must still apply the EnterPlanMode transition")
 }
 
@@ -1356,12 +1356,12 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 	require.Equal(t, agent.PlanModeControlEnter, plan.resolution.PlanModeControl)
 
 	before := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode]
-	require.NotEqual(t, agent.PermissionModePlan, before, "sanity: the agent is not already in plan mode")
+	require.NotEqual(t, contracts.ClaudeModePlan, before, "sanity: the agent is not already in plan mode")
 
 	svc.applyControlResponsePlanModeMutations("agent-1", dbAgent, plan)
 	dbAgent, err = svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode],
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode],
 		"an approved EnterPlanMode applies the plan-mode switch")
 
 	// A request-gone answer (no stored request to resolve the transition) mutates nothing.
@@ -1369,11 +1369,11 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 	gonePlan := svc.buildControlResponsePlan("agent-1", dbAgent, content)
 	require.False(t, gonePlan.requestMeta.Loaded, "sanity: the request is gone")
 	// Reset to Default so a no-op is distinguishable from a re-applied Enter transition (which sets Plan).
-	dbAgent = svc.setAgentPermissionModeWithAgent(dbAgent, agent.PermissionModeDefault)
+	dbAgent = svc.setAgentPermissionModeWithAgent(dbAgent, contracts.ClaudeModeDefault)
 	svc.applyControlResponsePlanModeMutations("agent-1", dbAgent, gonePlan)
 	dbAgent, err = svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModeDefault, loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode],
+	assert.Equal(t, contracts.ClaudeModeDefault, loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[agent.OptionIDPermissionMode],
 		"a request-gone answer resolves no transition, so it mutates nothing")
 }
 
@@ -1648,11 +1648,11 @@ func TestResolveTargetMode(t *testing.T) {
 	t.Parallel()
 
 	// The frontend's attached permission mode wins when present.
-	assert.Equal(t, agent.PermissionModePlan, resolveTargetMode(agent.PermissionModePlan, agent.PermissionModeDefault))
+	assert.Equal(t, contracts.ClaudeModePlan, resolveTargetMode(contracts.ClaudeModePlan, contracts.ClaudeModeDefault))
 	// Empty falls back to the caller's default -- the ONE thing the plan-prompt path
-	// (PermissionModeDefault) and the ExitPlanMode path (PermissionModeAcceptEdits) differ on.
-	assert.Equal(t, agent.PermissionModeDefault, resolveTargetMode("", agent.PermissionModeDefault))
-	assert.Equal(t, agent.PermissionModeAcceptEdits, resolveTargetMode("", agent.PermissionModeAcceptEdits))
+	// (contracts.ClaudeModeDefault) and the ExitPlanMode path (contracts.ClaudeModeAcceptEdits) differ on.
+	assert.Equal(t, contracts.ClaudeModeDefault, resolveTargetMode("", contracts.ClaudeModeDefault))
+	assert.Equal(t, contracts.ClaudeModeAcceptEdits, resolveTargetMode("", contracts.ClaudeModeAcceptEdits))
 }
 
 // TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped pins the marshal-boundary
@@ -1914,7 +1914,7 @@ func TestProcessControlResponse(t *testing.T) {
 		}{
 			{
 				"claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				agent.ToolNameExitPlanMode, agent.PermissionModeAcceptEdits,
+				agent.ToolNameExitPlanMode, contracts.ClaudeModeAcceptEdits,
 			},
 			{
 				"zcode", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,

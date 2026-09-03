@@ -158,7 +158,7 @@ Not every image renders inline:
 - **Images above about 5 MB** show a placeholder instead of the picture.
 - **An image the agent gives by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
 
-Every provider except ZCode can return an image: Claude Code, Codex, Pi, and each ACP provider (OpenCode, Cursor, GitHub Copilot, Kilo, Goose, Reasonix). ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so there is no picture left to draw.
+Every provider except ZCode can return an image: Claude Code, Codex, Pi, and each Agent Client Protocol (ACP) provider (OpenCode, Cursor, GitHub Copilot, Kilo, Goose, Reasonix). ZCode's app server turns an image part into a placeholder string before it reaches LeapMux, so there is no picture left to draw.
 
 ### The todo / plan sidebar
 
@@ -237,7 +237,7 @@ The **[+]** menu holds every axis, including provider-specific options that have
 
 Providers can add two adjacent permission shortcuts. **Smart permissions** selects the provider's safety-assisted mode. **Bypass permissions** disables permission prompts. Smart permissions is always directly above Bypass permissions. A shortcut appears only when the session offers every setting and value that the preset needs.
 
-Claude Code blocks an unsafe action in Auto Mode. Goose and GitHub Copilot ask for manual approval when their safety check does not approve an action.
+Each safety-assisted mode approves the calls it judges safe and asks about the others. Claude Code Auto Mode uses a classifier for that decision. Goose Smart Approve and GitHub Copilot Assisted Approval do the same.
 
 You can hide the status bar with **[+] > Show status bar**. The **[+]** menu still gives access to all status bar settings.
 
@@ -291,16 +291,16 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 | Provider | Default model | Default mode | Notes |
 | --- | --- | --- | --- |
 | Cursor | `auto` | `agent` | Has plan mode. |
-| GitHub Copilot | (CLI default) | `agent` | A new session enables Assisted Approval when the installed CLI supports it with Agent Client Protocol (ACP). Bypass permissions enables Allow All. Autopilot remains a workflow mode. |
+| GitHub Copilot | (CLI default) | `agent` | A new session enables Assisted Approval when the installed CLI supports it with ACP. Bypass permissions enables Allow All. Autopilot stays a permission mode, and no shortcut selects it. |
 | Goose | (CLI default) | `smart_approve` | Smart permissions selects Smart Approve. Bypass permissions selects Auto. Goose has no plan mode. |
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
 
 In the UI you pick these as named radio options (**Auto**, **Agent**, **Autopilot**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux control agent set --permission-mode`.
 
-GitHub Copilot also has **Assisted Approval** and **Allow All** option groups. These options cannot both be on. Enabling one turns the other off. Assisted Approval launches Copilot with `--experimental` and `--assisted-approval`. Therefore, Assisted Approval also enables all Copilot experimental features.
+GitHub Copilot also has **Assisted Approval** and **Allow All** option groups. Assisted Approval narrows what runs without a prompt, so turning it on turns Allow All off. The picker states that consequence on the option itself. Allow All is the broader permission and supersedes Assisted Approval, so turning Allow All on leaves Assisted Approval as it is. Assisted Approval launches Copilot with `--experimental` and `--assisted-approval`. Therefore, Assisted Approval also enables all Copilot experimental features, and a change to it restarts the CLI.
 
-Some Copilot CLI versions reject Assisted Approval with ACP mode. LeapMux retries a new session with Assisted Approval off when only the safe default caused this error. LeapMux then hides the unavailable option. An explicit Assisted Approval request still reports the error.
+Some Copilot CLI versions reject Assisted Approval with ACP mode. LeapMux retries a new session with Assisted Approval off when only the safe default caused this error. LeapMux then locks the option to Off for that session. An explicit Assisted Approval request still reports the error.
 
 **Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
 

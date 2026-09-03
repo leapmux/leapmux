@@ -1779,56 +1779,7 @@ ${rows}
 }
 
 // ---------------------------------------------------------------------------
-// GitHub Copilot permission identifiers
-// ---------------------------------------------------------------------------
-
-export function checkCopilotPermissions(c) {
-  mustBe(new Set(Object.values(c.groups)).size === Object.keys(c.groups).length, 'copilot-permissions.json', 'group identifiers must be unique')
-  mustBe(new Set(Object.values(c.values)).size === Object.keys(c.values).length, 'copilot-permissions.json', 'value identifiers must be unique')
-  return {}
-}
-
-export function emitGoCopilotPermissions(c) {
-  const groups = Object.entries(c.groups)
-    .map(([name, value]) => ({ name: `CopilotPermissionGroup${name}`, value: jsonString(value) }))
-  const values = Object.entries(c.values)
-    .map(([name, value]) => ({ name: `CopilotPermissionValue${name}`, value: jsonString(value) }))
-  return `${GO_HEADER('copilot-permissions.json')}package contracts
-
-// CopilotPermissionGroup* identify the two Copilot permission axes.
-const (
-${goConstBlock(groups)}
-)
-
-// CopilotPermissionValue* are the values that both permission axes use.
-const (
-${goConstBlock(values)}
-)
-`
-}
-
-export function emitTsCopilotPermissions(c) {
-  const groups = Object.entries(c.groups)
-    .map(([name, value]) => `  ${name}: ${jsonString(value)},`)
-    .join('\n')
-  const values = Object.entries(c.values)
-    .map(([name, value]) => `  ${name}: ${jsonString(value)},`)
-    .join('\n')
-  return `${TS_HEADER('copilot-permissions.json')}
-/** The option group identifiers for Copilot permission controls. */
-export const COPILOT_PERMISSION_GROUP = {
-${groups}
-} as const
-
-/** The values that both Copilot permission controls use. */
-export const COPILOT_PERMISSION_VALUE = {
-${values}
-} as const
-`
-}
-
-// ---------------------------------------------------------------------------
-// provider protocols: a coding agent's own wire vocabulary (zcode, pi, goose)
+// provider protocols: a coding agent's own wire vocabulary (zcode, claude, goose, copilot, pi)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1838,8 +1789,11 @@ ${values}
  * They share one emitter because they pose one problem. A provider's envelope `type`
  * and payload `kind` are dispatch keys on BOTH sides -- the Go worker classifies the
  * row, the TS plugin renders it -- so the two copies must agree exactly, and a
- * one-character drift silently stops rendering rather than failing a build. Neither
- * language owns the values: the agent's vendor does.
+ * one-character drift silently stops rendering rather than failing a build. The agent's
+ * vendor usually owns the values, and neither language does. A domain where LeapMux owns
+ * part of the vocabulary (copilot-permissions) states that in its own `preamble`, which
+ * replaces the default sentence in both emitted headers -- a generated comment that
+ * claims the wrong owner is worse than none.
  *
  * `goPrefix` and `tsPrefix` build the emitted identifiers, so a table needs no
  * per-constant name entry: the Go constant is `<goPrefix><Table><Key>` and the TS key
@@ -1868,6 +1822,31 @@ const PROVIDER_PROTOCOLS = [
     title: 'Goose',
     tables: [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'GooseMode', doc: 'permission modes' },
+    ],
+  },
+  {
+    name: 'claude-protocol',
+    goPrefix: 'Claude',
+    tsPrefix: 'CLAUDE',
+    title: 'Claude Code',
+    tables: [
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ClaudeMode', doc: 'permission modes' },
+    ],
+  },
+  {
+    name: 'copilot-permissions',
+    goPrefix: 'CopilotPermission',
+    tsPrefix: 'COPILOT_PERMISSION',
+    title: 'GitHub Copilot',
+    preamble: [
+      'Copilot\'s permission vocabulary. GitHub owns `allow_all` and the two values;',
+      'LeapMux owns `copilot_assisted_approval`, the axis its launch flags drive. Both',
+      'sides read them -- the Go worker builds the option group, the browser plugin builds',
+      'the preset -- so they are generated from one file rather than hand-copied into two.',
+    ].join('\n// '),
+    tables: [
+      { key: 'groups', goTable: 'Group', tsTable: 'GROUP', tsType: 'CopilotPermissionGroup', doc: 'permission option-group ids' },
+      { key: 'values', goTable: 'Value', tsTable: 'VALUE', tsType: 'CopilotPermissionValue', doc: 'permission values, shared by both axes' },
     ],
   },
   {
@@ -1922,12 +1901,13 @@ export function emitGoProviderProtocol(spec, p) {
   const extra = p.defaultMode == null
     ? ''
     : `\n// ${spec.goPrefix}DefaultMode is the mode a fresh session runs on.\nconst ${spec.goPrefix}DefaultMode = ${spec.goPrefix}Mode${p.defaultMode}\n`
-  return `${GO_HEADER(`${spec.name}.json`)}package contracts
-
-// ${spec.title}'s wire vocabulary. These literals are dispatch keys on BOTH sides --
+  const preamble = spec.preamble ?? `${spec.title}'s wire vocabulary. These literals are dispatch keys on BOTH sides --
 // the Go worker classifies each row, the browser plugin renders it -- so they are
 // generated from one file rather than hand-copied into two. ${spec.title}'s vendor owns
-// the values; LeapMux follows them.
+// the values; LeapMux follows them.`
+  return `${GO_HEADER(`${spec.name}.json`)}package contracts
+
+// ${preamble}
 
 ${blocks.join('\n\n')}
 ${extra}`
@@ -1942,9 +1922,10 @@ export function emitTsProviderProtocol(spec, p) {
   const extra = p.defaultMode == null
     ? ''
     : `\n/** The mode a fresh ${spec.title} session runs on. */\nexport const ${spec.tsPrefix}_DEFAULT_MODE = ${spec.tsPrefix}_MODE.${p.defaultMode}\n`
+  const preamble = spec.preamble ?? `${spec.title}'s wire vocabulary, generated from contracts/${spec.name}.json. The Go
+// provider reads the same tables, so the two can no longer drift by a character.`
   return `${TS_HEADER(`${spec.name}.json`)}
-// ${spec.title}'s wire vocabulary, generated from contracts/${spec.name}.json. The Go
-// provider reads the same tables, so the two can no longer drift by a character.
+// ${preamble}
 
 ${blocks.join('\n\n')}
 ${extra}`
@@ -2351,15 +2332,6 @@ const DOMAINS = [
       checkCodexBypass(c)
       out['backend/generated/contracts/codex-bypass.go'] = emitGoCodexBypass(c)
       out['frontend/src/generated/contracts/codex-bypass.ts'] = emitTsCodexBypass(c)
-    },
-  },
-  {
-    name: 'copilot-permissions',
-    emit(out, read) {
-      const c = read('copilot-permissions')
-      checkCopilotPermissions(c)
-      out['backend/generated/contracts/copilot-permissions.go'] = emitGoCopilotPermissions(c)
-      out['frontend/src/generated/contracts/copilot-permissions.ts'] = emitTsCopilotPermissions(c)
     },
   },
   {

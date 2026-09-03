@@ -193,7 +193,14 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
     equals: shallowEqualArrays,
   })
 
-  const livePermissionActions = createMemo(() => permissionActionsFor(props.agentProvider, props.optionGroups))
+  // `equals` for the same reason liveGroupIds carries one: a status push re-broadcasts
+  // the whole catalog, and permissionActionsFor allocates a fresh array of fresh objects
+  // every call. Without this, an identical catalog still produced a new value, the
+  // `structure` memo re-ran, and `For` destroyed and rebuilt both permission rows.
+  const livePermissionActions = createMemo(() => permissionActionsFor(props.agentProvider, props.optionGroups), undefined, {
+    equals: (a, b) => a.length === b.length
+      && a.every((action, i) => action.kind === b[i]!.kind && action.preset === b[i]!.preset),
+  })
 
   const [open, setOpen] = createSignal(false)
 

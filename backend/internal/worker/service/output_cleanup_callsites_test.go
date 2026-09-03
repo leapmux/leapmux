@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -96,7 +98,7 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-plan")
 	require.NoError(t, err)
 
-	svc.initiatePlanExecutionRestart("agent-plan", agent.PermissionModeDefault, dbAgent, "Execute the plan.")
+	svc.initiatePlanExecutionRestart("agent-plan", contracts.ClaudeModeDefault, dbAgent, "Execute the plan.")
 
 	assertControlRequestsCleared(t, ctx, svc, w, "agent-plan", requestID)
 }

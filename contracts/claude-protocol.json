@@ -1,0 +1,12 @@
+{
+  "_readme": "Claude Code permission modes that both the Go provider and the TypeScript plugin use. Anthropic owns these wire values: the worker sends them in set_permission_mode, and the browser plugin builds its permission presets and its plan-mode toggle from the same strings. defaultMode is the mode a Claude session with no stored one falls back to; the mode a NEW session requests is Auto, and setNewAgentOptionDefaults in claude.go is that fact's one home.",
+  "modes": {
+    "Default": "default",
+    "Plan": "plan",
+    "AcceptEdits": "acceptEdits",
+    "BypassPermissions": "bypassPermissions",
+    "DontAsk": "dontAsk",
+    "Auto": "auto"
+  },
+  "defaultMode": "Default"
+}

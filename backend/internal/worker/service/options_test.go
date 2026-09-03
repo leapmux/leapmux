@@ -78,17 +78,29 @@ func TestResolveNewAgentDefaultsAppliesOnlyToFreshSessions(t *testing.T) {
 
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	fresh := resolveLaunchOptions(OptionMap{}, claude, false)
-	assert.Equal(t, agent.PermissionModeAuto, fresh[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModeAuto, fresh.Options[agent.OptionIDPermissionMode])
+	assert.True(t, fresh.DefaultedIDs[agent.OptionIDPermissionMode])
 
+	// A resumed session keeps the provider's own default, and Claude's is "default".
 	resumed := resolveLaunchOptions(OptionMap{}, claude, true)
-	assert.NotEqual(t, agent.PermissionModeAuto, resumed[agent.OptionIDPermissionMode])
-	assert.Empty(t, newSessionDefaultOptionIDs(OptionMap{}, claude, true))
+	assert.Equal(t, contracts.ClaudeModeDefault, resumed.Options[agent.OptionIDPermissionMode])
+	assert.Empty(t, resumed.DefaultedIDs)
 
-	explicit := resolveLaunchOptions(OptionMap{agent.OptionIDPermissionMode: agent.PermissionModeDefault}, claude, false)
-	assert.Equal(t, agent.PermissionModeDefault, explicit[agent.OptionIDPermissionMode])
-	assert.Empty(t, newSessionDefaultOptionIDs(
-		OptionMap{agent.OptionIDPermissionMode: agent.PermissionModeDefault}, claude, false,
-	))
+	explicit := resolveLaunchOptions(OptionMap{agent.OptionIDPermissionMode: contracts.ClaudeModeDefault}, claude, false)
+	assert.Equal(t, contracts.ClaudeModeDefault, explicit.Options[agent.OptionIDPermissionMode])
+	assert.Empty(t, explicit.DefaultedIDs)
+}
+
+// A resumed session must never fall back to a mode that IS the provider's bypass. Goose
+// declares auto as its bypass preset, so the resumed fallback has to be smart_approve.
+func TestResolveLaunchOptionsResumedGooseDoesNotFallBackToBypass(t *testing.T) {
+	t.Parallel()
+
+	goose := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	resumed := resolveLaunchOptions(OptionMap{}, goose, true)
+	assert.Equal(t, contracts.GooseModeSmartApprove, resumed.Options[agent.OptionIDPermissionMode])
+	assert.NotEqual(t, contracts.GooseModeAuto, resumed.Options[agent.OptionIDPermissionMode])
+	assert.Empty(t, resumed.DefaultedIDs, "a resumed session receives no safe default")
 }
 
 func TestResolveNewAgentDefaultsHonorsExplicitCopilotAllowAll(t *testing.T) {
@@ -98,8 +110,56 @@ func TestResolveNewAgentDefaultsHonorsExplicitCopilotAllowAll(t *testing.T) {
 	got := resolveLaunchOptions(OptionMap{
 		contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn,
 	}, provider, false)
-	assert.Equal(t, contracts.CopilotPermissionValueOn, got[contracts.CopilotPermissionGroupAllowAll])
-	assert.Equal(t, contracts.CopilotPermissionValueOff, got[contracts.CopilotPermissionGroupAssistedApproval])
+	assert.Equal(t, contracts.CopilotPermissionValueOn, got.Options[contracts.CopilotPermissionGroupAllowAll],
+		"the explicit request is never overwritten")
+	// Requesting Allow All does NOT clear Assisted Approval: that axis rides the launch
+	// flags, so clearing it costs a restart, and Allow All already supersedes it while
+	// both are on. Only the reverse direction settles.
+	assert.Equal(t, contracts.CopilotPermissionValueOn, got.Options[contracts.CopilotPermissionGroupAssistedApproval])
+	assert.True(t, got.DefaultedIDs[contracts.CopilotPermissionGroupAssistedApproval],
+		"the safe default survived the resolver, so it is still default-sourced")
+	assert.False(t, got.DefaultedIDs[contracts.CopilotPermissionGroupAllowAll],
+		"an explicitly requested id is never default-sourced")
+}
+
+// The other direction DOES settle, and it drops the id from the defaulted set: an
+// Assisted Approval request overwrites the Allow All safe default, so a launch fallback
+// must not treat the result as a value LeapMux chose.
+func TestResolveLaunchOptionsAssistedApprovalRequestClearsAllowAll(t *testing.T) {
+	t.Parallel()
+
+	got := resolveLaunchOptions(OptionMap{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+	}, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, false)
+	assert.Equal(t, contracts.CopilotPermissionValueOn, got.Options[contracts.CopilotPermissionGroupAssistedApproval])
+	assert.Equal(t, contracts.CopilotPermissionValueOff, got.Options[contracts.CopilotPermissionGroupAllowAll])
+	assert.Empty(t, got.DefaultedIDs, "both axes were requested, so neither is default-sourced")
+}
+
+// defaultSourcedOptionIDs is what every RELAUNCH uses, because a stored row carries no
+// record of the original request. It reports an id whose stored value still equals the
+// safe default, so a provider's launch fallback survives a restart.
+func TestDefaultSourcedOptionIDs(t *testing.T) {
+	t.Parallel()
+
+	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
+	stored := OptionMap{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+	}
+	assert.Equal(t, map[string]bool{
+		contracts.CopilotPermissionGroupAssistedApproval: true,
+		contracts.CopilotPermissionGroupAllowAll:         true,
+	}, defaultSourcedOptionIDs(stored, copilot))
+
+	edited := stored.Clone()
+	edited[contracts.CopilotPermissionGroupAllowAll] = contracts.CopilotPermissionValueOn
+	assert.False(t, defaultSourcedOptionIDs(edited, copilot)[contracts.CopilotPermissionGroupAllowAll],
+		"a value that differs from the safe default is not default-sourced")
+
+	assert.Empty(t, defaultSourcedOptionIDs(OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX),
+		"a provider with no safe defaults reports none")
 }
 
 // TestOptionsChangeDelta pins the minimal-delta the settings-edit CAS persists: a changed or

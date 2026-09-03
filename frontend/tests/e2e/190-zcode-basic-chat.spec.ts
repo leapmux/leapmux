@@ -1,4 +1,4 @@
-import { ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, messageContents, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import { applyPermissionPreset, ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, messageContents, openPlusMenu, openSettingsMenu, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from './helpers/ui'
 import { expect, ZCODE_E2E_SKIP_REASON, zcodeTest } from './zcode-fixtures'
 
 zcodeTest.skip(!!ZCODE_E2E_SKIP_REASON, ZCODE_E2E_SKIP_REASON || '')
@@ -59,9 +59,9 @@ zcodeTest.describe('ZCode Mode Switch', () => {
     void authenticatedZCodeWorkspace
     await waitForSettingsHydrated(page)
     const menu = await openPlusMenu(page)
+    // ZCode declares no Smart preset, so only the bypass shortcut is drawn.
     await expect(menu.getByTestId('composer-smart-permissions')).toHaveCount(0)
-    await menu.getByTestId('composer-bypass-permissions').click()
-    await waitForSettingsIdle(page)
+    await applyPermissionPreset(page, 'bypass')
     await expectSettingsChip(page, 'Yolo')
   })
 

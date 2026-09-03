@@ -10,16 +10,13 @@ import (
 )
 
 func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
-	a := &CopilotCLIAgent{
-		acpBase: acpBase{
-			jsonrpcBase: jsonrpcBase{processBase: processBase{
-				agentID:      "test-agent",
-				providerName: "copilot",
-			}},
-			sink:      sink,
-			sessionID: "test-session",
-		},
-	}
+	a := newCopilotCLIAgent("", false)
+	a.jsonrpcBase = jsonrpcBase{processBase: processBase{
+		agentID:      "test-agent",
+		providerName: "copilot",
+	}}
+	a.sink = sink
+	a.sessionID = "test-session"
 	a.modeChannel = modeChannelPermissionMode
 	a.sink = newThinkingResetSink(a.sink, &a.thinkingTokens)
 	return a

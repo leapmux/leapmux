@@ -336,6 +336,9 @@ func init() {
 		"cursor-agent",
 	)
 	setModelIDNormalizer(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, normalizeCursorModelID)
+	setPermissionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, PermissionDefaults{
+		Fallback: CursorCLIModeAgent,
+	})
 }
 
 // cursorSubagentFromToolCall detects Cursor's Task delegation tool_call

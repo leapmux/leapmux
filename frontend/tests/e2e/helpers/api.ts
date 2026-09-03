@@ -603,6 +603,9 @@ export async function openAgentViaAPI(
 ): Promise<string> {
   const { OpenAgentRequestSchema, OpenAgentResponseSchema } = await import('../../../src/generated/proto/leapmux/v1/agent_pb')
   const channel = await getTestChannel(hubUrl, cookie)
+  // The proto carries the model AND every option-group value under the `options` map,
+  // not as a top-level field; create() would silently drop a spread `{ model }`, opening
+  // the agent at the provider default instead of the requested one.
   const initialOptions = {
     ...options?.optionValues,
     ...(options?.model ? { model: options.model } : {}),
@@ -658,6 +661,29 @@ export async function openAgentViaAPI(
     userEvents,
   })
   return resp.agent.id
+}
+
+/**
+ * Open an agent with the permission mode pinned to `default`.
+ *
+ * A new session otherwise starts on the provider's safe default — Claude Code requests
+ * Auto Mode — and the installed CLI decides whether it can enter that mode, so the
+ * resulting mode varies by machine. Every spec that asserts one EXACT mode string, or a
+ * "Mode (X → Y)" notification, opens its agent through here.
+ *
+ * A spec that means to exercise the safe default must NOT use this helper. It should
+ * open the agent plainly and read the offered modes to decide what to expect, the way
+ * `044-agent-settings.spec.ts` does.
+ */
+export async function openPinnedModeAgentViaAPI(
+  hubUrl: string,
+  cookie: string,
+  workerId: string,
+  workspaceId: string,
+): Promise<string> {
+  return openAgentViaAPI(hubUrl, cookie, workerId, workspaceId, undefined, {
+    optionValues: { permissionMode: 'default' },
+  })
 }
 
 // ---- Hub API helpers (Workspace CRUD) ----

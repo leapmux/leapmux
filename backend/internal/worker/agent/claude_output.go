@@ -333,9 +333,9 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 
 			switch block.Name {
 			case ToolNameEnterPlanMode:
-				a.sink.StorePlanModeToolUse(block.ID, PermissionModePlan)
+				a.sink.StorePlanModeToolUse(block.ID, contracts.ClaudeModePlan)
 			case ToolNameExitPlanMode:
-				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
+				a.sink.StorePlanModeToolUse(block.ID, contracts.ClaudeModeDefault)
 			}
 
 			// A subagent spawn opens no span (claudeToolSpawnsSubagent). Its
@@ -924,7 +924,7 @@ func (a *ClaudeCodeAgent) claudeCodeHandleControlResponse(content []byte) {
 		a.confirmedPermissionMode = mode
 		// The deferred ack confirming "auto" proves the session can enter it; clear a stale
 		// autoModeAvailable=false (see applyPermissionModeLive) so the picker offers auto again.
-		if mode == PermissionModeAuto {
+		if mode == contracts.ClaudeModeAuto {
 			a.autoModeAvailable = true
 		}
 	}
@@ -1236,9 +1236,9 @@ func (a *ClaudeCodeAgent) detectPlanModeFromToolResult(env *messageEnvelope) {
 
 		resultLower := strings.ToLower(resultText)
 		confirmed := false
-		if targetMode == PermissionModePlan && strings.Contains(resultLower, "entered plan mode") {
+		if targetMode == contracts.ClaudeModePlan && strings.Contains(resultLower, "entered plan mode") {
 			confirmed = true
-		} else if targetMode == PermissionModeDefault && strings.Contains(resultLower, "approved your plan") {
+		} else if targetMode == contracts.ClaudeModeDefault && strings.Contains(resultLower, "approved your plan") {
 			confirmed = true
 		}
 

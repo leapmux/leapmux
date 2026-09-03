@@ -70,33 +70,61 @@ func resolveProviderDefaults(options OptionMap, provider leapmuxv1.AgentProvider
 	return out
 }
 
-// resolveNewAgentDefaults adds safe permission values only for a new session.
-// Explicit request values take precedence.
-func resolveNewAgentDefaults(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) OptionMap {
-	resolved := options.Clone()
-	for id := range newSessionDefaultOptionIDs(options, provider, resumed) {
-		resolved[id] = agent.NewAgentOptionDefaults(provider)[id]
-	}
-	return resolved
+// launchOptions is one launch decision in one value: the complete resolved option set,
+// and the ids whose value came from the new-session safe defaults rather than from the
+// request. The two travel together because a provider's launch fallback keys on the
+// second -- Copilot may downgrade Assisted Approval only when LeapMux, not the user,
+// chose it -- and deriving them apart let the set claim an id the conflict resolver had
+// since overwritten.
+type launchOptions struct {
+	Options OptionMap
+	// DefaultedIDs is never nil, so a caller can index it without a check.
+	DefaultedIDs map[string]bool
 }
 
-// resolveLaunchOptions fills all launch defaults and resolves provider conflicts.
-// The original request decides which explicit value wins against a safe default.
-func resolveLaunchOptions(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) OptionMap {
-	resolved := resolveProviderDefaults(resolveNewAgentDefaults(options, provider, resumed), provider)
+// resolveLaunchOptions fills every launch default and settles the provider's option
+// conflicts. An explicit request value always beats a safe default, and a safe default
+// applies only to a session opened without a resume handle.
+func resolveLaunchOptions(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) launchOptions {
+	safeDefaults := agent.NewAgentOptionDefaults(provider)
+	defaulted := map[string]bool{}
+	resolved := options.Clone()
+	if !resumed {
+		for id, value := range safeDefaults {
+			if options[id] == "" {
+				resolved[id] = value
+				defaulted[id] = true
+			}
+		}
+	}
+	resolved = resolveProviderDefaults(resolved, provider)
 	if resolved[agent.OptionIDPermissionMode] == "" {
 		resolved[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(provider, "")
 	}
-	return OptionMap(agent.ProviderFor(provider).ResolveOptionConflicts(resolved, options))
+	resolved = agent.ProviderFor(provider).ResolveOptionConflicts(resolved, options)
+	// The conflict resolver can overwrite a safe default: a request for Copilot's Allow
+	// All turns Assisted Approval off. The id then no longer describes a defaulted
+	// value, so drop it -- a provider's launch fallback must not fire for a value the
+	// user's own request produced.
+	for id := range defaulted {
+		if resolved[id] != safeDefaults[id] {
+			delete(defaulted, id)
+		}
+	}
+	return launchOptions{Options: resolved, DefaultedIDs: defaulted}
 }
 
-func newSessionDefaultOptionIDs(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) map[string]bool {
-	if resumed {
-		return nil
-	}
+// defaultSourcedOptionIDs rebuilds the defaulted-id set from VALUES alone, for a launch
+// that replays a stored option map rather than a request -- a restart, a clear-context
+// relaunch, or a cold start. The agents.options column records what each axis IS, never
+// where it came from, so an explicitly chosen value that happens to equal the safe
+// default is indistinguishable here and counts as defaulted. That is deliberate: a
+// provider whose CLI cannot accept the value then degrades, instead of leaving the tab
+// with no process at all on every relaunch.
+func defaultSourcedOptionIDs(options OptionMap, provider leapmuxv1.AgentProvider) map[string]bool {
 	ids := map[string]bool{}
-	for id := range agent.NewAgentOptionDefaults(provider) {
-		if options[id] == "" {
+	for id, value := range agent.NewAgentOptionDefaults(provider) {
+		if options[id] == value {
 			ids[id] = true
 		}
 	}

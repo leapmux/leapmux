@@ -5,7 +5,7 @@ import type { RenderContext } from '../../messageRenderers'
 import type { ClassificationInput, Provider, SpanRole, ToolResultMeta } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
-import { ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_DEFAULT_MODE, ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { buildDenyResponse, getToolInput } from '~/utils/controlResponse'
@@ -269,9 +269,9 @@ const zcodePlugin: Provider = {
   permissionPresets: { bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } } },
   planMode: {
     groupKey: 'permissionMode',
-    currentMode: agent => agent.optionValues?.permissionMode ?? ZCODE_MODE.Build,
+    currentMode: agent => agent.optionValues?.permissionMode ?? ZCODE_DEFAULT_MODE,
     planValue: ZCODE_MODE.Plan,
-    defaultValue: ZCODE_MODE.Build,
+    defaultValue: ZCODE_DEFAULT_MODE,
   },
 
   classify(input: ClassificationInput): MessageCategory {

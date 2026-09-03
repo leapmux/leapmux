@@ -199,12 +199,12 @@ type agentFactoryEntry struct {
 	// uniformly for every provider, so a new provider declares its seeds here rather
 	// than the service layer growing a per-provider branch.
 	providerOptionDefaults map[string]string
-	// newAgentOptionDefaults contains safe permission values for a new session.
-	// The service does not apply these values to resumed or stored sessions.
-	newAgentOptionDefaults map[string]string
-	envModelKey            string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
-	envEffortKey           string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
-	binaryNames            []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
+	// permissionDefaults holds this provider's two permission-policy answers in one
+	// place, so a reader sees both at once and neither can be changed alone.
+	permissionDefaults PermissionDefaults
+	envModelKey        string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
+	envEffortKey       string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
+	binaryNames        []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
 	// launchResolver replaces the binaryNames probe for a provider whose program is
 	// not a bare name the login shell can resolve (see launchResolverFunc). When set,
 	// binaryNames is unused for both availability and launch.
@@ -374,16 +374,43 @@ func setProviderOptionDefaults(provider leapmuxv1.AgentProvider, defaults map[st
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.providerOptionDefaults = defaults })
 }
 
-// setNewAgentOptionDefaults declares defaults that apply only when a request
-// creates a session without a resume handle.
-func setNewAgentOptionDefaults(provider leapmuxv1.AgentProvider, defaults map[string]string) {
-	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.newAgentOptionDefaults = defaults })
+// PermissionDefaults is a provider's complete permission-policy declaration: what a NEW
+// session asks for, and what a session that stored nothing falls back to.
+//
+// The two live together because they are one policy read at two moments, and because
+// keeping them apart let them contradict each other: Goose declared `smart_approve` as
+// its new-session mode in one file and `auto` -- the very mode its bypass shortcut
+// selects -- as its fallback in another, so every RESUMED Goose session opened with
+// permission prompts disabled. One struct in one call puts both under the reader's eye.
+//
+// They stay two FIELDS because they are genuinely two values: Claude asks for Auto Mode
+// but falls back to Default, since a CLI that cannot enter Auto must still start.
+type PermissionDefaults struct {
+	// NewSession is the option id->value set stamped only into a session opened WITHOUT a
+	// resume handle. A provider may name several ids: Copilot sets both of its axes.
+	NewSession map[string]string
+	// Fallback is the permission mode for a session that carries no stored one -- a
+	// resume, a relaunch, or a row written before the axis existed. "" means the provider
+	// has no permission-mode axis at all, and the option is left unset.
+	Fallback string
 }
 
-// NewAgentOptionDefaults returns the safe defaults for a new session.
+// setPermissionDefaults declares a provider's permission policy. Called from the
+// provider's own init(), so the values live in that provider's file.
+func setPermissionDefaults(provider leapmuxv1.AgentProvider, defaults PermissionDefaults) {
+	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.permissionDefaults = defaults })
+}
+
+// NewAgentOptionDefaults returns the safe option values for a new session.
 // The returned map is shared and read-only.
 func NewAgentOptionDefaults(provider leapmuxv1.AgentProvider) map[string]string {
-	return agentFactoryRegistry[provider].newAgentOptionDefaults
+	return agentFactoryRegistry[provider].permissionDefaults.NewSession
+}
+
+// FallbackPermissionMode returns the mode a session with no stored one takes, or "" for a
+// provider with no permission-mode axis.
+func FallbackPermissionMode(provider leapmuxv1.AgentProvider) string {
+	return agentFactoryRegistry[provider].permissionDefaults.Fallback
 }
 
 // addStaticOptionGroups appends provider-owned groups to the static catalog.
@@ -709,6 +736,36 @@ type binaryAvailabilityKey struct {
 	shellPath  string
 	loginShell bool
 	binaryName string
+}
+
+// binaryFlagUnsupportedCache remembers, for this worker process, that one binary
+// rejected one launch flag. A capability belongs to the INSTALLED CLI, not to the agent
+// that happened to discover it: without this, a second tab repeats the failed spawn, and
+// every restart of the same tab forgets and fails again -- which turns a stored option
+// into a tab that can never start.
+//
+// Only a NEGATIVE result is stored, and only from a launch the CLI itself refused, so
+// there is nothing to invalidate: a flag a binary accepts is never recorded, and an
+// upgraded CLI is a new worker process.
+var binaryFlagUnsupportedCache sync.Map // binaryFlagKey -> struct{}
+
+type binaryFlagKey struct {
+	binaryAvailabilityKey
+	flag string
+}
+
+// MarkBinaryFlagUnsupported records that binaryName rejected flag under this shell.
+func MarkBinaryFlagUnsupported(shellPath string, loginShell bool, binaryName, flag string) {
+	binaryFlagUnsupportedCache.Store(
+		binaryFlagKey{binaryAvailabilityKey{shellPath, loginShell, binaryName}, flag}, struct{}{})
+}
+
+// BinaryFlagUnsupported reports whether a previous launch in this worker process proved
+// that binaryName rejects flag under this shell.
+func BinaryFlagUnsupported(shellPath string, loginShell bool, binaryName, flag string) bool {
+	_, found := binaryFlagUnsupportedCache.Load(
+		binaryFlagKey{binaryAvailabilityKey{shellPath, loginShell, binaryName}, flag})
+	return found
 }
 
 // checkBinaryAvailable answers whether one binary resolves, and whether

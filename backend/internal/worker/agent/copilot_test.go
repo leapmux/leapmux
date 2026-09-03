@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +25,7 @@ import (
 func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPC(t,
 		func() *CopilotCLIAgent {
-			a := &CopilotCLIAgent{}
+			a := newCopilotCLIAgent("", false)
 			a.modeChannel = modeChannelPermissionMode
 			return a
 		},
@@ -35,7 +36,7 @@ func newCopilotAgentForRPC(t *testing.T) (*CopilotCLIAgent, func() []recordedReq
 func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string) json.RawMessage) (*CopilotCLIAgent, func() []recordedRequest) {
 	return newACPAgentForRPCWithResponder(t,
 		func() *CopilotCLIAgent {
-			a := &CopilotCLIAgent{}
+			a := newCopilotCLIAgent("", false)
 			a.modeChannel = modeChannelPermissionMode
 			return a
 		},
@@ -120,6 +121,30 @@ func TestStartCopilotCLIFallsBackWhenNewSessionDefaultIsUnavailable(t *testing.T
 		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
 }
 
+// The counterpart of the fallback above, and the contract the troubleshooting page
+// states: an EXPLICITLY requested Assisted Approval is never downgraded. A user who asks
+// for it on a CLI that cannot do it must see the startup error, not a session running
+// silently without the option they chose.
+func TestStartCopilotCLIFailsWhenAnExplicitRequestIsUnavailable(t *testing.T) {
+	installFakeCopilotCLI(t, "assisted-unavailable")
+
+	provider, err := StartCopilotCLI(context.Background(), Options{
+		AgentID:       "copilot-explicit",
+		WorkingDir:    t.TempDir(),
+		Shell:         testutil.TestShell(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		Options: map[string]string{
+			contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		},
+		// No NewSessionDefaultOptionIDs: the value came from the user, not from LeapMux.
+	}, &testSink{})
+	if provider != nil {
+		t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	}
+	require.Error(t, err, "an explicit request must surface the CLI's refusal")
+	assert.True(t, isCopilotAssistedApprovalUnavailable(err))
+}
+
 func TestBuildCopilotSessionRequest_NewSession(t *testing.T) {
 	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, acpMethodSessionLoad)
 	assert.Equal(t, acpMethodSessionNew, method)
@@ -153,31 +178,140 @@ func TestCopilotBaseArgsEnableAssistedApproval(t *testing.T) {
 func TestCopilotAssistedApprovalOptionGroup(t *testing.T) {
 	t.Parallel()
 
-	agent := &CopilotCLIAgent{acpBase: acpBase{
-		modeChannel:       modeChannelPermissionMode,
-		secondaryFallback: fallbackCopilotCLIModes(),
-	}}
-	agent.assistedApproval = contracts.CopilotPermissionValueOn
+	agent := newCopilotCLIAgent(contracts.CopilotPermissionValueOn, false)
+	agent.modeChannel = modeChannelPermissionMode
+	agent.secondaryFallback = fallbackCopilotCLIModes()
 
 	group := optionids.GroupByID(agent.OptionGroups(), contracts.CopilotPermissionGroupAssistedApproval)
 	require.NotNil(t, group)
 	assert.Equal(t, "Assisted Approval", group.GetLabel())
 	assert.Equal(t, contracts.CopilotPermissionValueOn, group.GetCurrentValue())
-	assert.Equal(t, contracts.CopilotPermissionValueOn, group.GetDefaultValue())
+	// DefaultValue is Off: the value a session runs at when nothing sets this axis, which
+	// is what an empty current resolves to and what a first settlement is measured
+	// against. That a NEW session asks for On lives in NewAgentOptionDefaults instead, so
+	// a resumed session settling this axis is not announced as a change it never made.
+	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetDefaultValue())
 	assert.Equal(t, []string{contracts.CopilotPermissionValueOff, contracts.CopilotPermissionValueOn},
 		[]string{group.GetOptions()[0].GetId(), group.GetOptions()[1].GetId()})
 	assert.Equal(t, contracts.CopilotPermissionValueOn,
 		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
 }
 
+// The Assisted Approval group must reach the BASE catalog, not only an override. Go
+// resolves acpBase.SettingsSnapshot's own OptionGroups call to the base method, so a
+// provider that decorated only the override would surface a group in the UI that no
+// snapshot ever settles -- the frontend would then hold an unresolved axis forever.
+func TestCopilotAssistedApprovalReachesTheBaseCatalog(t *testing.T) {
+	agent, _ := newCopilotAgentForRPC(t)
+	assistedID := contracts.CopilotPermissionGroupAssistedApproval
+
+	// There is no OptionGroups override left to consult: the decorator runs inside the
+	// base method, so these two reads are the same call, which is exactly the property
+	// under test.
+	require.NotNil(t, optionids.GroupByID(agent.OptionGroups(), assistedID),
+		"the base catalog carries the decorated group")
+	snapshot := agent.SettingsSnapshot()
+	assert.Equal(t, contracts.CopilotPermissionValueOff, snapshot.SurfacedOptions[assistedID],
+		"a snapshot built from that same catalog settles the group, with no hand-patching")
+	assert.Equal(t, OptionSettlementConfirmed, snapshot.Settlements[assistedID].State)
+}
+
+// The static groups carry explicit display slots, and the composer sorts by that field
+// rather than by slice position, so the order lives in GetOrder and nothing else pins it.
+// The declared side effect and the resolver are two statements of ONE rule: the picker
+// tells the user what a click will do, and the resolver does it. This asserts they agree,
+// because a declaration that drifted from the behavior is worse than none -- it would
+// promise the user an outcome the worker does not produce.
+func TestCopilotAssistedApprovalDeclaresWhatTheResolverDoes(t *testing.T) {
+	t.Parallel()
+
+	group := optionids.GroupByID(
+		AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT),
+		contracts.CopilotPermissionGroupAssistedApproval)
+	require.NotNil(t, group)
+
+	var on *leapmuxv1.AvailableOption
+	for _, option := range group.GetOptions() {
+		if option.GetId() == contracts.CopilotPermissionValueOn {
+			on = option
+		} else {
+			assert.Empty(t, option.GetClears(), "only turning the axis ON settles anything")
+		}
+	}
+	require.NotNil(t, on)
+	require.Len(t, on.GetClears(), 1)
+	assert.Equal(t, contracts.CopilotPermissionGroupAllowAll, on.GetClears()[0].GetGroupId())
+	assert.Equal(t, contracts.CopilotPermissionValueOff, on.GetClears()[0].GetValue())
+
+	// The resolver produces exactly what the option declares.
+	resolved := resolveCopilotOptionConflicts(
+		optionmap.Map{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
+		optionmap.Map{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn})
+	for _, effect := range on.GetClears() {
+		assert.Equal(t, effect.GetValue(), resolved[effect.GetGroupId()],
+			"the resolver settles %s exactly as the option declares", effect.GetGroupId())
+	}
+}
+
+func TestCopilotStaticGroupsCarryTheirDisplayOrder(t *testing.T) {
+	t.Parallel()
+
+	groups := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
+	assert.Equal(t, OptionOrderProviderFourth,
+		optionids.GroupByID(groups, contracts.CopilotPermissionGroupAssistedApproval).GetOrder())
+	assert.Equal(t, OptionOrderPermissionMode,
+		optionids.GroupByID(groups, OptionIDPermissionMode).GetOrder())
+	for _, group := range groups {
+		assert.Greater(t, group.GetOrder(), OptionOrderModel,
+			"every provider group sorts after the model group: %s", group.GetId())
+	}
+}
+
 func TestCopilotAssistedApprovalChangeRequiresRestart(t *testing.T) {
 	t.Parallel()
 
-	agent := &CopilotCLIAgent{assistedApproval: contracts.CopilotPermissionValueOff}
+	agent := newCopilotCLIAgent(contracts.CopilotPermissionValueOff, false)
 	result := agent.UpdateSettings(map[string]string{
 		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
 	})
 	assert.False(t, result.AppliedLive)
+}
+
+// The assisted-approval capability belongs to the INSTALLED CLI, not to the agent that
+// discovered it, so it is remembered for the worker process: a second tab and every
+// restart must start with the flag off on the FIRST attempt instead of paying a failed
+// spawn, and a relaunch must not resurrect a flag this binary already refused.
+func TestCopilotBinaryFlagCapabilityIsRememberedPerBinary(t *testing.T) {
+	shell := "/bin/zsh-" + t.Name()
+
+	assert.False(t, BinaryFlagUnsupported(shell, false, copilotBinaryName, copilotAssistedApprovalFlag),
+		"an unprobed binary is not known to refuse the flag")
+
+	MarkBinaryFlagUnsupported(shell, false, copilotBinaryName, copilotAssistedApprovalFlag)
+	assert.True(t, BinaryFlagUnsupported(shell, false, copilotBinaryName, copilotAssistedApprovalFlag))
+
+	// The record is per shell, per login-shell mode, per binary and per flag, so it
+	// cannot leak onto another launch configuration.
+	assert.False(t, BinaryFlagUnsupported(shell, true, copilotBinaryName, copilotAssistedApprovalFlag))
+	assert.False(t, BinaryFlagUnsupported(shell, false, "other-cli", copilotAssistedApprovalFlag))
+	assert.False(t, BinaryFlagUnsupported(shell, false, copilotBinaryName, "--other-flag"))
+}
+
+func TestCopilotWithoutAssistedApprovalDoesNotMutateTheCaller(t *testing.T) {
+	t.Parallel()
+
+	opts := Options{Options: optionmap.Map{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+	}}
+	off := copilotWithoutAssistedApproval(opts)
+
+	assert.Equal(t, contracts.CopilotPermissionValueOff,
+		off.Options[contracts.CopilotPermissionGroupAssistedApproval])
+	assert.Equal(t, contracts.CopilotPermissionValueOn,
+		opts.Options[contracts.CopilotPermissionGroupAssistedApproval],
+		"the caller's launch map must be untouched")
+	assert.Equal(t, []string{"--acp", "--stdio"}, copilotBaseArgs(off),
+		"the downgraded options carry no assisted-approval flag")
 }
 
 func TestCopilotAssistedApprovalUnavailable(t *testing.T) {
@@ -188,7 +322,7 @@ func TestCopilotAssistedApprovalUnavailable(t *testing.T) {
 	)))
 	assert.False(t, isCopilotAssistedApprovalUnavailable(fmt.Errorf("initialize: authentication failed")))
 
-	agent := &CopilotCLIAgent{assistedApprovalUnavailable: true}
+	agent := newCopilotCLIAgent("", true)
 	group := optionids.GroupByID(agent.OptionGroups(), contracts.CopilotPermissionGroupAssistedApproval)
 	require.NotNil(t, group)
 	assert.False(t, group.GetMutable())
@@ -384,10 +518,9 @@ func TestCopilotCancelSessionSendsACPMethod(t *testing.T) {
 func TestCopilotAvailableOptionGroupsFallsBack(t *testing.T) {
 	// configure sets both the channel and the static fallback list; OptionGroups serves
 	// that fallback before the session reports a permission-mode catalog.
-	agent := &CopilotCLIAgent{acpBase: acpBase{
-		modeChannel:       modeChannelPermissionMode,
-		secondaryFallback: fallbackCopilotCLIModes(),
-	}}
+	agent := newCopilotCLIAgent("", false)
+	agent.modeChannel = modeChannelPermissionMode
+	agent.secondaryFallback = fallbackCopilotCLIModes()
 
 	groups := agent.OptionGroups()
 	require.Len(t, groups, 2)
@@ -411,7 +544,7 @@ func TestApplyStartupPermissionMode_PushesWhenDiffers(t *testing.T) {
 	agent, requests := newCopilotAgentForRPC(t)
 	agent.permissionMode = CopilotCLIModeAgent
 
-	require.NoError(t, agent.applyStartupPermissionMode(CopilotCLIModePlan))
+	require.NoError(t, agent.applyStartupPermissionMode(CopilotCLIModePlan, false))
 
 	assert.Equal(t, CopilotCLIModePlan, agent.permissionMode)
 	recorded := requests()
@@ -424,7 +557,7 @@ func TestApplyStartupPermissionMode_NoopWhenMatchesCurrent(t *testing.T) {
 	agent, requests := newCopilotAgentForRPC(t)
 	agent.permissionMode = CopilotCLIModePlan
 
-	require.NoError(t, agent.applyStartupPermissionMode(CopilotCLIModePlan))
+	require.NoError(t, agent.applyStartupPermissionMode(CopilotCLIModePlan, false))
 
 	assert.Empty(t, requests(), "no set_mode when the request already matches the server's current")
 }
@@ -433,7 +566,7 @@ func TestApplyStartupPermissionMode_NoopWhenEmpty(t *testing.T) {
 	agent, requests := newCopilotAgentForRPC(t)
 	agent.permissionMode = CopilotCLIModeAgent
 
-	require.NoError(t, agent.applyStartupPermissionMode(""))
+	require.NoError(t, agent.applyStartupPermissionMode("", false))
 
 	assert.Empty(t, requests(), "an empty requested mode is a no-op")
 }
@@ -447,8 +580,32 @@ func TestApplyStartupPermissionMode_RejectionIsFatal(t *testing.T) {
 	})
 	agent.permissionMode = CopilotCLIModeAgent
 
-	err := agent.applyStartupPermissionMode(CopilotCLIModePlan)
+	err := agent.applyStartupPermissionMode(CopilotCLIModePlan, false)
 	require.Error(t, err, "a rejected mode must surface so the caller aborts startup")
+}
+
+// A mode LeapMux chose, not the user, must not kill the session when this build does not
+// offer it: the safe default degrades to whatever mode the handshake reported. Goose is
+// the provider that ships one (smart_approve), and a build without that mode would
+// otherwise fail EVERY new session.
+func TestApplyStartupPermissionMode_SafeDefaultDegradesWhenUnavailable(t *testing.T) {
+	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionSetMode {
+			return json.RawMessage(`{"code":-32602,"message":"unknown mode"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.permissionMode = CopilotCLIModeAgent
+	agent.availableModes = []*leapmuxv1.AvailableOption{{Id: CopilotCLIModeAgent}}
+
+	require.NoError(t, agent.applyStartupPermissionMode(CopilotCLIModePlan, true),
+		"a safe default this session does not offer must not abort startup")
+	assert.Empty(t, requests(), "the mode is never pushed, so the session keeps the one it reported")
+	assert.Equal(t, CopilotCLIModeAgent, agent.permissionMode)
+
+	// The same mode asked for EXPLICITLY still aborts, so a typed --permission-mode this
+	// build cannot enter is reported rather than silently downgraded.
+	require.Error(t, agent.applyStartupPermissionMode(CopilotCLIModePlan, false))
 }
 
 // seedReasoningEffort surfaces a Copilot-shaped reasoning_effort config option, as a

@@ -4,7 +4,7 @@ import type { SettingsItem } from '~/components/chat/settingsGroups'
 import type { DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createMemo, createSignal } from 'solid-js'
-import { optionGroup, resolvedCurrent } from '~/components/chat/settingsGroups'
+import { optionGroup, optionSideEffectText, resolvedCurrent } from '~/components/chat/settingsGroups'
 import { OptionGroupMenuItems } from '~/components/chat/settingsShared'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { shallowEqualArraysDeep } from '~/lib/shallowEqual'
@@ -89,7 +89,15 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
   const items = createMemo<SettingsItem[]>(
     () => {
       const g = group()
-      return g ? g.options.map(o => ({ label: o.name || o.id, value: o.id, tooltip: o.description || undefined })) : []
+      if (!g)
+        return []
+      // The side-effect sentence rides the tooltip rather than a fourth key, so the
+      // shallow comparator below stays exact on a 3-key literal.
+      return g.options.map((o) => {
+        const alsoSets = optionSideEffectText(props.optionGroups, o)
+        const tooltip = [o.description || undefined, alsoSets].filter(Boolean).join(' ')
+        return { label: o.name || o.id, value: o.id, tooltip: tooltip || undefined }
+      })
     },
     [],
     { equals: shallowEqualArraysDeep },

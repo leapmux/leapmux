@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +14,35 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// openAgentAndCapture dispatches OpenAgent and returns the launch options the service
+// handed startAgentFn. It fails the test when the RPC reports an error or the start never
+// runs, so a caller asserts on the options alone. The service and the response writer come
+// back for the cases that also read the response or the persisted row.
+//
+// Six tests in this file drove the same capture-and-await skeleton by hand, in two
+// spellings (a buffered channel, and a mutex plus a done channel). One helper is the only
+// way the timeout, the error check and the locking stay identical across them.
+func openAgentAndCapture(t *testing.T, req *leapmuxv1.OpenAgentRequest) (*Service, *testResponseWriter, agent.Options) {
+	t.Helper()
+	svc, d, w := setupTestService(t)
+	started := make(chan agent.Options, 1)
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+		started <- opts
+		return opts.Options, nil
+	}
+
+	dispatch(d, "OpenAgent", req, w)
+	require.Empty(t, w.errors, "OpenAgent should succeed")
+
+	select {
+	case opts := <-started:
+		return svc, w, opts
+	case <-time.After(5 * time.Second):
+		t.Fatal("startAgentFn did not run within 5 seconds")
+		return nil, nil, agent.Options{}
+	}
+}
+
 func TestOpenAgentAppliesSafePermissionDefaultsToNewSessions(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -24,7 +52,7 @@ func TestOpenAgentAppliesSafePermissionDefaultsToNewSessions(t *testing.T) {
 		{
 			name:     "claude auto",
 			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-			want:     map[string]string{agent.OptionIDPermissionMode: agent.PermissionModeAuto},
+			want:     map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModeAuto},
 		},
 		{
 			name:     "goose smart approve",
@@ -42,92 +70,70 @@ func TestOpenAgentAppliesSafePermissionDefaultsToNewSessions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, d, w := setupTestService(t)
-			started := make(chan agent.Options, 1)
-			svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
-				started <- opts
-				return opts.Options, nil
-			}
-
-			dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+			_, _, opts := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
 				WorkingDir:    t.TempDir(),
 				AgentProvider: tc.provider,
-			}, w)
-			require.Empty(t, w.errors)
-
-			select {
-			case opts := <-started:
-				for id, value := range tc.want {
-					assert.Equal(t, value, opts.Get(id))
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("startAgentFn did not run within 5 seconds")
+			})
+			for id, value := range tc.want {
+				assert.Equal(t, value, opts.Get(id))
 			}
 		})
 	}
 }
 
+// A resumed session receives no safe default: it keeps whatever it had, and falls back to
+// the PROVIDER's own default for an axis it never stored.
+//
+// The assertions are exact values rather than "not the safe value". Goose's provider
+// default and its safe default are the same mode, so a NotEqual could not tell "the safe
+// default was skipped" from "the safe default was applied", and it passed on the very
+// value this change exists to avoid -- Goose's earlier fallback was `auto`, which is the
+// mode Goose's own BYPASS preset selects.
+//
+// resolveLaunchOptions' own decision (a resumed request marks NO id) is asserted in
+// options_test.go. What reaches the provider here is the launch funnel's re-derivation
+// from the resulting values, which is all a later restart can read.
 func TestOpenAgentDoesNotApplySafePermissionDefaultsToResumedSessions(t *testing.T) {
 	cases := []struct {
-		name       string
-		provider   leapmuxv1.AgentProvider
-		safeOption string
-		safeValue  string
+		name        string
+		provider    leapmuxv1.AgentProvider
+		option      string
+		wantResumed string
+		// wantDefaulted is what the launch funnel derives from the resulting VALUE, which
+		// is the only thing a relaunch can read. It is true only where the provider's own
+		// fallback happens to equal its safe default.
+		wantDefaulted bool
 	}{
-		{"claude auto", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, agent.OptionIDPermissionMode, agent.PermissionModeAuto},
-		{"goose smart approve", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, agent.OptionIDPermissionMode, contracts.GooseModeSmartApprove},
-		{"copilot assisted approval", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.CopilotPermissionGroupAssistedApproval, contracts.CopilotPermissionValueOn},
+		{"claude falls back to default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, agent.OptionIDPermissionMode, contracts.ClaudeModeDefault, false},
+		{"goose falls back to smart approve, never its bypass mode", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, agent.OptionIDPermissionMode, contracts.GooseModeSmartApprove, true},
+		{"copilot leaves assisted approval unset", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.CopilotPermissionGroupAssistedApproval, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, d, w := setupTestService(t)
-			started := make(chan agent.Options, 1)
-			svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
-				started <- opts
-				return opts.Options, nil
-			}
-
-			dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+			_, _, opts := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
 				WorkingDir:     t.TempDir(),
 				AgentProvider:  tc.provider,
 				AgentSessionId: "resume-session",
-			}, w)
-			require.Empty(t, w.errors)
-
-			select {
-			case opts := <-started:
-				assert.NotEqual(t, tc.safeValue, opts.Get(tc.safeOption))
-			case <-time.After(5 * time.Second):
-				t.Fatal("startAgentFn did not run within 5 seconds")
-			}
+			})
+			assert.Equal(t, tc.wantResumed, opts.Get(tc.option))
+			assert.Equal(t, tc.wantDefaulted, opts.NewSessionDefaultOptionIDs[tc.option])
 		})
 	}
 }
 
 func TestOpenAgentExplicitPermissionOptionsOverrideSafeDefaults(t *testing.T) {
-	svc, d, w := setupTestService(t)
-	started := make(chan agent.Options, 1)
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
-		started <- opts
-		return opts.Options, nil
-	}
-
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	_, _, opts := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		Options: map[string]string{
 			contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn,
 		},
-	}, w)
-	require.Empty(t, w.errors)
-
-	select {
-	case opts := <-started:
-		assert.Equal(t, contracts.CopilotPermissionValueOn, opts.Get(contracts.CopilotPermissionGroupAllowAll))
-		assert.Equal(t, contracts.CopilotPermissionValueOff, opts.Get(contracts.CopilotPermissionGroupAssistedApproval))
-	case <-time.After(5 * time.Second):
-		t.Fatal("startAgentFn did not run within 5 seconds")
-	}
+	})
+	assert.Equal(t, contracts.CopilotPermissionValueOn, opts.Get(contracts.CopilotPermissionGroupAllowAll),
+		"the explicit request wins over the safe default")
+	// Requesting Allow All leaves Assisted Approval at its safe default: clearing that
+	// axis costs a process restart, and Allow All already supersedes it.
+	assert.Equal(t, contracts.CopilotPermissionValueOn, opts.Get(contracts.CopilotPermissionGroupAssistedApproval))
 }
 
 // TestOpenAgent_DefaultsEffortToAuto verifies that when the OpenAgent
@@ -136,37 +142,13 @@ func TestOpenAgentExplicitPermissionOptionsOverrideSafeDefaults(t *testing.T) {
 // LeapMux to a specific effort name that older CLIs may not recognize).
 func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t)
-
-	var capturedMu sync.Mutex
-	var captured agent.Options
-	done := make(chan struct{})
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
-		capturedMu.Lock()
-		captured = opts
-		capturedMu.Unlock()
-		close(done)
-		return map[string]string{}, nil
-	}
-
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	svc, w, captured := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, w)
-
-	require.Empty(t, w.errors, "OpenAgent should succeed")
+	})
 	require.Len(t, w.responses, 1)
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("startAgentFn not invoked within 5s")
-	}
-
-	capturedMu.Lock()
-	effort := captured.Effort()
-	capturedMu.Unlock()
-	assert.Equal(t, "auto", effort,
+	assert.Equal(t, "auto", captured.Effort(),
 		"agent.Options.Effort should default to \"auto\" (CLI picks its own default)")
 
 	var resp leapmuxv1.OpenAgentResponse
@@ -189,36 +171,11 @@ func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 func TestOpenAgent_RespectsEnvOverride(t *testing.T) {
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_EFFORT", "high")
 
-	svc, d, w := setupTestService(t)
-
-	var capturedMu sync.Mutex
-	var captured agent.Options
-	done := make(chan struct{})
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
-		capturedMu.Lock()
-		captured = opts
-		capturedMu.Unlock()
-		close(done)
-		return map[string]string{}, nil
-	}
-
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	_, _, captured := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, w)
-
-	require.Empty(t, w.errors, "OpenAgent should succeed")
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("startAgentFn not invoked within 5s")
-	}
-
-	capturedMu.Lock()
-	effort := captured.Effort()
-	capturedMu.Unlock()
-	assert.Equal(t, "high", effort,
+	})
+	assert.Equal(t, "high", captured.Effort(),
 		"env var LEAPMUX_CLAUDE_DEFAULT_EFFORT should override the \"auto\" default")
 }
 
@@ -228,36 +185,11 @@ func TestOpenAgent_RespectsEnvOverride(t *testing.T) {
 func TestOpenAgent_PreservesExplicitEffort(t *testing.T) {
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_EFFORT", "high")
 
-	svc, d, w := setupTestService(t)
-
-	var capturedMu sync.Mutex
-	var captured agent.Options
-	done := make(chan struct{})
-	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
-		capturedMu.Lock()
-		captured = opts
-		capturedMu.Unlock()
-		close(done)
-		return map[string]string{}, nil
-	}
-
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+	_, _, captured := openAgentAndCapture(t, &leapmuxv1.OpenAgentRequest{
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{agent.OptionIDEffort: "medium"},
-	}, w)
-
-	require.Empty(t, w.errors, "OpenAgent should succeed")
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("startAgentFn not invoked within 5s")
-	}
-
-	capturedMu.Lock()
-	effort := captured.Effort()
-	capturedMu.Unlock()
-	assert.Equal(t, "medium", effort,
+	})
+	assert.Equal(t, "medium", captured.Effort(),
 		"explicit effort in OpenAgent request should win over env var override")
 }

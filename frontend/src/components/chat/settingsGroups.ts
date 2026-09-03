@@ -1,4 +1,4 @@
-import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AvailableOption, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { equals } from '@bufbuild/protobuf'
 import { EFFORT_AUTO } from '~/generated/contracts/worker-vocab'
 import { AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -52,6 +52,32 @@ export function optionGroup(optionGroups: AvailableOptionGroup[] | undefined, id
  */
 export function hasOptions(group: AvailableOptionGroup | undefined): boolean {
   return !!group && group.options.length > 0
+}
+
+/**
+ * The sentence describing what selecting `option` ALSO changes, or undefined when it
+ * changes nothing else.
+ *
+ * The worker declares the consequence on the option itself (AvailableOption.clears), so
+ * the picker can say it before the click instead of leaving the user to notice that a
+ * second axis moved. Labels come from the live catalog, so the sentence names what the
+ * user sees rather than the wire ids.
+ */
+export function optionSideEffectText(
+  optionGroups: AvailableOptionGroup[] | undefined,
+  option: AvailableOption,
+): string | undefined {
+  // `?? []` because a catalog object does not always come from a decoded proto: the tab
+  // store and the tests build option literals by hand, and a missing repeated field must
+  // read as "settles nothing" rather than throw while a picker is rendering.
+  const parts = (option.clears ?? []).map((effect) => {
+    const target = optionGroup(optionGroups, effect.groupId)
+    if (!target)
+      return undefined
+    const value = target.options.find(o => o.id === effect.value)
+    return `${target.label || effect.groupId} to ${value?.name || effect.value}`
+  }).filter((part): part is string => !!part)
+  return parts.length > 0 ? `Also sets ${parts.join(' and ')}.` : undefined
 }
 
 /** Whether the catalog holds `id` AND that group offers at least one option. */

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -844,7 +846,7 @@ func TestHandleOutput_PlanModeEnterExit(t *testing.T) {
 
 	modes := sink.PermissionModes()
 	require.Len(t, modes, 1)
-	assert.Equal(t, PermissionModePlan, modes[0])
+	assert.Equal(t, contracts.ClaudeModePlan, modes[0])
 }
 
 func TestHandleOutput_PlanModeEnter_StringToolUseResult(t *testing.T) {
@@ -878,7 +880,7 @@ func TestHandleOutput_PlanModeEnter_StringToolUseResult(t *testing.T) {
 
 	modes := sink.PermissionModes()
 	require.Len(t, modes, 1)
-	assert.Equal(t, PermissionModePlan, modes[0])
+	assert.Equal(t, contracts.ClaudeModePlan, modes[0])
 }
 
 func TestHandleOutput_MultipleToolUses(t *testing.T) {

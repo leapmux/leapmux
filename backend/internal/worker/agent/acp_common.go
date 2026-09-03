@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,9 +160,25 @@ type acpBase struct {
 	// the old syncsPermissionMode/syncsPrimaryAgent bool pair so the illegal "both set"
 	// state is unrepresentable and every family-conditional site reads one field.
 	modeChannel acpModeChannel
-	// orderPermissionModes applies a provider order to each rebuilt permission list.
-	// Goose uses it to put Smart Approve first. Other providers leave it nil.
-	orderPermissionModes func([]*leapmuxv1.AvailableOption)
+	// preferredFirstMode, when non-empty, is the permission-mode id this provider lists
+	// first in every rebuilt permission list. Goose declares smart_approve, its safe
+	// new-session mode. "" keeps the order the server reports.
+	//
+	// Position 0 is not only a display order: secondaryGroup stamps
+	// defaultOrFirstOption(options) as the group's DefaultValue, and
+	// reconcileCurrentOptionID re-seeds the current selection from the same option. So
+	// the preferred mode is also the one this provider falls back to.
+	preferredFirstMode string
+	// decorateOptionGroups lets a provider add or drop groups that no ACP channel ever
+	// reports. Copilot's Assisted Approval rides the launch flags, so no server payload
+	// carries it, and the base must surface it in the catalog AND in every result derived
+	// from that catalog -- SettingsSnapshot builds its settlements from OptionGroups, and
+	// Go resolves that call to the BASE method however the provider embeds acpBase. A
+	// provider that only overrode OptionGroups would therefore report a group the UI shows
+	// but no snapshot settles. nil leaves the base catalog alone.
+	//
+	// It runs OUTSIDE b.mu, because the base body holds the lock for its whole span.
+	decorateOptionGroups func([]*leapmuxv1.AvailableOptionGroup) []*leapmuxv1.AvailableOptionGroup
 	// secondaryChannelOnce/secondaryChannelCache memoize the resolved secondary channel.
 	// modeChannel is fixed at construction (configure) and the channel's field/list POINTERS
 	// and closures all capture b (stable), so the resolution is invariant for the agent's
@@ -636,9 +653,7 @@ func (b *acpBase) buildSecondaryChannel() acpSecondaryChannel {
 		sc.available = &b.availableModes
 		sc.rebuild = func(modes []acpModeInfo, reported string) {
 			if rebuilt := buildACPModes(modes, reported, nil); len(rebuilt) > 0 {
-				if b.orderPermissionModes != nil {
-					b.orderPermissionModes(rebuilt)
-				}
+				orderModesPreferredFirst(rebuilt, b.preferredFirstMode)
 				b.availableModes = rebuilt
 			}
 		}
@@ -2088,8 +2103,7 @@ type acpStartSpec[T any] struct {
 	provider       leapmuxv1.AgentProvider                    // registry key; lets acpStart seed b.secondaryFallback from the provider's registration
 	providerName   string                                     // process/log name, e.g. "cursor"
 	binaryName     string                                     // CLI binary to launch
-	baseArgs       []string                                   // args after the binary, e.g. {"acp"}
-	baseArgsFor    func(Options) []string                     // option-dependent args; overrides baseArgs when set
+	baseArgs       []string                                   // args after the binary, e.g. {"acp"}; a provider whose args depend on the launch options builds them at the call site (see copilotBaseArgs)
 	rcMarkerEnvKey string                                     // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
 	sessionConfig  acpSessionConfig                           // zero value -> acpDefaultSessionConfig
 	newAgent       func() *T                                  // construct a zero-value concrete agent
@@ -2111,15 +2125,11 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 		cancel()
 		return nil, err
 	}
-	baseArgs := spec.baseArgs
-	if spec.baseArgsFor != nil {
-		baseArgs = spec.baseArgsFor(opts)
-	}
 	wrap := shellWrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launch,
-		BaseArgs:   baseArgs,
+		BaseArgs:   spec.baseArgs,
 		WorkingDir: opts.WorkingDir,
 	}
 	if spec.rcMarkerEnvKey != "" {
@@ -2232,6 +2242,16 @@ var (
 // the secondary group. One body serves every ACP family; the axis specifics come from
 // secondaryChannel and the per-provider secondaryFallback, so no provider overrides this.
 func (b *acpBase) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	groups := b.baseOptionGroups()
+	if b.decorateOptionGroups != nil {
+		return b.decorateOptionGroups(groups)
+	}
+	return groups
+}
+
+// baseOptionGroups builds the catalog from the ACP channels alone. Split from
+// OptionGroups so the decorator runs after the lock is released.
+func (b *acpBase) baseOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var groups []*leapmuxv1.AvailableOptionGroup
@@ -2615,18 +2635,35 @@ func (b *acpBase) trySetStartupModel(requested string) {
 // the model, the mode is mandatory: a rejected mode returns an error so the caller
 // aborts startup.
 //
+// One case never aborts: a mode LeapMux itself chose (the new-session safe default)
+// that this session's own mode list does not offer. Goose declares smart_approve as
+// its safe default, and a build that reports no such mode would otherwise fail every
+// new session with "unknown mode" -- a mode the user never asked for killing the tab.
+// The session keeps the mode the handshake reported instead, and the warning names
+// what happened. An EXPLICIT request still aborts, so a typed --permission-mode that
+// this build cannot enter is reported rather than silently downgraded. Claude
+// (isAutoModeUnavailableError) and Copilot (the assisted-approval relaunch) degrade
+// their own safe defaults the same way.
+//
 // The current mode is read under b.mu: startACPHandshake starts the reader
 // goroutine before Start* reaches this point, and that goroutine can write
 // permissionMode concurrently (syncConfigOptionModeLocked for Copilot/Goose/Cursor).
 // This mirrors trySetStartupModel's locked read of b.model.
-func (b *acpBase) applyStartupPermissionMode(requested string) error {
+func (b *acpBase) applyStartupPermissionMode(requested string, defaulted bool) error {
 	if requested == "" {
 		return nil
 	}
 	b.mu.Lock()
 	current := b.permissionMode
+	available := b.availableModes
 	b.mu.Unlock()
 	if requested == current {
+		return nil
+	}
+	if defaulted && len(available) > 0 && !hasACPOption(available, requested) {
+		slog.Warn("this session does not offer the safe default permission mode; keeping the mode it reported",
+			"provider", b.providerName, "agent_id", b.agentID,
+			"requested", requested, "current", current)
 		return nil
 	}
 	return b.setSecondary(requested)
@@ -2643,9 +2680,7 @@ func (b *acpBase) applyStartupPermissionMode(requested string) error {
 // Used by ACP providers that track a permission mode (Copilot, Goose, Cursor).
 func (b *acpBase) applyHandshakeMode(handshake *acpSessionResult, defaultMode string) {
 	modes := buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
-	if b.orderPermissionModes != nil {
-		b.orderPermissionModes(modes)
-	}
+	orderModesPreferredFirst(modes, b.preferredFirstMode)
 	mode := handshake.CurrentModeID
 	if mode == "" {
 		mode = defaultMode
@@ -2688,7 +2723,8 @@ func (b *acpBase) applySecondaryStartup(handshake *acpSessionResult, opts Option
 func (b *acpBase) applyPermissionModeStartup(handshake *acpSessionResult, opts Options, defaultMode, requestedModel string) error {
 	return b.applySecondaryStartup(handshake, opts, requestedModel, func() error {
 		b.applyHandshakeMode(handshake, defaultMode)
-		return b.applyStartupPermissionMode(opts.PermissionMode())
+		return b.applyStartupPermissionMode(
+			opts.PermissionMode(), opts.NewSessionDefaultOptionIDs[OptionIDPermissionMode])
 	})
 }
 
@@ -2882,14 +2918,15 @@ func buildConfigOptionSelect(options []acpConfigOption, hiddenFilter func(string
 // mode or the primary agent) from the `mode` select of a configOptions payload. It
 // writes the available-option list and the current value into the caller-supplied
 // fields, and reports the new value, whether the current value changed, and whether
-// the available list changed. orderOptions applies a provider order before comparison.
-// The caller must hold b.mu. Shared by
+// the available list changed. preferredFirst, when non-empty, lists that option id
+// first before the comparison, so the rebuilt list matches what the handshake path
+// produced and an unchanged catalog compares equal. The caller must hold b.mu. Shared by
 // syncConfigOptionModeLocked and syncConfigOptionPrimaryAgentLocked, which differ
-// only in the hidden filter and the two target fields.
+// only in the hidden filter, the preferred first option, and the two target fields.
 func (b *acpBase) syncConfigOptionSelectLocked(
 	options []acpConfigOption,
 	hiddenFilter func(string) bool,
-	orderOptions func([]*leapmuxv1.AvailableOption),
+	preferredFirst string,
 	available *[]*leapmuxv1.AvailableOption,
 	currentField *string,
 ) (value string, changed, listChanged bool) {
@@ -2897,9 +2934,7 @@ func (b *acpBase) syncConfigOptionSelectLocked(
 	if !ok {
 		return "", false, false
 	}
-	if orderOptions != nil {
-		orderOptions(built)
-	}
+	orderModesPreferredFirst(built, preferredFirst)
 	// The len>0 guard mirrors the model channel (applyConfigOptionModelsLocked): an
 	// update that rebuilds to an empty list never blanks a populated picker.
 	if len(built) > 0 && !protoSliceEqual(*available, built) {
@@ -2929,7 +2964,7 @@ func (b *acpBase) syncConfigOptionSelectLocked(
 // b.mu. Used by ACP providers whose configOptions `mode` maps to the permission
 // mode (Copilot, Goose, Cursor).
 func (b *acpBase) syncConfigOptionModeLocked(options []acpConfigOption) (string, bool, bool) {
-	return b.syncConfigOptionSelectLocked(options, nil, b.orderPermissionModes, &b.availableModes, &b.permissionMode)
+	return b.syncConfigOptionSelectLocked(options, nil, b.preferredFirstMode, &b.availableModes, &b.permissionMode)
 }
 
 // syncConfigOptionPrimaryAgentLocked refreshes currentPrimaryAgent and
@@ -2940,7 +2975,7 @@ func (b *acpBase) syncConfigOptionModeLocked(options []acpConfigOption) (string,
 // primary-agent switch is reflected -- the mirror of syncConfigOptionModeLocked for
 // the permission-mode providers.
 func (b *acpBase) syncConfigOptionPrimaryAgentLocked(options []acpConfigOption) (string, bool, bool) {
-	return b.syncConfigOptionSelectLocked(options, b.primaryAgentHiddenFilter, nil, &b.availablePrimaryAgents, &b.currentPrimaryAgent)
+	return b.syncConfigOptionSelectLocked(options, b.primaryAgentHiddenFilter, "", &b.availablePrimaryAgents, &b.currentPrimaryAgent)
 }
 
 // acpRefreshMap builds the PersistSettingsRefresh delta for the ACP providers. model and mode
@@ -2997,6 +3032,29 @@ func buildACPModes(modes []acpModeInfo, currentModeID string, filter func(id str
 		})
 	}
 	return result
+}
+
+// orderModesPreferredFirst moves the option whose id is `preferred` to the front of
+// options, and keeps every other option in the order the server reported. An empty
+// `preferred`, an absent id, or an empty list leaves the slice untouched.
+//
+// A provider declares the id once (acpBase.preferredFirstMode) and every site that
+// rebuilds its list calls this, so the handshake list, the live config-option list and
+// the static fallback list cannot disagree about which mode comes first. That matters
+// beyond the drawing order: secondaryGroup reads position 0 for the group's
+// DefaultValue, and reconcileCurrentOptionID re-seeds the current selection from it.
+//
+// sort.SliceStable rather than a shift, matching sortEffortsDescending: the predicate
+// is a strict weak ordering with two classes (the preferred id, and everything else),
+// so a server that reports the preferred id TWICE leaves both copies at the front and
+// rotates nothing.
+func orderModesPreferredFirst(options []*leapmuxv1.AvailableOption, preferred string) {
+	if preferred == "" {
+		return
+	}
+	sort.SliceStable(options, func(i, j int) bool {
+		return options[i].GetId() == preferred && options[j].GetId() != preferred
+	})
 }
 
 func parseACPConfigOptions(raw json.RawMessage) []acpConfigOption {

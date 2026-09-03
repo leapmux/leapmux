@@ -557,7 +557,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "sonnet",
 			agent.OptionIDEffort:         retiredEffort,
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+			agent.OptionIDPermissionMode: contracts.ClaudeModeDefault,
 		}),
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
@@ -566,7 +566,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 	// inherited via the merge, not explicitly sent.
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
-		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDPermissionMode: agent.PermissionModePlan}},
+		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModePlan}},
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -575,7 +575,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 	got := loadOptions(dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort],
 		"an inherited effort the unchanged model no longer offers resets to auto")
-	assert.Equal(t, agent.PermissionModePlan, got[agent.OptionIDPermissionMode],
+	assert.Equal(t, contracts.ClaudeModePlan, got[agent.OptionIDPermissionMode],
 		"the actual edit (permission mode) still applies")
 	assert.Equal(t, "sonnet", got[agent.OptionIDModel], "the model is unchanged")
 }
@@ -881,7 +881,7 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 		foreign  string
 	}{
 		{"effort against Cursor", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, agent.OptionIDEffort},
-		{"allow_all against Claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, agent.CopilotConfigAllowAll},
+		{"allow_all against Claude", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, contracts.CopilotPermissionGroupAllowAll},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1876,6 +1876,49 @@ func TestSettingsResponseSettlements_ReportsConfirmedRemovalAndUnresolvedValue(t
 	assert.Equal(t, agent.OptionSettlementConfirmed, got["removed_option"].State)
 	assert.Nil(t, got["removed_option"].Value)
 	assert.Equal(t, agent.OptionSettlementUnresolved, got["service_tier"].State)
+}
+
+// Every RELAUNCH must carry the safe-default provenance, which only the OpenAgent request
+// knew. A restart that dropped it silently disabled Copilot's launch fallback, so a
+// stored Assisted Approval that the CLI refuses left the tab with no process on every
+// attempt -- and nothing said why.
+func TestApplySettingsViaRestartCarriesSafeDefaultProvenance(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	agentID := "copilot-restart-provenance"
+
+	stored := map[string]string{
+		// The value a new Copilot session receives, now replayed from the row.
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		agent.OptionIDModel: "gpt-5",
+	}
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            agentID,
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		Options:       marshalOptions(stored),
+	}))
+
+	launched := make(chan agent.Options, 1)
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.OutputSink) (map[string]string, error) {
+		launched <- opts
+		return opts.Options, nil
+	}
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	svc.applySettingsViaRestart(dbAgent, OptionMap(stored))
+
+	select {
+	case opts := <-launched:
+		assert.True(t, opts.NewSessionDefaultOptionIDs[contracts.CopilotPermissionGroupAssistedApproval],
+			"a value still equal to the safe default keeps the provider's launch fallback armed")
+		assert.False(t, opts.NewSessionDefaultOptionIDs[agent.OptionIDModel],
+			"an axis with no safe default is never reported as default-sourced")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the restart did not launch within 5 seconds")
+	}
 }
 
 func TestSettingsResponseSettlementsReportsIndirectCopilotConflict(t *testing.T) {

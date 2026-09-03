@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,12 +35,12 @@ func TestClaudeCodePermissionModeOptions_AllDescriptionsPopulated(t *testing.T) 
 	require.NotNil(t, permGroup, "permission-mode option group not found")
 
 	wantIDs := []string{
-		PermissionModeDefault,
-		PermissionModePlan,
-		PermissionModeAcceptEdits,
-		PermissionModeBypassPermissions,
-		PermissionModeDontAsk,
-		PermissionModeAuto,
+		contracts.ClaudeModeDefault,
+		contracts.ClaudeModePlan,
+		contracts.ClaudeModeAcceptEdits,
+		contracts.ClaudeModeBypassPermissions,
+		contracts.ClaudeModeDontAsk,
+		contracts.ClaudeModeAuto,
 	}
 	options := permGroup.GetOptions()
 	require.Len(t, options, len(wantIDs), "expected 6 permission modes")
@@ -60,37 +62,37 @@ func TestClaudeCodePermissionModeOptions_AllDescriptionsPopulated(t *testing.T) 
 func TestFilterPermissionModeGroup_AutoAvailable(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	got := livePermissionModeGroup(staticGroup, PermissionModePlan, true)
+	got := livePermissionModeGroup(staticGroup, contracts.ClaudeModePlan, true)
 
 	// When auto is available, the options list is shared (unfiltered) and the
 	// current value is overlaid onto a fresh live group.
 	assert.Len(t, got.GetOptions(), 6)
-	assert.Equal(t, PermissionModePlan, got.GetCurrentValue())
-	assert.Equal(t, PermissionModeAuto, got.GetDefaultValue())
+	assert.Equal(t, contracts.ClaudeModePlan, got.GetCurrentValue())
+	assert.Equal(t, contracts.ClaudeModeDefault, got.GetDefaultValue())
 }
 
 func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	got := livePermissionModeGroup(staticGroup, PermissionModeDefault, false)
+	got := livePermissionModeGroup(staticGroup, contracts.ClaudeModeDefault, false)
 
 	require.NotSame(t, staticGroup, got, "filtered result must be a fresh copy")
 	assert.Equal(t, staticGroup.GetId(), got.GetId())
 	assert.Equal(t, staticGroup.GetLabel(), got.GetLabel())
-	assert.Equal(t, PermissionModeDefault, got.GetDefaultValue())
+	assert.Equal(t, contracts.ClaudeModeDefault, got.GetDefaultValue())
 
 	ids := make([]string, 0, len(got.GetOptions()))
 	for _, o := range got.GetOptions() {
 		ids = append(ids, o.GetId())
 		assert.NotEmptyf(t, o.GetDescription(), "mode %q: Description must be preserved after filtering", o.GetId())
 	}
-	assert.NotContains(t, ids, PermissionModeAuto, "auto must be filtered out")
+	assert.NotContains(t, ids, contracts.ClaudeModeAuto, "auto must be filtered out")
 	assert.ElementsMatch(t, []string{
-		PermissionModeDefault,
-		PermissionModePlan,
-		PermissionModeAcceptEdits,
-		PermissionModeBypassPermissions,
-		PermissionModeDontAsk,
+		contracts.ClaudeModeDefault,
+		contracts.ClaudeModePlan,
+		contracts.ClaudeModeAcceptEdits,
+		contracts.ClaudeModeBypassPermissions,
+		contracts.ClaudeModeDontAsk,
 	}, ids, "remaining modes should include dontAsk and all non-auto modes")
 }
 
@@ -102,33 +104,41 @@ func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
 func TestLivePermissionModeGroup_KeepsCurrentAutoWhenUnavailable(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	got := livePermissionModeGroup(staticGroup, PermissionModeAuto, false)
+	got := livePermissionModeGroup(staticGroup, contracts.ClaudeModeAuto, false)
 
-	assert.Equal(t, PermissionModeAuto, got.GetCurrentValue())
+	assert.Equal(t, contracts.ClaudeModeAuto, got.GetCurrentValue())
 	ids := make([]string, 0, len(got.GetOptions()))
 	for _, o := range got.GetOptions() {
 		ids = append(ids, o.GetId())
 	}
-	assert.Contains(t, ids, PermissionModeAuto,
+	assert.Contains(t, ids, contracts.ClaudeModeAuto,
 		"the current value must stay selectable even when autoModeAvailable is false")
 
 	// The filter still hides auto when it is NOT the current value (the ordinary unavailable case).
-	hidden := livePermissionModeGroup(staticGroup, PermissionModePlan, false)
+	hidden := livePermissionModeGroup(staticGroup, contracts.ClaudeModePlan, false)
 	hiddenIDs := make([]string, 0, len(hidden.GetOptions()))
 	for _, o := range hidden.GetOptions() {
 		hiddenIDs = append(hiddenIDs, o.GetId())
 	}
-	assert.NotContains(t, hiddenIDs, PermissionModeAuto,
+	assert.NotContains(t, hiddenIDs, contracts.ClaudeModeAuto,
 		"auto is still hidden when it is unavailable and not the current value")
 }
 
 func TestLivePermissionModeGroup_EmptyCurrentFallsBackToDefault(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	// An empty current uses Auto when the session offers Auto.
+	// An empty current must resolve to the template's default rather than rendering a
+	// blank selection (delegated to liveGroup's empty-current fallback). The default is
+	// the TEMPLATE's, on both branches: a session that cannot enter Auto Mode must not
+	// be shown Auto Mode as its default either.
 	got := livePermissionModeGroup(staticGroup, "", true)
-	assert.Equal(t, PermissionModeAuto, got.GetCurrentValue())
-	assert.Equal(t, PermissionModeAuto, got.GetDefaultValue())
+	assert.Equal(t, staticGroup.GetDefaultValue(), got.GetCurrentValue())
+	assert.Equal(t, contracts.ClaudeModeDefault, got.GetCurrentValue())
+	assert.Equal(t, contracts.ClaudeModeDefault, got.GetDefaultValue())
+
+	unavailable := livePermissionModeGroup(staticGroup, "", false)
+	assert.Equal(t, contracts.ClaudeModeDefault, unavailable.GetCurrentValue())
+	assert.Equal(t, contracts.ClaudeModeDefault, unavailable.GetDefaultValue())
 }
 
 func TestIsAutoModeUnavailableError(t *testing.T) {
@@ -166,7 +176,7 @@ func TestClaudeCodeAgent_AvailableOptionGroupsFiltersAutoWhenUnavailable(t *test
 	permGroup := optionids.GroupByID(groups, OptionIDPermissionMode)
 	require.NotNil(t, permGroup)
 	for _, o := range permGroup.GetOptions() {
-		assert.NotEqual(t, PermissionModeAuto, o.GetId(), "auto must not appear when autoModeAvailable is false")
+		assert.NotEqual(t, contracts.ClaudeModeAuto, o.GetId(), "auto must not appear when autoModeAvailable is false")
 	}
 
 	agent.autoModeAvailable = true
@@ -175,7 +185,7 @@ func TestClaudeCodeAgent_AvailableOptionGroupsFiltersAutoWhenUnavailable(t *test
 	require.NotNil(t, permGroup)
 	found := false
 	for _, o := range permGroup.GetOptions() {
-		if o.GetId() == PermissionModeAuto {
+		if o.GetId() == contracts.ClaudeModeAuto {
 			found = true
 			break
 		}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,36 +19,66 @@ func TestCopilotResolveOptionConflicts(t *testing.T) {
 	provider := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
 	cases := []struct {
 		name      string
-		current   map[string]string
-		requested map[string]string
-		want      map[string]string
+		current   optionmap.Map
+		requested optionmap.Map
+		want      optionmap.Map
 	}{
 		{
 			name:      "assisted approval disables allow all",
 			current:   map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
-			requested: map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
-			want: map[string]string{
+			requested: optionmap.Map{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
+			want: optionmap.Map{
 				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
 				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
 			},
 		},
 		{
-			name:      "allow all disables assisted approval",
+			// The reverse of the rule above does NOT hold. Clearing Assisted Approval takes
+			// a process restart, because that axis rides the launch flags, and a bypass
+			// click that restarts the CLI mid-turn is a worse answer than letting the
+			// broader permission win -- Allow All already supersedes it while both are on.
+			name:      "allow all leaves assisted approval alone",
 			current:   map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
-			requested: map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
-			want: map[string]string{
-				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOff,
+			requested: optionmap.Map{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
+			want: optionmap.Map{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
 				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
 			},
 		},
 		{
 			name:    "assisted approval wins one conflicting request",
-			current: map[string]string{},
-			requested: map[string]string{
+			current: optionmap.Map{},
+			requested: optionmap.Map{
 				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
 				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
 			},
-			want: map[string]string{
+			want: optionmap.Map{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+			},
+		},
+		{
+			// The resolver runs on EVERY settings edit. A both-on state it never produced
+			// (a settings refresh folds the server's own Allow All in without passing
+			// through here) must survive an edit to an unrelated axis: turning a
+			// permission off during a model change is a change the user never asked for.
+			name: "an unrelated edit leaves a stored conflict alone",
+			current: optionmap.Map{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+			},
+			requested: optionmap.Map{OptionIDModel: "gpt-5"},
+			want: optionmap.Map{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+				OptionIDModel:                                    "gpt-5",
+			},
+		},
+		{
+			name:      "a non-conflicting request passes through",
+			current:   map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
+			requested: optionmap.Map{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOff},
+			want: optionmap.Map{
 				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
 				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
 			},

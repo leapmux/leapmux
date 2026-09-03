@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -226,12 +228,12 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	initialOptions := map[string]string{
 		agent.OptionIDModel:          "opus[1m]",
 		agent.OptionIDEffort:         "high",
-		agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+		agent.OptionIDPermissionMode: contracts.ClaudeModeDefault,
 	}
 	relaunchOptions := map[string]string{
 		agent.OptionIDModel:          "sonnet",
 		agent.OptionIDEffort:         agent.EffortAuto,
-		agent.OptionIDPermissionMode: agent.PermissionModePlan,
+		agent.OptionIDPermissionMode: contracts.ClaudeModePlan,
 	}
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
@@ -276,7 +278,7 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	got := loadOptions(stored.Options, provider)
 	assert.Equal(t, "sonnet", got[agent.OptionIDModel])
 	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort])
-	assert.Equal(t, agent.PermissionModePlan, got[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, got[agent.OptionIDPermissionMode])
 }
 
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
@@ -305,7 +307,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 			return nil, ctx.Err()
 		}
 		confirmed := opts.Options
-		confirmed[agent.OptionIDPermissionMode] = agent.PermissionModeDefault
+		confirmed[agent.OptionIDPermissionMode] = contracts.ClaudeModeDefault
 		return confirmed, nil
 	}
 
@@ -336,7 +338,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	require.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	require.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -369,11 +371,11 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	}, 5*time.Second, 20*time.Millisecond, "expected ACTIVE broadcast after releasing startup")
 
 	require.NotNil(t, activeStatus)
-	assert.Equal(t, agent.PermissionModePlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), agent.OptionIDPermissionMode))
+	assert.Equal(t, contracts.ClaudeModePlan, optionids.CurrentValue(activeStatus.GetOptionGroups(), agent.OptionIDPermissionMode))
 
 	row, err = svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
@@ -392,7 +394,7 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+			agent.OptionIDPermissionMode: contracts.ClaudeModeDefault,
 		}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Resumed:       0,
@@ -403,7 +405,7 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 		Options: map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+			agent.OptionIDPermissionMode: contracts.ClaudeModeDefault,
 		},
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}
@@ -421,7 +423,7 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModePlan,
+			agent.OptionIDPermissionMode: contracts.ClaudeModePlan,
 		}),
 		ID: agentID,
 	}))
@@ -430,15 +432,15 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 		agentID,
 		snapRow.Options,
 		latestOpts,
-		map[string]string{agent.OptionIDPermissionMode: agent.PermissionModeDefault},
+		map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModeDefault},
 		snapRow.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
@@ -457,7 +459,7 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModePlan,
+			agent.OptionIDPermissionMode: contracts.ClaudeModePlan,
 		}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Resumed:       0,
@@ -468,7 +470,7 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 		Options: map[string]string{
 			agent.OptionIDModel:          "opus",
 			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+			agent.OptionIDPermissionMode: contracts.ClaudeModeDefault,
 		},
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}
@@ -478,12 +480,12 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 	startedOpts.Options = map[string]string{
 		agent.OptionIDModel:          "opus",
 		agent.OptionIDEffort:         "high",
-		agent.OptionIDPermissionMode: agent.PermissionModePlan,
+		agent.OptionIDPermissionMode: contracts.ClaudeModePlan,
 	}
 	latestOpts := startedOpts
 
 	confirmed := confirmedSettingsPreservingStartupChanges(
-		map[string]string{agent.OptionIDPermissionMode: agent.PermissionModeDefault},
+		map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModeDefault},
 		initialOpts,
 		latestOpts,
 	)
@@ -497,11 +499,11 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 		preRow.OptionGroups,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(activeRow.Options, activeRow.AgentProvider)[agent.OptionIDPermissionMode])
 
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
-	assert.Equal(t, agent.PermissionModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.ClaudeModePlan, loadOptions(row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
 }
 
 // TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange
@@ -520,7 +522,7 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 		changedEffort   string
 		confirmedEffort string
 	}{
-		{name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, permissionMode: agent.PermissionModeDefault, resolvedModel: "claude-opus", initialEffort: "high", changedEffort: "low", confirmedEffort: "high"},
+		{name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, permissionMode: contracts.ClaudeModeDefault, resolvedModel: "claude-opus", initialEffort: "high", changedEffort: "low", confirmedEffort: "high"},
 		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, permissionMode: agent.CodexDefaultApprovalPolicy, resolvedModel: "gpt-5.6-sol", initialEffort: agent.EffortAuto, changedEffort: "high", confirmedEffort: "low"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -612,7 +614,7 @@ func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefau
 		Title: "cleared default axis",
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          agent.DefaultModelSentinel,
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
+			agent.OptionIDPermissionMode: contracts.ClaudeModeDefault,
 		}),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
