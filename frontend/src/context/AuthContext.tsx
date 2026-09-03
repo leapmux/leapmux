@@ -11,6 +11,7 @@ import { platformBridge } from '~/api/platformBridge'
 import { loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/proto/leapmux/v1/auth_pb'
+import { setBootPhase } from '~/lib/bootSplashTheme'
 import { setStorageAccount } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
@@ -430,9 +431,14 @@ export const AuthProvider: ParentComponent = (props) => {
    * code records nothing, and the app offers a "Log out" that strands them at
    * /login. So a failed load aborts here with a
    * `bootstrapError` for the guard's retry panel to render.
+   *
+   * Each stage also advances the boot splash's checklist (data-boot-phase on
+   * <html>): system info, then the session restore, then ready. A failure
+   * leaves the checklist on the stage that failed, which is the truth.
    */
   const bootstrap = async () => {
     setBootstrapError(null)
+    setBootPhase('system-info')
     try {
       await loadSystemInfo()
     }
@@ -442,7 +448,9 @@ export const AuthProvider: ParentComponent = (props) => {
       setBootstrapError(msg)
       return
     }
+    setBootPhase('session')
     await restoreSession()
+    setBootPhase('ready')
   }
 
   onMount(async () => {

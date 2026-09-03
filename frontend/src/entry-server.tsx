@@ -1,5 +1,5 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
-import { BootSplashIcon } from '~/components/common/BootSplash'
+import { BootSplashIcon, BootSplashProgress } from '~/components/common/BootSplash'
 import {
   BOOT_SPLASH_FAIL_TITLE,
   BOOT_SPLASH_LABEL,
@@ -7,6 +7,7 @@ import {
   BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
   bootFailureWatchdogScript,
+  bootPhaseScript,
   bootSplashDark,
   bootSplashDocumentCss,
   bootSplashLight,
@@ -105,7 +106,8 @@ export default createHandler(() => (
             >
               <div class="boot-splash-loading">
                 <BootSplashIcon />
-                <p>{BOOT_SPLASH_LABEL}</p>
+                <p class="boot-splash-label">{BOOT_SPLASH_LABEL}</p>
+                <BootSplashProgress />
               </div>
               <div class="boot-splash-error" hidden>
                 <p data-boot-fail-title>{BOOT_SPLASH_FAIL_TITLE}</p>
@@ -116,8 +118,15 @@ export default createHandler(() => (
             {children}
           </div>
           {/*
-            After `#app` so a failed entry chunk still leaves the splash in
-            the DOM for the watchdog to rewrite. Inline — must not depend on
+            Advance the splash checklist to "Loading bundles" the moment the
+            splash markup is parsed; the stylesheet reads the phase attribute,
+            and entry-client is the next advance. Placed with the watchdog —
+            after `#app`, inline, dependent on nothing.
+          */}
+          <script>{bootPhaseScript()}</script>
+          {/*
+            After `#app` so a failed entry chunk still leaves the splash in the
+            DOM for the watchdog to rewrite. Inline — must not depend on
             a module that may already have failed to load.
           */}
           <script>{bootFailureWatchdogScript()}</script>
