@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { imageBlockToMarkdown, MAX_INLINE_IMAGE_BASE64_LEN, parseImageBlock } from './imageBlocks'
 
-describe('parseimageblock', () => {
+describe('parseImageBlock', () => {
   it('parses the Anthropic base64 shape (Claude Read, MCP bridge, notebook output)', () => {
     expect(parseImageBlock({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
@@ -52,7 +52,7 @@ describe('parseimageblock', () => {
   })
 
   it('keeps a payload-less image block so the row can say an image was returned', () => {
-    // Anthropic's `source:{type:'file'}` names a file on Anthropic's servers,
+    // Anthropic's `source:{type:'file'}` states a file on Anthropic's servers,
     // and an MCP server may state only a MIME type. Dropping either would make
     // the image vanish from the transcript with no trace.
     expect(parseImageBlock({ type: 'image', source: { type: 'file', file_id: 'f1' } })).toEqual({})
@@ -74,7 +74,7 @@ describe('parseimageblock', () => {
     expect(parseImageBlock('image' as never)).toBeNull()
   })
 
-  // An empty `data` is no payload, not an empty payload: the arms below it must
+  // An empty `data` is no payload, not an empty payload: the branches below it must
   // still get their turn, and the source must end up renderable-as-nothing
   // rather than as a zero-length base64 the renderer would build a data URL out
   // of.
@@ -97,7 +97,7 @@ describe('parseimageblock', () => {
   })
 })
 
-describe('imageblocktomarkdown', () => {
+describe('imageBlockToMarkdown', () => {
   it('embeds base64 with a mime type', () => {
     expect(imageBlockToMarkdown({ data: 'AAAA', mimeType: 'image/png' }))
       .toBe('![image](data:image/png;base64,AAAA)')
@@ -184,5 +184,34 @@ describe('imageBlockFilePath platform shapes', () => {
   it('leaves a POSIX path alone, percent-decoding it', () => {
     expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///home/alice/a%20b.png' }))
       .toMatchObject({ filePath: '/home/alice/a b.png' })
+  })
+})
+
+describe('imageBlockToMarkdown MIME allowlist', () => {
+  // The allowlist lived in the transcript row's component, which a lib module
+  // cannot import -- so this path hand-copied the size cap and had no allowlist
+  // at all. Both now come from `imageRenderInfo`, so the two destinations agree
+  // on which types embed.
+  it('refuses a type the transcript row refuses, and says which type', () => {
+    expect(imageBlockToMarkdown({ data: 'AAAA', mimeType: 'application/pdf' }))
+      .toBe('[image: application/pdf — unsupported format]')
+  })
+
+  it('refuses that type given as a data URL', () => {
+    expect(imageBlockToMarkdown({ url: 'data:application/pdf;base64,AAAA' })).toBeNull()
+  })
+
+  // SVG IS allowlisted: every consumer mounts through `<img>`, which renders it
+  // in secure static mode, and the file viewer already drew on-disk SVGs the
+  // same way. Refusing it here served no guarantee the element does not already
+  // give.
+  it('embeds an SVG, the same way the file viewer renders one off disk', () => {
+    expect(imageBlockToMarkdown({ data: 'AAAA', mimeType: 'image/svg+xml' }))
+      .toBe('![image](data:image/svg+xml;base64,AAAA)')
+  })
+
+  it('still embeds a raster type', () => {
+    expect(imageBlockToMarkdown({ data: 'AAAA', mimeType: 'image/png' }))
+      .toBe('![image](data:image/png;base64,AAAA)')
   })
 })

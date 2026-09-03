@@ -290,7 +290,7 @@ func TestResolve_FixedTabTypeRejectsContradictingFlag(t *testing.T) {
 // The contradiction message prints BOTH sides through TabTypeWireName, so a
 // kind that function does not name reads as `--tab-type "" contradicts this
 // command's implicit type ""`. FILE has been in the enum all along and IMAGE
-// joined it, and neither was named -- so this pins the round trip for every
+// joined it, and neither was stated -- so this pins the round trip for every
 // kind rather than the two the message happened to cover.
 func TestResolve_ContradictionNamesEveryTabKind(t *testing.T) {
 	kinds := []struct {

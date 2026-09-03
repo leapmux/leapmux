@@ -1,8 +1,8 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
-import type { ImageResultSource } from '~/lib/imageBlocks'
+import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
 import { createMemo, createSignal, For, Show } from 'solid-js'
-import { MAX_INLINE_IMAGE_BASE64_LEN, RENDERABLE_IMAGE_MIME_TYPES } from '~/lib/imageBlocks'
+import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
 
@@ -16,67 +16,16 @@ import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, too
  * components. Nothing here knows which provider it is serving.
  */
 
-/** Why an image is shown as a placeholder rather than inline. */
-export type ImageSkipReason = 'no-data' | 'unsupported-mime' | 'too-large' | 'external-url' | 'unknown-shape'
-
 /**
- * Decision-tree for rendering an image source:
+ * The render policy (`imageRenderInfo`, `ImageSkipReason`, the MIME allowlist
+ * and the size cap) lives in `~/lib/imageBlocks`, beside the parser.
  *
- *   - Inline base64 + allowlisted MIME + under size cap → `<img src="data:...">`.
- *   - Already-formed `data:` URL with allowlisted MIME → render as-is.
- *   - http(s) URL → not rendered inline; the placeholder shows the URL as a
- *     link so the user can open it in a new tab.
- *   - Anything else → text placeholder so the user knows an image was
- *     returned but we're not rendering it (unknown MIME, bare base64
- *     without MIME, oversized inline data, etc.).
+ * It moved because this row is not its only consumer. `imageBlockToMarkdown`
+ * feeds every quote, scroll-rail preview and Markdown body, and the IMAGE tab's
+ * `decodeImageBytes` builds a Blob from the same source -- neither can import a
+ * component module, so while the policy lived here both hand-copied the size cap
+ * and neither applied the MIME allowlist. One policy, three destinations.
  */
-export function imageRenderInfo(source: ImageResultSource): {
-  src?: string
-  via?: 'inline'
-  reason?: ImageSkipReason
-} {
-  const url = source.url
-  if (url) {
-    // Already a complete data: URL — accept iff its MIME is allowlisted.
-    const DATA_URL_PREFIX = 'data:'
-    if (url.startsWith(DATA_URL_PREFIX)) {
-      const comma = url.indexOf(',')
-      if (comma < 0)
-        return { reason: 'unknown-shape' }
-      const meta = url.slice(DATA_URL_PREFIX.length, comma).toLowerCase()
-      // Require the base64 marker, because the two other readers of the same URL
-      // do. `decodeImageBytes` (the IMAGE tab) and `sniffImageDimensionsFromDataUrl`
-      // both refuse a percent-encoded payload, so accepting one here drew a
-      // clickable image whose tab then said "This image cannot be displayed here."
-      // and whose row lost its size reservation.
-      if (!meta.endsWith(';base64'))
-        return { reason: 'unknown-shape' }
-      const semi = meta.indexOf(';')
-      const mime = semi < 0 ? meta : meta.slice(0, semi)
-      if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
-        return { reason: 'unsupported-mime' }
-      if (url.length - comma - 1 > MAX_INLINE_IMAGE_BASE64_LEN)
-        return { reason: 'too-large' }
-      return { src: url, via: 'inline' }
-    }
-    // http(s) URL — show as an opt-in external link via the placeholder.
-    if (url.startsWith('http://') || url.startsWith('https://'))
-      return { reason: 'external-url' }
-    return { reason: 'unknown-shape' }
-  }
-
-  const data = source.data
-  if (!data)
-    return { reason: 'no-data' }
-
-  // Plain base64 — only render when MIME is explicitly provided + allowlisted.
-  const mime = (source.mimeType ?? '').toLowerCase()
-  if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
-    return { reason: 'unsupported-mime' }
-  if (data.length > MAX_INLINE_IMAGE_BASE64_LEN)
-    return { reason: 'too-large' }
-  return { src: `data:${mime};base64,${data}`, via: 'inline' }
-}
 
 /**
  * Inline style reserving an image's exact final box before it decodes, so
@@ -213,15 +162,9 @@ function ImageResultPlaceholder(props: {
     const url = props.source.url ?? ''
     return url.startsWith('http://') || url.startsWith('https://') ? url : ''
   }
-  const label = () => {
-    const mime = props.source.mimeType
-    const suffix = mime ? `: ${mime}` : ''
-    if (props.reason === 'too-large')
-      return `[image${suffix} — too large to render inline]`
-    if (props.reason === 'unsupported-mime')
-      return `[image${suffix} — unsupported format]`
-    return `[image${suffix}]`
-  }
+  // The same wording the Markdown path emits, from the one helper -- a reader
+  // who meets the same refused image in a quote reads the same sentence.
+  const label = () => imageSkipPlaceholder(props.reason, props.source.mimeType)
   return (
     <div class={toolImageRow}>
       <Show

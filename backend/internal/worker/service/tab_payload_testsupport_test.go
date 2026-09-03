@@ -6,7 +6,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// fileTabPayload builds the FILE arm of a TabPayload, which is what almost
+// fileTabPayload builds the FILE branch of a TabPayload, which is what almost
 // every test in this package registers. Kept here rather than repeated at each
 // call site so a change to the payload shape is one edit.
 func fileTabPayload(filePath, workingDir string) *leapmuxv1.TabPayload {

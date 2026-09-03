@@ -1,8 +1,8 @@
 import type { Accessor } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createEffect, createSignal, on, untrack } from 'solid-js'
+import { createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { createGuardedFetch } from '~/hooks/createGuardedFetch'
+import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
 
 export interface UseAvailableProvidersArgs {
   workerId: string
@@ -28,7 +28,7 @@ export interface UseAvailableProvidersResult {
 
 /**
  * Reactive wrapper around the ListAvailableProviders worker RPC, for a surface
- * that asks about ONE named worker on demand.
+ * that asks about ONE stated worker on demand.
  *
  * The sibling of {@link import('./useAvailableShells').useAvailableShells}, and
  * deliberately the same shape: `source` returns the fetch args or `null` to
@@ -41,7 +41,7 @@ export interface UseAvailableProvidersResult {
  * it. That one scans for whichever worker the ACTIVE TAB is on, and it carries
  * its own abort-and-supersede rules plus a keep-the-previous-list-on-failure
  * policy for that moving target. This hook answers for a worker the caller
- * names, which is what a branch row needs: the branch's own machine, not the
+ * states, which is what a branch row needs: the branch's own machine, not the
  * machine the current tab happens to sit on.
  */
 export function useAvailableProviders(
@@ -50,48 +50,17 @@ export function useAvailableProviders(
 ): UseAvailableProvidersResult {
   const [providers, setProviders] = createSignal<AgentProvider[] | undefined>(undefined)
 
-  // Advances only on a SUCCESSFUL load, so a failed fetch lets the next
-  // reactive tick with the same workerId retry instead of short-circuiting on
-  // a stale sentinel. Same rule as useAvailableShells, for the same reason.
-  let lastLoadedWorkerId = ''
-
-  const fetcher = createGuardedFetch<UseAvailableProvidersArgs, Awaited<ReturnType<typeof workerRpc.listAvailableProviders>>>({
+  // Every rule about WHEN to fetch, when to retry and when to clear lives in
+  // `createWorkerScopedList`. This hook keeps only the payload it stores.
+  const list = createWorkerScopedList<UseAvailableProvidersArgs, Awaited<ReturnType<typeof workerRpc.listAvailableProviders>>>({
+    source,
     fetch: (args, signal) => workerRpc.listAvailableProviders(args.workerId, { signal }),
-    applySuccess: (resp, args) => {
-      setProviders([...resp.providers])
-      lastLoadedWorkerId = args.workerId
-    },
-    onError: (err) => {
-      onError?.(err)
-      setProviders(undefined)
-    },
+    applySuccess: resp => setProviders([...resp.providers]),
+    // The previous worker's list is not an answer for this one, and
+    // `undefined` is the "not asked yet" state a caller distinguishes from `[]`.
+    clear: () => setProviders(undefined),
+    onError,
   })
 
-  // Track the workerId scalar, not the source accessor: caller closures build a
-  // fresh args object every tick, and only the workerId triggers the fetch.
-  const workerIdFromSource = (): string | null => source()?.workerId ?? null
-  createEffect(on(workerIdFromSource, (workerId) => {
-    if (!workerId)
-      return
-    if (workerId === lastLoadedWorkerId)
-      return
-    // The previous worker's list is not an answer for this one. Clear it before
-    // the fetch so a caller cannot offer a provider the new worker may not have.
-    setProviders(undefined)
-    // The `on()` already subscribes through `workerIdFromSource`; read the rest
-    // of the args untracked.
-    const args = untrack(source)
-    if (args === null)
-      return
-    void fetcher.run(args)
-  }))
-
-  const refresh = async (): Promise<void> => {
-    const args = untrack(source)
-    if (args === null)
-      return
-    await fetcher.run(args)
-  }
-
-  return { providers, loading: fetcher.loading, refresh }
+  return { providers, loading: list.loading, refresh: list.refresh }
 }

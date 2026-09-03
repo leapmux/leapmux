@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { imageRenderInfo, imageReservationMatchesDecoded, imageReservationStyle } from './imageResult'
+import { imageRenderInfo } from '~/lib/imageBlocks'
+import { imageReservationMatchesDecoded, imageReservationStyle } from './imageResult'
 
-describe('imagereservationstyle', () => {
+describe('imageReservationStyle', () => {
   // The width formula must reproduce exactly what auto layout yields after
   // the image decodes: height = min(h, h/w * containerWidth, MAX_HEIGHT).
   it('clamps by natural width for images that fit', () => {
@@ -28,7 +29,7 @@ describe('imagereservationstyle', () => {
   })
 })
 
-describe('imagereservationmatchesdecoded', () => {
+describe('imageReservationMatchesDecoded', () => {
   it('rejects decoded dimensions that preserve ratio but not absolute size', () => {
     expect(imageReservationMatchesDecoded(
       { width: 100, height: 50 },
@@ -44,7 +45,7 @@ describe('imagereservationmatchesdecoded', () => {
   })
 })
 
-describe('imagerenderinfo', () => {
+describe('imageRenderInfo', () => {
   it('returns no-data when neither data nor url is present', () => {
     expect(imageRenderInfo({})).toEqual({ reason: 'no-data' })
     expect(imageRenderInfo({ mimeType: 'image/png' })).toEqual({ reason: 'no-data' })
@@ -62,9 +63,16 @@ describe('imagerenderinfo', () => {
     expect(result.src).toBe('data:image/png;base64,AAAA')
   })
 
-  it('refuses non-allowlisted mime types (e.g. svg)', () => {
-    expect(imageRenderInfo({ mimeType: 'image/svg+xml', data: 'AAAA' }))
+  // SVG is allowlisted -- every consumer mounts through `<img>`, which renders
+  // it in secure static mode. A document type is not.
+  it('refuses a non-allowlisted mime type', () => {
+    expect(imageRenderInfo({ mimeType: 'application/pdf', data: 'AAAA' }))
       .toEqual({ reason: 'unsupported-mime' })
+  })
+
+  it('accepts svg, the same type the file viewer renders off disk', () => {
+    expect(imageRenderInfo({ mimeType: 'image/svg+xml', data: 'AAAA' }))
+      .toEqual({ src: 'data:image/svg+xml;base64,AAAA', via: 'inline' })
   })
 
   it('refuses base64 without an explicit mime type', () => {
@@ -97,7 +105,7 @@ describe('imagerenderinfo', () => {
   })
 
   it('refuses pre-formed data: URLs with non-allowlisted mime', () => {
-    expect(imageRenderInfo({ url: 'data:image/svg+xml;base64,XYZ=' }))
+    expect(imageRenderInfo({ url: 'data:application/pdf;base64,XYZ=' }))
       .toEqual({ reason: 'unsupported-mime' })
   })
 

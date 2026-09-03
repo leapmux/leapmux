@@ -34,14 +34,15 @@ UPDATE worktrees SET branch_name = ? WHERE id = ?;
 DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < sqlc.arg(cutoff) LIMIT 1000);
 
 -- name: AddWorktreeTab :exec
--- user_id is set only for FILE links (it scopes the worktree_tab_liveness join
--- against worker_tab_payloads); AGENT/TERMINAL links pass '' since their ids are
--- globally unique.
+-- user_id is set for every payload-backed link, FILE and IMAGE alike (it scopes
+-- the worktree_tab_liveness join against worker_tab_payloads, which is keyed by
+-- (user_id, tab_id)); AGENT/TERMINAL links pass '' since their ids are globally
+-- unique.
 INSERT INTO worktree_tabs (worktree_id, tab_type, tab_id, user_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING;
 
 -- name: RemoveWorktreeTab :exec
--- user_id is part of the key: FILE links carry the owning user (see the
--- worktree_tabs DDL), so an unbound user_id would delete a different user's
+-- user_id is part of the key: payload-backed links carry the owning user (see
+-- the worktree_tabs DDL), so an unbound user_id would delete a different user's
 -- link to the same worktree with the same tab_id. AGENT/TERMINAL callers pass
 -- '' -- exactly what AddWorktreeTab wrote for them.
 DELETE FROM worktree_tabs WHERE worktree_id = ? AND tab_type = ? AND tab_id = ? AND user_id = ?;

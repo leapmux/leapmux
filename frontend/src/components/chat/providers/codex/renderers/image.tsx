@@ -57,7 +57,7 @@ export const CodexImageGenerationRenderer = defineCodexRenderer({
  * Codex `imageView`: the `view_image` tool.
  *
  * The item is `{id, path}` and carries no pixels -- Codex attaches the image
- * to the model's context, not to the transcript. A header naming the file is
+ * to the model's context, not to the transcript. A header that states the file is
  * everything this row can say.
  */
 export const CodexImageViewRenderer = defineCodexRenderer({

@@ -220,7 +220,7 @@ function renderDialogs(
     tabOps: tabOps as unknown as ReturnType<typeof useTabOperations>,
     activeWorkspace,
     onSelectWorkspace,
-    isActiveWorkspaceMutatable: () => opts.mutatable ?? true,
+    isWorkspaceMutatable: () => opts.mutatable ?? true,
     layoutStore: { placementTileId, firstLeafIdFor } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
     repoGitStore,
     getCurrentTabContext: () => ({
@@ -659,7 +659,7 @@ describe('appShellDialogs agent creation', () => {
     const props = {
       dialogs,
       activeWorkspace: () => ({ id: 'ws1' }),
-      isActiveWorkspaceMutatable: () => true,
+      isWorkspaceMutatable: () => true,
       layoutStore: stores.layoutStore,
       view: stores.view,
       metadata: stores.metadata,

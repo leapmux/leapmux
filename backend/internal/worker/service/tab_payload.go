@@ -41,6 +41,10 @@ func NewTabPayloadStore(q *db.Queries, events *PrivateEventsBus) *TabPayloadStor
 
 // Register persists a (user_id, tab_id, tab_type, payload, working_dir) row and
 // broadcasts TabPayloadRegistered on the owner's private-event stream.
+//
+// Every error a bad request produces wraps ErrInvalidTabPayload; a marshal or a
+// database failure does not. The two are separate answers on the wire, and only
+// the second is worth a retry.
 func (s *TabPayloadStore) Register(ctx context.Context, p RegisterTabPayloadParams) error {
 	owner, ok := userid.New(p.UserID)
 	if !ok || p.TabID == "" || p.Payload == nil {
@@ -338,8 +342,10 @@ func (s *TabPayloadStore) Get(ctx context.Context, userID, tabID string) (*leapm
 }
 
 // TabTypeOf reports which kind of tab a stored payload belongs to, without
-// decoding the payload itself -- the column is there precisely so a reader that
-// only needs the kind pays nothing for the blob.
+// decoding the payload itself. The read still fetches the blob, because
+// GetWorkerTabPayload is a `SELECT *`; what the column saves is the
+// proto.Unmarshal, and the ability to answer for a row this binary cannot
+// parse.
 //
 // Returns ErrTabPayloadNotFound when no row exists, so a caller can tell "this
 // tab is an IMAGE tab" from "this tab is already closed".

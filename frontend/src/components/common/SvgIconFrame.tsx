@@ -28,7 +28,7 @@ function hasA11yProp(props: object): boolean {
  * It also matches lucide's ACCESSIBILITY default: a glyph with no role and no
  * `aria-*` prop is decoration, so it carries `aria-hidden="true"` and stays out
  * of the accessibility tree. Almost every call site is a glyph inside a button
- * that a tooltip already names, where a second nameless node is noise.
+ * that a tooltip already labels, where a second nameless node is noise.
  *
  * lucide skips its `aria-hidden` when the caller passes children, because there
  * children are extra content inside a complete icon. This frame takes the icon

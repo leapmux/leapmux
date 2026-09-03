@@ -23,6 +23,56 @@ describe('claudeAgentFromToolResult', () => {
     const source = claudeAgentFromToolResult({ status: 'async_launched', agentId: 'a1' }, HARNESS_TEXT)
     expect(source?.content).toBe('')
   })
+
+  // A synchronous result omits `description`. The paired tool_use input carries
+  // the model-written task title, so the extractor fills the gap from it.
+  it('takes the description from the paired tool_use input for a sync result', () => {
+    const source = claudeAgentFromToolResult(
+      { status: 'completed', agentId: 'a1' },
+      'The report.',
+      { description: 'SCAN triage + angle recommendation' },
+    )
+    expect(source?.description).toBe('SCAN triage + angle recommendation')
+  })
+
+  it('prefers a non-blank result description over the paired input', () => {
+    const source = claudeAgentFromToolResult(
+      { status: 'async_launched', description: 'From result', agentId: 'a1' },
+      '',
+      { description: 'From input' },
+    )
+    expect(source?.description).toBe('From result')
+  })
+
+  it('falls back to the paired input when the result description is blank', () => {
+    const source = claudeAgentFromToolResult(
+      { status: 'completed', description: '  ', agentId: 'a1' },
+      '',
+      { description: 'From input' },
+    )
+    expect(source?.description).toBe('From input')
+  })
+
+  it('keeps the agent ID fallback when neither payload supplies a description', () => {
+    const source = claudeAgentFromToolResult(
+      { status: 'completed', agentId: 'a1' },
+      '',
+      { description: '' },
+    )
+    expect(source?.description).toBe('')
+    expect(source?.agentId).toBe('a1')
+  })
+
+  // The input side trims too: a whitespace-only input description is not a
+  // real one, and the header would render `Agent "   " completed` without it.
+  it('treats a whitespace-only paired input description as absent', () => {
+    const source = claudeAgentFromToolResult(
+      { status: 'completed', agentId: 'a1' },
+      '',
+      { description: '   ' },
+    )
+    expect(source?.description).toBe('')
+  })
 })
 
 describe('agent report text', () => {

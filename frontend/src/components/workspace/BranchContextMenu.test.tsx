@@ -66,7 +66,7 @@ async function openMenu(trigger: HTMLElement) {
 }
 
 describe('branchContextMenu', () => {
-  // One item per git mode, so the label the user picks names the radio they
+  // One item per git mode, so the label the user picks states the radio they
   // then see. A single "Change branch..." made the mode invisible until the
   // dialog opened.
   describe('the three change items', () => {
@@ -203,7 +203,7 @@ describe('branchContextMenu', () => {
     })
 
     // The shortcut opens a dialog for the CURRENT tab context, not for this
-    // branch, so naming a key here would name one that does something else.
+    // branch, so stating a key here would state one that does something else.
     it('shows no keyboard-shortcut hint on the dialog items', async () => {
       const { trigger } = renderMenu()
       await openMenu(trigger)

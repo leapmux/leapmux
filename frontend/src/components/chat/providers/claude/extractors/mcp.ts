@@ -86,9 +86,14 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpT
     server: formatClaudeMcpServerName(parsed.serverName),
     tool: parsed.toolName,
     argsJson,
-    // When the call is flagged as an error, drop content to avoid double-
-    // rendering it (the error string already carries the text).
-    content: args.isError ? [] : content,
+    // When the call is flagged as an error, drop the TEXT to avoid rendering
+    // it twice -- the `error` string above is the joined text of these same
+    // blocks. The images stay: nothing else carries them, so dropping them hid
+    // the screenshot a failed MCP tool returned (Playwright returns one), and
+    // it left the row with fewer images than `Provider.toolResultImages`
+    // numbers for the message -- which is the index an already-open image tab
+    // addresses by, permanently.
+    content: args.isError ? content.filter(item => item.type === 'image') : content,
     structuredJson: prettifyStructuredJson(args.toolUseResult?.structuredContent),
     error,
     status,

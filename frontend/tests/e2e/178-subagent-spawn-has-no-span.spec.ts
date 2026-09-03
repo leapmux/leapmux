@@ -30,8 +30,11 @@ import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from './help
  *
  * The middle part is the TASK title when the payload carries one -- a launch
  * does, quoted and with spaces in it -- and the agent id when it does not, which
- * is the case for a finished synchronous run. The alternation covers both while
- * keeping each side anchored.
+ * is the fallback when neither the result nor the paired tool_use input supplies
+ * a description. The alternation covers both while keeping each side anchored.
+ *
+ * A synchronous result now receives its description from the paired tool_use
+ * input, so the quoted form appears for synchronous runs as well.
  *
  * NOT `.+?`, which this pattern used and which fails in both directions: `.`
  * matches a space, so it crosses out of the header into ordinary assistant prose
@@ -41,16 +44,15 @@ import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from './help
  * the spawn card renders. `.` also does not match a newline, so a model-written
  * title with a line break made the locator find nothing.
  *
- * Inside the quotes: `[\s\S]*?`, LAZY, and not `[^']*`. The title is model prose,
- * so an apostrophe in it is ordinary ("the parser's callers") -- and `[^']*`
- * stops dead at that apostrophe, then demands a status where the next letter
- * sits, so the whole locator matched nothing and the assertion failed red
- * against a card that rendered correctly. `[\s\S]` spans a newline, and the lazy
- * quantifier stops at the FIRST quote that a status follows rather than running
- * to the last quote on the page. `\S+` keeps the bare-id form from crossing a
- * space.
+ * Inside the quotes: `[\s\S]*?`, LAZY, and not `[^"]*`. The title is model
+ * prose, so a double quote in it is possible -- and `[^"]*` stops dead at that
+ * quote, then demands a status where the next character sits, so the whole
+ * locator matched nothing and the assertion failed red against a card that
+ * rendered correctly. `[\s\S]` spans a newline, and the lazy quantifier stops at
+ * the FIRST quote that a status follows rather than running to the last quote on
+ * the page. `\S+` keeps the bare-id form from crossing a space.
  */
-const AGENT_RESULT_HEADER = /Agent (?:'[\s\S]*?'|\S+) (?:completed|failed|launched asynchronously|launched remotely)/
+const AGENT_RESULT_HEADER = /Agent (?:"[\s\S]*?"|\S+) (?:completed|failed|launched asynchronously|launched remotely)/
 /** The Agent tool's own card title, which carries the subagent type. */
 const AGENT_TYPE = 'general-purpose'
 

@@ -136,32 +136,70 @@ export function joinContentParagraphs(
   kinds: Record<string, string>,
   formatOther: BlockFormatter = markdownImageFormatter,
 ): string {
+  const join = createParagraphJoiner()
+  forEachContentBlock(content, kinds, join.append, (block) => {
+    const formatted = formatOther(block)
+    if (typeof formatted === 'string')
+      join.append(formatted)
+  })
+  return join.text()
+}
+
+/**
+ * Walk the blocks once, and send each to the sink its `type` selects.
+ *
+ * `onOther` runs EXACTLY ONCE for each block that is an object and whose `type`
+ * is not an own key of `kinds`, in wire order, with no short circuit.
+ *
+ * `Object.hasOwn`, and not a plain lookup. `kinds[block.type]` answers a TRUTHY
+ * `Object.prototype` member for a block whose `type` is `constructor`,
+ * `toString`, `valueOf`, `hasOwnProperty` or `__proto__` -- and `type` is
+ * agent-supplied wire JSON, so any provider can send one. Such a block took the
+ * text path, read a non-string field, and `continue`d: `formatOther` never saw
+ * it, so an image it carried was dropped from the text with no error.
+ */
+function forEachContentBlock(
+  content: ContentBlock[] | null | undefined,
+  kinds: Record<string, string>,
+  onText: (text: string) => void,
+  onOther: (block: ContentBlock) => void,
+): void {
   if (!content)
-    return ''
-  let out = ''
-  const append = (chunk: string) => {
-    if (chunk === '')
-      return
-    if (out !== '') {
-      const trailing = (out.match(/\n*$/)?.[0] ?? '').length
-      if (trailing < 2)
-        out += '\n'.repeat(2 - trailing)
-    }
-    out += chunk
-  }
+    return
   for (const block of content) {
     if (!isObject(block))
       continue
-    const field = kinds[block.type as string]
-    if (field) {
-      const v = block[field]
-      if (typeof v === 'string')
-        append(v)
+    const type = block.type as string
+    if (Object.hasOwn(kinds, type)) {
+      const value = block[kinds[type]]
+      if (typeof value === 'string')
+        onText(value)
       continue
     }
-    const formatted = formatOther(block)
-    if (typeof formatted === 'string')
-      append(formatted)
+    onOther(block)
   }
-  return out
+}
+
+/**
+ * The "at least two newlines between non-empty entries" accumulator.
+ *
+ * "At least two" handles content that already ends with newlines: it pads up to
+ * two and never trims down, so `"A\n"` + `"B"` gives `"A\n\nB"` while
+ * `"A\n\n\n"` + `"B"` stays `"A\n\n\nB"`.
+ */
+function createParagraphJoiner(): { append: (chunk: string) => void, text: () => string } {
+  let out = ''
+  return {
+    append(chunk: string) {
+      if (chunk === '')
+        return
+      if (out !== '') {
+        const trailing = (out.match(/\n*$/)?.[0] ?? '').length
+        if (trailing < 2)
+          out += '\n'.repeat(2 - trailing)
+      }
+      out += chunk
+    },
+    text: () => out,
+  }
 }

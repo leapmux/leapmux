@@ -496,6 +496,18 @@ export const AppShell: Component = () => {
     return section?.sectionType === SectionType.WORKSPACES_ARCHIVED
   })
 
+  // Whether ONE NAMED workspace can be mutated. Per id, because a dialog can act
+  // on a workspace the user is not looking at. Answers false for an absent one
+  // -- deleted remotely while a dialog holds its id -- which is the same
+  // refusal archival earns and the same one the caller needs.
+  const isWorkspaceMutatableById = (workspaceId: string): boolean => {
+    const sectionId = sectionStore.getSectionForWorkspace(workspaceId)
+    const archived = sectionId
+      ? sectionStore.state.sections.find(s => s.id === sectionId)?.sectionType === SectionType.WORKSPACES_ARCHIVED
+      : false
+    return isWorkspaceMutatable(workspaceStore.state.workspaces.find(w => w.id === workspaceId), archived)
+  }
+
   // Whether the active workspace can be mutated
   const isActiveWorkspaceMutatable = createMemo(() =>
     isWorkspaceMutatable(activeWorkspace() ?? undefined, isActiveWorkspaceArchived()),
@@ -1313,7 +1325,7 @@ export const AppShell: Component = () => {
           newBranch,
         )}
         activeWorkspace={activeWorkspace}
-        isActiveWorkspaceMutatable={isActiveWorkspaceMutatable}
+        isWorkspaceMutatable={isWorkspaceMutatableById}
         getCurrentTabContext={getCurrentTabContext}
         agentOps={agentOps}
         termOps={termOps}

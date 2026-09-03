@@ -453,7 +453,7 @@ func TestTabPayload_ImageArm(t *testing.T) {
 	}
 }
 
-// TestTabPayload_RefusesAPayloadWithNoKind pins the default arm: a payload
+// TestTabPayload_RefusesAPayloadWithNoKind pins the default branch: a payload
 // whose oneof is unset specifies no tab, so there is nothing to store it as.
 func TestTabPayload_RefusesAPayloadWithNoKind(t *testing.T) {
 	t.Parallel()
@@ -468,7 +468,7 @@ func TestTabPayload_RefusesAPayloadWithNoKind(t *testing.T) {
 // TestTabPayload_ImageWorkingDirIsNotDerived pins the one place the two kinds
 // genuinely differ: a FILE tab with no stated working dir falls back to the
 // file's own directory, and an IMAGE tab has no file to fall back to. An
-// unnamed one stays blank and simply joins no branch group -- inventing a
+// one with no stated dir stays blank and simply joins no branch group -- inventing a
 // directory for it would put the tab in a repo the user never opened it from.
 func TestTabPayload_ImageWorkingDirIsNotDerived(t *testing.T) {
 	t.Parallel()

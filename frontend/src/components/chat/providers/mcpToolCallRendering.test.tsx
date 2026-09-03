@@ -194,13 +194,21 @@ describe('claude MCP tool_result rendering', () => {
     expect(container.textContent ?? '').toContain('[image: image/png]')
   })
 
-  it('falls back to a placeholder for unsupported MIME types (e.g. svg)', () => {
+  // SVG is allowlisted: an `<img>` renders it in secure static mode, which is
+  // how the file viewer has always drawn one off disk.
+  it('draws an svg an MCP server returned', () => {
     const parsed = makeMcpToolResult([
-      { type: 'image', mimeType: 'image/svg+xml', data: '<svg/>' },
+      { type: 'image', mimeType: 'image/svg+xml', data: 'PHN2Zy8+' },
     ])
-    const { container } = renderClaudeToolResult(parsed, {
-      spanType: 'mcp__server__svg',
-    })
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'mcp__server__svg' })
+    expect(container.querySelector('img')).not.toBeNull()
+  })
+
+  it('falls back to a placeholder for a type no `<img>` can draw', () => {
+    const parsed = makeMcpToolResult([
+      { type: 'image', mimeType: 'application/pdf', data: 'JVBERi0=' },
+    ])
+    const { container } = renderClaudeToolResult(parsed, { spanType: 'mcp__server__doc' })
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent ?? '').toContain('unsupported format')
   })

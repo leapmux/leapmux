@@ -223,7 +223,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 // that teardown applies.
 //
 // The arm used to hand-roll its own teardown, diverging from the AGENT and
-// TERMINAL arms. It now routes through closePayloadTabCommon like they do, with
+// TERMINAL branches. It now routes through closePayloadTabCommon like they do, with
 // dropWorktreeLink -- the same policy an ONLINE KEEP close uses. That is what
 // KEEP means: a zero-link worktree is excluded from
 // ListOrphanCandidateWorktrees, so the DIRECTORY SURVIVES rather than being

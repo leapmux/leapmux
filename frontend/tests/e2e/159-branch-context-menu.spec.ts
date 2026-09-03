@@ -57,7 +57,7 @@ test.describe('Branch context menu', () => {
       await expect(page.getByRole('menuitem', { name })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'Change branch...' })).toHaveCount(0)
 
-    // A worktree workspace, so the delete item names the worktree. The change
+    // A worktree workspace, so the delete item states the worktree. The change
     // items keep their names: a worktree has a branch checked out either way.
     await expect(page.getByRole('menuitem', { name: 'Delete worktree...' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'Delete branch...' })).toHaveCount(0)
@@ -203,7 +203,7 @@ test.describe('Branch context menu', () => {
   })
 
   // The glyph row's counterpart to the shell-item test above, and the same
-  // scope: it pins the WIRING, not the directory. A provider glyph names the
+  // scope: it pins the WIRING, not the directory. A provider glyph states the
   // branch worker's own provider list, which is the half a mount-time fetch
   // would have taken from the active tab's worker instead.
   test('opens an agent from the menu\'s provider glyph', async ({
@@ -229,7 +229,7 @@ test.describe('Branch context menu', () => {
     const before = await agentTabs.count()
     await openBranchMenu(page, branchGroupRow(page))
     // The first provider the branch's Worker reports. Which one it is depends
-    // on what the test machine has installed, so the test names none.
+    // on what the test machine has installed, so the test states none.
     await page.locator('menu[popover]:visible [data-testid^="menu-new-agent-"]').first().click()
 
     await expect(agentTabs).toHaveCount(before + 1)
@@ -242,7 +242,7 @@ test.describe('Branch context menu', () => {
   // the user is not looking at. The new tab is placed on the ACTIVE workspace's
   // focused tile, so the row's own workspace has to become active first -- and
   // in the same tick, because the placement follows the switch synchronously.
-  // Without it the pty is created on the Worker and no tab ever references it.
+  // Without it the pty is created on the Worker and no tab ever points at it.
   //
   // Both workspaces sit on the one Worker the fixture starts, so this pins the
   // WORKSPACE axis only. The Worker axis is the branch row's own `workerId`,
@@ -329,7 +329,7 @@ test.describe('Branch context menu', () => {
 
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByRole('heading', { name: 'New Agent' })).toBeVisible()
-    // The repository the branch row named. `NewAgentDialog` remaps a worktree
+    // The repository the branch row stated. `NewAgentDialog` remaps a worktree
     // root to the canonical repo root for its git options, exactly as it does
     // from the tab bar (see 072), so this is the repo root either way.
     await expect(dialog.getByPlaceholder('Enter path...')).toHaveValue(realRepoDir)

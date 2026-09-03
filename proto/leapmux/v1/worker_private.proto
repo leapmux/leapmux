@@ -152,7 +152,7 @@ message GetTabPayloadRequest {
 message GetTabPayloadResponse {
   // Always set on a successful response: a tab with no row answers NOT_FOUND
   // rather than OK with an unset payload, so a reader that sees this field
-  // absent is reading a payload arm its build does not know.
+  // absent is reading a payload branch its build does not know.
   TabPayload payload = 1;
 }
 

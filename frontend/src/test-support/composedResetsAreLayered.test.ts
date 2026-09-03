@@ -36,7 +36,7 @@ const INLINE_RESET = /style\(\[\s*\{\s*all:\s*'unset'/g
 /** `all: 'unset'` written as a declaration. */
 const BARE_RESET = /\ball:\s*'unset'/
 
-/** The absolute path of the `.css.ts` file that `spec` names, or undefined. */
+/** The absolute path of the `.css.ts` file that `spec` states, or undefined. */
 function resolveStyleModule(importer: string, spec: string): string | undefined {
   if (spec.startsWith('~/'))
     return join(srcRoot, `${spec.slice(2)}.ts`)

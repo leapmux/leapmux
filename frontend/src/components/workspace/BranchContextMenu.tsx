@@ -106,7 +106,7 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
           its own radio already selected. One item per mode, because a single
           "Change branch..." made the user open the dialog to discover that
           "Create new worktree" lived inside it. The labels are the dialog's own
-          radio labels, so the item the user picks names what they then see. */}
+          radio labels, so the item the user picks states what they then see. */}
       {changeItem('Switch to branch...', GitMode.SwitchBranch)}
       {changeItem('Create new branch...', GitMode.CreateBranch)}
       {changeItem('Create new worktree...', GitMode.CreateWorktree)}

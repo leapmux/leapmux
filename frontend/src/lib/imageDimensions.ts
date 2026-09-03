@@ -30,6 +30,10 @@
  */
 
 import { base64ToUint8Array } from './base64'
+// A VALUE import, unlike imageBlocks' own `import type { ImageDimensions }`
+// back here -- that one erases at build time, so the two modules form no
+// runtime cycle.
+import { parseDataImageUrl } from './imageBlocks'
 
 export interface ImageDimensions {
   width: number
@@ -49,17 +53,14 @@ const MAX_SANE_DIMENSION_PX = 65535
  * Sniff intrinsic dimensions from a `data:<mime>;base64,<payload>` URL.
  * Returns null for non-base64 data URLs, unsupported formats, and any
  * payload whose header cannot be parsed with certainty.
+ *
+ * The split itself comes from `~/lib/imageBlocks`, the one reader of a data URL
+ * in the app. This module used to hold a third copy of it, and the copies
+ * disagreed about whether `;base64` was required.
  */
 export function sniffImageDimensionsFromDataUrl(dataUrl: string): ImageDimensions | null {
-  if (!dataUrl.startsWith('data:'))
-    return null
-  const comma = dataUrl.indexOf(',')
-  if (comma < 0)
-    return null
-  const meta = dataUrl.slice(5, comma)
-  if (!meta.toLowerCase().endsWith(';base64'))
-    return null
-  return sniffImageDimensionsFromBase64(dataUrl.slice(comma + 1))
+  const parsed = parseDataImageUrl(dataUrl)
+  return parsed ? sniffImageDimensionsFromBase64(parsed.base64) : null
 }
 
 /** Sniff intrinsic dimensions from a bare base64 payload. */

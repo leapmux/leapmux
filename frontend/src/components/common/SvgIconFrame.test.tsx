@@ -46,7 +46,7 @@ describe('svgIconFrame (SvgIconFrame)', () => {
     expect(renderFrame({ 'data-testid': 'my-glyph' }).getAttribute('data-testid')).toBe('my-glyph')
   })
 
-  // The default: a glyph inside a button that a tooltip already names is
+  // The default: a glyph inside a button that a tooltip already labels is
   // decoration, and a second nameless node in the accessibility tree is noise.
   it('hides a glyph that carries no role and no accessible name', () => {
     expect(renderFrame().getAttribute('aria-hidden')).toBe('true')

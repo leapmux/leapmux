@@ -479,6 +479,17 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 		return nil, errors.New("tab sync: no registered owner yet")
 	}
 
+	// ONE read of worker_tab_payloads, bucketed by kind, for every
+	// payload-backed branch below. The switch runs once per TabType, so a
+	// per-branch read scanned the whole table again for each kind and threw
+	// away the rows of the other -- O(kinds x rows) on a path that runs on
+	// every hub connect and reconnect, and that grows with each payload-backed
+	// kind added later.
+	payloadIDs, err := payloadTabIDsByType(ctx, queries, owner)
+	if err != nil {
+		return nil, fmt.Errorf("list payload-backed tab ids: %w", err)
+	}
+
 	var tabs []*leapmuxv1.TabRef
 	// One default-less switch over every TabType, so `exhaustive` (enabled in
 	// .golangci.yml) fails the BUILD when a type is added. That matters more here
@@ -515,11 +526,11 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 			// only within a user, and a stale second owner's rows can outlive a
 			// deregister (ClearState removes state.json, not worker.db).
 			//
-			// Filtered by KIND as well, because one table now holds both: a row
+			// Bucketed by KIND as well, because one table now holds both: a row
 			// reported under the wrong type would be tombstoned by the hub, which
 			// matches nothing, and the real row would go unreported and be
 			// tombstoned for real.
-			ids, err = payloadTabIDsForOwner(ctx, queries, owner, tabType)
+			ids = payloadIDs[tabType]
 		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
 			// Not a hostable tab type; nothing to report.
 			continue
@@ -535,20 +546,25 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 	return &leapmuxv1.WorkerTabInventory{Tabs: tabs}, nil
 }
 
-// payloadTabIDsForOwner returns owner's tab ids of one payload-backed kind,
-// dropping any row belonging to a different user or a different kind. See the
-// FILE/IMAGE case of BuildTabSync for why both filters matter.
-func payloadTabIDsForOwner(ctx context.Context, queries *db.Queries, owner userid.UserID, tabType leapmuxv1.TabType) ([]string, error) {
+// payloadTabIDsByType returns owner's tab ids grouped by payload-backed kind,
+// from ONE read of the table. Rows belonging to a different user are dropped.
+// See the FILE/IMAGE branch of BuildTabSync for why the owner filter matters.
+//
+// Grouped rather than filtered per kind: the caller asks once per TabType, and
+// re-reading the whole table for each one scanned every IMAGE row to answer for
+// FILE and every FILE row to answer for IMAGE.
+func payloadTabIDsByType(ctx context.Context, queries *db.Queries, owner userid.UserID) (map[leapmuxv1.TabType][]string, error) {
 	rows, err := queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(rows))
+	ids := make(map[leapmuxv1.TabType][]string)
 	for _, row := range rows {
-		if !owner.Matches(row.UserID) || leapmuxv1.TabType(row.TabType) != tabType {
+		if !owner.Matches(row.UserID) {
 			continue
 		}
-		ids = append(ids, row.TabID)
+		tabType := leapmuxv1.TabType(row.TabType)
+		ids[tabType] = append(ids[tabType], row.TabID)
 	}
 	return ids, nil
 }

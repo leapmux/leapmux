@@ -23,7 +23,10 @@ describe('parsemcpcontentitem', () => {
       .toEqual({ type: 'image', source: { mimeType: 'image/png', data: 'base64...' } })
   })
 
-  it('parses image blocks (mimeType + url)', () => {
+  // The already-normalized `urlOrData` shape, whose value can be a URL or bare
+  // base64. The raw MCP `url` key is a different branch, covered in
+  // `lib/imageBlocks.test.ts`.
+  it('parses image blocks (mimeType + urlOrData holding a URL)', () => {
     expect(parseMcpContentItem({ type: 'image', mimeType: 'image/png', urlOrData: 'https://example.com/x.png' }))
       .toEqual({ type: 'image', source: { mimeType: 'image/png', url: 'https://example.com/x.png' } })
   })

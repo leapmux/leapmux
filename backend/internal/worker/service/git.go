@@ -2079,8 +2079,8 @@ var errNoTabWorkingDir = errors.New("tab has no working directory recorded")
 
 // getTabWorkingDir resolves the directory a tab's git questions are answered
 // from. Every tab type has one: agents and terminals carry it on their own row,
-// and a file tab carries the working dir of the tab it was opened from (see the
-// worker_tab_payloads.working_dir column comment).
+// and a payload-backed tab (FILE or IMAGE) carries the working dir of the tab it
+// was opened from (see the worker_tab_payloads.working_dir column comment).
 //
 // userID is only consulted for payload-backed tabs -- FILE and IMAGE -- whose
 // ids are unique within a user
@@ -2090,8 +2090,9 @@ var errNoTabWorkingDir = errors.New("tab has no working directory recorded")
 //
 // That latitude stops at this function. `hasOtherNonWorktreeTabOnBranch` takes
 // the same string and requires a real owner whatever the closing tab's type is,
-// because its FILE leg always runs: an agent close still has to see the user's
-// file tabs to know whether it is the last tab on the branch.
+// because its payload-backed scan always runs: an agent close still has to see
+// the user's file and image tabs to know whether it is the last tab on the
+// branch.
 func (svc *Service) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (string, error) {
 	dir, err := svc.readTabWorkingDir(ctx, tabType, tabID, userID)
 	if err != nil {
@@ -2143,7 +2144,7 @@ func (svc *Service) readTabWorkingDir(ctx context.Context, tabType leapmuxv1.Tab
 // Enforced by branchInfoProbe, which is allocated once per call and shared by
 // every per-type scan under it. It used to be a SetLimit on each scan's OWN
 // errgroup -- and those scans run concurrently, so the number here was the
-// number per LEG: 12 with agents+terminals, 18 once the file-tab leg landed,
+// number per SCAN: 12 with agents+terminals, 18 once the file-tab scan landed,
 // 24 for the next tab type. Holding the budget at the fork site instead makes
 // it independent of how the callers are fanned out.
 const branchProbeConcurrency = 6
@@ -2156,16 +2157,16 @@ const branchProbeConcurrency = 6
 // file tab still open on it, and closing that file tab would announce the same
 // with the agent still running.
 //
-// userID scopes the FILE leg only; see getTabWorkingDir.
+// userID scopes the payload-backed scan only; see getTabWorkingDir.
 func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID, repoRoot, branchName string) (bool, error) {
-	// Validate the owner BEFORE anything is launched. The FILE leg needs it
-	// (see its launch below), and refusing after the other two scans are
+	// Validate the owner BEFORE anything is launched. The payload-backed scan
+	// needs it (see its launch below), and refusing after the other two scans are
 	// already running would abandon their goroutines: nothing would reach the
 	// single g.Wait(), so their errors would be dropped and their rev-parse
 	// forks left to be torn down by the deferred cancel().
 	owner, ok := userid.New(userID)
 	if !ok {
-		return false, errors.New("branch sibling scan: owner required to scope the file-tab leg")
+		return false, errors.New("branch sibling scan: owner required to scope the payload-backed scan")
 	}
 
 	// gitPathInfo lookups dedupe at two levels:
@@ -2247,8 +2248,8 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 //
 // The self-skip matches on (tab_type, tab_id), not on tab_id alone. Across the
 // unified relation an id is not unique by itself: agent and terminal ids are
-// globally unique, but a file tab id is minted client-side as
-// `file-<millis>-<counter>` and only unique within a user, so a bare id match
+// globally unique, but a payload-backed tab id is minted client-side as
+// `<kind>-<millis>-<counter>` and only unique within a user, so a bare id match
 // could drop a DIFFERENT tab that happens to share the string -- counting one
 // fewer sibling and prompting to delete a branch someone is still on.
 func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any, selfType leapmuxv1.TabType, selfID string) ([]string, error) {

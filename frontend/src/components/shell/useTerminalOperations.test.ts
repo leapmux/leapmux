@@ -389,7 +389,7 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
     expect(terminalLoadingFlips).toEqual([])
   })
 
-  // The branch context menu names WHERE the terminal runs. Without the
+  // The branch context menu states WHERE the terminal runs. Without the
   // override, a shell picked from a branch row on another machine would open
   // on whichever worker the focused tab happens to sit on.
   it('opens on the target\'s worker and directory when one is given', async () => {
@@ -420,7 +420,7 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
   // The dialog is the fallback when neither the target nor the context resolves
   // a whole (worker, directory) pair -- and it has to open ON the target. An
   // `open({})` here would drop what the caller did know and ask the user for a
-  // Worker and a path the branch row already named.
+  // Worker and a path the branch row already stated.
   it('opens the dialog on the target when the pair is incomplete', async () => {
     const dialogOpen = vi.fn()
     const { ops } = setupForOpen({ ctx: { workerId: '', workingDir: '' }, dialogOpen })

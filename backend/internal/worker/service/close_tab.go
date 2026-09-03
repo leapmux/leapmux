@@ -625,7 +625,8 @@ func (svc *Service) closeTabForConvergence(
 // offline path from destroying a clean worktree the identical online close kept.
 //
 // userID is empty for AGENT and TERMINAL, whose links are written owner-blind; a
-// FILE tab's id is unique only within a user, so its owner is required.
+// payload-backed tab's id (FILE or IMAGE) is unique only within a user, so its
+// owner is required.
 func (svc *Service) CloseTabForReconcile(tabType leapmuxv1.TabType, userID, tabID string) {
 	svc.closeTabForConvergence(tabType, userID, tabID, dropWorktreeLink)
 }
