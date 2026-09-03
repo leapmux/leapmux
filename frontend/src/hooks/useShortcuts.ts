@@ -1,10 +1,10 @@
 import type { Accessor } from 'solid-js'
-import type { NewWorkspacePayload } from '~/components/shell/AppShellDialogs'
+import type { NewTabTarget, NewWorkspacePayload } from '~/components/shell/AppShellDialogs'
 import type { TabContext } from '~/components/shell/tabContext'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
-import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
+import type { DialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
 import type { Tab } from '~/stores/tab.types'
@@ -13,6 +13,7 @@ import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge } from '~/api/platformBridge'
 import { openPreferences } from '~/components/shell/UserMenuState'
+import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { loadDetectedEditors, resolvePreferredEditor } from '~/lib/externalEditors'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
@@ -24,7 +25,7 @@ import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/k
 import { syncMacMenuAccelerator } from '~/lib/shortcuts/tauriAccelerator'
 import { isTypingContext } from '~/lib/textInputBehavior'
 import { getFocusedChatSend } from '~/stores/focusedChatSend.store'
-import { tabKey } from '~/stores/tab.helpers'
+import { canCloseTab, tabKey } from '~/stores/tab.helpers'
 
 interface UseShortcutsProps {
   view: TabView
@@ -35,8 +36,8 @@ interface UseShortcutsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
 
-  newAgentDialog: ToggleDialogState
-  newTerminalDialog: ToggleDialogState
+  newAgentDialog: DialogState<NewTabTarget>
+  newTerminalDialog: DialogState<NewTabTarget>
   newWorkspaceDialog: DialogState<NewWorkspacePayload>
   hasActiveWorkspace: Accessor<boolean>
   toggleFloatingTab: () => void
@@ -44,6 +45,12 @@ interface UseShortcutsProps {
   toggleRightSidebar: () => void
   activeTabType: Accessor<TabType | null>
   resolveFocusedTab: () => Tab | null
+  /**
+   * Whether the active workspace is archived, for the close shortcut's own
+   * guard. The BUTTONS ask `canCloseTab`; without this the keyboard would be
+   * the one surface that still closes a tab the buttons refuse.
+   */
+  isActiveWorkspaceArchived: () => boolean
   splitFocusedTile: (direction: SplitOrientation) => void
   scrollFocusedTabPage: (direction: -1 | 1) => void
   writeToFocusedTerminal: (data: string) => void
@@ -66,11 +73,12 @@ interface UseShortcutsProps {
   setPreferredEditorId: (id: string | undefined) => void
 }
 
-const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = {
-  [TabType.AGENT]: 'agent',
-  [TabType.TERMINAL]: 'terminal',
-  [TabType.FILE]: 'file',
-}
+/**
+ * The token the keybinding context keys a tab kind by. GENERATED from
+ * contracts/tab-types.json, so it is the same string the tab strip publishes and
+ * the CLI accepts. UNSPECIFIED maps to '', which no binding matches.
+ */
+const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = TAB_TYPE_WIRE_TOKEN
 
 // FFI contract: must match SHOW_PREFERENCES_MENU_ID in desktop/rust/src/main.rs.
 const SHOW_PREFERENCES_MENU_ID = 'show-preferences'
@@ -134,12 +142,14 @@ export function useShortcuts(props: UseShortcutsProps): void {
       newWorkspaceDialog.open({})
       return
     }
-    newAgentDialog.open()
+    // An empty target: the shortcut is about the tab the user is looking at,
+    // so the dialog follows the current tab context.
+    newAgentDialog.open({})
   }, 'App')
   cmd('app.newTerminalDialog', 'New Terminal Dialog', () => {
     if (!hasActiveWorkspace())
       return
-    newTerminalDialog.open()
+    newTerminalDialog.open({})
   }, 'App')
   cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => newWorkspaceDialog.open({}), 'App')
   cmd('app.refreshDirectoryTree', 'Refresh Directory Tree', () => refreshFileTree(), 'Files')
@@ -147,7 +157,11 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.toggleFloatingTab', 'Toggle Floating Tab', toggleFloatingTab, 'Tab')
   cmd('app.closeActiveTab', 'Close Active Tab', () => {
     const tab = resolveFocusedTab()
-    if (tab)
+    // The SAME predicate the tab strip and the sidebar tree draw their close
+    // controls from. An archived workspace keeps its agent and terminal tabs, so
+    // a shortcut that closed one would be the only surface that disagrees --
+    // and the user would have no visible control to undo it with.
+    if (tab && canCloseTab(props.isActiveWorkspaceArchived(), tab))
       tabOps.handleTabClose(tab)
   }, 'Tab')
   cmd('app.toggleLeftSidebar', 'Toggle Left Sidebar', toggleLeftSidebar, 'Layout')

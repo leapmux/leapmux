@@ -36,10 +36,10 @@ func Run(ctx context.Context, st store.Store, soloMode bool) error {
 	// CreateUserParams.Validate accepts it; the empty email makes the helper's
 	// ClearCompetingPendingEmails a no-op.
 	user, err := service.CreateUser(ctx, st, service.CreateUserParams{
-		Username:    usernames.Solo,
-		DisplayName: "Solo",
-		PasswordSet: true,
-		IsAdmin:     true,
+		Username:              usernames.Solo,
+		DisplayName:           "Solo",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	})
 	if err != nil {
 		return err

@@ -1,8 +1,9 @@
+import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
 import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
-import type { ToggleDialogState } from '~/hooks/createDialogState'
+import type { DialogState } from '~/hooks/createDialogState'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
@@ -47,7 +48,7 @@ export interface UseAgentOperationsProps {
   isActiveWorkspaceMutatable: () => boolean
   activeWorkspace: () => Workspace | null
   getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
-  newAgentDialog: ToggleDialogState
+  newAgentDialog: DialogState<NewTabTarget>
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
@@ -231,27 +232,38 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   // When providerOverride is given (from per-provider TabBar buttons),
   // the agent is created directly. Otherwise prefer the active agent
   // tab's provider, then the MRU provider, then the first available one.
-  const handleOpenAgent = async (providerOverride?: AgentProvider) => {
+  //
+  // `target` says WHERE the agent runs. Omit it and the agent follows the
+  // current tab context, which is what the tab bar and the shortcut want. The
+  // branch context menu passes the branch's own worker and checkout instead --
+  // that branch is often on a different machine than the focused tab.
+  //
+  // The target does NOT decide the workspace: the tab is placed on the ACTIVE
+  // workspace's focused tile, so a caller acting on another workspace's branch
+  // selects that workspace first.
+  const handleOpenAgent = async (providerOverride?: AgentProvider, target?: NewTabTarget) => {
     if (!props.isActiveWorkspaceMutatable())
       return
     const ws = props.activeWorkspace()
     if (!ws)
       return
     const ctx = props.getCurrentTabContext()
-    if (!ctx.workerId || !ctx.workingDir) {
-      props.newAgentDialog.open()
+    const workerId = target?.workerId || ctx.workerId
+    const workingDir = target?.workingDir || ctx.workingDir
+    if (!workerId || !workingDir) {
+      props.newAgentDialog.open(target ?? {})
       return
     }
     const provider = providerOverride ?? resolvePreferredProvider()
     if (provider === null) {
-      props.newAgentDialog.open()
+      props.newAgentDialog.open(target ?? {})
       return
     }
     props.setNewAgentLoadingProvider(provider)
     try {
       // Only a successful open counts as a use: a refused or failed open
       // records nothing, so the MRU list keeps reflecting real usage.
-      if (await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider))
+      if (await openAgentInWorkspace(ws.id, workerId, workingDir, undefined, provider))
         touchMruProvider(provider)
     }
     finally {

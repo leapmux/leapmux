@@ -233,11 +233,11 @@ func (e *envT) seedUser(t *testing.T, username string) string {
 	t.Helper()
 	userID := id.Generate()
 	require.NoError(t, e.st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     username,
-		PasswordHash: "hash",
-		DisplayName:  username,
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              username,
+		PasswordHash:          "hash",
+		DisplayName:           username,
+		FirstCredentialExempt: true,
 	}))
 	return userID
 }

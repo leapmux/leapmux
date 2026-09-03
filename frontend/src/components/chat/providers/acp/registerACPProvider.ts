@@ -11,6 +11,7 @@ import { registerProvider } from '../registry'
 import { ACPControlActions, ACPControlContent } from './ACPControlRequest'
 import { acpBuildControlResponse, acpExtractQuotableText, classifyACPMessage } from './classification'
 import { acpControlResponseDisplay } from './controlResponse'
+import { acpToolResultImages } from './extractors/image'
 import { acpResultDivider } from './renderers'
 import { renderACPMessage } from './rendering'
 
@@ -143,6 +144,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
       ...(opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {}),
     }),
     renderMessage: renderACPMessage,
+    toolResultImages: acpToolResultImages,
     resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,
     // ACP-based providers (OpenCode, Cursor, Copilot, ...) mark only user sends and control-response

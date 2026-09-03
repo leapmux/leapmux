@@ -1,8 +1,9 @@
 import type { Accessor } from 'solid-js'
+import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
 import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
-import type { ToggleDialogState } from '~/hooks/createDialogState'
+import type { DialogState } from '~/hooks/createDialogState'
 import type { InputQueueDrain } from '~/lib/inputQueue'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
@@ -56,7 +57,7 @@ export interface UseTerminalOperationsProps {
   activeWorkspace: Accessor<Workspace | null>
   isActiveWorkspaceMutatable: Accessor<boolean>
   getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
-  newTerminalDialog: ToggleDialogState
+  newTerminalDialog: DialogState<NewTabTarget>
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
@@ -126,17 +127,29 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // the active tab so the sidebar doesn't flash the new tab under the
   // workspace before the worker's TerminalStatusChange phase-1 broadcast
   // lands.
+  //
+  // `args.target` says WHERE the terminal runs. Omit it and the terminal
+  // follows the current tab context, which is what the tab bar and the shortcut
+  // want. The branch context menu passes the branch's own worker and checkout
+  // instead -- that branch is often on a different machine than the focused
+  // tab. The target does NOT decide the workspace: the tab is placed on the
+  // ACTIVE workspace's focused tile, so a caller acting on another workspace's
+  // branch selects that workspace first.
   const openTerminalCore = async (
-    args: { shell: string, shellStartDir?: string, setLoading: (v: boolean) => void },
+    args: { shell: string, shellStartDir?: string, target?: NewTabTarget, setLoading: (v: boolean) => void },
   ) => {
     if (!props.isActiveWorkspaceMutatable())
       return
     const ws = props.activeWorkspace()
     if (!ws)
       return
-    const ctx = props.getCurrentTabContext()
+    const tabCtx = props.getCurrentTabContext()
+    const ctx = {
+      workerId: args.target?.workerId || tabCtx.workerId,
+      workingDir: args.target?.workingDir || tabCtx.workingDir,
+    }
     if (!ctx.workerId || !ctx.workingDir) {
-      props.newTerminalDialog.open()
+      props.newTerminalDialog.open(args.target ?? {})
       return
     }
     // BEFORE the worker RPC: it is the step that can't be taken back. A
@@ -199,11 +212,14 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
+  // No `target`: both callers of the default-shell path -- the tab bar's
+  // Terminal button and the file tree's "open terminal here" -- are about the
+  // directory the user is already looking at.
   const handleOpenTerminal = (shellStartDir?: string) =>
     openTerminalCore({ shell: '', shellStartDir: shellStartDir ?? '', setLoading: props.setNewTerminalLoading })
 
-  const handleOpenTerminalWithShell = (shell: string) =>
-    openTerminalCore({ shell, setLoading: props.setNewShellLoading })
+  const handleOpenTerminalWithShell = (shell: string, target?: NewTabTarget) =>
+    openTerminalCore({ shell, target, setLoading: props.setNewShellLoading })
 
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     const tab = props.view.getTerminalTab(terminalId)

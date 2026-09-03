@@ -41,10 +41,10 @@ test.describe('Repo git focused key alignment', () => {
       await page.locator('[data-testid="files-filter-changed"]').click()
       await expect(page.locator('[data-testid="git-diff-stats"]').first()).toBeVisible()
 
-      await clickBranchMenuItem(page, branchGroupRow(page), 'Change branch...')
+      await clickBranchMenuItem(page, branchGroupRow(page), 'Switch to branch...')
       const dialog = page.getByRole('dialog')
       await expect(dialog.getByRole('heading', { name: 'Change branch' })).toBeVisible()
-      await dialog.getByText('Switch to branch').click()
+      await dialog.getByText('Switch to branch', { exact: true }).click()
       await pickMenuOption(dialog, 'branch-select-menu', 'feature')
       await dialog.getByRole('button', { name: 'Apply' }).click()
       await expect(dialog.getByRole('heading', { name: 'Change branch' })).not.toBeVisible()

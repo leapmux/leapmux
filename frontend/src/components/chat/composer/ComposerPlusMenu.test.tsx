@@ -4,6 +4,7 @@ import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
+import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import '~/components/chat/providers'
@@ -39,8 +40,7 @@ function renderMenu(opts: {
   const onAttachFile = vi.fn()
   const onToggleEnterMode = vi.fn()
   const onToggleStatusBar = vi.fn()
-  const onChangeBranch = vi.fn()
-  const onDeleteBranch = vi.fn()
+  const branchActions = stubBranchMenuActions()
   const rendered = render(() => (
     <ComposerPlusMenu
       optionGroups={opts.groups ?? []}
@@ -58,8 +58,8 @@ function renderMenu(opts: {
         homeDir: opts.homeDir,
         stats: opts.branchStats,
       }}
-      onChangeBranch={onChangeBranch}
-      onDeleteBranch={onDeleteBranch}
+      branchActions={branchActions}
+      branchWorkerId="w-1"
       branchDisabledReason={opts.branchDisabledReason}
       enterKeyMode={() => 'cmd-enter-sends'}
       onToggleEnterMode={onToggleEnterMode}
@@ -68,7 +68,7 @@ function renderMenu(opts: {
       agentInfo={opts.agentInfo ? () => <span data-testid="agent-info-rows" /> : undefined}
     />
   ))
-  return { ...rendered, onSettingChange, onAttachFile, onToggleEnterMode, onToggleStatusBar, onChangeBranch, onDeleteBranch }
+  return { ...rendered, onSettingChange, onAttachFile, onToggleEnterMode, onToggleStatusBar, branchActions }
 }
 
 describe('composerPlusMenu structure freeze', () => {
@@ -93,6 +93,8 @@ describe('composerPlusMenu structure freeze', () => {
           name: sources.branch?.() ?? '',
           directory: '/repo',
         }}
+        branchActions={stubBranchMenuActions()}
+        branchWorkerId="w-1"
         enterKeyMode={() => 'cmd-enter-sends'}
         onToggleEnterMode={vi.fn()}
         showStatusBar={() => true}
@@ -436,11 +438,20 @@ describe('composerPlusMenu', () => {
     // Every other axis has a second home in this menu. The branch chip lives
     // only on the status bar, which this very menu can switch off, leaving the
     // sidebar -- itself behind a toggle on a narrow layout -- as the only route.
-    const { onChangeBranch } = renderMenu({ branchName: 'main' })
+    const { branchActions } = renderMenu({ branchName: 'main' })
 
     expect(screen.getByTestId('composer-plus-branch')).toHaveTextContent('main')
-    await fireEvent.click(screen.getByRole('menuitem', { name: /Change branch/, hidden: true }))
-    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+    await fireEvent.click(screen.getByRole('menuitem', { name: /Switch to branch/, hidden: true }))
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
+  })
+
+  // The new-tab sections ride along for the same reason: with the status bar
+  // off and the sidebar collapsed, this menu is the only route to them.
+  it('carries the new-tab sections too', async () => {
+    const { branchActions } = renderMenu({ branchName: 'main' })
+
+    await fireEvent.click(screen.getByRole('menuitem', { name: /New agent\.\.\./, hidden: true }))
+    expect(branchActions.onNewAgentAdvanced).toHaveBeenCalledTimes(1)
   })
 
   it('omits the branch item when the agent reports no branch', () => {
@@ -491,18 +502,18 @@ describe('composerPlusMenu', () => {
     expect(bare.container.querySelectorAll('hr')).toHaveLength(0)
   })
 
-  it('disables both branch actions when the Worker is unreachable, and says why', () => {
+  it('disables every branch action when the Worker is unreachable, and says why', () => {
     const reason = 'This Worker is offline. Branch actions need the machine the repository is on.'
-    const { onChangeBranch, onDeleteBranch } = renderMenu({ branchName: 'main', branchDisabledReason: reason })
+    const { branchActions } = renderMenu({ branchName: 'main', branchDisabledReason: reason })
 
-    // The trigger stays ENABLED — the two items inside it are what the guard
+    // The trigger stays ENABLED — the items inside it are what the guard
     // disables — and carries the reason through Tooltip, which renders its text
     // lazily on hover and so is not assertable here. The contract this test
-    // specifies is the two items.
-    expect(screen.getByRole('menuitem', { name: /Change branch/, hidden: true })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeDisabled()
-    expect(onChangeBranch).not.toHaveBeenCalled()
-    expect(onDeleteBranch).not.toHaveBeenCalled()
+    // specifies is the items.
+    for (const name of [/Switch to branch/, /Create new branch/, /Create new worktree/, /Delete branch/, /New agent\.\.\./, /New terminal\.\.\./])
+      expect(screen.getByRole('menuitem', { name, hidden: true })).toBeDisabled()
+    expect(branchActions.onChangeBranch).not.toHaveBeenCalled()
+    expect(branchActions.onDeleteBranch).not.toHaveBeenCalled()
   })
 
   it('reports each toggle state through aria-checked', () => {

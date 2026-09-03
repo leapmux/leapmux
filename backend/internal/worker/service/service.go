@@ -98,7 +98,7 @@ type Service struct {
 	// cleanup registries, the sync.Maps) each carry their own
 	// synchronisation. The pointer fields are assigned once but own the
 	// mutable state behind them -- the startup registries and PrivateEvents
-	// guard theirs internally, and FileTabPaths keeps its rows in the DB.
+	// guard theirs internally, and TabPayloads keeps its rows in the DB.
 	// Do not add a plain, unsynchronised mutable field to this block. ----
 
 	// registeredBy is the user who registered this worker -- the fact
@@ -123,14 +123,14 @@ type Service struct {
 	TerminalStartup *startupRegistry[leapmuxv1.TerminalStatus]
 
 	// PrivateEvents is the worker-local pub/sub for E2EE-only events
-	// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked). Always
+	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked). Always
 	// non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
-	// FileTabPaths persists (user_id, tab_id) -> file_path for
-	// FILE-typed tabs. Always non-nil after New.
-	// The hub never sees these rows; clients fetch paths over E2EE.
-	FileTabPaths *FileTabPathStore
+	// TabPayloads persists (user_id, tab_id) -> TabPayload for every
+	// payload-backed tab kind (FILE, IMAGE). Always non-nil after New.
+	// The hub never sees these rows; clients fetch payloads over E2EE.
+	TabPayloads *TabPayloadStore
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for
 	// them to finish before DB/data-dir teardown. Close handlers must
@@ -552,7 +552,7 @@ func New(cfg Config) *Service {
 	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {
 		svc.SetRegisteredBy(seed)
 	}
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, svc.PrivateEvents)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents)
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
@@ -1469,13 +1469,13 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 //
 // The absolute-path requirement is the point of sharing this. A working dir is
 // the one field every branch-context operation hands to `git -C` --
-// getTabWorkingDir, linkFileTabToWorktree, the branch-sibling scan, PushBranch
+// getTabWorkingDir, linkTabToWorktree, the branch-sibling scan, PushBranch
 // -- and `git -C` resolves a relative path against the WORKER PROCESS's cwd,
 // which is never the client's. A stored `.` or `../peer-repo` therefore does not
 // fail loudly; it silently answers for whatever repository the worker happens to
 // sit in, so a close inspection reports the wrong branch's dirty state and
 // `--worktree=push` can commit and push a repository the user never named.
-// Refusing at the write point is the same call FileTabPathStore.Register already
+// Refusing at the write point is the same call TabPayloadStore.Register already
 // makes for file_path, applied to the other half of the same lookup.
 //
 // It runs validate.SanitizePath, which is the SAME normalizer every reader of

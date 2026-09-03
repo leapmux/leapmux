@@ -1,15 +1,19 @@
 import type { CustomEditorComponent } from '../types'
 import type { AddressRow } from './networkAddress'
 import type { GetListenStatusResponse } from '~/generated/proto/leapmux/v1/admin_pb'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
+import X from 'lucide-solid/icons/x'
 import { createEffect, createSignal, For, onMount, Show, untrack } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { adminNetworkClient, userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Alert } from '~/components/common/Alert'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
+import { useAuth } from '~/context/AuthContext'
 import { ADDRESS_SOURCE_LISTEN, ADDRESS_SOURCE_MERGED, MAX_EXTRA_LISTEN_ADDRESSES } from '~/generated/contracts/listen'
 import { isValidPort } from '~/lib/ipAddress'
 import { loadSystemInfo, soloPasswordSet } from '~/lib/systemInfo'
@@ -35,6 +39,7 @@ import { ANY_HOST, mergeNotes, newRow, portOf, rowFromAddress, rowIsLoopback, to
  * neither of which a settings row can carry.
  */
 export const NetworkAccessControl: CustomEditorComponent = (props) => {
+  const auth = useAuth()
   const [status, setStatus] = createSignal<GetListenStatusResponse | null>(null)
   const [loading, setLoading] = createSignal(true)
   const [loadFailed, setLoadFailed] = createSignal(false)
@@ -154,9 +159,11 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
   const rowsAreValid = () => rows().every(r => r.host !== '' && isValidPort(r.port))
   const exposesTheHub = () => rows().some(r => !rowIsLoopback(r))
   /**
-   * The password half is shown only while the account has none. Once it does,
-   * Preferences → Account owns changing it, so the two surfaces never offer
-   * the same field at the same time.
+   * The password half is shown only while the account has none, and then only
+   * because this panel cannot apply an address without one. Preferences →
+   * Account → Password sets and replaces it at any time; this half exists so
+   * that publishing an address does not send the operator to another category
+   * mid-edit, and it disappears the moment either surface stores one.
    */
   const needsPassword = () => !soloPasswordSet()
   const passwordSatisfied = () =>
@@ -225,7 +232,15 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
         // authentication rule just changed -- reported "Failed to apply the
         // network settings" for an apply that succeeded. Each read states its
         // own failure where it belongs.
-        await Promise.allSettled([refresh(), loadSystemInfo(true)])
+        //
+        // The ACCOUNT joins them because this panel can store the account's
+        // password, and Account → Password reads the account to choose between
+        // "Set Password" and "Change Password". Without it that row offers to
+        // set a first password this Apply already stored. It runs on every
+        // apply, including one that stored none: the alternative reads the
+        // `passwordStored` latch before the reset below clears it, and one
+        // cheap read on a hand-driven admin action does not earn that ordering.
+        await Promise.allSettled([refresh(), loadSystemInfo(true), auth.refreshUser()])
         return 'Network access updated.'
       },
     })
@@ -274,14 +289,18 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
                   value={row.port}
                   onInput={e => updateRow(row.id, { port: e.currentTarget.value })}
                 />
+                {/*
+                  No confirmation step: Remove edits the STAGED list only.
+                  Apply is what publishes it, and Cancel puts the row back.
+                */}
                 <button
                   type="button"
-                  class="outline"
+                  class={`outline ${styles.removeButton}`}
                   data-variant="danger"
                   aria-label={`Remove ${toAddress(row)}`}
                   onClick={() => removeRow(row.id)}
                 >
-                  ✕
+                  <Icon icon={X} size="xs" aria-hidden="true" />
                 </button>
               </div>
             )}
@@ -427,7 +446,7 @@ function InterfaceMenu(props: {
           {...triggerProps}
         >
           <span class="clipped">{label()}</span>
-          <span aria-hidden="true">▾</span>
+          <Icon icon={ChevronDown} size="xs" aria-hidden="true" />
         </button>
       )}
     >

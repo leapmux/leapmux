@@ -15,7 +15,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -1039,5 +1039,60 @@ describe('mruSteerableAgentTab', () => {
       agent({ id: 'root' }),
     ]
     expect(mruSteerableAgentTab(tabs)?.id).toBe('root')
+  })
+})
+
+// The two predicates every surface that renders a tab row asks before it draws
+// a control. They live here rather than in the tab strip and the sidebar tree
+// because those two render the SAME tabs, and a copy each is how they came to
+// disagree -- the strip refused what the tree still offered.
+describe('canCloseTab and canRenameTab', () => {
+  const agent = { type: TabType.AGENT, id: 'a-1' } as Tab
+  const terminal = { type: TabType.TERMINAL, id: 't-1' } as Tab
+  const file = { type: TabType.FILE, id: 'f-1' } as Tab
+  const image = { type: TabType.IMAGE, id: 'i-1' } as Tab
+
+  it('closes every kind while the workspace is not archived', () => {
+    for (const tab of [agent, terminal, file, image])
+      expect(canCloseTab(false, tab)).toBe(true)
+  })
+
+  it('renames a process-backed tab while the workspace is not archived', () => {
+    expect(canRenameTab(false, agent)).toBe(true)
+    expect(canRenameTab(false, terminal)).toBe(true)
+  })
+
+  // An archived workspace takes no mutation, and an agent or a terminal has a
+  // process behind it that closing would stop.
+  it('refuses to close a process-backed tab in an archived workspace', () => {
+    expect(canCloseTab(true, agent)).toBe(false)
+    expect(canCloseTab(true, terminal)).toBe(false)
+  })
+
+  // A payload-backed tab is the exception: it owns no process, so closing one
+  // changes nothing on the Worker.
+  it('still closes a payload-backed tab in an archived workspace', () => {
+    expect(canCloseTab(true, file)).toBe(true)
+    expect(canCloseTab(true, image)).toBe(true)
+  })
+
+  // A payload-backed tab takes its title from what it SHOWS, so a user-typed
+  // name has nothing to hold -- archived or not.
+  it('never renames a payload-backed tab', () => {
+    expect(canRenameTab(false, file)).toBe(false)
+    expect(canRenameTab(false, image)).toBe(false)
+    expect(canRenameTab(true, file)).toBe(false)
+  })
+
+  it('refuses every rename in an archived workspace', () => {
+    expect(canRenameTab(true, agent)).toBe(false)
+    expect(canRenameTab(true, terminal)).toBe(false)
+  })
+
+  // `undefined` is what a surface that never learned the flag passes. It must
+  // read as "not archived" rather than blocking every control.
+  it('treats an absent archived flag as not archived', () => {
+    expect(canCloseTab(undefined, agent)).toBe(true)
+    expect(canRenameTab(undefined, agent)).toBe(true)
   })
 })

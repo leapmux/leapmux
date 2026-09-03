@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -349,23 +350,17 @@ func (h *handler) UpdateStream(ctx context.Context, req *connect.Request[leapmux
 	return connect.NewResponse(&leapmuxv1.UpdateStreamResponse{}), nil
 }
 
-// tabTypeWireName projects a TabType enum to the canonical lowercase
-// wire string ("agent" / "terminal" / "file"). Returns "" for the
-// unspecified zero value so callers can guard the env-var emit with
-// the same `if !="" then add` shape they had against the old string
-// field. Keeping the projection here (rather than reusing the CLI's
-// tabTypeName) avoids a worker→cli import direction.
+// tabTypeWireName projects a TabType enum to the canonical lowercase wire
+// string. Returns "" for the unspecified zero value, so callers can guard the
+// env-var emit with the same `if != "" then add` shape.
+//
+// It reads the GENERATED table rather than restating the CLI's switch. That
+// duplicate existed only to avoid a worker->cli import; `generated/contracts` is
+// a leaf both sides already depend on, so the copy is no longer the cheaper
+// option -- and the copy is what let this projection stop at "file" while the
+// enum had grown an IMAGE value.
 func tabTypeWireName(t leapmuxv1.TabType) string {
-	switch t {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		return "agent"
-	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return "terminal"
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		return "file"
-	default:
-		return ""
-	}
+	return contracts.TabTypeWireToken[t]
 }
 
 // EnvVars assembles the LEAPMUX_CONTROL_* env vars to inject into the

@@ -1,5 +1,5 @@
 -- name: CreateUser :exec
-INSERT INTO users (id, username, password_hash, display_name, display_name_folded, email, email_verified, password_set, is_admin)
+INSERT INTO users (id, username, password_hash, display_name, display_name_folded, email, email_verified, first_credential_exempt, is_admin)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetUserByID :one
@@ -80,7 +80,7 @@ ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
 -- name: UpdateUserPassword :exec
-UPDATE users SET password_hash = ?, password_set = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+UPDATE users SET password_hash = ?, first_credential_exempt = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;
 
 -- The profile/email/email_verified/admin updates all RETURN id, updated_at so
@@ -324,13 +324,13 @@ WHERE pending_recovery_token = sqlc.arg(token) AND pending_recovery_token != ''
   AND deleted_at IS NULL;
 
 -- name: CompleteRecovery :one
--- Spends the recovery token on a replacement factor. password_set is 1 for
+-- Spends the recovery token on a replacement factor. first_credential_exempt is 1 for
 -- a new password and 0 for a passkey spend (caller binds the not-set
 -- placeholder hash). The WHERE re-checks the token at write time, so a
 -- link spent on a concurrent completion matches no row.
 UPDATE users
 SET password_hash = sqlc.arg(password_hash),
-    password_set = sqlc.arg(password_set),
+    first_credential_exempt = sqlc.arg(first_credential_exempt),
     pending_recovery_token = '',
     pending_recovery_expires_at = NULL,
     pending_recovery_unblocked_at = NULL,

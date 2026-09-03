@@ -30,7 +30,7 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
 	ctx := context.Background()
 
 	repoDir := initRepo(t)
@@ -46,11 +46,10 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	// clients happened to mint the same tab id.
 	const sharedTabID = "file-1700000000000-1"
 	for _, userID := range []string{"user-a", "user-b"} {
-		require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-			UserID:     userID,
-			TabID:      sharedTabID,
-			FilePath:   openPath,
-			WorkingDir: wtDir,
+		require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
+			UserID:  userID,
+			TabID:   sharedTabID,
+			Payload: fileTabPayload(openPath, wtDir),
 		}))
 	}
 
@@ -60,7 +59,7 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 
 	// user-b closes its tab. KEEP so the assertion is about the link, not
 	// the worktree-removal branch.
-	result := svc.closeFileTabCommon("user-b", sharedTabID, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, dropWorktreeLink)
+	result := svc.closePayloadTabCommon("user-b", sharedTabID, leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, dropWorktreeLink)
 	require.Equal(t, "", result.GetFailureMessage(), "FILE close must not report a failure")
 
 	count, err = svc.Queries.CountWorktreeTabs(ctx, wtID)
@@ -84,9 +83,9 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	assert.True(t, errors.Is(err, sql.ErrNoRows), "user-b's link must be gone (err=%v)", err)
 
 	// user-a's file_tab row is untouched too.
-	loc, err := svc.FileTabPaths.Get(ctx, "user-a", sharedTabID)
+	loc, err := svc.TabPayloads.Get(ctx, "user-a", sharedTabID)
 	require.NoError(t, err)
-	assert.Equal(t, openPath, loc.FilePath)
+	assert.Equal(t, openPath, loc.GetFile().GetFilePath())
 }
 
 // TestWorktreeTabUserID pins the one rule every by-tab worktree_tabs read and

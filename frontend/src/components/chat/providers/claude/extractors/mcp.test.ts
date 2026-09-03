@@ -92,7 +92,7 @@ describe('claudeMcpFromToolResult', () => {
     })
     expect(source?.content).toEqual([
       { type: 'text', text: '## Results' },
-      { type: 'image', mimeType: 'image/png', urlOrData: undefined },
+      { type: 'image', source: { mimeType: 'image/png' } },
     ])
     expect(source?.argsJson).toBe('')
   })

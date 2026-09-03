@@ -4,6 +4,7 @@ import { userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { StatusLine } from '~/components/common/StatusLine'
+import { useAuth } from '~/context/AuthContext'
 import { USERNAME_SOLO } from '~/generated/contracts/validate'
 import { formatErrorMessage } from '~/lib/errors'
 import { loadSystemInfo } from '~/lib/systemInfo'
@@ -43,6 +44,7 @@ export const PasswordSetupGate: Component = () => {
    * no other way out. Throwing is the helper's only route to the second one, and
    * throwing is what says "the write failed".
    */
+  const auth = useAuth()
   const [busy, setBusy] = createSignal(false)
   const [message, setMessage] = createSignal<{ type: 'success' | 'error', text: string } | null>(null)
 
@@ -61,6 +63,16 @@ export const PasswordSetupGate: Component = () => {
       setBusy(false)
       return
     }
+    // The ACCOUNT is the other copy of this fact, and it does not follow the
+    // snapshot. `auth.user().passwordSet` is what Preferences -> Account renders
+    // its button and its solo warning from, and nothing re-reads it for the life
+    // of the page: `readCurrentUser` runs once, at bootstrap. Without this the
+    // operator who just set the first password finds a screen that offers to set
+    // one. It runs BEFORE the snapshot below, because that read is what takes
+    // this screen down. `refreshUser` swallows its own failure, so it can never
+    // report a stored password as a failed write. The two other surfaces that
+    // offer this same password already refresh both copies.
+    await auth.refreshUser()
     // OUTSIDE the catch above, because the password is stored by now. Forced,
     // because this snapshot is exactly what the gate reads: without it the
     // screen stays up over a hub that no longer needs it. But `loadSystemInfo`

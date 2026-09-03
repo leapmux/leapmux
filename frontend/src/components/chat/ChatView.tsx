@@ -234,6 +234,8 @@ export interface AgentLifecycleProps {
    */
   registryRows?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
+  /** Open an image a chat row rendered in its own tab. */
+  onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
 }
@@ -393,6 +395,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
     resolveBackgroundTaskRow,
     onOpenSubagent: props.agentLifecycle?.onOpenSubagent,
+    onOpenImage: props.agentLifecycle?.onOpenImage,
   }))
 
   // The scroll container (also handed to scroll.attachListRef below). Read

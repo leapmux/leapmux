@@ -523,14 +523,14 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		// Seed unverified so the flip to true is a grant (soft user_info path).
 		userID := id.Generate()
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			Username:      "unverified-grant",
-			PasswordHash:  "hash",
-			DisplayName:   "Unverified",
-			Email:         "unverified-grant@example.com",
-			EmailVerified: false,
-			PasswordSet:   true,
-			IsAdmin:       false,
+			ID:                    userID,
+			Username:              "unverified-grant",
+			PasswordHash:          "hash",
+			DisplayName:           "Unverified",
+			Email:                 "unverified-grant@example.com",
+			EmailVerified:         false,
+			FirstCredentialExempt: true,
+			IsAdmin:               false,
 		}))
 		assertUserInfoEvent(t, st, userID, func() error {
 			return st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{
@@ -544,14 +544,14 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		st := s.NewStore(t)
 		userID := id.Generate()
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			Username:      "to-unverify",
-			PasswordHash:  "hash",
-			DisplayName:   "To Unverify",
-			Email:         "to-unverify@example.com",
-			EmailVerified: false,
-			PasswordSet:   true,
-			IsAdmin:       false,
+			ID:                    userID,
+			Username:              "to-unverify",
+			PasswordHash:          "hash",
+			DisplayName:           "To Unverify",
+			Email:                 "to-unverify@example.com",
+			EmailVerified:         false,
+			FirstCredentialExempt: true,
+			IsAdmin:               false,
 		}))
 
 		require.NoError(t, st.Users().UpdateEmailVerified(ctx, store.UpdateUserEmailVerifiedParams{

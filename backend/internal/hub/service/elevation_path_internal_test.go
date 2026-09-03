@@ -38,7 +38,7 @@ func TestAccountElevatesOnlyThroughAProvider(t *testing.T) {
 		uid := id.Generate()
 		require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 			ID: uid, Username: username, PasswordHash: "hash",
-			DisplayName: "Test User", PasswordSet: passwordSet,
+			DisplayName: "Test User", FirstCredentialExempt: passwordSet,
 		}))
 		user, err := st.Users().GetByID(ctx, uid)
 		require.NoError(t, err)

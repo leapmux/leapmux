@@ -19,6 +19,7 @@ import {
   WatchRejectionReason,
 } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { rootAgentIdFor } from '~/stores/tab.helpers'
+import { isPayloadBackedTabType } from '~/stores/tab.types'
 
 export interface WatchPlan {
   agents: WatchAgentEntry[]
@@ -124,7 +125,8 @@ export function buildWatchPlans(
     return s
   }
   for (const tab of tabs) {
-    if (tab.type === TabType.FILE)
+    // A payload-backed tab runs no agent, so there is nothing to watch.
+    if (isPayloadBackedTabType(tab.type))
       continue
     if (!tab.workerId || !tab.tileId)
       continue

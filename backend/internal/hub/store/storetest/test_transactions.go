@@ -170,14 +170,14 @@ func (s *Suite) testTransactions(t *testing.T) {
 		userID := id.Generate()
 		err := st.RunInTransaction(ctx, func(tx store.Store) error {
 			if err := tx.Users().Create(ctx, store.CreateUserParams{
-				ID:            userID,
-				Username:      "rollback-multi-user",
-				PasswordHash:  "hash",
-				DisplayName:   "RB",
-				Email:         "rb@example.com",
-				EmailVerified: true,
-				PasswordSet:   true,
-				IsAdmin:       false,
+				ID:                    userID,
+				Username:              "rollback-multi-user",
+				PasswordHash:          "hash",
+				DisplayName:           "RB",
+				Email:                 "rb@example.com",
+				EmailVerified:         true,
+				FirstCredentialExempt: true,
+				IsAdmin:               false,
 			}); err != nil {
 				return err
 			}

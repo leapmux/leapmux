@@ -56,7 +56,21 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
   const prefs = usePreferences()
   const narrow = useViewportBelow(breakpoints.sm)
 
-  const isAdmin = () => auth.user()?.isAdmin === true
+  /**
+   * Whether this account administers the hub.
+   *
+   * A MEMO, and the memo is what keeps an open panel alive. `refreshUser`
+   * replaces the User object with an equal one -- three surfaces re-read the
+   * account while this dialog is open, and one of them is an editor INSIDE it
+   * -- and a plain accessor passes that new object straight through to
+   * `rowsByGroup` below. That memo then rebuilds `adminRows`, `<For>` sees new
+   * row objects and reconciles by reference, and every admin editor remounts:
+   * a half-typed address list is discarded, and the status line of the write
+   * that caused the re-read is replaced by the empty one of a fresh editor.
+   * A memo notifies only when the BOOLEAN moves, which it does once per
+   * session.
+   */
+  const isAdmin = createMemo(() => auth.user()?.isAdmin === true)
   const adminStore = createAdminSettingsStore(isAdmin)
 
   // A MEMO, not a one-time call: an account-backed entry takes its shape

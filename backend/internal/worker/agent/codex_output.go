@@ -418,7 +418,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", a.agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
 		persistToolItemStarted(a.sink, params, itemType, itemID, a.agentID)
 	case "collabAgentToolCall":
 		// Every collab tool_call stays in the parent transcript as a flat tool
@@ -494,7 +494,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		}); err != nil {
 			slog.Error("codex persist plan", "agent_id", a.agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
 		a.mu.Lock()
 		a.turnToolUses++
 		a.mu.Unlock()
@@ -1083,13 +1083,13 @@ func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMe
 }
 
 // persistToolItemStarted runs the shared per-type item/started logic for a tool
-// span (commandExecution/fileChange/mcpToolCall/dynamicToolCall) against the
-// given sink. Used by both the parent path (a.sink) and the child path
+// span (commandExecution/fileChange/mcpToolCall/dynamicToolCall/imageGeneration/
+// imageView) against the given sink. Used by both the parent path (a.sink) and the child path
 // (childSink). Non-tool item types are no-ops here (the parent handles its own
 // agentMessage/contextCompaction/collabAgentToolCall/reasoning cases inline).
 func persistToolItemStarted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
 		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
@@ -1108,7 +1108,7 @@ func persistToolItemCompleted(sink OutputSink, params json.RawMessage, itemType,
 		}); err != nil {
 			slog.Error("codex persist agentMessage/plan", "agent_id", agentID, "error", err)
 		}
-	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "imageGeneration", "imageView":
 		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {

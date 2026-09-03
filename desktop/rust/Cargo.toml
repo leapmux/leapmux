@@ -46,14 +46,14 @@ gtk = "0.18"
 gdk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The runtime subclass that overrides `-[NSWindow miniaturize:]`; see
+# The override of `-[NSWindow miniaturize:]` on tao's window class; see
 # `tray/minimize_macos.rs`. Tauri 2 emits no Minimized window event and tao
 # tracks the state without reporting it, so the shell calls AppKit itself. It
 # overrides that method rather than answering
 # NSWindowDidMiniaturizeNotification, because a miniaturize cannot be undone
 # once AppKit performs it.
 #
-# `objc2` alone: the override needs the class builder, `msg_send!` and `sel!`,
+# `objc2` alone: the override needs `class_addMethod`, `msg_send!` and `sel!`,
 # and none of the AppKit or Foundation types. Tauri re-exports objc2 only under
 # `target_os = "ios"`, so this file must list it itself. It is already in
 # Cargo.lock at this version through tao/muda/tray-icon, so the entry adds a

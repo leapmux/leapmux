@@ -14,6 +14,8 @@
  * and filtering logic.
  */
 
+import type { ImageResultSource } from './imageBlocks'
+import { imageBlockToMarkdown, parseImageBlock } from './imageBlocks'
 import { isObject } from './jsonPick'
 
 /** A content block in an Anthropic-style content array. */
@@ -52,40 +54,67 @@ export function asContentArray(value: unknown): ContentBlock[] | null {
 export type BlockFormatter = (block: ContentBlock) => string | null
 
 /**
- * Default non-text formatter: render images as Markdown so they survive
- * in any text rendering context. Base64 image data becomes an inline
- * `![image](data:...)` so it embeds when the surrounding renderer is
- * Markdown-aware; an external URL becomes `[image](url)` (a link, not
- * an inline embed) so we don't trigger a fetch from a third-party host.
+ * Default non-text formatter: render images as Markdown so they survive in any
+ * text rendering context. See {@link imageBlockToMarkdown} for the embed-vs-link
+ * rule and `~/lib/imageBlocks` for the wire shapes it accepts.
  *
- * Handles the three image shapes used in this repo:
- *   - Pi / MCP flat:   `{type:'image', mimeType, data}`
- *   - Anthropic:       `{type:'image', source: {type:'base64'|'url', media_type|url, ...}}`
- *   - MCP url-or-data: `{type:'image', mimeType?, urlOrData}`
+ * This is the right default for a Markdown destination and the WRONG one for a
+ * `<pre>`: there the data URL renders as a megabyte of literal base64. A
+ * tool-result body that can mount a component calls
+ * {@link splitToolResultContent} instead, which keeps the images out of the text
+ * and hands them back as sources.
  *
- * Returns null for non-image blocks and for image blocks whose shape
- * doesn't match any of the above (caller decides to skip or fall back).
+ * Returns null for non-image blocks and for image blocks with no payload
+ * (caller decides to skip or fall back).
  */
 export const markdownImageFormatter: BlockFormatter = (block) => {
-  if (block.type !== 'image')
-    return null
-  if (typeof block.data === 'string' && typeof block.mimeType === 'string')
-    return `![image](data:${block.mimeType};base64,${block.data})`
-  const source = isObject(block.source) ? block.source : null
-  if (source) {
-    if (source.type === 'base64'
-      && typeof source.data === 'string'
-      && typeof source.media_type === 'string') {
-      return `![image](data:${source.media_type};base64,${source.data})`
-    }
-    if (source.type === 'url' && typeof source.url === 'string')
-      return `[image](${source.url})`
+  const source = parseImageBlock(block)
+  return source ? imageBlockToMarkdown(source) : null
+}
+
+/** A tool result split into the text to render and the images to mount. */
+export interface ToolResultContent {
+  /** The joined text, with every image block excluded. */
+  text: string
+  /**
+   * Every image block, in wire order.
+   *
+   * The order is the contract behind an image tab's `imageIndex`: the row
+   * renders index N and the tab resolves index N from the same message later,
+   * so both must walk the blocks the same way.
+   */
+  images: ImageResultSource[]
+}
+
+/**
+ * Split a content-block array into the joined text plus the image blocks.
+ *
+ * The text half is exactly what {@link joinContentParagraphs} produces with the
+ * images skipped, so a caller that switches to this loses no text.
+ */
+export function splitToolResultContent(
+  content: ContentBlock[] | null | undefined,
+  kinds: Record<string, string>,
+): ToolResultContent {
+  // TWO walks, deliberately, and the image walk is its own.
+  //
+  // Collecting the images inside the text formatter looked cheaper and coupled
+  // the list to the caller's `kinds`: `joinContentParagraphs` consults `kinds`
+  // FIRST and never calls the formatter for a block whose type it names, so a
+  // caller that named a type an image can also carry would drop that image from
+  // the list AND from the text, with no error. This order is the contract an
+  // image tab's `imageIndex` addresses by, so it must not depend on what a
+  // caller happened to ask for the text.
+  const images: ImageResultSource[] = []
+  for (const block of content ?? []) {
+    const source = parseImageBlock(block)
+    if (source)
+      images.push(source)
   }
-  if (typeof block.urlOrData === 'string') {
-    const url = block.urlOrData
-    return url.startsWith('data:') ? `![image](${url})` : `[image](${url})`
-  }
-  return null
+  // The formatter answers null for every block: an image belongs to `images`,
+  // and nothing else reaches here that the text should carry.
+  const text = joinContentParagraphs(content, kinds, () => null)
+  return { text, images }
 }
 
 /**

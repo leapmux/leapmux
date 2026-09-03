@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strconv"
@@ -13,12 +14,40 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/listenset"
 )
 
-// freePorts returns n DISTINCT ports nothing holds.
+// The band freePorts draws from. Below Linux's default ephemeral floor (32768)
+// and below the BSD/macOS one (49152), so the kernel hands no port in it to
+// anything else on this machine. See freePorts for why that matters.
+const (
+	testPortBandLow  = 20000
+	testPortBandHigh = 29999
+)
+
+// freePorts returns n DISTINCT ports that nothing holds ON ANY INTERFACE.
 //
-// Every listener is held open until all n are chosen, then closed. Taking them
-// one at a time returns the same port twice on most systems -- the kernel
-// hands back the port it just freed -- and two test addresses that are secretly
-// one address make a merge test pass for the wrong reason.
+// Every listener is held open until all n are chosen, then closed. The caller
+// binds all n at once, so all n have to be free at one moment -- and taking
+// them one at a time returns the same port twice on most systems, because the
+// kernel hands back the port it just freed. Two test addresses that are
+// secretly one address make a merge test pass for the wrong reason.
+//
+// Two things here depart from the obvious `net.Listen("127.0.0.1:0")`, and each
+// closes a failure this file actually saw.
+//
+// THE BAND. `:0` draws from the operating system's ephemeral range, which is
+// where every other process on the machine gets its ports too. Between this
+// function closing its probe and the test binding the port itself there is a
+// window the kernel may fill with a browser, a dev server, or a second test
+// binary. That window cannot be closed -- the port has to be free for the test
+// to take it -- so the fix is to leave the pool that everything else draws
+// from. Nothing hands out a port in this band without being asked for it by
+// number.
+//
+// THE WILDCARD. A port free on 127.0.0.1 is NOT free for a wildcard bind: a
+// process holding 192.168.0.2:PORT does not collide with 127.0.0.1:PORT and
+// does collide with *:PORT, which several tests below bind. Probing on the
+// wildcard is what makes the answer mean what those callers need. It is also
+// what the loopback probe got wrong: `bind: address already in use` on a
+// *:PORT that this function had just declared free.
 //
 // Every address in this file is 127.0.0.1 on a port of its own, never
 // 127.0.0.2. Linux assigns the whole 127.0.0.0/8 to loopback and macOS assigns
@@ -28,16 +57,44 @@ import (
 func freePorts(t *testing.T, n int) []int {
 	t.Helper()
 	held := make([]net.Listener, 0, n)
+	// Only for the give-up path below, which is a t.Fatal: the probes would
+	// otherwise stay bound for the rest of the binary and take the band away
+	// from every later test in it. The success path empties `held` first, so
+	// this then closes nothing.
+	t.Cleanup(func() {
+		for _, ln := range held {
+			_ = ln.Close()
+		}
+	})
 	ports := make([]int, 0, n)
-	for range n {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		held = append(held, ln)
-		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
+	// A random start, so two runs of this package at the same time -- one `go
+	// test ./...` per checkout -- do not walk the band in the same order and
+	// collide on every port of it.
+	port := testPortBandLow + rand.IntN(testPortBandHigh-testPortBandLow+1)
+	for range testPortBandHigh - testPortBandLow + 1 {
+		if len(ports) == n {
+			break
+		}
+		// Almost every port in the band is free, because nothing here is handed
+		// out by the kernel. An in-use one is a service that asked for that
+		// number, or another run of this package -- either way a reason to try
+		// the next port rather than to fail.
+		if ln, err := net.Listen("tcp", ":"+strconv.Itoa(port)); err == nil {
+			held = append(held, ln)
+			ports = append(ports, port)
+		}
+		port++
+		if port > testPortBandHigh {
+			port = testPortBandLow
+		}
 	}
+	require.Len(t, ports, n, "no %d free ports in %d-%d; something is holding the whole band",
+		n, testPortBandLow, testPortBandHigh)
+	// Released together, so the caller finds every one of them free.
 	for _, ln := range held {
 		require.NoError(t, ln.Close())
 	}
+	held = held[:0]
 	return ports
 }
 
@@ -45,6 +102,33 @@ func freePorts(t *testing.T, n int) []int {
 func freePort(t *testing.T) int {
 	t.Helper()
 	return freePorts(t, 1)[0]
+}
+
+// Every test in this file rests on freePorts, so its own contract is pinned
+// rather than assumed. The BAND assertion is the deterministic guard: a probe
+// that went back to `net.Listen("127.0.0.1:0")` would return ephemeral ports and
+// fail it every time, on a quiet machine as loudly as on a busy one. That is the
+// point -- the failure it replaces appeared only under load, which is where a
+// flake is least welcome and hardest to reproduce.
+func TestFreePorts_ReturnsDistinctWildcardBindablePortsOutsideTheEphemeralRange(t *testing.T) {
+	ports := freePorts(t, 4)
+	require.Len(t, ports, 4)
+
+	seen := map[int]bool{}
+	for _, port := range ports {
+		assert.GreaterOrEqual(t, port, testPortBandLow, "port %d is below the band", port)
+		assert.LessOrEqual(t, port, testPortBandHigh, "port %d is above the band", port)
+		assert.False(t, seen[port], "port %d was returned twice", port)
+		seen[port] = true
+
+		// On the WILDCARD, which is what several tests below bind and what the
+		// loopback probe could not answer for. Bound and released one at a time:
+		// the caller's own binds are what must succeed, and holding all four
+		// here would only re-prove what freePorts already proved.
+		ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		require.NoError(t, err, "port %d must be free on every interface", port)
+		require.NoError(t, ln.Close())
+	}
 }
 
 // newTestSet builds a listener set over a server that answers "ok", with the

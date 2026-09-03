@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
+import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import { Show } from 'solid-js'
 import { WorkingTreeIcon, WorkingTreeTooltip } from '~/components/common/WorkingTree'
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
@@ -18,12 +19,15 @@ export interface WorkingTreeChipProps {
    * yet.
    */
   workingTree: WorkingTreeInfo
-  /** Why both branch actions are unusable, or undefined when usable. */
+  /** Why every branch action is unusable, or undefined when usable. */
   disabledReason?: string
-  /** Open the "Change branch..." dialog. */
-  onChangeBranch: () => void
-  /** Open the "Delete branch..." / "Delete worktree..." dialog. */
-  onDeleteBranch: () => void
+  /**
+   * Every menu action, already bound to this branch. Undefined hides the chip:
+   * a branch name that opens a menu of dead items is worse than no chip.
+   */
+  actions?: BranchMenuActions
+  /** The Worker the branch is checked out on, for the menu's own lists. */
+  workerId: string
 }
 
 /**
@@ -38,21 +42,30 @@ export interface WorkingTreeChipProps {
  * beside it does not.
  */
 export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
+  // Both facts or no chip. The chip states a branch NAME and opens a MENU, so a
+  // guard per fact would leave either a nameless chip or a trigger whose menu
+  // has nothing to run.
+  const ready = () => {
+    const { name } = props.workingTree
+    const { actions } = props
+    return name && actions ? { name, actions } : undefined
+  }
   return (
-    <Show when={props.workingTree.name}>
-      {branch => (
+    <Show when={ready()}>
+      {chip => (
         <BranchContextMenu
           isWorktree={props.workingTree.isWorktree}
-          onChangeBranch={props.onChangeBranch}
-          onDeleteBranch={props.onDeleteBranch}
+          workerId={props.workerId}
+          actions={chip().actions}
           disabledReason={props.disabledReason}
           data-testid="composer-branch-popover"
           trigger={triggerProps => (
-            // The branch name, not an action: the menu holds two, and the label
-            // is ellipsized, so this is where the full name shows -- alongside
-            // the kind of checkout and its directory, which the chip has no
-            // room for. When the actions are unusable it carries the reason
-            // instead, which otherwise only reaches a user who opens the menu.
+            // The branch name, not an action: the menu holds every action, and
+            // the label is ellipsized, so this is where the full name shows --
+            // alongside the kind of checkout and its directory, which the chip
+            // has no room for. When the actions are unusable it carries the
+            // reason instead, which otherwise only reaches a user who opens the
+            // menu.
             <WorkingTreeTooltip info={props.workingTree} disabledReason={props.disabledReason}>
               <button
                 class={styles.axisChip}
@@ -62,7 +75,7 @@ export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
                 {/* No `label`: the tooltip states the kind in words, and this
                     trigger is a real button, so a keyboard user opens it. */}
                 <WorkingTreeIcon isWorktree={props.workingTree.isWorktree} size="xs" />
-                <span class={styles.axisChipLabel}>{branch()}</span>
+                <span class={styles.axisChipLabel}>{chip().name}</span>
               </button>
             </WorkingTreeTooltip>
           )}

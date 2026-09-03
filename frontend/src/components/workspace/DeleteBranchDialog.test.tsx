@@ -836,9 +836,9 @@ describe('deleteBranchDialog', () => {
     // specifies a DIRECTORY, which every tab in a branch group shares by
     // construction and which is client-side metadata on the joined tab -- so
     // it needs no worker-side row. Anchoring on a tab used to mean a FILE tab
-    // could be chosen whose `worker_file_tabs` row a peer's close hard-deleted,
-    // and the push failed with "file tab path not found" while a healthy
-    // terminal sat beside it.
+    // could be chosen whose `worker_tab_payloads` row a peer's close
+    // hard-deleted, and the push failed with "tab payload not found" while a
+    // healthy terminal sat beside it.
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 1 })
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
     renderDialog({ tabs: [makeFileTab('f1'), makeTerminalTab('t1')] })

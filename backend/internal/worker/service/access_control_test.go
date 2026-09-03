@@ -287,17 +287,17 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 		ownerGatedProbe{"WatchWorkerPrivateEvents", "WatchWorkerPrivateEvents", func() proto.Message {
 			return &leapmuxv1.WatchWorkerPrivateEventsRequest{}
 		}},
-		ownerGatedProbe{"RegisterFileTabPath", "RegisterFileTabPath", func() proto.Message {
-			return &leapmuxv1.RegisterFileTabPathRequest{TabId: "tab-1", FilePath: "/tmp/x"}
+		ownerGatedProbe{"RegisterTabPayload", "RegisterTabPayload", func() proto.Message {
+			return &leapmuxv1.RegisterTabPayloadRequest{TabId: "tab-1", Payload: fileTabPayload("/tmp/x", "")}
 		}},
 		ownerGatedProbe{"CleanupWorkspace", "CleanupWorkspace", func() proto.Message {
 			return &leapmuxv1.CleanupWorkspaceRequest{}
 		}},
-		ownerGatedProbe{"GetFileTabPath", "GetFileTabPath", func() proto.Message {
-			return &leapmuxv1.GetFileTabPathRequest{TabId: "tab-1"}
+		ownerGatedProbe{"GetTabPayload", "GetTabPayload", func() proto.Message {
+			return &leapmuxv1.GetTabPayloadRequest{TabId: "tab-1"}
 		}},
-		ownerGatedProbe{"RevokeFileTabPath", "RevokeFileTabPath", func() proto.Message {
-			return &leapmuxv1.RevokeFileTabPathRequest{TabId: "tab-1"}
+		ownerGatedProbe{"RevokeTabPayload", "RevokeTabPayload", func() proto.Message {
+			return &leapmuxv1.RevokeTabPayloadRequest{TabId: "tab-1"}
 		}},
 		ownerGatedProbe{"ListAgents", "ListAgents", func() proto.Message {
 			return &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-1"}}
@@ -1080,7 +1080,7 @@ func TestEveryRegisteredMethodIsWithinTheDelegationGrant(t *testing.T) {
 }
 
 // TestAccessControl_WorktreeRemoveNeedsGitWrite pins the action-level gate on
-// RevokeFileTabPath: the method rides file:read because the registry row is
+// RevokeTabPayload: the method rides file:read because the registry row is
 // file-tab bookkeeping, but the WORKTREE_ACTION_REMOVE leg runs
 // `git worktree remove --force` and `git branch -D` -- a destructive write
 // that scope.proto places under git:write, the same family rule every other
@@ -1105,15 +1105,15 @@ func TestAccessControl_WorktreeRemoveNeedsGitWrite(t *testing.T) {
 		// absolute on the running system, and a Unix literal is not one on
 		// Windows.
 		repo := filepath.Join(t.TempDir(), "repo")
-		require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-			UserID: owner.String(), TabID: "tab-1", FilePath: filepath.Join(repo, "file"), WorkingDir: repo,
+		require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+			UserID: owner.String(), TabID: "tab-1", Payload: fileTabPayload(filepath.Join(repo, "file"), repo),
 		}))
-		payload, err := proto.Marshal(&leapmuxv1.RevokeFileTabPathRequest{
+		payload, err := proto.Marshal(&leapmuxv1.RevokeTabPayloadRequest{
 			TabId: "tab-1", WorktreeAction: action,
 		})
 		require.NoError(t, err)
 		d.DispatchWith(context.Background(), channel.NewCaller(owner, scopes), &leapmuxv1.InnerRpcRequest{
-			Method: "RevokeFileTabPath", Payload: payload,
+			Method: "RevokeTabPayload", Payload: payload,
 		}, w)
 		return w
 	}

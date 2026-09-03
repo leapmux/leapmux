@@ -18,7 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/mail"
-	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -287,7 +287,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *connect.Request[l
 	// than only a refused one. The user still reaches every factor the
 	// account really holds through the ordinary prompt, and the next page
 	// load answers the question properly.
-	elevatesOnlyThroughAProvider := counted && accountShapeElevatesOnlyThroughAProvider(user.PasswordSet, passkeyCount)
+	elevatesOnlyThroughAProvider := counted && accountShapeElevatesOnlyThroughAProvider(user.FirstCredentialExempt, passkeyCount)
 
 	// The link read REPORTS its failure only for the account shape that has
 	// nothing else to fall back on, and degrades for every other.
@@ -424,7 +424,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, err
 	}
 	email := req.Msg.GetEmail()
-	hash, err := pwdhash.Hash(pw)
+	hash, err := password.Hash(pw)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 	}
@@ -435,12 +435,12 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	if s.emailVerificationRequired(ctx) {
 		createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
-			username:     username,
-			displayName:  displayName,
-			pendingEmail: email,
-			passwordHash: hash,
-			passwordSet:  true,
-			now:          s.now,
+			username:              username,
+			displayName:           displayName,
+			pendingEmail:          email,
+			passwordHash:          hash,
+			firstCredentialExempt: true,
+			now:                   s.now,
 		})
 		if err != nil {
 			return nil, mapSignupCommitError(err)
@@ -474,12 +474,12 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 
 	// No verification required — email goes directly to email column.
 	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  displayName,
-		Email:        email,
-		PasswordSet:  true,
-		IsAdmin:      false,
+		Username:              username,
+		PasswordHash:          hash,
+		DisplayName:           displayName,
+		Email:                 email,
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -513,12 +513,12 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 	}
 
 	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:     username,
-		PasswordHash: passwordHash,
-		DisplayName:  displayName,
-		Email:        email,
-		PasswordSet:  true,
-		IsAdmin:      true,
+		Username:              username,
+		PasswordHash:          passwordHash,
+		DisplayName:           displayName,
+		Email:                 email,
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -881,7 +881,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		email:         userEmail,
 		emailVerified: emailVerified,
 		pendingEmail:  pendingEmail,
-		passwordHash:  pwdhash.PlaceholderHash,
+		passwordHash:  password.PlaceholderHash,
 		extra:         link,
 		now:           s.now,
 	})
@@ -976,8 +976,18 @@ func userToProto(u *store.User, passkeyCount int64) *leapmuxv1.User {
 		Email:         u.Email,
 		EmailVerified: u.EmailVerified,
 		PendingEmail:  u.PendingEmail,
-		PasswordSet:   u.PasswordSet,
-		PasskeyCount:  int32(passkeyCount),
+		// The HASH, not the users.password_set column. The column is a claim
+		// the creating flow makes, and the solo bootstrap sets it true with an
+		// empty hash -- so the column reports a password on an account that
+		// cannot sign in with one. The client renders "Change Password" and
+		// "Password changed." from this field, which is exactly the sentence a
+		// solo owner must not read while setting their first one.
+		//
+		// The ADMISSION rules keep reading the column, and that is deliberate:
+		// the claim is what routes solo past the first-credential rule that no
+		// solo account could ever satisfy. See assertFirstCredentialAuthIsFresh.
+		PasswordSet:  u.HasUsablePassword(),
+		PasskeyCount: int32(passkeyCount),
 	}
 }
 

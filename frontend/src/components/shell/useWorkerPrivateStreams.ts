@@ -3,14 +3,15 @@ import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup } from 'solid-js'
 import { sameKeys } from '~/lib/sameKeys'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
+import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
 /**
  * Open one `WatchWorkerPrivateEvents` subscription per WORKER that hosts a tab
  * -- across EVERY workspace, not just the one on screen.
  *
- * The worker emits a bootstrap reply (one FileTabPathRegistered per
- * `worker_file_tabs` row the caller owns) before going live; subsequent
- * FileTabPath* and TabRenamed events populate the local caches.
+ * The worker emits a bootstrap reply (one TabPayloadRegistered per
+ * `worker_tab_payloads` row the caller owns) before going live; subsequent
+ * TabPayload* and TabRenamed events populate the local caches.
  *
  * ONE STREAM PER WORKER, not per (workspace, worker) pair. The worker stores
  * no workspace id, so there is nothing to key a narrower subscription on --
@@ -94,7 +95,7 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
         onTabRenamed: (evt) => {
           opts.metadata.patch(evt.tabId, { title: evt.title })
         },
-        onFileTabPathRegistered: (evt) => {
+        onTabPayloadRegistered: (evt) => {
           // Mirror onto the joined tab so existing file-tab rendering (which
           // reads `tab.filePath`) and the branch grouping (which reads
           // `tab.workingDir`) see what arrived on the private-event stream --
@@ -123,21 +124,18 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
           // write equal to what is stored (see `sameStoredValue`), which is the
           // single place that rule lives now.
           //
-          // `|| undefined` because these arrive as proto3 strings: an absent
-          // field is `''`, and `mergeDefined` treats a real `''` as a CLEARING
-          // write rather than as "no opinion".
+          // The patch itself is `tabPayloadMetadata`, shared with the one-shot
+          // hydrator: both mark the tab `hydrated`, so whichever runs second is
+          // what the tab keeps, and two spellings of the same mapping would
+          // eventually disagree about a field.
           //
           // `hydrated` because this event IS a worker answer for this exact
-          // tab, carrying the same payload `GetFileTabPath` returns -- so the
-          // FILE hydrator has nothing left to ask. That flag is the one place
+          // tab, carrying the same payload `GetTabPayload` returns -- so the
+          // hydrator has nothing left to ask. That flag is the one place
           // "the worker has answered for this tab" lives; a second cache
           // holding the same fact could outlive the row it describes and strand
           // the tab (see `useMetadataSweep`).
-          opts.metadata.patch(evt.tabId, {
-            filePath: evt.filePath || undefined,
-            workingDir: evt.workingDir || undefined,
-            hydrated: true,
-          })
+          opts.metadata.patch(evt.tabId, tabPayloadMetadata(evt.payload))
         },
       })
       privateStreamCleanups.set(workerId, close)

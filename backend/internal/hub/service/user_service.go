@@ -651,7 +651,7 @@ func assertRemovingTheLinkLeavesALoginMethod(
 	enabled map[string]bool,
 	providerID string,
 ) error {
-	if user.PasswordSet {
+	if user.FirstCredentialExempt {
 		return nil
 	}
 	remaining := 0

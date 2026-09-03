@@ -14,7 +14,7 @@ import (
 )
 
 // RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
-// worker-side teardown (CloseAgent / CloseTerminal / RevokeFileTabPath).
+// worker-side teardown (CloseAgent / CloseTerminal / RevokeTabPayload).
 // The hub's remove-wins semantics mean the tab id is dead afterward;
 // recreating at the UI level mints a fresh id. The resolver derives
 // workspace + tab-type from --tab-id when only the id is given.
@@ -78,7 +78,7 @@ func RunTabClose(rawCtx any, args []string) error {
 
 		// `tab close` issues up to three inner-RPCs against the SAME worker --
 		// InspectLastTabClose, an optional PushBranch, and the
-		// CloseAgent/CloseTerminal/RevokeFileTabPath teardown -- with the CRDT
+		// CloseAgent/CloseTerminal/RevokeTabPayload teardown -- with the CRDT
 		// tombstone in between. Hoisting one Noise_NK channel over the sequence
 		// pays the handshake once rather than per call.
 		//
@@ -432,22 +432,22 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 				WorktreeAction: action,
 			},
 			&leapmuxv1.CloseTerminalResponse{})
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		// A file tab DOES have a worker-side row: worker_file_tabs, plus the
-		// worktree_tabs link that ref-counts its worktree. Revoking is what
-		// drives the shared closeTabCommon flow -- the same one CloseAgent and
-		// CloseTerminal drive -- so `--worktree=discard` actually removes the
-		// worktree and the link does not linger as a strand for the orphan
-		// reconciler to sweep later. This used to fall through to the default
-		// and dispatch nothing, on the belief that the CRDT tombstone was the
-		// whole teardown; it is not, and the frontend's own file-tab close has
-		// always called this RPC.
-		return nil, call("RevokeFileTabPath",
-			&leapmuxv1.RevokeFileTabPathRequest{
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		// A payload-backed tab DOES have a worker-side row:
+		// worker_tab_payloads, plus the worktree_tabs link that ref-counts its
+		// worktree. Revoking is what drives the shared closeTabCommon flow --
+		// the same one CloseAgent and CloseTerminal drive -- so
+		// `--worktree=discard` actually removes the worktree and the link does
+		// not linger as a strand for the orphan reconciler to sweep later. This
+		// used to fall through to the default and dispatch nothing, on the
+		// belief that the CRDT tombstone was the whole teardown; it is not, and
+		// the frontend's own close has always called this RPC.
+		return nil, call("RevokeTabPayload",
+			&leapmuxv1.RevokeTabPayloadRequest{
 				TabId:          got.TabID,
 				WorktreeAction: action,
 			},
-			&leapmuxv1.RevokeFileTabPathResponse{})
+			&leapmuxv1.RevokeTabPayloadResponse{})
 	default:
 		// UNSPECIFIED never reaches here -- the caller resolved a concrete tab
 		// before dispatching.

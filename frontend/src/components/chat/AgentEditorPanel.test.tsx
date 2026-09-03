@@ -5,6 +5,7 @@ import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { AgentEditorPanel } from './AgentEditorPanel'
 import '~/components/chat/providers'
@@ -66,8 +67,8 @@ function renderPanel(workerId = 'w1') {
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={() => {}}
-        onChangeBranch={() => {}}
-        onDeleteBranch={() => {}}
+        branchActions={stubBranchMenuActions()}
+        branchWorkerId={workerId}
       />
     </PreferencesProvider>
   ))

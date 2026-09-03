@@ -97,6 +97,35 @@ func TestChangePassword_SucceedsInSoloMode(t *testing.T) {
 	assert.True(t, match)
 }
 
+// Preferences → Account → Password is where a solo owner sets the first
+// password, and it renders "Set Password" or "Change Password" from the
+// account the hub reports. A fresh solo account must therefore report NO
+// password, although its users.password_set column claims one -- the bootstrap
+// writes that claim with an empty hash.
+func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) {
+	svc, st, gate, soloUser := soloUserService(t)
+	ctx := auth.WithUser(context.Background(), soloUser)
+
+	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"},
+		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	deps.SoloGate = gate
+	authSvc := service.NewAuthService(deps)
+
+	before, err := authSvc.GetCurrentUser(ctx, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	require.NoError(t, err)
+	assert.False(t, before.Msg.GetUser().GetPasswordSet(),
+		"a solo account with no hash holds no password, whatever the column claims")
+
+	_, err = svc.ChangePassword(ctx, connect.NewRequest(
+		&leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"}))
+	require.NoError(t, err)
+
+	after, err := authSvc.GetCurrentUser(ctx, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	require.NoError(t, err)
+	assert.True(t, after.Msg.GetUser().GetPasswordSet(),
+		"the stored password must reach the row that offers to change it")
+}
+
 // The write that stores the first password is also the write that starts
 // demanding one. Without a session handed back, the browser that made it is
 // signed out of the form it is standing in.

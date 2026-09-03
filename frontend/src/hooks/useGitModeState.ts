@@ -22,9 +22,13 @@ export enum GitMode {
  * so callers don't have to pass undefined sentinels for unrelated modes.
  *
  * Every variant is a flat object of primitive fields, so `shallowEqual`
- * works as the `equals` callback for a `createMemo<GitModeIntent>` —
- * variants with different `mode` values also have different key counts,
- * so the discriminator drop-through is handled by the key-count check.
+ * works as the `equals` callback for a `createMemo<GitModeIntent>` — `mode` is
+ * itself one of the compared keys, so two variants with different modes differ
+ * on that key whatever their shapes are.
+ *
+ * Do NOT restate that as a key-count argument. `CreateBranch` and
+ * `CreateWorktree` carry four keys each, so a reader who believes the counts
+ * discriminate would think dropping `mode` from a payload is safe. It is not.
  */
 export type GitModeIntent
   = | { mode: GitMode.Current }
@@ -47,6 +51,30 @@ export const CHANGE_BRANCH_MODES = [
 export type ChangeBranchMode = (typeof CHANGE_BRANCH_MODES)[number]
 export function isChangeBranchMode(mode: GitMode): mode is ChangeBranchMode {
   return CHANGE_BRANCH_MODES.includes(mode as ChangeBranchMode)
+}
+
+/**
+ * The seed intent for a ChangeBranchDialog opened directly on `mode`.
+ *
+ * Every field is empty, because the values belong to GitOptions: it owns the
+ * branch picker, the name input and the base-branch picker, and it emits a
+ * complete intent for its active mode on its first flush. What this seed
+ * carries is the MODE alone, which GitOptions reads once (untracked) to paint
+ * the correct radio on the first render.
+ *
+ * A dialog that seeds nothing paints `SwitchBranch` first and swaps a moment
+ * later, so the three menu items that open this dialog would all flash the
+ * same mode before landing on their own.
+ */
+export function changeBranchInitialIntent(mode: ChangeBranchMode): GitModeIntent {
+  switch (mode) {
+    case GitMode.SwitchBranch:
+      return { mode, checkoutBranch: '', checkoutBranchError: null }
+    case GitMode.CreateBranch:
+      return { mode, createBranch: '', createBranchError: null, createBranchBase: '' }
+    case GitMode.CreateWorktree:
+      return { mode, worktreeBranch: '', worktreeBranchError: null, worktreeBaseBranch: '' }
+  }
 }
 
 export interface GitFields {
@@ -154,9 +182,9 @@ export function useGitModeState(initial: GitModeIntent = { mode: GitMode.Current
     switch (i.mode) {
       case GitMode.Current:
         // Spread so callers can safely mutate the returned object —
-        // every other arm goes through a fieldsForXxx helper that
+        // every other case goes through a fieldsForXxx helper that
         // already spreads EMPTY_GIT_FIELDS, so returning the shared
-        // singleton here would be an inconsistent mutation footgun.
+        // singleton here would make mutation inconsistent.
         return { ...EMPTY_GIT_FIELDS }
       case GitMode.SwitchBranch:
         return fieldsForCheckoutBranch(i)

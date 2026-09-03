@@ -131,11 +131,12 @@ You can split, grid, resize, pop tabs out and back in, and drag tabs between til
 
 ### Tab
 
-A **tab** is one piece of content, and there are exactly three kinds:
+A **tab** is one piece of content, and there are exactly four kinds:
 
 - **Agent** — a coding-agent chat session (Claude Code, Codex, and other supported agents).
 - **Terminal** — a PTY/shell session.
 - **File** — a file viewer / diff.
+- **Image** — one image an agent returned, opened from its chat row so you can zoom it.
 
 Every tab lives in a tile and carries an ordering position. Each tab is hosted on a specific Worker and may be **bound to a git worktree and branch**. The Worker is where the agent process or shell runs. The worktree and branch select the checkout it operates on. See [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/) for each tab type, and [Worktrees & Branches](/docs/using/worktrees-and-branches/) for the git binding.
 

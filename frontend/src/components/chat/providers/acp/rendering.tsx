@@ -7,7 +7,7 @@ import type { JSX } from 'solid-js'
 import type { MessageCategory } from '../../messageClassification'
 import type { RenderContext } from '../../messageRenderers'
 import type { ContentBlock } from '~/lib/contentBlocks'
-import { joinContentParagraphs } from '~/lib/contentBlocks'
+import { splitToolResultContent } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers'
@@ -62,11 +62,17 @@ export function pickAcpRawOutputMetadata(toolUse: Record<string, unknown> | null
 }
 
 /**
- * Flatten ACP's nested `[{type:'content', content:{text}}, ...]` shape into
- * the canonical Anthropic-style `[{type:'text', text}, ...]` so the shared
- * {@link joinContentParagraphs} helper handles ACP content the same way it
- * handles Claude/Pi/Codex content. Non-text entries (image, diff, etc.)
- * pass through unchanged for the helper's image formatter to handle.
+ * Flatten ACP's nested `[{type:'content', content:{...}}, ...]` shape into the
+ * canonical Anthropic-style `[{type:'text', text}, ...]` so the shared
+ * {@link splitToolResultContent} and `joinContentParagraphs` helpers handle ACP
+ * content the same way they handle Claude/Pi/Codex content.
+ *
+ * The INNER block is unwrapped whatever its kind. Unwrapping only text used to
+ * mean an ACP `ImageContent` -- what OpenCode's read-on-image, Kilo's and
+ * Goose's screenshots all send, as
+ * `{type:'content', content:{type:'image', mimeType, data}}` -- was dropped
+ * here and never reached any renderer. Top-level entries that are not a
+ * `content` wrapper (`diff`, `terminal`) pass through for their own extractors.
  */
 export function flattenAcpContent(content: unknown): ContentBlock[] {
   if (!Array.isArray(content))
@@ -77,8 +83,11 @@ export function flattenAcpContent(content: unknown): ContentBlock[] {
     const entry = item as Record<string, unknown>
     if (entry.type === 'content' && isObject(entry.content)) {
       const inner = entry.content as Record<string, unknown>
+      // Keyed on the `text` FIELD, not on `type: 'text'`: agents omit the
+      // discriminant on a text block often enough that requiring it drops
+      // ordinary command output.
       const text = pickString(inner, 'text')
-      return text ? [{ type: 'text', text }] : []
+      return text ? [{ type: 'text', text }] : [inner]
     }
     return [entry]
   })
@@ -88,11 +97,14 @@ export function flattenAcpContent(content: unknown): ContentBlock[] {
  * Pull joined text out of an ACP tool_call_update's `content[]`. Falls back
  * to `rawOutput.output || rawOutput.error` when the content array yields
  * nothing.
+ *
+ * Images are excluded: this text renders into a `<pre>`, where a data URL is a
+ * megabyte of literal base64. `acpImagesFromToolCall` renders them as images.
  */
 export function collectAcpToolText(toolUse: Record<string, unknown> | null | undefined): string {
   if (!toolUse)
     return ''
-  const text = joinContentParagraphs(flattenAcpContent(toolUse.content), { text: 'text' })
+  const text = splitToolResultContent(flattenAcpContent(toolUse.content), { text: 'text' }).text
   if (text)
     return text
   const rawOutput = pickObject(toolUse, 'rawOutput')

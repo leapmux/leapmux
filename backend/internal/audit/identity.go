@@ -174,7 +174,7 @@ var identityComparisonSites = map[string]string{
 	// semantically identical to Matches, but a hand-written twin that no
 	// syntax-level rule could recognise, so the sharpest decision in the worker
 	// sat outside this net while appearing to be inside it.
-	"internal/worker/service.(*OrphanReconciler).reconcileFileTabs": "TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner",
+	"internal/worker/service.(*OrphanReconciler).reconcileTabPayloads": "TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner",
 	// The reconnect report's owner filter, and the mirror of the reap gate above:
 	// the same (user_id, tab_id) uniqueness rule, applied on the OTHER half of the
 	// same comparison. The worker's tab report carries no user axis on the wire, so
@@ -184,5 +184,5 @@ var identityComparisonSites = map[string]string{
 	// next, and a colliding client-minted id would suppress a tombstone the real
 	// owner's tab was due. BuildTabSync refuses an unminted owner outright rather
 	// than reporting every row on the machine.
-	"internal/worker/bootstrap.fileTabIDsForOwner": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
+	"internal/worker/bootstrap.payloadTabIDsForOwner": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
 }

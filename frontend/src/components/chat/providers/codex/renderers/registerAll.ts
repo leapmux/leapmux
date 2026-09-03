@@ -5,13 +5,14 @@
 // (turnPlan, reasoning, agentMessage, mcp fallback), the
 // plugin imports them directly from `./` — those imports also load the
 // modules, but the registry-only renderers (commandExecution, fileChange,
-// plan, webSearch, collabAgentToolCall) need this barrel to ensure they
-// aren't tree-shaken out of the bundle.
+// plan, webSearch, collabAgentToolCall, image) need this barrel to ensure
+// they aren't tree-shaken out of the bundle.
 
 import './agentMessage'
 import './collabAgentToolCall'
 import './commandExecution'
 import './fileChange'
+import './image'
 import './mcpToolCall'
 import './plan'
 import './reasoning'

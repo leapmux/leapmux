@@ -607,7 +607,7 @@ func (s ownerGuardScope) isSharedGuardCall(call *ast.CallExpr) bool {
 // id that never passed through the type: OwnerFilter is `IsZero -> refuse, else
 // unwrap`, and New is `empty -> refuse, else mint` with String() as the unwrap.
 // The worker binds owner columns from ids it holds as plain strings (a
-// worker_file_tabs row's user_id, a normalized worktree link owner), so without
+// worker_tab_payloads row's user_id, a normalized worktree link owner), so without
 // New the only guard reachable there would be no guard at all -- and the whole
 // point of moving OwnerFilter into package userid was that the worker can call
 // it. A name that merely LOOKS generic is not a risk here: the package is
@@ -1069,7 +1069,7 @@ func TestCreateTableBodies_ReadsEveryDialectsTerminator(t *testing.T) {
 		})
 	}
 
-	// A key that is composite but names no owner, and an owner column that is
+	// A key that is composite but specifies no owner, and an owner column that is
 	// the WHOLE key, are both outside the population: neither lets one user's
 	// predicate reach another user's row through the non-owner half.
 	bodies, _ := createTableBodies("CREATE TABLE t (\n    agent_id TEXT NOT NULL,\n    request_id TEXT NOT NULL,\n    PRIMARY KEY (agent_id, request_id)\n);")

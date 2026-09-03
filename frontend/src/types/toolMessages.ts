@@ -162,6 +162,14 @@ export const CODEX_ITEM = {
   DYNAMIC_TOOL_CALL: 'dynamicToolCall',
   COLLAB_AGENT_TOOL_CALL: 'collabAgentToolCall',
   WEB_SEARCH: 'webSearch',
+  /**
+   * The `image_gen` tool's result. `result` is a base64 PNG -- Codex builds
+   * `data:image/png;base64,{result}` from it for the model, so the format is
+   * not negotiable per call.
+   */
+  IMAGE_GENERATION: 'imageGeneration',
+  /** The `view_image` tool. Carries the file's `path` and no pixels. */
+  IMAGE_VIEW: 'imageView',
   REASONING: 'reasoning',
   PLAN: 'plan',
   USER_MESSAGE: 'userMessage',

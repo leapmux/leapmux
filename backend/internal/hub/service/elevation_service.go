@@ -770,14 +770,14 @@ func rejectSoloElevation(userInfo *auth.UserInfo) error {
 // -- admitting it here would give a recently signed-in session the
 // first-credential rule for an account that already has a durable factor.
 func accountElevatesOnlyThroughAProvider(ctx context.Context, st store.Store, user *store.User) (bool, error) {
-	if user.PasswordSet {
+	if user.FirstCredentialExempt {
 		return false, nil
 	}
 	count, err := st.PasskeyCredentials().CountByUser(ctx, user.ID)
 	if err != nil {
 		return false, err
 	}
-	return accountShapeElevatesOnlyThroughAProvider(user.PasswordSet, count), nil
+	return accountShapeElevatesOnlyThroughAProvider(user.FirstCredentialExempt, count), nil
 }
 
 // accountShapeElevatesOnlyThroughAProvider is the rule itself, over the two
@@ -955,7 +955,7 @@ func (s *UserService) ElevateSession(ctx context.Context, req *connect.Request[l
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
 	}
-	if !user.PasswordSet {
+	if !user.FirstCredentialExempt {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("this account has no password; verify with a passkey or your identity provider instead"))
 	}

@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChangeHandler } from '~/components/chat/providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
+import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import { Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
@@ -30,9 +31,14 @@ export interface ComposerStatusBarProps {
    * worktree as a branch, with no compile error.
    */
   workingTree: WorkingTreeInfo
-  /** Branch chip callbacks. */
-  onChangeBranch: () => void
-  onDeleteBranch: () => void
+  /**
+   * Every branch-chip action, already bound to this agent's branch. Undefined
+   * leaves the chip out: the panel resolves it and the guard together, so a
+   * chip with no actions would be a trigger that opens a menu of dead items.
+   */
+  branchActions?: BranchMenuActions
+  /** The Worker the branch is checked out on, for the menu's own lists. */
+  branchWorkerId?: string
   /** Why the branch actions are unusable (e.g. worker offline). */
   branchDisabledReason?: string
   /**
@@ -81,8 +87,8 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
         <WorkingTreeChip
           workingTree={props.workingTree}
           disabledReason={props.branchDisabledReason}
-          onChangeBranch={props.onChangeBranch}
-          onDeleteBranch={props.onDeleteBranch}
+          actions={props.branchActions}
+          workerId={props.branchWorkerId ?? ''}
         />
         <Show when={hasGroup(props.agent, OPTION_ID_MODEL)}>
           <OptionAxisChip

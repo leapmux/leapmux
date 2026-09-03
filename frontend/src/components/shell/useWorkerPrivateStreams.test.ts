@@ -1,4 +1,5 @@
 /// <reference types="vitest/globals" />
+import type { TabPayloadView } from '~/lib/tabPayload'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -11,7 +12,7 @@ import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 interface OpenedStream {
   workerId: string
   onTabRenamed: (evt: { tabId: string, title: string }) => void
-  onFileTabPathRegistered: (evt: { tabId: string, filePath: string, workingDir: string }) => void
+  onTabPayloadRegistered: (evt: { tabId: string, payload: TabPayloadView }) => void
   closed: boolean
 }
 
@@ -20,7 +21,7 @@ const mockOpen = vi.fn((o: Record<string, unknown>) => {
   const rec: OpenedStream = {
     workerId: o.workerId as string,
     onTabRenamed: o.onTabRenamed as OpenedStream['onTabRenamed'],
-    onFileTabPathRegistered: o.onFileTabPathRegistered as OpenedStream['onFileTabPathRegistered'],
+    onTabPayloadRegistered: o.onTabPayloadRegistered as OpenedStream['onTabPayloadRegistered'],
     closed: false,
   }
   opened.push(rec)
@@ -140,7 +141,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
 
       expect(opened).toHaveLength(before)
-      opened[0].onFileTabPathRegistered({ tabId: 'f1', filePath: '/repo/nested/new.ts', workingDir: '/repo' })
+      opened[0].onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
       expect(s.metadata.get('f1')?.hydrated, 'the event is a worker answer, so the hydrator has nothing left to ask').toBe(true)
       dispose()
     })
@@ -161,7 +162,7 @@ describe('useWorkerPrivateStreams', () => {
       s.run()
       await flush()
 
-      opened[0].onFileTabPathRegistered({ tabId: 'f1', filePath: '/repo/nested/new.ts', workingDir: '/repo' })
+      opened[0].onTabPayloadRegistered({ tabId: 'f1', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
 
       expect(s.metadata.get('f1')).toMatchObject({
         filePath: '/repo/nested/new.ts',
@@ -187,7 +188,7 @@ describe('useWorkerPrivateStreams', () => {
       s.run()
       await flush()
 
-      opened[0].onFileTabPathRegistered({ tabId: 'f-early', filePath: '/repo/early.ts', workingDir: '/repo' })
+      opened[0].onTabPayloadRegistered({ tabId: 'f-early', payload: { kind: 'file', filePath: '/repo/early.ts', workingDir: '/repo' } })
 
       emitAddTab({ type: TabType.FILE, id: 'f-early', tileId: s.harness.rootTileId, position: 'b', workerId: 'w1' })
       s.run()
@@ -218,7 +219,7 @@ describe('useWorkerPrivateStreams', () => {
       // What `handleFileOpen` writes when the context has not hydrated yet.
       s.metadata.patch('f2', { filePath: '/repo/nested/new.ts', workingDir: '' })
 
-      opened[0].onFileTabPathRegistered({ tabId: 'f2', filePath: '/repo/nested/new.ts', workingDir: '/repo' })
+      opened[0].onTabPayloadRegistered({ tabId: 'f2', payload: { kind: 'file', filePath: '/repo/nested/new.ts', workingDir: '/repo' } })
 
       expect(s.metadata.get('f2')).toMatchObject({
         filePath: '/repo/nested/new.ts',
@@ -244,7 +245,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
       s.metadata.patch('f3', { filePath: '/guess/a.ts', workingDir: '/guess' })
 
-      opened[0].onFileTabPathRegistered({ tabId: 'f3', filePath: '/repo/a.ts', workingDir: '/repo/wt' })
+      opened[0].onTabPayloadRegistered({ tabId: 'f3', payload: { kind: 'file', filePath: '/repo/a.ts', workingDir: '/repo/wt' } })
 
       expect(s.metadata.get('f3')).toMatchObject({
         filePath: '/repo/a.ts',
@@ -268,7 +269,7 @@ describe('useWorkerPrivateStreams', () => {
       await flush()
       s.metadata.patch('f4', { filePath: '/repo/a.ts', workingDir: '/repo' })
 
-      opened[0].onFileTabPathRegistered({ tabId: 'f4', filePath: '', workingDir: '' })
+      opened[0].onTabPayloadRegistered({ tabId: 'f4', payload: { kind: 'file', filePath: '', workingDir: '' } })
 
       expect(s.metadata.get('f4')).toMatchObject({
         filePath: '/repo/a.ts',

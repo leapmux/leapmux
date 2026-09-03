@@ -156,7 +156,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       activeWorkspace,
       isActiveWorkspaceMutatable: () => true,
       getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
-      newTerminalDialog: { open: () => {}, close: () => {}, isOpen: () => false },
+      newTerminalDialog: { open: () => {}, close: () => {}, value: () => null },
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
       repoGitStore: createRepoGitStore(),
@@ -209,7 +209,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       activeWorkspace,
       isActiveWorkspaceMutatable: () => opts.isMutatable ?? true,
       getCurrentTabContext: () => opts.ctx ?? { workerId: 'worker-1', workingDir: '/tmp' },
-      newTerminalDialog: { open: opts.dialogOpen ?? (() => {}), close: () => {}, isOpen: () => false },
+      newTerminalDialog: { open: opts.dialogOpen ?? (() => {}), close: () => {}, value: () => null },
       setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
       repoGitStore: createRepoGitStore(),
@@ -387,6 +387,49 @@ describe('useterminaloperations.handleopenterminalwithshell', () => {
     // Only the shell-loading setter fires for the dropdown path.
     expect(shellLoadingFlips).toEqual([true, false])
     expect(terminalLoadingFlips).toEqual([])
+  })
+
+  // The branch context menu names WHERE the terminal runs. Without the
+  // override, a shell picked from a branch row on another machine would open
+  // on whichever worker the focused tab happens to sit on.
+  it('opens on the target\'s worker and directory when one is given', async () => {
+    const { ops } = setupForOpen({})
+
+    // The fixture's tab context is worker-1 at /tmp, so a leak from it would
+    // be visible in either field.
+    await ops.handleOpenTerminalWithShell('/bin/zsh', { workerId: 'worker-2', workingDir: '/other/worktree' })
+
+    expect(openTerminalMock).toHaveBeenCalledTimes(1)
+    expect(openTerminalMock.mock.calls[0][0]).toBe('worker-2')
+    expect(openTerminalMock.mock.calls[0][1]).toMatchObject({
+      workerId: 'worker-2',
+      workingDir: '/other/worktree',
+      shell: '/bin/zsh',
+    })
+  })
+
+  it('falls back to the current tab context when no target is given', async () => {
+    const { ops } = setupForOpen({})
+
+    await ops.handleOpenTerminalWithShell('/bin/zsh')
+
+    expect(openTerminalMock.mock.calls[0][0]).toBe('worker-1')
+    expect(openTerminalMock.mock.calls[0][1]).toMatchObject({ workingDir: '/tmp' })
+  })
+
+  // The dialog is the fallback when neither the target nor the context resolves
+  // a whole (worker, directory) pair -- and it has to open ON the target. An
+  // `open({})` here would drop what the caller did know and ask the user for a
+  // Worker and a path the branch row already named.
+  it('opens the dialog on the target when the pair is incomplete', async () => {
+    const dialogOpen = vi.fn()
+    const { ops } = setupForOpen({ ctx: { workerId: '', workingDir: '' }, dialogOpen })
+
+    await ops.handleOpenTerminalWithShell('/bin/zsh', { workingDir: '/other/worktree' })
+
+    expect(openTerminalMock).not.toHaveBeenCalled()
+    expect(dialogOpen).toHaveBeenCalledTimes(1)
+    expect(dialogOpen.mock.calls[0][0]).toEqual({ workingDir: '/other/worktree' })
   })
 })
 

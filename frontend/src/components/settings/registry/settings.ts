@@ -10,7 +10,7 @@ import {
 } from '~/generated/contracts/desktop'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
-import { isDesktopApp, isSoloMode, soloPasswordSet } from '~/lib/systemInfo'
+import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { themeLabel, THEMES } from '~/styles/themes'
 import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar } from './bindings'
 import { requestTerminalOsNotifications } from './terminalNotifications'
@@ -625,9 +625,10 @@ export const browserSettings: BrowserSettingDecl[] = [
   // wrong failure mode). The other four move a durable identity, and the hub
   // refuses each without a recently proven factor.
   //
-  // Every one of them is hidden in solo mode: solo authenticates every request
-  // as the local user, so there is no account to administer and no CLI
-  // credential to mint.
+  // FOUR of the five are hidden in solo mode, because the hub refuses the RPCs
+  // behind them: solo authenticates every request as the local user, so it
+  // offers no sign-up, no passkey, no account recovery and no provider link.
+  // Password is the exception, and the section exists in solo for it alone.
   {
     id: 'account.profile',
     category: 'account',
@@ -664,17 +665,19 @@ export const browserSettings: BrowserSettingDecl[] = [
     sentinel: 'nullable',
     needsElevation: true,
     /*
-     * The ONE account row a solo hub keeps, and only once its account holds a
-     * password. Its four neighbours stay hidden either way, because solo
+     * The ONE account row a solo hub keeps, and it keeps it whether or not a
+     * password exists yet: the editor sets the first one and replaces a stored
+     * one through the same RPC. Its four neighbours stay hidden, because solo
      * refuses the RPCs behind them; ChangePassword is reachable there, because
      * the password is what lets the hub answer on a network address at all.
      *
-     * Before the first password, Administration → Network access owns setting
-     * it -- beside the addresses it guards, which is the decision it belongs
-     * to. Reading the same `soloPasswordSet()` that panel reads is what keeps
-     * the two from offering the field at the same time.
+     * Administration → Network access asks for the first password as well,
+     * beside the addresses it guards, and that is not a duplicate: publishing
+     * an address without one would put the whole app behind nothing, so the
+     * panel must ask there rather than send the operator away mid-edit. Both
+     * surfaces write through `userClient.changePassword`, and each re-reads
+     * what the other one moved.
      */
-    hidden: () => isSoloMode() && !soloPasswordSet(),
     bind: () => CUSTOM_EDITOR_OWNS_ITS_VALUE,
   },
   {

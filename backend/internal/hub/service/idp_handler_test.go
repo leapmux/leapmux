@@ -694,13 +694,13 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           id.Generate(),
-		Username:     "takenname",
-		PasswordHash: hash,
-		DisplayName:  "Taken",
-		Email:        "",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    id.Generate(),
+		Username:              "takenname",
+		PasswordHash:          hash,
+		DisplayName:           "Taken",
+		Email:                 "",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	require.NoError(t, err)
 
@@ -730,13 +730,13 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	err = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           id.Generate(),
-		Username:     "emailowner",
-		PasswordHash: hash,
-		DisplayName:  "Email Owner",
-		Email:        "taken@example.com",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    id.Generate(),
+		Username:              "emailowner",
+		PasswordHash:          hash,
+		DisplayName:           "Email Owner",
+		Email:                 "taken@example.com",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	require.NoError(t, err)
 

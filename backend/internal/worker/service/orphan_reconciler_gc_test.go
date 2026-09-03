@@ -37,7 +37,7 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
 		_ = q.DeleteWorktree(rctx, wt.ID)
 		_ = q.DeleteWorktreeTabsByWorktreeID(rctx, wt.ID)
 	}
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, nil, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
 		Now:          func() time.Time { return clock },
 		ReapWorktree: reap,
 		CloseTab:     svc.CloseTabForReconcile,
@@ -96,7 +96,7 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 	clock := time.Now()
 	var reaped []string
 	reap := func(_ context.Context, wt db.Worktree) { reaped = append(reaped, wt.ID) }
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, nil, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
 		Now:          func() time.Time { return clock },
 		ReapWorktree: reap,
 		CloseTab:     svc.CloseTabForReconcile,
@@ -133,7 +133,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	// link live?" backing both CountLiveWorktreeRefs and
 	// ListOrphanCandidateWorktrees. Pin its predicate across all three tab
 	// tables: an agent/terminal counts live while closed_at IS NULL; a FILE
-	// tab counts live while its worker_file_tabs row is present (file tabs
+	// tab counts live while its worker_tab_payloads row is present (file tabs
 	// are hard-deleted on close, so a missing row is a dead link).
 	svc, _, _ := setupTestService(t)
 	q := svc.Queries
@@ -143,7 +143,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: tabType, TabID: tabID}))
 	}
 	// FILE links carry the user so worktree_tab_liveness scopes its
-	// worker_file_tabs join by (user_id, tab_id); these all use user-1.
+	// worker_tab_payloads join by (user_id, tab_id); these all use user-1.
 	linkFile := func(wtID, tabID string) {
 		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: tabID, UserID: "user-1"}))
 	}
@@ -162,7 +162,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	link("wt-live-term", "t-open", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 
 	mkWorktree("wt-live-file")
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-1", TabID: "f-open", FilePath: "/r/wt-live-file/x"}))
+	require.NoError(t, q.UpsertWorkerTabPayload(ctx, db.UpsertWorkerTabPayloadParams{UserID: "user-1", TabID: "f-open", TabType: int64(leapmuxv1.TabType_TAB_TYPE_FILE), Payload: mustMarshalFilePayload("/r/wt-live-file/x", "")}))
 	linkFile("wt-live-file", "f-open")
 
 	// --- strands: each counts 0, all-strand worktrees are orphan candidates ---
@@ -176,7 +176,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 	require.NoError(t, closeErr(q.CloseTerminal(ctx, "t-closed")))
 	link("wt-dead-term", "t-closed", leapmuxv1.TabType_TAB_TYPE_TERMINAL)
 
-	// A FILE link whose worker_file_tabs row never existed (or was
+	// A FILE link whose worker_tab_payloads row never existed (or was
 	// hard-deleted on close) -- a dead link, since file-tab liveness is
 	// row-presence, not a closed_at flag.
 	mkWorktree("wt-dead-file")
@@ -223,7 +223,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 // that teardown applies.
 //
 // The arm used to hand-roll its own teardown, diverging from the AGENT and
-// TERMINAL arms. It now routes through closeFileTabCommon like they do, with
+// TERMINAL arms. It now routes through closePayloadTabCommon like they do, with
 // dropWorktreeLink -- the same policy an ONLINE KEEP close uses. That is what
 // KEEP means: a zero-link worktree is excluded from
 // ListOrphanCandidateWorktrees, so the DIRECTORY SURVIVES rather than being
@@ -231,7 +231,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 // offline close pins KEEP, so honouring it here is what stops the offline path
 // from destroying a clean worktree the identical online close would have kept.
 //
-// So: after the reconciler reaps a stale FILE tab, the worker_file_tabs row must
+// So: after the reconciler reaps a stale FILE tab, the worker_tab_payloads row must
 // be gone, the link must be gone, and the directory must NOT be an orphan
 // candidate.
 func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T) {
@@ -249,8 +249,9 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
 		WorktreeID: "wt-fileonly", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-1", UserID: "user-1",
 	}))
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
-		UserID: "user-1", TabID: "file-1", FilePath: "/r/fileonly/a.go",
+	require.NoError(t, q.UpsertWorkerTabPayload(ctx, db.UpsertWorkerTabPayloadParams{
+		UserID: "user-1", TabID: "file-1",
+		TabType: int64(leapmuxv1.TabType_TAB_TYPE_FILE), Payload: mustMarshalFilePayload("/r/fileonly/a.go", ""),
 	}))
 
 	// The hub owns nothing for this worker, so the local file tab is stale.
@@ -259,14 +260,14 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	}
 	// TabGrace -1: this test asserts WHAT the teardown does, not when it is due.
 	// TestReconcileTabs_* below covers the grace itself.
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		TabGrace: -1,
 	})
 	rec.reconcileOnce(ctx)
 
 	// The row is gone: the tab really was reaped, so this is not a no-op pass.
-	rows, err := q.ListAllWorkerFileTabs(ctx)
+	rows, err := q.ListAllWorkerTabPayloads(ctx)
 	require.NoError(t, err)
 	for _, r := range rows {
 		assert.NotEqual(t, "file-1", r.TabID, "the stale file tab row must be deleted")
@@ -292,10 +293,10 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 	t.Parallel()
 
-	// A file tab id is unique only within a user (worker_file_tabs is keyed by
+	// A file tab id is unique only within a user (worker_tab_payloads is keyed by
 	// (user_id, tab_id)), so the worktree_tab_liveness FILE leg must scope its
 	// join by user. Two users share the tab id "file-dup": user A's link is a
-	// strand (its worker_file_tabs row is gone -- file tabs hard-delete on
+	// strand (its worker_tab_payloads row is gone -- file tabs hard-delete on
 	// close), while user B has an identically-id'd LIVE file tab. Without user
 	// scoping, user A's strand borrows user B's liveness and user A's worktree is
 	// never reclaimed.
@@ -304,13 +305,13 @@ func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 	ctx := context.Background()
 
 	// User A: worktree whose only link is a FILE strand -- no backing
-	// worker_file_tabs row.
+	// worker_tab_payloads row.
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userA", WorktreePath: "/r/userA", RepoRoot: "/r", BranchName: "b"})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userA", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-A"}))
 
 	// User B: a LIVE file tab with the SAME tab id but a different user.
-	require.NoError(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{UserID: "user-B", TabID: "file-dup", FilePath: "/r/userB/x"}))
+	require.NoError(t, q.UpsertWorkerTabPayload(ctx, db.UpsertWorkerTabPayloadParams{UserID: "user-B", TabID: "file-dup", TabType: int64(leapmuxv1.TabType_TAB_TYPE_FILE), Payload: mustMarshalFilePayload("/r/userB/x", "")}))
 
 	// User A's strand must read as dead -- it must NOT match user B's live tab.
 	gotA, err := q.CountLiveWorktreeRefs(ctx, "wt-userA")
@@ -364,7 +365,7 @@ func TestReconcileOnce_LocalProbeFailureIsNotConvergence(t *testing.T) {
 		listCalls++
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 	})
 
@@ -408,7 +409,7 @@ func TestReconcileTabs_DefersTheReapUntilTheGraceElapses(t *testing.T) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
 	clock := time.Now()
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		Now:      func() time.Time { return clock },
 		TabGrace: 10 * time.Second,
@@ -452,7 +453,7 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 		return resp, nil
 	}
 	clock := time.Now()
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		Now:      func() time.Time { return clock },
 		TabGrace: 10 * time.Second,
@@ -495,7 +496,7 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
 	clock := time.Now()
-	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
 		Now:      func() time.Time { return clock },
 		TabGrace: 10 * time.Second,

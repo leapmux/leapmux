@@ -267,7 +267,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	//
 	// A session's UserID is the ONLY thing scoping every handler on this channel:
 	// requireWorkerOwner matches it against the Worker's registrant, and the
-	// owner-scoped stores (worker_file_tabs, worktree_tabs) bind it as half their
+	// owner-scoped stores (worker_tab_payloads, worktree_tabs) bind it as half their
 	// key. An empty one would simply run as nobody -- denied by requireWorkerOwner
 	// but reaching no row either way, with every audit line recording nobody.
 	//

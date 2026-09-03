@@ -3,6 +3,7 @@ import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
 import type { BypassController, ProviderSettingChangeHandler } from './providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
+import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -77,19 +78,21 @@ export interface AgentEditorPanelProps {
   agentSessionInfo?: AgentSessionInfo
   agentWorking?: boolean
   /**
-   * Open the "Change branch..." dialog for the agent's repo. Wired from the
-   * shell's branch-dialog state; the panel supplies the BranchRef from the
-   * agent's git status + worker id.
+   * Every branch-menu action for the agent's repo, already bound to that
+   * branch. Wired from the shell, which built them over the BranchRef the
+   * agent's git status + worker id resolve to. Undefined leaves the branch
+   * chip non-interactive.
    */
-  onChangeBranch?: () => void
+  branchActions?: BranchMenuActions
   /**
-   * Open the "Delete branch..." dialog for the agent's repo. Same wiring as
-   * onChangeBranch.
+   * The Worker the agent's branch is checked out on. The branch menu lists
+   * THAT Worker's agent providers and shells, not the ones already loaded for
+   * whichever tab is focused.
    */
-  onDeleteBranch?: () => void
+  branchWorkerId?: string
   /**
    * Why the branch actions are unusable (e.g. worker offline), or undefined
-   * when usable. Both actions need the Worker, so one reason covers both.
+   * when usable. Every action needs the Worker, so one reason covers them all.
    */
   branchDisabledReason?: string
   /** Repo-keyed git store for branch label and info-card flags. */
@@ -507,8 +510,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
               workingTree={workingTree()}
-              onChangeBranch={() => props.onChangeBranch?.()}
-              onDeleteBranch={() => props.onDeleteBranch?.()}
+              branchActions={props.branchActions}
+              branchWorkerId={props.branchWorkerId}
               branchDisabledReason={props.branchDisabledReason}
               // The stable function, not a rendered element — see the prop's doc.
               agentInfo={info.showInfoTrigger() ? agentInfoRows : undefined}
@@ -608,8 +611,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           workingTree={workingTree()}
           optionValues={currentOptionValues()}
           onSettingChange={props.onSettingChange}
-          onChangeBranch={() => props.onChangeBranch?.()}
-          onDeleteBranch={() => props.onDeleteBranch?.()}
+          branchActions={props.branchActions}
+          branchWorkerId={props.branchWorkerId}
           branchDisabledReason={props.branchDisabledReason}
           disabledReason={props.disabledReason}
           infoTrigger={info.showInfoTrigger() ? renderAgentInfoTrigger : undefined}

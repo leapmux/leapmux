@@ -27,7 +27,7 @@ DELETE FROM oauth_user_links WHERE provider_id = ?;
 -- (user_id, provider_id) is what makes the two forms equal.
 -- name: CountUsersOrphanedByProvider :one
 SELECT COUNT(*) FROM users u
-WHERE u.password_set = 0
+WHERE u.first_credential_exempt = 0
   AND u.deleted_at IS NULL
   AND (SELECT COUNT(*) FROM oauth_user_links l WHERE l.user_id = u.id) = 1
   AND EXISTS (

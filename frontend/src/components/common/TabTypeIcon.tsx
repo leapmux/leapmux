@@ -3,6 +3,7 @@ import type { IconSizeName } from '~/components/common/Icon'
 import type { Tab } from '~/stores/tab.types'
 import CornerDownRight from 'lucide-solid/icons/corner-down-right'
 import FileText from 'lucide-solid/icons/file-text'
+import ImageIcon from 'lucide-solid/icons/image'
 import Terminal from 'lucide-solid/icons/terminal'
 import { Match, Show, Switch } from 'solid-js'
 import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
@@ -45,6 +46,9 @@ export const TabTypeIcon: Component<TabTypeIconProps> = (props) => {
       </Match>
       <Match when={props.tab.type === TabType.FILE}>
         <Icon icon={FileText} size={tokenSize()} class={props.class} />
+      </Match>
+      <Match when={props.tab.type === TabType.IMAGE}>
+        <Icon icon={ImageIcon} size={tokenSize()} class={props.class} />
       </Match>
       <Match when={props.tab.type === TabType.TERMINAL}>
         <Icon icon={Terminal} size={tokenSize()} class={props.class} />

@@ -147,10 +147,14 @@ export function passwordSetupRequired(): boolean {
 /**
  * Whether the solo hub's single account holds a password.
  *
- * The Account section's Password row appears on a solo hub only once it does;
- * before that the Network access panel owns setting the first one, so the two
- * surfaces never offer the same field at the same time. Always false on a
+ * The HUB's rule, which is what the Network access panel asks: publishing an
+ * address demands a password, so that panel offers the field while this is
+ * false and points at Account → Password once it is true. Always false on a
  * multi-user hub, where each account answers for itself.
+ *
+ * An account's own password is `auth.user()?.passwordSet`, and Account →
+ * Password reads that one. Both answers come from the stored hash, so they
+ * agree; they differ in what they describe.
  */
 export function soloPasswordSet(): boolean {
   return current().soloPasswordSet

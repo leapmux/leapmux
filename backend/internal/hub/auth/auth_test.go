@@ -34,12 +34,12 @@ func createTestUser(t *testing.T, st store.Store) string {
 
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:           userID,
-		Username:     "testuser",
-		PasswordHash: hash,
-		DisplayName:  "Test User",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		ID:                    userID,
+		Username:              "testuser",
+		PasswordHash:          hash,
+		DisplayName:           "Test User",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	}))
 
 	return userID
@@ -114,8 +114,8 @@ func TestWorkspaceCanAccessIsOwnerOnly(t *testing.T) {
 	ownerID := id.Generate()
 	otherID := id.Generate()
 	for _, user := range []store.CreateUserParams{
-		{ID: ownerID, Username: "owner", PasswordHash: "hash", DisplayName: "Owner", PasswordSet: true},
-		{ID: otherID, Username: "other", PasswordHash: "hash", DisplayName: "Other", PasswordSet: true},
+		{ID: ownerID, Username: "owner", PasswordHash: "hash", DisplayName: "Owner", FirstCredentialExempt: true},
+		{ID: otherID, Username: "other", PasswordHash: "hash", DisplayName: "Other", FirstCredentialExempt: true},
 	} {
 		require.NoError(t, st.Users().Create(ctx, user))
 	}
@@ -154,8 +154,8 @@ func TestWorkspaceReadableByUsers(t *testing.T) {
 	ownerID := id.Generate()
 	strangerID := id.Generate()
 	for _, user := range []store.CreateUserParams{
-		{ID: ownerID, Username: "owner", PasswordHash: "hash", DisplayName: "Owner", PasswordSet: true},
-		{ID: strangerID, Username: "stranger", PasswordHash: "hash", DisplayName: "Stranger", PasswordSet: true},
+		{ID: ownerID, Username: "owner", PasswordHash: "hash", DisplayName: "Owner", FirstCredentialExempt: true},
+		{ID: strangerID, Username: "stranger", PasswordHash: "hash", DisplayName: "Stranger", FirstCredentialExempt: true},
 	} {
 		require.NoError(t, st.Users().Create(ctx, user))
 	}
@@ -200,8 +200,8 @@ func TestWorkspacesReadableByUser(t *testing.T) {
 	ownerID := id.Generate()
 	outsiderID := id.Generate()
 	for _, u := range []store.CreateUserParams{
-		{ID: ownerID, Username: "owner", PasswordHash: "h", DisplayName: "O", PasswordSet: true},
-		{ID: outsiderID, Username: "outsider", PasswordHash: "h", DisplayName: "X", PasswordSet: true},
+		{ID: ownerID, Username: "owner", PasswordHash: "h", DisplayName: "O", FirstCredentialExempt: true},
+		{ID: outsiderID, Username: "outsider", PasswordHash: "h", DisplayName: "X", FirstCredentialExempt: true},
 	} {
 		require.NoError(t, st.Users().Create(ctx, u))
 	}
@@ -246,8 +246,8 @@ func TestWorkspaceCanAccess(t *testing.T) {
 	ownerID := id.Generate()
 	otherID := id.Generate()
 	for _, u := range []store.CreateUserParams{
-		{ID: ownerID, Username: "owner", PasswordHash: "h", DisplayName: "O", PasswordSet: true},
-		{ID: otherID, Username: "other", PasswordHash: "h", DisplayName: "G", PasswordSet: true},
+		{ID: ownerID, Username: "owner", PasswordHash: "h", DisplayName: "O", FirstCredentialExempt: true},
+		{ID: otherID, Username: "other", PasswordHash: "h", DisplayName: "G", FirstCredentialExempt: true},
 	} {
 		require.NoError(t, st.Users().Create(ctx, u))
 	}
@@ -296,12 +296,12 @@ func TestLogin_PasswordNotSet_SameAsUnknownUser(t *testing.T) {
 	ctx := context.Background()
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
-		ID:           userID,
-		Username:     "pkonly",
-		PasswordHash: password.PlaceholderHash,
-		DisplayName:  "PK Only",
-		PasswordSet:  false,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "pkonly",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "PK Only",
+		FirstCredentialExempt: false,
+		IsAdmin:               false,
 	}))
 
 	_, _, _, err := auth.Login(ctx, st, "pkonly", "any-password", auth.DefaultSessionDuration)
@@ -546,8 +546,8 @@ func TestWorkspaceCanAccessEnforcesDeletion(t *testing.T) {
 	ownerID := id.Generate()
 	strangerID := id.Generate()
 	for _, u := range []store.CreateUserParams{
-		{ID: ownerID, Username: "cr-owner", PasswordHash: "hash", DisplayName: "Owner", PasswordSet: true},
-		{ID: strangerID, Username: "cr-stranger", PasswordHash: "hash", DisplayName: "Stranger", PasswordSet: true},
+		{ID: ownerID, Username: "cr-owner", PasswordHash: "hash", DisplayName: "Owner", FirstCredentialExempt: true},
+		{ID: strangerID, Username: "cr-stranger", PasswordHash: "hash", DisplayName: "Stranger", FirstCredentialExempt: true},
 	} {
 		require.NoError(t, st.Users().Create(ctx, u))
 	}
@@ -662,7 +662,7 @@ func TestLogin_BlankUserIDRowIsRefusedNotPanicked(t *testing.T) {
 	wrapped := blankIDUserStore{
 		Store: st,
 		users: blankIDUsers{UserStore: st.Users(), row: &store.User{
-			ID: "", Username: "blank", PasswordHash: hash, PasswordSet: true,
+			ID: "", Username: "blank", PasswordHash: hash, FirstCredentialExempt: true,
 		}},
 	}
 

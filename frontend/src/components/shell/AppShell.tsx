@@ -1,10 +1,12 @@
 import type { Component } from 'solid-js'
-import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPinConfirmState, NewWorkspacePayload, WorkspaceConfirmPayload } from './AppShellDialogs'
+import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPinConfirmState, NewTabTarget, NewWorkspacePayload, WorkspaceConfirmPayload } from './AppShellDialogs'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
+import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
@@ -20,7 +22,7 @@ import { TunnelProvider } from '~/context/TunnelContext'
 import { useWorkspace } from '~/context/WorkspaceContext'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { createDialogState, createToggleDialog } from '~/hooks/createDialogState'
+import { createDialogState } from '~/hooks/createDialogState'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useChatAutoFocus } from '~/hooks/useChatAutoFocus'
 import { useIsMobileLayout } from '~/hooks/useIsMobileLayout'
@@ -163,8 +165,8 @@ export const AppShell: Component = () => {
   // Dialog handles owned by AppShell. `lastTabConfirm` is owned by
   // useTabOperations (it drives the close flow) and joined into the
   // shared `dialogs` record below once tabOps exists.
-  const newAgentDialog = createToggleDialog()
-  const newTerminalDialog = createToggleDialog()
+  const newAgentDialog = createDialogState<NewTabTarget>()
+  const newTerminalDialog = createDialogState<NewTabTarget>()
   const newWorkspaceDialog = createDialogState<NewWorkspacePayload>()
   const confirmDeleteWsDialog = createDialogState<WorkspaceConfirmPayload>()
   const confirmArchiveWsDialog = createDialogState<WorkspaceConfirmPayload>()
@@ -172,14 +174,15 @@ export const AppShell: Component = () => {
   const changeBranchDialog = createDialogState<ChangeBranchState>()
   const deleteBranchDialog = createDialogState<DeleteBranchState>()
   // Both branch surfaces -- the sidebar's branch row and the composer's branch
-  // chip -- open the same dialogs from the same BranchRef, so the adapters are
+  // chip -- run the same actions from the same BranchRef, so the adapters are
   // defined once. A field added to either dialog state then reaches both.
-  const openChangeBranchDialog = (ref: BranchRef) => changeBranchDialog.open({
+  const openChangeBranchDialog = (ref: BranchRef, initialMode: ChangeBranchMode) => changeBranchDialog.open({
     workerId: ref.workerId,
     gitToplevel: ref.gitToplevel,
     workspaceId: ref.workspaceId,
     branchName: ref.branchName,
     isWorktree: ref.isWorktree,
+    initialMode,
   })
   const openDeleteBranchDialog = (ref: BranchRef) => deleteBranchDialog.open({
     workerId: ref.workerId,
@@ -230,10 +233,6 @@ export const AppShell: Component = () => {
   // Shared turn-end signal: bumped when an agent turn ends.
   // Drives sound playback, git file status refresh, and directory tree refresh.
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
-
-  // Cache of file-tab paths fed by WatchWorkerPrivateEvents
-  // bootstrap replay + GetFileTabPath fallback. Components consult
-  // this for FILE-tab titles instead of asking the hub.
 
   // No reconciler. `tabView` joins the projection with `tabMetadata` on read, so
   // there is no second copy of tile_id / position / worker_id to drift, nothing
@@ -897,6 +896,38 @@ export const AppShell: Component = () => {
     switchWorkspace(id)
   }
 
+  /**
+   * Run a new-tab action on a branch's checkout.
+   *
+   * The tab is placed on the ACTIVE workspace's focused tile, so the branch's
+   * own workspace becomes active first. The sidebar lists every workspace's
+   * tree, so a branch row often belongs to a workspace the user is not looking
+   * at, and without the switch the tab would land in the wrong one.
+   *
+   * `switchWorkspace` writes one signal, and `layoutStore.placementTileId()`
+   * derives from it, so the placement inside `run` already resolves against the
+   * new workspace -- there is nothing to await.
+   */
+  const atBranch = (ref: BranchRef, run: (target: NewTabTarget) => void) => {
+    if (ref.workspaceId && ref.workspaceId !== workspace.activeWorkspaceId())
+      handleSelectWorkspace(ref.workspaceId)
+    run({ workerId: ref.workerId, workingDir: ref.gitToplevel })
+  }
+
+  /**
+   * Every branch context menu's actions, for both surfaces that render one:
+   * the sidebar's per-branch row and the composer's branch chip. Defined once,
+   * so an item added to the menu reaches both or neither.
+   */
+  const branchActions: BranchRefActions = {
+    onChangeBranch: openChangeBranchDialog,
+    onDeleteBranch: openDeleteBranchDialog,
+    onNewAgent: (ref, provider) => atBranch(ref, target => void agentOps.handleOpenAgent(provider, target)),
+    onNewAgentAdvanced: ref => atBranch(ref, target => newAgentDialog.open(target)),
+    onNewTerminalWithShell: (ref, shell) => atBranch(ref, target => void termOps.handleOpenTerminalWithShell(shell, target)),
+    onNewTerminalAdvanced: ref => atBranch(ref, target => newTerminalDialog.open(target)),
+  }
+
   // Handle workspace deletion
   const handleDeleteWorkspace = (deletedId: string, nextWorkspaceId: string | null) => {
     // No selection cleanup here. `useSelectionSweep` reclaims the deleted
@@ -993,9 +1024,9 @@ export const AppShell: Component = () => {
     },
     settingsLoading,
     onOpenBackgroundTask,
+    onOpenChatImage: tabOps.handleChatImageOpen,
     branch: {
-      onChangeBranch: openChangeBranchDialog,
-      onDeleteBranch: openDeleteBranchDialog,
+      actions: branchActions,
       isWorkerKnownOnline: workerId => isWorkerKnownOnline(workerSection.workers(), workerId),
     },
   })
@@ -1026,6 +1057,7 @@ export const AppShell: Component = () => {
     toggleRightSidebar: () => toggleRightSidebarRef()?.(),
     activeTabType,
     resolveFocusedTab: tileRenderer.resolveFocusedTab,
+    isActiveWorkspaceArchived,
     splitFocusedTile: tileRenderer.splitFocusedTile,
     scrollFocusedTabPage: tileRenderer.scrollFocusedTabPage,
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
@@ -1104,8 +1136,7 @@ export const AppShell: Component = () => {
     // projected yet (the CRDT bootstrap hasn't landed); the tree falls back to
     // a position-only sort.
     getTileOrderForWorkspace: (wsId: string) => layoutStore.tileOrderFor(wsId),
-    onChangeBranch: openChangeBranchDialog,
-    onDeleteBranch: openDeleteBranchDialog,
+    branchActions,
   })
 
   // Refresh git status only when workerId or workingDir actually changes

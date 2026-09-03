@@ -54,11 +54,11 @@ message OwnedTab {
   TabType tab_type = 1;
   string  tab_id   = 2;
   // Owner of the row in workspace_tab_owned, which is keyed by
-  // (user_id, tab_id). FILE tab ids are unique only within a user, so the
-  // worker's orphan reconciler needs the owner to match a hub row against the
-  // right local worker_file_tabs row -- without it, a row belonging to another
-  // user misses the lookup and is reaped as an orphan. AGENT/TERMINAL ids are
-  // globally unique, so their reconciliation ignores this field.
+  // (user_id, tab_id). FILE and IMAGE tab ids are unique only within a user, so
+  // the worker's orphan reconciler needs the owner to match a hub row against
+  // the right local worker_tab_payloads row -- without it, a row belonging to
+  // another user misses the lookup and is reaped as an orphan. AGENT/TERMINAL
+  // ids are globally unique, so their reconciliation ignores this field.
   string  user_id  = 3;
 }
 

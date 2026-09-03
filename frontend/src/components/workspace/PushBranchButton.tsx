@@ -13,7 +13,7 @@ interface PushBranchButtonProps {
    *
    * A dir rather than an anchor tab, because the tab was only ever a way to
    * look one up on the worker -- and for a FILE tab that lookup goes through
-   * `worker_file_tabs`, a row the client writes fire-and-forget and a peer's
+   * `worker_tab_payloads`, a row the client writes fire-and-forget and a peer's
    * close hard-deletes, so it could be gone while the tab was still on screen.
    * Callers pass a dir they already hold locally (a tab's `workingDir`, or the
    * one the inspect response echoed back), so the push depends on no worker row

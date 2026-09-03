@@ -142,12 +142,6 @@ export const tabListDropTarget = style({
   borderRadius: 'var(--radius-small)',
 })
 
-export const shellDefault = style({
-  marginLeft: 'var(--space-1)',
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-})
-
 export const tabEditInput = style({
   'width': '100px',
   'padding': '0 2px',
@@ -163,35 +157,11 @@ export const tabEditInput = style({
   },
 })
 
-export const providerButton = style({
-  'appearance': 'none',
-  'background': 'none',
-  'border': 'none',
-  'display': 'inline-flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'width': '24px',
-  'height': '24px',
-  'minWidth': '24px',
-  'padding': 0,
-  'borderRadius': 'var(--radius-small)',
-  'color': 'var(--muted-foreground)',
-  'cursor': 'pointer',
-  'flexShrink': 0,
-  'lineHeight': 0,
-  ':hover': {
-    color: 'var(--foreground)',
-    backgroundColor: 'var(--card)',
-  },
-})
-
-export const providerIconsRow = style({
-  display: 'flex',
-  flexWrap: 'wrap',
-  alignItems: 'center',
-  gap: 'var(--space-1)',
-  padding: 'var(--space-1) var(--space-3)',
-})
+// `providerButton`, `providerIconsRow` and `shellDefault` moved to
+// `~/components/common/NewTabMenuItems.css.ts`: the Agents and Terminals
+// sections are shared with the branch context menu now, and the strip's
+// most-recently-used provider buttons import the same `providerButton` from
+// there so one glyph cannot be two sizes.
 
 // --- Collapsed new-tab button (visible at minimal/micro) ---
 export const collapsedNewTab = style({

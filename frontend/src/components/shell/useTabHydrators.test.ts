@@ -7,7 +7,7 @@ import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { createRepoGitStore } from '~/stores/repoGit.store'
-import { isFileTab } from '~/stores/tab.types'
+import { isFileTab, isImageTab } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
@@ -15,12 +15,12 @@ import { useTabHydrators } from './useTabHydrators'
 
 const mockListAgents = vi.fn()
 const mockListTerminals = vi.fn()
-const mockGetFileTabPath = vi.fn()
+const mockGetTabPayload = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   listAgents: (...a: unknown[]) => mockListAgents(...a),
   listTerminals: (...a: unknown[]) => mockListTerminals(...a),
-  getFileTabPath: (...a: unknown[]) => mockGetFileTabPath(...a),
+  getTabPayload: (...a: unknown[]) => mockGetTabPayload(...a),
 }))
 
 beforeEach(() => {
@@ -28,8 +28,10 @@ beforeEach(() => {
   mockListAgents.mockResolvedValue({ agents: [], verdicts: [] })
   mockListTerminals.mockReset()
   mockListTerminals.mockResolvedValue({ terminals: [], verdicts: [] })
-  mockGetFileTabPath.mockReset()
-  mockGetFileTabPath.mockResolvedValue({ filePath: '/repo/nested/x.ts', workingDir: '/repo' })
+  mockGetTabPayload.mockReset()
+  mockGetTabPayload.mockResolvedValue({
+    payload: { workingDir: '/repo', kind: { case: 'file', value: { filePath: '/repo/nested/x.ts' } } },
+  })
 })
 
 afterEach(() => setCRDTBridge(null))
@@ -295,7 +297,7 @@ describe('useTabHydrators', () => {
       await flush()
       await flush()
 
-      expect(mockGetFileTabPath).toHaveBeenCalledTimes(1)
+      expect(mockGetTabPayload).toHaveBeenCalledTimes(1)
       const f1 = s.view.getById(TabType.FILE, 'f1')
       expect(f1 && isFileTab(f1) && f1.filePath).toBe('/repo/nested/x.ts')
       // The working dir comes back with the path because it is what puts the
@@ -306,9 +308,38 @@ describe('useTabHydrators', () => {
       d()
     })
 
+    it('fetches the message reference for an image tab, so it can resolve at all', async () => {
+      // Without the payload an IMAGE tab knows no agent, no seq and no index,
+      // so it can show nothing whatsoever -- it needs this at least as much as
+      // a FILE tab does.
+      mockGetTabPayload.mockResolvedValueOnce({
+        payload: {
+          workingDir: '/repo',
+          kind: { case: 'image', value: { agentId: 'a1', seq: 42n, imageIndex: 1, title: 'Read' } },
+        },
+      })
+      const s = setup()
+      const d = createRoot((dispose) => {
+        s.add(TabType.IMAGE, 'i1')
+        s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(mockGetTabPayload).toHaveBeenCalledTimes(1)
+      const i1 = s.view.getById(TabType.IMAGE, 'i1')
+      expect(i1 && isImageTab(i1) && i1.imageAgentId).toBe('a1')
+      expect(i1 && isImageTab(i1) && i1.imageSeq).toBe(42n)
+      expect(i1 && isImageTab(i1) && i1.imageIndex).toBe(1)
+      expect(i1?.title).toBe('Read')
+      expect(i1?.workingDir).toBe('/repo')
+      d()
+    })
+
     /**
      * A tab the private-event stream already answered for is not fetched at
-     * all. `FileTabPathRegistered` carries the same `(file_path, working_dir)`
+     * all. `TabPayloadRegistered` carries the same `(file_path, working_dir)`
      * this RPC returns, so the stream marks the tab `hydrated` and the
      * predicate goes false.
      *
@@ -322,7 +353,7 @@ describe('useTabHydrators', () => {
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.FILE, 'f1')
-        // What `onFileTabPathRegistered` writes.
+        // What `onTabPayloadRegistered` writes.
         s.metadata.patch('f1', { filePath: '/repo/nested/x.ts', workingDir: '/repo', hydrated: true })
         s.mount()
         return dispose
@@ -330,7 +361,7 @@ describe('useTabHydrators', () => {
       await flush()
       await flush()
 
-      expect(mockGetFileTabPath).not.toHaveBeenCalled()
+      expect(mockGetTabPayload).not.toHaveBeenCalled()
       d()
     })
 
@@ -343,13 +374,13 @@ describe('useTabHydrators', () => {
       })
       await flush()
       await flush()
-      expect(mockGetFileTabPath).toHaveBeenCalledTimes(1)
+      expect(mockGetTabPayload).toHaveBeenCalledTimes(1)
 
       s.metadata.patch('f1', { hasNotification: true })
       await flush()
       await flush()
 
-      expect(mockGetFileTabPath).toHaveBeenCalledTimes(1)
+      expect(mockGetTabPayload).toHaveBeenCalledTimes(1)
       d()
     })
   })

@@ -57,6 +57,8 @@ frontend/src/spinners/
 /site/resources/
 /site/.hugo_build.lock
 /site/.hugo_cache/
+# `go build ./tools/ogbase` from site/ drops the binary here.
+/site/ogbase
 
 # IDE
 .idea/

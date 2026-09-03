@@ -647,7 +647,7 @@ func TestQueryGitPathInfo_NonGitDir(t *testing.T) {
 // positional `HEAD` revision can't resolve. The earlier code surfaced
 // the failure as errNotGitRepo, which locked every dialog whose open
 // path runs through queryGitPathInfo (GetGitInfo, ChangeBranchDialog,
-// linkFileTabToWorktree, …) out of an empty repo. The retry-without-HEAD
+// linkTabToWorktree, …) out of an empty repo. The retry-without-HEAD
 // path here must recognise the repo as real, return the toplevel + the
 // default branch name, and leave HeadSHA empty so callers know there's
 // nothing to short-SHA.
@@ -867,11 +867,10 @@ func createFileTabForPath(t *testing.T, svc *Service, userID, tabID, workingDir,
 	t.Helper()
 	filePath := filepath.Join(workingDir, fileName)
 	require.NoError(t, os.WriteFile(filePath, []byte("open\n"), 0o644))
-	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:     userID,
-		TabID:      tabID,
-		FilePath:   filePath,
-		WorkingDir: workingDir,
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID:  userID,
+		TabID:   tabID,
+		Payload: fileTabPayload(filePath, workingDir),
 	}))
 	return filePath
 }
@@ -1009,7 +1008,7 @@ func TestInspectLastTabClose_SelfSkipIsTypeScoped(t *testing.T) {
 	assert.False(t, resp.GetShouldPrompt())
 }
 
-// A file tab's branch siblings are its OWNER's tabs. `worker_file_tabs` is
+// A file tab's branch siblings are its OWNER's tabs. `worker_tab_payloads` is
 // keyed (user_id, tab_id), so an owner-blind scan resolves other users' rows
 // and counts them as siblings that keep the branch alive.
 //
@@ -1074,7 +1073,7 @@ func TestInspectLastTabClose_LoneFileTabOnWorktreePrompts(t *testing.T) {
 }
 
 // A file tab whose registration never landed (the client's fire-and-forget
-// RegisterFileTabPath failed) has no working dir to inspect. The close still
+// RegisterTabPayload failed) has no working dir to inspect. The close still
 // wins -- with the degraded hint that says the git check was skipped, which is
 // the honest answer here and exactly what the reported bug was reporting for
 // tabs that DID have one.
@@ -1280,7 +1279,7 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
 
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "file-tab-wt")
@@ -1293,11 +1292,10 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	createAgentForPath(t, svc, "agent-with-file", wtDir)
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-with-file")
 
-	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:     "user-1",
-		TabID:      "file-tab-1",
-		FilePath:   openPath,
-		WorkingDir: wtDir,
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "file-tab-1",
+		Payload: fileTabPayload(openPath, wtDir),
 	}))
 
 	// Sanity: Register linked the file tab into worktree_tabs.
@@ -1323,7 +1321,7 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 		dropWorktreeLink,
 		func() {},
 		func() (bool, error) {
-			err := svc.FileTabPaths.RevokeRow(context.Background(), "user-1", "file-tab-1")
+			err := svc.TabPayloads.RevokeRow(context.Background(), "user-1", "file-tab-1")
 			return err == nil, err
 		},
 	)
@@ -1608,7 +1606,7 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
 
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "file-only-wt")
@@ -1619,10 +1617,10 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
 	require.NoError(t, err)
 
-	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:   "user-1",
-		TabID:    "file-only-tab",
-		FilePath: openPath,
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "file-only-tab",
+		Payload: fileTabPayload(openPath, ""),
 	}))
 
 	count, err := svc.Queries.CountWorktreeTabs(context.Background(), wtID)
@@ -1637,7 +1635,7 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 		dropWorktreeLink,
 		func() {},
 		func() (bool, error) {
-			err := svc.FileTabPaths.RevokeRow(context.Background(), "user-1", "file-only-tab")
+			err := svc.TabPayloads.RevokeRow(context.Background(), "user-1", "file-only-tab")
 			return err == nil, err
 		},
 	)
@@ -1662,19 +1660,19 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 // A file tab whose path is outside any tracked worktree must register
 // successfully but leave worktree_tabs untouched — there is nothing to
 // link to, and a stray INSERT would later block the orphan-row clean up.
-func TestFileTabPathStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
+func TestTabPayloadStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
 
 	loosePath := filepath.Join(t.TempDir(), "loose.txt")
 	require.NoError(t, os.WriteFile(loosePath, []byte("loose\n"), 0o644))
 
-	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:   "user-1",
-		TabID:    "loose-file",
-		FilePath: loosePath,
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "loose-file",
+		Payload: fileTabPayload(loosePath, ""),
 	}))
 
 	wt, err := svc.Queries.GetWorktreeForTab(context.Background(), db.GetWorktreeForTabParams{
@@ -1698,7 +1696,7 @@ func TestFileTabPathStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
 // on working_dir loses exactly the case that matters -- a file opened from an
 // agent in the main checkout INTO a linked worktree, which is then unlinked and
 // reclaimable while it is on screen.
-func TestFileTabPathStore_LinksWorktreeContainingTheFile(t *testing.T) {
+func TestTabPayloadStore_LinksWorktreeContainingTheFile(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -1715,11 +1713,10 @@ func TestFileTabPathStore_LinksWorktreeContainingTheFile(t *testing.T) {
 	// the worktree on this tab's behalf.
 	wtPath := filepath.Join(wtDir, "inside.txt")
 	require.NoError(t, os.WriteFile(wtPath, []byte("inside\n"), 0o644))
-	require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-		UserID:     "user-1",
-		TabID:      "file-cross",
-		FilePath:   wtPath,
-		WorkingDir: repoDir,
+	require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "file-cross",
+		Payload: fileTabPayload(wtPath, repoDir),
 	}))
 
 	wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
@@ -1732,7 +1729,7 @@ func TestFileTabPathStore_LinksWorktreeContainingTheFile(t *testing.T) {
 
 	// ...and the identity half is untouched: the tab still answers branch
 	// questions from the dir it was opened in, so the two facts stay separable.
-	loc, err := svc.FileTabPaths.Get(ctx, "user-1", "file-cross")
+	loc, err := svc.TabPayloads.Get(ctx, "user-1", "file-cross")
 	require.NoError(t, err)
 	assert.Equal(t, repoDir, loc.WorkingDir, "working_dir stays the originating tab's")
 }
@@ -1741,7 +1738,7 @@ func TestFileTabPathStore_LinksWorktreeContainingTheFile(t *testing.T) {
 // were already open when a worktree became tracked. It pre-filters lexically
 // before probing git, and that filter has to read the same thing the link does
 // -- filtering on working_dir would skip exactly the tabs the probe would link.
-func TestFileTabPathStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
+func TestTabPayloadStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -1755,11 +1752,10 @@ func TestFileTabPathStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
 	// attempt finds no row and leaves the tab unbound.
 	wtPath := filepath.Join(wtDir, "inside.txt")
 	require.NoError(t, os.WriteFile(wtPath, []byte("inside\n"), 0o644))
-	require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-		UserID:     "user-1",
-		TabID:      "file-backfill",
-		FilePath:   wtPath,
-		WorkingDir: repoDir,
+	require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "file-backfill",
+		Payload: fileTabPayload(wtPath, repoDir),
 	}))
 	_, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-backfill", UserID: "user-1",
@@ -1768,7 +1764,7 @@ func TestFileTabPathStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
 
 	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
 	require.NoError(t, err)
-	svc.FileTabPaths.BackfillWorktreeLinks(ctx, wtDir)
+	svc.TabPayloads.BackfillWorktreeLinks(ctx, wtDir)
 
 	wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-backfill", UserID: "user-1",
@@ -1782,29 +1778,29 @@ func TestFileTabPathStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
 // would store "." and every git question about the tab -- the worktree link,
 // getTabWorkingDir, the branch-sibling scan -- would be answered by `git -C .`
 // in whatever repo the worker process happens to sit in.
-func TestFileTabPathStore_RefusesRelativeFilePath(t *testing.T) {
+func TestTabPayloadStore_RefusesRelativeFilePath(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
 
-	err := svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-		UserID:   "user-1",
-		TabID:    "file-rel",
-		FilePath: "notes.txt",
+	err := svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "file-rel",
+		Payload: fileTabPayload("notes.txt", ""),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be absolute")
 
-	_, getErr := svc.FileTabPaths.Get(ctx, "user-1", "file-rel")
-	require.ErrorIs(t, getErr, ErrFileTabPathNotFound, "a refused register must persist nothing")
+	_, getErr := svc.TabPayloads.Get(ctx, "user-1", "file-rel")
+	require.ErrorIs(t, getErr, ErrTabPayloadNotFound, "a refused register must persist nothing")
 }
 
 // A `~/...` working dir is expanded at the write point, the same normalizer
 // agents.working_dir and terminals.working_dir go through. Stored literally it
 // is a dir `git -C` cannot resolve, which puts the tab back in the degraded
 // "not readable as a git repository" close this column exists to eliminate.
-func TestFileTabPathStore_ExpandsTildeWorkingDir(t *testing.T) {
+func TestTabPayloadStore_ExpandsTildeWorkingDir(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -1812,16 +1808,15 @@ func TestFileTabPathStore_ExpandsTildeWorkingDir(t *testing.T) {
 
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
-	require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-		UserID:     "user-1",
-		TabID:      "file-tilde",
-		FilePath:   filepath.Join(home, "proj", "a.go"),
-		WorkingDir: "~/proj",
+	require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "file-tilde",
+		Payload: fileTabPayload(filepath.Join(home, "proj", "a.go"), "~/proj"),
 	}))
 
-	loc, err := svc.FileTabPaths.Get(ctx, "user-1", "file-tilde")
+	loc, err := svc.TabPayloads.Get(ctx, "user-1", "file-tilde")
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(home, "proj"), loc.WorkingDir)
+	assert.Equal(t, filepath.Join(home, "proj"), loc.GetWorkingDir())
 }
 
 // Fast path: a non-worktree tab with other non-worktree tabs on the
@@ -2150,7 +2145,7 @@ func TestUserOwnsLiveTabInDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, owns, "another repo on the same worker is not pushable")
 
-	// Another user's file tab is not this caller's: worker_file_tabs is keyed
+	// Another user's file tab is not this caller's: worker_tab_payloads is keyed
 	// (user_id, tab_id), and a file tab id is unique only within a client.
 	stranger, ok := userid.New("user-b")
 	require.True(t, ok)
@@ -6532,4 +6527,35 @@ func TestAnnotateFileStats_NoopWithoutATopLevel(t *testing.T) {
 
 	assert.Nil(t, files[0].Size)
 	assert.Nil(t, files[0].ModTime)
+}
+
+// An IMAGE tab opened with no originating tab to inherit a working dir from
+// stores a blank one by design (see resolveTabPayloadWorkingDir). It never
+// touched a repository, so a close that inspects nothing skipped nothing.
+//
+// Every error from loadTabGitContext used to map to the same degraded-close
+// hint, so closing such a tab warned that its "working directory is not
+// readable as a git repository" and that uncommitted changes went unchecked --
+// about a repository the tab never had. The frontend toasts that hint verbatim
+// for every tab kind, with no filter.
+func TestInspectLastTabClose_ImageTabWithNoWorkingDirIsNotADegradedClose(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID: "user-1",
+		TabID:  "img-no-dir",
+		Payload: &leapmuxv1.TabPayload{
+			Kind: &leapmuxv1.TabPayload_Image{Image: &leapmuxv1.ImageTabPayload{
+				AgentId: "agent-1", Seq: 7, ImageIndex: 0,
+			}},
+		},
+	}))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_IMAGE, "img-no-dir", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.Empty(t, resp.GetErrorHint(),
+		"a tab that never had a working dir must not be reported as one whose dir is unreadable")
+	assert.False(t, resp.GetShouldPrompt())
 }

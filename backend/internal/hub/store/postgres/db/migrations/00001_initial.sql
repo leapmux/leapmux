@@ -51,7 +51,12 @@ CREATE TABLE users (
     -- pending_email_unblocked_at for the semantics
     -- (ConsumeRecoveryAttemptByToken force-expires the same way).
     pending_recovery_unblocked_at TIMESTAMPTZ,
-    password_set             BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Whether this account is EXEMPT from the first-credential rule -- not
+    -- whether a password works. The solo bootstrap sets it true with an empty
+    -- hash, which is exactly what routes solo past a rule no solo account could
+    -- satisfy. "Can this account sign in with a password?" is a different
+    -- question, answered by store.User.HasUsablePassword() from the stored hash.
+    first_credential_exempt             BOOLEAN NOT NULL DEFAULT TRUE,
     is_admin                 BOOLEAN NOT NULL DEFAULT FALSE,
     prefs          TEXT NOT NULL DEFAULT '{}',
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),

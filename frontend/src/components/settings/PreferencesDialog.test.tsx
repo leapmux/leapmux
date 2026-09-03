@@ -23,18 +23,33 @@ vi.mock('~/api/clients', () => ({
   authClient: {},
 }))
 
-// The elevation members are REAL here, not stubs: the panel renders the
+// The account behind `user()` is a real Solid SIGNAL, and `refreshUser`
+// rewrites it with an equal-valued object -- exactly what the context does when
+// a surface re-reads the account. A plain accessor over a fabricated object
+// would track nothing, so the dialog's own reaction to a re-read could not be
+// tested at all.
+//
+// The elevation members are real here too, not stubs: the panel renders the
 // verified-session state at the top of every group that holds an
 // elevation-guarded row, and `elevationExpiresAt` is what decides whether that
 // state exists. A test drives it through the hoisted mock.
-vi.mock('~/context/AuthContext', () => ({
-  useAuth: () => ({
-    user: () => ({ username: 'admin', isAdmin: isAdmin() }),
-    elevationExpiresAt: () => elevationExpiresAt(),
-    dropElevation: vi.fn().mockResolvedValue(undefined),
-    refreshUser: vi.fn().mockResolvedValue(undefined),
-  }),
-}))
+const refreshUser = vi.hoisted(() => vi.fn())
+vi.mock('~/context/AuthContext', async () => {
+  const { createSignal } = await import('solid-js')
+  const [account, setAccount] = createSignal({ username: 'admin' })
+  refreshUser.mockImplementation(() => {
+    setAccount({ username: 'admin' })
+    return Promise.resolve()
+  })
+  return {
+    useAuth: () => ({
+      user: () => ({ ...account(), isAdmin: isAdmin() }),
+      elevationExpiresAt: () => elevationExpiresAt(),
+      dropElevation: vi.fn().mockResolvedValue(undefined),
+      refreshUser,
+    }),
+  }
+})
 
 // `isDesktopApp` defaults to FALSE, the environment every case below was
 // written for. Only the Desktop group needs the other answer.
@@ -176,6 +191,43 @@ describe('preferencesDialog admin restriction', () => {
     expect(screen.queryByTestId('preferences-nav-admin-general')).toBeNull()
     expect(screen.queryByText('ADMINISTRATION')).toBeNull()
     expect(screen.getByText('PREFERENCES')).toBeTruthy()
+  })
+
+  // An account re-read must leave an open panel exactly where it stands.
+  //
+  // Three surfaces re-read the account while this dialog is open, and one of
+  // them is an editor INSIDE it: Network access stores the solo account's
+  // password and then re-reads it. Each re-read replaces the User object with
+  // an equal one, and the dialog derived `isAdmin` straight from it -- so
+  // `adminRows` rebuilt, `<For>` reconciled by reference, and every admin
+  // editor remounted. A half-typed address list was discarded, and the status
+  // line of the write that caused the re-read was replaced by the empty one of
+  // a fresh editor.
+  it('keeps an open admin editor mounted through an account re-read', async () => {
+    isAdmin.mockReturnValue(true)
+    listSettings.mockResolvedValue({
+      descriptors: [{
+        key: 'session_duration_seconds',
+        category: 'general',
+        title: 'Session duration',
+        summary: '',
+        order: 10,
+        hiddenInSolo: false,
+        restart: false,
+        fields: [{ name: '', label: 'Session duration', help: '', kind: 2, enumValues: [], unit: 'seconds', secret: false, placeholder: '', min: 300n }],
+      }],
+      values: [],
+    })
+    renderDialog('admin-general')
+    await waitFor(() => expect(document.querySelector('[data-setting-id="session_duration_seconds"]')).toBeTruthy())
+    const row = document.querySelector('[data-setting-id="session_duration_seconds"]')
+
+    await refreshUser()
+
+    // The SAME node, not merely a node: a remount renders an identical row and
+    // detaches this one, which every assertion about the markup would pass.
+    expect(document.querySelector('[data-setting-id="session_duration_seconds"]')).toBe(row)
+    expect(row!.isConnected).toBe(true)
   })
 
   it('marks admin groups that hold restart-class settings', async () => {
@@ -346,20 +398,36 @@ describe('preferencesDialog deep link', () => {
 describe('preferencesDialog solo mode', () => {
   // Solo hides MOST of Account, not all of it, and the survivor is the point.
   //
-  // A solo hub authorizes apps like any other -- the solo rung yields to a
+  // Password stays, because ChangePassword is the one account verb solo does
+  // not refuse: that password is what lets the hub answer on a network address
+  // at all, so a solo owner must be able to set the first one and replace it.
+  // The four rows that move a durable identity hide, because solo has no
+  // sign-up, no passkey, no recovery and no provider link behind them.
+  //
+  // A solo hub also authorizes apps like any other -- the solo rung yields to a
   // presented bearer, so a scoped credential binds there too -- so its owner
-  // must be able to see what they authorized and disconnect it. Every row that
-  // needs a factor to prove (a password, a passkey, an address) still hides,
-  // because solo has no factor and no ceremony.
-  it('hides Account in solo and keeps Apps for connected apps', async () => {
+  // must be able to see what they authorized and disconnect it.
+  it('keeps Account in solo for the password row, and Apps for connected apps', async () => {
     solo.mockReturnValue(true)
-    renderDialog()
+    renderDialog('account')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    // Connected apps is an APPS row, so solo hides Account entirely and the
-    // app errand stays reachable.
-    expect(screen.queryByTestId('preferences-nav-account')).toBeNull()
+    expect(screen.getByTestId('preferences-nav-account')).toBeTruthy()
+    // Connected apps is an APPS row, so the app errand stays reachable through
+    // its own group rather than through the one solo reduced.
     expect(screen.getByTestId('preferences-nav-apps')).toBeTruthy()
-    // Dual rows still render with the scope chip.
+    const panel = document.querySelector('#preferences-panel')!
+    expect(panel.querySelector('[data-setting-id="account.password"]')).toBeTruthy()
+    for (const id of ['account.profile', 'account.email', 'account.passkeys', 'account.linkedProviders'])
+      expect(panel.querySelector(`[data-setting-id="${id}"]`), `${id} must stay hidden in solo`).toBeNull()
+  })
+
+  // The scope chip is a DIALOG-level fact -- the row reads its value from two
+  // tiers, and the chip says which one answers -- and solo changes neither
+  // tier for a preference like the theme.
+  it('still marks a dual row with its scope chip', async () => {
+    solo.mockReturnValue(true)
+    renderDialog('appearance')
+    await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     expect(screen.getByTestId('scope-chip-appearance.theme')).toBeTruthy()
   })
 
@@ -438,10 +506,9 @@ describe('preferencesDialog solo mode', () => {
     renderDialog('admin-captcha')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
     expect(screen.queryByTestId('preferences-nav-admin-captcha')).toBeNull()
-    // The FIRST visible group, which is Apps: solo hides Account entirely
-    // (connected apps is an Apps row), so the fallback stops there rather
-    // than at Appearance.
-    expect(screen.getByTestId('preferences-nav-apps').getAttribute('aria-selected')).toBe('true')
+    // The FIRST visible group, which is Account: solo keeps its Password row,
+    // so the fallback stops at the group the navigation leads with.
+    expect(screen.getByTestId('preferences-nav-account').getAttribute('aria-selected')).toBe('true')
   })
 })
 
@@ -808,19 +875,21 @@ describe('preferencesDialog section order', () => {
     expect(tabs).toContain('preferences-nav-appearance')
   })
 
-  // Account SURVIVES solo, because connected apps survives it: a solo hub
-  // authorizes apps like any other, and its owner must be able to disconnect
-  // one. So the fallback has nothing to move past, and the deep link lands
-  // where it asked.
+  // Account SURVIVES solo, because its Password row does: ChangePassword is
+  // the one account verb solo does not refuse, and that password is what lets
+  // the hub answer on a network address. So the fallback has nothing to move
+  // past, and the deep link lands where it asked -- still first in the list.
   //
-  // The rows that need a factor still hide. Solo has no password, no passkey
-  // and no address, so those editors would render controls whose ceremony
-  // cannot run.
-  it('falls back from Account in solo mode, where Apps holds the connected-apps row', async () => {
+  // The four rows that move a durable identity stay hidden. Solo offers no
+  // sign-up, no passkey, no recovery and no provider link, so those editors
+  // would render controls whose ceremony cannot run.
+  it('lands a solo deep link on Account, which leads the list there too', async () => {
     solo.mockReturnValue(true)
     renderDialog('account')
     await waitFor(() => expect(screen.getByTestId('preferences-nav-appearance')).toBeTruthy())
-    expect(screen.getByTestId('preferences-nav-apps')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('preferences-nav-account')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('tab').map(el => el.getAttribute('data-testid'))[0])
+      .toBe('preferences-nav-account')
   })
 })
 

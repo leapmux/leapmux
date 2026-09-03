@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tab-types.schema.json",
+  "title": "TabType wire vocabulary contract",
+  "description": "Keys are proto enum value names; the generator cross-checks them against the TabType enum from `buf build` (every value exactly once, including UNSPECIFIED, whose token is the empty string the CLI treats as \"no --type given\"). `wireToken` is what the CLI accepts and emits and what the browser writes to data-tab-type. The proto-canonical spelling (TAB_TYPE_FILE) is always accepted on parse, so a token pasted back from JSON round-trips without listing it here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "tabTypes"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "tabTypes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^TAB_TYPE_[A-Z0-9_]+$" },
+      "additionalProperties": { "$ref": "#/$defs/tabType" }
+    }
+  },
+  "$defs": {
+    "tabType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wireToken", "parseAliases"],
+      "properties": {
+        "wireToken": { "type": "string", "pattern": "^[a-z0-9-]*$" },
+        "parseAliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

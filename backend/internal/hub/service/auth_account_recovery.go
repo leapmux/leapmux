@@ -324,10 +324,10 @@ func (s *AuthService) spendRecoveryToken(
 	err := s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
 		var completeErr error
 		revoked, completeErr = tx.Users().CompleteRecovery(ctx, store.CompleteRecoveryParams{
-			ID:                   userID,
-			PasswordHash:         passwordHash,
-			PasswordSet:          passwordSet,
-			PendingRecoveryToken: hashedToken,
+			ID:                    userID,
+			PasswordHash:          passwordHash,
+			FirstCredentialExempt: passwordSet,
+			PendingRecoveryToken:  hashedToken,
 		})
 		if completeErr != nil {
 			if errors.Is(completeErr, store.ErrNotFound) {

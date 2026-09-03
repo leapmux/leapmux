@@ -195,12 +195,12 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	hash, _ := password.Hash("testpass")
 
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "testuser",
-		PasswordHash: hash,
-		DisplayName:  "Test User",
-		PasswordSet:  true,
-		IsAdmin:      true,
+		ID:                    userID,
+		Username:              "testuser",
+		PasswordHash:          hash,
+		DisplayName:           "Test User",
+		FirstCredentialExempt: true,
+		IsAdmin:               true,
 	})
 
 	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
@@ -253,14 +253,14 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	userID := id.Generate()
 
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "testuser",
-		PasswordHash:  password.PlaceholderHash,
-		DisplayName:   "Test User",
-		Email:         "testuser@example.com",
-		EmailVerified: true,
-		PasswordSet:   false,
-		IsAdmin:       true,
+		ID:                    userID,
+		Username:              "testuser",
+		PasswordHash:          password.PlaceholderHash,
+		DisplayName:           "Test User",
+		Email:                 "testuser@example.com",
+		EmailVerified:         true,
+		FirstCredentialExempt: false,
+		IsAdmin:               true,
 	})
 
 	// PasswordSet is false, so password Login refuses. Mint a session directly.
@@ -330,12 +330,12 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 	user2ID := id.Generate()
 	hash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           user2ID,
-		Username:     "user2",
-		PasswordHash: hash,
-		DisplayName:  "User 2",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    user2ID,
+		Username:              "user2",
+		PasswordHash:          hash,
+		DisplayName:           "User 2",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 
 	// Try to change testuser's username to "user2".
@@ -886,12 +886,12 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 	userID := id.Generate()
 	hash, _ := password.Hash("userpass")
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "plainuser",
-		PasswordHash: hash,
-		DisplayName:  "Plain User",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "plainuser",
+		PasswordHash:          hash,
+		DisplayName:           "Plain User",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	}))
 	// Start from a verified address so the interceptor does not refuse the call.
 	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
@@ -932,11 +932,11 @@ func TestRequestEmailChange_CooldownRefusesASecondAddress(t *testing.T) {
 	userID := id.Generate()
 	hash, _ := password.Hash("userpass")
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "flooduser",
-		PasswordHash: hash,
-		DisplayName:  "Flood User",
-		PasswordSet:  true,
+		ID:                    userID,
+		Username:              "flooduser",
+		PasswordHash:          hash,
+		DisplayName:           "Flood User",
+		FirstCredentialExempt: true,
 	}))
 	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email: "old@example.com", EmailVerified: true, ID: userID,
@@ -975,12 +975,12 @@ func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
 	user2ID := id.Generate()
 	hash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           user2ID,
-		Username:     "user2",
-		PasswordHash: hash,
-		DisplayName:  "User 2",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    user2ID,
+		Username:              "user2",
+		PasswordHash:          hash,
+		DisplayName:           "User 2",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	err := env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "claimed@example.com",
@@ -1051,12 +1051,12 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	userID := id.Generate()
 	hash, _ := password.Hash("userpass")
 	err := st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
-		Username:     "verifyuser",
-		PasswordHash: hash,
-		DisplayName:  "Verify User",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "verifyuser",
+		PasswordHash:          hash,
+		DisplayName:           "Verify User",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	require.NoError(t, err)
 
@@ -1322,7 +1322,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *mailSenderDouble) {
 	hash, _ := password.Hash("testpass")
 	_ = st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "resender", PasswordHash: hash,
-		DisplayName: "Resender", PasswordSet: true,
+		DisplayName: "Resender", FirstCredentialExempt: true,
 	})
 	token, _, _, err := auth.Login(context.Background(), st, "resender", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
@@ -1483,12 +1483,12 @@ func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
 	user2ID := id.Generate()
 	hash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           user2ID,
-		Username:     "claimer",
-		PasswordHash: hash,
-		DisplayName:  "Claimer",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    user2ID,
+		Username:              "claimer",
+		PasswordHash:          hash,
+		DisplayName:           "Claimer",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	err = env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email:         "contested@example.com",
@@ -1531,12 +1531,12 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 	attackerID := id.Generate()
 	attackerHash, _ := password.Hash("testpass2")
 	_ = env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           attackerID,
-		Username:     "attacker",
-		PasswordHash: attackerHash,
-		DisplayName:  "Attacker",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    attackerID,
+		Username:              "attacker",
+		PasswordHash:          attackerHash,
+		DisplayName:           "Attacker",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	attackerOwnToken := verifycode.Generate()
 	minted, err := env.store.Users().SetPendingEmail(context.Background(), store.SetPendingEmailParams{
@@ -1637,7 +1637,7 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 	hash, _ := password.Hash("testpass")
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "testuser", PasswordHash: hash,
-		DisplayName: "Test User", PasswordSet: true,
+		DisplayName: "Test User", FirstCredentialExempt: true,
 	}))
 
 	token, _, _, err := auth.Login(ctx, st, "testuser", "testpass", auth.DefaultSessionDuration)
@@ -1819,7 +1819,7 @@ func TestChangePassword_OAuthUser_SetsFirstPasswordWithoutElevation(t *testing.T
 	// Verify password_set is now 1.
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.True(t, user.PasswordSet)
+	assert.True(t, user.FirstCredentialExempt)
 
 	// Verify the new password works via login.
 	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
@@ -1862,7 +1862,7 @@ func TestChangePassword_PasskeyOnly_RequiresElevation(t *testing.T) {
 
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.True(t, user.PasswordSet)
+	assert.True(t, user.FirstCredentialExempt)
 
 	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
@@ -2240,7 +2240,7 @@ func TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testi
 
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	require.False(t, user.PasswordSet, "precondition: the account has nothing to elevate with")
+	require.False(t, user.FirstCredentialExempt, "precondition: the account has nothing to elevate with")
 
 	_, err = env.client.ChangePassword(context.Background(), bearerReq(&leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
@@ -2255,7 +2255,7 @@ func TestGatedRPCs_RefuseACommandLineCredentialWithNothingToElevateWith(t *testi
 
 	after, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.False(t, after.PasswordSet, "a refused change must attach no first password")
+	assert.False(t, after.FirstCredentialExempt, "a refused change must attach no first password")
 }
 
 // TestGatedRPCs_TellASessionToElevate is the contrast that gives the test
@@ -2362,7 +2362,7 @@ func TestRequestEmailChange_UnelevatedCannotProbeWhoOwnsAnAddress(t *testing.T) 
 	env := setupUserTest(t)
 	other := id.Generate()
 	require.NoError(t, env.store.Users().Create(context.Background(), store.CreateUserParams{
-		ID: other, Username: "otheruser", PasswordHash: "x", DisplayName: "Other", PasswordSet: true,
+		ID: other, Username: "otheruser", PasswordHash: "x", DisplayName: "Other", FirstCredentialExempt: true,
 	}))
 	require.NoError(t, env.store.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email: "taken@example.com", EmailVerified: true, ID: other,
@@ -2695,7 +2695,7 @@ func TestUserService_DeletePasskey_LastPasskeyWithNewPassword_Deactivates(t *tes
 
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.True(t, user.PasswordSet)
+	assert.True(t, user.FirstCredentialExempt)
 
 	rows, err := env.store.PasskeyCredentials().ListByUser(context.Background(), env.userID)
 	require.NoError(t, err)
@@ -2739,7 +2739,7 @@ func TestUserService_DeactivatePasskeyAuth_ElevatedWithNewPassword(t *testing.T)
 
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.True(t, user.PasswordSet)
+	assert.True(t, user.FirstCredentialExempt)
 
 	rows, err := env.store.PasskeyCredentials().ListByUser(context.Background(), env.userID)
 	require.NoError(t, err)
@@ -2782,7 +2782,7 @@ func TestUserService_DeactivatePasskeyAuth_EmptyPasswordAnswersTheRule(t *testin
 	require.NoError(t, err)
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
-	assert.False(t, user.PasswordSet)
+	assert.False(t, user.FirstCredentialExempt)
 }
 
 func TestUserService_DeactivatePasskeyAuth_InvalidatesOtherSessions(t *testing.T) {
@@ -2863,7 +2863,7 @@ func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 	hash, _ := password.Hash("testpass")
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "smtpuser", PasswordHash: hash,
-		DisplayName: "SMTP User", PasswordSet: true,
+		DisplayName: "SMTP User", FirstCredentialExempt: true,
 	}))
 	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email: "unverified@example.com", EmailVerified: false, ID: userID,
@@ -2996,7 +2996,7 @@ func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "shell", PasswordHash: password.PlaceholderHash,
-		DisplayName: "Shell", EmailVerified: false, PasswordSet: false, IsAdmin: true,
+		DisplayName: "Shell", EmailVerified: false, FirstCredentialExempt: false, IsAdmin: true,
 	}))
 	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
@@ -3048,7 +3048,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "reauth-badjson", PasswordHash: password.PlaceholderHash,
-		DisplayName: "Reauth", PasswordSet: false, IsAdmin: true,
+		DisplayName: "Reauth", FirstCredentialExempt: false, IsAdmin: true,
 	}))
 	credRow := id.Generate()
 	encPub, keyVersion, encErr := wa.EncryptPublicKey(credRow, []byte("pubkey"))
@@ -3118,7 +3118,7 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 	userID := id.Generate()
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "pkonly", PasswordHash: password.PlaceholderHash,
-		DisplayName: "PK Only", PasswordSet: false, IsAdmin: true,
+		DisplayName: "PK Only", FirstCredentialExempt: false, IsAdmin: true,
 	}))
 	// A REAL credential row: BeginRegistration lists the user's passkeys to
 	// build excludeCredentials, so it decrypts every stored public key.
@@ -3229,7 +3229,7 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID: userID, Username: "solouser", PasswordHash: hash, DisplayName: "Solo", PasswordSet: true, IsAdmin: true,
+		ID: userID, Username: "solouser", PasswordHash: hash, DisplayName: "Solo", FirstCredentialExempt: true, IsAdmin: true,
 	}))
 	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)

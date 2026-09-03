@@ -1,11 +1,12 @@
+import type { LucideProps } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
 import type { IconSizeName } from '~/components/common/Icon'
 import type { PathFlavor } from '~/lib/paths'
 import type { DiffStats } from '~/stores/repoGit'
-import FolderSymlink from 'lucide-solid/icons/folder-symlink'
 import GitBranch from 'lucide-solid/icons/git-branch'
-import { Show } from 'solid-js'
+import { Show, splitProps } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { SvgIconFrame } from '~/components/common/SvgIconFrame'
 import { Tooltip } from '~/components/common/Tooltip'
 import { DiffStatsBadge } from '~/components/tree/gitStatusUtils'
 import { tildify } from '~/lib/paths'
@@ -97,23 +98,64 @@ export interface WorkingTreeIconProps extends WorkingTreeKind {
 }
 
 /**
+ * lucide's `git-branch`, with both nodes solid.
+ *
+ * It is redrawn rather than imported because the fill goes on the two circles,
+ * and a lucide icon takes no attribute for one element of its own path list.
+ * The path data is lucide's, unchanged, so the two glyphs align exactly: filled
+ * nodes are the ONLY difference a reader sees between them.
+ *
+ * The stroke and the fill read one paint, because `SvgIconFrame` resolves
+ * `color` for the stroke alone. Two spellings of the same colour here are a
+ * divergence that shows up only under a caller that passes `color`, and that
+ * caller would see an outline in the colour it asked for around nodes in the
+ * inherited text colour.
+ */
+function GitBranchFilled(props: LucideProps) {
+  const [local, rest] = splitProps(props, ['color'])
+  const paint = () => local.color ?? 'currentColor'
+  return (
+    <SvgIconFrame color={paint()} {...rest}>
+      <path d="M15 6a9 9 0 0 0-9 9V3" />
+      <circle cx="18" cy="6" r="3" fill={paint()} />
+      <circle cx="6" cy="18" r="3" fill={paint()} />
+    </SvgIconFrame>
+  )
+}
+
+/**
  * The glyph that tells the two kinds apart at a glance.
  *
- * `FolderSymlink` for a linked worktree, because that is literally what one is
- * -- a directory whose `.git` is a file pointing back into the main repository.
- * `GitBranch` stays with the main working tree. The repo group row above them
- * uses `FolderGit`, which neither of these can be mistaken for.
+ * One silhouette, two weights: `GitBranch` for the main working tree, and the
+ * same branch with solid nodes for a linked worktree. A worktree IS that branch
+ * -- checked out a second time, in a directory of its own -- so the pair reads
+ * as one thing in two states, and a reader learns no second shape.
+ *
+ * The pair must separate at 14px in the sidebar branch row and at 12px in the
+ * composer chip, which is what rules the alternatives out. A mark added to the
+ * branch tip -- a chevron, a square, a small folder, a dashed trunk -- vanishes
+ * at both sizes. Any folder shape repeats the `FolderGit` silhouette that the
+ * repo group row one level up already draws, which is the defect `FolderSymlink`
+ * had here. Fill is the one difference that survives 12px.
+ *
+ * `GitBranchPlus` is not this glyph, although it looks like the obvious choice.
+ * A plus means "create": lucide ships `GitBranchPlus` and `GitBranchMinus` as
+ * the create/delete pair, this app has a Create worktree action that wants it
+ * (`GitMode.CreateWorktree`), and `ComposerPlusMenu` renders this glyph beside
+ * a literal `Plus`. The plus is also a smudge at 14px.
  */
 export const WorkingTreeIcon: Component<WorkingTreeIconProps> = props => (
   <Icon
-    icon={props.isWorktree ? FolderSymlink : GitBranch}
+    icon={props.isWorktree ? GitBranchFilled : GitBranch}
     size={props.size}
     class={props.class}
     data-testid={props.isWorktree ? 'worktree-icon' : 'branch-icon'}
     // A CONDITIONAL SPREAD, never `role={props.label ? 'img' : undefined}`.
-    // lucide-solid decides `aria-hidden` by testing whether a `role`/`aria-*`
-    // key is PRESENT, not by its value, so a `role: undefined` key drops the
-    // automatic `aria-hidden="true"` and puts every decorative glyph into the
+    // Both glyphs decide `aria-hidden` by testing whether a `role`/`aria-*` key
+    // is PRESENT, not by its value -- lucide-solid for `GitBranch`, and
+    // `SvgIconFrame` for the filled fork, which copies lucide's rule so the two
+    // behave alike. A `role: undefined` key drops the automatic
+    // `aria-hidden="true"` and puts every decorative glyph into the
     // accessibility tree with no name.
     {...(props.label ? { 'role': 'img', 'aria-label': props.label } : {})}
   />

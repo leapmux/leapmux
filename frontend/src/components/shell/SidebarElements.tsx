@@ -2,7 +2,7 @@ import type { Accessor, JSX } from 'solid-js'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
-import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
+import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -72,8 +72,8 @@ export interface SidebarElementsOpts {
   tabItemOps?: TabItemOps
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
   getTileOrderForWorkspace: (workspaceId: string) => readonly string[]
-  onChangeBranch?: (ref: BranchRef) => void
-  onDeleteBranch?: (ref: BranchRef) => void
+  /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
+  branchActions?: BranchRefActions
 }
 
 interface SidebarDisplayOpts {

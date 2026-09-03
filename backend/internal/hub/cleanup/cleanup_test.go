@@ -65,7 +65,7 @@ func TestRun_CleansUpOldRecords(t *testing.T) {
 	require.NoError(t, err)
 	err = st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "testuser",
-		PasswordHash: hash, DisplayName: "Test", PasswordSet: true,
+		PasswordHash: hash, DisplayName: "Test", FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 
@@ -94,7 +94,7 @@ func TestRun_RetainsRecentlyDeleted(t *testing.T) {
 	require.NoError(t, err)
 	err = st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "testuser",
-		PasswordHash: hash, DisplayName: "Test", PasswordSet: true,
+		PasswordHash: hash, DisplayName: "Test", FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 	err = st.Users().Delete(ctx, userID)
@@ -247,11 +247,11 @@ func TestRun_DeletesExpiredWebAuthnSessions(t *testing.T) {
 	liveUserID := id.Generate()
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: expiredUserID, Username: "wauser-expired",
-		PasswordHash: hash, DisplayName: "WA Expired", PasswordSet: true,
+		PasswordHash: hash, DisplayName: "WA Expired", FirstCredentialExempt: true,
 	}))
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: liveUserID, Username: "wauser-live",
-		PasswordHash: hash, DisplayName: "WA Live", PasswordSet: true,
+		PasswordHash: hash, DisplayName: "WA Live", FirstCredentialExempt: true,
 	}))
 
 	expiredID := id.Generate()
@@ -298,7 +298,7 @@ func TestRun_DeletesAPITokensPastBothDeadlines(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, st.Users().Create(ctx, store.CreateUserParams{
 		ID: userID, Username: "tokenuser",
-		PasswordHash: hash, DisplayName: "Token", PasswordSet: true,
+		PasswordHash: hash, DisplayName: "Token", FirstCredentialExempt: true,
 	}))
 	owner := userid.MustNew(userID)
 

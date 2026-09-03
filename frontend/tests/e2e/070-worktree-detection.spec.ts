@@ -41,7 +41,7 @@ test.describe('Worktree Detection', () => {
 
     // Verify git mode radio options are not visible
     await expect(page.getByText('Use current state')).not.toBeVisible()
-    await expect(page.getByText('Create new worktree')).not.toBeVisible()
+    await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -72,7 +72,7 @@ test.describe('Worktree Detection', () => {
 
     // Verify git mode radio options are not visible (even though it's inside a git repo)
     await expect(page.getByText('Use current state')).not.toBeVisible()
-    await expect(page.getByText('Create new worktree')).not.toBeVisible()
+    await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -94,9 +94,9 @@ test.describe('Worktree Detection', () => {
 
     // All five radio options should appear
     await expect(page.getByText('Use current state')).toBeVisible()
-    await expect(page.getByText('Switch to branch')).toBeVisible()
-    await expect(page.getByText('Create new branch')).toBeVisible()
-    await expect(page.getByText('Create new worktree')).toBeVisible()
+    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
+    await expect(page.getByText('Create new branch', { exact: true })).toBeVisible()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
     await expect(page.getByText('Use existing worktree')).toBeVisible()
 
     // Default should be "Use current state" — branch name input should NOT be visible
@@ -104,14 +104,14 @@ test.describe('Worktree Detection', () => {
     await expect(page.getByText('Worktree path:')).not.toBeVisible()
 
     // Select "Create new branch" — sub-controls should appear (branch name + base, no worktree path)
-    await page.getByText('Create new branch').click()
+    await page.getByText('Create new branch', { exact: true }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByText('Branch Name')).toBeVisible()
     await expect(dialog.getByText('Base Branch')).toBeVisible()
     await expect(page.getByText('Worktree path:')).not.toBeVisible()
 
     // Select "Create new worktree" — sub-controls should appear
-    await page.getByText('Create new worktree').click()
+    await page.getByText('Create new worktree', { exact: true }).click()
     await expect(dialog.getByText('Branch Name')).toBeVisible()
     await expect(page.getByText('Worktree path:')).toBeVisible()
 
@@ -137,8 +137,8 @@ test.describe('Worktree Detection', () => {
     await setWorkingDir(page, repoDir)
 
     await expect(page.getByText('Use current state')).toBeVisible()
-    await expect(page.getByText('Create new branch')).toBeVisible()
-    await expect(page.getByText('Create new worktree')).toBeVisible()
+    await expect(page.getByText('Create new branch', { exact: true })).toBeVisible()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -167,8 +167,8 @@ test.describe('Worktree Detection', () => {
     await setWorkingDir(page, repoDir)
 
     await expect(page.getByText('Use current state')).toBeVisible()
-    await expect(page.getByText('Create new branch')).toBeVisible()
-    await expect(page.getByText('Create new worktree')).toBeVisible()
+    await expect(page.getByText('Create new branch', { exact: true })).toBeVisible()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -201,7 +201,7 @@ test.describe('Worktree Detection', () => {
 
     // Git mode radio options should appear for an existing worktree root
     await expect(page.getByText('Use current state')).toBeVisible()
-    await expect(page.getByText('Create new worktree')).toBeVisible()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -290,8 +290,8 @@ test.describe('Worktree Detection', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible()
-    await page.getByText('Create new worktree').click()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
+    await page.getByText('Create new worktree', { exact: true }).click()
 
     // Warning about uncommitted changes should be visible
     await expect(page.getByText('uncommitted changes that will not be transferred')).toBeVisible()

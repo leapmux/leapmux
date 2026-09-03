@@ -14,7 +14,7 @@ package userid
 // deletes reach it through store.FilterTabIndexKeys.
 //
 // It lives HERE rather than in internal/hub/store because the worker process
-// binds owner columns too (worker_file_tabs is keyed by (user_id, tab_id)) and
+// binds owner columns too (worker_tab_payloads is keyed by (user_id, tab_id)) and
 // does not -- must not -- import the hub store. A guard the worker cannot call
 // is a guard the repo-wide audit in internal/audit could only enforce over half
 // the queries it scans; that is precisely the blind spot that let an owner-blind

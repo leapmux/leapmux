@@ -3,6 +3,7 @@ import type { TileActions } from './TileActionsMenu'
 import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { GuardedDragRow } from '~/lib/dragRow'
 import type { Tab } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
@@ -17,19 +18,21 @@ import X from 'lucide-solid/icons/x'
 import { createEffect, createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DragHandle } from '~/components/common/DragHandle'
-import { createContextMenuAnchor, DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
+import { createContextMenuAnchor, DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { NewTabMenuItems } from '~/components/common/NewTabMenuItems'
+import { providerButton } from '~/components/common/NewTabMenuItems.css'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
-import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { shortcutHint } from '~/lib/shortcuts/display'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isTerminalTab } from '~/stores/tab.types'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -71,13 +74,16 @@ function terminalStatusOf(tab: Tab): TerminalStatus | undefined {
   return isTerminalTab(tab) ? tab.status : undefined
 }
 
+/**
+ * The token this row publishes as `data-tab-type`.
+ *
+ * GENERATED from contracts/tab-types.json, shared with the Go side that spells
+ * the same tokens on the command line. It was a hand-written switch, and a kind
+ * missing from it does not fail to compile -- it publishes a token no E2E
+ * locator matches, which reads as a mystified selector rather than an error.
+ */
 function tabTypeLabel(type: TabType): string {
-  switch (type) {
-    case TabType.AGENT: return 'agent'
-    case TabType.TERMINAL: return 'terminal'
-    case TabType.FILE: return 'file'
-    default: return 'unknown'
-  }
+  return TAB_TYPE_WIRE_TOKEN[type] || 'unknown'
 }
 
 /** New-tab actions surfaced by the Plus button and overflow menu. */
@@ -115,7 +121,15 @@ interface TabBarProps {
   tileId: string
   tabs: Tab[]
   activeTabKey: string | null
-  readOnly?: boolean
+  /**
+   * The workspace these tabs belong to is archived, so the strip offers no
+   * mutation: no close (except a payload-backed tab -- see `canCloseTab`), no
+   * rename, and no middle-click close.
+   *
+   * Was `readOnly`. Archival is the only thing that blocks mutation, so the two
+   * were one concept under two names; the sidebar tree carries the same flag.
+   */
+  archived?: boolean
   closingTabKeys?: Set<string>
   isEditingRef?: (fn: () => boolean) => void
   onSelect: (tab: Tab) => void
@@ -320,7 +334,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const renderTabRow = (tab: () => Tab, dnd: TabRowDnd | undefined, surface: TabRowSurface) => {
     const row = dnd?.row
     const isClosing = () => props.closingTabKeys?.has(tabKey(tab())) ?? false
-    const canRename = () => tab().type !== TabType.FILE && !props.readOnly
+    const canRename = () => canRenameTab(props.archived, tab())
     // Suppress the click that fires on pointerup after a drag: dropping a row
     // back on itself must not also select it (and on the sheet, close it).
     let wasDragging = false
@@ -383,7 +397,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
             {...terminalProgressBarProps(tab())}
           />
         </Show>
-        <Show when={canCloseTab(props.readOnly, tab())}>
+        <Show when={canCloseTab(props.archived, tab())}>
           <IconButton
             icon={X}
             class={styles.tabClose}
@@ -405,7 +419,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           contextMenuFor={dnd?.rowEl}
           data-testid={surface.menuTestId}
           onRename={canRename() ? () => startEditing(tab()) : undefined}
-          onClose={canCloseTab(props.readOnly, tab()) ? () => props.onClose(tab()) : undefined}
+          onClose={canCloseTab(props.archived, tab()) ? () => props.onClose(tab()) : undefined}
           isClosing={isClosing()}
           pop={props.tabPop?.(tab())}
         />
@@ -432,7 +446,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
     onAuxClick: (e: MouseEvent) => {
       if (e.button === 1) {
         e.preventDefault()
-        if ((props.readOnly && tab().type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab())))
+        if (!canCloseTab(props.archived, tab()) || props.closingTabKeys?.has(tabKey(tab())))
           return
         props.onClose(tab())
       }
@@ -440,7 +454,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
     onDblClick: (e: MouseEvent) => {
       e.preventDefault()
       e.stopPropagation()
-      if (tab().type !== TabType.FILE && !props.readOnly)
+      if (canRenameTab(props.archived, tab()))
         startEditing(tab())
     },
   })
@@ -462,48 +476,20 @@ export const TabBar: Component<TabBarProps> = (props) => {
   // Shared menu items for "More options" (used in full, collapsed-new-tab, and collapsed-overflow menus)
   const renderMoreMenuItems = () => (
     <>
-      <li class={menuSectionHeader}>Agents</li>
-      <Show when={props.newTab.availableProviders?.length}>
-        <li class={styles.providerIconsRow}>
-          <For each={props.newTab.availableProviders}>
-            {provider => (
-              <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
-                <button
-                  type="button"
-                  class={styles.providerButton}
-                  onClick={() => handleNewAgent(provider)}
-                >
-                  <AgentProviderIcon provider={provider} size={16} />
-                </button>
-              </TabBarTooltip>
-            )}
-          </For>
-        </li>
-      </Show>
-      <button role="menuitem" onClick={() => props.newTab.onNewAgentAdvanced?.()}>
-        <DropdownMenuItemContent
-          label="New agent..."
-          shortcut={getShortcutHintsText('app.newAgentDialog')}
-        />
-      </button>
-      <hr />
-      <li class={menuSectionHeader}>Terminals</li>
-      <button role="menuitem" onClick={() => props.newTab.onNewTerminalAdvanced?.()}>
-        <DropdownMenuItemContent
-          label="New terminal..."
-          shortcut={getShortcutHintsText('app.newTerminalDialog')}
-        />
-      </button>
-      <For each={props.newTab.availableShells ?? []}>
-        {shell => (
-          <button role="menuitem" onClick={() => props.newTab.onNewTerminalWithShell?.(shell)}>
-            <code>{shell}</code>
-            <Show when={shell === props.newTab.defaultShell}>
-              <span class={styles.shellDefault}>(default)</span>
-            </Show>
-          </button>
-        )}
-      </For>
+      {/* `shortcuts`: these items act on the CURRENT tab context, which is
+          exactly what app.newAgent / app.newAgentDialog do, so the hints are
+          true here. The branch context menu renders the same block WITHOUT
+          them, because there the items act on that branch instead. */}
+      <NewTabMenuItems
+        shortcuts
+        availableProviders={props.newTab.availableProviders}
+        availableShells={props.newTab.availableShells}
+        defaultShell={props.newTab.defaultShell}
+        onNewAgent={handleNewAgent}
+        onNewAgentAdvanced={() => props.newTab.onNewAgentAdvanced?.()}
+        onNewTerminalWithShell={shell => props.newTab.onNewTerminalWithShell?.(shell)}
+        onNewTerminalAdvanced={() => props.newTab.onNewTerminalAdvanced?.()}
+      />
       <hr />
       <li class={menuSectionHeader}>Advanced</li>
       <DropdownMenuCheckableItem
@@ -627,7 +613,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                         >
                           <button
                             type="button"
-                            class={styles.providerButton}
+                            class={providerButton}
                             data-testid={`new-agent-button-${provider}`}
                             onClick={() => handleNewAgent(provider)}
                           >

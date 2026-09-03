@@ -1,6 +1,6 @@
 import { createEffect, createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
+import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { flush } from '~/test-support/async'
 
 describe('createDialogState', () => {
@@ -233,83 +233,5 @@ describe('createDialogState', () => {
         dispose()
       })
     })
-  })
-})
-
-describe('createToggleDialog', () => {
-  it('starts closed: isOpen is false', () => {
-    createRoot((dispose) => {
-      const d = createToggleDialog()
-      expect(d.isOpen()).toBe(false)
-      dispose()
-    })
-  })
-
-  it('open()/close() flips isOpen', () => {
-    createRoot((dispose) => {
-      const d = createToggleDialog()
-      d.open()
-      expect(d.isOpen()).toBe(true)
-      d.close()
-      expect(d.isOpen()).toBe(false)
-      dispose()
-    })
-  })
-
-  it('open() is idempotent (no spurious flicker if called twice)', async () => {
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const d = createToggleDialog()
-        const observed: boolean[] = []
-        createEffect(() => {
-          observed.push(d.isOpen())
-        })
-        await flush()
-        d.open()
-        await flush()
-        d.open()
-        await flush()
-        // Solid skips effect re-runs when the new signal value equals
-        // the old via `===`. The second open() must not push another
-        // `true` into observed.
-        expect(observed).toEqual([false, true])
-        dispose()
-        done()
-      })
-    })
-  })
-
-  it('isOpen is reactive', async () => {
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const d = createToggleDialog()
-        const seen: boolean[] = []
-        createEffect(() => {
-          seen.push(d.isOpen())
-        })
-        await flush()
-        d.open()
-        await flush()
-        d.close()
-        await flush()
-        expect(seen).toEqual([false, true, false])
-        dispose()
-        done()
-      })
-    })
-  })
-
-  it('the two handle types are interchangeable as function-shaped values', () => {
-    // AppShell wires both ToggleDialogState and DialogState<T> into the
-    // same `dialogs` record; consumers must be able to call .open() / .close()
-    // without runtime errors regardless of which shape they received.
-    const toggle = createToggleDialog()
-    const stateful = createDialogState<{ id: string }>()
-    const close = vi.fn()
-    close.mockImplementation(toggle.close)
-    close()
-    close.mockImplementation(stateful.close)
-    close()
-    expect(close).toHaveBeenCalledTimes(2)
   })
 })

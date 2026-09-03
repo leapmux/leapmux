@@ -38,6 +38,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"golang.org/x/sync/errgroup"
 )
@@ -93,40 +94,28 @@ type Inputs struct {
 	flagSet *flag.FlagSet
 }
 
-// ParseTabType converts a user-facing flag / env value to the wire
-// enum. Accepts both the short form ("agent" / "terminal" / "file" /
-// "") and the proto-canonical form ("TAB_TYPE_AGENT" /
-// "TAB_TYPE_TERMINAL" / "TAB_TYPE_FILE" / "TAB_TYPE_UNSPECIFIED") so
-// callers can paste a value straight from JSON output back into a
-// flag or env var. Unknown strings return ok=false so callers can
-// surface invalid_request.
+// ParseTabType converts a user-facing flag / env value to the wire enum.
+//
+// Both spellings are accepted -- the short token ("agent", "file", "") and the
+// proto-canonical name ("TAB_TYPE_FILE") -- so a value pasted straight out of a
+// JSON envelope goes back into a flag or an env var unchanged. Unknown strings
+// return ok=false so callers can surface invalid_request.
+//
+// The table is GENERATED from contracts/tab-types.json. It used to be a switch
+// here and a second switch in TabTypeWireName, and the two were the inverse of
+// each other only by hand: a kind added to one and missed by the other made the
+// contradiction message below print two empty strings.
 func ParseTabType(s string) (leapmuxv1.TabType, bool) {
-	switch s {
-	case "", "TAB_TYPE_UNSPECIFIED":
-		return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, true
-	case "agent", "TAB_TYPE_AGENT":
-		return leapmuxv1.TabType_TAB_TYPE_AGENT, true
-	case "terminal", "TAB_TYPE_TERMINAL":
-		return leapmuxv1.TabType_TAB_TYPE_TERMINAL, true
-	case "file", "TAB_TYPE_FILE":
-		return leapmuxv1.TabType_TAB_TYPE_FILE, true
-	default:
-		return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, false
-	}
+	t, ok := contracts.TabTypeParseAliases[s]
+	return t, ok
 }
 
-// TabTypeWireName returns the user-facing string ("agent" /
-// "terminal" / "") for a wire TabType. Mirrors the ParseTabType
-// inverse and is used by env-var comparison and help text.
+// TabTypeWireName returns the token a user types and reads for a wire TabType,
+// or "" for the unspecified zero value. It is the inverse of ParseTabType by
+// CONSTRUCTION now: both read the one generated table, so neither can name a
+// kind the other does not.
 func TabTypeWireName(t leapmuxv1.TabType) string {
-	switch t {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		return "agent"
-	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return "terminal"
-	default:
-		return ""
-	}
+	return contracts.TabTypeWireToken[t]
 }
 
 // Resolved is the post-derivation snapshot. Every field populated by
@@ -228,8 +217,8 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		parsed, ok := ParseTabType(in.TabType)
 		if !ok {
 			return Resolved{}, invalidArg(
-				"unknown --tab-type value %q; want \"agent\" or \"terminal\"",
-				in.TabType,
+				"unknown --tab-type value %q; want one of %s",
+				in.TabType, contracts.TabTypeAcceptedTokens,
 			)
 		}
 		tabType = parsed
@@ -239,8 +228,8 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		parsed, ok := ParseTabType(in.TabType)
 		if !ok {
 			return Resolved{}, invalidArg(
-				"unknown --tab-type value %q; want \"agent\" or \"terminal\"",
-				in.TabType,
+				"unknown --tab-type value %q; want one of %s",
+				in.TabType, contracts.TabTypeAcceptedTokens,
 			)
 		}
 		if parsed != tabType {

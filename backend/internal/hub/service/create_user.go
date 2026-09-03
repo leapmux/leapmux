@@ -39,29 +39,29 @@ const maxAccountRecoveryAttempts = 5
 
 // CreateUserParams holds the parameters for creating a new user.
 type CreateUserParams struct {
-	Username      string
-	PasswordHash  string
-	DisplayName   string
-	Email         string
-	EmailVerified bool
-	PasswordSet   bool
-	IsAdmin       bool
+	Username              string
+	PasswordHash          string
+	DisplayName           string
+	Email                 string
+	EmailVerified         bool
+	FirstCredentialExempt bool
+	IsAdmin               bool
 }
 
 // createUserTxParams describes one account creation. Extra runs inside the
 // same transaction after the user row exists, so a flavor-specific artifact
 // (a passkey credential, an OAuth link) commits with the account.
 type createUserTxParams struct {
-	userID        string // empty: generated here
-	username      string
-	displayName   string
-	email         string // direct email column value
-	emailVerified bool
-	pendingEmail  string // non-empty: stored as the pending verification row
-	passwordHash  string
-	passwordSet   bool
-	isAdmin       bool
-	extra         func(tx store.Store) error
+	userID                string // empty: generated here
+	username              string
+	displayName           string
+	email                 string // direct email column value
+	emailVerified         bool
+	pendingEmail          string // non-empty: stored as the pending verification row
+	passwordHash          string
+	firstCredentialExempt bool
+	isAdmin               bool
+	extra                 func(tx store.Store) error
 	// now is the CALLER's clock seam, and this transaction mints the pending
 	// verification row from it. Every instant a service mints comes from
 	// that seam (see clockSeam), and this one did not: it read the wall clock
@@ -134,14 +134,14 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 			return fmt.Errorf("generated empty user id")
 		}
 		if err := tx.Users().Create(ctx, store.CreateUserParams{
-			ID:            userID,
-			Username:      opt.username,
-			PasswordHash:  opt.passwordHash,
-			DisplayName:   opt.displayName,
-			Email:         opt.email,
-			EmailVerified: opt.emailVerified,
-			PasswordSet:   opt.passwordSet,
-			IsAdmin:       opt.isAdmin,
+			ID:                    userID,
+			Username:              opt.username,
+			PasswordHash:          opt.passwordHash,
+			DisplayName:           opt.displayName,
+			Email:                 opt.email,
+			EmailVerified:         opt.emailVerified,
+			FirstCredentialExempt: opt.firstCredentialExempt,
+			IsAdmin:               opt.isAdmin,
 		}); err != nil {
 			return fmt.Errorf("create user: %w", err)
 		}
@@ -200,13 +200,13 @@ func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store
 	// The admin pending-email promotion and the competing-pending-email
 	// clear both live in createUserInTx, so every sign-up flavor gets them.
 	user, _, err := createUserInTx(ctx, st, createUserTxParams{
-		username:      p.Username,
-		displayName:   p.DisplayName,
-		email:         p.Email,
-		emailVerified: p.EmailVerified,
-		passwordHash:  p.PasswordHash,
-		passwordSet:   p.PasswordSet,
-		isAdmin:       p.IsAdmin,
+		username:              p.Username,
+		displayName:           p.DisplayName,
+		email:                 p.Email,
+		emailVerified:         p.EmailVerified,
+		passwordHash:          p.PasswordHash,
+		firstCredentialExempt: p.FirstCredentialExempt,
+		isAdmin:               p.IsAdmin,
 	})
 	if err != nil {
 		return nil, err

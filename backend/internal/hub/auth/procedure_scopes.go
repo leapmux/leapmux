@@ -344,9 +344,9 @@ var procedureScopes = map[string]ScopeRequirement{
 	leapmuxv1connect.ControlIPCServiceCancelProcedure:                      ScopeNotHubServed,
 	leapmuxv1connect.ControlIPCServiceWhoamiProcedure:                      ScopeNotHubServed,
 	leapmuxv1connect.WorkerPrivateServiceWatchWorkerPrivateEventsProcedure: ScopeNotHubServed,
-	leapmuxv1connect.WorkerPrivateServiceRegisterFileTabPathProcedure:      ScopeNotHubServed,
-	leapmuxv1connect.WorkerPrivateServiceGetFileTabPathProcedure:           ScopeNotHubServed,
-	leapmuxv1connect.WorkerPrivateServiceRevokeFileTabPathProcedure:        ScopeNotHubServed,
+	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:       ScopeNotHubServed,
+	leapmuxv1connect.WorkerPrivateServiceGetTabPayloadProcedure:            ScopeNotHubServed,
+	leapmuxv1connect.WorkerPrivateServiceRevokeTabPayloadProcedure:         ScopeNotHubServed,
 }
 
 // ScopeRequirementFor returns what a procedure demands of a scoped credential.

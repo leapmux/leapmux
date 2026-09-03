@@ -28,11 +28,11 @@ func createSimpleUser(t *testing.T, st store.Store, username, email string) *sto
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	user, err := CreateUser(context.Background(), st, CreateUserParams{
-		Username:     username,
-		PasswordHash: hash,
-		DisplayName:  username,
-		Email:        email,
-		PasswordSet:  true,
+		Username:              username,
+		PasswordHash:          hash,
+		DisplayName:           username,
+		Email:                 email,
+		FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 	return user
@@ -58,11 +58,11 @@ func TestCreateUser_CreatesOneUserRowAndNoWorkspaces(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	user, err := CreateUser(ctx, st, CreateUserParams{
-		Username:     "solo-user",
-		PasswordHash: hash,
-		DisplayName:  "Solo",
-		Email:        "solo@example.com",
-		PasswordSet:  true,
+		Username:              "solo-user",
+		PasswordHash:          hash,
+		DisplayName:           "Solo",
+		Email:                 "solo@example.com",
+		FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, user.ID)
@@ -138,10 +138,10 @@ func TestCreateUser_SectionFailureRollsBackTheUserRow(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	_, err = CreateUser(ctx, failingSectionsStore{Store: st}, CreateUserParams{
-		Username:     "rollback",
-		PasswordHash: hash,
-		DisplayName:  "Rollback",
-		PasswordSet:  true,
+		Username:              "rollback",
+		PasswordHash:          hash,
+		DisplayName:           "Rollback",
+		FirstCredentialExempt: true,
 	})
 	require.Error(t, err, "the injected section failure must surface")
 
@@ -164,10 +164,10 @@ func TestCreateUser_FailedSignupLeavesNoSections(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	_, err = CreateUser(ctx, st, CreateUserParams{
-		Username:     "taken",
-		PasswordHash: hash,
-		DisplayName:  "Second",
-		PasswordSet:  true,
+		Username:              "taken",
+		PasswordHash:          hash,
+		DisplayName:           "Second",
+		FirstCredentialExempt: true,
 	})
 	require.Error(t, err, "a duplicate username must fail")
 
@@ -202,11 +202,11 @@ func TestCreateUser_DuplicateUsernameErrorIsNotDoublePrefixed(t *testing.T) {
 	hash, err := password.Hash("testpass")
 	require.NoError(t, err)
 	_, err = CreateUser(ctx, st, CreateUserParams{
-		Username:     "dupe-user",
-		PasswordHash: hash,
-		DisplayName:  "Dupe",
-		Email:        "second@example.com",
-		PasswordSet:  true,
+		Username:              "dupe-user",
+		PasswordHash:          hash,
+		DisplayName:           "Dupe",
+		Email:                 "second@example.com",
+		FirstCredentialExempt: true,
 	})
 	require.Error(t, err)
 	require.ErrorIs(t, err, store.ErrConflict, "a duplicate username must still classify as a conflict")
@@ -297,11 +297,11 @@ func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
 	// User B signs up with that email directly.
 	hash, _ := password.Hash("testpass")
 	_, err = CreateUser(ctx, st, CreateUserParams{
-		Username:     "user-b",
-		PasswordHash: hash,
-		DisplayName:  "User B",
-		Email:        "race@example.com",
-		PasswordSet:  true,
+		Username:              "user-b",
+		PasswordHash:          hash,
+		DisplayName:           "User B",
+		Email:                 "race@example.com",
+		FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 
@@ -386,7 +386,7 @@ func TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam(t *testing.T) {
 
 	user, code, err := createUserInTx(ctx, st, createUserTxParams{
 		username: "seamed", displayName: "Seamed",
-		pendingEmail: "seamed@example.com", passwordHash: "hash", passwordSet: true,
+		pendingEmail: "seamed@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		now: func() time.Time { return fixed },
 	})
 	require.NoError(t, err)
@@ -415,7 +415,7 @@ func TestVerifyPendingEmailToken_ReadsTheCallerSeam(t *testing.T) {
 
 	user, code, err := createUserInTx(ctx, st, createUserTxParams{
 		username: "expiring", displayName: "Expiring",
-		pendingEmail: "expiring@example.com", passwordHash: "hash", passwordSet: true,
+		pendingEmail: "expiring@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		now: func() time.Time { return issuedAt },
 	})
 	require.NoError(t, err)
@@ -457,7 +457,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
 			username: "unforced-admin", displayName: "Unforced", isAdmin: true,
 			email: "admin@example.com", emailVerified: false,
-			passwordHash: "hash", passwordSet: true,
+			passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
 		assert.False(t, user.EmailVerified, "nobody confirmed this address, so the column says so")
@@ -474,7 +474,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
 			username: "promoted-admin", displayName: "Promoted", isAdmin: true,
 			email: "", pendingEmail: "admin@example.com",
-			passwordHash: "hash", passwordSet: true,
+			passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "admin@example.com", user.Email)
@@ -497,7 +497,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		st := setupCreateUserTestDB(t)
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
 			username: "pending-user", displayName: "Pending",
-			pendingEmail: "user@example.com", passwordHash: "hash", passwordSet: true,
+			pendingEmail: "user@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
 		assert.Empty(t, user.Email)
@@ -514,7 +514,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		st := setupCreateUserTestDB(t)
 		loser, _, err := createUserInTx(ctx, st, createUserTxParams{
 			username: "loser", displayName: "Loser",
-			pendingEmail: "contested@example.com", passwordHash: "hash", passwordSet: true,
+			pendingEmail: "contested@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
 		require.Equal(t, "contested@example.com", loser.PendingEmail)
@@ -522,7 +522,7 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		_, _, err = createUserInTx(ctx, st, createUserTxParams{
 			username: "winner", displayName: "Winner",
 			email: "contested@example.com", emailVerified: true,
-			passwordHash: "hash", passwordSet: true,
+			passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
 

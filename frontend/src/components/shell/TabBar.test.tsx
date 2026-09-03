@@ -5,6 +5,7 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { loadBrowserPrefs, localStorageClearForTests } from '~/lib/browserStorage'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
@@ -163,7 +164,6 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   newTabWrapper: 'newTabWrapper',
   collapsedNewTab: 'collapsedNewTab',
   collapsedOverflow: 'collapsedOverflow',
-  shellDefault: 'shellDefault',
   tabChip: 'tabChip',
   mobileBarSpacer: 'mobileBarSpacer',
   mobileClippedLabel: 'mobileClippedLabel',
@@ -238,7 +238,7 @@ afterEach(() => {
   unbindAll()
 })
 
-describe('tabBar readOnly prop', () => {
+describe('tabBar archived prop', () => {
   it('shows shortcut hints on dialog menu items', () => {
     activateBindings(WORKSPACE_KEYBINDINGS, 'workspace')
     render(() => (
@@ -254,7 +254,52 @@ describe('tabBar readOnly prop', () => {
     expect(screen.getAllByRole('menuitem', { name: /New terminal\.\.\.Ctrl\+Shift\+T/ }).length).toBeGreaterThan(0)
   })
 
-  it('shows close button for all tab types when readOnly is false', () => {
+  // The Agents and Terminals sections come from the shared NewTabMenuItems
+  // block, which the branch context menu renders too. What is TabBar's own is
+  // the routing: a glyph in the menu opens on the CURRENT tab context, and it
+  // records the MRU that orders the strip's own two buttons.
+  it('opens the clicked provider from the more-menu on the current context', async () => {
+    const onNewAgent = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          newTab={{ ...defaultProps.newTab, availableProviders: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX], onNewAgent }}
+        />
+      </PreferencesProvider>
+    ))
+
+    // The mocked DropdownMenu renders every variant's children inline, so the
+    // glyph exists once per menu host — click the first.
+    await fireEvent.click(screen.getAllByTestId(`menu-new-agent-${AgentProvider.CODEX}`)[0])
+
+    expect(onNewAgent).toHaveBeenCalledWith(AgentProvider.CODEX)
+  })
+
+  it('lists the worker\'s shells in the more-menu and opens the clicked one', async () => {
+    const onNewTerminalWithShell = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          newTab={{
+            ...defaultProps.newTab,
+            availableProviders: [],
+            availableShells: ['/bin/zsh', '/bin/bash'],
+            defaultShell: '/bin/zsh',
+            onNewTerminalWithShell,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByText('/bin/zsh')[0].closest('button')?.textContent).toContain('(default)')
+    await fireEvent.click(screen.getAllByText('/bin/bash')[0])
+
+    expect(onNewTerminalWithShell).toHaveBeenCalledWith('/bin/bash')
+  })
+
+  it('shows close button for all tab types when archived is false', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
       makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
@@ -265,7 +310,7 @@ describe('tabBar readOnly prop', () => {
         <TabBar
           {...defaultProps}
           tabs={tabs}
-          readOnly={false}
+          archived={false}
         />
       </PreferencesProvider>
     ))
@@ -283,14 +328,14 @@ describe('tabBar readOnly prop', () => {
           {...defaultProps}
           tabs={tabs}
           closingTabKeys={new Set([`${TabType.AGENT}:a1`])}
-          readOnly={false}
+          archived={false}
         />
       </PreferencesProvider>
     ))
     expect(screen.getByTestId('tab-close')).toBeDisabled()
   })
 
-  it('hides close button for agent and terminal tabs when readOnly is true', () => {
+  it('hides close button for agent and terminal tabs when archived is true', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
       makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
@@ -300,7 +345,7 @@ describe('tabBar readOnly prop', () => {
         <TabBar
           {...defaultProps}
           tabs={tabs}
-          readOnly={true}
+          archived={true}
         />
       </PreferencesProvider>
     ))
@@ -308,7 +353,7 @@ describe('tabBar readOnly prop', () => {
     expect(closeButtons).toHaveLength(0)
   })
 
-  it('shows close button for file tabs when readOnly is true', () => {
+  it('shows close button for file tabs when archived is true', () => {
     const tabs = [
       makeTab(TabType.FILE, 'f1', 'readme.md'),
     ]
@@ -317,7 +362,7 @@ describe('tabBar readOnly prop', () => {
         <TabBar
           {...defaultProps}
           tabs={tabs}
-          readOnly={true}
+          archived={true}
         />
       </PreferencesProvider>
     ))
@@ -325,7 +370,7 @@ describe('tabBar readOnly prop', () => {
     expect(closeButtons).toHaveLength(1)
   })
 
-  it('shows close button for file tab but not agent/terminal when readOnly is true', () => {
+  it('shows close button for file tab but not agent/terminal when archived is true', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
       makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
@@ -336,7 +381,7 @@ describe('tabBar readOnly prop', () => {
         <TabBar
           {...defaultProps}
           tabs={tabs}
-          readOnly={true}
+          archived={true}
         />
       </PreferencesProvider>
     ))
@@ -345,13 +390,13 @@ describe('tabBar readOnly prop', () => {
     expect(closeButtons).toHaveLength(1)
   })
 
-  it('hides add-tab buttons when readOnly is true', () => {
+  it('hides add-tab buttons when archived is true', () => {
     render(() => (
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
           tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
-          readOnly={true}
+          archived={true}
           newTab={{ ...defaultProps.newTab, showAddButton: false }}
         />
       </PreferencesProvider>
@@ -371,7 +416,7 @@ describe('tabBar readOnly prop', () => {
         <TabBar
           {...defaultProps}
           tabs={tabs}
-          readOnly={false}
+          archived={false}
         />
       </PreferencesProvider>
     ))

@@ -1,4 +1,5 @@
 import type { Accessor, Component } from 'solid-js'
+import type { BranchRefActions } from './branchActions'
 import type { PathFlavor } from '~/lib/paths'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { RepoGitStore } from '~/stores/repoGit'
@@ -25,14 +26,14 @@ import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays, shallowEqualExcept } from '~/lib/shallowEqual'
 import { diffStatsFromRepo, repoGitView } from '~/stores/repoGit'
-import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import * as tabBarStyles from '../shell/TabBar.css'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
-import { WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
+import { bindBranchActions, WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
 import { BranchContextMenu } from './BranchContextMenu'
 import {
   branchKey,
@@ -413,13 +414,13 @@ const TabLeaf: Component<{
 /**
  * Selection + structural state every row reads. Provided once by
  * WorkspaceTabTree; consumed via `useRowSelection`. Accessors are used
- * for the reactive prop fields (`workspaceId`, `readOnly`,
+ * for the reactive prop fields (`workspaceId`, `archived`,
  * `activeTabKey`, `tabItemOps`) so they track the parent's props
  * without leaning on JSX getter trickery.
  */
 interface RowSelectionContextValue {
   workspaceId: Accessor<string>
-  readOnly: Accessor<boolean | undefined>
+  archived: Accessor<boolean | undefined>
   activeTabKey: Accessor<string | null>
   tabItemOps: Accessor<TabItemOps | undefined>
   onTabClick: (type: TabType, id: string) => void
@@ -457,12 +458,11 @@ interface RowEditingContextValue {
 }
 
 /**
- * Branch-row callbacks (Change/Delete). Only BranchGroupRow consumes
- * these; nested rows ignore the context.
+ * Branch-row callbacks. Only BranchGroupRow consumes these; nested rows
+ * ignore the context.
  */
 interface BranchActionsContextValue {
-  onChangeBranch?: (ref: BranchRef) => void
-  onDeleteBranch?: (ref: BranchRef) => void
+  branchActions?: BranchRefActions
   isWorkerKnownOnline?: (workerId: string) => boolean
 }
 
@@ -591,7 +591,7 @@ const TabLeafList: Component<{ tabs: readonly Tab[], depth: number }> = (props) 
 }
 
 // Renders one branch row inside a repo group: the header (chevron +
-// label + diff badge + Change/Delete menu) and the collapsible list of
+// label + diff badge + branch context menu) and the collapsible list of
 // tab leaves. `branch` is an Accessor so the parent's outer `<For>` can
 // iterate stable string keys and look up the live branch by key — a
 // rebuild that swaps branch identity must not unmount the row.
@@ -604,8 +604,9 @@ const BranchGroupRow: Component<{
   const actions = useBranchActions()
   const branchStats = createMemo(() => diffStatsFromRepo(props.branch()))
   const collapseKey = createMemo(() => collapseKeyForBranch(props.repoKey, props.branchKey))
-  // Both menu items need this row's Worker: Change reads the branch state from
-  // it, Delete mutates it. Undefined when they are usable -- see
+  // Every item of the menu needs this row's Worker: the change items read the
+  // branch state from it, Delete mutates it, and the new-tab items start an
+  // agent or a terminal on it. Undefined when they are usable -- see
   // BranchContextMenu.disabledReason.
   const menuDisabledReason = createMemo(() => {
     const isOnline = actions.isWorkerKnownOnline
@@ -665,30 +666,46 @@ const BranchGroupRow: Component<{
           )}
           stats={branchStats()}
         />
-        {/* Hide the Change/Delete menu on the synthetic "(no branch)"
-            group: branchName=null means the tab is on detached HEAD or
-            an unborn ref, and both actions would either fail in the
-            worker (`git branch -D <short-sha>`) or have no meaningful
-            target. Keeping the menu hidden is clearer than letting the
-            user click into an error. */}
+        {/* Hide the whole menu on the synthetic "(no branch)" group:
+            branchName=null means the row's git state specifies no branch at
+            all -- a repository with no commits yet, or a tab LeapMux has
+            not stamped yet -- so the branch actions have no target and the
+            new-tab items have no checkout to open in. Keeping the menu
+            hidden is clearer than letting the user click into an error.
+
+            A detached HEAD is NOT this case. The worker reports the short
+            HEAD SHA as the branch (`branchOrShortSHA`), so the row carries
+            a real label and keeps its menu. Delete then fails in the
+            worker, because the label identifies a commit. */}
         {/* gitToplevel guard, defensive. A branch group forms only when
             `repoKeyAndLabel` resolved an origin URL or a toplevel, and every
             store writer that sets an origin URL sets a toplevel in the same
             patch — so an empty `gitToplevel` should not reach this row, and a
             tab with neither lands in `ungrouped` instead. The guard stays
-            because the cost of being wrong is high: Change/Delete would send
-            `path: ""` to the worker, SanitizePath rejects empty, and the
-            dialog opens stuck on a permission-denied banner. */}
-        <Show when={!sel.readOnly() && props.branch().branchName !== null && props.branch().gitToplevel !== '' && actions.onChangeBranch && actions.onDeleteBranch}>
-          <div class={sidebarActions}>
-            <BranchContextMenu
-              contextMenuFor={rowEl}
-              isWorktree={props.branch().isWorktree}
-              disabledReason={menuDisabledReason()}
-              onChangeBranch={() => actions.onChangeBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
-              onDeleteBranch={() => actions.onDeleteBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
-            />
-          </div>
+            because the cost of being wrong is high: the branch actions
+            would send `path: ""` to the worker, SanitizePath rejects empty,
+            and the dialog opens stuck on a permission-denied banner. The
+            new-tab items resolve no working directory at all and fall back
+            to their dialog. */}
+        <Show when={!sel.archived() && props.branch().branchName !== null && props.branch().gitToplevel !== '' ? actions.branchActions : undefined}>
+          {branchActions => (
+            <div class={sidebarActions}>
+              <BranchContextMenu
+                contextMenuFor={rowEl}
+                isWorktree={props.branch().isWorktree}
+                workerId={props.branch().workerId}
+                disabledReason={menuDisabledReason()}
+                actions={bindBranchActions(
+                  branchActions(),
+                  // Lazy: the ref is built at click time, from the branch this
+                  // row shows THEN. A row survives a tree rebuild that swaps
+                  // its branch object, so binding the ref eagerly would act on
+                  // whichever branch the row happened to mount with.
+                  () => buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab),
+                )}
+              />
+            </div>
+          )}
         </Show>
       </div>
 
@@ -756,7 +773,22 @@ export interface WorkspaceTabTreeProps {
   activeTabKey: string | null
   onTabClick: (type: TabType, id: string) => void
   tabItemOps?: TabItemOps
-  readOnly?: boolean
+  /**
+   * The workspace this tree belongs to is archived, so its rows offer no
+   * mutation: no branch menu, no close and no rename. A payload-backed tab
+   * keeps its close -- see `canCloseTab`, which the tab bar shares.
+   *
+   * Named for the FACT rather than for the effect (this prop was `readOnly`).
+   * Archival is the only thing that blocks mutation -- access is owner-only, and
+   * `isWorkspaceMutatable` says so outright -- so the two were one concept
+   * under two names, and a flag named for the effect invites a second caller to
+   * set it for some other reason and re-open that gap.
+   *
+   * The branch menu is all-or-nothing here rather than dimmed with a reason:
+   * every item of it either changes branch state or opens a tab, so an archived
+   * workspace would leave a menu of nothing but dimmed items.
+   */
+  archived?: boolean
   workspaceId: string
   /**
    * Tile ids in their top-left-first traversal order of the workspace's
@@ -784,8 +816,11 @@ export interface WorkspaceTabTreeProps {
    * greying out a working action is worse than letting one fail.
    */
   isWorkerKnownOnline?: (workerId: string) => boolean
-  onChangeBranch?: (ref: BranchRef) => void
-  onDeleteBranch?: (ref: BranchRef) => void
+  /**
+   * What every branch row's context menu can do, unbound. Each row binds the
+   * bundle to its own {@link BranchRef}. Omit to render no branch menus.
+   */
+  branchActions?: BranchRefActions
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -909,11 +944,12 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
   let editCancelled = false
-  const canClose = (tab: Tab) => canCloseTab(props.readOnly, tab)
+  const canClose = (tab: Tab) => canCloseTab(props.archived, tab)
 
-  // A FILE tab's title IS its path, and a read-only tree owns nothing to rename.
+  // `canRenameTab` states the rule; this surface adds only whether it HAS a
+  // rename handler. Shared with the tab strip, which renders the same tabs.
   const canRename = (tab: Tab) =>
-    !props.readOnly && tab.type !== TabType.FILE && Boolean(props.tabItemOps?.onRename)
+    canRenameTab(props.archived, tab) && Boolean(props.tabItemOps?.onRename)
 
   const startEditing = (tab: Tab) => {
     if (!canRename(tab))
@@ -960,7 +996,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
 
   const selection: RowSelectionContextValue = {
     workspaceId: () => props.workspaceId,
-    readOnly: () => props.readOnly,
+    archived: () => props.archived,
     activeTabKey: () => props.activeTabKey,
     tabItemOps: () => props.tabItemOps,
     onTabClick: (type, id) => props.onTabClick(type, id),
@@ -979,11 +1015,8 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     cancelEdit,
   }
   const actions: BranchActionsContextValue = {
-    get onChangeBranch() {
-      return props.onChangeBranch
-    },
-    get onDeleteBranch() {
-      return props.onDeleteBranch
+    get branchActions() {
+      return props.branchActions
     },
     get isWorkerKnownOnline() {
       return props.isWorkerKnownOnline

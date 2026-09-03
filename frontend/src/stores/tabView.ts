@@ -1,4 +1,4 @@
-import type { AgentTab, FileTab, Tab, TerminalTab } from './tab.types'
+import type { AgentTab, FileTab, ImageTab, Tab, TerminalTab } from './tab.types'
 import type { TabMetadataStore } from './tabMetadata.store'
 import type { TabRecord, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { Projection, RenderedTab } from '~/lib/crdt'
@@ -346,6 +346,14 @@ export function createTabView(opts: CreateTabViewOpts) {
           progressState: m.progressState,
           progressPercent: m.progressPercent,
         } satisfies TerminalTab
+      case TabType.IMAGE:
+        return {
+          ...base,
+          type: TabType.IMAGE,
+          imageAgentId: m.imageAgentId,
+          imageSeq: m.imageSeq,
+          imageIndex: m.imageIndex,
+        } satisfies ImageTab
       default:
         return {
           ...base,
@@ -492,6 +500,10 @@ export function createTabView(opts: CreateTabViewOpts) {
     getFileTab(id: string): FileTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.FILE, id }))
       return t && t.type === TabType.FILE ? t : undefined
+    },
+    getImageTab(id: string): ImageTab | undefined {
+      const t = byKey().get(tabKey({ type: TabType.IMAGE, id }))
+      return t && t.type === TabType.IMAGE ? t : undefined
     },
     /** Every tab across every workspace — for worker-scoped sweeps. */
     all(): Tab[] {

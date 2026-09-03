@@ -36,7 +36,7 @@ func fromDBUser(u gendb.User) store.User {
 		PendingRecoveryExpiresAt:   u.PendingRecoveryExpiresAt.Ptr(),
 		PendingRecoveryUnblockedAt: u.PendingRecoveryUnblockedAt.Ptr(),
 		PendingRecoveryAttempts:    int64(u.PendingRecoveryAttempts),
-		PasswordSet:                u.PasswordSet,
+		FirstCredentialExempt:      u.FirstCredentialExempt,
 		IsAdmin:                    u.IsAdmin,
 		Prefs:                      u.Prefs,
 		CreatedAt:                  u.CreatedAt.Time,
@@ -52,15 +52,15 @@ func (s *userStore) Create(ctx context.Context, p store.CreateUserParams) error 
 		return err
 	}
 	return mapErr(s.conn.q.CreateUser(ctx, gendb.CreateUserParams{
-		ID:                p.ID,
-		Username:          store.NormalizeUsername(p.Username),
-		PasswordHash:      p.PasswordHash,
-		DisplayName:       p.DisplayName,
-		DisplayNameFolded: store.FoldSearchText(p.DisplayName),
-		Email:             store.NormalizeEmail(p.Email),
-		EmailVerified:     p.EmailVerified,
-		PasswordSet:       p.PasswordSet,
-		IsAdmin:           p.IsAdmin,
+		ID:                    p.ID,
+		Username:              store.NormalizeUsername(p.Username),
+		PasswordHash:          p.PasswordHash,
+		DisplayName:           p.DisplayName,
+		DisplayNameFolded:     store.FoldSearchText(p.DisplayName),
+		Email:                 store.NormalizeEmail(p.Email),
+		EmailVerified:         p.EmailVerified,
+		FirstCredentialExempt: p.FirstCredentialExempt,
+		IsAdmin:               p.IsAdmin,
 	}))
 }
 
@@ -465,10 +465,10 @@ func (s *userStore) GetByLiveRecoveryToken(ctx context.Context, tokenHash string
 
 func (s *userStore) CompleteRecovery(ctx context.Context, p store.CompleteRecoveryParams) (*store.RecoveryRevocation, error) {
 	row, err := s.conn.q.CompleteRecovery(ctx, gendb.CompleteRecoveryParams{
-		PasswordHash:         p.PasswordHash,
-		PasswordSet:          p.PasswordSet,
-		ID:                   p.ID,
-		PendingRecoveryToken: p.PendingRecoveryToken,
+		PasswordHash:          p.PasswordHash,
+		FirstCredentialExempt: p.FirstCredentialExempt,
+		ID:                    p.ID,
+		PendingRecoveryToken:  p.PendingRecoveryToken,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound

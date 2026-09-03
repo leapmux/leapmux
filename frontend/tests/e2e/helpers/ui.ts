@@ -616,7 +616,7 @@ const LOGIN_ATTEMPTS = 3
  * timeout. Without an explicit slice the URL assertion inherits
  * `expect.timeout` (120s) and the shell wait inherits `actionTimeout` (30s):
  * two attempts already exceed the test budget, and the third can never run —
- * the test dies with a bare "Test timeout" that names no assertion.
+ * the test dies with a bare "Test timeout" that specifies no assertion.
  */
 const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
 
@@ -1417,8 +1417,15 @@ function branchMenuTrigger(row: Locator): Locator {
   return row.locator('[aria-expanded]').first()
 }
 
-/** Open a branch group's three-dot menu, with `requiredItem` on screen. */
-export async function openBranchMenu(page: Page, row: Locator, requiredItem = 'Change branch...') {
+/**
+ * Open a branch group's three-dot menu, with `requiredItem` on screen.
+ *
+ * Reopening the SAME menu right after a dialog closes needs a wait in between:
+ * the menu stays open behind a modal dialog, so `openRowMenu` sees the item as
+ * visible, skips the trigger, and then clicks an item that disappears with the
+ * dialog. Wait for `menu[popover]:visible` to reach 0 first.
+ */
+export async function openBranchMenu(page: Page, row: Locator, requiredItem = 'Switch to branch...') {
   await openRowMenu(row, branchMenuTrigger(row), page.getByRole('menuitem', { name: requiredItem }))
 }
 

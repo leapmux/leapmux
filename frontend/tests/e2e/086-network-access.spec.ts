@@ -86,8 +86,9 @@ test.describe('Network access', () => {
     // the page that made it must NOT be signed out of the form it is in.
     await expect(row.getByText(/Change it in Account → Password/)).toBeVisible()
 
-    // Account → Password appears now that the account holds one; its
-    // neighbours stay hidden, because solo refuses the RPCs behind them.
+    // Account → Password is where it changes from here. It is the one Account
+    // row solo keeps; its neighbours stay hidden, because solo refuses the
+    // RPCs behind them. Setting the FIRST password there is 194's case.
     const account = await openSettingsAt(page, 'account')
     await expect(account.locator('[data-setting-id="account.password"]')).toBeVisible()
     await expect(account.locator('[data-setting-id="account.profile"]')).toHaveCount(0)

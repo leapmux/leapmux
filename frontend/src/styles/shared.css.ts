@@ -1,4 +1,30 @@
 import { style } from '@vanilla-extract/css'
+import { declareAppLayers } from '~/styles/layers'
+
+const layers = declareAppLayers()
+
+/**
+ * Removes what the browser and Oat paint on a control: the UA button
+ * appearance, its font and its border, and Oat's solid primary pill.
+ *
+ * The reset sits in the `reset` LAYER, and that is what makes it safe to
+ * compose. An unlayered declaration beats a layered one whatever the
+ * specificity, and whatever the stylesheet order, so a class that composes this
+ * one keeps every property that it declares itself. Unlayered, the two rules
+ * tie -- one class each -- and the winner is then decided by which stylesheet
+ * the bundler emits last. `axisChip` in
+ * `~/components/chat/composer/composer.css.ts` lost that race: `all: unset`
+ * erased its own `font-size`, `line-height` and `white-space`, and the chip
+ * rendered at the ambient 16px with no ellipsis.
+ *
+ * The layer still beats Oat, whose button rule sits in Oat's `base` layer, and
+ * it beats the UA sheet, which every author declaration outranks.
+ */
+export const controlReset = style({
+  '@layer': {
+    [layers.reset]: { all: 'unset' },
+  },
+})
 
 /**
  * The small muted button that opens something: the composer's status-bar chips
@@ -10,8 +36,7 @@ import { style } from '@vanilla-extract/css'
  * base and adds only what genuinely differs: its padding, its font size, and
  * whether it centres its content.
  */
-export const chipBase = style({
-  all: 'unset',
+export const chipBase = style([controlReset, {
   boxSizing: 'border-box',
   display: 'inline-flex',
   alignItems: 'center',
@@ -21,7 +46,7 @@ export const chipBase = style({
   selectors: {
     '&:hover': { color: 'var(--foreground)', backgroundColor: 'var(--card)' },
   },
-})
+}])
 
 export const errorText = style({
   color: 'var(--danger)',

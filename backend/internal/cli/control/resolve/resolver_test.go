@@ -287,6 +287,46 @@ func TestResolve_FixedTabTypeRejectsContradictingFlag(t *testing.T) {
 	assert.Contains(t, re.Message, "contradicts")
 }
 
+// The contradiction message prints BOTH sides through TabTypeWireName, so a
+// kind that function does not name reads as `--tab-type "" contradicts this
+// command's implicit type ""`. FILE has been in the enum all along and IMAGE
+// joined it, and neither was named -- so this pins the round trip for every
+// kind rather than the two the message happened to cover.
+func TestResolve_ContradictionNamesEveryTabKind(t *testing.T) {
+	kinds := []struct {
+		enum leapmuxv1.TabType
+		wire string
+	}{
+		{leapmuxv1.TabType_TAB_TYPE_AGENT, "agent"},
+		{leapmuxv1.TabType_TAB_TYPE_TERMINAL, "terminal"},
+		{leapmuxv1.TabType_TAB_TYPE_FILE, "file"},
+		{leapmuxv1.TabType_TAB_TYPE_IMAGE, "image"},
+	}
+	for _, k := range kinds {
+		assert.Equal(t, k.wire, resolve.TabTypeWireName(k.enum))
+		parsed, ok := resolve.ParseTabType(k.wire)
+		require.True(t, ok, "%s must parse back", k.wire)
+		assert.Equal(t, k.enum, parsed, "%s must round trip", k.wire)
+	}
+	assert.Empty(t, resolve.TabTypeWireName(leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED),
+		"the zero value stays empty, which is how a caller guards the env-var emit")
+
+	// The message a user actually reads, with neither side an empty string.
+	_, err := resolve.Resolve(context.Background(), resolve.Deps{},
+		resolve.Need{},
+		resolve.Inputs{
+			TabID:        "tab-1",
+			TabType:      "image",
+			FixedTabType: leapmuxv1.TabType_TAB_TYPE_FILE,
+		},
+	)
+	require.Error(t, err)
+	var re *resolve.ResolveError
+	require.ErrorAs(t, err, &re)
+	assert.Contains(t, re.Message, `"image"`)
+	assert.Contains(t, re.Message, `"file"`)
+}
+
 // TestResolve_FixedTabTypeAgreeingFlagIsOK is the inverse: passing
 // --tab-type explicitly to an agent-subgroup command must be
 // accepted as long as it matches. Catches a regression that
@@ -576,5 +616,37 @@ func TestResolve_HasNoWorkerExistenceCheck(t *testing.T) {
 	for _, name := range []string{"GetWorker", "ListWorkers"} {
 		_, found := depsType.FieldByName(name)
 		assert.False(t, found, "Deps must not carry a %s field", name)
+	}
+}
+
+// Every value the proto enum carries must have a wire token, and every token
+// must parse back to it.
+//
+// This is what the contract buys and what eight hand-written tables kept
+// losing: FILE sat in the enum unnamed, IMAGE joined it, and the gap surfaced
+// as `--tab-type "" contradicts this command's implicit type ""`. The table is
+// generated from contracts/tab-types.json now, and generate-contracts fails the
+// build for an enum value with no entry -- so this test walks the ENUM rather
+// than a list a reader has to remember to extend.
+func TestTabTypeVocabularyCoversEveryEnumValue(t *testing.T) {
+	for value, name := range leapmuxv1.TabType_name {
+		kind := leapmuxv1.TabType(value)
+		token := resolve.TabTypeWireName(kind)
+
+		if kind == leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED {
+			assert.Empty(t, token, "the zero value stays empty: it is how an omitted --type reads")
+		} else {
+			assert.NotEmpty(t, token, "%s has no wire token, so no user can name it on the command line", name)
+		}
+
+		parsed, ok := resolve.ParseTabType(token)
+		require.True(t, ok, "the token for %s must parse back", name)
+		assert.Equal(t, kind, parsed, "%s must round trip through its token", name)
+
+		// The proto-canonical spelling parses too, so a tab_type read out of a
+		// JSON envelope goes straight back into a flag.
+		canonical, ok := resolve.ParseTabType(name)
+		require.True(t, ok, "%s must parse in its canonical spelling", name)
+		assert.Equal(t, kind, canonical)
 	}
 }

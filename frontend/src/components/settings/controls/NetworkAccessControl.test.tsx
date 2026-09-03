@@ -9,10 +9,18 @@ import { NetworkAccessControl } from './NetworkAccessControl'
 
 const mockGetListenStatus = vi.fn()
 const mockChangePassword = vi.fn()
+const mockRefreshUser = vi.fn()
 
 vi.mock('~/api/clients', () => ({
   adminNetworkClient: { getListenStatus: (...args: unknown[]) => mockGetListenStatus(...args) },
   userClient: { changePassword: (...args: unknown[]) => mockChangePassword(...args) },
+}))
+
+// The panel writes the ACCOUNT's password, so it re-reads the account after an
+// apply that stored one -- Account → Password renders "Set" or "Change" from
+// that read.
+vi.mock('~/context/AuthContext', () => ({
+  useAuth: () => ({ refreshUser: mockRefreshUser }),
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -67,6 +75,7 @@ describe('networkAccessControl', () => {
     setSystemInfoMock({ soloMode: true, soloPasswordSet: false })
     mockGetListenStatus.mockResolvedValue(listenStatus())
     mockChangePassword.mockResolvedValue({})
+    mockRefreshUser.mockResolvedValue(undefined)
     // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
     // keeps the implementation, so one test's `mockRejectedValue` would
     // otherwise reject in every test after it.
@@ -186,6 +195,10 @@ describe('networkAccessControl', () => {
     await vi.waitFor(() => expect(order).toEqual(['changePassword', 'set']))
     expect(mockChangePassword).toHaveBeenCalledWith({ newPassword: 'correct-horse-battery-staple' })
     expect(set).toHaveBeenCalledWith({ addresses: ['192.168.1.24:8080'] })
+    // And the account is re-read, because this apply moved it: Account →
+    // Password renders "Set Password" or "Change Password" from that read, and
+    // a stale one offers to set a password this apply already stored.
+    await vi.waitFor(() => expect(mockRefreshUser).toHaveBeenCalled())
   })
 
   // The hub is read back rather than the request trusted: a stored address it
@@ -212,8 +225,9 @@ describe('networkAccessControl', () => {
     expect(screen.queryByText('Network access updated.')).not.toBeInTheDocument()
   })
 
-  // Once the account holds a password, Preferences → Account owns changing it,
-  // so the two surfaces never offer the same field at the same time.
+  // The password half exists so that publishing an address does not send the
+  // operator to another category mid-edit. Once the account holds one, that
+  // reason is gone and Account → Password is where it changes.
   it('drops its password half once the account has one', async () => {
     setSystemInfoMock({ soloMode: true, soloPasswordSet: true })
     render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['192.168.1.24:8080'] })} />)
@@ -322,6 +336,27 @@ describe('networkAccessControl', () => {
       .getAllByRole('menuitemradio', { hidden: true })
       .map(el => el.textContent?.trim())
     expect(options).toEqual(['All interfaces', '192.168.1.24', '127.0.0.1 (loopback)'])
+  })
+
+  // Lucide icons, never a text glyph. A unicode arrow renders in whatever font
+  // the platform substitutes for it, at a size and a baseline nothing here
+  // controls, and it matches none of the other triggers in this dialog.
+  //
+  // The accessible names are asserted with them: the icons are decoration, and
+  // the remove button still has to state WHICH address it removes -- eight of
+  // them stand in this list at the cap.
+  it('draws the trigger chevron and the remove mark as icons', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    const row = (await screen.findAllByTestId('network-address-row'))[0]!
+
+    const trigger = within(row).getByTestId('network-interface-trigger')
+    expect(trigger.querySelector('svg')).not.toBeNull()
+    expect(trigger).toHaveTextContent('All interfaces')
+    expect(trigger.textContent).not.toMatch(/[▾▼]/)
+
+    const remove = within(row).getByRole('button', { name: 'Remove *:4327' })
+    expect(remove.querySelector('svg')).not.toBeNull()
+    expect(remove.textContent).not.toMatch(/[✕✖×]/)
   })
 
   // The picker groups by interface, so an address is read beside the interface

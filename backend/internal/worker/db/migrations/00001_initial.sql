@@ -209,21 +209,22 @@ CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS 
 
 -- Junction: which tabs use which LeapMux-created worktree.
 --
--- user_id scopes the FILE-tab liveness join (see worktree_tab_liveness): file
--- tab ids are only unique within a user (worker_file_tabs is keyed by
--- (user_id, tab_id)), so the liveness view needs the user to avoid matching a
--- different user's file tab. It is left '' for AGENT/TERMINAL links, whose ids
--- are globally unique, so their liveness legs never need it.
+-- user_id scopes the client-minted-tab liveness join (see
+-- worktree_tab_liveness): a FILE or IMAGE tab id is only unique within a user
+-- (worker_tab_payloads is keyed by (user_id, tab_id)), so the liveness view
+-- needs the user to avoid matching a different user's tab. It is left '' for
+-- AGENT/TERMINAL links, whose ids are globally unique, so their liveness branches
+-- never need it.
 --
 -- user_id is part of the PRIMARY KEY for the same reason. Without it, two
 -- users' FILE links to the same worktree with the same tab_id collide: the
 -- second insert is swallowed by AddWorktreeTab's ON CONFLICT DO NOTHING, and
 -- then either user's tab-close deletes the single surviving row -- silently
 -- unlinking the other user's still-open file tab and letting the worktree GC
--- reclaim a directory that is still mounted in an editor. FILE tab ids are
--- minted client-side as file-<epoch-ms>-<per-module-load counter>, so a
--- cross-user collision needs no adversary, just two clients starting in the
--- same millisecond. The three read/delete queries keyed by tab
+-- reclaim a directory that is still mounted in an editor. FILE and IMAGE tab
+-- ids are minted client-side as <kind>-<epoch-ms>-<per-module-load counter>,
+-- so a cross-user collision needs no adversary, just two clients starting in
+-- the same millisecond. The three read/delete queries keyed by tab
 -- (RemoveWorktreeTab, DeleteWorktreeTabsByTabID, GetWorktreeForTab) bind
 -- user_id to match.
 CREATE TABLE worktree_tabs (
@@ -238,69 +239,94 @@ CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id, user_id);
 
 -- Each worktree_tabs link annotated with whether its backing tab is still
 -- live: an agent/terminal with closed_at IS NULL, or a still-present
--- worker_file_tabs row (file tabs are hard-deleted on close). A link to a
--- closed/deleted tab -- a startup-race strand -- has is_live = 0.
+-- worker_tab_payloads row (a payload-backed tab is hard-deleted on close). A
+-- link to a closed/deleted tab -- a startup-race strand -- has is_live = 0.
 --
 -- This view is the single definition of "is this link live?" so the two
 -- consumers (CountLiveWorktreeRefs and ListOrphanCandidateWorktrees) cannot
 -- drift apart: adding a new tab type means editing the predicate here once,
 -- not in two queries that must agree or the GC reaps a live worktree.
 --
--- The agent/terminal legs match on the globally-unique row id; the file leg
--- matches on (user_id, tab_id) because worker_file_tabs is keyed that way.
+-- The agent/terminal branches match on the globally-unique row id; the payload branch
+-- matches on (user_id, tab_id) because worker_tab_payloads is keyed that way.
 -- That key is about ID UNIQUENESS, not tenancy: agent and terminal ids are
--- minted server-side and are globally unique, while a file tab id is minted by
--- the client as `file-<millis>-<counter>` and is therefore unique only within
--- the client that made it. Matching tab_id alone would let one row stand in
--- for another that happens to share an id, marking a strand live and saving a
--- worktree that should be reaped. worktree_tabs.user_id carries the link's
--- user ('' for AGENT/TERMINAL links, whose ids never need it; '' never matches
--- a real worker_file_tabs row, which always has a non-empty user_id).
+-- minted server-side and are globally unique, while a FILE or IMAGE tab id is
+-- minted by the client as `<kind>-<millis>-<counter>` and is therefore unique
+-- only within the client that made it. Matching tab_id alone would let one row
+-- stand in for another that happens to share an id, marking a strand live and
+-- saving a worktree that should be reaped. worktree_tabs.user_id carries the
+-- link's user ('' for AGENT/TERMINAL links, whose ids never need it; '' never
+-- matches a real worker_tab_payloads row, which always has a non-empty
+-- user_id).
 CREATE VIEW worktree_tab_liveness AS
 SELECT
     t.worktree_id AS worktree_id,
     CASE WHEN
         EXISTS (SELECT 1 FROM agents a WHERE a.id = t.tab_id AND a.closed_at IS NULL)
         OR EXISTS (SELECT 1 FROM terminals te WHERE te.id = t.tab_id AND te.closed_at IS NULL)
-        OR EXISTS (SELECT 1 FROM worker_file_tabs f WHERE f.tab_id = t.tab_id AND f.user_id = t.user_id)
+        OR EXISTS (SELECT 1 FROM worker_tab_payloads p WHERE p.tab_id = t.tab_id AND p.user_id = t.user_id)
     THEN 1 ELSE 0 END AS is_live
 FROM worktree_tabs t;
 
--- File-tab paths kept E2EE on the worker. The hub never sees these
--- rows; clients fetch paths over WatchWorkerPrivateEvents and
--- GetFileTabPath. tab_id is unique within a user but not across users,
--- so the primary key includes user_id.
+-- Tab payloads kept E2EE on the worker: everything a FILE or IMAGE tab needs
+-- to resolve WHAT IT SHOWS. The hub never sees these rows; clients fetch them
+-- over WatchWorkerPrivateEvents and GetTabPayload. tab_id is unique within a
+-- user but not across users, so the primary key includes user_id.
 --
 -- user_id therefore stays while workspace_id goes: it is an ID-UNIQUENESS
 -- requirement, not a tenancy one (see worktree_tab_liveness above).
-CREATE TABLE worker_file_tabs (
+--
+-- One table for both kinds. A FILE tab's path and an IMAGE tab's message
+-- reference are the same class of secret, they are written, replayed, read and
+-- deleted at exactly the same points in a tab's life, and every reader of the
+-- shared columns (the worktree link, the branch group, the orphan reconciler,
+-- tab_locations) treats them identically. A second table would have to restate
+-- each of those and could then disagree with this one.
+CREATE TABLE worker_tab_payloads (
     -- CHECK (user_id <> ''): the worker's database has no users table, so the
-    -- hub's REFERENCES users(id) floor cannot reach here. FileTabPathStore
+    -- hub's REFERENCES users(id) floor cannot reach here. TabPayloadStore
     -- refuses a blank owner in Go, but a blank row that got in any other way
     -- would be permanently unclearable -- Get/RevokeRow both refuse an
     -- unminted owner, and the reconciler's scope check skips it -- while
-    -- worktree_tab_liveness's FILE leg (which matches f.user_id = t.user_id and
-    -- relies on '' never matching a real file-tab row) would start reading
+    -- worktree_tab_liveness's payload branch (which matches p.user_id = t.user_id
+    -- and relies on '' never matching a real payload row) would start reading
     -- agent/terminal links as live and leak their worktrees.
     user_id      TEXT NOT NULL CHECK (user_id <> ''),
     tab_id       TEXT NOT NULL,
-    file_path    TEXT NOT NULL,
-    -- The tab's git working directory, and the reason a FILE tab is a
+    -- TabType of the tab this payload belongs to: 3 = FILE, 4 = IMAGE. Stored
+    -- rather than derived from the payload so tab_locations can project it
+    -- without decoding a blob, and so a row whose payload the running binary
+    -- cannot parse still reports which kind of tab it is.
+    --
+    -- The CHECK is the floor the Go enum cannot supply, and it is the same
+    -- defence the user_id CHECK above states. Readers cast this column straight
+    -- to leapmuxv1.TabType, and two of them -- orphan_reconciler's
+    -- newOwnedTabKey and bootstrap's payload-tab filter -- have no default
+    -- case, so an out-of-range row would be keyed against nothing in the hub's
+    -- tab list and reaped as an orphan.
+    tab_type     INTEGER NOT NULL CHECK (tab_type IN (3, 4)),
+    -- The serialized leapmux.v1.TabPayload. Opaque here on purpose: the shared
+    -- columns beside it are exactly what shared code reads, and the kind-
+    -- specific half belongs to the kind. Adding a third tab kind is a proto
+    -- change and no schema change.
+    payload      BLOB NOT NULL,
+    -- The tab's git working directory, and the reason such a tab is a
     -- first-class git citizen rather than a type shared code routes around.
     -- agents.working_dir / terminals.working_dir are what every branch-context
     -- operation resolves a tab through -- last-tab close inspection, the
-    -- sibling-on-this-branch scan, push -- and this column is the FILE tab's
-    -- entry in that same lookup (see getTabWorkingDir).
+    -- sibling-on-this-branch scan, push -- and this column is this tab's entry
+    -- in that same lookup (see getTabWorkingDir).
     --
     -- It is the ORIGINATING tab's working dir, forwarded by the client that
-    -- opened the file, not something derived from file_path. A file is opened
-    -- from an agent or terminal tab, and the branch group the file tab renders
-    -- in is that tab's; deriving a dir from the path instead would answer for
-    -- whatever repo the file happens to sit in, which is a different question
-    -- and a different answer whenever the two diverge. Writers that have no
-    -- originating tab (`leapmux control tab open --type=file`) fall back to the
-    -- file's own directory, normalized once at write time in
-    -- FileTabPathStore.Register so every reader can just read the column.
+    -- opened this one, not something derived from the payload. A file (or an
+    -- image) is opened from an agent or terminal tab, and the branch group the
+    -- new tab renders in is that tab's; deriving a dir from a file path
+    -- instead would answer for whatever repo the file happens to sit in, which
+    -- is a different question and a different answer whenever the two diverge.
+    -- Writers that have no originating tab (`leapmux control tab open
+    -- --type=file`) fall back to the file's own directory, normalized once at
+    -- write time in TabPayloadStore.Register so every reader can just read the
+    -- column. It is duplicated out of the blob for that reason: SQL reads it.
     working_dir  TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (user_id, tab_id)
@@ -382,13 +408,16 @@ CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_ag
 -- ids are minted server-side and globally unique, so they need no owner to
 -- disambiguate them, while a file tab id is minted client-side as
 -- `file-<millis>-<counter>` and is unique only within the client that made it.
--- A reader scopes with `(user_id = '' OR user_id = ?)`, and worker_file_tabs'
--- own `CHECK (user_id <> '')` is what makes the '' arm provably unable to match
--- a file-tab row.
+-- A reader scopes with `(user_id = '' OR user_id = ?)`, and
+-- worker_tab_payloads' own `CHECK (user_id <> '')` is what makes the '' case
+-- provably unable to match a payload-backed row.
 --
 -- Openness differs by type and is encoded here so no reader restates it: agents
--- and terminals are closed by stamping closed_at, while a file tab is HARD
--- DELETED on close, so its presence IS its openness.
+-- and terminals are closed by stamping closed_at, while a payload-backed tab is
+-- HARD DELETED on close, so its presence IS its openness.
+--
+-- The projection covers every payload-backed kind, FILE and IMAGE alike: the
+-- view reads tab_type from the row rather than stating a constant.
 CREATE VIEW tab_locations AS
 SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir
 FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL
@@ -396,8 +425,8 @@ UNION ALL
 SELECT 2, id, '', working_dir
 FROM terminals WHERE closed_at IS NULL
 UNION ALL
-SELECT 3, tab_id, user_id, working_dir
-FROM worker_file_tabs;
+SELECT tab_type, tab_id, user_id, working_dir
+FROM worker_tab_payloads;
 
 -- +goose Down
 DROP VIEW IF EXISTS tab_locations;
@@ -405,7 +434,7 @@ DROP TABLE IF EXISTS agent_background_tasks;
 DROP INDEX IF EXISTS idx_agents_spawn_span;
 DROP INDEX IF EXISTS idx_agents_parent;
 DROP TABLE IF EXISTS agent_todos;
-DROP TABLE IF EXISTS worker_file_tabs;
+DROP TABLE IF EXISTS worker_tab_payloads;
 DROP TABLE IF EXISTS terminals;
 DROP VIEW IF EXISTS worktree_tab_liveness;
 DROP TABLE IF EXISTS worktree_tabs;

@@ -3,6 +3,7 @@ import { createEffect, createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import {
   CHANGE_BRANCH_MODES,
+  changeBranchInitialIntent,
   fieldsForCheckoutBranch,
   fieldsForCreateBranch,
   fieldsForCreateWorktree,
@@ -539,7 +540,7 @@ describe('toGitFields projects every active mode onto the RPC field set', () => 
   })
 
   it('current mode returns a fresh empty object (not the shared singleton)', () => {
-    // Regression guard for the EMPTY_GIT_FIELDS-shared-reference footgun.
+    // Regression guard for the shared EMPTY_GIT_FIELDS reference.
     // Mutating one returned object must NOT leak into the next call.
     const s = useGitModeState()
     const first = s.toGitFields()
@@ -556,5 +557,53 @@ describe('toGitFields projects every active mode onto the RPC field set', () => 
     const second = s.toGitFields()
     expect(second.checkoutBranch).toBe('')
     expect(second).not.toBe(first)
+  })
+})
+
+// The seed the branch context menu's three items hand ChangeBranchDialog. It
+// carries the MODE alone -- GitOptions owns every field and emits a complete
+// intent on its first flush -- so each item paints its own radio immediately
+// instead of flashing SwitchBranch first.
+describe('changeBranchInitialIntent', () => {
+  it('returns the matching variant for each mode', () => {
+    expect(changeBranchInitialIntent(GitMode.SwitchBranch)).toEqual({
+      mode: GitMode.SwitchBranch,
+      checkoutBranch: '',
+      checkoutBranchError: null,
+    })
+    expect(changeBranchInitialIntent(GitMode.CreateBranch)).toEqual({
+      mode: GitMode.CreateBranch,
+      createBranch: '',
+      createBranchError: null,
+      createBranchBase: '',
+    })
+    expect(changeBranchInitialIntent(GitMode.CreateWorktree)).toEqual({
+      mode: GitMode.CreateWorktree,
+      worktreeBranch: '',
+      worktreeBranchError: null,
+      worktreeBaseBranch: '',
+    })
+  })
+
+  it('covers every mode the dialog offers', () => {
+    for (const mode of CHANGE_BRANCH_MODES)
+      expect(changeBranchInitialIntent(mode).mode).toBe(mode)
+  })
+
+  // The seed feeds `useGitModeState`, whose `toGitFields` must not send a
+  // half-built payload if the dialog is submitted before GitOptions emits.
+  it('projects to blank git fields', () => {
+    for (const mode of CHANGE_BRANCH_MODES) {
+      const fields = useGitModeState(changeBranchInitialIntent(mode)).toGitFields()
+      expect(fields.checkoutBranch).toBe('')
+      expect(fields.createBranch).toBe('')
+      expect(fields.worktreeBranch).toBe('')
+      expect(fields.createWorktree).toBe(mode === GitMode.CreateWorktree)
+    }
+  })
+
+  it('mints a fresh object per call, so a mutation cannot leak', () => {
+    const first = changeBranchInitialIntent(GitMode.CreateBranch)
+    expect(changeBranchInitialIntent(GitMode.CreateBranch)).not.toBe(first)
   })
 })

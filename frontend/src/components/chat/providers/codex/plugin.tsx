@@ -37,6 +37,7 @@ import {
 } from './constants'
 import { codexControlResponseDisplay } from './controlResponse'
 import { CODEX_RENDERERS } from './defineRenderer'
+import { codexToolResultImages } from './extractors/image'
 import { codexNotificationThreadEntry } from './notifications'
 // The named imports below are the renderers dispatched explicitly (not via
 // the registry) by `renderMessage` for non-`item.type` shapes.
@@ -218,6 +219,8 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
       return { kind: 'hidden' }
     return { kind: 'tool_use', toolName: CODEX_ITEM.COLLAB_AGENT_TOOL_CALL, toolUse: item, content: [] }
   },
+  [CODEX_ITEM.IMAGE_GENERATION]: item => ({ kind: 'tool_use', toolName: CODEX_ITEM.IMAGE_GENERATION, toolUse: item, content: [] }),
+  [CODEX_ITEM.IMAGE_VIEW]: item => ({ kind: 'tool_use', toolName: CODEX_ITEM.IMAGE_VIEW, toolUse: item, content: [] }),
   [CODEX_ITEM.WEB_SEARCH]: (item) => {
     if (isCodexEmptyCompletedWebSearch(item))
       return { kind: 'hidden' }
@@ -498,6 +501,7 @@ const codexPlugin: Provider = {
   },
 
   toolResultMeta: codexToolResultMeta,
+  toolResultImages: codexToolResultImages,
 
   resultDivider: codexResultDivider,
 

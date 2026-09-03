@@ -165,14 +165,18 @@ test.describe('Worktree Git Modes', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Switch Branch WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Switch Branch WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
 
     // Wait for git options and select "Switch to branch"
-    await expect(page.getByText('Switch to branch')).toBeVisible()
-    await page.getByText('Switch to branch').click()
+    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
+    await page.getByText('Switch to branch', { exact: true }).click()
 
     // Branch dropdown should load with local branches
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
@@ -230,8 +234,8 @@ test.describe('Worktree Git Modes', () => {
 
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Switch to branch')).toBeVisible()
-    await page.getByText('Switch to branch').click()
+    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
+    await page.getByText('Switch to branch', { exact: true }).click()
 
     // Warning about uncommitted changes should appear
     await expect(page.getByText('uncommitted changes')).toBeVisible()
@@ -349,7 +353,11 @@ test.describe('Worktree Git Modes', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Use WT UI WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Use WT UI WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
@@ -508,14 +516,18 @@ test.describe('Worktree Git Modes', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Base Branch UI WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Base Branch UI WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
 
     // Wait for git options, select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible()
-    await page.getByText('Create new worktree').click()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
+    await page.getByText('Create new worktree', { exact: true }).click()
 
     // Base Branch label and selector should be visible
     await expect(dialog.getByText('Base Branch')).toBeVisible()

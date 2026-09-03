@@ -866,6 +866,17 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		loaded, err := svc.loadTabGitContext(ctx, tabType, tabID, userID)
 		trace("git_ctx_done")
 		if err != nil {
+			if errors.Is(err, errNoTabWorkingDir) {
+				// This tab never had a working directory -- an IMAGE tab opened
+				// with no originating tab to inherit one from. No git state was
+				// ever in scope for it, so nothing was skipped, and the hint
+				// below would warn about uncommitted changes in a repository
+				// this tab never touched.
+				trace("git_ctx_no_working_dir")
+				return &leapmuxv1.InspectLastTabCloseResponse{
+					Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+				}, nil
+			}
 			// Non-worktree tab whose working dir is not (or no longer)
 			// readable as a git repository. Per "close always wins" we
 			// proceed without a prompt — but this is a degraded close:
@@ -1999,7 +2010,7 @@ func dirtyTreeForPush(ctx context.Context, dir string) (bool, error) {
 // resolvePushStatus returns the push-time snapshot via a fresh
 // pushStatusForPath call. An earlier revision accepted an inspect-time
 // `BranchGitState` hint and copied its `UnpushedCommitCount` onto the
-// live probe — that was a footgun: pushStatusForPath already runs the
+// live probe — that was easy to call incorrectly: pushStatusForPath already runs the
 // `rev-list --count` fork it was meant to elide, and the user can have
 // a sibling terminal/IDE push commits between inspect and the Push
 // click, so blindly overwriting the live count with the stale hint
@@ -2060,13 +2071,20 @@ func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string)
 	return tabCtx, nil
 }
 
+// errNoTabWorkingDir marks a tab that never had a working directory, as opposed
+// to one whose directory is unreadable. An IMAGE tab opened with no originating
+// tab stores a blank by design (see resolveTabPayloadWorkingDir), so no git state
+// was ever in scope for it -- a close that skips the inspection skipped nothing.
+var errNoTabWorkingDir = errors.New("tab has no working directory recorded")
+
 // getTabWorkingDir resolves the directory a tab's git questions are answered
 // from. Every tab type has one: agents and terminals carry it on their own row,
 // and a file tab carries the working dir of the tab it was opened from (see the
-// worker_file_tabs.working_dir column comment).
+// worker_tab_payloads.working_dir column comment).
 //
-// userID is only consulted for FILE tabs, whose ids are unique within a user
-// rather than globally — worker_file_tabs is keyed by (user_id, tab_id), so the
+// userID is only consulted for payload-backed tabs -- FILE and IMAGE -- whose
+// ids are unique within a user
+// rather than globally — worker_tab_payloads is keyed by (user_id, tab_id), so the
 // owner is half the lookup. AGENT/TERMINAL ids are minted server-side and
 // globally unique, so their callers may pass "" HERE.
 //
@@ -2086,7 +2104,7 @@ func (svc *Service) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabT
 	// covers every row those writers did not produce with one check instead of
 	// three per-type column constraints.
 	if dir == "" {
-		return "", fmt.Errorf("tab %q has no working directory recorded", tabID)
+		return "", fmt.Errorf("tab %q has no working directory recorded: %w", tabID, errNoTabWorkingDir)
 	}
 	return dir, nil
 }
@@ -2105,12 +2123,12 @@ func (svc *Service) readTabWorkingDir(ctx context.Context, tabType leapmuxv1.Tab
 			return "", err
 		}
 		return terminalRow.WorkingDir, nil
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		loc, err := svc.FileTabPaths.Get(ctx, userID, tabID)
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		payload, err := svc.TabPayloads.Get(ctx, userID, tabID)
 		if err != nil {
-			return "", fmt.Errorf("resolve file tab working dir: %w", err)
+			return "", fmt.Errorf("resolve tab payload working dir: %w", err)
 		}
-		return loc.WorkingDir, nil
+		return payload.GetWorkingDir(), nil
 	default:
 		return "", errors.New("unsupported tab type")
 	}

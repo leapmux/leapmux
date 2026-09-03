@@ -1366,12 +1366,12 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 	userID = id.Generate()
 	hash, _ := password.Hash("testpass2")
 	_ = e.store.Users().Create(ctx, store.CreateUserParams{
-		ID:           userID,
-		Username:     "user2",
-		PasswordHash: hash,
-		DisplayName:  "User 2",
-		PasswordSet:  true,
-		IsAdmin:      false,
+		ID:                    userID,
+		Username:              "user2",
+		PasswordHash:          hash,
+		DisplayName:           "User 2",
+		FirstCredentialExempt: true,
+		IsAdmin:               false,
 	})
 	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, loginErr)

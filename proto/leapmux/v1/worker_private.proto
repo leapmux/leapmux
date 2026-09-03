@@ -6,9 +6,9 @@ import "leapmux/v1/workspace.proto";
 
 // WorkerPrivateService is a worker-side service whose RPCs travel
 // only over an E2EE channel. It carries content the hub deliberately
-// doesn't see (tab titles, file-tab paths). Frontends and the CLI
+// doesn't see (tab titles, tab payloads). Frontends and the CLI
 // subscribe once per worker that hosts any of their tabs; titles and
-// paths never traverse the hub.
+// payloads never traverse the hub.
 service WorkerPrivateService {
   // WatchWorkerPrivateEvents streams the calling user's private events
   // from this worker.
@@ -20,30 +20,29 @@ service WorkerPrivateService {
   // subscription could not reach without an out-of-band announcement.
   //
   // The worker emits a one-shot bootstrap reply at subscribe time: one
-  // FileTabPathRegistered per row in worker_file_tabs owned by the caller,
+  // TabPayloadRegistered per row in worker_tab_payloads owned by the caller,
   // followed by live events.
   rpc WatchWorkerPrivateEvents(WatchWorkerPrivateEventsRequest)
       returns (stream WorkerPrivateEvent);
 
-  // RegisterFileTabPath persists (tab_id, path, working dir) on the
-  // worker (user is implied by the authenticated principal). Path is
-  // plaintext on the wire -- this RPC must travel via E2EE. Emits
-  // FileTabPathRegistered.
-  rpc RegisterFileTabPath(RegisterFileTabPathRequest) returns (RegisterFileTabPathResponse);
+  // RegisterTabPayload persists (tab_id, payload) on the worker (user is
+  // implied by the authenticated principal). The payload is plaintext on the
+  // wire -- this RPC must travel via E2EE. Emits TabPayloadRegistered.
+  rpc RegisterTabPayload(RegisterTabPayloadRequest) returns (RegisterTabPayloadResponse);
 
-  // GetFileTabPath returns the worker-stored path and working dir for a
-  // tab. Used by late-joining clients that received a TabRecord via the
-  // CRDT before the corresponding FileTabPathRegistered event.
-  rpc GetFileTabPath(GetFileTabPathRequest) returns (GetFileTabPathResponse);
+  // GetTabPayload returns the worker-stored payload for a tab. Used by
+  // late-joining clients that received a TabRecord via the CRDT before the
+  // corresponding TabPayloadRegistered event.
+  rpc GetTabPayload(GetTabPayloadRequest) returns (GetTabPayloadResponse);
 
-  // RevokeFileTabPath deletes the worker-stored path. Emits
-  // FileTabPathRevoked.
+  // RevokeTabPayload deletes the worker-stored payload. Emits
+  // TabPayloadRevoked.
   //
   // Mirrors the CloseAgent / CloseTerminal contract: the request
   // carries a WorktreeAction, the response carries a CloseTabResult,
   // and the worker drives the same closeTabCommon path so worktree
   // removal stays consistent across tab types.
-  rpc RevokeFileTabPath(RevokeFileTabPathRequest) returns (RevokeFileTabPathResponse);
+  rpc RevokeTabPayload(RevokeTabPayloadRequest) returns (RevokeTabPayloadResponse);
 }
 
 // WatchWorkerPrivateEventsRequest is deliberately empty: the worker the
@@ -53,9 +52,9 @@ message WatchWorkerPrivateEventsRequest {}
 
 message WorkerPrivateEvent {
   oneof event {
-    TabRenamed              tab_renamed                = 1;
-    FileTabPathRegistered   file_tab_path_registered   = 2;
-    FileTabPathRevoked      file_tab_path_revoked      = 3;
+    TabRenamed           tab_renamed            = 1;
+    TabPayloadRegistered tab_payload_registered = 2;
+    TabPayloadRevoked    tab_payload_revoked    = 3;
   }
 }
 
@@ -66,67 +65,109 @@ message TabRenamed {
   string origin_client_id = 4;
 }
 
-message FileTabPathRegistered {
-  string tab_id    = 1;
-  string file_path = 2;
-  // Working dir the worker resolved for this tab (see
-  // RegisterFileTabPathRequest.working_dir). Carried so a client that
-  // learns about the tab from this event -- a peer, or a late joiner
-  // replaying the bootstrap -- puts it in the same branch group as the
-  // client that opened it, instead of inferring one from the path.
-  string working_dir = 3;
-}
-
-message FileTabPathRevoked {
-  string tab_id = 1;
-}
-
-// --- File-tab path RPC payloads ---
-
-message RegisterFileTabPathRequest {
-  string tab_id    = 1;
-  string file_path = 2;
-  // Working dir of the tab the file was opened FROM -- the agent or
-  // terminal whose context the new file tab inherits (title bar, file
-  // tree root, branch group). It becomes the file tab's authoritative
-  // git working directory on the worker, which is what makes a FILE tab
-  // answerable to the same branch-context operations as the other two
-  // tab types: last-tab close inspection, the sibling-on-this-branch
-  // scan, and PushBranch.
+// TabPayload is everything a tab needs to resolve WHAT IT SHOWS, and that the
+// hub must therefore never see. `TabRecord` in the CRDT carries placement only
+// -- tab type, id, tile, position, worker -- so this is the other half of a
+// tab, and it lives on the worker behind the E2EE channel.
+//
+// One message for both kinds rather than one mechanism per kind: a FILE tab's
+// path and an IMAGE tab's message reference are the same class of secret, they
+// are registered, replayed, re-read and revoked at exactly the same points in
+// a tab's life, and every reader below the oneof (the worktree link, the
+// branch group, the orphan reconciler) treats them identically.
+message TabPayload {
+  // The tab's git working directory, and the reason such a tab is a
+  // first-class git citizen rather than a type shared code routes around.
+  // agents.working_dir / terminals.working_dir are what every branch-context
+  // operation resolves a tab through -- last-tab close inspection, the
+  // sibling-on-this-branch scan, push -- and this is that tab's entry in the
+  // same lookup.
   //
-  // Optional. A caller with no originating tab to name -- `leapmux
-  // remote tab open --type=file` run from a plain shell rather than
-  // from inside a LeapMux tab -- leaves it empty, and the worker falls
-  // back to the file's own directory.
-  string working_dir = 3;
+  // It is the ORIGINATING tab's working dir, forwarded by the client that
+  // opened this one, not something derived from the payload. Optional: a
+  // caller with no originating tab to name leaves it empty and the worker
+  // falls back (for a FILE tab, to the file's own directory).
+  string working_dir = 1;
+
+  oneof kind {
+    FileTabPayload  file  = 2;
+    ImageTabPayload image = 3;
+  }
 }
 
-message RegisterFileTabPathResponse {}
-
-message GetFileTabPathRequest {
-  string tab_id = 1;
-}
-
-message GetFileTabPathResponse {
+message FileTabPayload {
+  // Absolute. The worker refuses a relative path rather than normalizing it:
+  // the worker's own CWD is the only base available and it is never the
+  // client's.
   string file_path = 1;
-  // See FileTabPathRegistered.working_dir -- this is the same value on
-  // the one-shot read path a client takes when a TabRecord arrives
-  // before the private-event stream has replayed its bootstrap.
-  string working_dir = 2;
 }
 
-message RevokeFileTabPathRequest {
+// ImageTabPayload addresses an image the agent returned inside one chat
+// message, so the tab can re-fetch it without ever storing the pixels.
+//
+// Storing the base64 here would put a screenshot in the tab layer, and
+// re-fetching costs one GetAgentMessage the scroll rail already makes for its
+// own previews. The three fields together are what the hub must not learn:
+// message seqs are worker-local, and which one a user opened is a fact about
+// their reading, not about the transcript.
+message ImageTabPayload {
+  // The agent whose transcript holds the message. GetAgentMessage is scoped to
+  // it, so a payload naming another user's agent resolves to nothing.
+  string agent_id = 1;
+  // Per-agent message seq -- the same addressing the scroll rail's mark
+  // previews use.
+  int64 seq = 2;
+  // Which image of that message, as the provider's `toolResultImages` orders
+  // them. Both the row that rendered the image and this tab run that one
+  // function, so the index cannot mean two things.
+  int32 image_index = 3;
+  // Display name for the tab strip. Derived once at open time from whatever
+  // the provider knew (a tool name, a file basename); there is nothing on the
+  // resolve path that could recover it.
+  string title = 4;
+}
+
+message TabPayloadRegistered {
   string tab_id = 1;
-  // Worktree disposition chosen by the user when the file tab was the
-  // last tab on a tracked worktree. UNSPECIFIED / KEEP leaves the
-  // worktree in place; REMOVE asks the worker to `git worktree remove`
-  // once no other tabs reference it. Mirrors CloseAgentRequest.
+  TabPayload payload = 2;
+}
+
+message TabPayloadRevoked {
+  string tab_id = 1;
+}
+
+// --- Tab payload RPC messages ---
+
+message RegisterTabPayloadRequest {
+  string tab_id = 1;
+  TabPayload payload = 2;
+}
+
+message RegisterTabPayloadResponse {}
+
+message GetTabPayloadRequest {
+  string tab_id = 1;
+}
+
+message GetTabPayloadResponse {
+  // Always set on a successful response: a tab with no row answers NOT_FOUND
+  // rather than OK with an unset payload, so a reader that sees this field
+  // absent is reading a payload arm its build does not know.
+  TabPayload payload = 1;
+}
+
+message RevokeTabPayloadRequest {
+  string tab_id = 1;
+  // Worktree disposition chosen by the user when this tab was the last tab on
+  // a tracked worktree. UNSPECIFIED / KEEP leaves the worktree in place;
+  // REMOVE asks the worker to `git worktree remove` once no other tabs
+  // reference it. Mirrors CloseAgentRequest.
   WorktreeAction worktree_action = 2;
 }
 
-// RevokeFileTabPathResponse reports the outcome of the close. See
+// RevokeTabPayloadResponse reports the outcome of the close. See
 // CloseTabResult for why partial failures are returned in-band rather
 // than as RPC errors.
-message RevokeFileTabPathResponse {
+message RevokeTabPayloadResponse {
   CloseTabResult result = 1;
 }

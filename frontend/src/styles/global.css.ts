@@ -14,10 +14,11 @@
 //   --z-{dropdown,modal}
 
 import type { ThemeVariant } from '~/styles/themes'
-import { globalFontFace, globalLayer, globalStyle } from '@vanilla-extract/css'
+import { globalFontFace, globalStyle } from '@vanilla-extract/css'
 import { DEFAULT_MONO_FONT_FAMILY } from '~/lib/fontStack'
 import { blendedCodeTint, blendedTint, CODE_BLOCK_TINT_PERCENT, CODE_CARD_TINT_PERCENT, opaqueCodeTint } from '~/styles/codePalette'
 import { DIFF_TINT } from '~/styles/diffTint'
+import { declareAppLayers } from '~/styles/layers'
 import { ALL_VARIANTS, DARK_VARIANTS, LIGHT_VARIANTS, resolveVariant } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
 import { breakpoints } from '~/styles/tokens'
@@ -512,12 +513,13 @@ globalStyle('ot-dropdown hr', {
 // specificity as a VE class, so `dangerMenuItem` and the two `menuItemSelected`
 // classes would have been decided by stylesheet link order alone -- and a
 // chunking change would have flipped "Delete…" back to the default colour and
-// erased the selected-row highlight, with nothing to catch it. Declared here,
-// after Oat's statement, the layer appends past `utilities`: it still beats
-// Oat's `base` button fill, and still loses to every unlayered class by
-// construction. Scoping the selector instead would NOT work -- it raises
-// specificity and would beat those classes outright.
-const menuItem = globalLayer('leapmuxMenuItem')
+// erased the selected-row highlight, with nothing to catch it.
+// `declareAppLayers` states the whole order, Oat's five layers ahead of the
+// app's own, so this layer appends past `utilities` whichever stylesheet the
+// bundler emits first: it still beats Oat's `base` button fill, and still loses
+// to every unlayered class by construction. Scoping the selector instead would
+// NOT work -- it raises specificity and would beat those classes outright.
+const { menuItem } = declareAppLayers()
 
 // Prefix match, not an enumeration: it covers `menuitem`, `menuitemcheckbox`,
 // and `menuitemradio`, and no other ARIA role begins with "menuitem". A list

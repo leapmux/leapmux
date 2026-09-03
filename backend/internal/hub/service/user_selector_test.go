@@ -28,7 +28,7 @@ func newSelectorUser(t *testing.T, st store.Store, username string) *store.User 
 	hash, err := password.Hash("testpass123")
 	require.NoError(t, err)
 	user, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
-		Username: username, PasswordHash: hash, DisplayName: username, PasswordSet: true,
+		Username: username, PasswordHash: hash, DisplayName: username, FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
 	return user

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -169,11 +168,11 @@ func (g *SoloGate) accountHasPassword(ctx context.Context) bool {
 			"error", err)
 		return true
 	}
-	// password.IsUsable, not user.PasswordSet. The column is a claim the
+	// HasUsablePassword, not FirstCredentialExempt. That column is a claim the
 	// creating flow makes, and the solo bootstrap sets it TRUE with an empty
 	// hash -- so reading it here would demand a sign-in that no password can
 	// satisfy, on a hub whose owner never set one. The hash is the fact.
-	if password.IsUsable(user.PasswordHash) {
+	if user.HasUsablePassword() {
 		g.passwordSet.Store(true)
 		return true
 	}

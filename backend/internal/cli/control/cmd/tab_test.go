@@ -777,9 +777,9 @@ func TestDispatchWorkerClose_AgentReportsNoSubagentsWhenTheCloseFails(t *testing
 	assert.Empty(t, subagents)
 }
 
-// A FILE tab's teardown is an RPC, not a no-op. `worker_file_tabs` and the
+// A FILE tab's teardown is an RPC, not a no-op. `worker_tab_payloads` and the
 // worktree_tabs link are worker-side rows that the CRDT tombstone does not
-// touch, and RevokeFileTabPath is what drives the shared closeTabCommon flow
+// touch, and RevokeTabPayload is what drives the shared closeTabCommon flow
 // -- so a `--worktree=discard` on a file tab has to reach the worker or the
 // worktree the user asked to remove simply stays.
 func TestDispatchWorkerClose_FileTabRevokesPathWithAction(t *testing.T) {
@@ -792,8 +792,8 @@ func TestDispatchWorkerClose_FileTabRevokesPathWithAction(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, calls, 1, "a file tab close must dispatch worker-side teardown")
-	assert.Equal(t, "RevokeFileTabPath", calls[0].method)
-	req, ok := calls[0].in.(*leapmuxv1.RevokeFileTabPathRequest)
+	assert.Equal(t, "RevokeTabPayload", calls[0].method)
+	req, ok := calls[0].in.(*leapmuxv1.RevokeTabPayloadRequest)
 	require.True(t, ok, "unexpected request type %T", calls[0].in)
 	assert.Equal(t, "file-1", req.GetTabId())
 	assert.Equal(t, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, req.GetWorktreeAction(),
@@ -812,7 +812,7 @@ func TestDispatchWorkerClose_RoutesPerTabType(t *testing.T) {
 	}{
 		{"agent", leapmuxv1.TabType_TAB_TYPE_AGENT, "w1", "CloseAgent"},
 		{"terminal", leapmuxv1.TabType_TAB_TYPE_TERMINAL, "w1", "CloseTerminal"},
-		{"file", leapmuxv1.TabType_TAB_TYPE_FILE, "w1", "RevokeFileTabPath"},
+		{"file", leapmuxv1.TabType_TAB_TYPE_FILE, "w1", "RevokeTabPayload"},
 		{"no worker", leapmuxv1.TabType_TAB_TYPE_FILE, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1015,4 +1015,20 @@ func TestTerminalOpenRequest_CarriesTheTitle(t *testing.T) {
 func TestTerminalOpenRequest_EmptyTitleMeansTheWorkerPicks(t *testing.T) {
 	req := terminalOpenRequest(openTerminalArgs{WorkerID: "w-1", WorkingDir: "/src"})
 	assert.Empty(t, req.GetTitle())
+}
+
+// The envelope's tab_type is the CANONICAL name, whatever spelling the flag
+// used. `ParseTabType` accepts the proto form so a value can be pasted straight
+// back from JSON, and that tolerance is exactly what makes echoing the raw flag
+// wrong: `tab list` and `tab get` project through `tabTypeName`, so a script
+// comparing tab_type across commands would stop matching for one caller's
+// spelling and not another's.
+func TestTabOpenEnvelope_TabTypeIsCanonicalWhateverTheFlagSpelling(t *testing.T) {
+	for _, spelling := range []string{"file", "TAB_TYPE_FILE"} {
+		tt, ok := resolve.ParseTabType(spelling)
+		require.True(t, ok, "ParseTabType must accept %q", spelling)
+		out := tabOpenEnvelope("tab-1", resolve.TabTypeWireName(tt), "ws-1", "w-1", "tile-1", "p1")
+		assert.Equal(t, "file", out["tab_type"],
+			"the envelope must not echo the %q the user typed", spelling)
+	}
 }

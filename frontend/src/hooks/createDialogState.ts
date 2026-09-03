@@ -8,9 +8,8 @@ import { createSignal } from 'solid-js'
  * typical consumer pattern).
  *
  * The shape collapses the show-flag + payload + setter triple that parents
- * used to thread through props. Use {@link ToggleDialogState} for
- * payload-less dialogs, and {@link UpdatableDialogState} for a dialog whose
- * payload is patched in place.
+ * used to thread through props. Use {@link UpdatableDialogState} for a dialog
+ * whose payload is patched in place.
  *
  * There is deliberately NO `update` here. Whether a payload can change
  * while the dialog stays open decides how the consumer renders it: a
@@ -47,17 +46,6 @@ export interface UpdatableDialogState<T> extends DialogState<T> {
   update: (patch: Partial<T>) => boolean
 }
 
-/**
- * Imperative handle for a payload-less dialog (a pure "shown / hidden"
- * toggle). `isOpen` is a boolean accessor; consumers gate with
- * `<Show when={state.isOpen()}>`.
- */
-export interface ToggleDialogState {
-  open: () => void
-  close: () => void
-  isOpen: Accessor<boolean>
-}
-
 export function createUpdatableDialogState<T>(): UpdatableDialogState<T> {
   const [value, setValue] = createSignal<T | null>(null)
   return {
@@ -81,13 +69,4 @@ export function createUpdatableDialogState<T>(): UpdatableDialogState<T> {
  */
 export function createDialogState<T>(): DialogState<T> {
   return createUpdatableDialogState<T>()
-}
-
-export function createToggleDialog(): ToggleDialogState {
-  const [isOpen, setIsOpen] = createSignal(false)
-  return {
-    open: () => setIsOpen(true),
-    close: () => setIsOpen(false),
-    isOpen,
-  }
 }

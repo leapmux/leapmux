@@ -388,7 +388,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 	// Passkey-only / OAuth-only accounts store PlaceholderHash. Verify would
 	// return a parse error mapped to CodeInternal and leak that the username
 	// exists without a password. Treat "no password" like a wrong password.
-	if !user.PasswordSet {
+	if !user.FirstCredentialExempt {
 		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 	}
 
@@ -417,7 +417,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		if lockedUser.Username != store.NormalizeUsername(username) {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
-		if !lockedUser.PasswordSet {
+		if !lockedUser.FirstCredentialExempt {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
 		match, verifyErr := matchPrelock, verifyErrPrelock

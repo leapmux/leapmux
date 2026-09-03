@@ -15,6 +15,7 @@ import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderBypassSettings, ProviderSettingsAction } from '../providerSettings'
 import type { AgentInfo, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
@@ -253,6 +254,25 @@ export interface Provider {
     spanType: string | undefined,
     toolUseParsed: ParsedMessageContent | undefined,
   ) => ToolResultMeta | null
+
+  /**
+   * Every image a message carries, in a stable order.
+   *
+   * Two callers must agree on what "image N of this message" means: the row
+   * that renders the images, and the image tab that resolves index N again
+   * later against the same message re-fetched from the worker. One pure
+   * provider-dispatched function is what stops them drifting -- an order
+   * derived twice, from two walks of the same JSON, would agree until the day
+   * one of them learned a new block kind.
+   *
+   * Runs outside the render tree, so it must not read Solid state. Return an
+   * empty array when the message carries no image.
+   */
+  toolResultImages?: (
+    parsed: unknown,
+    spanType: string | undefined,
+    toolUseParsed: ParsedMessageContent | undefined,
+  ) => ImageResultSource[]
 
   /**
    * Extract quotable text from a parsed message — used by MessageBubble to

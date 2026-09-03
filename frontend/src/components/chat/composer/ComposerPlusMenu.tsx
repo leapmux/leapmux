@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ProviderSettingChangeHandler, ProviderSettingsAction } from '~/components/chat/providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
+import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -76,11 +77,15 @@ export interface ComposerPlusMenuProps {
    * neither surface applies a default of its own.
    */
   workingTree: WorkingTreeInfo
-  /** Open the "Change branch..." dialog. */
-  onChangeBranch?: () => void
-  /** Open the "Delete branch..." / "Delete worktree..." dialog. */
-  onDeleteBranch?: () => void
-  /** Why both branch actions are unusable (e.g. the Worker is offline). */
+  /**
+   * Every branch-submenu action, already bound to this agent's branch. Omit to
+   * hide the submenu — its trigger opens a menu, so a trigger with no actions
+   * would open one of dead items.
+   */
+  branchActions?: BranchMenuActions
+  /** The Worker the branch is checked out on, for the submenu's own lists. */
+  branchWorkerId?: string
+  /** Why every branch action is unusable (e.g. the Worker is offline). */
   branchDisabledReason?: string
   /** Whether the status bar is shown. */
   showStatusBar: () => boolean
@@ -127,6 +132,14 @@ interface MenuStructure {
    * live: those are labels, and staleness there would be its own bug.
    */
   isWorktree: boolean
+  /**
+   * Frozen WITH the branch name for the same reason the kind is: the submenu
+   * renders only when both are present, so a live bundle under a held name
+   * could leave the row on screen with nothing behind it. The bundle's own
+   * closures still read the branch at CLICK time, so freezing it here holds the
+   * row still without acting on stale data.
+   */
+  branchActions?: BranchMenuActions
   agentInfo?: () => JSX.Element
 }
 
@@ -191,11 +204,16 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const structure = createMemo<MenuStructure>((prev) => {
     if (open() && prev !== undefined && hasMenuRows(prev))
       return prev
+    // The submenu needs BOTH a name to show and actions to run, so the two
+    // travel as one fact: `branchName` is set only when the bundle is there,
+    // and `hasMenuRows` below then fences the region correctly either way.
+    const branchActions = props.branchActions
     return {
       groupIds: liveGroupIds(),
       actions: liveActions(),
-      branchName: props.workingTree.name || undefined,
+      branchName: branchActions ? props.workingTree.name || undefined : undefined,
       isWorktree: props.workingTree.isWorktree,
+      branchActions,
       agentInfo: props.agentInfo,
     }
   })
@@ -204,7 +222,11 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const actions = () => structure().actions
   const branchName = () => structure().branchName
   const agentInfo = () => structure().agentInfo
-  const isWorktree = () => structure().isWorktree
+  /** The held facts of the branch submenu, or undefined when it draws none. */
+  const heldBranch = () => {
+    const { branchName: name, branchActions, isWorktree } = structure()
+    return name && branchActions ? { name, actions: branchActions, isWorktree } : undefined
+  }
 
   // Whether anything renders BETWEEN the attach item and the view toggles. Both
   // rules that fence that region are drawn only when it is non-empty: a fresh
@@ -290,16 +312,16 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
           status bar that normally hosts it is a preference this menu can switch
           off, and the only other route is the sidebar — which is itself hidden
           behind a toggle on a narrow layout. Same menu items, same guard. */}
-      <Show when={branchName()}>
+      <Show when={heldBranch()}>
         {branch => (
           <BranchContextMenu
-            isWorktree={isWorktree()}
-            onChangeBranch={props.onChangeBranch ?? (() => {})}
-            onDeleteBranch={props.onDeleteBranch ?? (() => {})}
+            isWorktree={branch().isWorktree}
+            workerId={props.branchWorkerId ?? ''}
+            actions={branch().actions}
             disabledReason={props.branchDisabledReason}
             data-testid="composer-plus-branch-popover"
             trigger={triggerProps => (
-              // The trigger stays enabled — the two items inside it are what the
+              // The trigger stays enabled — the items inside it are what the
               // Worker guard disables — so the reason needs a real tooltip here.
               // Absent a reason it carries what the status-bar chip carries: the
               // kind of checkout and its directory. This menu exists because the
@@ -311,7 +333,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               // badge stay live.
               <WorkingTreeTooltip
                 disabledReason={props.branchDisabledReason}
-                info={{ ...props.workingTree, isWorktree: isWorktree(), name: branch() }}
+                info={{ ...props.workingTree, isWorktree: branch().isWorktree, name: branch().name }}
               >
                 <button
                   role="menuitem"
@@ -320,8 +342,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
                   {...triggerProps}
                 >
                   <span class={styles.subTriggerLabel}>
-                    <WorkingTreeIcon isWorktree={isWorktree()} size="xs" />
-                    {branch()}
+                    <WorkingTreeIcon isWorktree={branch().isWorktree} size="xs" />
+                    {branch().name}
                   </span>
                   <Icon icon={ChevronRight} size="xs" />
                 </button>

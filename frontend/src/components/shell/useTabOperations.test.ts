@@ -23,8 +23,8 @@ import { createTestFloatingWindowStore, createTestTabStores } from '~/test-suppo
 // `mock.calls[0]` and narrow `req` with a per-call `as { ... }` cast.
 const mockInspectLastTabClose = vi.fn((..._args: unknown[]) => Promise.resolve({ shouldPrompt: false } as unknown))
 const mockPushBranch = vi.fn((..._args: unknown[]) => {})
-const mockRegisterFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
-const mockRevokeFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockRegisterTabPayload = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockRevokeTabPayload = vi.fn((..._args: unknown[]) => Promise.resolve({}))
 const mockCloseAgent = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
 const mockCloseTerminal = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
 const mockShowWarnToast = vi.fn()
@@ -33,8 +33,8 @@ const mockShowInfoToast = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
   inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
   pushBranch: (...args: unknown[]) => mockPushBranch(...args),
-  registerFileTabPath: (...args: unknown[]) => mockRegisterFileTabPath(...args),
-  revokeFileTabPath: (...args: unknown[]) => mockRevokeFileTabPath(...args),
+  registerTabPayload: (...args: unknown[]) => mockRegisterTabPayload(...args),
+  revokeTabPayload: (...args: unknown[]) => mockRevokeTabPayload(...args),
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args),
   closeTerminal: (...args: unknown[]) => mockCloseTerminal(...args),
 }))
@@ -173,33 +173,258 @@ describe('useTabOperations', () => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
     mockPushBranch.mockReset()
-    mockRegisterFileTabPath.mockReset()
-    mockRevokeFileTabPath.mockReset()
-    mockRegisterFileTabPath.mockImplementation(() => Promise.resolve({}))
-    mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRegisterTabPayload.mockReset()
+    mockRevokeTabPayload.mockReset()
+    mockRegisterTabPayload.mockImplementation(() => Promise.resolve({}))
+    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
     mockShowWarnToast.mockReset()
     mockShowInfoToast.mockReset()
   })
 
   describe('file-tab E2EE worker round-trip', () => {
-    it('handleFileOpen calls RegisterFileTabPath with the local path and the originating tab\'s working dir', async () => {
+    it('handleFileOpen calls RegisterTabPayload with the local path and the originating tab\'s working dir', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
           ops.handleFileOpen('/tmp/nested/myfile.go')
           // Allow the fire-and-forget E2EE call to dispatch.
           await Promise.resolve()
-          expect(mockRegisterFileTabPath).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRegisterFileTabPath.mock.calls[0]
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRegisterTabPayload.mock.calls[0]
           expect(workerId).toBe('w-1')
           // The working dir is the CONTEXT's, not the file's own directory:
           // it is what the worker answers this tab's branch-context questions
           // from (last-tab close, sibling scan, push), so it has to name the
           // repo the user is working in rather than wherever the file sits.
           expect(req).toMatchObject({
-            filePath: '/tmp/nested/myfile.go',
+            payload: {
+              workingDir: '/tmp',
+              kind: { case: 'file', value: { filePath: '/tmp/nested/myfile.go' } },
+            },
+          })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen registers a message reference, never the pixels', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          await Promise.resolve()
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(workerId).toBe('w-1')
+          expect(req).toMatchObject({
+            payload: {
+              workingDir: '/tmp',
+              kind: {
+                case: 'image',
+                value: { agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' },
+              },
+            },
+          })
+          // The whole point of the reference: a screenshot must not reach the
+          // tab layer, which the hub sees the identity half of.
+          expect(JSON.stringify(req, (_k, v) => typeof v === 'bigint' ? String(v) : v))
+            .not
+            .toContain('base64')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen focuses the existing tab instead of opening a second one', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          await flush()
+          const opened = view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)
+          expect(opened).toHaveLength(1)
+
+          mockRegisterTabPayload.mockClear()
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          await flush()
+          expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
+          expect(mockRegisterTabPayload).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen opens a separate tab for a different image of the same message', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          await flush()
+          expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(2)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen rolls the tab back when the payload registration fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          mockRegisterTabPayload.mockRejectedValueOnce(new Error('channel closed'))
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          await flush()
+          // Leaving it would strand a tab no peer -- and no reload -- can
+          // resolve, because nothing on the worker describes it.
+          expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(0)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The routing rule the whole click path rests on. The transcript's copy of
+    // an image the agent read from disk is a downsample it sent to its model, so
+    // a named path has to reach the FILE viewer instead -- same picture, full
+    // resolution, straight off the Worker.
+    it('handleChatImageOpen opens the FILE itself when the provider named a path', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 0,
+            filePath: '/repo/shot.png',
+            title: 'Read',
+            workerId: 'w-1',
             workingDir: '/tmp',
           })
+          await flush()
+
+          const tabs = view.forWorkspace('ws-test')
+          expect(tabs.filter(t => t.type === TabType.IMAGE)).toHaveLength(0)
+          const files = tabs.filter(t => t.type === TabType.FILE)
+          expect(files).toHaveLength(1)
+          expect(files[0]).toMatchObject({ filePath: '/repo/shot.png' })
+          // A FILE payload, so a peer resolves it as a path and not as a
+          // message reference it would have to fetch an agent message for.
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          const [, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(req).toMatchObject({ payload: { kind: { case: 'file' } } })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleChatImageOpen opens an IMAGE tab when the image exists only in the transcript', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          // No filePath: an MCP screenshot, or a Bash whose stdout was a data
+          // URI. Nothing on disk to open, so the reference is the only route.
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 3, title: 'screenshot', workerId: 'w-1', workingDir: '/tmp' })
+          await flush()
+
+          const tabs = view.forWorkspace('ws-test')
+          expect(tabs.filter(t => t.type === TabType.FILE)).toHaveLength(0)
+          const images = tabs.filter(t => t.type === TabType.IMAGE)
+          expect(images).toHaveLength(1)
+          // `index` becomes `imageIndex`, which is what the viewer resolves by.
+          expect(images[0]).toMatchObject({ imageAgentId: 'agent-a', imageSeq: 42n, imageIndex: 3 })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // `''` is "no path", not a path. An extractor that fills `filePath` from a
+    // field the wire left blank produces one, and routing it to the FILE branch
+    // would open a viewer on the empty path -- which the worker refuses, so the
+    // user would get a broken tab instead of the picture they clicked.
+    it('handleChatImageOpen treats an empty path as no path', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, filePath: '', title: 'shot', workerId: 'w-1', workingDir: '/tmp' })
+          await flush()
+
+          const tabs = view.forWorkspace('ws-test')
+          expect(tabs.filter(t => t.type === TabType.FILE)).toHaveLength(0)
+          expect(tabs.filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The click site names the Worker, and the focused tile does not get a
+    // vote. A tile is focused by a click that BUBBLES from this very button, so
+    // on the first click into an unfocused split the focused tile is still the
+    // other one -- and registering the payload there writes it on a Worker that
+    // has no such agent, leaving a tab that can never resolve.
+    it('handleChatImageOpen registers the image on the agent\'s worker, not the focused tile\'s', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({
+            agentId: 'agent-b',
+            seq: 7n,
+            index: 1,
+            title: 'screenshot',
+            workerId: 'w-2',
+            workingDir: '/other',
+          })
+          await flush()
+
+          const images = view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)
+          expect(images).toHaveLength(1)
+          expect(images[0]).toMatchObject({ workerId: 'w-2', workingDir: '/other' })
+          const [workerId] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(workerId).toBe('w-2')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // Same rule on the FILE branch: the path the agent named lives on the
+    // agent's machine, so opening it against the focused tile's Worker asks the
+    // wrong host for a file it does not have.
+    it('handleChatImageOpen opens a named path on the agent\'s worker', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({
+            agentId: 'agent-b',
+            seq: 7n,
+            index: 0,
+            filePath: '/other/shot.png',
+            title: 'Read',
+            workerId: 'w-2',
+            workingDir: '/other',
+          })
+          await flush()
+
+          const files = view.forWorkspace('ws-test').filter(t => t.type === TabType.FILE)
+          expect(files).toHaveLength(1)
+          expect(files[0]).toMatchObject({ filePath: '/other/shot.png', workerId: 'w-2' })
+          const [workerId] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(workerId).toBe('w-2')
         }
         finally {
           dispose()
@@ -246,7 +471,7 @@ describe('useTabOperations', () => {
           // The seeded agent tabs are outside this workspace's tree; the
           // claim is that no FILE tab joined them.
           expect(view.all().some(t => t.type === TabType.FILE), 'nothing was placed').toBe(false)
-          expect(mockRegisterFileTabPath, 'no phantom row for an unplaced tab id').not.toHaveBeenCalled()
+          expect(mockRegisterTabPayload, 'no phantom row for an unplaced tab id').not.toHaveBeenCalled()
           expect(mockShowWarnToast).toHaveBeenCalled()
         }
         finally {
@@ -276,7 +501,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose on a FILE tab inspects then calls RevokeFileTabPath with KEEP', async () => {
+    it('handleTabClose on a FILE tab inspects then calls RevokeTabPayload with KEEP', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
@@ -291,8 +516,8 @@ describe('useTabOperations', () => {
           expect(ok).toBe(true)
           await Promise.resolve()
           expect(mockInspectLastTabClose).toHaveBeenCalledTimes(1)
-          expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRevokeFileTabPath.mock.calls[0]
+          expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRevokeTabPayload.mock.calls[0]
           expect(workerId).toBe('w-1')
           expect((req as { tabId: string }).tabId).toBe('file-1')
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
@@ -323,7 +548,7 @@ describe('useTabOperations', () => {
           const ok = await closePromise
           expect(ok).toBe(false)
           expect(view.all().some(t => t.id === 'file-last')).toBe(true)
-          expect(mockRevokeFileTabPath).not.toHaveBeenCalled()
+          expect(mockRevokeTabPayload).not.toHaveBeenCalled()
         }
         finally {
           dispose()
@@ -331,10 +556,10 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose FILE tab close-anyway forwards WorktreeAction.KEEP to RevokeFileTabPath', async () => {
+    it('handleTabClose FILE tab close-anyway forwards WorktreeAction.KEEP to RevokeTabPayload', async () => {
       // Counterpart to the schedule-delete test below: the user chose
       // to close the last FILE tab but keep the worktree on disk.
-      // RevokeFileTabPath must still fire (the row + worktree link
+      // RevokeTabPayload must still fire (the row + worktree link
       // need to come down) with KEEP so the worker side leaves the
       // worktree alone — same shape as the AGENT/TERMINAL close-anyway
       // path.
@@ -351,8 +576,8 @@ describe('useTabOperations', () => {
           const ok = await closePromise
           expect(ok).toBe(true)
           await Promise.resolve()
-          expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
-          const [, req] = mockRevokeFileTabPath.mock.calls[0]
+          expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
+          const [, req] = mockRevokeTabPayload.mock.calls[0]
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
           expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worktree will be removed')
         }
@@ -362,7 +587,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleTabClose FILE tab schedule-delete forwards WorktreeAction.REMOVE to RevokeFileTabPath', async () => {
+    it('handleTabClose FILE tab schedule-delete forwards WorktreeAction.REMOVE to RevokeTabPayload', async () => {
       await createRoot(async (dispose) => {
         try {
           const { view, ops, addFile } = setup()
@@ -376,8 +601,8 @@ describe('useTabOperations', () => {
           const ok = await closePromise
           expect(ok).toBe(true)
           await Promise.resolve()
-          expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
-          const [, req] = mockRevokeFileTabPath.mock.calls[0]
+          expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
+          const [, req] = mockRevokeTabPayload.mock.calls[0]
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.REMOVE)
           // The report is the worker's verdict, not an optimistic promise at
           // click time. This mock resolves no result, so the honest answer is
@@ -392,10 +617,10 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('handleFileOpen rolls back the optimistic tab on RegisterFileTabPath failure', async () => {
+    it('handleFileOpen rolls back the optimistic tab on RegisterTabPayload failure', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockRegisterFileTabPath.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
+          mockRegisterTabPayload.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
           const { view, ops } = setup()
           ops.handleFileOpen('/tmp/myfile.go')
           // Tab added optimistically.
@@ -953,8 +1178,8 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
     mockCloseAgent.mockReset()
     mockCloseTerminal.mockReset()
-    mockRevokeFileTabPath.mockReset()
-    mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRevokeTabPayload.mockReset()
+    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
   })
 
   /**
@@ -1041,7 +1266,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
     })
   })
 
-  it('closes a FILE tab in another workspace via revokeFileTabPath', async () => {
+  it('closes a FILE tab in another workspace via revokeTabPayload', async () => {
     await createRoot(async (dispose) => {
       const { ops, tab, view, handleAgentClose, handleTerminalClose }
         = setupCrossWorkspace(TabType.FILE, 'file-cross', { filePath: '/repo/x.md' })
@@ -1054,9 +1279,9 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       // workerId.
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
-      expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
-      expect(mockRevokeFileTabPath.mock.calls[0][0]).toBe('w-other')
-      expect(mockRevokeFileTabPath.mock.calls[0][1]).toMatchObject({
+      expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
+      expect(mockRevokeTabPayload.mock.calls[0][0]).toBe('w-other')
+      expect(mockRevokeTabPayload.mock.calls[0][1]).toMatchObject({
         tabId: 'file-cross',
         worktreeAction: WorktreeAction.KEEP,
       })
@@ -1074,8 +1299,8 @@ describe('useTabOperations.handleTabClose focus migration', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
-    mockRevokeFileTabPath.mockReset()
-    mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRevokeTabPayload.mockReset()
+    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
   })
 
   it('moves focusedTileId to the surviving active tab\'s tile when the focused tile empties', async () => {
@@ -1231,8 +1456,8 @@ describe('useTabOperations.handleTabClose floating-window cleanup', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
-    mockRevokeFileTabPath.mockReset()
-    mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRevokeTabPayload.mockReset()
+    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
   })
 
   it('closing the last FILE tab in a single-tile floating window auto-removes the window', async () => {
@@ -1319,8 +1544,8 @@ describe('useTabOperations.closeTabWithAction', () => {
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
     mockCloseAgent.mockReset()
     mockCloseTerminal.mockReset()
-    mockRevokeFileTabPath.mockReset()
-    mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRevokeTabPayload.mockReset()
+    mockRevokeTabPayload.mockImplementation(() => Promise.resolve({}))
     mockCloseAgent.mockImplementation(() => Promise.resolve({ result: undefined }))
     mockCloseTerminal.mockImplementation(() => Promise.resolve({ result: undefined }))
   })
@@ -1594,9 +1819,9 @@ describe('useTabOperations.closeTabWithAction', () => {
 
       expect(handleAgentClose).not.toHaveBeenCalled()
       expect(handleTerminalClose).not.toHaveBeenCalled()
-      expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
-      expect(mockRevokeFileTabPath.mock.calls[0][0]).toBe('w-cross')
-      expect(mockRevokeFileTabPath.mock.calls[0][1]).toMatchObject({
+      expect(mockRevokeTabPayload).toHaveBeenCalledTimes(1)
+      expect(mockRevokeTabPayload.mock.calls[0][0]).toBe('w-cross')
+      expect(mockRevokeTabPayload.mock.calls[0][1]).toMatchObject({
         tabId: 'file-cross',
         worktreeAction: WorktreeAction.KEEP,
       })

@@ -21,11 +21,11 @@ vi.mock('~/api/clients', () => ({
 }))
 
 // Solo mode, the desktop app and the solo account's password are the three
-// environment facts a hide rule reads. Control them per test rather than
+// environment facts these rows read. Control them per test rather than
 // depending on the fabricated defaults -- `isDesktopApp` answers false under
 // jsdom, which would hide every Desktop row and make its visibility cases
-// vacuous, and the password is what decides whether the Password row appears
-// on a solo hub.
+// vacuous, and the password is what the Account case moves to prove that the
+// Password row survives either answer.
 const solo = vi.hoisted(() => vi.fn(() => false))
 const desktop = vi.hoisted(() => vi.fn(() => true))
 const soloPassword = vi.hoisted(() => vi.fn(() => false))
@@ -150,15 +150,14 @@ describe('browserSettings registry', () => {
       .toBeFalsy()
   })
 
-  // The Account section on a solo hub holds ONE row, and only once the account
-  // has a password.
+  // The Account section on a solo hub holds ONE row, whatever the account's
+  // password says.
   //
-  // Its four neighbours stay hidden either way, because solo refuses the RPCs
-  // behind them; ChangePassword is reachable there, because the password is
-  // what lets the hub answer on a network address at all. Before that first
-  // password, Administration → Network access owns setting it -- beside the
-  // addresses it guards -- so the two surfaces never offer the field at once.
-  it('shows the Account password row in solo only once a password exists', () => {
+  // Its four neighbours stay hidden, because solo refuses the RPCs behind
+  // them. ChangePassword is reachable there -- the password is what lets the
+  // hub answer on a network address at all -- so the row is where a solo owner
+  // sets the first password as well as replaces it.
+  it('keeps the Account password row in solo, with or without a password', () => {
     const hiddenOf = (id: string) => {
       const d = descriptorsOf(makeFakePrefs() as unknown as PreferencesState).find(x => x.id === id)
       return d?.hidden?.() ?? false
@@ -168,7 +167,7 @@ describe('browserSettings registry', () => {
     expect(hiddenOf('account.password')).toBe(false)
 
     solo.mockReturnValue(true)
-    expect(hiddenOf('account.password')).toBe(true)
+    expect(hiddenOf('account.password'), 'the first password is set here too').toBe(false)
     for (const id of neighbours)
       expect(hiddenOf(id), `${id} must stay hidden in solo`).toBe(true)
 
