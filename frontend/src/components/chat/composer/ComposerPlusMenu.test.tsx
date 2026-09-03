@@ -2,6 +2,7 @@ import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
@@ -35,6 +36,7 @@ function renderMenu(opts: {
   directory?: string
   homeDir?: string
   branchStats?: { added: number, deleted: number, untracked: number }
+  settingsDispatcher?: boolean
 } = {}) {
   const onSettingChange = vi.fn()
   const onAttachFile = vi.fn()
@@ -46,7 +48,7 @@ function renderMenu(opts: {
       optionGroups={opts.groups ?? []}
       optionValues={opts.values ?? {}}
       agentProvider={opts.provider}
-      onSettingChange={onSettingChange}
+      onSettingChange={opts.settingsDispatcher === false ? undefined : onSettingChange}
       onAttachFile={onAttachFile}
       canAttach={opts.canAttach ?? true}
       disabledReason={opts.disabledReason}
@@ -315,7 +317,7 @@ describe('composerPlusMenu', () => {
 
     expect(onSettingChange).toHaveBeenCalledTimes(1)
     const change = onSettingChange.mock.calls[0]![0] as { sets: Record<string, string> }
-    expect(Object.keys(change.sets).length).toBeGreaterThan(1)
+    expect(change).toEqual(CODEX_BYPASS_SETTINGS)
   })
 
   it('disables a provider action whose axes are already applied', () => {
@@ -388,6 +390,35 @@ describe('composerPlusMenu', () => {
     })
 
     expect(screen.getByTestId('composer-smart-permissions')).toBeDisabled()
+  })
+
+  it('keeps a multi-axis permission action enabled until every target is active', () => {
+    renderMenu({
+      provider: AgentProvider.CODEX,
+      groups: [
+        group('network_access', 'Network', 10, ['restricted', 'enabled']),
+        group('sandbox_policy', 'Sandbox', 20, ['workspace-write', 'danger-full-access']),
+        group('permissionMode', 'Approval', 30, ['on-request', 'never']),
+      ],
+      values: {
+        network_access: 'enabled',
+        sandbox_policy: 'danger-full-access',
+        permissionMode: 'on-request',
+      },
+    })
+
+    expect(screen.getByTestId('composer-bypass-permissions')).toBeEnabled()
+  })
+
+  it('disables permission actions when no settings dispatcher exists', () => {
+    renderMenu({
+      provider: AgentProvider.CLAUDE_CODE,
+      groups: [group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions'])],
+      settingsDispatcher: false,
+    })
+
+    expect(screen.getByTestId('composer-smart-permissions')).toBeDisabled()
+    expect(screen.getByTestId('composer-bypass-permissions')).toBeDisabled()
   })
 
   it('disables attach during a control request, and says why', () => {

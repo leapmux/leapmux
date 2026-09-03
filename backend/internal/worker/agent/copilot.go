@@ -108,6 +108,7 @@ func (a *CopilotCLIAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 			template = filterGroupOptions(template, func(option *leapmuxv1.AvailableOption) bool {
 				return option.GetId() == contracts.CopilotPermissionValueOff
 			})
+			template.DefaultValue = contracts.CopilotPermissionValueOff
 			template.Mutable = false
 		}
 		filtered = append(filtered, liveGroup(template, a.assistedApprovalValue()))
@@ -172,8 +173,8 @@ func init() {
 			OptionOrderProviderFourth,
 			contracts.CopilotPermissionValueOff,
 			[]optDef{
-				{Id: contracts.CopilotPermissionValueOff, Name: "Off", Default: true},
-				{Id: contracts.CopilotPermissionValueOn, Name: "On", Description: "Approve safe tool calls and ask about other calls. This also enables all experimental Copilot features."},
+				{Id: contracts.CopilotPermissionValueOff, Name: "Off"},
+				{Id: contracts.CopilotPermissionValueOn, Name: "On", Description: "Approve safe tool calls and ask about other calls. This also enables all experimental Copilot features.", Default: true},
 			},
 		),
 	)

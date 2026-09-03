@@ -370,7 +370,7 @@ describe('emitters', () => {
   })
 })
 
-// The provider-protocol domains (zcode, pi) carry an agent's OWN wire vocabulary, and
+// The provider-protocol domains (ZCode, Goose, Pi) carry an agent's OWN wire vocabulary, and
 // both languages dispatch on the literals -- so the checks below are what stop a table
 // from reaching one side and not the other, or from carrying two branches the wire
 // cannot tell apart.

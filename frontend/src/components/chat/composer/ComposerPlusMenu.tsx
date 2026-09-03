@@ -421,7 +421,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             <button
               role="menuitem"
               data-testid={action.testId}
-              disabled={!!props.disabledReason || !permissionActionAvailable(action) || Object.entries(action.preset.sets).every(
+              disabled={!props.onSettingChange || !!props.disabledReason || !permissionActionAvailable(action) || Object.entries(action.preset.sets).every(
                 ([k, v]) => resolvedCurrent(props.optionGroups, props.optionValues, k) === v,
               )}
               onClick={() => props.onSettingChange?.({ sets: { ...action.preset.sets } })}

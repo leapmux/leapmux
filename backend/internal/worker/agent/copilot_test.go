@@ -115,6 +115,7 @@ func TestStartCopilotCLIFallsBackWhenNewSessionDefaultIsUnavailable(t *testing.T
 	assert.False(t, group.GetMutable())
 	require.Len(t, group.GetOptions(), 1)
 	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetOptions()[0].GetId())
+	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetDefaultValue())
 	assert.Equal(t, contracts.CopilotPermissionValueOff,
 		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
 }
@@ -162,6 +163,7 @@ func TestCopilotAssistedApprovalOptionGroup(t *testing.T) {
 	require.NotNil(t, group)
 	assert.Equal(t, "Assisted Approval", group.GetLabel())
 	assert.Equal(t, contracts.CopilotPermissionValueOn, group.GetCurrentValue())
+	assert.Equal(t, contracts.CopilotPermissionValueOn, group.GetDefaultValue())
 	assert.Equal(t, []string{contracts.CopilotPermissionValueOff, contracts.CopilotPermissionValueOn},
 		[]string{group.GetOptions()[0].GetId(), group.GetOptions()[1].GetId()})
 	assert.Equal(t, contracts.CopilotPermissionValueOn,
@@ -192,6 +194,7 @@ func TestCopilotAssistedApprovalUnavailable(t *testing.T) {
 	assert.False(t, group.GetMutable())
 	require.Len(t, group.GetOptions(), 1)
 	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetOptions()[0].GetId())
+	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetDefaultValue())
 	assert.Equal(t, contracts.CopilotPermissionValueOff,
 		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
 }

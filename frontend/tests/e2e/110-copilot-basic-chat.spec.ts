@@ -18,10 +18,9 @@ copilotTest.describe('Copilot Basic Chat', () => {
     const smart = menu.getByTestId('composer-smart-permissions')
     const bypass = menu.getByTestId('composer-bypass-permissions')
     await expect(bypass).toBeVisible()
-    if (await smart.count() === 0)
-      return
-
-    await expect(smart).toBeDisabled()
+    const smartOffered = await smart.count() > 0
+    if (smartOffered)
+      await expect(smart).toBeDisabled()
     await bypass.click()
     await waitForSettingsIdle(page)
 
@@ -29,6 +28,9 @@ copilotTest.describe('Copilot Basic Chat', () => {
     await expect(group.locator('[data-testid="allow_all-on"] input[type="radio"]')).toBeChecked()
     group = await openSettingsMenu(page, 'copilot_assisted_approval')
     await expect(group.locator('[data-testid="copilot_assisted_approval-off"] input[type="radio"]')).toBeChecked()
+
+    if (!smartOffered)
+      return
 
     menu = await openPlusMenu(page)
     await menu.getByTestId('composer-smart-permissions').click()
