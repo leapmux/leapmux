@@ -63,6 +63,15 @@ func TestResolveProviderDefaults(t *testing.T) {
 	assert.Equal(t, "sonnet", kept[agent.OptionIDModel], "an explicit value is left untouched")
 }
 
+func TestResolveProviderDefaults_CodexUsesAccountDefaultSentinel(t *testing.T) {
+	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "")
+
+	codex := resolveProviderDefaults(OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+
+	assert.Equal(t, agent.DefaultModelSentinel, codex[agent.OptionIDModel])
+	assert.Equal(t, agent.EffortAuto, codex[agent.OptionIDEffort])
+}
+
 // TestOptionsChangeDelta pins the minimal-delta the settings-edit CAS persists: a changed or
 // added key carries its new value, a removed key carries "" (the wire merge deletes it), and
 // an unchanged key is omitted -- so a concurrent server-initiated refresh's keys aren't
@@ -195,4 +204,54 @@ func TestParseOptionGroups_AllOrNothing(t *testing.T) {
 	assert.Nil(t, parseOptionGroups(""))
 	assert.Nil(t, parseOptionGroups("[]"))
 	assert.Nil(t, parseOptionGroups("{not json"))
+}
+
+// TestResetEffortToAutoIfUnsupported_KeepsEffortOnTheAccountDefault is the guard
+// for silent data loss on a stopped agent. The account-default sentinel is a
+// SELECTABLE model whose catalog entry carries no efforts, so a catalog lookup
+// reports every tier unsupported. Clamping on that answer discards a user's
+// effort on ANY edit -- including an edit that never touched the effort axis --
+// and resolveProviderDefaults only refills an EMPTY effort, so the choice is gone
+// for good. An unresolved model must be left for the running session to validate.
+func TestResetEffortToAutoIfUnsupported_KeepsEffortOnTheAccountDefault(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		provider leapmuxv1.AgentProvider
+	}{
+		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX},
+		{name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// No agent is registered under this id, so OptionGroups serves the static
+			// fallback -- exactly the catalog a settings edit on a STOPPED agent sees.
+			manager := agent.NewManager(nil)
+			catalog := manager.OptionGroups("not-running", test.provider, agent.DefaultModelSentinel)
+			require.NotEmpty(t, catalog)
+
+			// An edit on an unrelated axis: the effort is merely inherited from the
+			// stored row, and explicitEffort is empty because the client sent none.
+			inherited := OptionMap{agent.OptionIDModel: agent.DefaultModelSentinel, agent.OptionIDEffort: "high"}
+			resetEffortToAutoIfUnsupported(test.provider, inherited, catalog, agent.DefaultModelSentinel, agent.DefaultModelSentinel, "")
+			assert.Equal(t, "high", inherited[agent.OptionIDEffort],
+				"an edit on another axis must not discard the stored effort")
+
+			// An explicit effort on a stopped agent still sitting on the sentinel.
+			explicit := OptionMap{agent.OptionIDModel: agent.DefaultModelSentinel, agent.OptionIDEffort: "high"}
+			resetEffortToAutoIfUnsupported(test.provider, explicit, catalog, agent.DefaultModelSentinel, agent.DefaultModelSentinel, "high")
+			assert.Equal(t, "high", explicit[agent.OptionIDEffort],
+				"an explicitly chosen effort must stick until the model resolves")
+
+			// Switching TO the sentinel with no effort sent still resets, so the
+			// account's own default model picks its own tier. That clause is
+			// untouched by the unresolved-model guard.
+			switched := OptionMap{agent.OptionIDModel: agent.DefaultModelSentinel, agent.OptionIDEffort: "high"}
+			resetEffortToAutoIfUnsupported(test.provider, switched, catalog, "some-other-model", agent.DefaultModelSentinel, "")
+			assert.Equal(t, agent.EffortAuto, switched[agent.OptionIDEffort],
+				"a model switch with no explicit effort still hands the tier back to the agent")
+		})
+	}
 }

@@ -154,3 +154,7 @@ func (zcodeProvider) EndsSubagentTranscript([]byte) bool { return false }
 // SupportsChildSteering is false: a ZCode subagent runs to completion and takes no
 // further message.
 func (zcodeProvider) SupportsChildSteering() bool { return false }
+
+// ReportsDefaultModelSentinel is false: ZCode's catalog names every model
+// explicitly, so no entry stands for the account default.
+func (zcodeProvider) ReportsDefaultModelSentinel() bool { return false }

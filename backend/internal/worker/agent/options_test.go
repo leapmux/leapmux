@@ -197,6 +197,25 @@ func TestModelEffortKnown(t *testing.T) {
 		"the hidden current model is known via the top-level effort group")
 	assert.False(t, ModelEffortKnown(hiddenCatalog, claude, "future-model"),
 		"a model that is neither selectable nor the current value is unknown even with an effort group present")
+
+	// The account-default sentinel is SELECTABLE and carries no efforts, so the
+	// selectable-option loop would report it known and every tier unsupported --
+	// which makes resetEffortToAutoIfUnsupported clamp a user's effort to auto.
+	// "Unresolved" is not "offers nothing": haiku above is genuinely effort-less
+	// and must stay known, while the sentinel must not.
+	sentinelModels := []*ModelInfo{
+		accountDefaultModelEntry("Use your account's default model"),
+		{Id: "sonnet", DisplayName: "Sonnet", DefaultEffort: "high", SupportedEfforts: []*EffortInfo{{Id: "auto"}, {Id: "high"}}},
+	}
+	sentinelCatalog := []*leapmuxv1.AvailableOptionGroup{modelOptionGroup(sentinelModels, DefaultModelSentinel, effortSubGroups)}
+	require.NotNil(t, findAvailableOptionByID(optionids.GroupByID(sentinelCatalog, OptionIDModel), DefaultModelSentinel),
+		"the sentinel IS a selectable option, which is what makes the loop report it known")
+	assert.False(t, ModelEffortKnown(sentinelCatalog, claude, DefaultModelSentinel),
+		"the account default has not resolved to a concrete model, so its effort set is unknown")
+	assert.False(t, ModelEffortKnown(sentinelCatalog, claude, ""),
+		"an unset model means the account default too")
+	assert.True(t, ModelEffortKnown(sentinelCatalog, claude, "sonnet"),
+		"a concrete model beside the sentinel is still known")
 }
 
 // TestOptionStateApply_AuthoritativeDropsStaleOutOfListValue is the regression guard for

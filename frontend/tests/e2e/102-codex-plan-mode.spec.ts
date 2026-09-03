@@ -13,7 +13,7 @@ const REVISE_PLAN_PROMPT
 async function configureCodexPlanMode(page: Page) {
   await openSettingsMenu(page, 'collaboration_mode')
   await page.locator('[data-testid="collaboration_mode-plan"]').click()
-  await expectSettingsChip(page, 'GPT-5.4 Mini')
+  await expectSettingsChip(page, 'GPT-5.4-Mini')
   await expectSettingsChip(page, 'Plan Mode')
 }
 

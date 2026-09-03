@@ -39,6 +39,60 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 		assert.Equal(t, "thread/resume", sent[0].Method)
 	})
 
+	// codexThreadParams sends a concrete model and omits the account default, and
+	// applyThreadResult then adopts whatever model the response reports. The two
+	// halves are asserted separately: a row whose stored model equals its response
+	// model proves nothing about the second half, so every row here either omits the
+	// model on the wire or reports a DIFFERENT model back.
+	t.Run("pins concrete models and adopts the reported one", func(t *testing.T) {
+		t.Parallel()
+
+		for _, test := range []struct {
+			name string
+			// storedModel is a.model at launch, and what codexThreadParams reads.
+			storedModel string
+			// responseModel is the effective model Codex reports back.
+			responseModel string
+			// wantModelOmitted states the wire shape explicitly, so a row that omits
+			// wantModel cannot assert omission by accident. "model" absent and "model"
+			// present but empty are different requests, and only the first is correct.
+			wantModelOmitted bool
+			// resumeID is empty for the thread/start path.
+			resumeID   string
+			wantMethod string
+		}{
+			{name: "user selection is pinned and kept", storedModel: "gpt-5.6-luna", responseModel: "gpt-5.6-luna", resumeID: "thread-old", wantMethod: "thread/resume"},
+			{name: "retired selection is pinned and clamped by codex", storedModel: "gpt-5.2", responseModel: "gpt-5.6-sol", resumeID: "thread-old", wantMethod: "thread/resume"},
+			{name: "interrupted startup default resolves on resume", storedModel: DefaultModelSentinel, responseModel: "gpt-5.6-sol", wantModelOmitted: true, resumeID: "thread-old", wantMethod: "thread/resume"},
+			{name: "new session omits the account default", storedModel: DefaultModelSentinel, responseModel: "gpt-5.6-sol", wantModelOmitted: true, wantMethod: "thread/start"},
+			{name: "new session pins a concrete model", storedModel: "gpt-5.6-terra", responseModel: "gpt-5.6-terra", wantMethod: "thread/start"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+
+				a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+					return json.RawMessage(`{"thread":{"id":"thread-1"},"model":"` + test.responseModel + `"}`)
+				})
+				a.model = test.storedModel
+				params := codexThreadParams(test.storedModel, "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+
+				thread, err := a.startOrResumeThread(params, test.resumeID, timeout)
+				require.NoError(t, err)
+				a.applyThreadResult(thread)
+
+				sent := requests()
+				require.Len(t, sent, 1)
+				assert.Equal(t, test.wantMethod, sent[0].Method)
+				if test.wantModelOmitted {
+					assert.NotContains(t, sent[0].Params, "model", "the account default lets Codex resolve the model")
+				} else {
+					assert.Equal(t, test.storedModel, sent[0].Params["model"], "a concrete model is pinned on the wire")
+				}
+				assert.Equal(t, test.responseModel, a.model, "the agent adopts the model the response reports")
+			})
+		}
+	})
+
 	// An RPC error arrives as a delivered body rather than as a transport error,
 	// so the agent's own message is only in the response. The failure must carry
 	// it: "carried no thread ID" identifies the symptom and hides the reason.

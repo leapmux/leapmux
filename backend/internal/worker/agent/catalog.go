@@ -26,6 +26,25 @@ type ModelInfo struct {
 	Hidden bool
 }
 
+// accountDefaultModelEntry builds the leading catalog entry that means "let the
+// CLI pick the account's own default model". A provider whose CLI resolves the
+// model itself puts this first in its static catalog, and DefaultModel then
+// returns the sentinel for a new agent of that provider.
+//
+// The entry carries no efforts and no context window on purpose. The effort menu
+// appears once the concrete model is known, which keeps a fresh launch from
+// forwarding an effort the resolved model may not offer. One helper for every
+// provider makes that omission impossible to lose: a caller states the wording of
+// the description and nothing else.
+func accountDefaultModelEntry(description string) *ModelInfo {
+	return &ModelInfo{
+		Id:          DefaultModelSentinel,
+		DisplayName: "Default (recommended)",
+		Description: description,
+		IsDefault:   true,
+	}
+}
+
 func (m *ModelInfo) GetId() string {
 	if m == nil {
 		return ""

@@ -262,8 +262,11 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 **Codex** — Fast Mode, Effort, Model, Workflow, Network Access, Sandbox Policy, Approval Policy, plus a **Bypass permissions** item.
 
-- Default model **GPT-5.4** (`gpt-5.4`); also offered: gpt-5.4-mini, gpt-5.3-codex, gpt-5.2-codex, gpt-5.2, gpt-5.1-codex-max, gpt-5.1-codex-mini.
-- Effort tiers: Auto, Ultra, Max, Extra High, High, Medium, Low, Minimal, None.
+- Default model **Default (recommended)** (your Codex account's own pick); also offered: GPT-5.6-Sol, GPT-5.6-Terra, GPT-5.6-Luna, GPT-5.5, GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex-Spark. A running agent lists whatever models your Codex account offers, so an account-specific model appears here too.
+- Effort tiers depend on the model:
+  - **GPT-5.6-Sol** and **GPT-5.6-Terra** offer the full set: Auto, Ultra, Max, Extra High, High, Medium, Low.
+  - **GPT-5.6-Luna** offers Auto, Max, Extra High, High, Medium, Low.
+  - The other models offer Auto, Extra High, High, Medium, Low.
 - Approval Policy: **Full Auto** (`never`), **Suggest & Approve** (`on-request`, the default), **Auto-edit** (`untrusted`).
 - Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
 - The **Bypass permissions** item sets network = enabled, sandbox = full access, and approval = Full Auto in one click.

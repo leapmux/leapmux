@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -256,6 +257,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 
 	// 5. Query available models (best-effort; don't fail startup if this fails).
 	a.availableModels = a.queryAvailableModels(timeout)
+	a.reconcileModelCatalog()
 
 	// 6. Publish the active thread settings. The lifecycle response owns the
 	// settings that thread/start accepts. Turn-only settings keep their requested
@@ -684,7 +686,7 @@ func (a *CodexAgent) sendTurnStart(
 		"threadId": threadID,
 		"input":    input,
 	}
-	if s.model != "" {
+	if !UsesAccountDefaultModel(s.model) {
 		params["model"] = s.model
 	}
 	if e, ok := codexEffortValue(s.effort); ok {
@@ -817,6 +819,12 @@ func codexCollaborationModeObject(mode, model, effort string) map[string]interfa
 	if e, ok := codexEffortValue(effort); ok {
 		reasoningEffort = e
 	}
+	// settings.model is a required non-empty string: Codex answers an omitted field
+	// with "missing field 'model'", a null with "invalid type: null, expected a
+	// string", and an empty string with the same unknown-model error as any other
+	// unknown id. So this field cannot carry the account-default rule that
+	// codexThreadParams applies. The caller must supply a concrete model, which
+	// UpdateSettings enforces by requiring a relaunch to reach the account default.
 	return map[string]interface{}{
 		"mode": mode,
 		"settings": map[string]interface{}{
@@ -839,17 +847,22 @@ func codexEffortValue(effort string) (string, bool) {
 	return effort, true
 }
 
-// codexThreadParams builds the request params shared by thread/start and thread/resume,
-// so the launch (StartCodex) and clear-context (ClearContext) paths construct the thread
-// the same way and a new thread field is added once. The serviceTier field is included
-// only when codexServiceTierValue reports a non-default tier. StartCodex appends threadId
-// itself for the resume case.
+// codexThreadParams builds the params shared by thread/start and thread/resume.
+// StartCodex and ClearContext both call it, so the launch path and the
+// clear-context path construct the thread the same way and a new thread field is
+// added once, here.
+//
+// It omits an account-default model so Codex can resolve it. It includes a concrete
+// model so a resumed thread keeps its effective or user-selected model. It never
+// sets threadId: startOrResumeThread adds that for the resume case.
 func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier string) map[string]interface{} {
 	params := map[string]interface{}{
-		"model":          model,
 		"cwd":            cwd,
 		"approvalPolicy": approvalPolicy,
 		"sandbox":        sandboxPolicy,
+	}
+	if !UsesAccountDefaultModel(model) {
+		params["model"] = model
 	}
 	if st := codexServiceTierValue(serviceTier); st != nil {
 		params["serviceTier"] = *st
@@ -960,12 +973,25 @@ func (a *CodexAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 func (a *CodexAgent) UpdateSettings(options optionmap.Map) SettingsApplyResult {
 	a.mu.Lock()
 	curEffort := a.effort
+	curModel := a.model
 	// Switching to EffortAuto can't be done live: Codex's session config
 	// remembers the last reasoning_effort across turns, so simply
 	// omitting the field on the next turn keeps the prior effort
 	// applied. A restart is the only way to hand control back to the
 	// CLI's own default.
 	if IsEffortAutoTransition(options[OptionIDEffort], curEffort) {
+		a.mu.Unlock()
+		return restartRequiredSettings(options)
+	}
+	// Switching to the account default can't be done live either, and for the same
+	// shape of reason as the effort sentinel above. thread/start resolves an omitted
+	// model, but turn/start sends the stored string as it is, and Codex rejects the
+	// literal id "default" ("The 'default' model is not supported"). A relaunch runs
+	// codexThreadParams again, which omits the model and lets Codex resolve it.
+	// Test the sentinel EXACTLY, not UsesAccountDefaultModel: in this map an empty
+	// value means "not supplied" (see the axis loop below), so the wider test would
+	// demand a restart on every edit that leaves the model alone.
+	if m := options[OptionIDModel]; m == DefaultModelSentinel && m != curModel {
 		a.mu.Unlock()
 		return restartRequiredSettings(options)
 	}
@@ -1035,6 +1061,7 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 			DisplayName               string `json:"displayName"`
 			IsDefault                 bool   `json:"isDefault"`
 			Hidden                    bool   `json:"hidden"`
+			Description               string `json:"description"`
 			DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
 			SupportedReasoningEfforts []struct {
 				ReasoningEffort string `json:"reasoningEffort"`
@@ -1092,6 +1119,9 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 			description = d.Description
 			contextWindow = d.ContextWindow
 		}
+		if description == "" {
+			description = m.Description
+		}
 		if displayName == "" {
 			displayName = m.DisplayName
 		}
@@ -1112,30 +1142,82 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 	return models
 }
 
-// Default Codex efforts (auto first, then strongest → weakest) used as
-// static fallback. "auto" is a LeapMux-side sentinel: the CLI never reports
-// or accepts it, but selecting it causes LeapMux to omit reasoning_effort
-// so Codex applies its own default.
+// reconcileModelCatalog repairs the two gaps between what model/list reports and
+// what the picker must offer. It runs once at startup, after applyThreadResult has
+// settled a.model, and it is the Codex twin of Claude's ensureSettledModelListed.
 //
-// The slice order IS the menu order: optionGroupsForAgent maps it into the
-// option group unchanged, and the frontend renders the options in order. It is
-// DERIVED from effortLadder rather than written out, so a tier cannot be put in
-// the wrong place: this file states only WHICH tiers Codex offers, and the
-// ladder states what comes before what.
+// Gap one: model/list never reports the account-default sentinel, unlike the
+// Claude CLI, which lists it itself. Without the row a user who picks a concrete
+// model can never return to "let my account decide" for the life of the tab, and
+// the option would appear before the first launch and then vanish. The sentinel
+// leads the list, matching the static catalog's order.
 //
-// Every tier the live CLI reports should appear here, so the static fallback
-// offers the same menu the running session does. A tier that is absent is no
-// longer a labeling hazard: both paths resolve their label through effortLabel,
-// so an unlisted id renders capitalized like its siblings rather than raw.
+// Gap two: the settled model can be one model/list omits -- a model the account
+// retired between the thread resuming and this query, for instance. An unlisted
+// current model leaves the picker with no selected row and no effort menu, so the
+// static catalog's entry is inserted at its canonical slot.
+//
+// No-op on an empty live list: queryAvailableModels failed or the CLI reported
+// nothing, and OptionGroups then falls back to the static catalog, which already
+// carries both the sentinel and every shipped model. Appending here would replace
+// that full fallback with a singleton.
+func (a *CodexAgent) reconcileModelCatalog() {
+	if len(a.availableModels) == 0 {
+		return
+	}
+	if FindAvailableModel(a.availableModels, DefaultModelSentinel) == nil {
+		if sentinel := FindAvailableModel(codexDefaultModels, DefaultModelSentinel); sentinel != nil {
+			a.availableModels = slices.Insert(a.availableModels, 0, sentinel)
+		}
+	}
+	if UsesAccountDefaultModel(a.model) || FindAvailableModel(a.availableModels, a.model) != nil {
+		return
+	}
+	entry := FindAvailableModel(codexDefaultModels, a.model)
+	if entry == nil {
+		return
+	}
+	// Drop the settled model at its slot in the static catalog's order rather than
+	// at the end, so a retired model does not sort below a newer one it outranks.
+	// The inserted pointer is the shared static entry, which every consumer reads
+	// and none mutates -- modelOptionGroup projects it into fresh protos.
+	rank := codexCanonicalModelRank(a.model)
+	insertAt := len(a.availableModels)
+	for i, m := range a.availableModels {
+		if codexCanonicalModelRank(m.GetId()) > rank {
+			insertAt = i
+			break
+		}
+	}
+	a.availableModels = slices.Insert(a.availableModels, insertAt, entry)
+}
+
+// codexCanonicalModelRank returns modelID's index in codexDefaultModels, whose
+// order is the canonical picker order (the sentinel first, then newest to oldest,
+// then the retired models). A model the static catalog omits ranks last, so it
+// sorts after every catalog-known model.
+func codexCanonicalModelRank(modelID string) int {
+	if i := slices.IndexFunc(codexDefaultModels, func(m *ModelInfo) bool {
+		return m.GetId() == modelID
+	}); i >= 0 {
+		return i
+	}
+	return len(codexDefaultModels)
+}
+
+// codexDefaultEfforts contains all effort levels in the Codex fallback catalog.
+// The order matches the menu. Each model selects a supported window of it below.
+//
+// Every tier the live CLI reports must appear here, so the static fallback offers
+// the same menu the running session does. codexEffortsDownFrom fails at startup on
+// a tier this list omits, so a forgotten tier cannot shrink a menu in silence.
 var codexDefaultEfforts = buildCodexDefaultEfforts()
 
-// codexEffortIDs is WHICH levels Codex offers. The ORDER comes from
-// effortLadder, so this states membership only: Codex has no `ultracode` rung
-// and no separate `off`, and listing it here in ladder order would be a second
-// statement of the ordering that a level moved in the ladder could fall behind.
+// codexEffortIDs states membership. effortLadder supplies the order.
+// Codex offers no `ultracode` rung and no separate `off` level.
 var codexEffortIDs = map[string]bool{
 	"ultra": true, "max": true, EffortXHigh: true, EffortHigh: true,
-	"medium": true, "low": true, "minimal": true, "none": true,
+	"medium": true, "low": true,
 }
 
 func buildCodexDefaultEfforts() []*EffortInfo {
@@ -1146,6 +1228,27 @@ func buildCodexDefaultEfforts() []*EffortInfo {
 		}
 	}
 	return efforts
+}
+
+// codexEffortsDownFrom returns auto followed by every tier from top down to the
+// weakest one Codex offers. Each model states only its strongest tier, so a menu
+// cannot skip a rung or fall out of ladder order: the window comes from
+// codexDefaultEfforts, which effortLadder already orders.
+//
+// It panics on a tier codexDefaultEfforts omits. Every argument is a literal in
+// this file and codexDefaultEfforts is derived at build time, so no runtime input
+// reaches it -- the panic fires on the first `go test` of this package, never on a
+// running worker. A silent filter instead shortened the menu with no diagnostic.
+func codexEffortsDownFrom(top string) []*EffortInfo {
+	tiers := codexDefaultEfforts[1:]
+	for i, tier := range tiers {
+		if tier.Id == top {
+			// The literal has capacity 1, so append allocates a new array and the
+			// returned slice never aliases codexDefaultEfforts.
+			return append([]*EffortInfo{codexAutoEffort()}, tiers[i:]...)
+		}
+	}
+	panic("codex: effort tier " + top + " is not in codexDefaultEfforts")
 }
 
 // codexAutoEffort is the LeapMux-side "auto" sentinel. The CLI never reports it,
@@ -1159,14 +1262,38 @@ func codexAutoEffort() *EffortInfo {
 	}
 }
 
+var (
+	codexEffortsFromUltra = codexEffortsDownFrom("ultra")
+	codexEffortsFromMax   = codexEffortsDownFrom("max")
+	codexEffortsFromXHigh = codexEffortsDownFrom(EffortXHigh)
+)
+
+// codexDefaultModels is the static fallback model catalog. The selectable rows
+// mirror what Codex 0.152.1 reports from model/list, in its order. model/list adds
+// the account-specific models, such as Daybreak, at runtime.
+//
+// A model the current app server no longer lists stays here Hidden rather than
+// leaving the file. queryAvailableModels reads this list for the Description and
+// the ContextWindow that model/list never reports, and modelDependentGroups reads
+// it for a stopped agent, so a session still pinned to a retired model keeps its
+// effort tiers and its context meter. The picker skips a Hidden row; a lookup by
+// id still finds it.
 var codexDefaultModels = []*ModelInfo{
-	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Latest frontier agentic coding model", IsDefault: true, DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 1_050_000},
-	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", Description: "Smaller frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex", Description: "Frontier Codex-optimized agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex", Description: "Frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.2", DisplayName: "GPT-5.2", Description: "Optimized for professional work and long-running agents", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 256_000},
-	{Id: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "Codex-optimized model for deep and fast reasoning", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "Optimized for Codex; cheaper, faster, but less capable", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
+	accountDefaultModelEntry("Use the account's default Codex model"),
+	{Id: "gpt-5.6-sol", DisplayName: "GPT-5.6-Sol", Description: "Reliable agentic workhorse for everyday tasks", DefaultEffort: "low", SupportedEfforts: codexEffortsFromUltra, ContextWindow: 1_050_000},
+	{Id: "gpt-5.6-terra", DisplayName: "GPT-5.6-Terra", Description: "Balanced agentic coding model for everyday work", DefaultEffort: "medium", SupportedEfforts: codexEffortsFromUltra, ContextWindow: 1_050_000},
+	{Id: "gpt-5.6-luna", DisplayName: "GPT-5.6-Luna", Description: "Fast and affordable agentic coding model", DefaultEffort: "medium", SupportedEfforts: codexEffortsFromMax, ContextWindow: 1_050_000},
+	{Id: "gpt-5.5", DisplayName: "GPT-5.5", Description: "Proven previous-generation model for coding and general work", DefaultEffort: "medium", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 1_050_000},
+	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Strong model for everyday coding", DefaultEffort: "medium", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 1_050_000},
+	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4-Mini", Description: "Small, fast, and cost-efficient model for simpler coding tasks", DefaultEffort: "medium", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 400_000},
+	{Id: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3-Codex-Spark", Description: "Ultra-fast coding model", DefaultEffort: "high", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 128_000},
+	// Retired below: Codex 0.152.1 lists none of these, so they carry their last
+	// known metadata and stay out of the picker.
+	{Id: "gpt-5.2", DisplayName: "GPT-5.2", Description: "Optimized for professional work and long-running agents", DefaultEffort: "high", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 256_000, Hidden: true},
+	{Id: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex", Description: "Frontier Codex-optimized agentic coding model", DefaultEffort: "high", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 400_000, Hidden: true},
+	{Id: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex", Description: "Frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 400_000, Hidden: true},
+	{Id: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "Codex-optimized model for deep and fast reasoning", DefaultEffort: "high", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 400_000, Hidden: true},
+	{Id: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "Optimized for Codex; cheaper, faster, but less capable", DefaultEffort: "high", SupportedEfforts: codexEffortsFromXHigh, ContextWindow: 400_000, Hidden: true},
 }
 
 // codexBinaryCandidates lists the executable names to probe for Codex, in
@@ -1252,7 +1379,11 @@ func init() {
 }
 
 // codexModelDisplayName generates a human-readable display name from a Codex
-// model ID (e.g. "gpt-5.4-mini" → "GPT-5.4 Mini", "o4-mini" → "o4-mini").
+// model ID (e.g. "gpt-4.1-mini" → "GPT-4.1 Mini", "o4-mini" → "o4-mini"). It is
+// the last fallback in queryAvailableModels: codexDefaultModels wins, then the
+// name model/list reports, so this runs only for a model that neither supplies.
+// Do not draw an example from codexDefaultModels -- the catalog spells the
+// current models the way the CLI does ("GPT-5.4-Mini"), which this differs from.
 func codexModelDisplayName(id string) string {
 	prefix := ""
 	rest := id

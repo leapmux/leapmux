@@ -1021,11 +1021,10 @@ func TestModelGroupDefault_ToleratesNilAndHiddenEntries(t *testing.T) {
 	}, codex), "the designated default outranks the first-entry fallback")
 }
 
-// TestWithDefaultModelMarked_SentinelIsClaudeOnly verifies the DefaultModelSentinel
-// ("default") badge rule is scoped to Claude Code. A non-Claude ACP provider whose
-// live list happens to contain a model literally id'd "default" must NOT have its
-// self-marked current-model badge hijacked onto that entry -- the sentinel is a
-// Claude-Code concept, so for other providers "default" is just another model id.
+// TestModelGroupDefault_SentinelIsClaudeOnly verifies that only Claude Code treats
+// an entry with the id "default" as the sentinel and prefers it. For every other
+// provider "default" is an ordinary model id, so the self-marked current model
+// must keep the badge.
 func TestModelGroupDefault_SentinelIsClaudeOnly(t *testing.T) {
 	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "")
@@ -1188,4 +1187,59 @@ func TestModelGroupDefault_EmptyAndAllNilCatalogs(t *testing.T) {
 	got := withModelGroupDefaultMarked(groups, claude)
 	require.Len(t, got, 1)
 	assert.Same(t, other, got[0], "no model group -> the input is returned untouched")
+}
+
+// TestReportsDefaultModelSentinel pins the per-provider answer that
+// defaultModelIDForList dispatches on. Only Claude Code's own catalog lists the
+// sentinel as a selectable entry, so only Claude gives it the default badge; for
+// every other provider "default" is an ordinary model id.
+func TestReportsDefaultModelSentinel(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, claudeProvider{}.ReportsDefaultModelSentinel(), "the Claude CLI reports a \"default\" entry itself")
+	assert.False(t, codexProvider{}.ReportsDefaultModelSentinel(), "Codex resolves the sentinel to a concrete model at startup")
+	assert.False(t, zcodeProvider{}.ReportsDefaultModelSentinel(), "ZCode names every model explicitly")
+	assert.False(t, noopProvider{}.ReportsDefaultModelSentinel(), "a provider must opt in, not inherit Claude's answer")
+
+	// The dispatcher must agree with the plugin for every registered provider, so a
+	// new provider cannot be added to the enum and miss the decision.
+	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+	} {
+		want := provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+		assert.Equal(t, want, ProviderFor(provider).ReportsDefaultModelSentinel(), "provider %s", provider)
+	}
+}
+
+// TestModelGroupDefault_CodexBadgesTheSentinelOnceReconciled covers the badge for
+// a RUNNING Codex agent. reconcileModelCatalog puts the account-default row back
+// into the live catalog that model/list omits, and DefaultModel(CODEX) is that
+// same sentinel, so the ladder badges it at the configured-default step -- ahead
+// of the concrete model the CLI marked isDefault. Before the reconciliation the
+// sentinel was absent from a live list and the badge landed on that concrete
+// model instead, so this pins which of the two the picker highlights.
+func TestModelGroupDefault_CodexBadgesTheSentinelOnceReconciled(t *testing.T) {
+	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
+	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	require.Equal(t, DefaultModelSentinel, DefaultModel(codex), "precondition: Codex's configured default is the sentinel")
+
+	reconciled := []*ModelInfo{
+		accountDefaultModelEntry("Use the account's default Codex model"),
+		{Id: "gpt-5.6-sol", DisplayName: "GPT-5.6-Sol", IsDefault: true},
+		{Id: "gpt-5.4", DisplayName: "GPT-5.4"},
+	}
+	assert.Equal(t, DefaultModelSentinel, derivedModelDefault(t, reconciled, codex),
+		"the account default carries the badge once the sentinel is listed")
+
+	// A live list the reconciliation never touched (it no-ops on an empty catalog,
+	// and an older persisted catalog can lack the row) still badges the model the
+	// CLI marked, rather than badging nothing.
+	rawLive := []*ModelInfo{
+		{Id: "gpt-5.6-sol", DisplayName: "GPT-5.6-Sol", IsDefault: true},
+		{Id: "gpt-5.4", DisplayName: "GPT-5.4"},
+	}
+	assert.Equal(t, "gpt-5.6-sol", derivedModelDefault(t, rawLive, codex),
+		"with no sentinel listed the CLI's own default keeps the badge")
 }

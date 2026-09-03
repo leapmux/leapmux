@@ -174,6 +174,13 @@ type Provider interface {
 	// child tab is read-only. Defaults to false (noopProvider); only Codex
 	// overrides it to true.
 	SupportsChildSteering() bool
+	// ReportsDefaultModelSentinel reports whether this provider's own model
+	// catalog lists DefaultModelSentinel as a selectable entry meaning "the
+	// account default". Only such a provider gives that entry the default badge
+	// (see defaultModelIDForList). Another provider may report an ordinary model
+	// literally id'd "default", and its badge must stay where the catalog put it.
+	// Defaults to false (noopProvider); only Claude Code overrides it to true.
+	ReportsDefaultModelSentinel() bool
 	// ResolveResumeHandle checks the client-supplied handle and returns the
 	// value that must reach argv, or reports why this provider cannot resume
 	// from it.
@@ -333,6 +340,11 @@ func (noopProvider) EndsSubagentTranscript([]byte) bool { return false }
 // cannot steer a subagent conversation inside their own process. Only Codex
 // overrides it to true (its collab child threads accept host-initiated turns).
 func (noopProvider) SupportsChildSteering() bool { return false }
+
+// ReportsDefaultModelSentinel defaults to false: a provider whose CLI reports
+// concrete model ids only must keep the default badge on the entry its own
+// catalog designates, even when one of those ids happens to be "default".
+func (noopProvider) ReportsDefaultModelSentinel() bool { return false }
 
 // defaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
 // provider shipped today puts it there, but the decision stays behind the
@@ -536,12 +548,23 @@ func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return 
 // child routes through the owner process's ChildSteerer.
 func (codexProvider) SupportsChildSteering() bool { return true }
 
+// ReportsDefaultModelSentinel is false: Codex stores the sentinel until the
+// thread/start lifecycle response reports a concrete model, and model/list never
+// returns it, so Codex badges the model the CLI itself marks.
+func (codexProvider) ReportsDefaultModelSentinel() bool { return false }
+
 type claudeProvider struct {
 	noopProvider
 }
 
 // ListStoredSessions reads Claude Code's own transcripts; see
 // claude_sessions.go.
+// ReportsDefaultModelSentinel is true: the Claude CLI lists a "default" entry in
+// its own initialize response, and convertClaudeModels owns that reserved id, so
+// the sentinel is a real selectable option that tracks the account's default
+// across plan tiers.
+func (claudeProvider) ReportsDefaultModelSentinel() bool { return true }
+
 func (claudeProvider) ListStoredSessions(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error) {
 	return claudeStoredSessions(ctx, q)
 }

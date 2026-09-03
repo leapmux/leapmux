@@ -1542,14 +1542,13 @@ const (
 // any account, including non-Opus tiers) starts on it, and buildModelEffortArgs
 // omits --model so the CLI resolves it to that account's concrete default --
 // which get_settings then reports back, so the tab settles on the real model
-// after startup. It carries no efforts: the effort menu appears once the
-// concrete model is known, which also keeps a fresh launch from forwarding an
-// --effort the resolved model may not support. The concrete models follow in
+// after startup. accountDefaultModelEntry states why it carries no efforts.
+// The concrete models follow in
 // most→least powerful order, matching Claude Code's own ordering ("Fable for the
 // hardest problems, Opus for complex work, Sonnet for most tasks, Haiku for
 // quick questions").
 var claudeCodeAvailableModels = []*ModelInfo{
-	{Id: DefaultModelSentinel, DisplayName: "Default (recommended)", Description: "Use your account's default model", IsDefault: true},
+	accountDefaultModelEntry("Use your account's default model"),
 	// Fable 5 is 1M-context only; its canonical id carries the [1m] marker so it
 	// matches the live CLI's "claude-fable-5[1m]" (normalizeClaudeCodeModel
 	// collapses every Fable spelling, bare "fable" included, to "fable[1m]"). The
