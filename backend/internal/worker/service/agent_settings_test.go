@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -1869,12 +1870,40 @@ func TestSettingsResponseSettlements_ReportsConfirmedRemovalAndUnresolvedValue(t
 		"service_tier":     "fast",
 	}
 
-	got := settingsResponseSettlements(requested, OptionMap(requested), settled, result)
+	got := settingsResponseSettlements(OptionMap(requested), requested, OptionMap(requested), settled, result)
 	assert.Equal(t, agent.OptionSettlementConfirmed, got["reasoning_effort"].State)
 	assert.Equal(t, confirmedValue, *got["reasoning_effort"].Value)
 	assert.Equal(t, agent.OptionSettlementConfirmed, got["removed_option"].State)
 	assert.Nil(t, got["removed_option"].Value)
 	assert.Equal(t, agent.OptionSettlementUnresolved, got["service_tier"].State)
+}
+
+func TestSettingsResponseSettlementsReportsIndirectCopilotConflict(t *testing.T) {
+	t.Parallel()
+
+	prior := OptionMap{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+	}
+	optimistic := OptionMap{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOff,
+		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+	}
+	result := agent.SettingsApplyResult{
+		AppliedLive: true,
+		SurfacedOptions: map[string]string{
+			contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOff,
+			contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+		},
+	}
+
+	got := settingsResponseSettlements(prior,
+		map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
+		optimistic, optimistic, result)
+	require.Contains(t, got, contracts.CopilotPermissionGroupAssistedApproval)
+	assert.Equal(t, contracts.CopilotPermissionValueOff,
+		*got[contracts.CopilotPermissionGroupAssistedApproval].Value)
+	require.Contains(t, got, contracts.CopilotPermissionGroupAllowAll)
 }
 
 // TestReportModelChange verifies the settings_changed notification reports a model

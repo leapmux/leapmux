@@ -1,0 +1,9 @@
+{
+  "_readme": "Goose permission modes that both the Go provider and the TypeScript plugin use. Goose owns these wire values. The order puts Smart Approve first because LeapMux presents it as the safe default for a new session.",
+  "modes": {
+    "SmartApprove": "smart_approve",
+    "Auto": "auto",
+    "Approve": "approve",
+    "Chat": "chat"
+  }
+}

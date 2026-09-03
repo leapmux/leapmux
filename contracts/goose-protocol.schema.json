@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "goose-protocol.schema.json",
+  "title": "Goose permission mode vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "modes"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "modes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SmartApprove", "Auto", "Approve", "Chat"],
+      "properties": {
+        "SmartApprove": { "type": "string", "minLength": 1 },
+        "Auto": { "type": "string", "minLength": 1 },
+        "Approve": { "type": "string", "minLength": 1 },
+        "Chat": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

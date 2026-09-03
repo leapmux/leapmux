@@ -7,7 +7,6 @@ import './copilot'
 
 const MODE_AGENT = 'https://agentclientprotocol.com/protocol/session-modes#agent'
 const MODE_PLAN = 'https://agentclientprotocol.com/protocol/session-modes#plan'
-const MODE_AUTOPILOT = 'https://agentclientprotocol.com/protocol/session-modes#autopilot'
 
 describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
@@ -19,8 +18,11 @@ describe('copilot provider', () => {
     expect(plugin.planMode?.currentMode({ optionValues: { permissionMode: '' } })).toBe(MODE_AGENT)
   })
 
-  it('uses autopilot as bypass permission mode', () => {
-    expect(plugin.bypassSettings?.sets.permissionMode).toBe(MODE_AUTOPILOT)
+  it('maps smart and bypass permissions to the two permission axes', () => {
+    expect(plugin.permissionPresets).toEqual({
+      smart: { sets: { copilot_assisted_approval: 'on' } },
+      bypass: { sets: { allow_all: 'on' } },
+    })
   })
 
   it('declares plan mode on the permissionMode group and defaults to agent', () => {

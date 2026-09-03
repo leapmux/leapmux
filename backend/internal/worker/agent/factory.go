@@ -107,7 +107,7 @@ const EffortHigh = "high"
 // plan-execution path does.
 type ExitHandler func(agentID string, exitCode int, err error, stopped bool)
 
-// Options configures a new ClaudeCodeAgent.
+// Options configures one agent process start.
 type Options struct {
 	AgentID         string
 	WorkingDir      string
@@ -118,13 +118,17 @@ type Options struct {
 	// a specific axis via Model()/Effort()/PermissionMode()/Get(id). It is the same
 	// optionmap.Map type the service layer (OptionMap) and the Agent interface use,
 	// so a launch option set flows to/from those boundaries without a conversion.
-	Options        optionmap.Map
-	StartupTimeout time.Duration           // Timeout for the startup handshake (default: 5m)
-	APITimeout     time.Duration           // Timeout for JSON-RPC requests (default: 10s)
-	Shell          string                  // Default shell path (always set when using shell wrapper)
-	LoginShell     bool                    // If true, use interactive+login shell flags
-	HomeDir        string                  // User's home directory (reads Claude Code settings; expands `~` when the Pi rule CHECKS a resume handle -- Pi expands it again itself)
-	AgentProvider  leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
+	Options optionmap.Map
+	// NewSessionDefaultOptionIDs records which option values came from the
+	// safe defaults for a new session. A provider can fall back when its local
+	// CLI does not support one of these defaults. Explicit values are absent.
+	NewSessionDefaultOptionIDs map[string]bool
+	StartupTimeout             time.Duration           // Timeout for the startup handshake (default: 5m)
+	APITimeout                 time.Duration           // Timeout for JSON-RPC requests (default: 10s)
+	Shell                      string                  // Default shell path (always set when using shell wrapper)
+	LoginShell                 bool                    // If true, use interactive+login shell flags
+	HomeDir                    string                  // User's home directory (reads Claude Code settings; expands `~` when the Pi rule CHECKS a resume handle -- Pi expands it again itself)
+	AgentProvider              leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 	// ExtraEnv is appended verbatim to the spawned process's
 	// environment after the provider-specific env-var setup. The
 	// service.Service populates this with LEAPMUX_CONTROL_* so the
@@ -195,6 +199,9 @@ type agentFactoryEntry struct {
 	// uniformly for every provider, so a new provider declares its seeds here rather
 	// than the service layer growing a per-provider branch.
 	providerOptionDefaults map[string]string
+	// newAgentOptionDefaults contains safe permission values for a new session.
+	// The service does not apply these values to resumed or stored sessions.
+	newAgentOptionDefaults map[string]string
 	envModelKey            string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_MODEL"
 	envEffortKey           string   // e.g. "LEAPMUX_CLAUDE_DEFAULT_EFFORT"
 	binaryNames            []string // preferred first; e.g. {"codex", "codex-x86_64-pc-windows-msvc"}
@@ -365,6 +372,26 @@ func PersistedOnlyOptionIDs(provider leapmuxv1.AgentProvider) map[string]bool {
 // after registerAgentFactory; a provider with none (most) need not call it.
 func setProviderOptionDefaults(provider leapmuxv1.AgentProvider, defaults map[string]string) {
 	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.providerOptionDefaults = defaults })
+}
+
+// setNewAgentOptionDefaults declares defaults that apply only when a request
+// creates a session without a resume handle.
+func setNewAgentOptionDefaults(provider leapmuxv1.AgentProvider, defaults map[string]string) {
+	mutateFactoryEntry(provider, func(e *agentFactoryEntry) { e.newAgentOptionDefaults = defaults })
+}
+
+// NewAgentOptionDefaults returns the safe defaults for a new session.
+// The returned map is shared and read-only.
+func NewAgentOptionDefaults(provider leapmuxv1.AgentProvider) map[string]string {
+	return agentFactoryRegistry[provider].newAgentOptionDefaults
+}
+
+// addStaticOptionGroups appends provider-owned groups to the static catalog.
+// A live provider must also include each group in its settings snapshot.
+func addStaticOptionGroups(provider leapmuxv1.AgentProvider, groups ...*leapmuxv1.AvailableOptionGroup) {
+	mutateFactoryEntry(provider, func(e *agentFactoryEntry) {
+		e.optionGroups = append(e.optionGroups, groups...)
+	})
 }
 
 // ProviderOptionDefaults returns the provider-specific seed option values (id->default)

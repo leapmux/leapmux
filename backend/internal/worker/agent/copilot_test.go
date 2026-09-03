@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,15 +46,20 @@ func newCopilotAgentForRPCWithResponder(t *testing.T, respond func(method string
 
 func installFakeCopilotCLI(t *testing.T, scenario string) {
 	installFakeACPCLI(t, fakeACPCLISpec{
-		binary:    "copilot",
-		helperRun: "TestHelperProcessCopilotCLI",
-		wantEnv:   "GO_WANT_HELPER_PROCESS_COPILOT",
-		env:       []string{"LEAPMUX_COPILOT_TEST_SCENARIO=" + scenario},
+		binary:      "copilot",
+		helperRun:   "TestHelperProcessCopilotCLI",
+		wantEnv:     "GO_WANT_HELPER_PROCESS_COPILOT",
+		env:         []string{"LEAPMUX_COPILOT_TEST_SCENARIO=" + scenario},
+		forwardArgs: true,
 	})
 }
 
 func TestHelperProcessCopilotCLI(*testing.T) {
 	scenario := os.Getenv("LEAPMUX_COPILOT_TEST_SCENARIO")
+	if scenario == "assisted-unavailable" && slices.Contains(os.Args, "--assisted-approval") {
+		_, _ = fmt.Fprintln(os.Stderr, copilotAssistedApprovalUnavailableText)
+		os.Exit(1)
+	}
 	runFakeACPServer("GO_WANT_HELPER_PROCESS_COPILOT", func(method string) (string, bool, bool) {
 		switch method {
 		case acpMethodInitialize:
@@ -78,6 +85,40 @@ func TestHelperProcessCopilotCLI(*testing.T) {
 	})
 }
 
+func TestStartCopilotCLIFallsBackWhenNewSessionDefaultIsUnavailable(t *testing.T) {
+	installFakeCopilotCLI(t, "assisted-unavailable")
+
+	provider, err := StartCopilotCLI(context.Background(), Options{
+		AgentID:       "copilot-fallback",
+		WorkingDir:    t.TempDir(),
+		Shell:         testutil.TestShell(),
+		LoginShell:    false,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		Options: map[string]string{
+			contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		},
+		NewSessionDefaultOptionIDs: map[string]bool{
+			contracts.CopilotPermissionGroupAssistedApproval: true,
+		},
+	}, &testSink{})
+	require.NoError(t, err)
+
+	agent := provider.(*CopilotCLIAgent)
+	t.Cleanup(func() {
+		agent.Stop()
+		_ = agent.Wait()
+	})
+
+	assert.True(t, agent.assistedApprovalUnavailable)
+	group := optionids.GroupByID(agent.OptionGroups(), contracts.CopilotPermissionGroupAssistedApproval)
+	require.NotNil(t, group)
+	assert.False(t, group.GetMutable())
+	require.Len(t, group.GetOptions(), 1)
+	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetOptions()[0].GetId())
+	assert.Equal(t, contracts.CopilotPermissionValueOff,
+		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
+}
+
 func TestBuildCopilotSessionRequest_NewSession(t *testing.T) {
 	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, acpMethodSessionLoad)
 	assert.Equal(t, acpMethodSessionNew, method)
@@ -96,6 +137,63 @@ func TestBuildCopilotSessionRequest_LoadSession(t *testing.T) {
 	require.NoError(t, json.Unmarshal(params, &parsed))
 	assert.Equal(t, "/workspace", parsed["cwd"])
 	assert.Equal(t, "session-123", parsed["sessionId"])
+}
+
+func TestCopilotBaseArgsEnableAssistedApproval(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, []string{"--acp", "--stdio"}, copilotBaseArgs(Options{}))
+	assert.Equal(t, []string{"--acp", "--stdio", "--experimental", "--assisted-approval"},
+		copilotBaseArgs(Options{Options: map[string]string{
+			contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		}}))
+}
+
+func TestCopilotAssistedApprovalOptionGroup(t *testing.T) {
+	t.Parallel()
+
+	agent := &CopilotCLIAgent{acpBase: acpBase{
+		modeChannel:       modeChannelPermissionMode,
+		secondaryFallback: fallbackCopilotCLIModes(),
+	}}
+	agent.assistedApproval = contracts.CopilotPermissionValueOn
+
+	group := optionids.GroupByID(agent.OptionGroups(), contracts.CopilotPermissionGroupAssistedApproval)
+	require.NotNil(t, group)
+	assert.Equal(t, "Assisted Approval", group.GetLabel())
+	assert.Equal(t, contracts.CopilotPermissionValueOn, group.GetCurrentValue())
+	assert.Equal(t, []string{contracts.CopilotPermissionValueOff, contracts.CopilotPermissionValueOn},
+		[]string{group.GetOptions()[0].GetId(), group.GetOptions()[1].GetId()})
+	assert.Equal(t, contracts.CopilotPermissionValueOn,
+		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
+}
+
+func TestCopilotAssistedApprovalChangeRequiresRestart(t *testing.T) {
+	t.Parallel()
+
+	agent := &CopilotCLIAgent{assistedApproval: contracts.CopilotPermissionValueOff}
+	result := agent.UpdateSettings(map[string]string{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+	})
+	assert.False(t, result.AppliedLive)
+}
+
+func TestCopilotAssistedApprovalUnavailable(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, isCopilotAssistedApprovalUnavailable(fmt.Errorf(
+		"initialize: %s", copilotAssistedApprovalUnavailableText,
+	)))
+	assert.False(t, isCopilotAssistedApprovalUnavailable(fmt.Errorf("initialize: authentication failed")))
+
+	agent := &CopilotCLIAgent{assistedApprovalUnavailable: true}
+	group := optionids.GroupByID(agent.OptionGroups(), contracts.CopilotPermissionGroupAssistedApproval)
+	require.NotNil(t, group)
+	assert.False(t, group.GetMutable())
+	require.Len(t, group.GetOptions(), 1)
+	assert.Equal(t, contracts.CopilotPermissionValueOff, group.GetOptions()[0].GetId())
+	assert.Equal(t, contracts.CopilotPermissionValueOff,
+		agent.SettingsSnapshot().SurfacedOptions[contracts.CopilotPermissionGroupAssistedApproval])
 }
 
 func TestStartCopilotCLI_NewSessionHandshake(t *testing.T) {
@@ -289,9 +387,11 @@ func TestCopilotAvailableOptionGroupsFallsBack(t *testing.T) {
 	}}
 
 	groups := agent.OptionGroups()
-	require.Len(t, groups, 1)
-	assert.Equal(t, "permissionMode", groups[0].GetId())
-	assert.Equal(t, CopilotCLIModeAgent, groups[0].GetOptions()[0].GetId())
+	require.Len(t, groups, 2)
+	mode := optionids.GroupByID(groups, OptionIDPermissionMode)
+	require.NotNil(t, mode)
+	assert.Equal(t, CopilotCLIModeAgent, mode.GetOptions()[0].GetId())
+	require.NotNil(t, optionids.GroupByID(groups, contracts.CopilotPermissionGroupAssistedApproval))
 }
 
 func TestDefaultModel_CopilotUsesEnvOverride(t *testing.T) {

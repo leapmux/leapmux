@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, ContentProps } from '../../controls/types'
 import type { MessageCategory } from '../../messageClassification'
-import type { ProviderBypassSettings } from '../../providerSettings'
+import type { ProviderPermissionPresets } from '../../providerSettings'
 import type { AttachmentCapabilities, Provider, ProviderAskUserQuestion } from '../registry'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -65,8 +65,8 @@ export interface ACPProviderOptions {
    * Omit to disable plan-mode wiring (e.g. Goose has no plan mode).
    */
   planValue?: string
-  /** Complete settings change for the Bypass Permissions switch. */
-  bypassSettings?: ProviderBypassSettings
+  /** Provider-native presets for standard permission actions. */
+  permissionPresets?: ProviderPermissionPresets
   /** Question-handling hooks for providers that override the default ACP path. */
   questionHandling?: ACPQuestionHandling
   /**
@@ -161,8 +161,8 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     ControlActions: opts.ControlActions ?? ACPControlActions,
   }
 
-  if (opts.bypassSettings !== undefined)
-    plugin.bypassSettings = opts.bypassSettings
+  if (opts.permissionPresets !== undefined)
+    plugin.permissionPresets = opts.permissionPresets
   if (opts.planValue !== undefined)
     plugin.planMode = planModeFromConfig(sc, opts.planValue)
   const triggerModeGroupKey = triggerModeGroupKeyForConfig(sc)

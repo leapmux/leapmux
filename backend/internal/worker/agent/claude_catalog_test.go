@@ -66,6 +66,7 @@ func TestFilterPermissionModeGroup_AutoAvailable(t *testing.T) {
 	// current value is overlaid onto a fresh live group.
 	assert.Len(t, got.GetOptions(), 6)
 	assert.Equal(t, PermissionModePlan, got.GetCurrentValue())
+	assert.Equal(t, PermissionModeAuto, got.GetDefaultValue())
 }
 
 func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
@@ -76,6 +77,7 @@ func TestFilterPermissionModeGroup_AutoUnavailable(t *testing.T) {
 	require.NotSame(t, staticGroup, got, "filtered result must be a fresh copy")
 	assert.Equal(t, staticGroup.GetId(), got.GetId())
 	assert.Equal(t, staticGroup.GetLabel(), got.GetLabel())
+	assert.Equal(t, PermissionModeDefault, got.GetDefaultValue())
 
 	ids := make([]string, 0, len(got.GetOptions()))
 	for _, o := range got.GetOptions() {
@@ -123,11 +125,10 @@ func TestLivePermissionModeGroup_KeepsCurrentAutoWhenUnavailable(t *testing.T) {
 func TestLivePermissionModeGroup_EmptyCurrentFallsBackToDefault(t *testing.T) {
 	staticGroup := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)[0]
 
-	// An empty current must resolve to the template's default rather than rendering a
-	// blank selection (delegated to liveGroup's empty-current fallback).
+	// An empty current uses Auto when the session offers Auto.
 	got := livePermissionModeGroup(staticGroup, "", true)
-	assert.Equal(t, staticGroup.GetDefaultValue(), got.GetCurrentValue())
-	assert.Equal(t, PermissionModeDefault, got.GetCurrentValue())
+	assert.Equal(t, PermissionModeAuto, got.GetCurrentValue())
+	assert.Equal(t, PermissionModeAuto, got.GetDefaultValue())
 }
 
 func TestIsAutoModeUnavailableError(t *testing.T) {

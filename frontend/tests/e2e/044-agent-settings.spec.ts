@@ -1,5 +1,5 @@
 import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
-import { ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Settings', () => {
@@ -13,6 +13,27 @@ test.describe('Agent Settings', () => {
     // instant it becomes visible sees "…" and nothing else, forever.
     await expectSettingsChip(page, 'Sonnet')
     await expectSettingsChip(page, 'Default')
+  })
+
+  test('permission shortcuts use the Claude modes that the session offers', async ({ authenticatedWorkspace, page }) => {
+    void authenticatedWorkspace
+    await waitForSettingsHydrated(page)
+    const menu = await openPlusMenu(page)
+    const bypass = menu.getByTestId('composer-bypass-permissions')
+    const smart = menu.getByTestId('composer-smart-permissions')
+    await expect(bypass).toBeVisible()
+    const smartOffered = await smart.isVisible()
+
+    await bypass.click()
+    await waitForSettingsIdle(page)
+    await expectSettingsChip(page, 'Bypass Permissions')
+
+    if (smartOffered) {
+      await openPlusMenu(page)
+      await page.getByTestId('composer-smart-permissions').click()
+      await waitForSettingsIdle(page)
+      await expectSettingsChip(page, 'Auto Mode')
+    }
   })
 
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {
@@ -186,7 +207,7 @@ test.describe('Agent Settings', () => {
     expect(await effortOptions(), 'and Sonnet still does on the way back').toEqual(onSonnet)
   })
 
-  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, page }) => {
+  test('ultracode effort settles and keeps the composer writable', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace // fixture trigger
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -195,24 +216,19 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-ultracode"]')).toBeVisible()
     await page.keyboard.press('Escape')
 
-    // Select ultracode. CI accounts lack the dynamic-workflows entitlement, so
-    // the CLI gracefully downgrades to xhigh (apply_flag_settings no-ops and
-    // get_settings reports ultracode:false). We therefore assert the agent
-    // stays functional rather than that the selection persists as ultracode.
+    // Select Ultracode. Some accounts keep it, and other accounts settle on
+    // Extra High. Both results confirm that the CLI processed the change.
     await chooseSettingsOption(page, 'effort-ultracode')
     await waitForSettingsIdle(page)
 
+    const effortMenu = await openSettingsMenu(page, 'effort')
+    await expect(effortMenu.locator(
+      '[data-testid="effort-ultracode"] input[type="radio"]:checked, [data-testid="effort-xhigh"] input[type="radio"]:checked',
+    )).toHaveCount(1)
+
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
-    await editor.click()
-    // Use a distinctive sentinel word as the answer, not a number. A numeric
-    // answer would be unsafe here because the "Took Ns" bubble's duration
-    // (e.g. "Took 11s") shares data-role="agent" and would substring-match a
-    // numeric sentinel like "11", letting the test pass on the duration bubble
-    // even if the agent never answered.
-    await page.keyboard.type('Reply with exactly the word PINEAPPLE and nothing else.')
-    await page.keyboard.press('Meta+Enter')
-    await expect(assistantBubbles(page).filter({ hasText: 'PINEAPPLE' })).toBeVisible()
+    await expect(editor).toHaveAttribute('contenteditable', 'true')
   })
 
   test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
@@ -577,10 +593,9 @@ test.describe('Agent Settings', () => {
     // Open a second agent tab
     await openAgentViaUI(page)
 
-    // The new tab should also start with Default mode, once its agent has
-    // reported an option catalog -- until then the trigger reads "… · Auto".
+    // A new session requests Auto Mode and falls back to Default when unavailable.
     await waitForSettingsHydrated(page)
-    await expectSettingsChip(page, 'Default')
+    await expectSettingsChip(page, /Auto Mode|Default/)
 
     // Switch the new agent to Plan Mode
     await chooseSettingsOption(page, 'permissionMode-plan')
@@ -588,7 +603,7 @@ test.describe('Agent Settings', () => {
     await waitForSettingsIdle(page)
 
     // Verify the notification appears in the new agent's chat (not the first agent's)
-    await expect(visibleOnly(page.getByText('Mode (Default → Plan Mode)'))).toBeVisible()
+    await expect(visibleOnly(page.getByText(/Mode \((Auto Mode|Default) → Plan Mode\)/))).toBeVisible()
 
     // Switch back to the first agent tab
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')

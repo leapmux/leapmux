@@ -1779,7 +1779,56 @@ ${rows}
 }
 
 // ---------------------------------------------------------------------------
-// provider protocols: a coding agent's own wire vocabulary (zcode, pi)
+// GitHub Copilot permission identifiers
+// ---------------------------------------------------------------------------
+
+export function checkCopilotPermissions(c) {
+  mustBe(new Set(Object.values(c.groups)).size === Object.keys(c.groups).length, 'copilot-permissions.json', 'group identifiers must be unique')
+  mustBe(new Set(Object.values(c.values)).size === Object.keys(c.values).length, 'copilot-permissions.json', 'value identifiers must be unique')
+  return {}
+}
+
+export function emitGoCopilotPermissions(c) {
+  const groups = Object.entries(c.groups)
+    .map(([name, value]) => ({ name: `CopilotPermissionGroup${name}`, value: jsonString(value) }))
+  const values = Object.entries(c.values)
+    .map(([name, value]) => ({ name: `CopilotPermissionValue${name}`, value: jsonString(value) }))
+  return `${GO_HEADER('copilot-permissions.json')}package contracts
+
+// CopilotPermissionGroup* identify the two Copilot permission axes.
+const (
+${goConstBlock(groups)}
+)
+
+// CopilotPermissionValue* are the values that both permission axes use.
+const (
+${goConstBlock(values)}
+)
+`
+}
+
+export function emitTsCopilotPermissions(c) {
+  const groups = Object.entries(c.groups)
+    .map(([name, value]) => `  ${name}: ${jsonString(value)},`)
+    .join('\n')
+  const values = Object.entries(c.values)
+    .map(([name, value]) => `  ${name}: ${jsonString(value)},`)
+    .join('\n')
+  return `${TS_HEADER('copilot-permissions.json')}
+/** The option group identifiers for Copilot permission controls. */
+export const COPILOT_PERMISSION_GROUP = {
+${groups}
+} as const
+
+/** The values that both Copilot permission controls use. */
+export const COPILOT_PERMISSION_VALUE = {
+${values}
+} as const
+`
+}
+
+// ---------------------------------------------------------------------------
+// provider protocols: a coding agent's own wire vocabulary (zcode, pi, goose)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1810,6 +1859,15 @@ const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'ZCodeMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
       { key: 'resultTypes', goTable: 'Result', tsTable: 'RESULT', tsType: 'ZCodeResult', doc: '`turn.completed.resultType`' },
       { key: 'decisions', goTable: 'Decision', tsTable: 'DECISION', tsType: 'ZCodeDecision', doc: '`permission.resolved.decision`' },
+    ],
+  },
+  {
+    name: 'goose-protocol',
+    goPrefix: 'Goose',
+    tsPrefix: 'GOOSE',
+    title: 'Goose',
+    tables: [
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'GooseMode', doc: 'permission modes' },
     ],
   },
   {
@@ -2293,6 +2351,15 @@ const DOMAINS = [
       checkCodexBypass(c)
       out['backend/generated/contracts/codex-bypass.go'] = emitGoCodexBypass(c)
       out['frontend/src/generated/contracts/codex-bypass.ts'] = emitTsCodexBypass(c)
+    },
+  },
+  {
+    name: 'copilot-permissions',
+    emit(out, read) {
+      const c = read('copilot-permissions')
+      checkCopilotPermissions(c)
+      out['backend/generated/contracts/copilot-permissions.go'] = emitGoCopilotPermissions(c)
+      out['frontend/src/generated/contracts/copilot-permissions.ts'] = emitTsCopilotPermissions(c)
     },
   },
   {

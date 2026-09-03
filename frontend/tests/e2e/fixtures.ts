@@ -225,7 +225,9 @@ export const test = base.extend<
     )
     // Open an initial agent — workspace creation on the hub no longer
     // auto-creates one (that was the old worker behavior).
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
+      optionValues: { permissionMode: 'default' },
+    })
     await use({ workspaceId })
 
     // Teardown (best effort): stop the workspace's agents on the worker, THEN

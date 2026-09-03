@@ -106,7 +106,15 @@ func TestStartGooseCLI_NewSessionHandshake(t *testing.T) {
 	for _, opt := range modeGroup.GetOptions() {
 		modeNames = append(modeNames, opt.GetName())
 	}
-	assert.Equal(t, []string{"Auto", "Approve", "Smart Approve", "Chat"}, modeNames)
+	assert.Equal(t, []string{"Smart Approve", "Auto", "Approve", "Chat"}, modeNames)
+}
+
+func TestFallbackGooseModesPutSmartApproveFirst(t *testing.T) {
+	t.Parallel()
+
+	modes := fallbackGooseCLIModes()
+	require.NotEmpty(t, modes)
+	assert.Equal(t, GooseCLIModeSmartApprove, modes[0].GetId())
 }
 
 func TestStartGooseCLI_LoadSessionUsesResumeID(t *testing.T) {
@@ -220,7 +228,7 @@ func TestGooseAvailableOptionGroupsFallsBack(t *testing.T) {
 	groups := agent.OptionGroups()
 	require.Len(t, groups, 1)
 	assert.Equal(t, "permissionMode", groups[0].GetId())
-	assert.Equal(t, GooseCLIModeAuto, groups[0].GetOptions()[0].GetId())
+	assert.Equal(t, GooseCLIModeSmartApprove, groups[0].GetOptions()[0].GetId())
 }
 
 func TestDefaultModel_GooseUsesEnvOverride(t *testing.T) {

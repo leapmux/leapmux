@@ -841,20 +841,14 @@ describe('codex settings config', () => {
     expect(plugin.planMode!.currentMode({})).toBe(DEFAULT_CODEX_COLLABORATION_MODE)
   })
 
-  it('declares the complete bypass settings', () => {
-    expect(plugin.bypassSettings?.sets.permissionMode).toBe('never')
-  })
-
-  it('declares a "Bypass permissions" settings action that sets network/sandbox/approval together', () => {
-    expect(plugin.settingsActions).toEqual([{
-      label: 'Bypass permissions',
-      testId: 'codex-bypass-permissions',
-      sets: {
+  it('declares one complete bypass permission preset', () => {
+    expect(plugin.permissionPresets).toEqual({
+      bypass: { sets: {
         network_access: 'enabled',
         sandbox_policy: 'danger-full-access',
         permissionMode: 'never',
-      },
-    }])
+      } },
+    })
   })
 })
 

@@ -17,7 +17,7 @@ describe('reasonix provider', () => {
 
   it('has no runtime mode: no plan mode, permission mode, or bypass', () => {
     expect(plugin.planMode).toBeUndefined()
-    expect(plugin.bypassSettings).toBeUndefined()
+    expect(plugin.permissionPresets).toBeUndefined()
     // modelOnly: no mode axis, so the trigger renders no third (mode) segment.
     expect(plugin.triggerModeGroupKey).toBeUndefined()
   })

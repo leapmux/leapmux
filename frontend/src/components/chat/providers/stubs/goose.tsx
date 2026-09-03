@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../../messageClassification'
-import type { PermissionMode } from '~/utils/controlResponse'
+import { GOOSE_MODE } from '~/generated/contracts/goose-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerACPProvider } from '../acp/registerACPProvider'
 import { isGooseSubagentToolRequest } from './gooseShape'
@@ -9,8 +9,6 @@ import { isGooseSubagentToolRequest } from './gooseShape'
 // ./gooseShape.ts to avoid an import cycle through registerACPProvider (which
 // pulls in the renderers that read the name extractor).
 export { gooseSubagentToolRequestName, isGooseSubagentToolRequest } from './gooseShape'
-
-const GOOSE_MODE_AUTO = 'auto' as PermissionMode
 
 // Goose's classify hook for tool_call_update: recognize the subagent
 // tool-request _meta and emit a `subagent_tool_request` tool_use category so
@@ -24,7 +22,10 @@ function classifyGooseToolCallUpdate(parent: Record<string, unknown>): MessageCa
 
 registerACPProvider({
   provider: AgentProvider.GOOSE,
-  defaultPermissionMode: GOOSE_MODE_AUTO,
-  bypassSettings: { sets: { permissionMode: GOOSE_MODE_AUTO } },
+  defaultPermissionMode: GOOSE_MODE.Auto,
+  permissionPresets: {
+    smart: { sets: { permissionMode: GOOSE_MODE.SmartApprove } },
+    bypass: { sets: { permissionMode: GOOSE_MODE.Auto } },
+  },
   classifyToolCallUpdate: classifyGooseToolCallUpdate,
 })

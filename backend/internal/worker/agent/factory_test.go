@@ -280,6 +280,7 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.True(t, has(copilot, OptionIDPermissionMode))
 	assert.True(t, has(copilot, CopilotConfigReasoningEffort))
 	assert.True(t, has(copilot, CopilotConfigAllowAll))
+	assert.True(t, has(copilot, contracts.CopilotPermissionGroupAssistedApproval))
 	assert.False(t, has(copilot, OptionIDEffort), "copilot uses reasoning_effort, not the well-known effort")
 
 	// OpenCode / Kilo surface their per-model reasoning under the well-known "effort"
@@ -321,6 +322,21 @@ func TestKnownOptionIDs(t *testing.T) {
 	// An unknown provider yields just {model}.
 	unknown := KnownOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
 	assert.Equal(t, map[string]bool{OptionIDModel: true}, unknown)
+}
+
+func TestNewAgentOptionDefaults(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, map[string]string{OptionIDPermissionMode: PermissionModeAuto},
+		NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	assert.Equal(t, map[string]string{OptionIDPermissionMode: contracts.GooseModeSmartApprove},
+		NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE))
+	assert.Equal(t, map[string]string{
+		contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+		contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+	}, NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT))
+	assert.Empty(t, NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	assert.Empty(t, NewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE))
 }
 
 // TestRegisteredSecondaryFallback verifies acpStart's secondary-fallback seeding sources the SAME

@@ -4,12 +4,62 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
+
+func TestCopilotResolveOptionConflicts(t *testing.T) {
+	t.Parallel()
+
+	provider := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT)
+	cases := []struct {
+		name      string
+		current   map[string]string
+		requested map[string]string
+		want      map[string]string
+	}{
+		{
+			name:      "assisted approval disables allow all",
+			current:   map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
+			requested: map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
+			want: map[string]string{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+			},
+		},
+		{
+			name:      "allow all disables assisted approval",
+			current:   map[string]string{contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn},
+			requested: map[string]string{contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn},
+			want: map[string]string{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOff,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+			},
+		},
+		{
+			name:    "assisted approval wins one conflicting request",
+			current: map[string]string{},
+			requested: map[string]string{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOn,
+			},
+			want: map[string]string{
+				contracts.CopilotPermissionGroupAssistedApproval: contracts.CopilotPermissionValueOn,
+				contracts.CopilotPermissionGroupAllowAll:         contracts.CopilotPermissionValueOff,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := provider.ResolveOptionConflicts(tc.current, tc.requested)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
 
 // Two handlers answer for the same tab, and they must agree about which CLI a
 // request means. OpenAgent spawns Claude Code for a request that omits the

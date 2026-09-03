@@ -3,6 +3,7 @@ package service
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -70,6 +71,35 @@ func TestResolveProviderDefaults_CodexUsesAccountDefaultSentinel(t *testing.T) {
 
 	assert.Equal(t, agent.DefaultModelSentinel, codex[agent.OptionIDModel])
 	assert.Equal(t, agent.EffortAuto, codex[agent.OptionIDEffort])
+}
+
+func TestResolveNewAgentDefaultsAppliesOnlyToFreshSessions(t *testing.T) {
+	t.Parallel()
+
+	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	fresh := resolveLaunchOptions(OptionMap{}, claude, false)
+	assert.Equal(t, agent.PermissionModeAuto, fresh[agent.OptionIDPermissionMode])
+
+	resumed := resolveLaunchOptions(OptionMap{}, claude, true)
+	assert.NotEqual(t, agent.PermissionModeAuto, resumed[agent.OptionIDPermissionMode])
+	assert.Empty(t, newSessionDefaultOptionIDs(OptionMap{}, claude, true))
+
+	explicit := resolveLaunchOptions(OptionMap{agent.OptionIDPermissionMode: agent.PermissionModeDefault}, claude, false)
+	assert.Equal(t, agent.PermissionModeDefault, explicit[agent.OptionIDPermissionMode])
+	assert.Empty(t, newSessionDefaultOptionIDs(
+		OptionMap{agent.OptionIDPermissionMode: agent.PermissionModeDefault}, claude, false,
+	))
+}
+
+func TestResolveNewAgentDefaultsHonorsExplicitCopilotAllowAll(t *testing.T) {
+	t.Parallel()
+
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
+	got := resolveLaunchOptions(OptionMap{
+		contracts.CopilotPermissionGroupAllowAll: contracts.CopilotPermissionValueOn,
+	}, provider, false)
+	assert.Equal(t, contracts.CopilotPermissionValueOn, got[contracts.CopilotPermissionGroupAllowAll])
+	assert.Equal(t, contracts.CopilotPermissionValueOff, got[contracts.CopilotPermissionGroupAssistedApproval])
 }
 
 // TestOptionsChangeDelta pins the minimal-delta the settings-edit CAS persists: a changed or

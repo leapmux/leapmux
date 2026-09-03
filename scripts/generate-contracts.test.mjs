@@ -19,6 +19,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   bufDescriptor,
   checkCodexBypass,
+  checkCopilotPermissions,
   checkDesktop,
   checkHeaders,
   checkListen,
@@ -38,6 +39,7 @@ import {
   DESKTOP_RS_BEHAVIOR_NAMES,
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
+  emitGoCopilotPermissions,
   emitGoDesktop,
   emitGoHeaders,
   emitGoListen,
@@ -46,6 +48,7 @@ import {
   emitGoValidate,
   emitGoWire,
   emitRsDesktop,
+  emitTsCopilotPermissions,
   emitTsDesktop,
   emitTsHeaders,
   emitTsListen,
@@ -449,6 +452,55 @@ describe('checkCodexBypass', () => {
   })
 })
 
+describe('checkCopilotPermissions', () => {
+  const valid = () => ({
+    groups: {
+      AssistedApproval: 'copilot_assisted_approval',
+      AllowAll: 'allow_all',
+    },
+    values: { Off: 'off', On: 'on' },
+  })
+
+  it('accepts unique group and value identifiers', () => {
+    expect(checkCopilotPermissions(valid())).toEqual({})
+  })
+
+  it('rejects duplicate group or value identifiers', () => {
+    expectContractError(() => checkCopilotPermissions({
+      ...valid(),
+      groups: { AssistedApproval: 'allow_all', AllowAll: 'allow_all' },
+    }), 'group identifiers must be unique')
+    expectContractError(() => checkCopilotPermissions({
+      ...valid(),
+      values: { Off: 'on', On: 'on' },
+    }), 'value identifiers must be unique')
+  })
+})
+
+describe('copilot permission emitters', () => {
+  const contract = {
+    groups: {
+      AssistedApproval: 'copilot_assisted_approval',
+      AllowAll: 'allow_all',
+    },
+    values: { Off: 'off', On: 'on' },
+  }
+
+  it('emits matching identifiers for Go and TypeScript', () => {
+    const go = emitGoCopilotPermissions(contract)
+    const ts = emitTsCopilotPermissions(contract)
+    for (const value of ['copilot_assisted_approval', 'allow_all', 'off', 'on']) {
+      expect(go).toContain(JSON.stringify(value))
+      expect(ts).toContain(JSON.stringify(value))
+    }
+  })
+
+  it('is deterministic', () => {
+    expect(emitGoCopilotPermissions(contract)).toBe(emitGoCopilotPermissions(contract))
+    expect(emitTsCopilotPermissions(contract)).toBe(emitTsCopilotPermissions(contract))
+  })
+})
+
 // The pool the worker and the browser dialogs both name tabs from. The schema
 // holds the per-name shape; these are the two relations it cannot express.
 describe('checkTabNames', () => {
@@ -576,7 +628,9 @@ describe('generate', () => {
     expect(Object.keys(files).sort()).toEqual([
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/codex-bypass.go',
+      'backend/generated/contracts/copilot-permissions.go',
       'backend/generated/contracts/desktop.go',
+      'backend/generated/contracts/goose-protocol.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/listen.go',
       'backend/generated/contracts/pi-protocol.go',
@@ -594,7 +648,9 @@ describe('generate', () => {
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
+      'frontend/src/generated/contracts/copilot-permissions.ts',
       'frontend/src/generated/contracts/desktop.ts',
+      'frontend/src/generated/contracts/goose-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',

@@ -266,7 +266,7 @@ const zcodePlugin: Provider = {
   // ZCode's mode axis rides LeapMux's permission-mode channel, so the mode chip and
   // the plan toggle drive `session/setMode`.
   triggerModeGroupKey: 'permissionMode',
-  bypassSettings: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+  permissionPresets: { bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } } },
   planMode: {
     groupKey: 'permissionMode',
     currentMode: agent => agent.optionValues?.permissionMode ?? ZCODE_MODE.Build,

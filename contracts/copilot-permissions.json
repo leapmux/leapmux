@@ -1,0 +1,11 @@
+{
+  "_readme": "Permission identifiers that both the Go worker and the TypeScript plugin use for GitHub Copilot. Assisted Approval is a LeapMux option backed by Copilot launch flags. Allow All is the config option that the Copilot Agent Client Protocol server reports. The values are the shared two-state vocabulary for both groups.",
+  "groups": {
+    "AssistedApproval": "copilot_assisted_approval",
+    "AllowAll": "allow_all"
+  },
+  "values": {
+    "Off": "off",
+    "On": "on"
+  }
+}

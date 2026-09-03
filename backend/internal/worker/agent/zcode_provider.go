@@ -61,6 +61,10 @@ func (zcodeProvider) IsInterrupt(content string) bool {
 // DefaultPermissionMode is ZCode's own default session mode.
 func (zcodeProvider) DefaultPermissionMode() string { return contracts.ZCodeDefaultMode }
 
+func (zcodeProvider) ResolveOptionConflicts(current, requested map[string]string) map[string]string {
+	return noopProvider{}.ResolveOptionConflicts(current, requested)
+}
+
 // IsSelfDisplayingControlTool is false: the app-server does not echo a control
 // answer into its event stream, so the service's synthetic answer row is the only
 // record of it.

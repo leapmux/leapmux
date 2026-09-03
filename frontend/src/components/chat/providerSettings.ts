@@ -1,4 +1,4 @@
-import type { PermissionMode } from '~/utils/controlResponse'
+import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** One atomic change to one or more provider settings. */
 export interface ProviderSettingChange {
@@ -7,20 +7,34 @@ export interface ProviderSettingChange {
 
 export type ProviderSettingChangeHandler = (change: ProviderSettingChange) => void | Promise<void>
 
-/** The complete settings change that disables a provider's permission prompts. */
-export interface ProviderBypassSettings extends ProviderSettingChange {
-  sets: { permissionMode: PermissionMode } & Record<string, string>
+/** One provider-native permission preset. */
+export interface ProviderPermissionPreset extends ProviderSettingChange {
+  sets: Record<string, string>
+}
+
+/** The standard permission presets that a provider can offer. */
+export interface ProviderPermissionPresets {
+  smart?: ProviderPermissionPreset
+  bypass?: ProviderPermissionPreset
 }
 
 /** A usable bypass action. The UI receives it only when both parts exist. */
 export interface BypassController {
-  settings: ProviderBypassSettings
+  settings: ProviderPermissionPreset
   apply: ProviderSettingChangeHandler
 }
 
-/** A provider action that applies several settings together. */
-export interface ProviderSettingsAction {
-  label: string
-  testId: string
-  sets: Record<string, string>
+/** Reports whether the catalog offers every group and value in a preset. */
+export function permissionPresetAvailable(
+  preset: ProviderPermissionPreset | undefined,
+  groups: AvailableOptionGroup[] | undefined,
+): preset is ProviderPermissionPreset {
+  if (!preset)
+    return false
+  const entries = Object.entries(preset.sets)
+  if (entries.length === 0)
+    return false
+  return entries.every(([groupId, value]) =>
+    groups?.some(group => group.id === groupId && group.mutable && group.options.some(option => option.id === value)) ?? false,
+  )
 }

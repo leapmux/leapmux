@@ -70,6 +70,39 @@ func resolveProviderDefaults(options OptionMap, provider leapmuxv1.AgentProvider
 	return out
 }
 
+// resolveNewAgentDefaults adds safe permission values only for a new session.
+// Explicit request values take precedence.
+func resolveNewAgentDefaults(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) OptionMap {
+	resolved := options.Clone()
+	for id := range newSessionDefaultOptionIDs(options, provider, resumed) {
+		resolved[id] = agent.NewAgentOptionDefaults(provider)[id]
+	}
+	return resolved
+}
+
+// resolveLaunchOptions fills all launch defaults and resolves provider conflicts.
+// The original request decides which explicit value wins against a safe default.
+func resolveLaunchOptions(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) OptionMap {
+	resolved := resolveProviderDefaults(resolveNewAgentDefaults(options, provider, resumed), provider)
+	if resolved[agent.OptionIDPermissionMode] == "" {
+		resolved[agent.OptionIDPermissionMode] = agent.PermissionModeOrDefault(provider, "")
+	}
+	return OptionMap(agent.ProviderFor(provider).ResolveOptionConflicts(resolved, options))
+}
+
+func newSessionDefaultOptionIDs(options OptionMap, provider leapmuxv1.AgentProvider, resumed bool) map[string]bool {
+	if resumed {
+		return nil
+	}
+	ids := map[string]bool{}
+	for id := range agent.NewAgentOptionDefaults(provider) {
+		if options[id] == "" {
+			ids[id] = true
+		}
+	}
+	return ids
+}
+
 // sortedOptionKeys returns the sorted union of keys across the given maps.
 func sortedOptionKeys(mapsToMerge ...OptionMap) []string {
 	keys := make(map[string]struct{})

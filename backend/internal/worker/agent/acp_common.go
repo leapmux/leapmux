@@ -159,6 +159,9 @@ type acpBase struct {
 	// the old syncsPermissionMode/syncsPrimaryAgent bool pair so the illegal "both set"
 	// state is unrepresentable and every family-conditional site reads one field.
 	modeChannel acpModeChannel
+	// orderPermissionModes applies a provider order to each rebuilt permission list.
+	// Goose uses it to put Smart Approve first. Other providers leave it nil.
+	orderPermissionModes func([]*leapmuxv1.AvailableOption)
 	// secondaryChannelOnce/secondaryChannelCache memoize the resolved secondary channel.
 	// modeChannel is fixed at construction (configure) and the channel's field/list POINTERS
 	// and closures all capture b (stable), so the resolution is invariant for the agent's
@@ -633,6 +636,9 @@ func (b *acpBase) buildSecondaryChannel() acpSecondaryChannel {
 		sc.available = &b.availableModes
 		sc.rebuild = func(modes []acpModeInfo, reported string) {
 			if rebuilt := buildACPModes(modes, reported, nil); len(rebuilt) > 0 {
+				if b.orderPermissionModes != nil {
+					b.orderPermissionModes(rebuilt)
+				}
 				b.availableModes = rebuilt
 			}
 		}
@@ -2083,6 +2089,7 @@ type acpStartSpec[T any] struct {
 	providerName   string                                     // process/log name, e.g. "cursor"
 	binaryName     string                                     // CLI binary to launch
 	baseArgs       []string                                   // args after the binary, e.g. {"acp"}
+	baseArgsFor    func(Options) []string                     // option-dependent args; overrides baseArgs when set
 	rcMarkerEnvKey string                                     // provider rc marker stripped + re-added on a login shell (e.g. "KILO_CLIENT"); "" if none
 	sessionConfig  acpSessionConfig                           // zero value -> acpDefaultSessionConfig
 	newAgent       func() *T                                  // construct a zero-value concrete agent
@@ -2104,11 +2111,15 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 		cancel()
 		return nil, err
 	}
+	baseArgs := spec.baseArgs
+	if spec.baseArgsFor != nil {
+		baseArgs = spec.baseArgsFor(opts)
+	}
 	wrap := shellWrapSpec{
 		Shell:      opts.Shell,
 		LoginShell: opts.LoginShell,
 		Launch:     launch,
-		BaseArgs:   spec.baseArgs,
+		BaseArgs:   baseArgs,
 		WorkingDir: opts.WorkingDir,
 	}
 	if spec.rcMarkerEnvKey != "" {
@@ -2632,6 +2643,9 @@ func (b *acpBase) applyStartupPermissionMode(requested string) error {
 // Used by ACP providers that track a permission mode (Copilot, Goose, Cursor).
 func (b *acpBase) applyHandshakeMode(handshake *acpSessionResult, defaultMode string) {
 	modes := buildACPModes(handshake.Modes, handshake.CurrentModeID, nil)
+	if b.orderPermissionModes != nil {
+		b.orderPermissionModes(modes)
+	}
 	mode := handshake.CurrentModeID
 	if mode == "" {
 		mode = defaultMode
@@ -2868,18 +2882,23 @@ func buildConfigOptionSelect(options []acpConfigOption, hiddenFilter func(string
 // mode or the primary agent) from the `mode` select of a configOptions payload. It
 // writes the available-option list and the current value into the caller-supplied
 // fields, and reports the new value, whether the current value changed, and whether
-// the available list changed. The caller must hold b.mu. Shared by
+// the available list changed. orderOptions applies a provider order before comparison.
+// The caller must hold b.mu. Shared by
 // syncConfigOptionModeLocked and syncConfigOptionPrimaryAgentLocked, which differ
 // only in the hidden filter and the two target fields.
 func (b *acpBase) syncConfigOptionSelectLocked(
 	options []acpConfigOption,
 	hiddenFilter func(string) bool,
+	orderOptions func([]*leapmuxv1.AvailableOption),
 	available *[]*leapmuxv1.AvailableOption,
 	currentField *string,
 ) (value string, changed, listChanged bool) {
 	built, current, ok := buildConfigOptionSelect(options, hiddenFilter)
 	if !ok {
 		return "", false, false
+	}
+	if orderOptions != nil {
+		orderOptions(built)
 	}
 	// The len>0 guard mirrors the model channel (applyConfigOptionModelsLocked): an
 	// update that rebuilds to an empty list never blanks a populated picker.
@@ -2910,7 +2929,7 @@ func (b *acpBase) syncConfigOptionSelectLocked(
 // b.mu. Used by ACP providers whose configOptions `mode` maps to the permission
 // mode (Copilot, Goose, Cursor).
 func (b *acpBase) syncConfigOptionModeLocked(options []acpConfigOption) (string, bool, bool) {
-	return b.syncConfigOptionSelectLocked(options, nil, &b.availableModes, &b.permissionMode)
+	return b.syncConfigOptionSelectLocked(options, nil, b.orderPermissionModes, &b.availableModes, &b.permissionMode)
 }
 
 // syncConfigOptionPrimaryAgentLocked refreshes currentPrimaryAgent and
@@ -2921,7 +2940,7 @@ func (b *acpBase) syncConfigOptionModeLocked(options []acpConfigOption) (string,
 // primary-agent switch is reflected -- the mirror of syncConfigOptionModeLocked for
 // the permission-mode providers.
 func (b *acpBase) syncConfigOptionPrimaryAgentLocked(options []acpConfigOption) (string, bool, bool) {
-	return b.syncConfigOptionSelectLocked(options, b.primaryAgentHiddenFilter, &b.availablePrimaryAgents, &b.currentPrimaryAgent)
+	return b.syncConfigOptionSelectLocked(options, b.primaryAgentHiddenFilter, nil, &b.availablePrimaryAgents, &b.currentPrimaryAgent)
 }
 
 // acpRefreshMap builds the PersistSettingsRefresh delta for the ACP providers. model and mode

@@ -7,6 +7,17 @@ import { input } from '../testUtils'
 // Side-effect import to register the Claude plugin.
 import './plugin'
 
+describe('claude permission presets', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  it('maps smart and bypass permissions to Claude modes', () => {
+    expect(plugin.permissionPresets).toEqual({
+      smart: { sets: { permissionMode: 'auto' } },
+      bypass: { sets: { permissionMode: 'bypassPermissions' } },
+    })
+  })
+})
+
 describe('claude clearsThinkingTokensForMessage', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 

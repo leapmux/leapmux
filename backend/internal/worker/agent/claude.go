@@ -858,7 +858,10 @@ func claudeModelSubGroups(m *ModelInfo) []*leapmuxv1.AvailableOptionGroup {
 // "auto" when the startup probe rejected it (so the UI can't offer a mode this
 // Claude Code instance can't enter).
 func livePermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, current string, autoAvail bool) *leapmuxv1.AvailableOptionGroup {
-	if static != nil && !autoAvail {
+	if static != nil && autoAvail {
+		static = cloneOptionGroupTemplate(static)
+		static.DefaultValue = PermissionModeAuto
+	} else if static != nil {
 		// Hide "auto" when the startup probe rejected it: filter the template (never mutate
 		// the shared static group) so the UI can't offer a mode this Claude Code instance
 		// can't enter. liveGroup then overlays the live current value and supplies the
@@ -2411,4 +2414,7 @@ func init() {
 	setModelIDNormalizer(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, normalizeClaudeCodeModel)
 	// model + permissionMode (static group) + effort (built from the model catalog).
 	setAdditionalOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, OptionIDEffort)
+	setNewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, map[string]string{
+		OptionIDPermissionMode: PermissionModeAuto,
+	})
 }

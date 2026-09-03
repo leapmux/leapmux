@@ -514,7 +514,9 @@ export const processTest = base.extend<
       adminToken,
       `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     )
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
+      optionValues: { permissionMode: 'default' },
+    })
     await use({ workspaceId })
     // Stop the workspace's agents on the worker BEFORE the hub soft-delete -- the
     // same cascade the browser app runs (deleteWorkspaceViaAPI only does the hub

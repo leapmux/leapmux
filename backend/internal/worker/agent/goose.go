@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const (
-	GooseCLIModeAuto         = "auto"
-	GooseCLIModeApprove      = "approve"
-	GooseCLIModeSmartApprove = "smart_approve"
-	GooseCLIModeChat         = "chat"
+	GooseCLIModeAuto         = contracts.GooseModeAuto
+	GooseCLIModeApprove      = contracts.GooseModeApprove
+	GooseCLIModeSmartApprove = contracts.GooseModeSmartApprove
+	GooseCLIModeChat         = contracts.GooseModeChat
 )
 
 // Goose's server-driven ACP config-option ids (surfaced as mutable option groups,
@@ -41,6 +42,7 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		base:         func(a *GooseCLIAgent) *acpBase { return &a.acpBase },
 		configure: func(a *GooseCLIAgent) {
 			a.modeChannel = modeChannelPermissionMode
+			a.orderPermissionModes = putGooseSmartApproveFirst
 			// Goose's reasoning-effort axis is the convention id "thinking_effort", not the
 			// well-known "effort" -- declare it so the env-effort override maps onto it.
 			a.effortConfigID = GooseConfigThinkingEffort
@@ -58,11 +60,22 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 	})
 }
 
+func putGooseSmartApproveFirst(modes []*leapmuxv1.AvailableOption) {
+	for index, mode := range modes {
+		if mode.GetId() != contracts.GooseModeSmartApprove || index == 0 {
+			continue
+		}
+		copy(modes[1:index+1], modes[:index])
+		modes[0] = mode
+		return
+	}
+}
+
 func fallbackGooseCLIModes() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
+		{Id: GooseCLIModeSmartApprove, Name: "Smart Approve"},
 		{Id: GooseCLIModeAuto, Name: "Auto"},
 		{Id: GooseCLIModeApprove, Name: "Approve"},
-		{Id: GooseCLIModeSmartApprove, Name: "Smart Approve"},
 		{Id: GooseCLIModeChat, Name: "Chat"},
 	}
 }
@@ -254,4 +267,7 @@ func init() {
 		"LEAPMUX_GOOSE_DEFAULT_MODEL", "goose",
 		GooseConfigThinkingEffort, GooseConfigProvider,
 	)
+	setNewAgentOptionDefaults(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, map[string]string{
+		OptionIDPermissionMode: contracts.GooseModeSmartApprove,
+	})
 }

@@ -366,7 +366,10 @@ function claudeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsa
 }
 
 const claudeCodePlugin: Provider = {
-  bypassSettings: { sets: { permissionMode: 'bypassPermissions' } },
+  permissionPresets: {
+    smart: { sets: { permissionMode: 'auto' } },
+    bypass: { sets: { permissionMode: 'bypassPermissions' } },
+  },
   contextBufferPct: CLAUDE_AUTOCOMPACT_BUFFER_PCT,
   attachments: {
     text: true,

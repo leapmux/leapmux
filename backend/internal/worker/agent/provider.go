@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/optionmap"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
@@ -78,6 +79,10 @@ type Provider interface {
 	// mode/approval policy -- the value stamped under the "permissionMode"
 	// option id when the agent carries no explicit selection.
 	DefaultPermissionMode() string
+	// ResolveOptionConflicts merges requested values over current values and
+	// resolves provider-specific conflicts. The service calls this before it
+	// writes the optimistic option map.
+	ResolveOptionConflicts(current, requested map[string]string) map[string]string
 	// PlanModePermissionMode returns the permission mode an APPROVED plan-mode
 	// transition of the given kind switches the agent to, when the user selected
 	// none in the approval banner.
@@ -294,6 +299,10 @@ func (noopProvider) ListStoredSessions(context.Context, StoredSessionQuery) ([]S
 }
 
 func (noopProvider) DefaultPermissionMode() string { return "" }
+
+func (noopProvider) ResolveOptionConflicts(current, requested map[string]string) map[string]string {
+	return optionmap.Map(current).Merge(requested)
+}
 
 // IsSelfDisplayingControlTool defaults to false: a provider that doesn't echo control
 // answers into its own transcript relies on the service layer's synthetic display row.
@@ -873,7 +882,8 @@ type acpProvider struct {
 	// read -- but each keeps it in a different place and shape, so the function
 	// lives in that provider's own file and is wired here at registration, the
 	// way validateAttachment already is. Nil lists nothing.
-	listStoredSessions func(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
+	listStoredSessions     func(ctx context.Context, q StoredSessionQuery) ([]StoredSession, error)
+	resolveOptionConflicts func(current, requested map[string]string) map[string]string
 }
 
 // ListStoredSessions dispatches to the reader the registration supplied. The
@@ -900,12 +910,38 @@ func (p acpProvider) DefaultPermissionMode() string {
 	return p.defaultPermissionMode
 }
 
+func (p acpProvider) ResolveOptionConflicts(current, requested map[string]string) map[string]string {
+	if p.resolveOptionConflicts != nil {
+		return p.resolveOptionConflicts(current, requested)
+	}
+	return p.noopProvider.ResolveOptionConflicts(current, requested)
+}
+
+func resolveCopilotOptionConflicts(current, requested map[string]string) map[string]string {
+	resolved := optionmap.Map(current).Merge(requested)
+	assisted := contracts.CopilotPermissionGroupAssistedApproval
+	allowAll := contracts.CopilotPermissionGroupAllowAll
+	if resolved[assisted] != contracts.CopilotPermissionValueOn ||
+		resolved[allowAll] != contracts.CopilotPermissionValueOn {
+		return resolved
+	}
+
+	if requested[assisted] == contracts.CopilotPermissionValueOn {
+		resolved[allowAll] = contracts.CopilotPermissionValueOff
+	} else if requested[allowAll] == contracts.CopilotPermissionValueOn {
+		resolved[assisted] = contracts.CopilotPermissionValueOff
+	} else {
+		resolved[allowAll] = contracts.CopilotPermissionValueOff
+	}
+	return resolved
+}
+
 func init() {
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codexProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, claudeProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, piProvider{})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, defaultPermissionMode: CursorCLIModeAgent, listStoredSessions: cursorStoredSessions})
-	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent, listStoredSessions: copilotStoredSessions})
+	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, defaultPermissionMode: CopilotCLIModeAgent, listStoredSessions: copilotStoredSessions, resolveOptionConflicts: resolveCopilotOptionConflicts})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: kiloStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, questionRequestContext: opencodeQuestionRequestContext, listStoredSessions: opencodeStoredSessions})
 	RegisterProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, defaultPermissionMode: GooseCLIModeAuto, listStoredSessions: gooseStoredSessions})

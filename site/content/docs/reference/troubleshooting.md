@@ -427,18 +427,20 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 - If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
 
-### A model, effort, or permission-mode change seems to "reset" the agent
+### A setting change seems to "reset" the agent
 
 **Symptom**
-Changing the model or effort from a composer chip or the **[+]** menu restarts the agent.
+Changing a setting from a composer chip or the **[+]** menu restarts the agent.
 
 **Cause**
-Most settings changes are applied **live**, without a restart: switching effort to a concrete level (e.g. high → xhigh) and changing the permission mode are applied in place for both Claude Code and Codex.
+Most settings changes apply **live**. Some settings control process launch arguments and require a restart. Copilot Assisted Approval is one example. LeapMux adds `--experimental` and `--assisted-approval` when this option is on. This option also enables all Copilot experimental features.
 
-A restart happens only when you switch effort back to **Auto** — the CLI must relaunch without an `--effort` flag. Changing the model resets effort to Auto, so it restarts too. The change is applied optimistically and rolled back on failure.
+Some Copilot CLI versions reject Assisted Approval with Agent Client Protocol (ACP) mode. LeapMux retries a new session with the safe default switched off. It hides Assisted Approval for that session. An explicit request still fails and shows the startup error.
+
+An effort change to **Auto** also requires a restart because LeapMux must remove the `--effort` argument. A model change can reset effort to Auto. Reasonix also fixes its model at process launch.
 
 **Fix**
-No action needed — wait for the agent to come back up. If it fails to restart, you'll see the start failure described above; resolve that.
+Wait for the agent to start again. If the start fails, use the startup error guidance above.
 
 ## Docker
 

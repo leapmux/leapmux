@@ -7,14 +7,18 @@ import { gooseSubagentToolRequestName, isGooseSubagentToolRequest } from './goos
 import { describeACPStubBasics } from './stubBasics'
 
 const MODE_AUTO = 'auto'
+const MODE_SMART_APPROVE = 'smart_approve'
 
 describe('goose provider', () => {
   const plugin = providerFor(AgentProvider.GOOSE)!
 
   describeACPStubBasics(plugin, { text: true, image: true, pdf: true, binary: true })
 
-  it('uses auto as bypass permission mode', () => {
-    expect(plugin.bypassSettings?.sets.permissionMode).toBe(MODE_AUTO)
+  it('maps smart and bypass permissions to Goose modes', () => {
+    expect(plugin.permissionPresets).toEqual({
+      smart: { sets: { permissionMode: MODE_SMART_APPROVE } },
+      bypass: { sets: { permissionMode: MODE_AUTO } },
+    })
   })
 
   it('has no plan mode', () => {
