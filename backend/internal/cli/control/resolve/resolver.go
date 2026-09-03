@@ -95,11 +95,11 @@ type Inputs struct {
 
 // ParseTabType converts a user-facing flag / env value to the wire
 // enum. Accepts both the short form ("agent" / "terminal" / "file" /
-// "") and the proto-canonical form ("TAB_TYPE_AGENT" /
-// "TAB_TYPE_TERMINAL" / "TAB_TYPE_FILE" / "TAB_TYPE_UNSPECIFIED") so
-// callers can paste a value straight from JSON output back into a
-// flag or env var. Unknown strings return ok=false so callers can
-// surface invalid_request.
+// "image" / "") and the proto-canonical form ("TAB_TYPE_AGENT" /
+// "TAB_TYPE_TERMINAL" / "TAB_TYPE_FILE" / "TAB_TYPE_IMAGE" /
+// "TAB_TYPE_UNSPECIFIED") so callers can paste a value straight from
+// JSON output back into a flag or env var. Unknown strings return
+// ok=false so callers can surface invalid_request.
 func ParseTabType(s string) (leapmuxv1.TabType, bool) {
 	switch s {
 	case "", "TAB_TYPE_UNSPECIFIED":
@@ -117,15 +117,22 @@ func ParseTabType(s string) (leapmuxv1.TabType, bool) {
 	}
 }
 
-// TabTypeWireName returns the user-facing string ("agent" /
-// "terminal" / "") for a wire TabType. Mirrors the ParseTabType
-// inverse and is used by env-var comparison and help text.
+// TabTypeWireName returns the user-facing string ("agent" / "terminal" /
+// "file" / "image", or "" for the unspecified zero value) for a wire
+// TabType. It is the inverse of ParseTabType and must stay one: the
+// contradiction message below prints BOTH sides through it, so a kind
+// this switch does not name reads as `--tab-type "" contradicts this
+// command's implicit type ""` and tells the user nothing.
 func TabTypeWireName(t leapmuxv1.TabType) string {
 	switch t {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
 		return "agent"
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		return "terminal"
+	case leapmuxv1.TabType_TAB_TYPE_FILE:
+		return "file"
+	case leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		return "image"
 	default:
 		return ""
 	}
@@ -230,7 +237,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		parsed, ok := ParseTabType(in.TabType)
 		if !ok {
 			return Resolved{}, invalidArg(
-				"unknown --tab-type value %q; want \"agent\" or \"terminal\"",
+				"unknown --tab-type value %q; want \"agent\", \"terminal\", \"file\" or \"image\"",
 				in.TabType,
 			)
 		}
@@ -241,7 +248,7 @@ func Resolve(ctx context.Context, deps Deps, need Need, in Inputs) (Resolved, er
 		parsed, ok := ParseTabType(in.TabType)
 		if !ok {
 			return Resolved{}, invalidArg(
-				"unknown --tab-type value %q; want \"agent\" or \"terminal\"",
+				"unknown --tab-type value %q; want \"agent\", \"terminal\", \"file\" or \"image\"",
 				in.TabType,
 			)
 		}

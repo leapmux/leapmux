@@ -350,7 +350,7 @@ func (h *handler) UpdateStream(ctx context.Context, req *connect.Request[leapmux
 }
 
 // tabTypeWireName projects a TabType enum to the canonical lowercase
-// wire string ("agent" / "terminal" / "file"). Returns "" for the
+// wire string ("agent" / "terminal" / "file" / "image"). Returns "" for the
 // unspecified zero value so callers can guard the env-var emit with
 // the same `if !="" then add` shape they had against the old string
 // field. Keeping the projection here (rather than reusing the CLI's

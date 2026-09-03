@@ -43,22 +43,17 @@ export interface ImageBlockSource {
 export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimensions }
 
 /**
- * True when the source carries something an `<img>` could render.
- *
- * A block can be a legitimate image and still carry nothing -- an Anthropic
- * `source:{type:'file'}` names a file on Anthropic's servers, and an MCP
- * server may state a MIME type with no payload. Those parse successfully so
- * the renderer can say "an image was returned, and here is why you cannot see
- * it" instead of dropping the block without a trace.
- */
-export function imageBlockHasPayload(source: ImageBlockSource): boolean {
-  return Boolean(source.data || source.url)
-}
-
-/**
  * Parse one content block into an {@link ImageBlockSource}. Returns null only
- * when the block is not an image block at all; an image block with no
- * renderable payload yields a source whose `data` and `url` are both absent.
+ * when the block is not an image block at all.
+ *
+ * An image block with no renderable payload yields a source whose `data` and
+ * `url` are both absent, rather than null. A block can be a legitimate image
+ * and still carry nothing -- an Anthropic `source:{type:'file'}` names a file
+ * on Anthropic's servers, and an MCP server may state a MIME type with no
+ * payload. Keeping it lets the renderer say "an image was returned, and here
+ * is why you cannot see it" (`imageRenderInfo` answers `no-data`) instead of
+ * dropping the block without a trace -- and it keeps that block's INDEX, which
+ * an image tab addresses by.
  *
  * The shapes, and who emits each:
  *

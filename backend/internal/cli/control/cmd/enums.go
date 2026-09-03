@@ -11,8 +11,8 @@ import (
 // reading a CLI envelope. These helpers project each enum to the form
 // the rest of the product already uses:
 //
-//   - TabType        -> "agent" / "terminal" / "file" (matches the
-//                       --type flag values and $LEAPMUX_CONTROL_TAB_TYPE)
+//   - TabType        -> "agent" / "terminal" / "file" / "image" (matches
+//                       the --type flag values and $LEAPMUX_CONTROL_TAB_TYPE)
 //   - AgentProvider  -> agentlabels.DisplayName, e.g. "Claude Code"
 //                       (the canonical display name the frontend
 //                       picker shows; parseProvider already accepts it)

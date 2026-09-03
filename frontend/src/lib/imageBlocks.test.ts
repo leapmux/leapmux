@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { imageBlockHasPayload, imageBlockToMarkdown, parseImageBlock } from './imageBlocks'
+import { imageBlockToMarkdown, parseImageBlock } from './imageBlocks'
 
 describe('parseimageblock', () => {
   it('parses the Anthropic base64 shape (Claude Read, MCP bridge, notebook output)', () => {
@@ -76,15 +76,6 @@ describe('parseimageblock', () => {
 
   it('returns an empty source for an inputImage with no url', () => {
     expect(parseImageBlock({ type: 'inputImage' })).toEqual({})
-  })
-})
-
-describe('imageblockhaspayload', () => {
-  it('is true only when there is something to render', () => {
-    expect(imageBlockHasPayload({ data: 'AAAA' })).toBe(true)
-    expect(imageBlockHasPayload({ url: 'data:image/png;base64,AAAA' })).toBe(true)
-    expect(imageBlockHasPayload({ mimeType: 'image/png' })).toBe(false)
-    expect(imageBlockHasPayload({})).toBe(false)
   })
 })
 

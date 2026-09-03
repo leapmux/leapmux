@@ -12,15 +12,20 @@ import (
 
 // TestTabTypeName_AllValues pins the lowercase short labels the CLI
 // emits in JSON envelopes. The strings have to match the --type flag
-// values that `tab open` accepts (parseTabType in tab.go) and the
+// values that `tab open` accepts (resolve.ParseTabType) and the
 // $LEAPMUX_CONTROL_TAB_TYPE env var the resolver reads, so a script
 // that reads a tab_id from one envelope and feeds it back as a flag
 // doesn't need a translation table.
+//
+// EVERY value, as the name says. A kind this table omits emits "" into
+// the envelope, and the script that feeds that "" back reads as "no tab
+// type given" rather than as an error.
 func TestTabTypeName_AllValues(t *testing.T) {
 	cases := map[leapmuxv1.TabType]string{
 		leapmuxv1.TabType_TAB_TYPE_AGENT:       "agent",
 		leapmuxv1.TabType_TAB_TYPE_TERMINAL:    "terminal",
 		leapmuxv1.TabType_TAB_TYPE_FILE:        "file",
+		leapmuxv1.TabType_TAB_TYPE_IMAGE:       "image",
 		leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED: "",
 	}
 	for in, want := range cases {

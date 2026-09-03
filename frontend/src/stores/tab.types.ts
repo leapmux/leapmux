@@ -14,10 +14,11 @@ export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
 
 /**
- * Fields every tab carries regardless of kind. AGENT/TERMINAL/FILE
+ * Fields every tab carries regardless of kind. The AGENT/TERMINAL/FILE/IMAGE
  * variants extend BaseTab with their own kind-specific fields and
  * narrow `type` to a literal so consumers can `switch (tab.type)` or
- * use the `isAgentTab` / `isTerminalTab` / `isFileTab` guards below.
+ * use the `isAgentTab` / `isTerminalTab` / `isFileTab` / `isImageTab`
+ * guards below.
  */
 export interface BaseTab {
   id: string
