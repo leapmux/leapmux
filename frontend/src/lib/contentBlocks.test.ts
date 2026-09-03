@@ -174,7 +174,7 @@ describe('markdownImageFormatter', () => {
   })
 })
 
-describe('splittoolresultcontent', () => {
+describe('splitToolResultContent', () => {
   it('returns the same text as joinContentParagraphs with images skipped', () => {
     const blocks = [
       { type: 'text', text: 'before' },
@@ -226,5 +226,64 @@ describe('splittoolresultcontent', () => {
     ], { text: 'text' })
     expect(text).toBe('')
     expect(images).toEqual([])
+  })
+})
+
+describe('forEachContentBlock guarantees', () => {
+  // `kinds[block.type]` reached Object.prototype: a block whose `type` is
+  // `constructor` or `toString` answered a truthy value, took the text path,
+  // read a non-string field and was skipped -- so `formatOther` never saw it.
+  // `type` is agent-supplied wire JSON, so any provider can send one.
+  it('hands a block whose type is an Object.prototype key to formatOther', () => {
+    const seen: string[] = []
+    joinContentParagraphs(
+      [
+        { type: 'constructor', text: 'x' },
+        { type: 'toString', text: 'y' },
+        { type: 'valueOf' },
+        { type: '__proto__' },
+      ],
+      { text: 'text' },
+      (block) => {
+        seen.push(String(block.type))
+        return null
+      },
+    )
+    expect(seen).toEqual(['constructor', 'toString', 'valueOf', '__proto__'])
+  })
+
+  // The ordering guarantee an image tab's permanent `imageIndex` rests on.
+  it('visits every non-kinds block exactly once, in wire order', () => {
+    const seen: unknown[] = []
+    joinContentParagraphs(
+      [
+        { type: 'text', text: 'a' },
+        { type: 'image', id: 1 },
+        { type: 'text', text: 'b' },
+        { type: 'image', id: 2 },
+      ],
+      { text: 'text' },
+      (block) => {
+        seen.push(block.id)
+        return null
+      },
+    )
+    expect(seen).toEqual([1, 2])
+  })
+
+  // The same walk feeds both sinks, so the index a tab stores and the text a
+  // quote shows come from one traversal rather than two that must agree.
+  it('splitToolResultContent numbers images by that same order', () => {
+    const { text, images } = splitToolResultContent(
+      [
+        { type: 'image', mimeType: 'image/png', data: 'FIRST' },
+        { type: 'text', text: 'between' },
+        { type: 'constructor', mimeType: 'image/png', data: 'SECOND' },
+        { type: 'image', mimeType: 'image/png', data: 'THIRD' },
+      ],
+      { text: 'text' },
+    )
+    expect(text).toBe('between')
+    expect(images.map(i => i.data)).toEqual(['FIRST', 'THIRD'])
   })
 })

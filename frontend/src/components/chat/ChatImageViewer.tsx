@@ -5,6 +5,7 @@ import { createEffect, createMemo, createSignal, Match, on, onCleanup, Switch } 
 import * as styles from '~/components/fileviewer/FileViewer.css'
 import { ImageRender } from '~/components/fileviewer/ImageFileView'
 import { base64ToUint8Array } from '~/lib/base64'
+import { imageRenderInfo, parseDataImageUrl } from '~/lib/imageBlocks'
 import { resolveChatImage } from './chatImageResolve'
 
 /**
@@ -95,12 +96,16 @@ export function ChatImageViewer(props: {
           {(resolution() as { status: 'error', message: string }).message}
         </div>
       </Match>
-      {/* Resolved, and the bytes will not decode. This branch is REACHED, not
-          defensive: `imageRenderInfo` gates the click target on the shape of the
-          source and never on whether the payload decodes, so base64 the browser
-          refuses lands here, and so does an image block that states a MIME type
-          and carries nothing. A sentence beats the `fallback` below, which would
-          otherwise say "Loading image…" forever on a tab that will never load. */}
+      {/* Resolved, and the bytes will not decode. `ImageResultView` draws a
+          click target only for an image `imageRenderInfo` accepts, and this
+          decoder now asks the same function, so a picture the row drew always
+          decodes here.
+          It stays reachable on purpose for the case the click cannot cover: the
+          tab stores (agent, seq, index) rather than the bytes, so a message that
+          merges in place can put a different source at index N between the click
+          and the re-resolve. The alternative is the `fallback` below --
+          "Loading image…" forever, on a tab that will never load. A sentence
+          beats a spinner. */}
       <Match when={resolution().status === 'ready'}>
         <div class={styles.errorState}>
           This image cannot be displayed here.
@@ -113,16 +118,26 @@ export function ChatImageViewer(props: {
 /**
  * Turn a resolved source into bytes the blob URL can hold.
  *
- * Only inline base64 is decodable here. An image the agent named by URL was
+ * Only inline base64 is decodable here. An image the agent gave as a URL was
  * never inlined in the transcript either -- the chat row shows it as a link for
  * the same anti-exfiltration reason -- so there is nothing local to open, and
  * such an image never becomes a tab (see the click handler in ImageResultView).
+ *
+ * It applies the SAME `imageRenderInfo` policy the transcript row applies, from
+ * the same module, so the tab and the row can never disagree about which
+ * pictures are displayable. The tab addresses its image by (agent, seq, index)
+ * and re-resolves it at open time, so the source it decodes is not necessarily
+ * the one the click validated: a same-seq message merge can move index N.
+ * Without the check here a 40 MB payload, or a type the row refuses, would
+ * reach a Blob that the
+ * row beside it refuses to draw.
  */
 export function decodeImageBytes(source: { data?: string, url?: string, mimeType?: string }): { content: Uint8Array, mimeType: string } | null {
-  const inline = source.data
-    ? { base64: source.data, mimeType: source.mimeType }
-    : parseDataUrl(source.url)
-  if (!inline?.base64 || !inline.mimeType)
+  const info = imageRenderInfo(source)
+  if (!info.src)
+    return null
+  const inline = parseDataImageUrl(info.src)
+  if (!inline)
     return null
   try {
     return { content: base64ToUint8Array(inline.base64), mimeType: inline.mimeType }
@@ -130,17 +145,4 @@ export function decodeImageBytes(source: { data?: string, url?: string, mimeType
   catch {
     return null
   }
-}
-
-/** Split a `data:<mime>;base64,<payload>` URL. Returns null for anything else. */
-function parseDataUrl(url: string | undefined): { base64: string, mimeType: string } | null {
-  if (!url?.startsWith('data:'))
-    return null
-  const comma = url.indexOf(',')
-  if (comma < 0)
-    return null
-  const meta = url.slice('data:'.length, comma)
-  if (!meta.toLowerCase().endsWith(';base64'))
-    return null
-  return { base64: url.slice(comma + 1), mimeType: meta.slice(0, meta.length - ';base64'.length) }
 }

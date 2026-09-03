@@ -67,6 +67,7 @@ use std::ptr::{self, NonNull};
 use std::sync::{Arc, OnceLock};
 
 use objc2::ffi::class_addMethod;
+use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{msg_send, sel};
 use tauri::WebviewWindow;
@@ -97,13 +98,28 @@ struct MinimizeHook {
     /// carries the override, and a `super` relative to the receiver's own
     /// class sends `miniaturize:` straight back into this module.
     super_class: &'static AnyClass,
-    /// The address of the window that the policy applies to.
+    /// The window that the policy applies to.
     ///
     /// Every tao window in the process shares the class that carries the
-    /// override, so the override must recognise its own window. An address
-    /// identifies it: tauri owns the main window for the length of the
-    /// process, and `answer` holds a `WebviewWindow` for it besides.
-    window: usize,
+    /// override, so the override must recognise its own window.
+    ///
+    /// A WEAK reference, not an address. An address identifies a window only
+    /// while that window lives, and a raw `usize` cannot tell a live window
+    /// from a dead one: once the original is released, the allocator may hand
+    /// a later window the same address, and that window would inherit the
+    /// hide-to-tray policy -- its yellow button would make it vanish with no
+    /// Dock tile and no tray entry that states it. A weak reference answers
+    /// `None` instead, and the override falls through to the ordinary
+    /// minimize, which is the safe direction.
+    ///
+    /// Nothing else anchors it. The `WebviewWindow` clone that `answer`
+    /// captures is a label-keyed handle over the runtime dispatcher and holds
+    /// no retain on the `NSWindow`.
+    ///
+    /// Weak rather than strong on purpose: a strong reference would keep the
+    /// window alive for the life of the process, which is a leak that hides
+    /// the very lifetime question this field exists to answer.
+    window: WeakWindow,
     /// Answers one minimize on the window that `install` hooked. Reports
     /// whether it hid that window.
     ///
@@ -112,6 +128,38 @@ struct MinimizeHook {
     /// none up by label. It is also the seam that the tests drive: a
     /// `WebviewWindow` needs a running application, and a stub answer does not.
     answer: Box<dyn Fn() -> bool + Send + Sync>,
+}
+
+/// A weak reference to the hooked window, storable in a process global.
+///
+/// `objc2::rc::Weak` is neither `Send` nor `Sync`, because a general
+/// Objective-C object may be neither. This one is safe to share:
+///
+/// - `objc_storeWeak` / `objc_loadWeak` / `objc_destroyWeak` are thread safe by
+///   contract; the runtime serializes them on its own side table.
+/// - Every access here happens on the MAIN thread. `install` runs from
+///   `tray::install` during setup, and `miniaturize` runs from an AppKit
+///   dispatch, which is main-thread by definition.
+/// - The value lives in a `static OnceLock`, so it is never dropped and no
+///   destructor races anything.
+struct WeakWindow(objc2::rc::Weak<AnyObject>);
+
+// SAFETY: see the type's own doc. The wrapper adds no access of its own; it
+// only lets the reference sit in a `static`.
+unsafe impl Send for WeakWindow {}
+// SAFETY: same.
+unsafe impl Sync for WeakWindow {}
+
+/// Whether `this` is the window the policy was installed for.
+///
+/// A dead reference answers `false`, so a window that took the dead one's
+/// address keeps the ordinary minimize rather than inheriting a policy that was
+/// never meant for it.
+fn is_hooked_window(hook: &MinimizeHook, this: *const AnyObject) -> bool {
+    hook.window
+        .0
+        .load()
+        .is_some_and(|live| ptr::eq(Retained::as_ptr(&live), this))
 }
 
 static HOOK: OnceLock<MinimizeHook> = OnceLock::new();
@@ -171,7 +219,12 @@ pub(crate) fn install(window: &WebviewWindow, state: Arc<TrayState>) {
     if HOOK
         .set(MinimizeHook {
             super_class,
-            window: ptr::from_ref(object) as usize,
+            // SAFETY: `object` is the live `NSWindow` that `install` was given;
+            // `Weak::from_retained` needs a strong reference, so this borrows
+            // one for the length of the call and lets it go again.
+            window: WeakWindow(objc2::rc::Weak::from_retained(unsafe {
+                &Retained::retain(ptr::from_ref(object).cast_mut()).expect("the window is live")
+            })),
             answer: Box::new(move || super::handle_minimize(&state, &hooked)),
         })
         .is_err()
@@ -202,7 +255,7 @@ pub(crate) fn install(window: &WebviewWindow, state: Arc<TrayState>) {
 /// and the runtime removes that subclass again when the last observer goes
 /// away. `-class` answers past it, which is where an override survives.
 ///
-/// Answers `None` when the window does not inherit from the class it names.
+/// Answers `None` when the window does not inherit from the class it states.
 /// `-class` is a method like any other, and an override that answers an
 /// unrelated class would put `miniaturize:` on a class whose own instances
 /// then run the policy for a window they are not.
@@ -310,7 +363,7 @@ extern "C-unwind" fn miniaturize(this: &AnyObject, _cmd: Sel, sender: *mut AnyOb
     // Every tao window in the process shares the class that carries this
     // override. The main window is the one with a policy, so the rest fall
     // through to the ordinary minimize.
-    if ptr::from_ref(this) as usize == hook.window {
+    if is_hooked_window(hook, ptr::from_ref(this)) {
         let hidden = catch_unwind(AssertUnwindSafe(|| (hook.answer)())).unwrap_or_else(|_| {
             crate::shell_log!("the minimize policy panicked; the window minimizes as usual");
             false
@@ -335,7 +388,10 @@ mod tests {
     use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Method, NSObject, Sel};
     use objc2::{msg_send, sel, ClassType};
 
-    use super::{add_override, defines_miniaturize, window_class, MinimizeHook, HOOK};
+    use super::{
+        add_override, defines_miniaturize, is_hooked_window, window_class, MinimizeHook, WeakWindow,
+        HOOK,
+    };
 
     /// The prefix that Key-Value Observing gives to the class it generates.
     const KVO_CLASS_PREFIX: &[u8] = b"NSKVONotifying_";
@@ -379,7 +435,7 @@ mod tests {
     /// A stand-in for tao's `TaoWindow`: it adds nothing, so `miniaturize:`
     /// reaches it only through the override that a test installs.
     ///
-    /// Each test names its own classes, because `objc_registerClassPair` cannot
+    /// Each test registers its own classes, because `objc_registerClassPair` cannot
     /// be undone and a name registers once for the whole process.
     fn stub_subclass(name: &CStr, superclass: &AnyClass) -> &'static AnyClass {
         ClassBuilder::new(name, superclass)
@@ -581,7 +637,7 @@ mod tests {
         let other: Retained<AnyObject> = unsafe { msg_send![installed_class, new] };
         HOOK.set(MinimizeHook {
             super_class: base,
-            window: ptr::from_ref(&*window) as usize,
+            window: WeakWindow(objc2::rc::Weak::from_retained(&window)),
             answer: Box::new(|| {
                 assert!(
                     !HOOK_PANICS.load(Ordering::SeqCst),
@@ -639,5 +695,45 @@ mod tests {
         let calls = minimize(&window);
         HOOK_PANICS.store(false, Ordering::SeqCst);
         assert_eq!(calls, 4, "a panic must leave the ordinary minimize alone");
+    }
+
+    // A window that took the hooked window's ADDRESS after it died must not
+    // inherit its policy.
+    //
+    // Every tao window in the process shares the class that carries the
+    // override, so the override recognises its own window itself. It used to
+    // compare a raw `usize`, which cannot tell a live window from a dead one:
+    // once the original is released, the allocator may hand a later window the
+    // same address, and that window's yellow button would then hide it with no
+    // Dock tile and no tray entry that states it. A weak reference answers
+    // `None` instead, and the caller falls through to the ordinary minimize.
+    //
+    // It drives `is_hooked_window` rather than the selector, because `HOOK`
+    // publishes once per process and the dispatch test above owns it.
+    #[test]
+    fn a_dead_window_reference_matches_no_receiver() {
+        let base = stub_window_class(c"LeapMuxWeakBase");
+        let class = stub_subclass(c"LeapMuxWeak", base);
+        // SAFETY: `class` descends from `NSObject`, which answers `new`.
+        let window: Retained<AnyObject> = unsafe { msg_send![class, new] };
+        let address = ptr::from_ref(&*window);
+        let hook = MinimizeHook {
+            super_class: base,
+            window: WeakWindow(objc2::rc::Weak::from_retained(&window)),
+            answer: Box::new(|| false),
+        };
+
+        assert!(
+            is_hooked_window(&hook, address),
+            "the live window it was installed for must match"
+        );
+
+        // The last strong reference goes, so the weak one empties.
+        drop(window);
+
+        assert!(
+            !is_hooked_window(&hook, address),
+            "a later window at the same address must not inherit the policy"
+        );
     }
 }

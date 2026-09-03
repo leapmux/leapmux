@@ -2,6 +2,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { MAX_INLINE_IMAGE_BASE64_LEN } from '~/lib/imageBlocks'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ChatImageViewer, decodeImageBytes } from './ChatImageViewer'
 import './providers/claude'
@@ -11,7 +12,7 @@ import './providers/testMocks'
 const PNG_BASE64 = 'iVBORw0KGgo='
 const PNG_BYTES = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 
-describe('decodeimagebytes', () => {
+describe('decodeImageBytes', () => {
   it('decodes inline base64 with its stated mime type', () => {
     const decoded = decodeImageBytes({ data: PNG_BASE64, mimeType: 'image/png' })
     expect(decoded?.mimeType).toBe('image/png')
@@ -34,6 +35,31 @@ describe('decodeimagebytes', () => {
 
   it('refuses a non-base64 data URL', () => {
     expect(decodeImageBytes({ url: 'data:image/png,rawbytes' })).toBeNull()
+  })
+
+  // The tab addresses its image by (agent, seq, index) and re-resolves it at
+  // open time, so the source it decodes is not necessarily the one the click
+  // validated -- a same-seq message merge can move index N. Applying the SAME
+  // policy the transcript row applies is what keeps the two from disagreeing.
+  it('decodes an SVG, which the transcript row draws and the file viewer already did', () => {
+    const decoded = decodeImageBytes({ data: PNG_BASE64, mimeType: 'image/svg+xml' })
+    expect(decoded?.mimeType).toBe('image/svg+xml')
+  })
+
+  it('refuses a type the row refuses, so the two cannot disagree', () => {
+    expect(decodeImageBytes({ data: PNG_BASE64, mimeType: 'application/pdf' })).toBeNull()
+  })
+
+  it('refuses a payload past the inline size cap', () => {
+    const huge = 'A'.repeat(MAX_INLINE_IMAGE_BASE64_LEN + 1)
+    expect(decodeImageBytes({ data: huge, mimeType: 'image/png' })).toBeNull()
+  })
+
+  // A parameter must not reach the Blob type, or the tab and the row describe
+  // the same bytes two ways.
+  it('drops a data-URL parameter from the mime it hands the blob', () => {
+    const decoded = decodeImageBytes({ url: `data:image/png;charset=utf-8;base64,${PNG_BASE64}` })
+    expect(decoded?.mimeType).toBe('image/png')
   })
 
   it('refuses a data URL with no comma', () => {
@@ -114,10 +140,10 @@ describe('chatImageViewer', () => {
     expect(container.querySelector('img')).toBeNull()
   })
 
-  // The guard arm. An image block can be legitimate and carry nothing -- an
+  // The guard branch. An image block can be legitimate and carry nothing -- an
   // Anthropic `source:{type:'file'}`, or an MCP server that states a type and
   // no payload -- and it keeps its index so the row and this tab still agree.
-  // Without the arm this resolves `ready`, decodes to nothing, and the tab sits
+  // Without the branch this resolves `ready`, decodes to nothing, and the tab sits
   // on "Loading image…" forever.
   it('says so when the reference resolves to bytes it cannot decode', async () => {
     const { container } = renderViewer(claudeImageMessage([{ type: 'image', mimeType: 'image/png' }]))

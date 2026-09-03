@@ -38,7 +38,7 @@ function deps(overrides: Partial<Parameters<typeof resolveChatImage>[1]> = {}) {
 
 const ref = { workerId: 'w1', agentId: 'a1', seq: 7n, imageIndex: 0 }
 
-describe('messagetoolresultimages', () => {
+describe('messageToolResultImages', () => {
   it('routes through the message provider plugin, keeping wire order', () => {
     expect(messageToolResultImages(claudeImageMessage(['first', 'second'])).map(i => i.data))
       .toEqual(['first', 'second'])
@@ -55,7 +55,7 @@ describe('messagetoolresultimages', () => {
   })
 })
 
-describe('imagefrommessage', () => {
+describe('imageFromMessage', () => {
   it('picks the image at the index', () => {
     expect(imageFromMessage(claudeImageMessage(['first', 'second']), 1)?.data).toBe('second')
   })
@@ -65,7 +65,7 @@ describe('imagefrommessage', () => {
   })
 })
 
-describe('resolvechatimage', () => {
+describe('resolveChatImage', () => {
   it('resolves from the loaded window without fetching', async () => {
     const fetchMessageBySeq = vi.fn(async () => undefined)
     const result = await resolveChatImage(ref, deps({

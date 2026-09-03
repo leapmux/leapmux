@@ -10,7 +10,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// filePayload builds the FILE arm of a TabPayload for the reconciler tests,
+// filePayload builds the FILE branch of a TabPayload for the reconciler tests,
 // which care about which rows survive rather than what is in them.
 func filePayload(filePath string) *leapmuxv1.TabPayload {
 	return &leapmuxv1.TabPayload{

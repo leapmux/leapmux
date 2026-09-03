@@ -48,7 +48,7 @@ export type ImageResultSource = ImageBlockSource & { dimensions?: ImageDimension
  *
  * An image block with no renderable payload yields a source whose `data` and
  * `url` are both absent, rather than null. A block can be a legitimate image
- * and still carry nothing -- an Anthropic `source:{type:'file'}` names a file
+ * and still carry nothing -- an Anthropic `source:{type:'file'}` states a file
  * on Anthropic's servers, and an MCP server may state a MIME type with no
  * payload. Keeping it lets the renderer say "an image was returned, and here
  * is why you cannot see it" (`imageRenderInfo` answers `no-data`) instead of
@@ -143,10 +143,23 @@ export function parseImageBlock(block: ContentBlock): ImageBlockSource | null {
 }
 
 /**
- * MIME types LeapMux renders inline. SVG is excluded deliberately: an SVG can
- * carry script, and although a browser refuses to run it inside `<img>`, the
- * allowlist is what keeps that guarantee from resting on the mount point a
- * future caller happens to pick.
+ * MIME types LeapMux renders inline.
+ *
+ * The list exists for the SIZE CAP and for one policy in one place, not as a
+ * script defence. Every consumer mounts an image through `ImageRender`, which
+ * builds a blob URL and hands it to an `<img>` -- and an `<img>` renders SVG in
+ * SECURE STATIC MODE, where no script runs, no external resource loads and no
+ * declarative animation plays. That is a property of the element, not of this
+ * set.
+ *
+ * SVG is therefore included. Excluding it refused an agent's diagram while the
+ * file viewer rendered the identical bytes off disk through the SAME
+ * `ImageRender`, which is an inconsistency rather than a policy.
+ *
+ * One real cost: `sniffImageDimensionsFromDataUrl` reads intrinsic dimensions
+ * from a raster header, and an SVG has none, so an SVG row reserves no box and
+ * falls back to measure-on-load. That costs one scroll adjustment when it
+ * decodes; it does not affect what is rendered.
  */
 export const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
   'image/png',
@@ -154,6 +167,7 @@ export const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
   'image/gif',
   'image/webp',
   'image/avif',
+  'image/svg+xml',
 ])
 
 /**
@@ -203,6 +217,7 @@ function imageBlockFilePath(block: Record<string, unknown>): string | undefined 
   const uri = pickString(block, 'uri', undefined)
   if (!uri || !uri.startsWith('file://'))
     return undefined
+  let pathname: string
   try {
     const parsed = new URL(uri)
     const path = decodeURIComponent(parsed.pathname)
@@ -220,32 +235,164 @@ function imageBlockFilePath(block: Record<string, unknown>): string | undefined 
   catch {
     return undefined
   }
+  // A LITERAL `%` that is not valid percent-encoding makes decodeURIComponent
+  // throw, and an agent that builds the uri by pasting a path after `file://`
+  // sends one for any file named `50%off.png`. The raw pathname is the right
+  // answer there: it is what the caller asked to open, and the only cost of
+  // skipping the decode is that a genuinely encoded name stays encoded --
+  // whereas returning undefined silently downgrades the click to the
+  // transcript's downsampled copy, with nothing to explain why.
+  try {
+    return decodeURIComponent(pathname) || undefined
+  }
+  catch {
+    return pathname || undefined
+  }
+}
+
+/** Why an image draws as a placeholder rather than inline. */
+export type ImageSkipReason = 'no-data' | 'unsupported-mime' | 'too-large' | 'external-url' | 'unknown-shape'
+
+/**
+ * Split a `data:<mime>[;<param>...];base64,<payload>` URL.
+ *
+ * ONE reader, because two disagreed. `imageRenderInfo` accepted a data URL with
+ * no `;base64` and the image-tab decoder refused it, so such an image drew
+ * inline with a click target and then opened a tab that said it could not
+ * display the picture -- the branch that decoder's own comment calls
+ * unreachable. Requiring `;base64` in the one parser is what makes it
+ * unreachable in fact.
+ *
+ * `mimeType` is the essence alone: `data:image/png;charset=utf-8;base64,...`
+ * answers `image/png`. A parameter that reached a Blob type made the tab and the
+ * row describe the same bytes two ways, and the allowlist below is keyed on the
+ * essence.
+ */
+export function parseDataImageUrl(url: string | undefined): { mimeType: string, base64: string } | null {
+  if (!url?.startsWith('data:'))
+    return null
+  const comma = url.indexOf(',')
+  if (comma < 0)
+    return null
+  const params = url.slice('data:'.length, comma).split(';')
+  const mimeType = (params.shift() ?? '').toLowerCase()
+  if (!params.some(param => param.toLowerCase() === 'base64'))
+    return null
+  return { mimeType, base64: url.slice(comma + 1) }
+}
+
+/**
+ * Whether an image source draws inline, and if not, why.
+ *
+ * The single render policy for every destination. It lives beside the parser
+ * rather than in the transcript row, because the row is not the only consumer:
+ * `imageBlockToMarkdown` feeds every quote, preview and Markdown body, and it
+ * used to embed a 50 MB payload that the row next to it refused.
+ *
+ *   - inline base64 + allowlisted MIME + under the cap -> `<img src="data:...">`
+ *   - an already-formed `data:` URL, on the same terms
+ *   - an http(s) URL -> not drawn; the caller shows an open link, so the
+ *     transcript fetches from no remote host on its own
+ *   - anything else -> a placeholder, so the reader still learns an image came
+ *     back
+ */
+export function imageRenderInfo(source: ImageBlockSource): {
+  src?: string
+  via?: 'inline'
+  reason?: ImageSkipReason
+} {
+  const url = source.url
+  if (url) {
+    if (url.startsWith('data:')) {
+      const parsed = parseDataImageUrl(url)
+      if (!parsed)
+        return { reason: 'unknown-shape' }
+      return renderPolicy(parsed.mimeType, parsed.base64, url)
+    }
+    // An http(s) URL is shown as an opt-in external link by the caller.
+    if (url.startsWith('http://') || url.startsWith('https://'))
+      return { reason: 'external-url' }
+    return { reason: 'unknown-shape' }
+  }
+
+  const data = source.data
+  if (!data)
+    return { reason: 'no-data' }
+  const mimeType = (source.mimeType ?? '').toLowerCase()
+  return renderPolicy(mimeType, data, `data:${mimeType};base64,${data}`)
+}
+
+/**
+ * The allowlist and the cap, applied once. Both shapes above normalize to
+ * (mime, base64) first, so neither can be checked against a different length
+ * than the other renders.
+ */
+function renderPolicy(mimeType: string, base64: string, src: string): {
+  src?: string
+  via?: 'inline'
+  reason?: ImageSkipReason
+} {
+  if (!RENDERABLE_IMAGE_MIME_TYPES.has(mimeType))
+    return { reason: 'unsupported-mime' }
+  if (base64.length > MAX_INLINE_IMAGE_BASE64_LEN)
+    return { reason: 'too-large' }
+  return { src, via: 'inline' }
 }
 
 /**
  * Render an image block as Markdown, for the text-only contexts that have no
  * place to mount a component (a quote, a scroll-rail preview, a Markdown body).
  *
- * Base64 becomes an inline `![image](data:...)`, which embeds when the
- * surrounding renderer is Markdown-aware. An external URL becomes a
+ * A renderable image becomes an inline `![image](data:...)`, which embeds when
+ * the surrounding renderer is Markdown-aware. An external URL becomes a
  * `[image](url)` LINK, not an embed, so rendering it never fetches from a
  * third-party host.
+ *
+ * It asks `imageRenderInfo`, the SAME policy the transcript row asks, so the two
+ * destinations can never disagree about which pictures are safe to embed. This
+ * path used to skip that policy entirely, and `rehypeBlockRemoteImages` lets a
+ * `data:` src through -- so an `image/svg+xml` or a 50 MB payload embedded here
+ * after the row beside it had already refused to draw it.
+ *
+ * Anything the policy refuses returns null and the caller omits the block,
+ * which is what this function has always done for a shape it could not render.
+ * The row is where a refused image still leaves a visible trace, through
+ * {@link imageSkipPlaceholder}; a Markdown body has no box to put one in.
  */
 export function imageBlockToMarkdown(source: ImageBlockSource): string | null {
-  if (source.data && source.mimeType) {
-    if (source.data.length > MAX_INLINE_IMAGE_BASE64_LEN)
-      return `[image: ${source.mimeType} — too large to embed]`
-    return `![image](data:${source.mimeType};base64,${source.data})`
+  const info = imageRenderInfo(source)
+  if (info.src)
+    return `![image](${info.src})`
+  if (info.reason === 'external-url' && source.url)
+    return `[image](${source.url})`
+  // A refused image still leaves a trace, so a reader learns one came back.
+  if (info.reason === 'too-large')
+    return source.mimeType ? `[image: ${source.mimeType} — too large to embed]` : '[image: too large to embed]'
+  // `unsupported-mime` says something only when a type was actually stated --
+  // an `image/svg+xml`, which the allowlist refuses and this path used to
+  // embed. Without a type the block carries nothing to describe, and this
+  // function has always omitted such a block; so has `no-data`.
+  if (info.reason === 'unsupported-mime' && source.mimeType)
+    return `[image: ${source.mimeType} — unsupported format]`
+  return null
+}
+
+/**
+ * The text a destination shows in place of an image it will not draw.
+ *
+ * One wording for the transcript row and for the Markdown path, so a reader who
+ * sees the same refused image in a quote and in the transcript reads the same
+ * sentence. The MIME type is included when the wire carried one, because
+ * "unsupported format" without the format is a question rather than an answer.
+ */
+export function imageSkipPlaceholder(reason: ImageSkipReason | undefined, mimeType?: string): string {
+  const suffix = mimeType ? `: ${mimeType}` : ''
+  switch (reason) {
+    case 'too-large':
+      return `[image${suffix} — too large to render inline]`
+    case 'unsupported-mime':
+      return `[image${suffix} — unsupported format]`
+    default:
+      return `[image${suffix}]`
   }
-  const url = source.url
-  if (!url)
-    return null
-  if (!url.startsWith('data:'))
-    return `[image](${url})`
-  // The same cap on an already-formed data URL. Measured past the comma, so it
-  // compares the payload and not the `data:<mime>;base64,` preamble.
-  const comma = url.indexOf(',')
-  if (comma >= 0 && url.length - comma - 1 > MAX_INLINE_IMAGE_BASE64_LEN)
-    return '[image: too large to embed]'
-  return `![image](${url})`
 }

@@ -1167,10 +1167,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					// applies: this bus multiplexes agent and terminal tab
 					// renames beside the tab-payload events, and a rename's title
 					// is exactly what the agent:read / terminal:read scopes
-					// govern. A caller granted file:read alone keeps the
-					// file-tab events and the renames of file tabs, and hears
-					// nothing about agents or terminals it holds no scope to
-					// read.
+					// govern. An IMAGE payload states an agent id, a message seq
+					// and a title, so agent:read governs it too -- the stream's
+					// file:read floor admits the FILE payloads and nothing else.
+					// A caller granted file:read alone keeps the file-tab events
+					// and the renames of file tabs, and hears nothing about
+					// agents or terminals it holds no scope to read.
 					if !privateEventVisible(caller, evt) {
 						return nil
 					}
@@ -1204,6 +1206,26 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// way a deleted working dir does: the git probes fail and the close
 			// path takes its tolerant branch. Per-kind required fields are
 			// likewise the store's (see tabPayloadType).
+			//
+			// The kind is read here for the same per-kind scope gate the stream
+			// and GetTabPayload apply: an IMAGE payload states an agent, so
+			// minting a reference to one is not something file:read authorizes
+			// on its own.
+			tabType, err := tabPayloadType(r.GetPayload())
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
+			}
+			if !callerReadsTabType(caller, tabType) {
+				sendPermissionDenied(sender, "scope required for this tab kind")
+				return
+			}
+			// Only a payload the CALLER got wrong is INVALID_ARGUMENT. A
+			// marshal or a database failure is the worker's own fault and
+			// answers INTERNAL, because the two demand opposite responses from
+			// the client: fix the request, or retry it. Reporting a full disk
+			// as a bad argument makes the client roll its optimistic tab back
+			// and tell the user nothing worth acting on.
 			if err := svc.TabPayloads.Register(bgCtx(), RegisterTabPayloadParams{
 				UserID:  caller.UserID.String(),
 				TabID:   r.GetTabId(),
@@ -1242,6 +1264,16 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			sendInternalError(sender, err.Error())
+			return
+		}
+		// The same per-kind gate the private-event stream applies. Without it
+		// this one-shot read hands a file:read-only caller the agent id, the
+		// message seq and the title of an IMAGE payload that the stream
+		// withholds -- one route open and the other shut is not a gate.
+		// A payload this binary cannot parse fails closed, as it does there.
+		tabType, err := tabPayloadType(payload)
+		if err != nil || !callerReadsTabType(caller, tabType) {
+			sendNotFoundError(sender, "tab payload not found")
 			return
 		}
 		sendProtoResponse(sender, &leapmuxv1.GetTabPayloadResponse{Payload: payload})
@@ -3763,21 +3795,55 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 	}
 }
 
-// privateEventVisible reports whether this stream's caller may see one
-// private event. File-tab events ride the stream's own file:read floor; a tab
-// rename is governed by the scope of the tab KIND it names, exactly as
-// WatchEvents partitions its agent and terminal sections.
-func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEvent) bool {
-	renamed := evt.GetTabRenamed()
-	if renamed == nil {
-		return true
-	}
-	switch renamed.GetTabType() {
-	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		return caller.Allows(leapmuxv1.Scope_SCOPE_AGENT_READ)
+// tabTypeReadScope returns the scope that governs the facts a tab of this kind
+// carries, and whether any scope beyond the stream's own file:read floor
+// applies.
+//
+// An AGENT or a TERMINAL tab's title, and an IMAGE payload's agent id, message
+// seq and title, all describe a transcript or a session. agent:read and
+// terminal:read are what govern those. A FILE tab's path describes neither, so
+// it rides the file:read floor that every caller of these RPCs already holds.
+//
+// The switch lists every kind and has no default, so `exhaustive` fails the
+// build when a new TabType arrives without an answer here. A default would
+// silently give the next payload-backed kind the FILE answer, which is how the
+// IMAGE payload reached a file:read-only caller in the first place.
+func tabTypeReadScope(tabType leapmuxv1.TabType) (leapmuxv1.Scope, bool) {
+	switch tabType {
+	case leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		return leapmuxv1.Scope_SCOPE_AGENT_READ, true
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return caller.Allows(leapmuxv1.Scope_SCOPE_TERMINAL_READ)
-	default:
-		return true
+		return leapmuxv1.Scope_SCOPE_TERMINAL_READ, true
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
+		return leapmuxv1.Scope_SCOPE_UNSPECIFIED, false
 	}
+	return leapmuxv1.Scope_SCOPE_UNSPECIFIED, false
+}
+
+// callerReadsTabType reports whether this caller may learn the facts a tab of
+// this kind carries.
+func callerReadsTabType(caller channel.Caller, tabType leapmuxv1.TabType) bool {
+	scope, governed := tabTypeReadScope(tabType)
+	return !governed || caller.Allows(scope)
+}
+
+// privateEventVisible reports whether this stream's caller may see one
+// private event. A FILE payload rides the stream's own file:read floor; a tab
+// rename and an IMAGE payload are governed by the scope of the tab KIND they
+// name, exactly as WatchEvents partitions its agent and terminal sections.
+//
+// A payload this binary cannot parse fails closed. It cannot state its kind,
+// so it cannot state which scope governs it.
+func privateEventVisible(caller channel.Caller, evt *leapmuxv1.WorkerPrivateEvent) bool {
+	if renamed := evt.GetTabRenamed(); renamed != nil {
+		return callerReadsTabType(caller, renamed.GetTabType())
+	}
+	if registered := evt.GetTabPayloadRegistered(); registered != nil {
+		tabType, err := tabPayloadType(registered.GetPayload())
+		if err != nil {
+			return false
+		}
+		return callerReadsTabType(caller, tabType)
+	}
+	return true
 }

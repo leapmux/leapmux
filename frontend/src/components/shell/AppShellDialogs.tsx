@@ -147,7 +147,12 @@ interface AppShellDialogsProps {
   onBranchChanged?: (repo: RepoRef, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
   /** False while the active workspace is archived — read-only, so no new tabs. */
-  isActiveWorkspaceMutatable: () => boolean
+  /**
+   * Whether a NAMED workspace takes mutation. Per id, not per active workspace:
+   * a dialog can act on a workspace the user is not looking at, and the guard
+   * has to answer for the one the RPC is for.
+   */
+  isWorkspaceMutatable: (workspaceId: string) => boolean
   getCurrentTabContext: () => TabContext
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
@@ -264,7 +269,13 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
     // had not delivered, and the refusal that follows is silent: the RPC has
     // already made the agent and the worktree, and nothing places a tab.
     const target = workspaceId ?? active.id
-    if (target === active.id && !props.isActiveWorkspaceMutatable())
+    // Asked about the TARGET, not only when the target IS the active workspace.
+    // An archived workspace takes no tab either way, and a branch row of one is
+    // reachable while another workspace is active -- so scoping this to
+    // `target === active.id` left Create enabled over exactly the workspace
+    // that refuses the tab, and the refusal arrives only after the RPC has made
+    // the agent.
+    if (!props.isWorkspaceMutatable(target))
       return 'This workspace is archived. Unarchive it to create tabs.'
     // `firstLeafIdFor` answers for ANY workspace and is null exactly when
     // `placementTileId()` would be empty, which is the state this reason names.

@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
-import { createEffect, createSignal, on, untrack } from 'solid-js'
+import { createSignal } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { createGuardedFetch } from '~/hooks/createGuardedFetch'
+import { createWorkerScopedList } from '~/hooks/createWorkerScopedList'
 
 export interface UseAvailableShellsArgs {
   workerId: string
@@ -61,60 +61,29 @@ export function useAvailableShells(
   const [serverDefault, setServerDefault] = createSignal('')
   const [userSelectedShell, setUserSelectedShell] = createSignal<string | null>(null)
 
-  // `lastLoadedWorkerId` advances only on a SUCCESSFUL listAvailableShells
-  // — a failed fetch leaves it unchanged so the next reactive tick with
-  // the same workerId can retry instead of short-circuiting on a stale
-  // sentinel. Assigning before the fetch (as an earlier revision did)
-  // would lock the dialog out of recovering from a transient failure
-  // until the user switched workers and back.
-  let lastLoadedWorkerId = ''
-
-  const fetcher = createGuardedFetch<UseAvailableShellsArgs, Awaited<ReturnType<typeof workerRpc.listAvailableShells>>>({
+  // Every rule about WHEN to fetch, when to retry and when to clear lives in
+  // `createWorkerScopedList`. This hook keeps only the state it stores: the
+  // server default beside the list, and the user's explicit override.
+  const list = createWorkerScopedList<UseAvailableShellsArgs, Awaited<ReturnType<typeof workerRpc.listAvailableShells>>>({
+    source,
     fetch: args => workerRpc.listAvailableShells(args.workerId, args),
-    applySuccess: (resp, args) => {
+    applySuccess: (resp) => {
       setShells(resp.shells)
       setServerDefault(resp.defaultShell)
-      lastLoadedWorkerId = args.workerId
       onLoaded?.()
     },
-    onError: (err) => {
-      onError?.(err)
+    // The override is cleared with the list, so `shell()` falls back to '' while
+    // the new fetch is in flight. Without it the dialog reports the PREVIOUS
+    // worker's default during the transition -- a leaked selection -- and a
+    // create gate that only checks `shell() !== ''` would let the user submit a
+    // shell the new worker may not have.
+    clear: () => {
       setShells([])
       setServerDefault('')
+      setUserSelectedShell(null)
     },
+    onError,
   })
-
-  // Track `source()?.workerId` rather than the source accessor itself.
-  // Caller closures typically build a fresh args object each tick, so
-  // `on(source, ...)` would re-fire the effect on every identity change
-  // upstream — merely a re-read that allocates a new object — even when the
-  // workerId, the only field that gates the fetch, is unchanged. Tracking the
-  // workerId scalar means identity churn that doesn't change worker stays a
-  // no-op tick on the memo, not a full effect run.
-  const workerIdFromSource = (): string | null => source()?.workerId ?? null
-  createEffect(on(workerIdFromSource, (workerId) => {
-    if (!workerId)
-      return
-    if (workerId === lastLoadedWorkerId)
-      return
-    // Worker changed (or the previous workerId never resolved) — clear
-    // the cached shells / serverDefault and the explicit override so
-    // shell() falls back to '' while the new fetch is in flight. Without
-    // this clear, the dialog reports the previous worker's default
-    // (effectively a leaked selection) during the transition window and
-    // an isTerminalCreateDisabled gate that only checks shell() != ''
-    // would let the user submit with a shell the new worker may not
-    // even have.
-    setShells([])
-    setServerDefault('')
-    setUserSelectedShell(null)
-    // Pull the rest of the fetch args out of `source()` untracked (the
-    // on() already subscribes via `workerIdFromSource`).
-    const args = untrack(source)
-    if (args === null)
-      return
-    void fetcher.run(args)
-  }))
 
   const defaultShell = () => {
     const s = shells()
@@ -122,24 +91,12 @@ export function useAvailableShells(
   }
   const shell = () => userSelectedShell() ?? defaultShell()
 
-  const refresh = async (): Promise<void> => {
-    const args = untrack(source)
-    if (args === null)
-      return
-    // Don't clear lastLoadedWorkerId here; the source-driven effect
-    // only consults it on a workerId TRANSITION, so a manual refresh
-    // against the current worker just re-fetches and re-stamps it on
-    // success (or leaves it untouched on failure, preserving the
-    // retry-allowed invariant).
-    await fetcher.run(args)
-  }
-
   return {
     shells,
     defaultShell,
     shell,
     setShell: setUserSelectedShell,
-    loading: fetcher.loading,
-    refresh,
+    loading: list.loading,
+    refresh: list.refresh,
   }
 }

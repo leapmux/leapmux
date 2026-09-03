@@ -3,6 +3,8 @@
 // ──────────────────────────────────────────────
 
 import type { ChannelManager } from '../../../src/lib/channel'
+import { enumFromJson } from '@bufbuild/protobuf'
+import { TabTypeSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { solveCaptchaViaAPI } from './altcha'
 import { createTestChannelManager } from './e2e-channel'
 
@@ -760,13 +762,6 @@ async function listTabsViaAPI(
   cookie: string,
   workspaceId: string,
 ): Promise<{ tabType: number, tabId: string, workerId: string }[]> {
-  const { TabType } = await import('../../../src/generated/proto/leapmux/v1/workspace_pb')
-  const tabTypeByName: Record<string, number> = {
-    TAB_TYPE_UNSPECIFIED: TabType.UNSPECIFIED,
-    TAB_TYPE_AGENT: TabType.AGENT,
-    TAB_TYPE_TERMINAL: TabType.TERMINAL,
-    TAB_TYPE_FILE: TabType.FILE,
-  }
   const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
     method: 'POST',
     headers: authedHeaders(cookie),
@@ -777,12 +772,33 @@ async function listTabsViaAPI(
   const body = await res.json() as { tabs?: { tabType?: string, tabId?: string, workerId?: string }[] }
   return (body.tabs ?? [])
     .filter(t => t.tabId)
-    .map((t) => {
-      const tabType = tabTypeByName[t.tabType ?? '']
-      if (tabType === undefined)
-        throw new Error(`listTabsViaAPI: unrecognized tab_type ${JSON.stringify(t.tabType)} for tab ${t.tabId}`)
-      return { tabType, tabId: t.tabId!, workerId: t.workerId ?? '' }
-    })
+    .map(t => ({
+      tabType: tabTypeFromProtoName(t.tabType ?? '', t.tabId!),
+      tabId: t.tabId!,
+      workerId: t.workerId ?? '',
+    }))
+}
+
+/**
+ * The TabType a protojson `tab_type` name stands for.
+ *
+ * Reflection over the generated enum, NOT a hand-written table. The table this
+ * replaced listed four names and was already one short: `TAB_TYPE_IMAGE` was
+ * missing, so `listTabsViaAPI` threw on any workspace that held an image tab,
+ * and every spec sharing that fixture failed in teardown rather than in the
+ * assertion it was written for.
+ *
+ * It still THROWS on a name the enum does not declare, which is the contract
+ * the caller needs: a tab this helper cannot classify must not be silently
+ * dropped from a cleanup sweep.
+ */
+export function tabTypeFromProtoName(name: string, tabId?: string): number {
+  try {
+    return enumFromJson(TabTypeSchema, name as never) as number
+  }
+  catch {
+    throw new Error(`listTabsViaAPI: unrecognized tab_type ${JSON.stringify(name)}${tabId ? ` for tab ${tabId}` : ''}`)
+  }
 }
 
 /**

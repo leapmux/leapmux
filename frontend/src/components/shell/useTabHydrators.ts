@@ -478,9 +478,19 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         return
       const resp = await getTabPayload(tab.workerId, { tabId: tab.id })
       const payload = tabPayloadView(resp.payload)
-      // A payload this client cannot read is left un-hydrated on purpose: the
-      // tab then renders as unsupported rather than as an empty FILE tab, and a
-      // client that does understand it still resolves it.
+      // A payload this client cannot read patches nothing, and the tab is still
+      // marked hydrated by `runFor` -- which is correct, however it reads.
+      // The worker ANSWERED; asking again would return the same bytes this
+      // build still could not decode, so leaving the tab un-hydrated would only
+      // spin the retry loop forever.
+      //
+      // What the tab then shows is the open problem, not this early return.
+      // `tabView`'s assembly falls to its FILE branch for a kind it does not
+      // know, so such a tab renders as a file viewer with no path, which holds
+      // "Loading..." for the life of the session. The app has no
+      // unsupported-tab state to render instead. Do NOT restate this as "left
+      // un-hydrated on purpose" -- an earlier comment here claimed exactly
+      // that, and no such branch has ever existed.
       if (!payload)
         return
       // The patch is `tabPayloadMetadata`, shared with the private-event

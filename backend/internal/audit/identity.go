@@ -184,5 +184,5 @@ var identityComparisonSites = map[string]string{
 	// next, and a colliding client-minted id would suppress a tombstone the real
 	// owner's tab was due. BuildTabSync refuses an unminted owner outright rather
 	// than reporting every row on the machine.
-	"internal/worker/bootstrap.payloadTabIDsForOwner": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
+	"internal/worker/bootstrap.payloadTabIDsByType": "TestBuildTabSync_RefusesWithoutARegisteredOwner",
 }

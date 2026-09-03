@@ -402,12 +402,13 @@ CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_ag
 -- worktree_tab_liveness above: one definition of the per-type predicate, not N
 -- that must agree.
 --
--- user_id is '' for agents and terminals and REAL for file tabs, and that
--- asymmetry is deliberate rather than a placeholder. It mirrors
--- worktree_tabs.user_id exactly (see worktree_tab_liveness): agent and terminal
--- ids are minted server-side and globally unique, so they need no owner to
--- disambiguate them, while a file tab id is minted client-side as
--- `file-<millis>-<counter>` and is unique only within the client that made it.
+-- user_id is '' for agents and terminals and REAL for payload-backed tabs
+-- (FILE and IMAGE), and that asymmetry is deliberate rather than a placeholder.
+-- It mirrors worktree_tabs.user_id exactly (see worktree_tab_liveness): agent
+-- and terminal ids are minted server-side and globally unique, so they need no
+-- owner to disambiguate them, while a payload-backed tab id is minted
+-- client-side as `<kind>-<millis>-<counter>` and is unique only within the
+-- client that made it.
 -- A reader scopes with `(user_id = '' OR user_id = ?)`, and
 -- worker_tab_payloads' own `CHECK (user_id <> '')` is what makes the '' case
 -- provably unable to match a payload-backed row.

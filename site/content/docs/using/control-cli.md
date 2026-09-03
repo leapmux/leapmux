@@ -223,7 +223,7 @@ Almost every command needs to know which entity to act on. Rather than hand-roll
 | Flag | Env default | Notes |
 | --- | --- | --- |
 | `--tab-id` | `$LEAPMUX_CONTROL_TAB_ID` | The agent/terminal/file tab |
-| `--tab-type` | (none) | `agent` or `terminal`; auto-detected when omitted. Not on `agent`/`terminal` commands, which pin the type; hidden on `tab list`, which reuses the flag as an output filter. |
+| `--tab-type` | (none) | `agent`, `terminal`, `file` or `image`; auto-detected when omitted. Not on `agent`/`terminal` commands, which pin the type; hidden on `tab list`, which reuses the flag as an output filter. |
 | `--tile-id` | (none) | Derivable from `--tab-id` |
 | `--workspace-id` | (none) | Derivable from `--tab-id` / `--tile-id` |
 | `--worker-id` | `$LEAPMUX_CONTROL_WORKER_ID` | The host Worker |

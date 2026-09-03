@@ -42,10 +42,13 @@ function renderToolUse(provider: AgentProvider, toolUse: Record<string, unknown>
 // Claude
 // ---------------------------------------------------------------------------
 
-function claudeToolResult(content: unknown, toolUseResult?: Record<string, unknown>) {
+function claudeToolResult(content: unknown, toolUseResult?: Record<string, unknown>, isError = false) {
   return {
     type: 'user',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', content }] },
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'r1', content, ...(isError ? { is_error: true } : {}) }],
+    },
     ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
   }
 }
@@ -152,7 +155,7 @@ describe('codex image items', () => {
     expect(container.textContent ?? '').toContain('usageLimitExceeded')
   })
 
-  it('names the file for imageView, which carries no pixels', () => {
+  it('states the file for imageView, which carries no pixels', () => {
     const item = { type: 'imageView', id: 'view-1', path: '/repo/shot.png' }
     const { container } = renderToolUse(AgentProvider.CODEX, { item, threadId: 't1' }, 'imageView')
     expect(container.querySelector('img')).toBeNull()
@@ -225,9 +228,20 @@ describe('pi read on an image', () => {
 // ---------------------------------------------------------------------------
 
 describe('shared image guardrails', () => {
-  it('refuses SVG, which can carry script and is not sandboxed', () => {
+  // SVG DRAWS. Every consumer mounts through `ImageRender`, which builds a blob
+  // URL for an `<img>`, and an `<img>` renders SVG in secure static mode: no
+  // script, no external fetch. The file viewer already drew on-disk SVGs the
+  // same way, so refusing an agent's cost the diagram and bought nothing.
+  it('draws an SVG, the same way the file viewer renders one off disk', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
       [{ type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'PHN2Zy8+' } }],
+    ), { spanType: 'Read' } as RenderContext)
+    expect(container.querySelector('img')).not.toBeNull()
+  })
+
+  it('refuses a type no `<img>` can draw', () => {
+    const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
+      [{ type: 'image', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } }],
     ), { spanType: 'Read' } as RenderContext)
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent ?? '').toContain('unsupported format')
@@ -252,6 +266,26 @@ function imagesOf(provider: AgentProvider, parsedMessage: unknown, spanType?: st
 }
 
 describe('provider toolResultImages', () => {
+  // A FAILED MCP call used to drop its whole content, images and all, because
+  // the `error` string already carries the joined TEXT. Nothing else carries
+  // the pixels, so a Playwright screenshot of the failure vanished from the
+  // row -- and the row then showed fewer images than `toolResultImages`
+  // numbers for that message, which is the index an open image tab addresses
+  // by, permanently.
+  it('claude keeps the images a failed MCP call returned, and the tab still numbers them', () => {
+    const payload = claudeToolResult([
+      { type: 'text', text: 'the tool failed' },
+      { type: 'image', data: PNG, mimeType: 'image/png' },
+    ], undefined, true)
+    const { container } = renderToolResult(
+      AgentProvider.CLAUDE_CODE,
+      payload,
+      { spanType: 'mcp__x__y' } as RenderContext,
+    )
+    expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(imagesOf(AgentProvider.CLAUDE_CODE, payload, 'mcp__x__y')).toHaveLength(1)
+  })
+
   it('claude keeps wire order across mixed blocks', () => {
     const images = imagesOf(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'image', data: 'first', mimeType: 'image/png' },
@@ -285,7 +319,7 @@ describe('provider toolResultImages', () => {
     expect(images.every(i => i.dimensions === undefined)).toBe(true)
   })
 
-  // The zero-block case takes the same arm as the one-block case, so the
+  // The zero-block case takes the same branch as the one-block case, so the
   // structured payload is still the answer: a Read on an image that sent no
   // content block at all is exactly what it describes.
   it('claude falls back to the structured payload when the blocks carry no image', () => {
@@ -325,7 +359,7 @@ describe('provider toolResultImages', () => {
       ],
     })
     expect(images.map(i => i.data)).toEqual(['first', 'second'])
-    // The block's own `uri` wins over the tool input, because it names the
+    // The block's own `uri` wins over the tool input, because it states the
     // file THIS image came from when a tool returned several.
     expect(images.map(i => i.filePath)).toEqual(['/repo/shot.png', '/repo/other.png'])
   })
@@ -417,7 +451,7 @@ describe('opening a tool-result image', () => {
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }))
   })
 
-  it('reports the file path when the provider named one, so the file itself opens', () => {
+  it('reports the file path when the provider stated one, so the file itself opens', () => {
     const onOpenImage = vi.fn()
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
@@ -432,7 +466,7 @@ describe('opening a tool-result image', () => {
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 0, filePath: '/repo/shot.png' }))
   })
 
-  it('names the tab the way the row names itself, not the raw tool name', () => {
+  it('titles the tab the way the row titles itself, not the raw tool name', () => {
     // The MCP body already holds the provider-computed "Server / tool" pair,
     // so the tab reads "Playwright / screenshot" rather than the span type's
     // `mcp__playwright__screenshot`.

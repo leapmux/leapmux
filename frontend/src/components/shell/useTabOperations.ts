@@ -24,7 +24,7 @@ import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
-import { basename } from '~/lib/paths'
+import { basename, isAbsolute } from '~/lib/paths'
 import { fileTabPayload, imageTabPayload } from '~/lib/tabPayload'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { descendantAgentTabs, planOptimisticRepoGit, tabKey } from '~/stores/tab.helpers'
@@ -828,7 +828,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     workingDir: string
   }) => {
     const at = { workerId: image.workerId, workingDir: image.workingDir }
-    if (image.filePath) {
+    // Only an ABSOLUTE path reaches the file viewer. The worker refuses a
+    // relative one, because `git -C` would resolve it against the worker
+    // process's cwd and answer for the wrong repository. A provider states this
+    // path from its own tool input (`rawInput.path`, `args.filePath`,
+    // `savedPath`) and nothing upstream promises it is absolute, so a relative
+    // one added the tab, failed the registration and rolled back -- a tab that
+    // flashed and vanished with no message. The transcript's own copy is the
+    // better answer there: a smaller picture beats no picture.
+    if (image.filePath && isAbsolute(image.filePath)) {
       handleFileOpen(image.filePath, undefined, at)
       return
     }

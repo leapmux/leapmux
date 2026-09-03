@@ -1144,7 +1144,7 @@ func TestHandleCodexOutput_DynamicToolCallCompletedDoesNotBroadcastStreamEnd(t *
 }
 
 // Both image items are ordinary tool items and take the ordinary tool path.
-// They used to fall to handleItemCompleted's default arm instead: the completed
+// They used to fall to handleItemCompleted's default branch instead: the completed
 // row persisted with a span id that nothing had opened and nothing then closed,
 // so the transcript drew a rail that stayed open for the rest of the turn.
 func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
