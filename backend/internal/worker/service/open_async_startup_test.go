@@ -506,7 +506,11 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 
 // TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange
 // verifies that a concurrent effort change does not discard a resolved model.
+// A whole-blob compare against the launch options would discard the entire
+// confirmed blob here, and leave the row on the unresolved "default" sentinel.
 func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange(t *testing.T) {
+	t.Parallel()
+
 	for _, test := range []struct {
 		name            string
 		provider        leapmuxv1.AgentProvider
@@ -560,6 +564,8 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 				initialOpts,
 				latestOpts,
 			)
+			// The changed effort axis leaves the confirmed blob. The unchanged model
+			// axis stays.
 			assert.Equal(t, test.resolvedModel, confirmed[agent.OptionIDModel])
 			assert.NotContains(t, confirmed, agent.OptionIDEffort)
 
@@ -572,8 +578,8 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 			)
 			require.NoError(t, err)
 			persisted := loadOptions(activeRow.Options, activeRow.AgentProvider)
-			assert.Equal(t, test.resolvedModel, persisted[agent.OptionIDModel])
-			assert.Equal(t, test.changedEffort, persisted[agent.OptionIDEffort])
+			assert.Equal(t, test.resolvedModel, persisted[agent.OptionIDModel], "the confirmed model resolution must survive")
+			assert.Equal(t, test.changedEffort, persisted[agent.OptionIDEffort], "the user's mid-startup effort change must be preserved")
 
 			row, err := svc.Queries.GetAgentByID(ctx, agentID)
 			require.NoError(t, err)

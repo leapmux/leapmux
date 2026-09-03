@@ -108,6 +108,15 @@ func EffortSupportedByModel(groups []*leapmuxv1.AvailableOptionGroup, provider l
 // effort for the running session to validate -- mirroring ValidateLaunchOptions, which deliberately
 // does NOT validate model/effort against the seed.
 func ModelEffortKnown(groups []*leapmuxv1.AvailableOptionGroup, provider leapmuxv1.AgentProvider, model string) bool {
+	// The account default is a placeholder, not a concrete model. Its catalog entry
+	// carries no efforts on purpose, so an empty effort sub-group here means "not yet
+	// resolved" and never "this model offers no tier". Report it as unknown, so the
+	// running session validates the effort and resetEffortToAutoIfUnsupported keeps
+	// the user's choice instead of clamping it against an empty list. claude.go's
+	// definedEfforts already answers the same way for the same input.
+	if UsesAccountDefaultModel(model) {
+		return false
+	}
 	mg := optionids.GroupByID(groups, OptionIDModel)
 	if mg == nil {
 		return false

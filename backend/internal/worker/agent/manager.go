@@ -599,18 +599,23 @@ func (m *Manager) ClearContext(agentID string) (string, bool) {
 // withModelGroupDefaultMarked reduces the projected "model" option group to these three
 // arguments on every OptionGroups read. Priority:
 //  1. The explicit LEAPMUX_*_DEFAULT_MODEL operator override.
-//  2. A provider-reported default that the list designates. Claude Code reports
-//     DefaultModelSentinel. Codex reports its resolved concrete default.
-//  3. The provider's configured default. When the list contains it, return it;
-//     when the list omits it (an account-specific list whose configured default
-//     isn't offered, e.g. a Claude CLI reporting concrete models but no "default"
-//     sentinel), fall back to the highest-preference entry present so the picker
-//     still shows a badge.
+//  2. The DefaultModelSentinel entry, for a provider that reports the sentinel in
+//     its own catalog (Claude Code today). It tracks the account's own default
+//     across plan tiers (e.g. Sonnet vs Fable).
+//  3. The provider's configured default, when the list contains it. Codex's
+//     configured default is the sentinel too, and reconcileModelCatalog keeps the
+//     sentinel in the live catalog, so Codex badges the sentinel at this step for
+//     a stopped AND a running agent.
+//  4. A default the list itself designates -- what queryAvailableModels copied
+//     from the CLI's own isDefault. Reached when the configured default is absent
+//     from this account's list, so a stale registry default cannot move the badge
+//     off the model the CLI marked.
+//  5. The highest-preference entry present, so the picker always shows a badge.
 //
 // Returning "" means "don't touch the list's existing default": that's the case for a
 // provider with no configured default at all (ACP providers registered with nil
 // defaultModels, which self-mark the currently-selected model in buildACPModels). The
-// step-3 fallback is gated on a non-empty configured default precisely so it doesn't
+// steps 4 and 5 run only for a non-empty configured default, precisely so they don't
 // clobber that per-agent marking.
 func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv1.AgentProvider) string {
 	if env := DefaultModelEnvOverride(provider); env != "" {
@@ -633,11 +638,9 @@ func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv
 			return id
 		}
 	}
-	// Only Claude Code reports the sentinel in its live catalog. Codex keeps the
-	// sentinel until a lifecycle response reports a concrete model. It follows the
-	// configured-default path below. Other providers can use "default" as an
-	// ordinary model ID.
-	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE && slices.Contains(ids, DefaultModelSentinel) {
+	// Each provider states for itself whether its catalog reports the sentinel, so
+	// this ladder stays provider-neutral. Only Claude Code answers true today.
+	if ProviderFor(provider).ReportsDefaultModelSentinel() && slices.Contains(ids, DefaultModelSentinel) {
 		return DefaultModelSentinel
 	}
 	configured := DefaultModel(provider)

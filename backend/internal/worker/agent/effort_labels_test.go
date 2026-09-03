@@ -52,13 +52,25 @@ func TestSortEffortsDescending_AgreesWithTheCodexCatalogOrder(t *testing.T) {
 	t.Parallel()
 
 	// Auto is not a strength and never reaches the sort, so it is dropped first.
-	tail := append([]*EffortInfo(nil), codexDefaultEfforts[1:]...)
+	tail := slices.Clone(codexDefaultEfforts[1:])
 	want := effortIDs(tail)
 
+	// A plain reversal is NOT a sufficient input: sortEffortsDescending could be
+	// implemented as slices.Reverse and still turn reverse(want) back into want.
+	// Rotating leaves most adjacent pairs already in correct relative order, so
+	// only a rank-aware sort recovers the full order.
 	shuffled := slices.Clone(tail)
-	slices.Reverse(shuffled)
+	shuffled = append(shuffled[3:], shuffled[:3]...)
+	require.NotEqual(t, want, effortIDs(shuffled), "the input must start out of order")
 	sortEffortsDescending(shuffled)
 	assert.Equal(t, want, effortIDs(shuffled))
+
+	// The same input must defeat a reversal-only implementation, which is the
+	// mistake a reversed input cannot catch.
+	reverseOnly := slices.Clone(tail)
+	reverseOnly = append(reverseOnly[3:], reverseOnly[:3]...)
+	slices.Reverse(reverseOnly)
+	assert.NotEqual(t, want, effortIDs(reverseOnly), "a reversal alone must not reproduce the order")
 }
 
 // A model that offers a toggle rather than a ladder: ZCode gives GLM-5-Turbo
