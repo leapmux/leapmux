@@ -19,6 +19,7 @@ import { WorkingTreeIcon, WorkingTreeTooltip } from '~/components/common/Working
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { formatShortcut } from '~/lib/shortcuts/display'
+import { menuSubTrigger, menuSubTriggerLabel } from '~/styles/shared.css'
 import * as styles from './composer.css'
 import { OptionGroupPopover } from './OptionGroupPopover'
 
@@ -379,11 +380,11 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               >
                 <button
                   role="menuitem"
-                  class={styles.subTrigger}
+                  class={menuSubTrigger}
                   data-testid="composer-plus-branch"
                   {...triggerProps}
                 >
-                  <span class={styles.subTriggerLabel}>
+                  <span class={menuSubTriggerLabel}>
                     <WorkingTreeIcon isWorktree={branch().isWorktree} size="xs" />
                     {branch().name}
                   </span>
@@ -401,7 +402,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             trigger={triggerProps => (
               <button
                 role="menuitem"
-                class={styles.subTrigger}
+                class={menuSubTrigger}
                 data-testid="composer-agent-info"
                 {...triggerProps}
               >
@@ -486,7 +487,7 @@ function PlusGroupSubmenu(props: {
       trigger={(triggerProps, view) => (
         <button
           role="menuitem"
-          class={styles.subTrigger}
+          class={menuSubTrigger}
           data-testid={`composer-group-${props.groupId}`}
           {...triggerProps}
         >

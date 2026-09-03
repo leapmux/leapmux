@@ -123,8 +123,11 @@ export function buildSectionDef(
       defaultOpen: sectionType !== SectionType.WORKSPACES_ARCHIVED,
       collapsible: true,
       draggable: true,
+      // `undefined`, never `() => undefined`: the `<Show>` in
+      // CollapsibleSidebar tests the FACTORY, so a factory that returns
+      // nothing is still truthy and renders an empty actions box.
       headerActions: ctx.wsOps.canAddToSection(section)
-        ? (
+        ? () => (
             <IconButton
               icon={Plus}
               iconSize="sm"
@@ -183,7 +186,7 @@ export function buildSectionDef(
       collapsible: true,
       draggable: true,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      headerActions: (
+      headerActions: () => (
         <FilesSectionHeaderActions
           handle={ctx.filesSectionHandle}
           onLocateFile={() => {
@@ -295,7 +298,7 @@ export function buildSectionDef(
       draggable: true,
       defaultSize: 0.15,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      headerActions: (
+      headerActions: () => (
         <IconButton
           icon={Plus}
           iconSize="sm"

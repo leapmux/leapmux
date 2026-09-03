@@ -7,7 +7,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
-import { dangerMenuItem } from '~/styles/shared.css'
+import { dangerMenuItem, menuSubTrigger } from '~/styles/shared.css'
 
 interface WorkspaceContextMenuProps extends ContextMenuTargetProps {
   isArchived: boolean
@@ -30,7 +30,7 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
       <Show when={!props.isArchived && props.sections.some(s => s.id !== props.currentSectionId && isMoveTargetSection(s.sectionType))}>
         <DropdownMenu
           trigger={triggerProps => (
-            <button role="menuitem" class="sub-trigger" {...triggerProps}>
+            <button role="menuitem" class={menuSubTrigger} {...triggerProps}>
               Move to
               <Icon icon={ChevronRight} size="xs" />
             </button>

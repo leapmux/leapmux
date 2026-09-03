@@ -8,19 +8,18 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, For, Show } from 'solid-js'
 import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
-import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
-import { readExpandedWorkspaceIds } from './expandedWorkspaces'
+import { isWorkspaceExpanded, setWorkspacesExpanded, toggleWorkspaceExpanded } from './expandedWorkspaces'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
 import { sumDiffStatsFromTabs, WorkspaceTabTree } from './WorkspaceTabTree'
@@ -94,43 +93,17 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // transformer" warnings.
   // ---------------------------------------------------------------------------
 
-  // Track which workspaces have their tab tree expanded (independent of selection).
-  // Restore from sessionStorage so expanded state survives page refresh.
-  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(readExpandedWorkspaceIds())
-
-  function isExpanded(id: string): boolean {
-    return expandedIds().has(id)
-  }
-
-  function toggleExpanded(id: string) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id))
-        next.delete(id)
-      else
-        next.add(id)
-      return next
-    })
-  }
-
-  // Persist expanded state to sessionStorage.
-  createEffect(() => {
-    const ids = expandedIds()
-    sessionStorageSet(KEY_EXPANDED_WORKSPACES, [...ids])
-  })
+  // Which rows are expanded is APP state, not this instance's: one sidebar
+  // mounts this component once per workspace section, and the app mounts the
+  // sidebar twice. `~/components/workspace/expandedWorkspaces` owns the signal
+  // and the sessionStorage write for all of them -- a per-instance signal wrote
+  // the whole set back with no merge and erased every other instance's rows.
 
   // Auto-expand the active workspace when it changes (if it has tabs).
   createEffect(() => {
     const activeId = props.activeWorkspaceId
-    if (activeId && props.getTabsForWorkspace(activeId).length > 0) {
-      setExpandedIds((prev) => {
-        if (prev.has(activeId))
-          return prev
-        const next = new Set(prev)
-        next.add(activeId)
-        return next
-      })
-    }
+    if (activeId && props.getTabsForWorkspace(activeId).length > 0)
+      setWorkspacesExpanded([activeId], true)
   })
 
   // The active workspace used to be forked onto separate `tabs` /
@@ -238,16 +211,16 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     // Collapsing only sets `visibility: hidden` on the children
                     // wrapper, so the leaves stay in the DOM and counting them
                     // cannot tell expanded from collapsed. Expose the bit.
-                    data-expanded={isExpanded(id) ? 'true' : 'false'}
+                    data-expanded={isWorkspaceExpanded(id) ? 'true' : 'false'}
                   >
                     <DragHandle activators={dragRow.gripActivators} testId="workspace-drag-handle" />
                     <ChevronRight
                       size={14}
-                      class={`${shared.chevron} ${isExpanded(id) ? shared.chevronExpanded : ''}`}
+                      class={`${shared.chevron} ${isWorkspaceExpanded(id) ? shared.chevronExpanded : ''}`}
                       data-testid={`workspace-chevron-${id}`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        toggleExpanded(id)
+                        toggleWorkspaceExpanded(id)
                       }}
                     />
                     <Show
@@ -306,7 +279,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     </div>
                   </div>
                   <div
-                    class={`${shared.childrenWrapper} ${isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}
+                    class={`${shared.childrenWrapper} ${isWorkspaceExpanded(id) ? shared.childrenWrapperExpanded : ''}`}
                     data-testid={`workspace-children-${id}`}
                   >
                     <div class={shared.childrenInner}>

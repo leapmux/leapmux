@@ -54,7 +54,6 @@ function harness(opts: HarnessOpts = {}) {
       sectionStore: createSectionStore(),
       loadSections: async () => {},
       onSelectWorkspace: () => {},
-      onNewWorkspace: () => {},
       onRefreshWorkspaces: () => {},
       onDeleteWorkspace: opts.onDeleteWorkspace ?? (() => {}),
     }),
@@ -226,7 +225,6 @@ function groupsFor(workspaces: Workspace[], sections: Section[], items: SectionI
       sectionStore,
       loadSections: async () => {},
       onSelectWorkspace: () => {},
-      onNewWorkspace: () => {},
       onRefreshWorkspaces: () => {},
       onDeleteWorkspace: () => {},
     })

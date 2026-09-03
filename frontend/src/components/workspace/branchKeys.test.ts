@@ -5,7 +5,9 @@ import {
   branchKey,
   branchNameSegment,
   collapseKeyForBranch,
+  formatGitOriginUrl,
   isLocalRepoKey,
+  repoKeyAndLabel,
   repoKeyForLocal,
   repoKeyTooltip,
   tabBranchKey,
@@ -177,5 +179,92 @@ describe('branchKeys accept a precomputed view', () => {
     const view = repoGitView(tab, store)
     expect(tabBranchKey(tab, store, view))
       .toBe(tabBranchKey(tab, store))
+  })
+})
+
+describe('repoKeyAndLabel', () => {
+  const store = createRepoGitStore()
+
+  function seedRepo(workerId: string, toplevel: string, patch: Record<string, unknown>) {
+    store.upsert(repoKey(workerId, toplevel), { workerId, toplevel, ...patch })
+  }
+
+  it('keys an origin-backed repo by its raw origin URL, labelled for reading', () => {
+    seedRepo('w1', '/repo', { originUrl: 'git@github.com:org/repo.git' })
+    expect(repoKeyAndLabel({ workerId: 'w1', gitToplevel: '/repo' }, store))
+      .toEqual({ key: 'git@github.com:org/repo.git', label: 'github.com/org/repo' })
+  })
+
+  it('gives two clones of one origin on two workers the same key', () => {
+    seedRepo('w1', '/a', { originUrl: 'https://example.com/o/r.git' })
+    seedRepo('w2', '/b', { originUrl: 'https://example.com/o/r.git' })
+    expect(repoKeyAndLabel({ workerId: 'w1', gitToplevel: '/a' }, store)?.key)
+      .toBe(repoKeyAndLabel({ workerId: 'w2', gitToplevel: '/b' }, store)?.key)
+  })
+
+  it('keys an origin-less repo by its toplevel, labelled with the basename', () => {
+    seedRepo('w1', '/home/me/alpha', {})
+    expect(repoKeyAndLabel({ workerId: 'w1', gitToplevel: '/home/me/alpha' }, store))
+      .toEqual({ key: repoKeyForLocal('/home/me/alpha'), label: 'alpha' })
+  })
+
+  it('keeps two origin-less repos on one worker apart', () => {
+    seedRepo('w1', '/home/me/alpha', {})
+    seedRepo('w1', '/home/me/beta', {})
+    expect(repoKeyAndLabel({ workerId: 'w1', gitToplevel: '/home/me/alpha' }, store)?.key)
+      .not
+      .toBe(repoKeyAndLabel({ workerId: 'w1', gitToplevel: '/home/me/beta' }, store)?.key)
+  })
+
+  it('answers null for a tab with neither an origin nor a toplevel', () => {
+    expect(repoKeyAndLabel({ workerId: 'w1' }, store)).toBeNull()
+  })
+
+  it('accepts a pre-resolved view rather than resolving a second time', () => {
+    seedRepo('w1', '/repo', { originUrl: 'https://example.com/o/r.git' })
+    const tab = { workerId: 'w1', gitToplevel: '/repo' }
+    expect(repoKeyAndLabel(tab, store, repoGitView(tab, store)))
+      .toEqual(repoKeyAndLabel(tab, store))
+  })
+})
+
+describe('formatGitOriginUrl', () => {
+  it('strips https protocol', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('strips http protocol', () => {
+    expect(formatGitOriginUrl('http://github.com/org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('converts SSH format', () => {
+    expect(formatGitOriginUrl('git@github.com:org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('strips trailing .git', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('handles URL without .git suffix', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('strips trailing slash', () => {
+    expect(formatGitOriginUrl('https://github.com/org/repo/'))
+      .toBe('github.com/org/repo')
+  })
+
+  it('returns empty string for empty input', () => {
+    expect(formatGitOriginUrl('')).toBe('')
+  })
+
+  it('handles SSH with nested path', () => {
+    expect(formatGitOriginUrl('git@gitlab.com:group/subgroup/repo.git'))
+      .toBe('gitlab.com/group/subgroup/repo')
   })
 })

@@ -128,6 +128,35 @@ export const dangerMenuItem = style({
   color: 'var(--danger)',
 })
 
+/**
+ * A menu item that OPENS A SUBMENU: its label at one end, its chevron at the
+ * other.
+ *
+ * Shared because every submenu trigger in the app is this same shape -- the
+ * composer's `[+]` groups, the sidebar's section menu, the workspace row menu.
+ * It lived in the composer's own stylesheet while the sidebar's copy carried a
+ * `class="sub-trigger"` that matched no rule at all, so one surface was styled
+ * and the other silently was not.
+ */
+export const menuSubTrigger = style({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  width: '100%',
+})
+
+/**
+ * The leading half of a submenu trigger, for an item whose label carries an
+ * icon (the branch item). `menuSubTrigger` pushes its two children apart, so
+ * the icon and the text need one box between them or the chevron separates
+ * them instead.
+ */
+export const menuSubTriggerLabel = style([clippedText, {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+}])
+
 export const menuSectionHeader = style({
   fontSize: 'var(--text-8)',
   fontWeight: 'var(--font-bold)',

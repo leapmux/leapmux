@@ -149,7 +149,6 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     sectionStore: store,
     loadSections: props.loadSections,
     onSelectWorkspace: props.onSelectWorkspace,
-    onNewWorkspace: props.onNewWorkspace,
     onRefreshWorkspaces: props.onRefreshWorkspaces,
     onDeleteWorkspace: props.onDeleteWorkspace,
     onConfirmDelete: props.onConfirmDelete,

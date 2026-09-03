@@ -7,7 +7,7 @@ import { tildify } from '~/lib/paths'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { repoKeyForLocal } from './branchKeys'
-import { buildTree, formatGitOriginUrl, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey, workerProjectionsEqual } from './WorkspaceTabTree'
+import { buildTree, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey, workerProjectionsEqual } from './WorkspaceTabTree'
 
 interface RepoGitSeed {
   workerId?: string
@@ -176,47 +176,6 @@ function tabsWithSeeds(
   }
   return { tabs, repoSeeds: [...seedByKey.values()] }
 }
-
-describe('formatGitOriginUrl', () => {
-  it('strips https protocol', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips http protocol', () => {
-    expect(formatGitOriginUrl('http://github.com/org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('converts SSH format', () => {
-    expect(formatGitOriginUrl('git@github.com:org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips trailing .git', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('handles URL without .git suffix', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips trailing slash', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo/'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('returns empty string for empty input', () => {
-    expect(formatGitOriginUrl('')).toBe('')
-  })
-
-  it('handles SSH with nested path', () => {
-    expect(formatGitOriginUrl('git@gitlab.com:group/subgroup/repo.git'))
-      .toBe('gitlab.com/group/subgroup/repo')
-  })
-})
 
 describe('buildTree', () => {
   it('returns empty tree for empty input', () => {

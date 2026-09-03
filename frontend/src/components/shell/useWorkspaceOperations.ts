@@ -22,7 +22,6 @@ export interface UseWorkspaceOperationsProps {
   sectionStore: ReturnType<typeof createSectionStore>
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
-  onNewWorkspace: (sectionId: string | null) => void
   onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
   onConfirmDelete?: (workspaceId: string) => Promise<boolean>
