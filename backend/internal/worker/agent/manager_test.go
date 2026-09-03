@@ -1021,11 +1021,9 @@ func TestModelGroupDefault_ToleratesNilAndHiddenEntries(t *testing.T) {
 	}, codex), "the designated default outranks the first-entry fallback")
 }
 
-// TestWithDefaultModelMarked_SentinelIsClaudeOnly verifies the DefaultModelSentinel
-// ("default") badge rule is scoped to Claude Code. A non-Claude ACP provider whose
-// live list happens to contain a model literally id'd "default" must NOT have its
-// self-marked current-model badge hijacked onto that entry -- the sentinel is a
-// Claude-Code concept, so for other providers "default" is just another model id.
+// TestModelGroupDefault_SentinelIsClaudeOnly verifies that only Claude Code gives
+// a provider-reported "default" entry sentinel priority. A non-Claude Agent Client
+// Protocol provider can use "default" as an ordinary model ID.
 func TestModelGroupDefault_SentinelIsClaudeOnly(t *testing.T) {
 	t.Setenv("LEAPMUX_OPENCODE_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "")

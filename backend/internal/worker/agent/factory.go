@@ -55,19 +55,13 @@ const DefaultAPITimeout = config.DefaultAPITimeout
 // that don't recognize newer effort names (e.g. "xhigh") still work.
 const EffortAuto = contracts.EffortAuto
 
-// DefaultModelSentinel is the model id meaning "let the CLI pick the account's
-// own default model". Claude Code reports it as a distinct entry in the
-// initialize response (displayName "Default (recommended)"); selecting it makes
-// the provider omit --model at launch (and relaunch on a live switch) so the CLI
-// resolves it to the concrete model, which get_settings then reports back -- the
-// model-side analogue of EffortAuto.
+// DefaultModelSentinel means "let the agent select the account's default model."
+// Claude Code reports this option. LeapMux uses it as a startup placeholder for
+// Codex. Codex replaces it with the concrete model from the lifecycle response.
 const DefaultModelSentinel = contracts.DefaultModelSentinel
 
-// UsesAccountDefaultModel reports whether a (normalized) model id means "no concrete
-// model -- let the CLI pick the account default": an empty id or the
-// DefaultModelSentinel. Centralizing the two-clause check keeps the "omit --model"
-// decision identical at every site and makes a forgotten sentinel clause a missing
-// call rather than a silent wrong branch.
+// UsesAccountDefaultModel reports whether the model lets the agent select the
+// account default. An empty value and DefaultModelSentinel have this meaning.
 func UsesAccountDefaultModel(model string) bool {
 	return model == "" || model == DefaultModelSentinel
 }

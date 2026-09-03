@@ -63,6 +63,15 @@ func TestResolveProviderDefaults(t *testing.T) {
 	assert.Equal(t, "sonnet", kept[agent.OptionIDModel], "an explicit value is left untouched")
 }
 
+func TestResolveProviderDefaults_CodexUsesAccountDefaultSentinel(t *testing.T) {
+	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "")
+
+	codex := resolveProviderDefaults(OptionMap{}, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+
+	assert.Equal(t, agent.DefaultModelSentinel, codex[agent.OptionIDModel])
+	assert.Equal(t, agent.EffortAuto, codex[agent.OptionIDEffort])
+}
+
 // TestOptionsChangeDelta pins the minimal-delta the settings-edit CAS persists: a changed or
 // added key carries its new value, a removed key carries "" (the wire merge deletes it), and
 // an unchanged key is omitted -- so a concurrent server-initiated refresh's keys aren't

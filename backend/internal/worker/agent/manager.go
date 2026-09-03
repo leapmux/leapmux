@@ -599,9 +599,8 @@ func (m *Manager) ClearContext(agentID string) (string, bool) {
 // withModelGroupDefaultMarked reduces the projected "model" option group to these three
 // arguments on every OptionGroups read. Priority:
 //  1. The explicit LEAPMUX_*_DEFAULT_MODEL operator override.
-//  2. A provider-reported default the list itself designates -- for Claude Code
-//     this is the CLI's DefaultModelSentinel ("default") entry, which tracks the
-//     account's own default across plan tiers (e.g. Sonnet vs Fable).
+//  2. A provider-reported default that the list designates. Claude Code reports
+//     DefaultModelSentinel. Codex reports its resolved concrete default.
 //  3. The provider's configured default. When the list contains it, return it;
 //     when the list omits it (an account-specific list whose configured default
 //     isn't offered, e.g. a Claude CLI reporting concrete models but no "default"
@@ -634,10 +633,10 @@ func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv
 			return id
 		}
 	}
-	// DefaultModelSentinel is a Claude-Code-specific concept (the CLI's "default"
-	// entry); gate the check to that provider so a non-Claude provider that
-	// happens to report a model literally id'd "default" doesn't get its
-	// self-marked/CLI-marked badge hijacked onto that entry.
+	// Only Claude Code reports the sentinel in its live catalog. Codex keeps the
+	// sentinel until a lifecycle response reports a concrete model. It follows the
+	// configured-default path below. Other providers can use "default" as an
+	// ordinary model ID.
 	if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE && slices.Contains(ids, DefaultModelSentinel) {
 		return DefaultModelSentinel
 	}

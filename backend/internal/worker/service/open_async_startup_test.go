@@ -505,90 +505,83 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 }
 
 // TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange
-// guards the compare-and-swap regression: when the user changes ONE axis (effort)
-// mid-startup, the provider's confirmed resolution of an UNCHANGED axis (the model
-// sentinel -> a concrete model) must still be persisted. A whole-blob compare
-// against the launch options would discard the entire confirmed blob here, leaving
-// the row stuck on the unresolved "default" sentinel.
+// verifies that a concurrent effort change does not discard a resolved model.
 func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange(t *testing.T) {
-	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		provider        leapmuxv1.AgentProvider
+		permissionMode  string
+		resolvedModel   string
+		initialEffort   string
+		changedEffort   string
+		confirmedEffort string
+	}{
+		{name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, permissionMode: agent.PermissionModeDefault, resolvedModel: "claude-opus", initialEffort: "high", changedEffort: "low", confirmedEffort: "high"},
+		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, permissionMode: agent.CodexDefaultApprovalPolicy, resolvedModel: "gpt-5.6-sol", initialEffort: agent.EffortAuto, changedEffort: "high", confirmedEffort: "low"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	ctx := context.Background()
-	svc, _, _ := setupTestService(t)
-	defer drainAllInFlight(svc)
+			ctx := context.Background()
+			svc, _, _ := setupTestService(t)
+			defer drainAllInFlight(svc)
 
-	agentID := "agent-effort-change-mid-startup"
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:         agentID,
-		WorkingDir: t.TempDir(),
-		HomeDir:    t.TempDir(),
-		Title:      "effort change",
-		Options: marshalOptions(map[string]string{
-			agent.OptionIDModel:          agent.DefaultModelSentinel,
-			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
-		}),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		Resumed:       0,
-	}))
+			agentID := "agent-model-resolution-" + test.name
+			initialOptions := OptionMap{
+				agent.OptionIDModel:          agent.DefaultModelSentinel,
+				agent.OptionIDEffort:         test.initialEffort,
+				agent.OptionIDPermissionMode: test.permissionMode,
+			}
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID:            agentID,
+				WorkingDir:    t.TempDir(),
+				HomeDir:       t.TempDir(),
+				Title:         "model resolution",
+				Options:       marshalOptions(initialOptions),
+				AgentProvider: test.provider,
+			}))
 
-	// The subprocess was launched with the sentinel model and effort=high.
-	initialOpts := agent.Options{
-		AgentID: agentID,
-		Options: map[string]string{
-			agent.OptionIDModel:          agent.DefaultModelSentinel,
-			agent.OptionIDEffort:         "high",
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
-		},
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			initialOpts := agent.Options{AgentID: agentID, Options: initialOptions, AgentProvider: test.provider}
+			latestOptions := initialOptions.Clone()
+			latestOptions[agent.OptionIDEffort] = test.changedEffort
+			require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
+				Options: marshalOptions(latestOptions),
+				ID:      agentID,
+			}))
+			latestRow, err := svc.Queries.GetAgentByID(ctx, agentID)
+			require.NoError(t, err)
+			latestOpts := applyDBSettingsToAgentOptions(initialOpts, &latestRow)
+
+			confirmed := confirmedSettingsPreservingStartupChanges(
+				map[string]string{
+					agent.OptionIDModel:  test.resolvedModel,
+					agent.OptionIDEffort: test.confirmedEffort,
+				},
+				initialOpts,
+				latestOpts,
+			)
+			assert.Equal(t, test.resolvedModel, confirmed[agent.OptionIDModel])
+			assert.NotContains(t, confirmed, agent.OptionIDEffort)
+
+			activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
+				agentID,
+				latestRow.Options,
+				latestOpts,
+				confirmed,
+				latestRow.OptionGroups,
+			)
+			require.NoError(t, err)
+			persisted := loadOptions(activeRow.Options, activeRow.AgentProvider)
+			assert.Equal(t, test.resolvedModel, persisted[agent.OptionIDModel])
+			assert.Equal(t, test.changedEffort, persisted[agent.OptionIDEffort])
+
+			row, err := svc.Queries.GetAgentByID(ctx, agentID)
+			require.NoError(t, err)
+			stored := loadOptions(row.Options, row.AgentProvider)
+			assert.Equal(t, test.resolvedModel, stored[agent.OptionIDModel])
+			assert.Equal(t, test.changedEffort, stored[agent.OptionIDEffort])
+		})
 	}
-
-	// The user lowers effort while startup is finishing; the DB row diverges from
-	// the launch options on the effort axis only.
-	require.NoError(t, svc.Queries.SetAgentOptions(ctx, db.SetAgentOptionsParams{
-		Options: marshalOptions(map[string]string{
-			agent.OptionIDModel:          agent.DefaultModelSentinel,
-			agent.OptionIDEffort:         "low",
-			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
-		}),
-		ID: agentID,
-	}))
-	latestRow, err := svc.Queries.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	latestOpts := applyDBSettingsToAgentOptions(initialOpts, &latestRow)
-
-	// The provider confirms the launch settings: the sentinel resolved to a
-	// concrete model, and effort=high (what it launched with).
-	confirmed := confirmedSettingsPreservingStartupChanges(
-		map[string]string{
-			agent.OptionIDModel:  "claude-opus",
-			agent.OptionIDEffort: "high",
-		},
-		initialOpts,
-		latestOpts,
-	)
-	// The changed effort axis is dropped from the confirmed blob; the unchanged
-	// model axis is kept.
-	assert.Equal(t, "claude-opus", confirmed[agent.OptionIDModel])
-	assert.NotContains(t, confirmed, agent.OptionIDEffort)
-
-	activeRow, err := svc.persistConfirmedAgentSettingsPreservingStartedSettings(
-		agentID,
-		latestRow.Options,
-		latestOpts,
-		confirmed,
-		latestRow.OptionGroups,
-	)
-	require.NoError(t, err)
-	persisted := loadOptions(activeRow.Options, activeRow.AgentProvider)
-	assert.Equal(t, "claude-opus", persisted[agent.OptionIDModel], "confirmed model resolution must survive")
-	assert.Equal(t, "low", persisted[agent.OptionIDEffort], "user's mid-startup effort change must be preserved")
-
-	row, err := svc.Queries.GetAgentByID(ctx, agentID)
-	require.NoError(t, err)
-	stored := loadOptions(row.Options, row.AgentProvider)
-	assert.Equal(t, "claude-opus", stored[agent.OptionIDModel])
-	assert.Equal(t, "low", stored[agent.OptionIDEffort])
 }
 
 // TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefaultAxis guards the

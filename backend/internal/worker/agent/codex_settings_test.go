@@ -7,7 +7,9 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -254,6 +256,87 @@ func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 	assert.Equal(t, "auto", agent.effort)
 }
 
+func TestDefaultModel_CodexUsesAccountDefaultSentinel(t *testing.T) {
+	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "")
+
+	assert.Equal(t, DefaultModelSentinel, DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+}
+
+func TestDefaultModel_CodexUsesEnvironmentOverride(t *testing.T) {
+	t.Setenv("LEAPMUX_CODEX_DEFAULT_MODEL", "gpt-5.6-terra")
+
+	assert.Equal(t, "gpt-5.6-terra", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+}
+
+func TestCodexFallbackCatalogMatchesCurrentAppServer(t *testing.T) {
+	t.Parallel()
+
+	type fallbackModel struct {
+		id            string
+		displayName   string
+		description   string
+		isDefault     bool
+		defaultEffort string
+		efforts       []string
+		contextWindow int64
+	}
+	actual := make([]fallbackModel, 0, len(codexDefaultModels))
+	for _, model := range codexDefaultModels {
+		var efforts []string
+		for _, effort := range model.SupportedEfforts {
+			efforts = append(efforts, effort.Id)
+		}
+		actual = append(actual, fallbackModel{
+			id:            model.Id,
+			displayName:   model.DisplayName,
+			description:   model.Description,
+			isDefault:     model.IsDefault,
+			defaultEffort: model.DefaultEffort,
+			efforts:       efforts,
+			contextWindow: model.ContextWindow,
+		})
+	}
+	assert.Equal(t, []fallbackModel{
+		{id: DefaultModelSentinel, displayName: "Default (recommended)", description: "Use the account's default Codex model", isDefault: true},
+		{id: "gpt-5.6-sol", displayName: "GPT-5.6-Sol", description: "Reliable agentic workhorse for everyday tasks.", defaultEffort: "low", efforts: []string{EffortAuto, "ultra", "max", EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 1_050_000},
+		{id: "gpt-5.6-terra", displayName: "GPT-5.6-Terra", description: "Balanced agentic coding model for everyday work.", defaultEffort: "medium", efforts: []string{EffortAuto, "ultra", "max", EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 1_050_000},
+		{id: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", description: "Fast and affordable agentic coding model.", defaultEffort: "medium", efforts: []string{EffortAuto, "max", EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 1_050_000},
+		{id: "gpt-5.5", displayName: "GPT-5.5", description: "Proven previous-generation model for coding and general work.", defaultEffort: "medium", efforts: []string{EffortAuto, EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 1_050_000},
+		{id: "gpt-5.4", displayName: "GPT-5.4", description: "Strong model for everyday coding.", defaultEffort: "medium", efforts: []string{EffortAuto, EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 1_050_000},
+		{id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", description: "Small, fast, and cost-efficient model for simpler coding tasks.", defaultEffort: "medium", efforts: []string{EffortAuto, EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 400_000},
+		{id: "gpt-5.3-codex-spark", displayName: "GPT-5.3-Codex-Spark", description: "Ultra-fast coding model.", defaultEffort: "high", efforts: []string{EffortAuto, EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 128_000},
+		{id: "gpt-5.2", displayName: "GPT-5.2", description: "Optimized for professional work and long-running agents.", defaultEffort: "medium", efforts: []string{EffortAuto, EffortXHigh, EffortHigh, "medium", "low"}, contextWindow: 400_000},
+	}, actual)
+}
+
+func TestCodexQueryAvailableModelsDoesNotInjectAccountDefault(t *testing.T) {
+	t.Parallel()
+
+	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+		return json.RawMessage(`{"data":[
+			{"id":"gpt-5.6-sol","model":"gpt-5.6-sol","displayName":"gpt-5.6-sol","isDefault":true,"defaultReasoningEffort":"low","supportedReasoningEfforts":[
+				{"reasoningEffort":"low","description":"Low"},
+				{"reasoningEffort":"high","description":"High"}
+			]},
+			{"id":"hidden-model","model":"hidden-model","displayName":"Hidden","hidden":true,"supportedReasoningEfforts":[]}
+		]}`)
+	})
+
+	models := agent.queryAvailableModels(time.Second)
+
+	require.Len(t, models, 1)
+	assert.Equal(t, "gpt-5.6-sol", models[0].Id)
+	assert.Equal(t, "GPT-5.6-Sol", models[0].DisplayName)
+	assert.True(t, models[0].IsDefault)
+	assert.Equal(t, "low", models[0].DefaultEffort)
+	assert.Equal(t, int64(1_050_000), models[0].ContextWindow)
+	assert.Equal(t, []string{EffortAuto, EffortHigh, "low"}, effortIDs(models[0].SupportedEfforts))
+	assert.Nil(t, FindAvailableModel(models, DefaultModelSentinel))
+	sent := requests()
+	require.Len(t, sent, 1)
+	assert.Equal(t, "model/list", sent[0].Method)
+}
+
 // TestCodexThreadParams covers the request params shared by thread/start and thread/resume that
 // StartCodex and ClearContext build identically via codexThreadParams. The model/cwd/approvalPolicy/
 // sandbox axes are stamped verbatim; serviceTier is included ONLY when codexServiceTierValue reports
@@ -278,19 +361,17 @@ func TestCodexThreadParams(t *testing.T) {
 	empty := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, "")
 	_, hasEmptyTier := empty["serviceTier"]
 	assert.False(t, hasEmptyTier, "an empty tier omits serviceTier")
+
+	accountDefault := codexThreadParams(DefaultModelSentinel, "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+	assert.NotContains(t, accountDefault, "model", "the account default lets Codex resolve the model")
+
+	unsetModel := codexThreadParams("", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+	assert.NotContains(t, unsetModel, "model", "an unset model lets Codex resolve the model")
 }
 
-// The static fallback effort list is BOTH the id -> name lookup
-// (codexEffortName) and the ordered menu every codexDefaultModels entry
-// advertises. Only the second role constrains the order, and only the first
-// one fails visibly when it is wrong -- so appending a tier satisfies the
-// label lookup while placing it wrongly in every picker, which is exactly how
-// "max" first landed after "none".
+// The fallback effort list supplies labels and menu order. Each model selects
+// a subset, which must keep that order.
 func TestCodexDefaultEffortsRankOrder(t *testing.T) {
-	// The expected order is DERIVED from the shared effortRank table, not
-	// written out again here. A hand-written list is a third copy of the
-	// ordering, and a tier appended at the end can be added to the list and the
-	// slice in one edit, which is the mistake this test exists to catch.
 	require.NotEmpty(t, codexDefaultEfforts)
 	require.Equal(t, EffortAuto, codexDefaultEfforts[0].Id, "the LeapMux auto sentinel leads the menu")
 
@@ -306,34 +387,37 @@ func TestCodexDefaultEffortsRankOrder(t *testing.T) {
 			"codexDefaultEfforts is the menu order: %q ranks above %q, so it must come first", tiers[i-1].Id, e.Id)
 	}
 
-	// Every tier carries a label, and it is the SHARED table's label -- the live
-	// catalog resolves the same way, so the two paths cannot spell one tier two
-	// ways.
+	// Every tier uses the shared label.
 	for _, e := range codexDefaultEfforts {
 		assert.NotEmpty(t, e.Name, "effort %q needs a display name", e.Id)
 		assert.Equal(t, effortLabel(e.Id), e.Name, "effort %q must take the shared label", e.Id)
 		assert.NotEqual(t, e.Id, e.Name, "effort %q must carry a display label, not its raw id", e.Id)
 	}
 
-	// The models that advertise the list inherit that order verbatim.
-	want := make([]string, 0, len(codexDefaultEfforts))
-	for _, e := range codexDefaultEfforts {
-		want = append(want, e.Id)
+	known := make(map[string]bool, len(codexDefaultEfforts))
+	for _, effort := range codexDefaultEfforts {
+		known[effort.Id] = true
 	}
 	for _, m := range codexDefaultModels {
-		require.NotEmpty(t, m.SupportedEfforts, "model %q advertises no efforts", m.Id)
-		ids := make([]string, 0, len(m.SupportedEfforts))
-		for _, e := range m.SupportedEfforts {
-			ids = append(ids, e.Id)
+		if m.Id == DefaultModelSentinel {
+			assert.Empty(t, m.SupportedEfforts, "the unresolved model has no effort catalog")
+			continue
 		}
-		assert.Equal(t, want, ids, "model %q must offer the tiers in rank order", m.Id)
+		require.NotEmpty(t, m.SupportedEfforts, "model %q advertises no efforts", m.Id)
+		require.Equal(t, EffortAuto, m.SupportedEfforts[0].Id, "model %q must offer auto first", m.Id)
+		for i, effort := range m.SupportedEfforts[1:] {
+			require.True(t, known[effort.Id], "model %q has unknown effort %q", m.Id, effort.Id)
+			if i == 0 {
+				continue
+			}
+			previousRank, _ := effortRankOf(m.SupportedEfforts[i].Id)
+			rank, _ := effortRankOf(effort.Id)
+			assert.Greater(t, previousRank, rank, "model %q must list efforts in rank order", m.Id)
+		}
 	}
 }
 
-// The live CLI (codex-cli 0.147.0) reports an "ultra" reasoning effort above
-// "max" on every current model. A tier missing from codexDefaultEfforts leaves
-// the static fallback offering a menu the running session does not, and
-// effortRank sorts it into the unranked tail.
+// Codex reports Ultra for models that support automatic delegation.
 func TestCodexOffersUltraEffort(t *testing.T) {
 	var ultra *EffortInfo
 	for _, e := range codexDefaultEfforts {
@@ -343,6 +427,12 @@ func TestCodexOffersUltraEffort(t *testing.T) {
 	}
 	require.NotNil(t, ultra, "the live CLI reports an \"ultra\" tier; the fallback catalog must offer it too")
 	assert.Equal(t, "Ultra", ultra.Name, "the tier carries its shared label")
+	sol := FindAvailableModel(codexDefaultModels, "gpt-5.6-sol")
+	luna := FindAvailableModel(codexDefaultModels, "gpt-5.6-luna")
+	require.NotNil(t, sol)
+	require.NotNil(t, luna)
+	assert.Contains(t, effortIDs(sol.SupportedEfforts), "ultra")
+	assert.NotContains(t, effortIDs(luna.SupportedEfforts), "ultra")
 	// A tier the CLI ships before this catalog catches up still renders
 	// capitalized, not as a raw lowercase id beside its siblings.
 	assert.Equal(t, "Turbo", effortLabel("turbo"), "an unlisted tier is capitalized, not raw")

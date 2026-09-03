@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -54,7 +55,8 @@ func TestSortEffortsDescending_AgreesWithTheCodexCatalogOrder(t *testing.T) {
 	tail := append([]*EffortInfo(nil), codexDefaultEfforts[1:]...)
 	want := effortIDs(tail)
 
-	shuffled := []*EffortInfo{tail[3], tail[0], tail[6], tail[1], tail[5], tail[2], tail[7], tail[4]}
+	shuffled := slices.Clone(tail)
+	slices.Reverse(shuffled)
 	sortEffortsDescending(shuffled)
 	assert.Equal(t, want, effortIDs(shuffled))
 }

@@ -839,17 +839,17 @@ func codexEffortValue(effort string) (string, bool) {
 	return effort, true
 }
 
-// codexThreadParams builds the request params shared by thread/start and thread/resume,
-// so the launch (StartCodex) and clear-context (ClearContext) paths construct the thread
-// the same way and a new thread field is added once. The serviceTier field is included
-// only when codexServiceTierValue reports a non-default tier. StartCodex appends threadId
-// itself for the resume case.
+// codexThreadParams builds the params shared by thread/start and thread/resume.
+// It omits an account-default model so Codex can resolve it. It includes a concrete
+// model so a resumed thread keeps its effective or user-selected model.
 func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier string) map[string]interface{} {
 	params := map[string]interface{}{
-		"model":          model,
 		"cwd":            cwd,
 		"approvalPolicy": approvalPolicy,
 		"sandbox":        sandboxPolicy,
+	}
+	if !UsesAccountDefaultModel(model) {
+		params["model"] = model
 	}
 	if st := codexServiceTierValue(serviceTier); st != nil {
 		params["serviceTier"] = *st
@@ -1112,30 +1112,14 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 	return models
 }
 
-// Default Codex efforts (auto first, then strongest → weakest) used as
-// static fallback. "auto" is a LeapMux-side sentinel: the CLI never reports
-// or accepts it, but selecting it causes LeapMux to omit reasoning_effort
-// so Codex applies its own default.
-//
-// The slice order IS the menu order: optionGroupsForAgent maps it into the
-// option group unchanged, and the frontend renders the options in order. It is
-// DERIVED from effortLadder rather than written out, so a tier cannot be put in
-// the wrong place: this file states only WHICH tiers Codex offers, and the
-// ladder states what comes before what.
-//
-// Every tier the live CLI reports should appear here, so the static fallback
-// offers the same menu the running session does. A tier that is absent is no
-// longer a labeling hazard: both paths resolve their label through effortLabel,
-// so an unlisted id renders capitalized like its siblings rather than raw.
+// codexDefaultEfforts contains all effort levels in the Codex fallback catalog.
+// The order matches the menu. Each model selects its supported subset below.
 var codexDefaultEfforts = buildCodexDefaultEfforts()
 
-// codexEffortIDs is WHICH levels Codex offers. The ORDER comes from
-// effortLadder, so this states membership only: Codex has no `ultracode` rung
-// and no separate `off`, and listing it here in ladder order would be a second
-// statement of the ordering that a level moved in the ladder could fall behind.
+// codexEffortIDs states membership. effortLadder supplies the order.
 var codexEffortIDs = map[string]bool{
 	"ultra": true, "max": true, EffortXHigh: true, EffortHigh: true,
-	"medium": true, "low": true, "minimal": true, "none": true,
+	"medium": true, "low": true,
 }
 
 func buildCodexDefaultEfforts() []*EffortInfo {
@@ -1143,6 +1127,21 @@ func buildCodexDefaultEfforts() []*EffortInfo {
 	for _, id := range effortLadderIDs() {
 		if codexEffortIDs[id] {
 			efforts = append(efforts, effortTier(id))
+		}
+	}
+	return efforts
+}
+
+// codexSupportedEfforts returns auto followed by the requested levels in menu order.
+func codexSupportedEfforts(ids ...string) []*EffortInfo {
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
+	efforts := []*EffortInfo{codexAutoEffort()}
+	for _, effort := range codexDefaultEfforts[1:] {
+		if selected[effort.Id] {
+			efforts = append(efforts, effort)
 		}
 	}
 	return efforts
@@ -1159,14 +1158,24 @@ func codexAutoEffort() *EffortInfo {
 	}
 }
 
+var (
+	codexEffortsWithUltra = codexSupportedEfforts("ultra", "max", EffortXHigh, EffortHigh, "medium", "low")
+	codexEffortsWithMax   = codexSupportedEfforts("max", EffortXHigh, EffortHigh, "medium", "low")
+	codexEffortsToXHigh   = codexSupportedEfforts(EffortXHigh, EffortHigh, "medium", "low")
+)
+
+// codexDefaultModels contains the general model catalog from Codex 0.152.1.
+// model/list supplies account-specific models, such as Daybreak, at runtime.
 var codexDefaultModels = []*ModelInfo{
-	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Latest frontier agentic coding model", IsDefault: true, DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 1_050_000},
-	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", Description: "Smaller frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.3-codex", DisplayName: "GPT-5.3 Codex", Description: "Frontier Codex-optimized agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.2-codex", DisplayName: "GPT-5.2 Codex", Description: "Frontier agentic coding model", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.2", DisplayName: "GPT-5.2", Description: "Optimized for professional work and long-running agents", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 256_000},
-	{Id: "gpt-5.1-codex-max", DisplayName: "GPT-5.1 Codex Max", Description: "Codex-optimized model for deep and fast reasoning", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
-	{Id: "gpt-5.1-codex-mini", DisplayName: "GPT-5.1 Codex Mini", Description: "Optimized for Codex; cheaper, faster, but less capable", DefaultEffort: "high", SupportedEfforts: codexDefaultEfforts, ContextWindow: 400_000},
+	{Id: DefaultModelSentinel, DisplayName: "Default (recommended)", Description: "Use the account's default Codex model", IsDefault: true},
+	{Id: "gpt-5.6-sol", DisplayName: "GPT-5.6-Sol", Description: "Reliable agentic workhorse for everyday tasks.", DefaultEffort: "low", SupportedEfforts: codexEffortsWithUltra, ContextWindow: 1_050_000},
+	{Id: "gpt-5.6-terra", DisplayName: "GPT-5.6-Terra", Description: "Balanced agentic coding model for everyday work.", DefaultEffort: "medium", SupportedEfforts: codexEffortsWithUltra, ContextWindow: 1_050_000},
+	{Id: "gpt-5.6-luna", DisplayName: "GPT-5.6-Luna", Description: "Fast and affordable agentic coding model.", DefaultEffort: "medium", SupportedEfforts: codexEffortsWithMax, ContextWindow: 1_050_000},
+	{Id: "gpt-5.5", DisplayName: "GPT-5.5", Description: "Proven previous-generation model for coding and general work.", DefaultEffort: "medium", SupportedEfforts: codexEffortsToXHigh, ContextWindow: 1_050_000},
+	{Id: "gpt-5.4", DisplayName: "GPT-5.4", Description: "Strong model for everyday coding.", DefaultEffort: "medium", SupportedEfforts: codexEffortsToXHigh, ContextWindow: 1_050_000},
+	{Id: "gpt-5.4-mini", DisplayName: "GPT-5.4-Mini", Description: "Small, fast, and cost-efficient model for simpler coding tasks.", DefaultEffort: "medium", SupportedEfforts: codexEffortsToXHigh, ContextWindow: 400_000},
+	{Id: "gpt-5.3-codex-spark", DisplayName: "GPT-5.3-Codex-Spark", Description: "Ultra-fast coding model.", DefaultEffort: "high", SupportedEfforts: codexEffortsToXHigh, ContextWindow: 128_000},
+	{Id: "gpt-5.2", DisplayName: "GPT-5.2", Description: "Optimized for professional work and long-running agents.", DefaultEffort: "medium", SupportedEfforts: codexEffortsToXHigh, ContextWindow: 400_000},
 }
 
 // codexBinaryCandidates lists the executable names to probe for Codex, in

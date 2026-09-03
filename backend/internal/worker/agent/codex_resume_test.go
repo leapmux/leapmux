@@ -39,6 +39,42 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 		assert.Equal(t, "thread/resume", sent[0].Method)
 	})
 
+	t.Run("pins concrete models and resolves a leftover default", func(t *testing.T) {
+		for _, test := range []struct {
+			name          string
+			storedModel   string
+			responseModel string
+			wantModel     string
+		}{
+			{name: "resolved account default", storedModel: "gpt-5.6-sol", responseModel: "gpt-5.6-sol", wantModel: "gpt-5.6-sol"},
+			{name: "user selection", storedModel: "gpt-5.6-luna", responseModel: "gpt-5.6-luna", wantModel: "gpt-5.6-luna"},
+			{name: "legacy concrete selection", storedModel: "gpt-5.4", responseModel: "gpt-5.4", wantModel: "gpt-5.4"},
+			{name: "interrupted startup default", storedModel: DefaultModelSentinel, responseModel: "gpt-5.6-sol"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+					return json.RawMessage(`{"thread":{"id":"thread-old"},"model":"` + test.responseModel + `"}`)
+				})
+				a.model = test.storedModel
+				params := codexThreadParams(test.storedModel, "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexDefaultServiceTier)
+
+				thread, err := a.startOrResumeThread(params, "thread-old", timeout)
+				require.NoError(t, err)
+				a.applyThreadResult(thread)
+
+				sent := requests()
+				require.Len(t, sent, 1)
+				assert.Equal(t, "thread/resume", sent[0].Method)
+				if test.wantModel == "" {
+					assert.NotContains(t, sent[0].Params, "model")
+				} else {
+					assert.Equal(t, test.wantModel, sent[0].Params["model"])
+				}
+				assert.Equal(t, test.responseModel, a.model)
+			})
+		}
+	})
+
 	// An RPC error arrives as a delivered body rather than as a transport error,
 	// so the agent's own message is only in the response. The failure must carry
 	// it: "carried no thread ID" identifies the symptom and hides the reason.
