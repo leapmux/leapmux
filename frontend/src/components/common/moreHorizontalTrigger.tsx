@@ -7,6 +7,16 @@ import { IconButton } from './IconButton'
 export interface MoreHorizontalTriggerOptions {
   'class'?: string
   'data-testid'?: string
+  /**
+   * Tooltip text, which `IconButton` renders as a `<Tooltip ariaLabel>` -- so
+   * it is also the button's ACCESSIBLE NAME.
+   *
+   * A row menu leaves it unset: the row beside it already says what the menu
+   * acts on, and every row would otherwise announce the same word. A trigger
+   * that stands alone (a section header, a titlebar) must set it, or it
+   * announces as an unnamed button.
+   */
+  'title'?: string
 }
 
 // Builds the DropdownMenu `trigger` render-prop for the standard
@@ -24,6 +34,7 @@ export function moreHorizontalTrigger(
       icon={MoreHorizontal}
       size="sm"
       class={opts.class}
+      title={opts.title}
       ref={triggerProps.ref}
       aria-expanded={triggerProps['aria-expanded']}
       data-testid={opts['data-testid']}

@@ -37,16 +37,15 @@ export function isMoveTargetSection(sectionType: SectionType): boolean {
 }
 
 /**
- * Whether a workspace can be mutated (create agents/terminals, rename, etc.).
- * Ownership is not a parameter: access is owner-only, so every workspace the
- * client can see is the current user's own — only archival gates mutation.
+ * Whether a workspace can be mutated: create agents and terminals, rename it.
+ *
+ * Archival is the ONE thing that blocks mutation, and this signature says so.
+ * The `workspace` parameter it used to take was never read for its
+ * `createdBy` -- a vestige of the removed sharing model, used only as a
+ * presence check -- and it forced every caller that holds an archived FLAG but
+ * no workspace object to invent one.
  */
-export function isWorkspaceMutatable(
-  workspace: { createdBy: string } | undefined,
-  isArchived: boolean,
-): boolean {
-  if (!workspace)
-    return false
+export function isWorkspaceMutatable(isArchived: boolean): boolean {
   return !isArchived
 }
 

@@ -128,7 +128,7 @@ vi.mock('~/components/common/DropdownMenu', async () => {
       return (
         <span>
           <span>{props.label}</span>
-          {props.shortcut ? <span>{props.shortcut}</span> : null}
+          {props.detail ? <span>{props.detail}</span> : null}
         </span>
       )
     },

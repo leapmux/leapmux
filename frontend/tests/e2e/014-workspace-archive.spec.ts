@@ -5,6 +5,14 @@ import { loginViaToken, openTreeContextMenu, openWorkspace, treeRow, workspaceRo
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
+/**
+ * The workspace row menu carries an INFO BLOCK and repository-named items now,
+ * and Playwright matches an accessible name by SUBSTRING unless told otherwise
+ * -- so `{ name: 'Delete' }` also matched the info block (whose name is every
+ * row of it joined) and `{ name: 'Archive' }` also matched
+ * "New agent in archived-branch...". Every lookup below is `exact`.
+ */
+
 /** Open the context menu for a workspace item that's already located by testid. */
 async function openContextMenu(item: ReturnType<import('@playwright/test').Page['locator']>) {
   await item.hover()
@@ -17,7 +25,7 @@ test.describe('Workspace Archive', () => {
 
     // Open context menu and click Archive (top-level menu item)
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
 
     // Confirmation dialog should appear
     const dialog = page.locator('dialog')
@@ -41,7 +49,7 @@ test.describe('Workspace Archive', () => {
 
     // Open context menu and click Archive (top-level menu item)
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
 
     // Confirmation dialog should appear
     const dialog = page.locator('dialog')
@@ -60,7 +68,7 @@ test.describe('Workspace Archive', () => {
 
     // Archive the workspace first: open context menu using the workspace item directly
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
     // Wait for the archived section to appear (auto-expanded)
@@ -69,7 +77,7 @@ test.describe('Workspace Archive', () => {
 
     // Now unarchive it: open context menu using the workspace item directly
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Unarchive' }).click()
+    await page.getByRole('menuitem', { name: 'Unarchive', exact: true }).click()
 
     // Workspace is active again — add-tab buttons should be visible
     await expect(page.locator('[data-testid^="new-agent-button"]').first()).toBeVisible()
@@ -83,23 +91,28 @@ test.describe('Workspace Archive', () => {
     await openContextMenu(workspaceItem)
 
     // "Move to" should not be visible (no other non-archived, non-shared sections to move to)
-    await expect(page.getByRole('menuitem', { name: 'Move to' })).not.toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Move to', exact: true })).not.toBeVisible()
 
     // Other menu items should be present
-    await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: 'Archive' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Archive', exact: true })).toBeVisible()
   })
 
-  test('should only show valid workspace sections in Move-to menu', async ({ page, authenticatedWorkspace }) => {
+  test('leaks no non-workspace section into the row menu', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
-    // Open context menu
     await openContextMenu(workspaceItem)
 
-    // Shared, Files, To-dos should NOT appear as menu items for move targets
-    const menuItems = page.getByRole('menuitem')
-    const allLabels = await menuItems.allTextContents()
-    expect(allLabels).not.toContain('Shared')
+    // Files and To-dos are sections, but not ones a workspace can live in, so
+    // no item of this menu may name them.
+    //
+    // This does NOT exercise the Move-to submenu, and its old name claimed it
+    // did. The submenu mounts its items only while it is open (see `SubMenu`),
+    // and this fixture has one workspace section, so Move-to is not offered at
+    // all. `isMoveTargetSection`'s filter is covered where it can actually be
+    // driven: `WorkspaceContextMenu.test.tsx` ("lists every other workspace
+    // section, and no other kind") and 195's custom-section flow.
+    const allLabels = await page.getByRole('menuitem').allTextContents()
     expect(allLabels).not.toContain('Files')
     expect(allLabels).not.toContain('To-dos')
   })
@@ -109,7 +122,7 @@ test.describe('Workspace Archive', () => {
 
     // Archive the workspace
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
     // The archived section should be visible and expanded (auto-expand)
@@ -131,7 +144,7 @@ test.describe('Workspace Archive', () => {
 
     // Archive the workspace
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
     // Tabs should still be visible (read-only) after archiving
@@ -164,7 +177,7 @@ test.describe('Workspace Archive', () => {
       // Archive the workspace
       const wsItem = workspaceRow(page, workspaceId)
       await openContextMenu(wsItem)
-      await page.getByRole('menuitem', { name: 'Archive' }).click()
+      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
       // Wait for archived section to appear
@@ -215,7 +228,7 @@ test.describe('Workspace Archive', () => {
       // Archive the workspace
       const wsItem = workspaceRow(page, workspaceId)
       await openContextMenu(wsItem)
-      await page.getByRole('menuitem', { name: 'Archive' }).click()
+      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
       // Wait for archived section
@@ -259,7 +272,7 @@ test.describe('Workspace Archive', () => {
       // Archive the workspace
       const wsItem = workspaceRow(page, workspaceId)
       await openContextMenu(wsItem)
-      await page.getByRole('menuitem', { name: 'Archive' }).click()
+      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
 
       // Wait for archived section
@@ -287,7 +300,7 @@ test.describe('Workspace Archive', () => {
 
     // Open context menu and click Delete
     await openContextMenu(workspaceItem)
-    await page.getByRole('menuitem', { name: 'Delete' }).click()
+    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
 
     // ConfirmDialog should appear (not native dialog)
     const dialog = page.locator('dialog')

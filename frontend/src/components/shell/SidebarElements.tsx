@@ -3,6 +3,9 @@ import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
+import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
+import type { Section, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -34,12 +37,18 @@ export interface SidebarElementsOpts {
   selection: TabSelectionStore
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
-  onNewWorkspace: (sectionId: string | null) => void
+  /** Open the New workspace dialog, into `sectionId` and from `startPoint`. */
+  onNewWorkspace: (sectionId: string | null, startPoint: WorkspaceStartPoint) => void
   onRefreshWorkspaces: () => void
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
   onConfirmDelete: (workspaceId: string) => Promise<boolean>
   onConfirmArchive: (workspaceId: string) => Promise<boolean>
+  onConfirmEmptyArchive: (count: number) => Promise<boolean>
   onPostArchiveWorkspace: (workspaceId: string) => void
+  /** Open the New section dialog for `sidebar`. */
+  onNewSection: (sidebar: Sidebar) => void
+  onRenameSection: (section: Section) => void
+  onDeleteSection: (section: Section) => void
   getCurrentTabContext: () => TabContext
   getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   fileTreePath: string
@@ -63,6 +72,11 @@ export interface SidebarElementsOpts {
   activeTabReady: boolean
   // Worker section
   workers: Worker[]
+  /**
+   * Whether the desktop shell runs its own bundled sidecar. See
+   * `~/lib/workerLocality`.
+   */
+  localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
@@ -74,6 +88,8 @@ export interface SidebarElementsOpts {
   getTileOrderForWorkspace: (workspaceId: string) => readonly string[]
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
   branchActions?: BranchRefActions
+  /** Open a new agent / terminal at one of a workspace's checkouts. */
+  workspaceStartActions?: WorkspaceStartActions
 }
 
 interface SidebarDisplayOpts {

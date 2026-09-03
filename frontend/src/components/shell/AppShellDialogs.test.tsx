@@ -13,6 +13,7 @@ import { createDialogState, createUpdatableDialogState } from '~/hooks/createDia
 import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { createSectionStore } from '~/stores/section.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
@@ -170,6 +171,9 @@ function makeDialogs(): AppShellDialogStates {
     newWorkspace: createDialogState(),
     confirmDeleteWs: createDialogState(),
     confirmArchiveWs: createDialogState(),
+    confirmEmptyArchive: createDialogState(),
+    sectionName: createDialogState(),
+    confirmDeleteSection: createDialogState(),
     lastTabConfirm: createUpdatableDialogState(),
     keyPinConfirm: createDialogState(),
     changeBranch: createDialogState(),
@@ -768,5 +772,67 @@ describe('appShellDialogs agent creation', () => {
     fireEvent.click(await screen.findByTestId('new-agent-created'))
 
     await waitFor(() => expect(dialogs.newAgent.value()).toBeNull())
+  })
+})
+
+/**
+ * The two confirms whose COPY lives only here: one prompt for the whole
+ * archive, and one that states where a deleted section's workspaces go.
+ */
+describe('appShellDialogs section and bulk confirms', () => {
+  function renderConfirms() {
+    const dialogs = makeDialogs()
+    const props = {
+      dialogs,
+      activeWorkspace: () => null,
+      isActiveWorkspaceMutatable: () => true,
+      loadSections: async () => {},
+      sectionStore: createSectionStore(),
+    }
+    render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
+    return dialogs
+  }
+
+  it('names the count in the empty-archive confirm, and says it is not atomic', async () => {
+    const dialogs = renderConfirms()
+    const resolve = vi.fn()
+    dialogs.confirmEmptyArchive.open({ count: 3, resolve })
+
+    expect(await screen.findByText(/Delete 3 archived workspaces\?/)).toBeInTheDocument()
+    // Each workspace is its own RPC, so a failure part way through leaves the
+    // rest in the archive. The prompt has to say so.
+    expect(screen.getByText(/failure part way through/)).toBeInTheDocument()
+  })
+
+  it('says "workspace", singular, for one', async () => {
+    const dialogs = renderConfirms()
+    dialogs.confirmEmptyArchive.open({ count: 1, resolve: vi.fn() })
+
+    expect(await screen.findByText(/Delete 1 archived workspace\?/)).toBeInTheDocument()
+  })
+
+  it('resolves the empty-archive promise both ways', async () => {
+    const dialogs = renderConfirms()
+    const resolve = vi.fn()
+    dialogs.confirmEmptyArchive.open({ count: 2, resolve })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    expect(resolve).toHaveBeenCalledWith(false)
+    expect(dialogs.confirmEmptyArchive.value()).toBeNull()
+
+    const second = vi.fn()
+    dialogs.confirmEmptyArchive.open({ count: 2, resolve: second })
+    // ConfirmButton arms on the first click and fires on the second.
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete all' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm?' }))
+    expect(second).toHaveBeenCalledWith(true)
+  })
+
+  it('states where a deleted section\'s workspaces go, which is what the hub does', async () => {
+    const dialogs = renderConfirms()
+    dialogs.confirmDeleteSection.open({ sectionId: 'sec-1', sectionName: 'Reviews' })
+
+    expect(await screen.findByText(/Delete "Reviews"\? Its workspaces move to In progress\./))
+      .toBeInTheDocument()
   })
 })

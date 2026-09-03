@@ -23,8 +23,8 @@ import { createStableContext } from '~/lib/createStableContext'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedDraggableRow } from '~/lib/dragRow'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
-import { flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays, shallowEqualExcept } from '~/lib/shallowEqual'
+import { tildifyForWorker, workerPathFlavor } from '~/lib/workerPaths'
 import { diffStatsFromRepo, repoGitView } from '~/stores/repoGit'
 import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
@@ -1350,34 +1350,6 @@ export function buildTree(
   })
 
   return { groups, ungrouped: sort(ungrouped) }
-}
-
-/**
- * The path flavor to shorten a worker's paths with, or undefined when the
- * worker has not reported its OS.
- *
- * Undefined rather than a default, because `flavorFromOs(undefined)` answers
- * `'posix'` — which would force posix onto a Windows worker with no system info
- * yet, and stop `C:\Users\u\repo` from compressing at all. Undefined lets
- * `tildify` sniff the flavor from the path instead.
- */
-function workerPathFlavor(info: WorkerInfo | null | undefined): PathFlavor | undefined {
-  return info?.os ? flavorFromOs(info.os) : undefined
-}
-
-/**
- * Tilde-compress a worker-side absolute path for the collision suffix.
- *
- * One spelling of the rule for the whole tree: this suffix and the row's own
- * tooltip must shorten the same path the same way, or a row reads
- * `~/repos/foo` while its tooltip reads `/Users/x/repos/foo`. The tooltip gets
- * there by handing `WorkingTreeRows` the same `homeDir` and `flavor` this
- * function derives, so both end in one `tildify` call with equal arguments.
- * Returns the path unchanged while the worker's system info is absent — a
- * correct long path beats a wrong short one.
- */
-function tildifyForWorker(path: string, info: WorkerInfo | null | undefined): string {
-  return tildify(path, info?.homeDir, workerPathFlavor(info))
 }
 
 /**

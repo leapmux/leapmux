@@ -18,7 +18,7 @@ describe('dropdownMenu', () => {
   it('renders trailing shortcut text in menu item content', () => {
     render(() => (
       <button role="menuitem">
-        <DropdownMenuItemContent label="New agent..." shortcut="Ctrl+Shift+N" />
+        <DropdownMenuItemContent label="New agent..." detail="Ctrl+Shift+N" />
       </button>
     ))
 

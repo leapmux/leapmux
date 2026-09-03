@@ -68,6 +68,9 @@ export type WorkspaceStartPoint
   // yields a directory, after which the existing `openAgent` call runs
   // unchanged.
 
+/** The `repo` variant alone, for the surfaces that only produce that one. */
+export type WorkspaceRepoStartPoint = Extract<WorkspaceStartPoint, { kind: 'repo' }>
+
 /**
  * The storage key a repository's last-used git mode is remembered under.
  *

@@ -56,7 +56,11 @@ const STATIC_PASSTHROUGHS = new Set([
   'onDeleteWorkspace',
   'onConfirmDelete',
   'onConfirmArchive',
+  'onConfirmEmptyArchive',
   'onPostArchiveWorkspace',
+  'onNewSection',
+  'onRenameSection',
+  'onDeleteSection',
   'getCurrentTabContext',
   'getMruAgentContext',
   'onFileSelect',
@@ -102,7 +106,11 @@ function trackedOpts() {
     onDeleteWorkspace: noop,
     onConfirmDelete: noop,
     onConfirmArchive: noop,
+    onConfirmEmptyArchive: noop,
     onPostArchiveWorkspace: noop,
+    onNewSection: noop,
+    onRenameSection: noop,
+    onDeleteSection: noop,
     getCurrentTabContext: tabContext,
     getMruAgentContext: () => ({ workingDir: '/repo', homeDir: '/home/u' }),
     get fileTreePath() {
@@ -145,6 +153,13 @@ function trackedOpts() {
       reads.push('workers')
       return []
     },
+    // Counted, because it is REACTIVE: it comes from a `createResource` over
+    // the desktop shell's runtime state, so an eager read here would put the
+    // whole sidebar back on the remount-per-change path.
+    get localSolo() {
+      reads.push('localSolo')
+      return false
+    },
     workerInfoFn: () => undefined,
     channelStatusFn: () => undefined,
     onAddTunnel: noop,
@@ -155,6 +170,7 @@ function trackedOpts() {
     // A real bundle, not omitted: the pass-through assertion below compares
     // identities, and two `undefined`s compare equal without proving anything.
     branchActions: stubBranchRefActions(),
+    workspaceStartActions: { onNewAgentAt: noop, onNewTerminalAt: noop },
   } as unknown as SidebarElementsOpts
   return { opts, reads }
 }

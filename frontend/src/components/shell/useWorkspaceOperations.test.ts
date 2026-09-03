@@ -1,10 +1,18 @@
 import type { Section, SectionItem } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceOperations } from '~/components/shell/useWorkspaceOperations'
+import {
+  resetWorkspaceListStateForTests,
+  setSectionFilterQuery,
+  setWorkspaceSortOrder,
+  toggleSectionFilter,
+} from '~/components/workspace/workspaceListState'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { localStorageClearForTests, setStorageAccount } from '~/lib/browserStorage'
 import { createSectionStore } from '~/stores/section.store'
 
 interface TabRefLike { tabType: TabType, tabId: string }
@@ -13,6 +21,7 @@ interface WorkerTabsLike { workerId: string, tabs: TabRefLike[] }
 const mockDeleteWorkspace = vi.fn<(req: { workspaceId: string }) => Promise<{ workerTabs: WorkerTabsLike[] }>>()
 const mockRenameWorkspace = vi.fn<(req: { workspaceId: string, title: string }) => Promise<unknown>>()
 const mockCleanupWorkspace = vi.fn<(workerId: string, req: { tabs: TabRefLike[] }) => Promise<unknown>>()
+const mockMoveWorkspace = vi.fn<(req: { workspaceId: string, sectionId: string, position: string }) => Promise<unknown>>()
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/clients', () => ({
@@ -20,7 +29,13 @@ vi.mock('~/api/clients', () => ({
     deleteWorkspace: (...args: unknown[]) => mockDeleteWorkspace(...args as [{ workspaceId: string }]),
     renameWorkspace: (...args: unknown[]) => mockRenameWorkspace(...args as [{ workspaceId: string, title: string }]),
   },
-  sectionClient: {},
+  sectionClient: {
+    // Stubbed, and its ABSENCE used to hide a bug: `moveWorkspace` threw on
+    // `undefined.moveWorkspace`, the hook's own catch swallowed it into a
+    // toast, and every test that moved a workspace passed for the wrong
+    // reason.
+    moveWorkspace: (...args: unknown[]) => mockMoveWorkspace(...args as [{ workspaceId: string, sectionId: string, position: string }]),
+  },
 }))
 
 vi.mock('~/api/workerRpc', () => ({
@@ -357,5 +372,239 @@ describe('useWorkspaceOperations commitRename', () => {
   ])('sends nothing for %s', async (_label, typed) => {
     await rename(typed)
     expect(mockRenameWorkspace).not.toHaveBeenCalled()
+  })
+})
+
+// ----- Bulk archive operations -----
+
+/**
+ * The hook wired to a populated section store, for the two bulk operations.
+ *
+ * They read the ARCHIVED section's items at the start of each run, so the store
+ * has to be real rather than empty.
+ */
+function bulkHarness(archivedIds: readonly string[], opts: {
+  onConfirmEmptyArchive?: (count: number) => Promise<boolean>
+  onConfirmDelete?: (workspaceId: string) => Promise<boolean>
+} = {}) {
+  const inProgress = section('s-progress', SectionType.WORKSPACES_IN_PROGRESS)
+  const archived = section('s-archived', SectionType.WORKSPACES_ARCHIVED)
+  return createRoot((dispose) => {
+    const sectionStore = createSectionStore()
+    sectionStore.setSections([inProgress, archived])
+    sectionStore.setItems(archivedIds.map((id, i) => item(id, 's-archived', `p${i}`)))
+    const ops = useWorkspaceOperations({
+      workspaces: () => archivedIds.map(ws),
+      activeWorkspaceId: () => null,
+      sectionStore,
+      loadSections: async () => {},
+      onSelectWorkspace: () => {},
+      onRefreshWorkspaces: () => {},
+      onDeleteWorkspace: () => {},
+      onConfirmDelete: opts.onConfirmDelete,
+      onConfirmEmptyArchive: opts.onConfirmEmptyArchive,
+    })
+    return { dispose, ops, sectionStore }
+  })
+}
+
+describe('useWorkspaceOperations unarchiveAll', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockMoveWorkspace.mockResolvedValue({})
+  })
+
+  it('moves every archived workspace to In progress', async () => {
+    const h = bulkHarness(['w1', 'w2', 'w3'])
+    await h.ops.unarchiveAll()
+    expect(mockMoveWorkspace.mock.calls.map(c => c[0].workspaceId)).toEqual(['w1', 'w2', 'w3'])
+    expect(mockMoveWorkspace.mock.calls.every(c => c[0].sectionId === 's-progress')).toBe(true)
+    h.dispose()
+  })
+
+  it('gives every move a DISTINCT position', async () => {
+    // This is what separates the sequential loop from `Promise.all`.
+    // `moveWorkspace` computes `appendPosition(getItemsForSection(...))`, which
+    // reads `items.at(-1)` BEFORE its await while the store write lands after
+    // it -- so a parallel fan-out hands every call the identical lexorank and
+    // the sidebar shuffles the whole set on the next refresh.
+    const h = bulkHarness(['w1', 'w2', 'w3'])
+    await h.ops.unarchiveAll()
+    const positions = mockMoveWorkspace.mock.calls.map(c => c[0].position)
+    expect(new Set(positions).size).toBe(positions.length)
+    h.dispose()
+  })
+
+  it('does nothing for an empty archive', async () => {
+    const h = bulkHarness([])
+    await h.ops.unarchiveAll()
+    expect(mockMoveWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('warns for the workspace that failed and still moves the rest', async () => {
+    // Both callees catch and toast, so "the loop continued" is true for every
+    // loop shape including none. The TOAST is what says which one failed.
+    mockMoveWorkspace.mockImplementation(async (req) => {
+      if (req.workspaceId === 'w2')
+        throw new Error('nope')
+      return {}
+    })
+    const h = bulkHarness(['w1', 'w2', 'w3'])
+    await h.ops.unarchiveAll()
+    expect(mockMoveWorkspace).toHaveBeenCalledTimes(3)
+    expect(mockShowWarnToast).toHaveBeenCalledTimes(1)
+    expect(mockShowWarnToast.mock.calls[0][0]).toBe('Failed to move workspace')
+    h.dispose()
+  })
+})
+
+describe('useWorkspaceOperations emptyArchive', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDeleteWorkspace.mockResolvedValue({ workerTabs: [] })
+  })
+
+  it('asks ONCE, naming the count, and never asks per workspace', async () => {
+    // The per-workspace confirm is not merely noisy: `confirmDeleteWsDialog` is
+    // a single-slot dialog state, so N concurrent opens drop N-1 resolvers and
+    // those awaits never settle.
+    const onConfirmEmptyArchive = vi.fn(async () => true)
+    const onConfirmDelete = vi.fn(async () => true)
+    const h = bulkHarness(['w1', 'w2', 'w3'], { onConfirmEmptyArchive, onConfirmDelete })
+
+    await h.ops.emptyArchive()
+
+    expect(onConfirmEmptyArchive).toHaveBeenCalledTimes(1)
+    expect(onConfirmEmptyArchive).toHaveBeenCalledWith(3)
+    expect(onConfirmDelete).not.toHaveBeenCalled()
+    expect(mockDeleteWorkspace.mock.calls.map(c => c[0].workspaceId)).toEqual(['w1', 'w2', 'w3'])
+    h.dispose()
+  })
+
+  it('deletes nothing when the confirm is declined', async () => {
+    const h = bulkHarness(['w1', 'w2'], { onConfirmEmptyArchive: async () => false })
+    await h.ops.emptyArchive()
+    expect(mockDeleteWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('does not ask at all for an empty archive', async () => {
+    // "Delete 0 archived workspaces?" is a prompt with no answer worth giving.
+    const onConfirmEmptyArchive = vi.fn(async () => true)
+    const h = bulkHarness([], { onConfirmEmptyArchive })
+    await h.ops.emptyArchive()
+    expect(onConfirmEmptyArchive).not.toHaveBeenCalled()
+    expect(mockDeleteWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('warns for the workspace that failed and still deletes the rest', async () => {
+    mockDeleteWorkspace.mockImplementation(async (req) => {
+      if (req.workspaceId === 'w2')
+        throw new Error('nope')
+      return { workerTabs: [] }
+    })
+    const h = bulkHarness(['w1', 'w2', 'w3'], { onConfirmEmptyArchive: async () => true })
+    await h.ops.emptyArchive()
+    expect(mockDeleteWorkspace).toHaveBeenCalledTimes(3)
+    expect(mockShowWarnToast).toHaveBeenCalledTimes(1)
+    expect(mockShowWarnToast.mock.calls[0][0]).toBe('Failed to delete workspace')
+    h.dispose()
+  })
+})
+
+// ----- The view order: filter, then sort -----
+//
+// `getWorkspacesForGroup` is the ONE place the row list is produced, so every
+// consumer -- the rows, the header menu's Collapse all, the repository list --
+// sees the same order.
+
+function viewOrder(
+  titles: readonly string[],
+  opts: { mru?: Record<string, number> } = {},
+): { ids: () => string[], dispose: () => void } {
+  const inProgress = section('s-progress', SectionType.WORKSPACES_IN_PROGRESS)
+  const workspaces = titles.map((title, i) => ({ id: `w${i}`, title, createdAt: `2026-0${i + 1}-01` } as Workspace))
+  return createRoot((dispose) => {
+    const sectionStore = createSectionStore()
+    sectionStore.setSections([inProgress])
+    sectionStore.setItems(workspaces.map((w, i) => item(w.id, 's-progress', `p${i}`)))
+    const ops = useWorkspaceOperations({
+      workspaces: () => workspaces,
+      activeWorkspaceId: () => null,
+      sectionStore,
+      loadSections: async () => {},
+      onSelectWorkspace: () => {},
+      onRefreshWorkspaces: () => {},
+      onDeleteWorkspace: () => {},
+      getTabsForWorkspace: (wsId: string) => {
+        const mru = opts.mru?.[wsId]
+        return mru === undefined ? [] : [{ mru } as Tab]
+      },
+    })
+    return {
+      dispose,
+      ids: () => ops.getWorkspacesForGroup('s-progress', ops.buildSectionGroups([inProgress])).map(w => w.id),
+    }
+  })
+}
+
+describe('useWorkspaceOperations getWorkspacesForGroup', () => {
+  beforeEach(() => {
+    localStorageClearForTests()
+    setStorageAccount('u-1')
+    resetWorkspaceListStateForTests()
+  })
+
+  it('returns the lexorank order under the default manual sort', () => {
+    const v = viewOrder(['Charlie', 'alpha', 'Bravo'])
+    expect(v.ids()).toEqual(['w0', 'w1', 'w2'])
+    v.dispose()
+  })
+
+  it('applies the global sort', () => {
+    const v = viewOrder(['Charlie', 'alpha', 'Bravo'])
+    setWorkspaceSortOrder({ key: 'name', direction: 'asc' })
+    expect(v.ids()).toEqual(['w1', 'w2', 'w0'])
+    v.dispose()
+  })
+
+  it('ranks by the most recently activated TAB under the recent sort', () => {
+    const v = viewOrder(['a', 'b', 'c'], { mru: { w0: 1, w1: 9, w2: 5 } })
+    setWorkspaceSortOrder({ key: 'recent', direction: 'desc' })
+    expect(v.ids()).toEqual(['w1', 'w2', 'w0'])
+    v.dispose()
+  })
+
+  it('applies the section filter', () => {
+    const v = viewOrder(['gentle-amber-fox', 'Bold Blue Bear', 'amber tooling'])
+    toggleSectionFilter('s-progress')
+    setSectionFilterQuery('s-progress', 'amber')
+    expect(v.ids()).toEqual(['w0', 'w2'])
+    v.dispose()
+  })
+
+  it('ignores a filter aimed at a DIFFERENT section', () => {
+    const v = viewOrder(['gentle-amber-fox', 'Bold Blue Bear'])
+    toggleSectionFilter('s-other')
+    setSectionFilterQuery('s-other', 'amber')
+    expect(v.ids()).toEqual(['w0', 'w1'])
+    v.dispose()
+  })
+
+  it('filters BEFORE it sorts, so the sort sees the narrowed list', () => {
+    const v = viewOrder(['zeta amber', 'Bold Blue Bear', 'alpha amber'])
+    toggleSectionFilter('s-progress')
+    setSectionFilterQuery('s-progress', 'amber')
+    setWorkspaceSortOrder({ key: 'name', direction: 'asc' })
+    expect(v.ids()).toEqual(['w2', 'w0'])
+    v.dispose()
+  })
+
+  it('answers empty for a section that does not exist', () => {
+    const v = viewOrder(['a'])
+    expect(v.ids()).toEqual(['w0'])
+    v.dispose()
   })
 })

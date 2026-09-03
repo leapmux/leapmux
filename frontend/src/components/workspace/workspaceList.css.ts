@@ -193,6 +193,33 @@ globalStyle(`${item}${itemDropTarget}:hover > ${sidebarActions} ${menuTrigger}`,
   opacity: 0,
 })
 
+/**
+ * The per-section filter box, shown by the header menu's "Filter workspaces"
+ * toggle.
+ *
+ * It sits in the section BODY rather than inside the menu popover, which keeps
+ * the menu a plain `menu` (a `div` popover would force a per-item close) and
+ * leaves the box usable while the menu is closed.
+ */
+export const filterRow = style({
+  padding: 'var(--space-1) var(--space-2)',
+})
+
+export const filterInput = style({
+  'width': '100%',
+  'fontSize': 'var(--text-7)',
+  'color': 'var(--foreground)',
+  'backgroundColor': 'var(--background)',
+  'border': '1px solid var(--border)',
+  'borderRadius': 'var(--radius-small)',
+  'padding': '0 var(--space-2)',
+  'outline': 'none',
+  'minWidth': 0,
+  ':focus-visible': {
+    boxShadow: '0 0 0 2px var(--ring)',
+  },
+})
+
 export const emptySection = style({
   padding: 'var(--space-2) var(--space-4)',
   paddingLeft: 'var(--space-4)',

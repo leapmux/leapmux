@@ -109,10 +109,10 @@ export const CustomTitlebar: Component<CustomTitlebarProps> = (props) => {
             <DropdownMenuItemContent label={maximizeLabel()} />
           </button>
           <button role="menuitem" onClick={() => openWebInspector()}>
-            <DropdownMenuItemContent label="Open Web Inspector" shortcut={getShortcutHintsText('app.openWebInspector')} />
+            <DropdownMenuItemContent label="Open Web Inspector" detail={getShortcutHintsText('app.openWebInspector')} />
           </button>
           <button role="menuitem" onClick={() => quitApp()}>
-            <DropdownMenuItemContent label="Quit" shortcut={getShortcutHintsText('app.quit')} />
+            <DropdownMenuItemContent label="Quit" detail={getShortcutHintsText('app.quit')} />
           </button>
         </Show>
       </DropdownMenu>

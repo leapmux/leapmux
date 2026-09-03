@@ -3,7 +3,9 @@ import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
-import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
+import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
+import type { Section, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -22,17 +24,20 @@ import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
 import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
+import { setWorkspacesExpanded } from '~/components/workspace/expandedWorkspaces'
+import { revealWorkspaceRow } from '~/components/workspace/revealWorkspaceRow'
 import { emptySection as emptySectionStyle } from '~/components/workspace/workspaceList.css'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { flavorFromOs } from '~/lib/paths'
-import { shortcutHint } from '~/lib/shortcuts/display'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
+import { isLocalWorker } from '~/lib/workerLocality'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { todoProgress } from '~/stores/chatTodos'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
+import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
 
 /**
  * All dependencies needed to build a `SidebarSectionDef` for any section type.
@@ -46,8 +51,17 @@ export interface SectionDefContext {
   wsOps: WorkspaceOperations
   getWorkspacesForGroup: (sectionId: string) => Workspace[]
   activeWorkspaceId: string | null
-  onNewWorkspace: (sectionId: string | null) => void
+  /** Open the New workspace dialog, into `sectionId` and from `startPoint`. */
+  onNewWorkspace: (sectionId: string | null, startPoint: WorkspaceStartPoint) => void
   onSelectWorkspace: (id: string) => void
+  /** Expand a collapsed section, so a revealed row has a box to scroll into. */
+  expandSection?: (sectionId: string) => void
+  /** Open the New section dialog for `sidebar`. */
+  onNewSection: (sidebar: Sidebar) => void
+  onRenameSection: (section: Section) => void
+  onDeleteSection: (section: Section) => void
+  /** Open a new agent / terminal at one of a workspace's checkouts. */
+  workspaceStartActions?: WorkspaceStartActions
   view?: TabView
   selection?: TabSelectionStore
   onTabClick?: (type: number, id: string) => void
@@ -93,6 +107,12 @@ export interface SectionDefContext {
 
   // Workers section
   workers: Worker[]
+  /**
+   * Whether the desktop shell runs its own bundled sidecar. Half of the
+   * "is this worker local" test; the other half is the worker's own
+   * `autoRegistered` flag. See `~/lib/workerLocality`.
+   */
+  localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
@@ -115,6 +135,9 @@ export function buildSectionDef(
   const sectionId = section.id
 
   if (isWorkspaceSection(sectionType)) {
+    // The workspaces this section holds, for every item that acts on the whole
+    // section: the repository list, Collapse/Expand all, and Reveal.
+    const workspaceIds = () => ctx.getWorkspacesForGroup(sectionId).map(w => w.id)
     return {
       id: sectionId,
       title: section.name,
@@ -123,30 +146,46 @@ export function buildSectionDef(
       defaultOpen: sectionType !== SectionType.WORKSPACES_ARCHIVED,
       collapsible: true,
       draggable: true,
-      // `undefined`, never `() => undefined`: the `<Show>` in
-      // CollapsibleSidebar tests the FACTORY, so a factory that returns
-      // nothing is still truthy and renders an empty actions box.
-      headerActions: ctx.wsOps.canAddToSection(section)
-        ? () => (
-            <IconButton
-              icon={Plus}
-              iconSize="sm"
-              size="md"
-              title={shortcutHint(`New workspace in ${section.name}`, 'app.newWorkspaceDialog')}
-              data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
-              onClick={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-                ctx.onNewWorkspace(sectionId)
-              }}
-            />
-          )
-        : undefined,
+      // A MENU, not the `+` it replaces. Archived gains a header action it
+      // never had: `canAddToSection` refuses it (a workspace created there
+      // would be born read-only), so the old `+` was absent and the bulk
+      // archive operations and the section CRUD had nowhere to live.
+      headerActions: () => (
+        <WorkspaceSectionMenu
+          section={section}
+          canCreate={ctx.wsOps.canAddToSection(section)}
+          getTabs={() => workspaceIds().flatMap(id => ctx.view?.forWorkspace(id) ?? [])}
+          getWorkspaceIds={workspaceIds}
+          repoGitStore={ctx.gitStatusStore}
+          workerInfoFn={ctx.workerInfoFn}
+          isWorkerOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
+          hasActiveWorkspace={() => {
+            const active = ctx.activeWorkspaceId
+            return active !== null && workspaceIds().includes(active)
+          }}
+          onRevealActiveWorkspace={() => {
+            const active = ctx.activeWorkspaceId
+            if (!active)
+              return
+            ctx.expandSection?.(sectionId)
+            revealWorkspaceRow(active)
+          }}
+          onCollapseAll={() => setWorkspacesExpanded(workspaceIds(), false)}
+          onExpandAll={() => setWorkspacesExpanded(workspaceIds(), true)}
+          onNewWorkspace={startPoint => ctx.onNewWorkspace(sectionId, startPoint)}
+          onUnarchiveAll={() => void ctx.wsOps.unarchiveAll()}
+          onEmptyArchive={() => void ctx.wsOps.emptyArchive()}
+          onNewSection={() => ctx.onNewSection(section.sidebar)}
+          onRenameSection={() => ctx.onRenameSection(section)}
+          onDeleteSection={() => ctx.onDeleteSection(section)}
+        />
+      ),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       content: () => (
         <WorkspaceSectionContent
           workspaces={ctx.getWorkspacesForGroup(sectionId)}
           sectionId={sectionId}
+          sectionName={section.name}
           activeWorkspaceId={ctx.activeWorkspaceId}
           sections={ctx.sectionStore.state.sections}
           onSelect={ctx.onSelectWorkspace}
@@ -169,6 +208,11 @@ export function buildSectionDef(
           tabItemOps={ctx.tabItemOps}
           workerInfoFn={ctx.workerInfoFn}
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
+          // Derived here, beside the liveness predicate and exactly the same
+          // way: one line off `ctx.workers` and one flag, rather than a prop
+          // threaded down the whole sidebar chain.
+          isLocalWorkerFn={workerId => isLocalWorker(ctx.workers, workerId, ctx.localSolo)}
+          startActions={ctx.workspaceStartActions}
           branchActions={ctx.branchActions}
           repoGitStore={ctx.gitStatusStore}
         />

@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { BranchRefActions } from './branchActions'
+import type { WorkspaceStartActions } from './workspaceStartActions'
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { TabType, Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -15,13 +16,20 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { attachDragActivators } from '~/lib/dragActivators'
-import { createGuardedSortableRow } from '~/lib/dragRow'
+import { createGuardedDraggableRow, createGuardedSortableRow } from '~/lib/dragRow'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
 import { isWorkspaceExpanded, setWorkspacesExpanded, toggleWorkspaceExpanded } from './expandedWorkspaces'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
+import {
+  canReorderWithinSection,
+  isSectionFilterShown,
+  sectionFilterQuery,
+  setSectionFilterQuery,
+  toggleSectionFilter,
+} from './workspaceListState'
 import { sumDiffStatsFromTabs, WorkspaceTabTree } from './WorkspaceTabTree'
 
 /** solid-dnd directives are callable but typed as objects; this wraps the unsafe cast. */
@@ -32,6 +40,8 @@ function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
 export interface WorkspaceSectionContentProps {
   workspaces: Workspace[]
   sectionId: string
+  /** The section's display name, for each row menu's info block. */
+  sectionName: string
   activeWorkspaceId: string | null
   sections: Section[]
   onSelect: (id: string) => void
@@ -71,6 +81,14 @@ export interface WorkspaceSectionContentProps {
    */
   workerInfoFn?: (id: string) => WorkerInfo | null
   isWorkerKnownOnline?: (workerId: string) => boolean
+  /**
+   * Whether a worker runs on THIS machine, so the row menu may offer the two
+   * actions that open the LOCAL Finder and the LOCAL editor. See
+   * `~/lib/workerLocality`.
+   */
+  isLocalWorkerFn?: (workerId: string) => boolean
+  /** Open a new agent / terminal at one of a workspace's checkouts. */
+  startActions?: WorkspaceStartActions
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
   branchActions?: BranchRefActions
   repoGitStore: ReturnType<typeof createRepoGitStore>
@@ -133,8 +151,30 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     return map
   })
 
+  /**
+   * Whether this section's rows may be dragged to a new position within it.
+   *
+   * False while a non-manual sort or a live filter makes the view order differ
+   * from the model order -- the state in which "insert here" has no meaning.
+   * See `canReorderWithin`.
+   */
+  const canReorder = () => canReorderWithinSection(props.sectionId)
+
+  /**
+   * The `<For>` key carries the reorder MODE, not the workspace id alone.
+   *
+   * A solid-dnd primitive cannot be created conditionally on a later re-render,
+   * and the two modes need DIFFERENT primitives: a sortable registers a
+   * between-row drop target, and a plain draggable registers none. Putting the
+   * mode in the key remounts the row when it flips, which happens only when the
+   * user picks a sort or types a filter -- exactly when the list is being
+   * rebuilt anyway.
+   */
+  const rowKeys = () => workspaceIds().map(id => `${canReorder() ? 's' : 'd'}\u0000${id}`)
+  const idOfRowKey = (rowKey: string) => rowKey.slice(rowKey.indexOf('\u0000') + 1)
+
   return (
-    <SortableProvider ids={props.workspaces.map(w => `ws-${w.id}`)}>
+    <SortableProvider ids={canReorder() ? props.workspaces.map(w => `ws-${w.id}`) : []}>
       <div
         ref={droppable}
         class={styles.sectionItems}
@@ -142,17 +182,61 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
           [styles.sectionHeaderDropTarget]: droppable.isActiveDroppable,
         }}
       >
+        {/* In the section BODY, not in the header menu's popover: that keeps
+            the menu a plain `menu` (a `div` popover would force a per-item
+            close) and leaves the box usable while the menu is shut. */}
+        <Show when={isSectionFilterShown(props.sectionId)}>
+          <div class={styles.filterRow}>
+            <input
+              type="text"
+              class={styles.filterInput}
+              aria-label={`Filter ${props.sectionName}`}
+              data-testid={`workspace-filter-${props.sectionId}`}
+              placeholder="Filter workspaces"
+              value={sectionFilterQuery(props.sectionId) ?? ''}
+              onInput={e => setSectionFilterQuery(props.sectionId, e.currentTarget.value)}
+              onKeyDown={(e) => {
+                // Escape closes the box rather than reaching the sidebar, which
+                // would leave a narrowed list with no visible reason for it.
+                if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  toggleSectionFilter(props.sectionId)
+                }
+              }}
+              ref={(el) => {
+                requestAnimationFrame(() => el.focus())
+              }}
+            />
+          </div>
+        </Show>
         <Show
           when={props.workspaces.length > 0}
-          fallback={<div class={styles.emptySection}>No workspaces</div>}
+          fallback={(
+            <div class={styles.emptySection}>
+              {isSectionFilterShown(props.sectionId) && (sectionFilterQuery(props.sectionId) ?? '') !== ''
+                ? 'No matching workspaces'
+                : 'No workspaces'}
+            </div>
+          )}
         >
-          <For each={workspaceIds()}>
-            {(id) => {
+          <For each={rowKeys()}>
+            {(rowKey) => {
+              const id = idOfRowKey(rowKey)
               const workspace = () => workspaceById().get(id)!
-              const dragRow = createGuardedSortableRow(`ws-${id}`, {
-                sectionId: props.sectionId,
-                workspaceId: id,
-              })
+
+              // Read ONCE per row, deliberately: a solid-dnd primitive cannot
+              // be created conditionally on a later re-render. The `<For>` key
+              // above carries the mode, so a flip remounts the row and this
+              // decision is made again with it.
+              const dragRow = canReorderWithinSection(props.sectionId)
+                ? createGuardedSortableRow(`ws-${id}`, {
+                    sectionId: props.sectionId,
+                    workspaceId: id,
+                  })
+                : createGuardedDraggableRow(`ws-${id}`, {
+                    sectionId: props.sectionId,
+                    workspaceId: id,
+                  })
               const wsDroppable = createDroppable(`${WORKSPACE_DROP_PREFIX}${id}`)
               const isActive = () => id === props.activeWorkspaceId
               const isRenaming = () => props.renamingWorkspaceId === id
@@ -265,9 +349,18 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         <Show when={!isRenaming()}>
                           <WorkspaceContextMenu
                             contextMenuFor={rowEl}
+                            workspaceId={id}
+                            workspaceTitle={title()}
+                            sectionName={props.sectionName}
                             isArchived={props.isArchived(id)}
                             sections={props.sections}
                             currentSectionId={props.sectionId}
+                            getTabs={() => tabsFor(id)}
+                            repoGitStore={props.repoGitStore}
+                            workerInfoFn={props.workerInfoFn}
+                            isWorkerOnline={props.isWorkerKnownOnline}
+                            isLocalWorkerFn={props.isLocalWorkerFn}
+                            startActions={props.startActions}
                             onRename={() => props.onRename(workspace())}
                             onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
                             onArchive={() => props.onArchive(id)}

@@ -111,7 +111,10 @@ test.describe('Branch context menu', () => {
     const wsRow = workspaceRow(page, workspaceId)
     await wsRow.hover()
     await wsRow.locator('button').first().click()
-    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    // `exact`: this is the WORKSPACE row's menu, which now also offers
+    // "New agent in archived-branch..." -- and Playwright matches an
+    // accessible name by substring unless told otherwise.
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
     await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 

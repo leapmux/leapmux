@@ -30,10 +30,11 @@ test.describe('creation dialog on a phone', () => {
   test.use({ viewport: { width: 390, height: 667 } })
 
   test('body scrolls as one container; header and footer stay pinned; the scrollbar sits at the dialog edge', async ({ page, authenticatedWorkspace }) => {
-    // The sidebar's new-workspace button lives behind the workspaces drawer on
-    // a phone; open the drawer first.
+    // The section header menu that holds "New workspace..." lives behind the
+    // workspaces drawer on a phone; open the drawer first.
     await page.getByRole('button', { name: 'Toggle workspaces' }).click()
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
+    await page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]').click()
+    await page.locator('[data-testid="sidebar-new-workspace"]:visible').click()
     await expect(page.getByRole('heading', { name: 'New workspace', level: 2 })).toBeVisible()
 
     // The dialog's directory tree makes the body genuinely taller than the

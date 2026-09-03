@@ -102,7 +102,7 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
           >
             <DropdownMenuItemContent
               label={pop().label}
-              shortcut={getShortcutHintsText('app.toggleFloatingTab')}
+              detail={getShortcutHintsText('app.toggleFloatingTab')}
             />
           </button>
         )}
@@ -117,7 +117,7 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
               <Show when={props.withIcons}><Icon icon={action.icon} size="sm" /></Show>
               <DropdownMenuItemContent
                 label={action.label}
-                shortcut={getShortcutHintsText(action.shortcutId)}
+                detail={getShortcutHintsText(action.shortcutId)}
               />
             </button>
           )}

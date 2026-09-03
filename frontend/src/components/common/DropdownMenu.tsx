@@ -245,7 +245,21 @@ export interface DropdownMenuProps {
 
 export interface DropdownMenuItemContentProps {
   label: JSX.Element
-  shortcut?: string
+  /**
+   * A short note at the RIGHT end of the row, which the row keeps whole while
+   * the label beside it clips.
+   *
+   * Named for the SLOT, not for one of its contents -- the same reason the
+   * `menuItemDetail` class it renders into carries that name. It holds a
+   * keyboard shortcut on the titlebar items and the remembered git mode on the
+   * section menu's repository rows, and a prop called `shortcut` on the second
+   * of those would be a lie.
+   *
+   * A plain string, unlike `DropdownMenuCheckableItem.detail`, which is an
+   * accessor because its callers build a LIVE element (a ticking clock) and a
+   * presence test plus a draw would build two. Nothing here needs that.
+   */
+  detail?: string
 }
 
 export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
@@ -257,8 +271,8 @@ export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
           component -- that changes a shared prop contract, so it is the
           author's decision, not a mechanical swap. */}
       <span class={clippedText}>{props.label}</span>
-      <Show when={props.shortcut}>
-        {shortcut => <span class={menuItemDetail}>{shortcut()}</span>}
+      <Show when={props.detail}>
+        {detail => <span class={menuItemDetail}>{detail()}</span>}
       </Show>
     </span>
   )

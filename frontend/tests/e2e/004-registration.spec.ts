@@ -1,7 +1,6 @@
 import { expect, test } from './fixtures'
 import { loginViaUI } from './helpers/ui'
-
-const NEW_WORKSPACE_RE = /New workspace/
+import { openNewWorkspaceDialog } from './helpers/worktree'
 
 test.describe('Worker Registration', () => {
   // In dev mode, the worker is auto-registered with name "Local".
@@ -12,9 +11,10 @@ test.describe('Worker Registration', () => {
     // in the new workspace dialog. The initial onMount fetch should find it.
     await loginViaUI(page)
 
-    // Open the new workspace dialog
-    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    // Through the shared helper: the section header's `+` is a MENU now, so
+    // "New workspace..." is an item inside it and the accessible name this
+    // used to click no longer exists on any button.
+    await openNewWorkspaceDialog(page)
 
     // The initial fetch on mount should find the worker (already online).
     // Verify the worker name appears in the dropdown (dev mode uses "Local")
@@ -24,9 +24,10 @@ test.describe('Worker Registration', () => {
   test('should refresh worker list when clicking refresh button', async ({ page }) => {
     await loginViaUI(page)
 
-    // Open the new workspace dialog
-    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    // Through the shared helper: the section header's `+` is a MENU now, so
+    // "New workspace..." is an item inside it and the accessible name this
+    // used to click no longer exists on any button.
+    await openNewWorkspaceDialog(page)
 
     // Wait for initial load to find the worker
     await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
@@ -41,9 +42,10 @@ test.describe('Worker Registration', () => {
   test('should not spin refresh button when selecting a directory', async ({ page }) => {
     await loginViaUI(page)
 
-    // Open the new workspace dialog
-    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    // Through the shared helper: the section header's `+` is a MENU now, so
+    // "New workspace..." is an item inside it and the accessible name this
+    // used to click no longer exists on any button.
+    await openNewWorkspaceDialog(page)
 
     // Wait for initial load to find the worker and directory tree
     await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
@@ -66,9 +68,10 @@ test.describe('Worker Registration', () => {
   test('should show updated worker list when dialog is re-opened', async ({ page }) => {
     await loginViaUI(page)
 
-    // Open the new workspace dialog
-    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    // Through the shared helper: the section header's `+` is a MENU now, so
+    // "New workspace..." is an item inside it and the accessible name this
+    // used to click no longer exists on any button.
+    await openNewWorkspaceDialog(page)
 
     // Wait for initial load
     await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')
@@ -78,8 +81,7 @@ test.describe('Worker Registration', () => {
     await expect(page.getByRole('heading', { name: 'New Workspace' })).not.toBeVisible()
 
     // Re-open the dialog
-    await page.getByLabel(NEW_WORKSPACE_RE).first().click()
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+    await openNewWorkspaceDialog(page)
 
     // The re-mount fetch should find the worker
     await expect(page.getByTestId('worker-select-menu-trigger')).toContainText('Local')

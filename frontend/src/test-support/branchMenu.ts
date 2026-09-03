@@ -1,5 +1,6 @@
 import type { Mock } from 'vitest'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
+import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
 import { vi } from 'vitest'
 
 /** A {@link BranchMenuActions} bundle whose every action is a spy. */
@@ -39,5 +40,23 @@ export function stubBranchRefActions(): StubBranchRefActions {
     onNewAgentAdvanced: vi.fn(),
     onNewTerminalWithShell: vi.fn(),
     onNewTerminalAdvanced: vi.fn(),
+  }
+}
+
+/** A {@link WorkspaceStartActions} bundle whose every action is a spy. */
+export type StubWorkspaceStartActions = { [K in keyof WorkspaceStartActions]: Mock<WorkspaceStartActions[K]> }
+
+/**
+ * The workspace ROW's two tab-creation actions, as spies.
+ *
+ * Shared for the same reason as the branch bundles above: a third action added
+ * to {@link WorkspaceStartActions} makes every caller fail to compile in ONE
+ * place, instead of silently leaving the new item unwired in each suite that
+ * hand-rolled its own pair.
+ */
+export function stubWorkspaceStartActions(): StubWorkspaceStartActions {
+  return {
+    onNewAgentAt: vi.fn(),
+    onNewTerminalAt: vi.fn(),
   }
 }
