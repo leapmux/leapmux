@@ -10,8 +10,8 @@ import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
  * -- across EVERY workspace, not just the one on screen.
  *
  * The worker emits a bootstrap reply (one TabPayloadRegistered per
- * `worker_file_tabs` row the caller owns) before going live; subsequent
- * FileTabPath* and TabRenamed events populate the local caches.
+ * `worker_tab_payloads` row the caller owns) before going live; subsequent
+ * TabPayload* and TabRenamed events populate the local caches.
  *
  * ONE STREAM PER WORKER, not per (workspace, worker) pair. The worker stores
  * no workspace id, so there is nothing to key a narrower subscription on --

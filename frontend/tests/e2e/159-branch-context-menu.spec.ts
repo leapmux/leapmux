@@ -202,6 +202,41 @@ test.describe('Branch context menu', () => {
     await expect(branchGroupRow(page)).toContainText('newtab-branch')
   })
 
+  // The glyph row's counterpart to the shell-item test above, and the same
+  // scope: it pins the WIRING, not the directory. A provider glyph names the
+  // branch worker's own provider list, which is the half a mount-time fetch
+  // would have taken from the active tab's worker instead.
+  test('opens an agent from the menu\'s provider glyph', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-glyph-repo')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Glyph WS',
+      repoDir,
+      'glyph-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const before = await agentTabs.count()
+    await openBranchMenu(page, branchGroupRow(page))
+    // The first provider the branch's Worker reports. Which one it is depends
+    // on what the test machine has installed, so the test names none.
+    await page.locator('menu[popover]:visible [data-testid^="menu-new-agent-"]').first().click()
+
+    await expect(agentTabs).toHaveCount(before + 1)
+    // Under the branch row it was opened from, not in the ungrouped bucket.
+    await expect(branchGroupRow(page)).toContainText('glyph-branch')
+  })
+
   test('opens the New agent dialog from the menu', async ({
     page,
     leapmuxServer,

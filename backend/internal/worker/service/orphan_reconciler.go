@@ -507,7 +507,9 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 	return true
 }
 
-// reconcileTabPayloads reaps local file-tab rows the hub no longer lists.
+// reconcileTabPayloads reaps local tab-payload rows the hub no longer lists.
+// Both payload-backed kinds -- FILE and IMAGE -- are in scope: the row states
+// its own tab_type, so this walk never enumerates the kinds.
 //
 // owner is the single owner the hub response is authoritative about -- exactly
 // one, the calling worker's registrant, because the hub's query binds user_id

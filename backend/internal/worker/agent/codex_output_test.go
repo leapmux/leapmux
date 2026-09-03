@@ -1143,6 +1143,65 @@ func TestHandleCodexOutput_DynamicToolCallCompletedDoesNotBroadcastStreamEnd(t *
 	require.Equal(t, 0, sink.StreamEndCount())
 }
 
+// Both image items are ordinary tool items and take the ordinary tool path.
+// They used to fall to handleItemCompleted's default arm instead: the completed
+// row persisted with a span id that nothing had opened and nothing then closed,
+// so the transcript drew a rail that stayed open for the rest of the turn.
+func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		itemType  string
+		id        string
+		started   string
+		completed string
+	}{
+		{
+			itemType:  "imageGeneration",
+			id:        "img-1",
+			started:   `{"method":"item/started","params":{"threadId":"t1","item":{"type":"imageGeneration","id":"img-1","status":"inProgress","prompt":"a cat"}}}`,
+			completed: `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"imageGeneration","id":"img-1","status":"completed","result":"aVZ","revisedPrompt":"a cat, photoreal"}}}`,
+		},
+		{
+			itemType:  "imageView",
+			id:        "view-1",
+			started:   `{"method":"item/started","params":{"threadId":"t1","item":{"type":"imageView","id":"view-1","status":"inProgress","path":"/tmp/a.png"}}}`,
+			completed: `{"method":"item/completed","params":{"threadId":"t1","item":{"type":"imageView","id":"view-1","status":"completed","path":"/tmp/a.png"}}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.itemType, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			agent := newCodexAgentWithSink(sink)
+
+			handleCodexOutput(agent, parseLine([]byte(tc.started)))
+			handleCodexOutput(agent, parseLine([]byte(tc.completed)))
+
+			open := sink.OpenSpans()
+			require.Len(t, open, 1, "the started row opens one span")
+			assert.Equal(t, tc.id, open[0].SpanID)
+			assert.Equal(t, tc.itemType, sink.GetSpanType(tc.id))
+			assert.Equal(t, []string{tc.id}, sink.ClosedSpans(), "and the completed row closes it")
+
+			messages := sink.Messages()
+			require.Len(t, messages, 2)
+			assert.False(t, messages[0].Closing)
+			assert.True(t, messages[1].Closing)
+			// The tool_use row persists BEFORE its own span opens, and the
+			// result row WHILE it is open -- that is what draws the connector.
+			assert.Empty(t, messages[0].SpansOpenAtPersist)
+			require.Len(t, messages[1].SpansOpenAtPersist, 1)
+			assert.Equal(t, tc.id, messages[1].SpansOpenAtPersist[0].SpanID)
+			// Neither item streams deltas keyed by its item id, so a stream-end
+			// would end a stream that never started.
+			assert.Equal(t, 0, sink.StreamEndCount())
+		})
+	}
+}
+
 func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	t.Parallel()
 

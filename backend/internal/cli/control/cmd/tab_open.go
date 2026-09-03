@@ -220,7 +220,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 		// same "the file tab inherits the context it was opened from" the UI
 		// path sends. Run from outside a LeapMux tab it is empty, and the
 		// worker falls back to the file's own directory.
-		if err := registerFileTabPath(cc.ctx, cc.c, workerID, tabID, filePath, workingDir); err != nil {
+		if err := registerFileTabPayload(cc.ctx, cc.c, workerID, tabID, filePath, workingDir); err != nil {
 			return control.EmitErrorWith("worker_register_failed", err)
 		}
 		ops := []*leapmuxv1.CrdtOp{
@@ -261,11 +261,11 @@ func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position str
 	}
 }
 
-// registerFileTabPath invokes the worker's `RegisterTabPayload`
+// registerFileTabPayload invokes the worker's `RegisterTabPayload`
 // inner-RPC over E2EE so the file path stays off the hub. The
 // returned response is empty on success; any worker-side error is
 // surfaced as a wrapped codedRPCError.
-func registerFileTabPath(ctx context.Context, c *control.Client, workerID, tabID, filePath, workingDir string) error {
+func registerFileTabPayload(ctx context.Context, c *control.Client, workerID, tabID, filePath, workingDir string) error {
 	req := &leapmuxv1.RegisterTabPayloadRequest{
 		TabId: tabID,
 		Payload: &leapmuxv1.TabPayload{

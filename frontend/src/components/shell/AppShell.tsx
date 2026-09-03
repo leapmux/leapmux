@@ -234,10 +234,6 @@ export const AppShell: Component = () => {
   // Drives sound playback, git file status refresh, and directory tree refresh.
   const [turnEndTrigger, setTurnEndTrigger] = createSignal(0)
 
-  // Cache of file-tab paths fed by WatchWorkerPrivateEvents
-  // bootstrap replay + GetFileTabPath fallback. Components consult
-  // this for FILE-tab titles instead of asking the hub.
-
   // No reconciler. `tabView` joins the projection with `tabMetadata` on read, so
   // there is no second copy of tile_id / position / worker_id to drift, nothing
   // to drop or re-add on a remote change, and no active-workspace filter — every

@@ -171,10 +171,10 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   // The dir the group shares, taken from any tab in it. `workingDir` is
   // client-side metadata on the joined tab, so this needs no worker row -- which
   // is what retires the old anchor-tab dance: an anchor's worker-side row could
-  // be absent (a FILE tab's lives in `worker_file_tabs`, which a peer's close
-  // hard-deletes) and the push failed with "file tab path not found" even though
-  // a healthy sibling sat next to it. Every tab in a branch group shares the
-  // dir by construction, so there is nothing to prefer between them.
+  // be absent (a FILE tab's lives in `worker_tab_payloads`, which a peer's close
+  // hard-deletes) and the push failed with "tab payload not found" even though a
+  // healthy sibling sat next to it. Every tab in a branch group shares the dir
+  // by construction, so there is nothing to prefer between them.
   // Pin once — same one-shot rationale as tabCounts.
   // eslint-disable-next-line solid/reactivity
   const pushWorkingDir = props.tabs.find(t => t.workingDir)?.workingDir ?? ''

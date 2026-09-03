@@ -93,8 +93,8 @@ enum Scope {
   //
   // There is no file:write scope, because the Worker registers no file-write
   // handler. An unused scope on a consent screen is a lie; a future write
-  // handler adds its own. The one destructive leg the file-tab verbs can
-  // reach -- RevokeFileTabPath with WORKTREE_ACTION_REMOVE, which runs
+  // handler adds its own. The one destructive leg the tab-payload verbs can
+  // reach -- RevokeTabPayload with WORKTREE_ACTION_REMOVE, which runs
   // `git worktree remove` -- is gated under SCOPE_GIT_WRITE at the action,
   // so file:read alone stays read-only.
   SCOPE_FILE_READ = 13;

@@ -60,11 +60,12 @@ export function WorkingTreeChip(props: WorkingTreeChipProps): JSX.Element {
           disabledReason={props.disabledReason}
           data-testid="composer-branch-popover"
           trigger={triggerProps => (
-            // The branch name, not an action: the menu holds two, and the label
-            // is ellipsized, so this is where the full name shows -- alongside
-            // the kind of checkout and its directory, which the chip has no
-            // room for. When the actions are unusable it carries the reason
-            // instead, which otherwise only reaches a user who opens the menu.
+            // The branch name, not an action: the menu holds every action, and
+            // the label is ellipsized, so this is where the full name shows --
+            // alongside the kind of checkout and its directory, which the chip
+            // has no room for. When the actions are unusable it carries the
+            // reason instead, which otherwise only reaches a user who opens the
+            // menu.
             <WorkingTreeTooltip info={props.workingTree} disabledReason={props.disabledReason}>
               <button
                 class={styles.axisChip}

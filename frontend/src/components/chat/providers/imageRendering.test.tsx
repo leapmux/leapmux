@@ -251,6 +251,33 @@ describe('provider toolResultImages', () => {
     expect(images).toEqual([{ data: PNG, mimeType: 'image/png', dimensions: { width: 10, height: 20 } }])
   })
 
+  // The structured payload describes ONE image, so it can only stand in for the
+  // blocks when the blocks are that same one. Letting it win here would drop the
+  // second picture from the row AND shift every index an image tab addresses --
+  // the invariant the whole reference scheme rests on.
+  it('claude keeps every block when the result carries more images than the structured one', () => {
+    const images = imagesOf(AgentProvider.CLAUDE_CODE, claudeToolResult(
+      [
+        { type: 'image', data: 'first', mimeType: 'image/png' },
+        { type: 'image', data: 'second', mimeType: 'image/png' },
+      ],
+      { type: 'image', file: { base64: PNG, type: 'image/png', dimensions: { displayWidth: 10, displayHeight: 20 } } },
+    ), 'mcp__x__y')
+    expect(images.map(i => i.data)).toEqual(['first', 'second'])
+    expect(images.every(i => i.dimensions === undefined)).toBe(true)
+  })
+
+  // The zero-block case takes the same arm as the one-block case, so the
+  // structured payload is still the answer: a Read on an image that sent no
+  // content block at all is exactly what it describes.
+  it('claude falls back to the structured payload when the blocks carry no image', () => {
+    const images = imagesOf(AgentProvider.CLAUDE_CODE, claudeToolResult(
+      [{ type: 'text', text: 'no image here' }],
+      { type: 'image', file: { base64: PNG, type: 'image/png' } },
+    ), 'Read')
+    expect(images).toEqual([{ data: PNG, mimeType: 'image/png' }])
+  })
+
   it('claude attaches the tool_use file path, which routes the click to the file itself', () => {
     const images = imagesOf(
       AgentProvider.CLAUDE_CODE,

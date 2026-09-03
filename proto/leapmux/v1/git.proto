@@ -116,10 +116,10 @@ message PushBranchRequest {
   // by probing it -- which is all it ever did with the (tab_type, tab_id) this
   // replaces, since `loadTabGitContext` used the tab ONLY to look a working dir
   // up. Naming the dir directly removes a failure the indirection created: a
-  // FILE tab's dir lives in `worker_file_tabs`, which the client writes
+  // FILE tab's dir lives in `worker_tab_payloads`, which the client writes
   // fire-and-forget and a peer's close HARD-deletes, so the anchor tab's row
   // could be gone while the tab was still on screen and the push failed with
-  // "file tab path not found" even though a healthy sibling sat next to it.
+  // "tab payload not found" even though a healthy sibling sat next to it.
   //
   // Clients send a dir they already hold locally (the tab's `workingDir`, which
   // is client-side metadata), so the push no longer depends on any worker row

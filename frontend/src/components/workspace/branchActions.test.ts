@@ -103,6 +103,39 @@ describe('focusedBranchAction gating', () => {
     expect(enabled.buildRef).toBeDefined()
   })
 
+  // The menu lists the BRANCH Worker's providers and shells on every render, so
+  // the Worker has to arrive beside `buildRef` rather than inside it. Reading it
+  // through the ref would walk every tab of the workspace once per render, for
+  // one id this call already holds.
+  it('states the Worker beside the builder, without building the ref', () => {
+    const store = createRepoGitStore()
+    const t = tab({ workerId: 'w-branch' })
+    seedRepo(store, t, { branch: 'main' })
+    let walked = 0
+    const result = focusedBranchAction({
+      tab: t,
+      workspaceId: 'ws1',
+      workspaceTabs: () => {
+        walked++
+        return [t]
+      },
+      repoGitStore: store,
+      isWorkerKnownOnline: () => true,
+    })
+    expect(result.workerId).toBe('w-branch')
+    expect(walked).toBe(0)
+  })
+
+  // The refused variant carries no Worker at all, so a menu that reads it while
+  // disabled asks no Worker for a provider list.
+  it('states no Worker when the actions are refused', () => {
+    const store = createRepoGitStore()
+    expect(action(tab({ workerId: '' }), store, () => true).workerId).toBeUndefined()
+    const offline = tab()
+    seedRepo(store, offline, { branch: 'main' })
+    expect(action(offline, store, () => false).workerId).toBeUndefined()
+  })
+
   it('does not build the ref while only gating', () => {
     const store = createRepoGitStore()
     const t = tab()

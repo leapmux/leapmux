@@ -98,7 +98,7 @@ type Service struct {
 	// cleanup registries, the sync.Maps) each carry their own
 	// synchronisation. The pointer fields are assigned once but own the
 	// mutable state behind them -- the startup registries and PrivateEvents
-	// guard theirs internally, and FileTabPaths keeps its rows in the DB.
+	// guard theirs internally, and TabPayloads keeps its rows in the DB.
 	// Do not add a plain, unsynchronised mutable field to this block. ----
 
 	// registeredBy is the user who registered this worker -- the fact
@@ -127,9 +127,9 @@ type Service struct {
 	// non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
-	// FileTabPaths persists (user_id, tab_id) -> file_path for
-	// FILE-typed tabs. Always non-nil after New.
-	// The hub never sees these rows; clients fetch paths over E2EE.
+	// TabPayloads persists (user_id, tab_id) -> TabPayload for every
+	// payload-backed tab kind (FILE, IMAGE). Always non-nil after New.
+	// The hub never sees these rows; clients fetch payloads over E2EE.
 	TabPayloads *TabPayloadStore
 
 	// Cleanup tracks in-flight close handlers so Shutdown() can wait for

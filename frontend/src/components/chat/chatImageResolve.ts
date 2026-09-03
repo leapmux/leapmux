@@ -13,8 +13,16 @@ import { pluginFor } from './providers/registry'
 // single message over E2EE, and keep the two outcomes distinguishable --
 // "resolved, nothing there" is permanent, a failed RPC is not.
 //
-// It differs in one way that matters: a preview is a nicety, so the rail caches
-// a '' and moves on. An image IS the tab, so a missing one has to say so.
+// It differs in two ways. A preview is a nicety, so the rail caches a '' and
+// moves on; an image IS the tab, so a missing one has to say so.
+//
+// And there is no cache here, deliberately. The rail resolves a preview on every
+// hover, whereas an IMAGE tab resolves once: `TileRenderer` keeps one pane per
+// image tab of the tile mounted and only hides the inactive ones, so a tab
+// switch re-fetches nothing. A module-global cache saves one RPC on a reopened
+// tab, and the cost is that it holds whole `AgentChatMessage` protos --
+// megabytes of base64 each -- for the life of the page. The rail caches a short
+// string, so it has no such cost.
 //
 // Store DATA ops are injected, so this component-layer module never imports the
 // DI'd chat store.

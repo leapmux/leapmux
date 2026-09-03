@@ -1592,14 +1592,18 @@ export function createChatStore() {
       return hit?.seq === seq ? hit : undefined
     },
     /**
-     * Fetch a SINGLE message by its per-agent seq for the scroll rail's hover preview
-     * of a mark outside the loaded window. Resolves undefined ONLY for a definitive
-     * absence -- the agent has no message at that seq (deleted/reseq'd since the mark
-     * was recorded), which the worker returns as an unset message. A transient RPC
-     * failure RETHROWS (rather than collapsing to undefined) so the caller can tell a
-     * real absence -- cache '' and stop -- from a blip it should retry, instead of
-     * poisoning the dot's preview for the rest of the session. Does NOT touch the
-     * loaded window; it's a read-only lookup for preview text only.
+     * Fetch a SINGLE message by its per-agent seq, for a reader that addresses a
+     * message outside the loaded window. Two callers: the scroll rail's hover preview
+     * of a mark, and an IMAGE tab resolving its `(agentId, seq, imageIndex)` reference
+     * back to pixels.
+     *
+     * Resolves undefined ONLY for a definitive absence -- the agent has no message at
+     * that seq (deleted/reseq'd since the reference was recorded), which the worker
+     * returns as an unset message. A transient RPC failure RETHROWS (rather than
+     * collapsing to undefined) so the caller can tell a real absence -- permanent,
+     * stop -- from a blip it should retry, instead of poisoning that reference for
+     * the rest of the session. Does NOT touch the loaded window; it is a read-only
+     * lookup.
      */
     async fetchMessageBySeq(workerId: string, agentId: string, seq: bigint): Promise<AgentChatMessage | undefined> {
       try {
@@ -1607,7 +1611,7 @@ export function createChatStore() {
         return resp.message
       }
       catch (err) {
-        console.warn('failed to fetch message for preview', { agentId, seq, err })
+        console.warn('failed to fetch message by seq', { agentId, seq, err })
         throw err
       }
     },

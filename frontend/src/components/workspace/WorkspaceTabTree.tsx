@@ -591,7 +591,7 @@ const TabLeafList: Component<{ tabs: readonly Tab[], depth: number }> = (props) 
 }
 
 // Renders one branch row inside a repo group: the header (chevron +
-// label + diff badge + Change/Delete menu) and the collapsible list of
+// label + diff badge + branch context menu) and the collapsible list of
 // tab leaves. `branch` is an Accessor so the parent's outer `<For>` can
 // iterate stable string keys and look up the live branch by key — a
 // rebuild that swaps branch identity must not unmount the row.
@@ -604,8 +604,9 @@ const BranchGroupRow: Component<{
   const actions = useBranchActions()
   const branchStats = createMemo(() => diffStatsFromRepo(props.branch()))
   const collapseKey = createMemo(() => collapseKeyForBranch(props.repoKey, props.branchKey))
-  // Both menu items need this row's Worker: Change reads the branch state from
-  // it, Delete mutates it. Undefined when they are usable -- see
+  // Every item of the menu needs this row's Worker: the change items read the
+  // branch state from it, Delete mutates it, and the new-tab items start an
+  // agent or a terminal on it. Undefined when they are usable -- see
   // BranchContextMenu.disabledReason.
   const menuDisabledReason = createMemo(() => {
     const isOnline = actions.isWorkerKnownOnline
@@ -665,20 +666,27 @@ const BranchGroupRow: Component<{
           )}
           stats={branchStats()}
         />
-        {/* Hide the Change/Delete menu on the synthetic "(no branch)"
-            group: branchName=null means the tab is on detached HEAD or
-            an unborn ref, and both actions would either fail in the
-            worker (`git branch -D <short-sha>`) or have no meaningful
-            target. Keeping the menu hidden is clearer than letting the
-            user click into an error. */}
+        {/* Hide the whole menu on the synthetic "(no branch)" group:
+            branchName=null means the row's git state names no branch at
+            all -- a repository with no commits yet, or a tab LeapMux has
+            not stamped yet -- so the branch actions have no target and the
+            new-tab items have no checkout to open in. Keeping the menu
+            hidden is clearer than letting the user click into an error.
+
+            A detached HEAD is NOT this case. The worker reports the short
+            HEAD SHA as the branch (`branchOrShortSHA`), so the row carries
+            a real label and keeps its menu. Delete then fails in the
+            worker, because the label identifies a commit. */}
         {/* gitToplevel guard, defensive. A branch group forms only when
             `repoKeyAndLabel` resolved an origin URL or a toplevel, and every
             store writer that sets an origin URL sets a toplevel in the same
             patch — so an empty `gitToplevel` should not reach this row, and a
             tab with neither lands in `ungrouped` instead. The guard stays
-            because the cost of being wrong is high: Change/Delete would send
-            `path: ""` to the worker, SanitizePath rejects empty, and the
-            dialog opens stuck on a permission-denied banner. */}
+            because the cost of being wrong is high: the branch actions
+            would send `path: ""` to the worker, SanitizePath rejects empty,
+            and the dialog opens stuck on a permission-denied banner. The
+            new-tab items resolve no working directory at all and fall back
+            to their dialog. */}
         <Show when={!sel.archived() && props.branch().branchName !== null && props.branch().gitToplevel !== '' ? actions.branchActions : undefined}>
           {branchActions => (
             <div class={sidebarActions}>

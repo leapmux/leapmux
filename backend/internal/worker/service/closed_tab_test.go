@@ -271,7 +271,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	//
 	// A hand-rolled &Service{} is the same "declared but never wired"
 	// hazard the Config embedding exists to remove, reintroduced in the
-	// harness: it omitted PrivateEvents and FileTabPaths -- both
+	// harness: it omitted PrivateEvents and TabPayloads -- both
 	// documented "always non-nil after New" -- so WatchWorkerPrivateEvents
 	// returned early on its own nil guard and any test dispatching it
 	// passed without exercising anything. Going through the constructor

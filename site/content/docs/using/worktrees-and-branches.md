@@ -71,7 +71,7 @@ Every item acts through the Worker that hosts the repository. LeapMux greys them
 Two rows carry no menu at all, because there would be nothing in it to enable. The `(no branch)` row has no branch to act on. And a row in an **archived** workspace has nothing it may do: every item either changes branch state or opens a tab, and an archived workspace takes neither. Unarchive the workspace to get the menu back.
 
 {{< callout type="info" >}}
-A detached-HEAD row keeps its menu, because its short-SHA label is a real label. The branch delete fails there — the row identifies a commit, not a branch — and only after LeapMux switches the working directory to the branch you picked. Use **Create new branch** first to get onto a real branch.
+A detached-HEAD row keeps its menu, because its short-SHA label is a real label. **Delete branch** fails there, because the label identifies a commit and not a branch. Use **Switch to branch** or **Create new branch** first, to put the working directory on a real branch.
 {{< /callout >}}
 
 ### The branch chip in the composer

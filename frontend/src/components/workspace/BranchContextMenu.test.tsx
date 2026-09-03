@@ -157,6 +157,22 @@ describe('branchContextMenu', () => {
       expect(screen.getByText('/bin/bash')).toBeInTheDocument()
     })
 
+    // The two halves of this menu do different kinds of thing -- one changes
+    // branch state, the other opens a tab -- so a rule divides them. Asserted
+    // on the ORDER rather than on a count of `<hr>`, because the block below
+    // carries a rule of its own between Agents and Terminals.
+    it('divides the branch actions from the new-tab sections with one rule', async () => {
+      const { trigger } = renderMenu()
+      await openMenu(trigger)
+
+      const header = screen.getByText('Agents')
+      const rows = Array.from(header.parentElement!.children)
+      const deleteIdx = rows.findIndex(el => el.contains(menuItem('Delete branch...')))
+      const headerIdx = rows.indexOf(header)
+      expect(deleteIdx).toBeGreaterThanOrEqual(0)
+      expect(rows.slice(deleteIdx + 1, headerIdx).map(el => el.tagName)).toEqual(['HR'])
+    })
+
     it('opens the clicked provider immediately', async () => {
       const { actions, trigger } = renderMenu()
       await openMenu(trigger)
