@@ -106,7 +106,7 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
         // socket is not ours to unlink -- /tmp is sticky -- so binding here would just
         // fail. Take a private endpoint.
         Err(err) => {
-            eprintln!("leapmux: cannot use dev sidecar endpoint {endpoint}: {err}");
+            crate::shell_log!("cannot use dev sidecar endpoint {endpoint}: {err}");
             endpoint = private_endpoint;
         }
     }
@@ -187,6 +187,10 @@ fn start_sidecar_stderr_thread(stderr: impl Read + Send + 'static) {
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
+            // The one `eprintln!` that `shell_log!` must not replace. This
+            // forwards what the SIDECAR wrote, so the prefix marks another
+            // program's output and reading it as a shell line would misattribute
+            // every sidecar error.
             eprintln!("desktop-sidecar: {line}");
         }
     });
@@ -267,8 +271,8 @@ fn request_sidecar_shutdown(endpoint: &str) -> bool {
         Some(pid) => format!("process {pid}"),
         None => "an unidentified process".to_string(),
     };
-    eprintln!(
-        "leapmux: a sidecar ({holder}) is holding {endpoint} and did not shut down \
+    crate::shell_log!(
+        "a sidecar ({holder}) is holding {endpoint} and did not shut down \
          when asked; starting on a private endpoint instead. Stop it manually if it \
          should not be running -- in SOLO mode it also holds the shared DB's runtime \
          lease, so ConnectSolo will keep failing until it is gone (a launcher-mode \

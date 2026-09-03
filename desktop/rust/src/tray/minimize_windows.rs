@@ -31,7 +31,7 @@ pub(crate) fn on_resized(window: &Window) {
     let Some(state) = app.try_state::<Arc<TrayState>>() else {
         return;
     };
-    let Some(webview) = app.get_webview_window("main") else {
+    let Some(webview) = app.get_webview_window(crate::MAIN_WINDOW_LABEL) else {
         return;
     };
     if webview.is_minimized().unwrap_or(false) {
