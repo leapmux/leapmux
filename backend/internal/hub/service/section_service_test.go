@@ -282,10 +282,19 @@ func TestSectionService_CreateSection(t *testing.T) {
 
 	// Create a custom section.
 	resp, err := env.client.CreateSection(context.Background(), authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: "My Custom"}, env.token))
+		&leapmuxv1.CreateSectionRequest{Name: "My Custom", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, resp.Msg.GetSectionId())
+	// The whole row, not just the id: the SERVER computes the position, and a
+	// client that had to re-derive it would be a second source of truth for the
+	// section order.
+	created := resp.Msg.GetSection()
+	require.NotNil(t, created)
+	assert.NotEmpty(t, created.GetId())
+	assert.Equal(t, "My Custom", created.GetName())
+	assert.NotEmpty(t, created.GetPosition())
+	assert.Equal(t, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM, created.GetSectionType())
+	assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_LEFT, created.GetSidebar())
 
 	// Verify it appears in the list.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
@@ -299,7 +308,7 @@ func TestSectionService_CreateSection_EmptyName(t *testing.T) {
 	env := setupSectionTest(t)
 
 	_, err := env.client.CreateSection(context.Background(), authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: ""}, env.token))
+		&leapmuxv1.CreateSectionRequest{Name: "", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
@@ -314,8 +323,8 @@ func TestSectionService_RenameSection(t *testing.T) {
 
 	// Create a section first.
 	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: "Old Name"}, env.token))
-	sectionID := createResp.Msg.GetSectionId()
+		&leapmuxv1.CreateSectionRequest{Name: "Old Name", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
+	sectionID := createResp.Msg.GetSection().GetId()
 
 	// Rename it.
 	_, err := env.client.RenameSection(context.Background(), authedReq(
@@ -332,6 +341,142 @@ func TestSectionService_RenameSection(t *testing.T) {
 		}
 	}
 	assert.Fail(t, "section not found after rename")
+}
+
+// The two built-in workspace sections cannot be renamed or deleted, and this is
+// the first coverage of that rule.
+//
+// The store queries have always carried it as their own `section_type = custom`
+// filter, so it HELD -- what it could not do is say which rule refused. A
+// built-in and a missing row both came back as zero rows, so both answered
+// NotFound with a message that admitted the ambiguity ("not found or not a
+// custom section"). The handlers now separate the two, so these assertions are
+// about the diagnosis and not about the enforcement.
+func TestSectionService_RenameSection_RefusesBuiltIn(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	for _, sectionType := range []leapmuxv1.SectionType{
+		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+	} {
+		sectionID := seededSectionID(t, env, sectionType)
+
+		_, err := env.client.RenameSection(ctx, authedReq(
+			&leapmuxv1.RenameSectionRequest{SectionId: sectionID, Name: "Renamed"}, env.token))
+		require.Error(t, err, "%v must not be renamable", sectionType)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+			"the section exists and the caller owns it; only its state forbids the rename")
+		assert.Contains(t, err.Error(), "built-in section")
+
+		// And the row is untouched.
+		section, getErr := env.store.WorkspaceSections().GetByID(ctx, sectionID)
+		require.NoError(t, getErr)
+		assert.NotEqual(t, "Renamed", section.Name)
+	}
+}
+
+func TestSectionService_DeleteSection_RefusesBuiltIn(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	for _, sectionType := range []leapmuxv1.SectionType{
+		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+	} {
+		sectionID := seededSectionID(t, env, sectionType)
+
+		_, err := env.client.DeleteSection(ctx, authedReq(
+			&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
+		require.Error(t, err, "%v must not be deletable", sectionType)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		assert.Contains(t, err.Error(), "built-in section")
+
+		_, getErr := env.store.WorkspaceSections().GetByID(ctx, sectionID)
+		require.NoError(t, getErr, "the section must still be there")
+	}
+}
+
+// The other half of the split: an id that names nothing is still NotFound, so
+// the two outcomes a single code could not distinguish are now distinguishable.
+func TestSectionService_RenameSection_NotFoundOnBogusID(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+
+	_, err := env.client.RenameSection(context.Background(), authedReq(
+		&leapmuxv1.RenameSectionRequest{SectionId: "section-id-that-does-not-exist", Name: "New Name"}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// A custom section on the RIGHT sidebar gets a position past that sidebar's
+// last section.
+//
+// The scan used to be hard-coded to the left sidebar, where "between the last
+// custom section and Archived" is a well-defined place. The right sidebar has
+// neither anchor, so both ends came back empty and every new section fell to
+// lexorank.First() -- always "n", colliding with the first built-in section
+// already there.
+func TestSectionService_CreateSection_RightSidebarAppendsPastTheLast(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	before := mustListSections(t, env, userid.MustNew(env.userID))
+	var lastRightPos string
+	for _, sec := range before {
+		if sec.Sidebar == leapmuxv1.Sidebar_SIDEBAR_RIGHT {
+			lastRightPos = sec.Position
+		}
+	}
+	require.NotEmpty(t, lastRightPos, "the seeded set must put at least one section on the right")
+
+	resp, err := env.client.CreateSection(ctx, authedReq(
+		&leapmuxv1.CreateSectionRequest{Name: "Right Custom", Sidebar: leapmuxv1.Sidebar_SIDEBAR_RIGHT}, env.token))
+	require.NoError(t, err)
+	created := resp.Msg.GetSection()
+	require.NotNil(t, created)
+
+	assert.Equal(t, leapmuxv1.Sidebar_SIDEBAR_RIGHT, created.GetSidebar())
+	assert.Greater(t, created.GetPosition(), lastRightPos,
+		"a right-sidebar section must sort after the sections already there")
+
+	// Two in a row must not collide either, which is what a First() fallback
+	// would produce.
+	second, err := env.client.CreateSection(ctx, authedReq(
+		&leapmuxv1.CreateSectionRequest{Name: "Right Custom 2", Sidebar: leapmuxv1.Sidebar_SIDEBAR_RIGHT}, env.token))
+	require.NoError(t, err)
+	assert.NotEqual(t, created.GetPosition(), second.Msg.GetSection().GetPosition())
+}
+
+func TestSectionService_CreateSection_RejectsUnspecifiedSidebar(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+
+	_, err := env.client.CreateSection(context.Background(), authedReq(
+		&leapmuxv1.CreateSectionRequest{Name: "Nowhere"}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"MoveSection applies the same rule, so a section cannot be created into a sidebar it could not be moved to")
+}
+
+// The id of the seeded section of one built-in type.
+func seededSectionID(t *testing.T, env *sectionTestEnv, sectionType leapmuxv1.SectionType) string {
+	t.Helper()
+	for _, sec := range mustListSections(t, env, userid.MustNew(env.userID)) {
+		if sec.SectionType == sectionType {
+			return sec.ID
+		}
+	}
+	require.FailNowf(t, "no seeded section", "type %v", sectionType)
+	return ""
 }
 
 func TestSectionService_RenameSection_EmptyName(t *testing.T) {
@@ -355,8 +500,8 @@ func TestSectionService_DeleteSection(t *testing.T) {
 
 	// Create a section, then delete it.
 	createResp, _ := env.client.CreateSection(context.Background(), authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: "Temp Section"}, env.token))
-	sectionID := createResp.Msg.GetSectionId()
+		&leapmuxv1.CreateSectionRequest{Name: "Temp Section", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
+	sectionID := createResp.Msg.GetSection().GetId()
 
 	_, err := env.client.DeleteSection(context.Background(), authedReq(
 		&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
@@ -390,9 +535,9 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 
 	// Create a custom section and assign a workspace to it.
 	createResp, err := env.client.CreateSection(ctx, authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: "Custom With Items"}, env.token))
+		&leapmuxv1.CreateSectionRequest{Name: "Custom With Items", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
 	require.NoError(t, err)
-	customID := createResp.Msg.GetSectionId()
+	customID := createResp.Msg.GetSection().GetId()
 
 	_, err = env.client.MoveWorkspace(ctx, authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{
@@ -487,9 +632,9 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 	// Create a custom section and drop wsCustom into it at "n" too —
 	// the colliding position that the bug exploited.
 	createResp, err := env.client.CreateSection(ctx, authedReq(
-		&leapmuxv1.CreateSectionRequest{Name: "Custom"}, env.token))
+		&leapmuxv1.CreateSectionRequest{Name: "Custom", Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT}, env.token))
 	require.NoError(t, err)
-	customID := createResp.Msg.GetSectionId()
+	customID := createResp.Msg.GetSection().GetId()
 	_, err = env.client.MoveWorkspace(ctx, authedReq(
 		&leapmuxv1.MoveWorkspaceRequest{
 			WorkspaceId: wsCustom,

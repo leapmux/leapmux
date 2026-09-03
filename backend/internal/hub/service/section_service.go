@@ -93,15 +93,27 @@ func (s *SectionService) CreateSection(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
+	// The same rule MoveSection applies, so a section cannot be created into a
+	// sidebar it could not then be moved to.
+	sidebar := req.Msg.GetSidebar()
+	if sidebar != leapmuxv1.Sidebar_SIDEBAR_LEFT && sidebar != leapmuxv1.Sidebar_SIDEBAR_RIGHT {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sidebar must be LEFT or RIGHT"))
+	}
+
 	// Find the position between the last custom section and "Archived".
 	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	var lastCustomPos, archivedPos string
+	// The scan follows the REQUESTED sidebar, not always the left one. The
+	// right sidebar holds no Archived anchor and no custom section, so a
+	// left-only scan left both ends empty there and every new section fell to
+	// lexorank.First() -- always "n", which collides with the first built-in
+	// section already on that side.
+	var lastCustomPos, archivedPos, lastPos string
 	for _, sec := range sections {
-		if sec.Sidebar != leapmuxv1.Sidebar_SIDEBAR_LEFT {
+		if sec.Sidebar != sidebar {
 			continue
 		}
 		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM {
@@ -110,14 +122,21 @@ func (s *SectionService) CreateSection(
 		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED {
 			archivedPos = sec.Position
 		}
+		// ListByUserID orders by (sidebar, position), so the last row of this
+		// sidebar carries its highest position.
+		lastPos = sec.Position
 	}
 
 	var position string
-	if lastCustomPos != "" && archivedPos != "" {
+	switch {
+	case lastCustomPos != "" && archivedPos != "":
 		position = lexorank.Mid(lastCustomPos, archivedPos)
-	} else if archivedPos != "" {
+	case archivedPos != "":
 		position = lexorank.Mid("", archivedPos)
-	} else {
+	case lastPos != "":
+		// No Archived anchor on this sidebar: append past its last section.
+		position = lexorank.After(lastPos)
+	default:
 		position = lexorank.First()
 	}
 
@@ -128,13 +147,22 @@ func (s *SectionService) CreateSection(
 		Name:        name,
 		Position:    position,
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
-		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+		Sidebar:     sidebar,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
+	// The whole row, because the SERVER computed the position. A client that
+	// got only the id would have to re-derive the lexorank rule to place the
+	// section in its own list, which is a second source of truth for the order.
 	return connect.NewResponse(&leapmuxv1.CreateSectionResponse{
-		SectionId: sectionID,
+		Section: &leapmuxv1.Section{
+			Id:          sectionID,
+			Name:        name,
+			Position:    position,
+			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+			Sidebar:     sidebar,
+		},
 	}), nil
 }
 
@@ -152,6 +180,17 @@ func (s *SectionService) RenameSection(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name: %w", err))
 	}
 
+	// Diagnose the two refusals apart BEFORE the write. The query carries its
+	// own `section_type = custom` filter, so a built-in came back as rows == 0
+	// and the handler could only answer "not found or not a custom section" --
+	// a message that admits it cannot tell the caller which. There is no
+	// transaction here (only DeleteSection has one), so this is a read that
+	// precedes the update rather than one inside it; a section deleted in the
+	// window between them still lands on the rows == 0 branch below.
+	if _, err := s.requireCustomSection(ctx, user.ID, req.Msg.GetSectionId(), "rename"); err != nil {
+		return nil, err
+	}
+
 	rows, err := s.store.WorkspaceSections().Rename(ctx, store.RenameWorkspaceSectionParams{
 		Name:   name,
 		ID:     req.Msg.GetSectionId(),
@@ -161,7 +200,7 @@ func (s *SectionService) RenameSection(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found or not a custom section"))
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 	}
 
 	return connect.NewResponse(&leapmuxv1.RenameSectionResponse{}), nil
@@ -177,6 +216,13 @@ func (s *SectionService) DeleteSection(
 	}
 
 	sectionID := req.Msg.GetSectionId()
+
+	// Same pre-flight as RenameSection: separate "gone" from "built-in" while
+	// the answer is still available. Inside the transaction the delete's own
+	// `section_type = custom` filter collapses both into rows == 0.
+	if _, err := s.requireCustomSection(ctx, user.ID, sectionID, "delete"); err != nil {
+		return nil, err
+	}
 
 	// The whole move-then-delete sequence runs in one transaction: the
 	// previous code looped N `Set` calls and then a `Delete` outside
@@ -282,7 +328,7 @@ func (s *SectionService) DeleteSection(
 		return nil
 	}); err != nil {
 		if notFound {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found or not a custom section"))
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
 		}
 		if errors.Is(err, store.ErrSectionNotEmpty) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty)
@@ -322,6 +368,38 @@ func (s *SectionService) requireOwnedSection(ctx context.Context, userID userid.
 	}
 	if !userID.Matches(section.UserID) {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
+	}
+	return section, nil
+}
+
+// requireCustomSection loads an owned section and refuses a built-in one.
+//
+// Rename and Delete apply to CUSTOM sections only, and both store queries carry
+// that rule as their own `section_type = custom` filter -- which is what keeps
+// the invariant true for any caller. What the filter cannot do is SAY which
+// rule refused: a built-in and a missing row both come back as zero rows, so
+// the handler answered NotFound for both and its own message admitted it
+// ("not found or not a custom section").
+//
+// FailedPrecondition for the built-in, because the section exists, the caller
+// owns it, and its STATE forbids the operation -- the same code the sibling
+// archived-workspace guard uses, so two near-identical state rules answer with
+// one code rather than two.
+//
+// `verb` names the refused operation in the message, so a client that logs the
+// error alone still knows what was refused.
+func (s *SectionService) requireCustomSection(
+	ctx context.Context, userID userid.UserID, sectionID, verb string,
+) (*store.WorkspaceSection, error) {
+	section, err := s.requireOwnedSection(ctx, userID, sectionID)
+	if err != nil {
+		return nil, err
+	}
+	if section.SectionType != leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM {
+		return nil, connect.NewError(
+			connect.CodeFailedPrecondition,
+			fmt.Errorf("cannot %s a built-in section", verb),
+		)
 	}
 	return section, nil
 }

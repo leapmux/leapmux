@@ -99,6 +99,39 @@ func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID st
 	return ws, nil
 }
 
+// refuseArchivedWorkspace refuses a mutation of a workspace that sits in the
+// caller's Archived section.
+//
+// Hiding the menu item is not enforcement. RenameWorkspace is reachable from
+// the CLI (`leapmux workspace rename`) and from any client, and an archived
+// workspace is read-only everywhere else in the app: the tab bar's `+`
+// disappears, the branch menu is hidden, and `isWorkspaceMutatable` names the
+// rule outright.
+//
+// FailedPrecondition, not NotFound: the workspace is well-formed and the caller
+// owns it, and only its STATE forbids the write. Folding the rule into the
+// store as an anti-join -- the way the section queries carry
+// `section_type = custom` -- would collapse the outcome into the existing
+// `rows == 0` -> NotFound, which already means "not found or not owner".
+//
+// It FAILS OPEN for an unminted caller: the adapters answer `(false, nil)` when
+// `userid.OwnerFilter` refuses, because binding "" would match every
+// blank-owner row rather than none. That is safe only because `MustGetUser` and
+// `loadOwnedWorkspaceOr403` already ran and rejected such a caller.
+func refuseArchivedWorkspace(ctx context.Context, tx store.Store, workspaceID string, userID userid.UserID) error {
+	archived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("check archived section: %w", err))
+	}
+	if archived {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot rename an archived workspace"))
+	}
+	return nil
+}
+
 // readWorkspaceOrNotFound loads a workspace for reading and collapses the two
 // existence-revealing codes into notFound.
 //
@@ -245,6 +278,13 @@ func (s *WorkspaceService) RenameWorkspace(
 		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
 			ws, err := loadOwnedWorkspaceOr403(ctx, tx, req.Msg.GetWorkspaceId(), user.ID, "only workspace owner can modify workspace state")
 			if err != nil {
+				return "", crdt.LifecyclePayload{}, nil, err
+			}
+			// Inside the same transaction as the write, so the guard and the
+			// rename commit or abort together -- an archive landing between a
+			// check outside and the update would otherwise slip through. It is
+			// a read, so it is safe under storetest.NewDoubleRunStore.
+			if err := refuseArchivedWorkspace(ctx, tx, req.Msg.GetWorkspaceId(), user.ID); err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
 			}
 			rows, err := tx.Workspaces().Rename(ctx, store.RenameWorkspaceParams{

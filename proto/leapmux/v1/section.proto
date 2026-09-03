@@ -64,10 +64,18 @@ message ListSectionsResponse {
 
 message CreateSectionRequest {
   string name = 1;
+  // Which sidebar the new section belongs to. Must be LEFT or RIGHT --
+  // MoveSection applies the same rule, so a section cannot be created into a
+  // sidebar it could not be moved to.
+  Sidebar sidebar = 2;
 }
 
 message CreateSectionResponse {
-  string section_id = 1;
+  // The created section, complete. The SERVER computes the lexorank position,
+  // so a response carrying only the id would leave the client either
+  // duplicating that rule -- a second source of truth for section order -- or
+  // refetching the whole list to learn where its own section landed.
+  Section section = 1;
 }
 
 message RenameSectionRequest {

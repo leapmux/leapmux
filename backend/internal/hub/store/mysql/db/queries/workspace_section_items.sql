@@ -45,6 +45,9 @@ WHERE section_id = ?;
 SELECT EXISTS(SELECT 1 FROM workspace_section_items WHERE section_id = ?) AS has_items;
 
 -- name: IsWorkspaceInArchivedSection :one
+-- Section type is a parameter, not the literal 3 this used to carry: a
+-- SectionType renumber must propagate rather than silently change which
+-- sections count as archived. See RenameWorkspaceSection.
 SELECT COUNT(*) > 0 AS is_archived FROM workspace_section_items wsi
 JOIN workspace_sections ws ON wsi.section_id = ws.id
-WHERE wsi.user_id = ? AND wsi.workspace_id = ? AND ws.section_type = 3;
+WHERE wsi.user_id = ? AND wsi.workspace_id = ? AND ws.section_type = ?;
