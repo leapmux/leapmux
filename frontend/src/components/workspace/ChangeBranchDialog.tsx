@@ -23,7 +23,7 @@ import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { useChangeBranchInspect } from '~/hooks/useChangeBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
-import { changeBranchInitialIntent, fieldsForCreateWorktree, GitMode, isChangeBranchMode, useGitModeState } from '~/hooks/useGitModeState'
+import { CHANGE_BRANCH_MODES, changeBranchInitialIntent, fieldsForCreateWorktree, GitMode, isChangeBranchMode, useGitModeState } from '~/hooks/useGitModeState'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { flavorFromOs } from '~/lib/paths'
@@ -346,7 +346,10 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
               gitInfo={pathInfo}
               gitMode={gitMode.gitMode}
               onGitModeChange={gitMode.handleGitModeChange}
-              modes={[GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree]}
+              // The constant, not a hand-copied literal: `isChangeBranchMode`
+              // above validates the submitted intent against it, so a spelled
+              // list here could offer a radio the submit path then refuses.
+              modes={CHANGE_BRANCH_MODES}
               preloadedBranches={inspect.branches}
               preloadedBranchesLoading={inspect.branchesLoading}
               onRefreshBranches={inspect.refresh}

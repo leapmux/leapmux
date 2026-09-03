@@ -4,6 +4,7 @@ import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTabOperations } from './useTabOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState, UpdatableDialogState } from '~/hooks/createDialogState'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
@@ -103,14 +104,17 @@ export interface WorkspaceConfirmPayload {
 
 /**
  * Open-time payload for the NewWorkspaceDialog. Both fields are optional:
- *   - `preselectedWorkerId` seeds the worker dropdown (`?newWorkspace=true&workerId=`
- *     from the URL, or the workspace-sidebar "+ workspace" button on a specific worker).
- *   - `targetSectionId` is the section the freshly-created workspace will be moved into
- *     post-CreateWorkspace (a left-sidebar "+" inside a section header).
- * The shortcut path opens with `{}` (no preselection, default section).
+ *   - `startPoint` says what the dialog already knows: a repository the section
+ *     works on (from a section header menu row), or a worker alone
+ *     (`?newWorkspace=true&workerId=` from the URL). Omit it for "no target",
+ *     which is the same thing as `{ kind: 'directory' }` -- the default is
+ *     applied at ONE place, where this payload reaches the dialog.
+ *   - `targetSectionId` is the section the freshly-created workspace will be
+ *     moved into post-CreateWorkspace (a section header menu's own section).
+ * The shortcut path opens with `{}` (no target, default section).
  */
 export interface NewWorkspacePayload {
-  preselectedWorkerId?: string
+  startPoint?: WorkspaceStartPoint
   targetSectionId?: string | null
 }
 
@@ -350,7 +354,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           <NewWorkspaceDialog
             metadata={props.metadata}
             repoGitStore={props.repoGitStore}
-            preselectedWorkerId={payload.preselectedWorkerId}
+            startPoint={payload.startPoint ?? { kind: 'directory' }}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
             onCreated={(workspaceId) => {

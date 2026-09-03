@@ -387,6 +387,92 @@ describe('gitOptions activeMode ownership', () => {
     expect(screen.getByLabelText('Use current state')).toBeInTheDocument()
   })
 
+  it('clamps a seed mode that is not in the enabled set', async () => {
+    // A seed outside `props.modes` leaves EVERY radio unchecked -- each row is
+    // gated on `enabledModes().has` -- while the emit effect still reports that
+    // mode, so the dialog submits an intent it never showed. The remembered
+    // per-repository mode makes that reachable: a mode stored from a dialog
+    // that offers all five can arrive at one that offers three.
+    const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+        modes={[GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree]}
+      />
+    ))
+
+    // The first enabled mode, because Current is not enabled either.
+    await waitFor(() => expect(screen.getByLabelText('Switch to branch')).toBeChecked())
+    await waitFor(() => expect(onGitModeChange).toHaveBeenCalled())
+    const firstIntent = onGitModeChange.mock.calls[0][0] as { mode: GitMode }
+    expect(firstIntent.mode).toBe(GitMode.SwitchBranch)
+  })
+
+  it('clamps to Current when the enabled set includes it', async () => {
+    const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+        modes={[GitMode.Current, GitMode.SwitchBranch]}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
+    expect(screen.getByLabelText('Switch to branch')).not.toBeChecked()
+  })
+
+  it('passes a seed that IS in the enabled set through unchanged', async () => {
+    // The guard rail on the clamp above: a legitimate seed must not be
+    // rewritten to the default.
+    const [mode] = createSignal<GitMode>(GitMode.CreateWorktree)
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+        modes={[GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree]}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Create new worktree')).toBeChecked())
+  })
+
+  it('honours a seed inside DEFAULT_GIT_MODES when modes is the empty array', async () => {
+    // The second guard rail: an empty `modes` falls back to the default set,
+    // so the clamp must judge the seed against THAT set and not refuse it.
+    const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+        modes={[]}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Use existing worktree')).toBeChecked())
+  })
+
   it('resets the mode to the default when the selected path changes', async () => {
     // Switching repos invalidates every selection the mode depends on --
     // checkout branch, base branch, worktree path, and the fetched lists

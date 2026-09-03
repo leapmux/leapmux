@@ -328,7 +328,8 @@ export const AppShell: Component = () => {
   createEffect(() => {
     if (searchParams.newWorkspace === 'true') {
       newWorkspaceDialog.open({
-        preselectedWorkerId: searchParams.workerId as string | undefined,
+        // A worker and no directory: the URL names a machine, not a repository.
+        startPoint: { kind: 'directory', workerId: searchParams.workerId as string | undefined },
       })
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
     }

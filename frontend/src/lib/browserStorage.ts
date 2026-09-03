@@ -175,6 +175,7 @@ export const PREFIX_WORKER_INFO = 'worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'local-messages:'
 export const PREFIX_FILES_SHOW_HIDDEN = 'files-show-hidden:'
 export const PREFIX_FILES_SORT_ORDER = 'files-sort-order:'
+export const PREFIX_WORKSPACE_GIT_MODE = 'workspace-git-mode:'
 export const PREFIX_CHAT_ROW_HEIGHTS = 'chat-row-heights:'
 
 /** sessionStorage dynamic key prefixes. */
@@ -301,6 +302,12 @@ export const LOCAL_KEY_SPECS = {
   [PREFIX_LOCAL_MESSAGES]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_FILES_SHOW_HIDDEN]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_FILES_SORT_ORDER]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
+  // The git mode a repository was last started with, keyed by
+  // `<workerId>:<gitToplevel>` (see `gitModeStickyKey`). The TTL is the only
+  // thing limiting growth -- there is one entry per repository the user ever
+  // starts a workspace in -- and `readDynamic` refreshes it on read, so a
+  // repository in weekly use never expires while an abandoned one does.
+  [PREFIX_WORKSPACE_GIT_MODE]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   // Measured chat-row heights (see chatRowHeightPersistence). A warm-start
   // cache: stale entries are harmless (each row's key digest must match its
   // live heightKey to hydrate), so the TTL only limits storage growth.

@@ -126,6 +126,14 @@ export function useGitPathInfo(
   let firstProbeSeen = false
   let firstProbeWorkerId = ''
 
+  // Whether ANY probe has answered for this hook, success or failure.
+  //
+  // Distinct from `firstProbeSeen`, which is a per-(worker, path) gate that
+  // `fetch()` deliberately rewinds when either goes empty. This one only ever
+  // goes true, and it is what tells a seed that is still the caller's best
+  // knowledge from one that a real answer already replaced.
+  let probeAnswered = false
+
   // Memo so downstream `on()` effects don't refire when info() updates
   // without changing the boolean (e.g. the post-seed probe lands and
   // fills in currentBranch but showGitOptions stays true).
@@ -173,6 +181,7 @@ export function useGitPathInfo(
         if (!shallowEqual(info(), next))
           setInfo(next)
       }
+      probeAnswered = true
       if (!firstProbeSeen) {
         firstProbeSeen = true
         firstProbeWorkerId = args.wid
@@ -189,6 +198,7 @@ export function useGitPathInfo(
       // cancel, transient network) and the user manually navigates to
       // a canonical path before the next probe lands, we shouldn't
       // remap them out of their explicit choice.
+      probeAnswered = true
       firstProbeSeen = true
       firstProbeWorkerId = args.wid
     },
@@ -203,7 +213,22 @@ export function useGitPathInfo(
     const wid = workerId()
     const p = path()
     if (!wid || !p) {
-      resetToEmpty()
+      // KEEP a seed that no probe has answered yet.
+      //
+      // A dialog opened against a known repo passes `seed`, but its worker id
+      // arrives one tick later -- `createWorkerDialogContext` resolves it from
+      // `listWorkers`, and it must stay '' until then so `dialogValidation`
+      // cannot arm submit against a worker that is not online. This branch runs
+      // in that window, and discarding the seed there left `info()` empty, so
+      // `showGitOptions()` was false, so `skipLoadingFlash` did not fire -- and
+      // a pre-filled dialog painted the "Loading branch info" spinner it was
+      // seeded to avoid.
+      //
+      // Once a probe HAS answered, the seed is superseded and clearing is
+      // correct: the caller cleared the worker or the path, and the last-known
+      // repository is no longer what the form is about.
+      if (!options.seed || probeAnswered)
+        resetToEmpty()
       firstProbeSeen = false
       firstProbeWorkerId = ''
       await fetcher.run(null)

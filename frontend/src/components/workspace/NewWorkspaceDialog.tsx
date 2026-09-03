@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { WorkspaceStartPoint } from './workspaceStartPoint'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
@@ -22,14 +23,26 @@ import { createDirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import { createSessionIdState } from '~/hooks/createSessionIdState'
 import { createTitleState } from '~/hooks/createTitleState'
 import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
+import { initialIntentForMode } from '~/hooks/useGitModeState'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
 import { openedAgentTabFields } from '~/stores/tab.helpers'
+import {
+  gitModeStickyKey,
+  readStickyGitMode,
+  rememberStickyGitMode,
+  startPointDialogSetup,
+} from './workspaceStartPoint'
 
 interface NewWorkspaceDialogProps {
   onCreated: (workspaceId: string) => void
   onClose: () => void
-  preselectedWorkerId?: string
+  /**
+   * Where the workspace starts from. Read ONCE at mount -- the dialog's `<Show>`
+   * is keyed, so a different start point remounts the whole form rather than
+   * mutating a half-filled one under the user.
+   */
+  startPoint: WorkspaceStartPoint
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
   /**
@@ -43,10 +56,28 @@ interface NewWorkspaceDialogProps {
 }
 
 export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) => {
+  // Read once: `useWorkerDialog`'s sub-hooks take their seeds as plain
+  // one-time values, and the keyed `<Show>` at the call site remounts this
+  // component whenever the start point changes.
+  // eslint-disable-next-line solid/reactivity -- one-time initial values
+  const setup = startPointDialogSetup(props.startPoint)
+  const seededMode = readStickyGitMode(setup.stickyKey)
+
   const { submit: { submitting, error, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create workspace' },
-    // eslint-disable-next-line solid/reactivity -- one-time initial value
-    worker: { preselectedWorkerId: props.preselectedWorkerId },
+    worker: {
+      preselectedWorkerId: setup.workerId,
+      defaultWorkingDir: setup.workingDir,
+    },
+    // The mode this repository was last started with, so the form opens on the
+    // answer the user gave last time rather than on `Use current state`.
+    // `GitOptions` clamps a seed outside its enabled set, and this dialog
+    // enables all five, so any stored mode survives.
+    gitMode: seededMode === undefined ? undefined : { initialIntent: initialIntentForMode(seededMode) },
+    // A seeded snapshot, so `GitOptionsLoader` mounts `GitOptions` on the first
+    // paint instead of showing the "Loading branch info" spinner while the
+    // probe confirms what the menu already knew.
+    pathInfo: { seed: setup.pathInfoSeed },
   })
   const tree = createDirectoryTreeState()
   // A word slug, not the worker's tab-name pool: a workspace carries no
@@ -102,6 +133,13 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
 
       if (agentResp.agent) {
         recordProviderUse(provider)
+        // Remember the git mode for THIS repository, from the live worker and
+        // directory rather than from the start point -- the user may have
+        // navigated somewhere else in the dialog. `showGitOptions()` is the
+        // guarantee that the path is a repository root or a worktree root,
+        // which is exactly what the key means.
+        if (pathInfo.showGitOptions())
+          rememberStickyGitMode(gitModeStickyKey(wid, worker.workingDir()), gitMode.gitMode())
         // Seed the agent's METADATA first, BEFORE the placement below -- the
         // same order `openTabInFocusedTile` documents and every other open path
         // follows. Placement is what makes the tab exist for the projection, and

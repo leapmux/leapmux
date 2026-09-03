@@ -1,3 +1,4 @@
+import type { WorkspaceStartPoint } from './workspaceStartPoint'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
@@ -6,17 +7,21 @@ import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { GitMode } from '~/hooks/useGitModeState'
+import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccount } from '~/lib/browserStorage'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
+import { gitModeStickyKey, readStickyGitMode } from './workspaceStartPoint'
 
 // Hoisted alongside the `vi.mock` factories below, which read them. A plain
 // `const` would be in its temporal dead zone when the factories run.
-const { WORKER_ID, WORKING_DIR, NEW_WORKSPACE_ID } = vi.hoisted(() => ({
+const { WORKER_ID, WORKING_DIR, REPO_DIR, NEW_WORKSPACE_ID } = vi.hoisted(() => ({
   WORKER_ID: 'w1',
   WORKING_DIR: '/home/u/proj',
+  REPO_DIR: '/home/u/leapmux',
   NEW_WORKSPACE_ID: 'ws-new',
 }))
 
@@ -44,6 +49,10 @@ vi.mock('~/stores/workerInfo.store', () => ({
 vi.mock('~/api/workerRpc', () => ({
   openAgent: vi.fn(),
   getGitInfo: vi.fn(),
+  // GitOptions issues both of these as soon as it mounts, which a seeded
+  // path-info snapshot makes happen on the first paint.
+  listGitBranches: vi.fn(async () => ({ branches: [] })),
+  listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
   listDirectory: vi.fn(),
   statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
 }))
@@ -104,6 +113,7 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
   const props = {
     onCreated: vi.fn(),
     onClose: vi.fn(),
+    startPoint: { kind: 'directory' } as WorkspaceStartPoint,
     availableProviders: [AgentProvider.CLAUDE_CODE],
     metadata: { patch: vi.fn() } as unknown as TabMetadataStore,
     repoGitStore: createRepoGitStore(),
@@ -380,6 +390,91 @@ describe('newWorkspaceDialog', () => {
       expect(workerRpc.openAgent).not.toHaveBeenCalled()
       expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
       expect(props.onCreated).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('a repo start point', () => {
+    const REPO_START: WorkspaceStartPoint = {
+      kind: 'repo',
+      workerId: WORKER_ID,
+      gitToplevel: REPO_DIR,
+      isWorktree: false,
+      currentBranch: 'main',
+    }
+
+    beforeEach(() => {
+      localStorageClearForTests()
+      setStorageAccount('u-1')
+    })
+
+    it('opens ready to submit, with no directory to pick', async () => {
+      // The whole point of the start point: the menu already knows the worker
+      // and the repository, so the dialog must not re-ask for either.
+      renderDialog({ startPoint: REPO_START })
+
+      const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+      await waitFor(() => expect(createButton.disabled).toBe(false))
+      fireEvent.click(createButton)
+
+      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
+      expect(vi.mocked(workerRpc.openAgent).mock.calls[0][1])
+        .toMatchObject({ workerId: WORKER_ID, workingDir: REPO_DIR })
+    })
+
+    it('paints the git options straight away, with no loading spinner', async () => {
+      // The seeded snapshot is what keeps `skipLoadingFlash` armed. Without it
+      // the pre-filled dialog shows "Loading branch info" for a round trip.
+      renderDialog({ startPoint: REPO_START })
+
+      expect(await screen.findByLabelText('Use current state')).toBeInTheDocument()
+      expect(screen.queryByText(/loading branch info/i)).not.toBeInTheDocument()
+    })
+
+    it('opens on the mode this repository was last submitted with', async () => {
+      localStorageSet(`${PREFIX_WORKSPACE_GIT_MODE}${gitModeStickyKey(WORKER_ID, REPO_DIR)}`, 'create-worktree')
+      renderDialog({ startPoint: REPO_START })
+
+      await waitFor(() => expect(screen.getByLabelText('Create new worktree')).toBeChecked())
+    })
+
+    it('remembers the mode on a successful submit', async () => {
+      renderDialog({ startPoint: REPO_START })
+
+      const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+      await waitFor(() => expect(createButton.disabled).toBe(false))
+      fireEvent.click(await screen.findByLabelText('Create new branch'))
+      fireEvent.click(createButton)
+
+      await waitFor(() => {
+        expect(readStickyGitMode(gitModeStickyKey(WORKER_ID, REPO_DIR))).toBe(GitMode.CreateBranch)
+      })
+    })
+
+    it('remembers nothing when the submit fails', async () => {
+      // A mode the user selected and then lost to an error is not what they
+      // work with, so the next dialog must not open on it.
+      vi.mocked(workerRpc.openAgent).mockRejectedValue(new Error('worker exploded'))
+      renderDialog({ startPoint: REPO_START })
+
+      const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
+      await waitFor(() => expect(createButton.disabled).toBe(false))
+      fireEvent.click(await screen.findByLabelText('Create new branch'))
+      fireEvent.click(createButton)
+
+      expect(await screen.findByText('worker exploded')).toBeInTheDocument()
+      expect(readStickyGitMode(gitModeStickyKey(WORKER_ID, REPO_DIR))).toBeUndefined()
+    })
+
+    it('remembers nothing for a directory that is not a repository', async () => {
+      // The key means "a repository root or a worktree root", which is exactly
+      // what `showGitOptions()` guarantees. A plain directory has no mode to
+      // remember.
+      renderDialog()
+
+      await submitDialog()
+
+      await waitFor(() => expect(workerRpc.openAgent).toHaveBeenCalledOnce())
+      expect(readStickyGitMode(gitModeStickyKey(WORKER_ID, WORKING_DIR))).toBeUndefined()
     })
   })
 })
