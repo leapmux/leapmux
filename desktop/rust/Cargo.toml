@@ -46,29 +46,19 @@ gtk = "0.18"
 gdk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The NSWindowDidMiniaturizeNotification observer; see
+# The runtime subclass that overrides `-[NSWindow miniaturize:]`; see
 # `tray/minimize_macos.rs`. Tauri 2 emits no Minimized window event and tao
-# tracks the state without reporting it, so the AppKit notification is the only
-# signal that catches every way a window can be miniaturized.
+# tracks the state without reporting it, so the shell calls AppKit itself. It
+# overrides that method rather than answering
+# NSWindowDidMiniaturizeNotification, because a miniaturize cannot be undone
+# once AppKit performs it.
 #
-# Tauri re-exports objc2 only under `target_os = "ios"`, so this file must list
-# these four itself. All four are already in Cargo.lock at these versions
-# through tao/muda/tray-icon, so the entries add direct edges and no new
-# packages.
-#
-# The objc2-foundation feature list is what makes
-# `addObserverForName:object:queue:usingBlock:` available. Drop one and the
-# method simply does not exist, with no hint as to which is missing.
+# `objc2` alone: the override needs the class builder, `msg_send!` and `sel!`,
+# and none of the AppKit or Foundation types. Tauri re-exports objc2 only under
+# `target_os = "ios"`, so this file must list it itself. It is already in
+# Cargo.lock at this version through tao/muda/tray-icon, so the entry adds a
+# direct edge and no new package.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = [
-    "std",
-    "NSNotification",
-    "NSOperation",
-    "NSString",
-    "block2",
-] }
-block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 # Only the SID lookup that ACLs the named pipe, and the pipe's own error codes,

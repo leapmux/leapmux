@@ -35,6 +35,8 @@ pub(crate) fn on_resized(window: &Window) {
         return;
     };
     if webview.is_minimized().unwrap_or(false) {
+        // The answer is for macOS, which asks before AppKit acts. Here the
+        // minimize already happened, so there is nothing left to let proceed.
         super::handle_minimize(state.inner(), &webview);
     }
 }

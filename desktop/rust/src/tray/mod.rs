@@ -857,16 +857,18 @@ pub(crate) fn apply_launch_visibility(
 
 /// The policy answer for a minimize, and the hide it may call for.
 ///
-/// The three platform hooks funnel here so the decision is made once.
-pub(crate) fn handle_minimize(state: &TrayState, window: &tauri::WebviewWindow) {
+/// The three platform hooks funnel here so the decision is made once. Linux and
+/// Windows REACT to a minimize the operating system already performed. macOS
+/// INTERCEPTS the request before AppKit performs it, and reads the answer to
+/// decide whether to let the ordinary minimize proceed.
+///
+/// Returns whether the window was hidden.
+pub(crate) fn handle_minimize(state: &TrayState, window: &tauri::WebviewWindow) -> bool {
     if state.window_action(WindowIntent::Minimized) != WindowAction::HideWindow {
-        return;
+        return false;
     }
-    // macOS must leave the miniaturized state before it leaves the screen; see
-    // `minimize_macos::prepare_hide`.
-    #[cfg(target_os = "macos")]
-    minimize_macos::prepare_hide(window);
     let _ = window.hide();
+    true
 }
 
 /// Build the tray from the device cache, decide the launch, and register both
@@ -1020,6 +1022,47 @@ mod tests {
     fn minimize_stays_on_the_taskbar_when_the_tray_is_disabled() {
         let (_, minimize) = actions(false, TrayOnClose::Tray, TrayOnMinimize::Tray);
         assert_eq!(minimize, WindowAction::LeaveMinimized);
+    }
+
+    // The answer the macOS override reads at the moment of the click, from the
+    // LIVE state rather than the free function above. It calls `super` -- the
+    // ordinary minimize -- for every answer except `HideWindow`, so a state
+    // that reports `HideWindow` while no icon exists would hide a window with
+    // nothing to bring it back, and one that reports `LeaveMinimized` after the
+    // user chose the tray would put the window in the Dock they asked to skip.
+    #[test]
+    fn the_live_state_hides_on_minimize_only_with_an_icon_and_the_tray_choice() {
+        let state = TrayState::new();
+        let choose = |tray_enabled: bool, on_minimize: TrayOnMinimize| {
+            state.enabled.store(tray_enabled, Ordering::SeqCst);
+            state.store_policy(&WindowBehavior {
+                tray_enabled,
+                tray_on_minimize: on_minimize,
+                ..WindowBehavior::default()
+            });
+            state.window_action(WindowIntent::Minimized)
+        };
+
+        assert_eq!(choose(true, TrayOnMinimize::Tray), WindowAction::HideWindow);
+
+        // The three answers that must leave the ordinary minimize alone. Each
+        // one reaches `super` on macOS, so the window still goes to the Dock.
+        assert_eq!(
+            choose(true, TrayOnMinimize::Taskbar),
+            WindowAction::LeaveMinimized
+        );
+        assert_eq!(
+            choose(false, TrayOnMinimize::Tray),
+            WindowAction::LeaveMinimized
+        );
+        assert_eq!(
+            choose(false, TrayOnMinimize::Taskbar),
+            WindowAction::LeaveMinimized
+        );
+
+        // And back, because the override reads the state on every click. A
+        // preference the user changes mid-session must reach the next minimize.
+        assert_eq!(choose(true, TrayOnMinimize::Tray), WindowAction::HideWindow);
     }
 
     #[test]
