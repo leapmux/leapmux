@@ -111,7 +111,7 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
   },
 
   [CLAUDE_TOOL.AGENT]: (info, ctx) => {
-    const source = claudeAgentFromToolResult(info.toolUseResult, info.resultContent)
+    const source = claudeAgentFromToolResult(info.toolUseResult, info.resultContent, info.toolInput)
     if (!source)
       return null
     return <AgentResultView source={source} context={ctx} />

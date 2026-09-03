@@ -44,14 +44,15 @@ function clipDescription(description: string): string {
 /**
  * The header line. A launch gives the TASK, because that is the thing the user
  * recognizes and the only human-written string in the payload; the agent id is a
- * generated token that says nothing about the work. A finished sync run carries
- * no description at all, so it falls back to the id.
+ * generated token that says nothing about the work. A finished sync run now
+ * receives its description from the paired tool_use input when the result omits
+ * one, so the id fallback fires only when neither payload supplies a description.
  */
 function agentTitle(source: ClaudeAgentResult): string {
   const status = formatAgentStatus(source.status)
   const description = clipDescription(source.description)
   if (description)
-    return `Agent '${description}' ${status}`
+    return `Agent "${description}" ${status}`
   const id = source.agentId || source.taskId
   return id ? `Agent ${id} ${status}` : `Agent ${status}`
 }

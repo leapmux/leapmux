@@ -60,19 +60,31 @@ export function claudeAgentResultIsLaunch(source: ClaudeAgentResult): boolean {
  * None of that is about the subagent that the user reads, so treating it as
  * the card's body buried the one thing that is: what the agent was asked to do.
  *
+ * An optional `toolInput` supplies the paired tool_use input. A synchronous
+ * result carries no `description`, but the tool_use that opened the span does —
+ * the model writes one in every `Agent` call. When the result omits its own
+ * description, the paired input fills the gap.
+ *
  * Returns null when the payload is not an object, so the dispatch entry can fall
  * through to the catch-all.
  */
 export function claudeAgentFromToolResult(
   toolUseResult: Record<string, unknown> | undefined,
   resultContent: string,
+  toolInput?: Record<string, unknown>,
 ): ClaudeAgentResult | null {
   if (!isObject(toolUseResult))
     return null
   const status = pickString(toolUseResult, 'status', 'completed')
+  // Prefer a non-blank result description, then fall back to the paired
+  // tool_use input's description, then leave empty for the agent ID fallback.
+  // Trim before the test: `pickString` preserves whitespace, and a blank
+  // description is not a real one.
+  const resultDescription = pickString(toolUseResult, 'description').trim()
+  const inputDescription = toolInput ? pickString(toolInput, 'description').trim() : ''
   const source: ClaudeAgentResult = {
     status,
-    description: pickString(toolUseResult, 'description'),
+    description: resultDescription || inputDescription,
     agentId: pickString(toolUseResult, 'agentId'),
     taskId: pickString(toolUseResult, 'taskId'),
     sessionUrl: pickString(toolUseResult, 'sessionUrl'),

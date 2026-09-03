@@ -46,11 +46,26 @@ function agentToolResult(resultContent: string, toolUseResult?: Record<string, u
   }
 }
 
-function renderAgentResult(resultContent: string, toolUseResult?: Record<string, unknown>): HTMLElement {
+function renderAgentResult(
+  resultContent: string,
+  toolUseResult?: Record<string, unknown>,
+  toolUseInput?: Record<string, unknown>,
+): HTMLElement {
   const category: MessageCategory = { kind: 'tool_result' }
+  const toolUseParsed = toolUseInput
+    ? {
+        rawText: '',
+        topLevel: null,
+        parentObject: {
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Agent', input: toolUseInput }] },
+        },
+        wrapper: null,
+      }
+    : undefined
   const result = renderMessageContent(
     agentToolResult(resultContent, toolUseResult),
-    { spanType: 'Agent' },
+    { spanType: 'Agent', toolUseParsed },
     category,
     AgentProvider.CLAUDE_CODE,
   )
@@ -63,7 +78,7 @@ describe('claude Agent tool_result rendering: an async launch', () => {
   // about the work, so it belongs in the field list rather than the headline.
   it('shows the task in the header rather than the agent id', () => {
     const text = renderAgentResult(HARNESS_TEXT, asyncLaunch()).textContent ?? ''
-    expect(text).toContain('Agent \'Verify V1 theme pair freeze\' launched asynchronously')
+    expect(text).toContain('Agent "Verify V1 theme pair freeze" launched asynchronously')
   })
 
   it('lists the agent id, the model and the output file', () => {
@@ -107,7 +122,7 @@ describe('claude Agent tool_result rendering: an async launch', () => {
   it('caps an overlong task description so the outcome stays in the header', () => {
     const description = 'Audit every renderer that clips a one-line header '.repeat(4)
     const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({ description })).textContent ?? ''
-    expect(text).toContain('\u2026\' launched asynchronously')
+    expect(text).toContain('\u2026" launched asynchronously')
     expect(text).not.toContain(description)
   })
 
@@ -115,7 +130,7 @@ describe('claude Agent tool_result rendering: an async launch', () => {
     const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({
       description: 'Freeze the theme pairs\nand then audit them',
     })).textContent ?? ''
-    expect(text).toContain('Agent \'Freeze the theme pairs\' launched asynchronously')
+    expect(text).toContain('Agent "Freeze the theme pairs" launched asynchronously')
     expect(text).not.toContain('and then audit them')
   })
 
@@ -144,7 +159,7 @@ describe('claude Agent tool_result rendering: a remote launch', () => {
       prompt: PROMPT,
       outputFile: OUTPUT_FILE,
     }).textContent ?? ''
-    expect(text).toContain('Agent \'Audit the migration\' launched remotely')
+    expect(text).toContain('Agent "Audit the migration" launched remotely')
     expect(text).toContain('Task ID:')
     expect(text).toContain('task-remote-1')
     expect(text).toContain('Session:')
@@ -189,6 +204,40 @@ describe('claude Agent tool_result rendering: a finished run', () => {
   it('falls through to the catch-all when there is no structured payload at all', () => {
     const text = renderAgentResult('just text').textContent ?? ''
     expect(text).not.toContain('Agent ID:')
+  })
+
+  // A synchronous result omits `description`. The paired tool_use input carries
+  // the model-written task title, so the header shows it instead of the agent id.
+  it('shows the paired tool_use description for a synchronous result', () => {
+    const text = renderAgentResult(
+      '',
+      {
+        status: 'completed',
+        agentId: 'a7bcba10b2b861663',
+        content: [{ type: 'text', text: 'The tide comes in twice a day.' }],
+        resolvedModel: 'claude-opus-5[1m]',
+      },
+      { description: 'SCAN triage + angle recommendation' },
+    ).textContent ?? ''
+    expect(text).toContain('Agent "SCAN triage + angle recommendation" completed')
+    expect(text).not.toContain('Agent a7bcba10b2b861663 completed')
+  })
+
+  // The paired input is the NEW description source, so its blank case must
+  // fall through to the id exactly as a blank result description does.
+  it('falls back to the agent id when the paired tool_use description is blank', () => {
+    const text = renderAgentResult(
+      '',
+      {
+        status: 'completed',
+        agentId: 'a7bcba10b2b861663',
+        content: [{ type: 'text', text: 'The tide comes in twice a day.' }],
+        resolvedModel: 'claude-opus-5[1m]',
+      },
+      { description: '   ' },
+    ).textContent ?? ''
+    expect(text).toContain('Agent a7bcba10b2b861663 completed')
+    expect(text).not.toContain('Agent "')
   })
 })
 
@@ -257,7 +306,7 @@ describe('claude Agent tool_result rendering: field-list edge cases', () => {
       agentId: 'a1',
       description: 'Something',
     })
-    expect(container.textContent).toContain('Agent \'Something\' launched asynchronously')
+    expect(container.textContent).toContain('Agent "Something" launched asynchronously')
     expect(container.textContent).not.toContain('Prompt')
   })
 
