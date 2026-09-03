@@ -3,22 +3,27 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  BOOT_PHASE_READY,
   BOOT_SPLASH_FAIL_TIMEOUT_DETAIL,
   BOOT_SPLASH_FAIL_TIMEOUT_MS,
   BOOT_SPLASH_FAIL_TITLE,
   BOOT_SPLASH_GAP,
   BOOT_SPLASH_LABEL,
   BOOT_SPLASH_LINE_HEIGHT,
+  BOOT_SPLASH_PHASE_ATTRIBUTE,
+  BOOT_SPLASH_PHASES,
   BOOT_SPLASH_RELOAD_LABEL,
   BOOT_SPLASH_SPACE_4,
   BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
   bootFailureWatchdogScript,
+  bootPhaseScript,
   bootSplashDark,
   bootSplashDocumentCss,
   bootSplashLight,
   bootThemeScript,
   removeStaticBootSplash,
+  setBootPhase,
 } from './bootSplashTheme'
 
 describe('boot splash palette', () => {
@@ -426,5 +431,159 @@ describe('boot splash lockstep sources', () => {
   it('does not ship a BootSplash.css.ts twin', () => {
     const path = resolve(here, '../components/common/BootSplash.css.ts')
     expect(() => readFileSync(path, 'utf8')).toThrow()
+  })
+})
+
+// The checklist advances through phases carried by one attribute on <html>.
+// The stylesheet is the only consumer, so the static splash (pre-JS, advanced
+// by an inline script) and the Solid one (advanced by setBootPhase) can never
+// disagree: there is no second state to drift.
+describe('boot phase checklist', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+  })
+
+  // The stylesheet generates one selector per key; a duplicate key would
+  // silently merge two rows' states, and `ready` as a row key would get a
+  // row that no phase ever completes.
+  it('uses unique phase keys, and ready is not one of them', () => {
+    const keys = BOOT_SPLASH_PHASES.map(p => p.key)
+
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(keys).not.toContain(BOOT_PHASE_READY)
+    // The document script advances to the SECOND phase; the order is the
+    // checklist the user reads.
+    expect(BOOT_SPLASH_PHASES[1]!.key).toBe('loading-bundles')
+    expect(BOOT_SPLASH_PHASES[4]!.key).toBe('session')
+  })
+
+  it('advances to loading-bundles the moment the document is parsed, and reads no storage', () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+
+    // eslint-disable-next-line no-new-func -- evaluate the same string the document ships
+    new Function(bootPhaseScript())()
+
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('loading-bundles')
+    // Same contract as the theme script: inline static HTML, before any
+    // identity, so there is no account whose storage it could read.
+    expect(getItem).not.toHaveBeenCalled()
+    getItem.mockRestore()
+  })
+
+  it('setBootPhase writes the exact attribute the stylesheet reads', () => {
+    setBootPhase('session')
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('session')
+
+    setBootPhase(BOOT_PHASE_READY)
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe(BOOT_PHASE_READY)
+  })
+
+  it('styles a done row, an active row, and the default from the attribute', () => {
+    const css = bootSplashDocumentCss()
+
+    for (const { key } of BOOT_SPLASH_PHASES) {
+      expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${key}"] .boot-splash-row-${key} .boot-splash-progress-label{opacity:1}`)
+      expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${key}"] .boot-splash-row-${key} .boot-splash-progress-dots{opacity:1}`)
+    }
+    // Rows above each phase get their check; loading-bundles is phase index 1,
+    // so initializing is the one row it marks done.
+    expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="loading-bundles"] .boot-splash-row-initializing .boot-splash-progress-check{opacity:1}`)
+    expect(css).not.toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="loading-bundles"] .boot-splash-row-mounting .boot-splash-progress-check`)
+    // Before any script runs, the first row is the active one.
+    expect(css).toContain(`html:not([${BOOT_SPLASH_PHASE_ATTRIBUTE}]) .boot-splash-row-initializing .boot-splash-progress-dots{opacity:1}`)
+    // ready checks every row and fades the list in place — in place, because
+    // display:none would move the logo and label the user is reading.
+    expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-row-session .boot-splash-progress-check{opacity:1}`)
+    expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-progress{opacity:0}`)
+  })
+
+  it('neutralizes oat list element rules so the checklist does not reflow when oat lands', () => {
+    const css = bootSplashDocumentCss()
+    const oat = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../node_modules/@knadh/oat/oat.min.css'), 'utf8')
+    // Whitespace-collapsed so the rule formatting cannot break the assertions.
+    const flat = css.replace(/\s+/g, '')
+
+    // oat's element rules for lists: padding-inline-start, margin-block-end,
+    // disc markers. The checklist states the opposite for both the list and
+    // the rows, or the block grew when the app stylesheet arrived.
+    expect(oat).toContain('padding-inline-start')
+    expect(flat).toContain('.boot-splash-progress{margin:0;padding:0;list-style:none')
+    expect(flat).toContain('.boot-splash-progress-row{')
+    expect(flat).toContain('margin:0;padding:0;list-style:none;font:inherit')
+  })
+
+  it('keeps the label readable when the engine cannot clip or mix, and still under reduced motion', () => {
+    const css = bootSplashDocumentCss()
+
+    // The shimmer paints the label transparent and fills the glyphs with a
+    // gradient; an engine lacking either primitive must keep the solid colour
+    // instead of invisible text.
+    expect(css).toContain('@supports ((-webkit-background-clip: text) or (background-clip: text)) and (color: color-mix(in srgb, red, blue))')
+    // Reduced motion still shows the checklist; only the motion stops.
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(css).toContain('animation:none')
+    expect(css).toContain('transition:none')
+  })
+
+  it('mixes the shimmer sweep per polarity from the palette foregrounds', () => {
+    const css = bootSplashDocumentCss()
+
+    // Light: dark glyphs, so the sweep lightens them toward the page colour.
+    // Dark: light glyphs, so the sweep brightens them toward white. Both
+    // stops flow through custom properties — a gradient that named the
+    // foregrounds directly could not answer the polarity rules above it.
+    expect(css).toContain(`--boot-splash-lo:${bootSplashLight.foreground}`)
+    expect(css).toContain(`--boot-splash-hi:color-mix(in srgb, ${bootSplashLight.foreground} 55%, ${bootSplashLight.background})`)
+    expect(css).toContain(`--boot-splash-lo:${bootSplashDark.foreground}`)
+    expect(css).toContain(`--boot-splash-hi:color-mix(in srgb, ${bootSplashDark.foreground} 45%, #ffffff)`)
+    expect(css).toContain('linear-gradient(100deg,var(--boot-splash-lo) 30%,var(--boot-splash-hi) 50%,var(--boot-splash-lo) 70%)')
+  })
+})
+
+// The phase advances are four one-line calls across three files; nothing else
+// connects them. This pins the wiring so a refactor cannot silently strand
+// the checklist on "Loading bundles".
+describe('boot phase wiring', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+
+  function source(relative: string): string {
+    return readFileSync(resolve(here, relative), 'utf8')
+  }
+
+  it('renders the checklist and the phase script into the static document', () => {
+    const entry = source('../entry-server.tsx')
+
+    expect(entry).toContain('<BootSplashProgress />')
+    expect(entry).toContain('{bootPhaseScript()}')
+    // The label carries the shimmer class in both trees or only one shimmers.
+    expect(entry).toContain('class="boot-splash-label"')
+  })
+
+  it('advances to mounting from the entry graph, before mount', () => {
+    const entry = source('../entry-client.tsx')
+
+    expect(entry).toContain(`setBootPhase('mounting')`)
+    // Before removeStaticBootSplash: the static node is still on screen while
+    // the synchronous mount runs, and it must already say the truth.
+    expect(entry.indexOf(`setBootPhase('mounting')`)).toBeLessThan(entry.indexOf('removeStaticBootSplash()'))
+  })
+
+  it('advances around both bootstrap RPCs in AuthProvider', () => {
+    const auth = source('../context/AuthContext.tsx')
+
+    expect(auth).toContain(`setBootPhase('system-info')`)
+    expect(auth).toContain(`setBootPhase('session')`)
+    expect(auth).toContain(`setBootPhase('${BOOT_PHASE_READY}')`)
+  })
+
+  it('keeps the check geometry Lucide Check and the rows on the shared array', () => {
+    const splash = source('../components/common/BootSplash.tsx')
+
+    expect(splash).toContain('points="20 6 9 17 4 12"')
+    expect(splash).toContain('stroke-width="2"')
+    expect(splash).toContain('stroke-linecap="round"')
+    expect(splash).toContain('stroke-linejoin="round"')
+    expect(splash).toContain('<For each={BOOT_SPLASH_PHASES}>')
+    expect(splash).toContain('boot-splash-progress-check')
   })
 })

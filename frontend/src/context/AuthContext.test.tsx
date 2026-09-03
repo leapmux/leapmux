@@ -7,6 +7,7 @@ import { render, screen } from '@solidjs/testing-library'
 import { Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
+import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
 import { hasStorageAccount, KEY_BROWSER_PREFS, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
@@ -115,6 +116,12 @@ describe('authContext', () => {
     mockLoadSystemInfo.mockResolvedValue(undefined)
   })
 
+  // Bootstrap writes the boot splash's phase onto <html>; later tests in this
+  // file would otherwise read a phase a previous test left behind.
+  afterEach(() => {
+    document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+  })
+
   it('restores session from cookie on mount when getCurrentUser succeeds', async () => {
     mockGetCurrentUser.mockResolvedValue({
       user: { id: 'u1', username: 'testuser', isAdmin: false },
@@ -126,6 +133,44 @@ describe('authContext', () => {
       expect(screen.getByTestId('authenticated')).toHaveTextContent('yes')
     })
     expect(screen.getByTestId('username')).toHaveTextContent('testuser')
+  })
+
+  // The boot splash's checklist advances on these phases; both RPCs are held
+  // open with deferreds so each phase is observed, not raced past.
+  it('advances the boot splash phase through bootstrap and lands on ready', async () => {
+    const systemInfo = deferred<void>()
+    const session = deferred<{ user: { id: string, username: string, isAdmin: boolean } }>()
+    mockLoadSystemInfo.mockReturnValue(systemInfo.promise)
+    mockGetCurrentUser.mockReturnValue(session.promise)
+
+    renderWithAuth()
+
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('system-info')
+    })
+
+    systemInfo.resolve()
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('session')
+    })
+
+    session.resolve({ user: { id: 'u1', username: 'testuser', isAdmin: false } })
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
+    })
+  })
+
+  // A failed system-info load aborts bootstrap; the checklist stays on the
+  // step that failed instead of claiming the session restore ran.
+  it('leaves the boot splash phase on the step that failed', async () => {
+    mockLoadSystemInfo.mockRejectedValue(new ConnectError('hub unreachable', Code.Unavailable))
+
+    renderWithAuth()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('bootstrap-error')).not.toHaveTextContent('none')
+    })
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('system-info')
   })
 
   // The two ways bootstrap can fail must stay distinguishable. An expired or

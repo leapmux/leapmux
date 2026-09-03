@@ -1,10 +1,16 @@
 // @refresh reload
 import { mount, StartClient } from '@solidjs/start/client'
 import { showWarnToast } from '~/components/common/Toast'
-import { removeStaticBootSplash } from '~/lib/bootSplashTheme'
+import { removeStaticBootSplash, setBootPhase } from '~/lib/bootSplashTheme'
 import { installIgnorableErrorSuppressor } from '~/lib/ignorableErrorEvents'
 import { installGlobalErrorSink } from '~/lib/installGlobalErrorSink'
 import { scheduleRenderPipelineWarmup } from '~/lib/renderPipelineWarmup'
+
+// This module executing IS the checklist's "Loading bundles" done: advance to
+// "Mounting application" before anything else, so the splash (still the static
+// node until removeStaticBootSplash below) tells the truth during the
+// synchronous mount that follows.
+setBootPhase('mounting')
 
 // Suppress the window errors that carry nothing to act on -- the benign
 // "ResizeObserver loop ..." warning and an error the browser muted to "Script

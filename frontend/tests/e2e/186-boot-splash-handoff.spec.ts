@@ -6,12 +6,18 @@ import {
   BOOT_SPLASH_ICON_HEIGHT,
   BOOT_SPLASH_ICON_WIDTH,
   BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_PHASES,
   BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
   bootSplashDocumentCss,
 } from '../../src/lib/bootSplashTheme'
 import { expect, test } from './fixtures'
 import { appMenuTrigger, loginViaToken } from './helpers/ui'
+
+// The app stylesheet the splash must survive, read from the exact artifact
+// `src/app.tsx` imports. Shared by the geometry describes below.
+const here = dirname(fileURLToPath(import.meta.url))
+const oatCss = readFileSync(resolve(here, '../../node_modules/@knadh/oat/oat.min.css'), 'utf8')
 
 /**
  * The static splash in the served document must yield to the client app.
@@ -38,7 +44,15 @@ test.describe('static boot splash handoff', () => {
     // cannot pass vacuously when the document stops embedding a splash.
     const response = await page.goto('/')
     expect(response, 'goto(/) must return the document response').not.toBeNull()
-    expect(await response!.text()).toContain('id="boot-splash"')
+    const body = await response!.text()
+    expect(body).toContain('id="boot-splash"')
+    // The shipped document must also carry the checklist rows and the phase
+    // script — the splash the user first sees is this markup, before any
+    // module has run.
+    for (const phase of BOOT_SPLASH_PHASES)
+      expect(body, `the document must ship the ${phase.key} row`).toContain(`boot-splash-row-${phase.key}`)
+    expect(body).toContain('boot-splash-progress-check')
+    expect(body).toContain('data-boot-phase')
 
     // The handoff: the entry removes the static splash after mount. A
     // regression leaves the node in `#app` forever, so this assertion fails
@@ -71,9 +85,6 @@ test.describe('static boot splash handoff', () => {
  * shipped markup and adds the shipped oat sheet, which is the whole transition.
  */
 test.describe('boot splash layout across the app stylesheet', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const oatCss = readFileSync(resolve(here, '../../node_modules/@knadh/oat/oat.min.css'), 'utf8')
-
   // Geometry only: a rect, not the artwork. `BootSplashIcon`'s paths are held
   // against `public/icons/leapmux-icon.svg` in the unit suite.
   const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${BOOT_SPLASH_ICON_WIDTH}" height="${BOOT_SPLASH_ICON_HEIGHT}" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0D9488" /></svg>`
@@ -169,5 +180,101 @@ test.describe('boot splash layout across the app stylesheet', () => {
     await page.addStyleTag({ content: oatCss })
     expect(await read()).toEqual(beforeAppCss)
     expect(beforeAppCss.detail.h).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * The progress checklist advances by one attribute on <html>; the stylesheet
+ * does the rest. Two things only a layout engine can check:
+ *
+ * - the logo and the label hold STILL while the checklist advances (rows
+ *   change state by opacity alone, and `ready` fades in place rather than
+ *   collapsing), measured with oat's sheet present so the list element rules
+ *   the splash must neutralize are in play;
+ * - the attribute actually maps to done checks, an active row, and the
+ *   `ready` fade.
+ */
+test.describe('boot splash progress checklist', () => {
+  const check = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="boot-splash-progress-check"><polyline points="20 6 9 17 4 12"/></svg>`
+  const dots = '<span class="boot-splash-progress-dots">'
+    + '<span class="boot-splash-progress-dot"></span>'
+    + '<span class="boot-splash-progress-dot"></span>'
+    + '<span class="boot-splash-progress-dot"></span>'
+    + '</span>'
+  const rows = BOOT_SPLASH_PHASES.map(phase =>
+    `<li class="boot-splash-progress-row boot-splash-row-${phase.key}">`
+    + `<span class="boot-splash-progress-label">${phase.label}</span>`
+    + `<span class="boot-splash-progress-status">${check}${dots}</span>`
+    + '</li>',
+  ).join('')
+  const markup = `<div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}" role="status">`
+    + '<div class="boot-splash-loading">'
+    + `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${BOOT_SPLASH_ICON_WIDTH}" height="${BOOT_SPLASH_ICON_HEIGHT}" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0D9488" /></svg>`
+    + `<p class="boot-splash-label">${BOOT_SPLASH_LABEL}</p>`
+    + `<ul class="boot-splash-progress">${rows}</ul>`
+    + '</div></div>'
+
+  test('the logo and the label hold still across every phase, with oat present', async ({ page }) => {
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${markup}</div>`)
+    await page.addStyleTag({ content: oatCss })
+
+    const read = () => page.evaluate(() => {
+      const round = (n: number) => Math.round(n * 100) / 100
+      const splash = document.querySelector('[data-testid="boot-splash"]')!
+      const iconRect = splash.querySelector('svg')!.getBoundingClientRect()
+      const labelRect = splash.querySelector('p')!.getBoundingClientRect()
+      return {
+        iconTop: round(iconRect.top),
+        iconLeft: round(iconRect.left),
+        gap: round(labelRect.top - iconRect.bottom),
+        labelCenterX: round(labelRect.left + labelRect.width / 2),
+        columnHeight: round(splash.getBoundingClientRect().height),
+      }
+    })
+
+    // No attribute yet: `initializing` is the active row.
+    const baseline = await read()
+    expect(baseline.gap).toBe(16)
+    for (const key of [...BOOT_SPLASH_PHASES.map(p => p.key), 'ready']) {
+      await page.evaluate((phase) => {
+        document.documentElement.setAttribute('data-boot-phase', phase)
+      }, key)
+      expect(await read(), `phase ${key}`).toEqual(baseline)
+    }
+  })
+
+  test('maps the attribute to done checks, one active row, and the ready fade', async ({ page }) => {
+    // Opacity transitions would make every read a race with the animation;
+    // reduced motion switches them off, which is exactly the steady state.
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${markup}</div>`)
+
+    // `mounting` sits mid-list, so all three row states exist at once.
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-boot-phase', 'mounting')
+    })
+
+    const opacity = (selector: string) =>
+      page.locator(selector).evaluate(el => getComputedStyle(el).opacity)
+
+    // Rows above the phase: check on, dots off, label half-muted.
+    await expect.poll(() => opacity('.boot-splash-row-initializing .boot-splash-progress-check')).toBe('1')
+    await expect.poll(() => opacity('.boot-splash-row-loading-bundles .boot-splash-progress-check')).toBe('1')
+    expect(await opacity('.boot-splash-row-initializing .boot-splash-progress-dots')).toBe('0')
+    expect(await opacity('.boot-splash-row-initializing .boot-splash-progress-label')).toBe('0.6')
+    // The phase's own row: dots on, check off, label at full strength.
+    expect(await opacity('.boot-splash-row-mounting .boot-splash-progress-dots')).toBe('1')
+    expect(await opacity('.boot-splash-row-mounting .boot-splash-progress-check')).toBe('0')
+    expect(await opacity('.boot-splash-row-mounting .boot-splash-progress-label')).toBe('1')
+    // Rows below: nothing yet — dimmest label, no check, no dots.
+    expect(await opacity('.boot-splash-row-system-info .boot-splash-progress-label')).toBe('0.45')
+    expect(await opacity('.boot-splash-row-session .boot-splash-progress-check')).toBe('0')
+    expect(await opacity('.boot-splash-row-session .boot-splash-progress-dots')).toBe('0')
+
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-boot-phase', 'ready')
+    })
+    await expect.poll(() => opacity('.boot-splash-row-session .boot-splash-progress-check')).toBe('1')
+    await expect.poll(() => opacity('.boot-splash-progress')).toBe('0')
   })
 })

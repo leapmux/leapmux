@@ -1,8 +1,8 @@
 /**
- * Colours, copy, document CSS, the blocking boot scripts, and the client-side
- * removal of the static splash. Shared by `entry-server.tsx`,
- * `entry-client.tsx`, and `BootSplash` so the static HTML Go serves and the
- * Solid Suspense/AuthGuard chrome cannot drift.
+ * Colours, copy, document CSS, the blocking boot scripts, the boot-phase
+ * checklist, and the client-side removal of the static splash. Shared by
+ * `entry-server.tsx`, `entry-client.tsx`, and `BootSplash` so the static HTML
+ * Go serves and the Solid Suspense/AuthGuard chrome cannot drift.
  *
  * Palette comes from Default theme so the splash matches what `themeStore`
  * paints after hydration.
@@ -69,6 +69,42 @@ export function removeStaticBootSplash(): void {
 /** Visible label; keep the ellipsis character identical in both trees. */
 export const BOOT_SPLASH_LABEL = 'Loading LeapMux…'
 
+/**
+ * The boot checklist, in order. Both trees render these rows identically;
+ * which row is DONE and which is ACTIVE is carried by
+ * {@link BOOT_SPLASH_PHASE_ATTRIBUTE} on `<html>` and styled purely by CSS in
+ * `bootSplashDocumentCss` — there is no shared runtime state, so the pre-JS
+ * static splash and the post-mount Solid splash advance in lockstep.
+ *
+ * The attribute advances in this order: the document script
+ * (`bootPhaseScript`) marks `loading-bundles` once the splash markup is
+ * parsed, `entry-client` marks `mounting` when the entry graph executes,
+ * and `AuthProvider.bootstrap` marks `system-info` → `session` → `ready`
+ * around its two hub RPCs.
+ */
+export const BOOT_SPLASH_PHASES = [
+  { key: 'initializing', label: 'Initializing' },
+  { key: 'loading-bundles', label: 'Loading bundles' },
+  { key: 'mounting', label: 'Mounting application' },
+  { key: 'system-info', label: 'Loading system info' },
+  { key: 'session', label: 'Restoring session' },
+] as const
+
+export type BootPhaseKey = (typeof BOOT_SPLASH_PHASES)[number]['key']
+
+/** Terminal phase: every row checked, the checklist fades. Not a row. */
+export const BOOT_PHASE_READY = 'ready'
+
+export type BootPhase = BootPhaseKey | typeof BOOT_PHASE_READY
+
+/** Attribute on `<html>` that carries the current boot phase to the CSS. */
+export const BOOT_SPLASH_PHASE_ATTRIBUTE = 'data-boot-phase'
+
+/** Client-side phase advance; see {@link BOOT_SPLASH_PHASES} for the order. */
+export function setBootPhase(phase: BootPhase): void {
+  document.documentElement.setAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE, phase)
+}
+
 export const BOOT_SPLASH_ICON_WIDTH = 64
 export const BOOT_SPLASH_ICON_HEIGHT = 64
 
@@ -129,6 +165,47 @@ export const BOOT_SPLASH_FAIL_TIMEOUT_MS = 45_000
 /** Detail when the watchdog timer fires with no earlier script fault. */
 export const BOOT_SPLASH_FAIL_TIMEOUT_DETAIL
   = 'The app did not start in time. Check your network connection, then reload the page.'
+
+/**
+ * Attribute-driven row states for the progress checklist, appended to
+ * `bootSplashDocumentCss`. For each phase value: every row ABOVE it is done
+ * (check visible, label half-muted), the phase's own row is active (full
+ * label, pulsing dots), rows below stay pending. With no attribute at all the
+ * first row is active — the document has rendered but `bootPhaseScript` has
+ * not run yet. `ready` checks every row and fades the whole list in place.
+ *
+ * Selectors are deliberately unscoped: the `boot-splash-progress-*` classes
+ * exist only inside the two splash trees, and the phase attribute persists on
+ * `<html>` after boot, where these rules then match nothing.
+ */
+function bootProgressPhaseCss(): string {
+  const attr = BOOT_SPLASH_PHASE_ATTRIBUTE
+  const rows = (scope: string, keys: readonly string[], suffix: string, decl: string): string =>
+    keys.map(k => `${scope} .boot-splash-row-${k}${suffix}{${decl}}`).join('')
+
+  const phases = BOOT_SPLASH_PHASES.map((phase, index) => {
+    const scope = `html[${attr}="${phase.key}"]`
+    const done = BOOT_SPLASH_PHASES.slice(0, index).map(p => p.key)
+    return [
+      rows(scope, done, ' .boot-splash-progress-label', 'opacity:.6'),
+      rows(scope, done, ' .boot-splash-progress-check', 'opacity:1'),
+      rows(scope, [phase.key], ' .boot-splash-progress-label', 'opacity:1'),
+      rows(scope, [phase.key], ' .boot-splash-progress-dots', 'opacity:1'),
+    ].join('')
+  }).join('')
+
+  const unstarted = `html:not([${attr}])`
+  const ready = `html[${attr}="${BOOT_PHASE_READY}"]`
+  const all = BOOT_SPLASH_PHASES.map(p => p.key)
+  return [
+    phases,
+    rows(unstarted, [BOOT_SPLASH_PHASES[0].key], ' .boot-splash-progress-label', 'opacity:1'),
+    rows(unstarted, [BOOT_SPLASH_PHASES[0].key], ' .boot-splash-progress-dots', 'opacity:1'),
+    rows(ready, all, ' .boot-splash-progress-label', 'opacity:.6'),
+    rows(ready, all, ' .boot-splash-progress-check', 'opacity:1'),
+    `${ready} .boot-splash-progress{opacity:0}`,
+  ].join('')
+}
 
 /**
  * Inline document CSS for the static splash, the Solid `BootSplash` (same
@@ -192,6 +269,16 @@ export function bootSplashDocumentCss(): string {
   const darkFg = bootSplashDark.foreground
   const id = BOOT_SPLASH_STATIC_ID
   const testId = BOOT_SPLASH_TEST_ID
+  // Shimmer gradient stops per polarity: the sweep must be BRIGHTER than the
+  // base glyphs in both polarities — mixed toward the page colour under a dark
+  // foreground, toward white under a light one. The gradient itself only ever
+  // reads these custom properties, never `currentColor`: the shimmer rule
+  // paints the label with `color: transparent`, and a `currentColor` stop
+  // would resolve against exactly that.
+  const lightLo = lightFg
+  const lightHi = `color-mix(in srgb, ${lightFg} 55%, ${lightBg})`
+  const darkLo = darkFg
+  const darkHi = `color-mix(in srgb, ${darkFg} 45%, #ffffff)`
   return `
 html,body,#app{margin:0;height:100%;width:100%;overflow:hidden}
 html,body{background:${lightBg}}
@@ -208,6 +295,8 @@ body{
 }
 #${id},[data-testid="${testId}"]{
   --space-4:${BOOT_SPLASH_SPACE_4};
+  --boot-splash-lo:${lightLo};
+  --boot-splash-hi:${lightHi};
   box-sizing:border-box;width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
   flex-direction:column;gap:${BOOT_SPLASH_GAP};font-family:system-ui,sans-serif;
@@ -219,15 +308,21 @@ body{
 [data-testid="${testId}"]:not(#${id}){min-height:100dvh}
 @media (prefers-color-scheme: dark){
   #${id},[data-testid="${testId}"]{
+    --boot-splash-lo:${darkLo};
+    --boot-splash-hi:${darkHi};
     background:${darkBg};
     color:${darkFg};
   }
 }
 html[data-theme="light"] #${id},html[data-theme="light"] [data-testid="${testId}"]{
+  --boot-splash-lo:${lightLo};
+  --boot-splash-hi:${lightHi};
   background:${lightBg};
   color:${lightFg};
 }
 html[data-theme="dark"] #${id},html[data-theme="dark"] [data-testid="${testId}"]{
+  --boot-splash-lo:${darkLo};
+  --boot-splash-hi:${darkHi};
   background:${darkBg};
   color:${darkFg};
 }
@@ -243,6 +338,64 @@ html[data-theme="dark"] #${id},html[data-theme="dark"] [data-testid="${testId}"]
 #${id} .boot-splash-error button{
   font:inherit;cursor:pointer;padding:.5rem 1rem;border-radius:.375rem;
   border:1px solid currentColor;background:transparent;color:inherit;
+}
+/*
+  Label shimmer. The sweep paints through background-clip, so the text node
+  never changes and assistive tech reads the plain label. Guarded: without
+  clipping, or without color-mix for the stops, the declarations inside would
+  leave a transparent label, so engines lacking either keep the solid colour.
+  The gradient is sized to three element-widths and translated by exactly one
+  period per cycle, so one highlight passes per loop with no visible seam —
+  both gradient ends are the base colour.
+*/
+@supports ((-webkit-background-clip: text) or (background-clip: text)) and (color: color-mix(in srgb, red, blue)){
+  #${id} .boot-splash-label,[data-testid="${testId}"] .boot-splash-label{
+    background:linear-gradient(100deg,var(--boot-splash-lo) 30%,var(--boot-splash-hi) 50%,var(--boot-splash-lo) 70%);
+    background-size:300% 100%;
+    -webkit-background-clip:text;
+    background-clip:text;
+    color:transparent;
+    -webkit-text-fill-color:transparent;
+    animation:boot-splash-shimmer 1.8s linear infinite;
+  }
+}
+@keyframes boot-splash-shimmer{from{background-position:150% 0}to{background-position:0 0}}
+/*
+  Progress checklist. Every row is rendered in both trees from first paint and
+  rows change state by opacity alone, so the block's height — and with it the
+  logo and label positions — never moves while a phase advances. Oat's ul and
+  li element rules (padding-inline-start, margin-block-end, disc markers) are
+  neutralized here rather than restated, per the doctrine above.
+*/
+#${id} .boot-splash-progress,[data-testid="${testId}"] .boot-splash-progress{
+  margin:0;padding:0;list-style:none;
+  display:flex;flex-direction:column;gap:.375rem;
+  font-size:.8rem;line-height:1.25;
+  transition:opacity 150ms;
+}
+#${id} .boot-splash-progress-row,[data-testid="${testId}"] .boot-splash-progress-row{
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+  width:14rem;max-width:100%;margin:0;padding:0;list-style:none;font:inherit;
+}
+/*
+  The middle column centers each label; the flanking 1fr columns give the
+  status slot a fixed start however wide its contents are, so a check
+  appearing can never shift the text. Check and dots share one grid cell.
+*/
+.boot-splash-progress-label{grid-column:2;grid-row:1;text-align:center;white-space:nowrap;opacity:.45;transition:opacity 150ms}
+.boot-splash-progress-status{grid-column:3;grid-row:1;justify-self:start;margin-left:.5rem;width:1rem;display:grid;place-items:center}
+.boot-splash-progress-status>*{grid-area:1/1}
+/* Brand teal, same literal as the BootSplashIcon background rect. */
+.boot-splash-progress-check{display:block;width:.9em;height:.9em;opacity:0;transition:opacity 150ms;color:#0D9488}
+.boot-splash-progress-dots{display:inline-flex;gap:.25rem;opacity:0;transition:opacity 150ms}
+.boot-splash-progress-dot{width:.1875rem;height:.1875rem;border-radius:9999px;background:currentColor;animation:boot-splash-dot 1.2s ease-in-out infinite}
+.boot-splash-progress-dot:nth-child(2){animation-delay:.15s}
+.boot-splash-progress-dot:nth-child(3){animation-delay:.3s}
+@keyframes boot-splash-dot{0%,100%{opacity:.2}50%{opacity:1}}
+${bootProgressPhaseCss()}
+@media (prefers-reduced-motion: reduce){
+  #${id} .boot-splash-label,[data-testid="${testId}"] .boot-splash-label,.boot-splash-progress-dot{animation:none}
+  .boot-splash-progress,.boot-splash-progress-label,.boot-splash-progress-check,.boot-splash-progress-dots{transition:none}
 }
 `.trim()
 }
@@ -272,6 +425,21 @@ export function bootThemeScript(): string {
   const lightBg = bootSplashLight.background
   const darkBg = bootSplashDark.background
   return `(function(){try{var dark=window.matchMedia("(prefers-color-scheme: dark)").matches;document.documentElement.setAttribute("data-theme",dark?"dark":"light");var fallback=document.querySelector('meta[name="theme-color"]:not([media])');if(fallback)fallback.setAttribute("content",dark?${JSON.stringify(darkBg)}:${JSON.stringify(lightBg)});}catch(e){}})();`
+}
+
+/**
+ * Inline document script: advance the splash checklist to "Loading bundles"
+ * the instant the static splash markup is parsed — "Initializing" is already
+ * true by the time this runs, so the checklist starts honest. The entry graph
+ * takes over from here; `entry-client` is the next advance.
+ *
+ * Like the other boot scripts: inline, no modules, reads nothing, and wrapped
+ * in try/catch so a broken DOM never breaks the document.
+ */
+export function bootPhaseScript(): string {
+  const attr = BOOT_SPLASH_PHASE_ATTRIBUTE
+  const phase = BOOT_SPLASH_PHASES[1].key
+  return `(function(){try{document.documentElement.setAttribute(${JSON.stringify(attr)},${JSON.stringify(phase)});}catch(e){}})();`
 }
 
 /**
