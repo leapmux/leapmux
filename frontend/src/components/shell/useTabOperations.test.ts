@@ -23,7 +23,7 @@ import { createTestFloatingWindowStore, createTestTabStores } from '~/test-suppo
 // `mock.calls[0]` and narrow `req` with a per-call `as { ... }` cast.
 const mockInspectLastTabClose = vi.fn((..._args: unknown[]) => Promise.resolve({ shouldPrompt: false } as unknown))
 const mockPushBranch = vi.fn((..._args: unknown[]) => {})
-const mockRegisterFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
+const mockRegisterTabPayload = vi.fn((..._args: unknown[]) => Promise.resolve({}))
 const mockRevokeFileTabPath = vi.fn((..._args: unknown[]) => Promise.resolve({}))
 const mockCloseAgent = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
 const mockCloseTerminal = vi.fn((..._args: unknown[]) => Promise.resolve({ result: undefined }))
@@ -33,8 +33,8 @@ const mockShowInfoToast = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
   inspectLastTabClose: (...args: unknown[]) => mockInspectLastTabClose(...args),
   pushBranch: (...args: unknown[]) => mockPushBranch(...args),
-  registerFileTabPath: (...args: unknown[]) => mockRegisterFileTabPath(...args),
-  revokeFileTabPath: (...args: unknown[]) => mockRevokeFileTabPath(...args),
+  registerTabPayload: (...args: unknown[]) => mockRegisterTabPayload(...args),
+  revokeTabPayload: (...args: unknown[]) => mockRevokeFileTabPath(...args),
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args),
   closeTerminal: (...args: unknown[]) => mockCloseTerminal(...args),
 }))
@@ -173,33 +173,118 @@ describe('useTabOperations', () => {
     mockInspectLastTabClose.mockReset()
     mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
     mockPushBranch.mockReset()
-    mockRegisterFileTabPath.mockReset()
+    mockRegisterTabPayload.mockReset()
     mockRevokeFileTabPath.mockReset()
-    mockRegisterFileTabPath.mockImplementation(() => Promise.resolve({}))
+    mockRegisterTabPayload.mockImplementation(() => Promise.resolve({}))
     mockRevokeFileTabPath.mockImplementation(() => Promise.resolve({}))
     mockShowWarnToast.mockReset()
     mockShowInfoToast.mockReset()
   })
 
   describe('file-tab E2EE worker round-trip', () => {
-    it('handleFileOpen calls RegisterFileTabPath with the local path and the originating tab\'s working dir', async () => {
+    it('handleFileOpen calls RegisterTabPayload with the local path and the originating tab\'s working dir', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
           ops.handleFileOpen('/tmp/nested/myfile.go')
           // Allow the fire-and-forget E2EE call to dispatch.
           await Promise.resolve()
-          expect(mockRegisterFileTabPath).toHaveBeenCalledTimes(1)
-          const [workerId, req] = mockRegisterFileTabPath.mock.calls[0]
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRegisterTabPayload.mock.calls[0]
           expect(workerId).toBe('w-1')
           // The working dir is the CONTEXT's, not the file's own directory:
           // it is what the worker answers this tab's branch-context questions
           // from (last-tab close, sibling scan, push), so it has to name the
           // repo the user is working in rather than wherever the file sits.
           expect(req).toMatchObject({
-            filePath: '/tmp/nested/myfile.go',
-            workingDir: '/tmp',
+            payload: {
+              workingDir: '/tmp',
+              kind: { case: 'file', value: { filePath: '/tmp/nested/myfile.go' } },
+            },
           })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen registers a message reference, never the pixels', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setup()
+          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          await Promise.resolve()
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          const [workerId, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(workerId).toBe('w-1')
+          expect(req).toMatchObject({
+            payload: {
+              workingDir: '/tmp',
+              kind: {
+                case: 'image',
+                value: { agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' },
+              },
+            },
+          })
+          // The whole point of the reference: a screenshot must not reach the
+          // tab layer, which the hub sees the identity half of.
+          expect(JSON.stringify(req, (_k, v) => typeof v === 'bigint' ? String(v) : v))
+            .not
+            .toContain('base64')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen focuses the existing tab instead of opening a second one', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          await flush()
+          const opened = view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)
+          expect(opened).toHaveLength(1)
+
+          mockRegisterTabPayload.mockClear()
+          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          await flush()
+          expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
+          expect(mockRegisterTabPayload).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen opens a separate tab for a different image of the same message', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 0, title: 'Read' })
+          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' })
+          await flush()
+          expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(2)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleImageOpen rolls the tab back when the payload registration fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          mockRegisterTabPayload.mockRejectedValueOnce(new Error('channel closed'))
+          ops.handleImageOpen({ agentId: 'agent-a', seq: 42n, imageIndex: 0, title: 'Read' })
+          await flush()
+          // Leaving it would strand a tab no peer -- and no reload -- can
+          // resolve, because nothing on the worker describes it.
+          expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(0)
         }
         finally {
           dispose()
@@ -246,7 +331,7 @@ describe('useTabOperations', () => {
           // The seeded agent tabs are outside this workspace's tree; the
           // claim is that no FILE tab joined them.
           expect(view.all().some(t => t.type === TabType.FILE), 'nothing was placed').toBe(false)
-          expect(mockRegisterFileTabPath, 'no phantom row for an unplaced tab id').not.toHaveBeenCalled()
+          expect(mockRegisterTabPayload, 'no phantom row for an unplaced tab id').not.toHaveBeenCalled()
           expect(mockShowWarnToast).toHaveBeenCalled()
         }
         finally {
@@ -395,7 +480,7 @@ describe('useTabOperations', () => {
     it('handleFileOpen rolls back the optimistic tab on RegisterFileTabPath failure', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockRegisterFileTabPath.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
+          mockRegisterTabPayload.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
           const { view, ops } = setup()
           ops.handleFileOpen('/tmp/myfile.go')
           // Tab added optimistically.
@@ -1041,7 +1126,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
     })
   })
 
-  it('closes a FILE tab in another workspace via revokeFileTabPath', async () => {
+  it('closes a FILE tab in another workspace via revokeTabPayload', async () => {
     await createRoot(async (dispose) => {
       const { ops, tab, view, handleAgentClose, handleTerminalClose }
         = setupCrossWorkspace(TabType.FILE, 'file-cross', { filePath: '/repo/x.md' })

@@ -110,7 +110,7 @@ describe('codexMcpFromItem', () => {
         contentItems: [{ type: 'inputImage', imageUrl: 'https://example.com/x.png' }],
       })
       expect(source?.content).toEqual([
-        { type: 'image', urlOrData: 'https://example.com/x.png' },
+        { type: 'image', source: { url: 'https://example.com/x.png' } },
       ])
     })
 

@@ -183,7 +183,7 @@ Building from source is for contributors and administrators who want to compile 
 
 ### Prerequisites
 
-- **Go** 1.27.0 or later
+- **Go** 1.27.1 or later
 - **Node.js** 24 or later
 - **Bun** 1.4.0 or later — JavaScript runtime and package manager
 - **Task** — the build runner

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { branchGroupRow, clickBranchMenuItem, loginViaToken, openBranchMenu, openWorkspace, pickMenuOption } from './helpers/ui'
+import { branchGroupRow, clickBranchMenuItem, loginViaToken, openBranchMenu, openWorkspace, pickMenuOption, workspaceRow } from './helpers/ui'
 import {
   branchExists,
   createGitRepo,
@@ -29,7 +29,7 @@ async function confirmDelete(page: Page, kind: 'branch' | 'worktree') {
 }
 
 test.describe('Branch context menu', () => {
-  test('three-dot menu opens with Change and Delete items', async ({
+  test('three-dot menu opens with the git items, the delete item and the new-tab sections', async ({
     page,
     leapmuxServer,
   }) => {
@@ -52,11 +52,186 @@ test.describe('Branch context menu', () => {
     await expect(branchRow).toBeVisible()
     await openBranchMenu(page, branchRow)
 
-    // A worktree workspace, so the delete item names the worktree. Change
-    // keeps its name: a worktree has a branch checked out either way.
-    await expect(page.getByRole('menuitem', { name: 'Change branch...' })).toBeVisible()
+    // One item per git mode, so the mode is visible before the dialog opens.
+    for (const name of ['Switch to branch...', 'Create new branch...', 'Create new worktree...'])
+      await expect(page.getByRole('menuitem', { name })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'Change branch...' })).toHaveCount(0)
+
+    // A worktree workspace, so the delete item names the worktree. The change
+    // items keep their names: a worktree has a branch checked out either way.
     await expect(page.getByRole('menuitem', { name: 'Delete worktree...' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'Delete branch...' })).toHaveCount(0)
+
+    // The Agents / Terminals block, listing the BRANCH worker's own shells.
+    const menu = page.locator('menu[popover]:visible')
+    await expect(menu.getByText('Agents', { exact: true })).toBeVisible()
+    await expect(menu.getByText('Terminals', { exact: true })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'New agent...' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: 'New terminal...' })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: /\/bin\// }).first()).toBeVisible()
+  })
+
+  // Every item of this menu either changes branch state or opens a tab, and an
+  // archived workspace refuses both — so there is nothing left to dim and the
+  // row carries no menu at all.
+  test('an archived workspace\'s branch row carries no menu', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-archived-repo')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Archived WS',
+      repoDir,
+      'archived-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    // Scoped to THIS workspace's subtree, not `branchGroupRow`: that one takes
+    // the first visible row in the whole sidebar, and every workspace an
+    // earlier test expanded still has one. Archiving moves this workspace to
+    // another section, so the unscoped locator drifted onto a live workspace's
+    // row and read its menu as this row's.
+    // `:visible` as well, because the shell mounts the sidebar twice.
+    const row = page
+      .locator(`[data-testid="workspace-children-${workspaceId}"] [data-testid="tab-tree-branch-group"]:visible`)
+      .first()
+
+    // The menu is there while the workspace is live, so its absence below is
+    // the archive doing it rather than the row never having had one.
+    await expect(row).toContainText('archived-branch')
+    await expect(row.locator('[aria-expanded]')).toHaveCount(1)
+
+    const wsRow = workspaceRow(page, workspaceId)
+    await wsRow.hover()
+    await wsRow.locator('button').first().click()
+    await page.getByRole('menuitem', { name: 'Archive' }).click()
+    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+    await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
+
+    // The row itself survives — it still groups the tabs and carries the diff
+    // badge — but its kebab is gone, and with it every item.
+    await expect(row).toBeVisible()
+    await expect(row).toContainText('archived-branch')
+    await expect(row.locator('[aria-expanded]')).toHaveCount(0)
+  })
+
+  // The three items differ only in the radio the dialog opens on, and that is
+  // the whole point of splitting them: the mode used to be invisible until the
+  // dialog was already open on "Switch to branch".
+  test('each change item opens the dialog on its own mode', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-mode-repo')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Mode WS',
+      repoDir,
+      'mode-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    const dialog = page.getByRole('dialog')
+    for (const [item, mode] of [
+      ['Switch to branch...', 'Switch to branch'],
+      ['Create new branch...', 'Create new branch'],
+      ['Create new worktree...', 'Create new worktree'],
+    ]) {
+      await clickBranchMenuItem(page, branchGroupRow(page), item)
+      await expect(dialog.getByRole('heading', { name: 'Change branch' })).toBeVisible()
+      await expect(dialog.getByRole('radio', { name: mode })).toBeChecked()
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+      await expect(dialog.getByRole('heading', { name: 'Change branch' })).not.toBeVisible()
+      // The menu STAYS OPEN behind the dialog -- the modal takes the click, so
+      // the popover's light dismiss never fires -- and it closes only once the
+      // dialog is gone. Wait for that: `openBranchMenu` skips its trigger when
+      // the item still reads visible, so the next round would click an item
+      // that vanishes under it and wait out the whole action timeout.
+      await expect(page.locator('menu[popover]:visible')).toHaveCount(0)
+    }
+  })
+
+  // The branch row states a (worker, working directory) pair that a new agent
+  // or terminal almost always wants. Before this, the only way to start one
+  // there was the tab bar's menu, which acts on the CURRENT tab instead.
+  //
+  // What this covers is the WIRING, end to end: a shell item reaches the
+  // worker's OpenTerminal and the tab lands under the branch it was opened
+  // from. Which directory each surface chooses is pinned by the unit tests --
+  // both surfaces resolve to the same one in a single-repo workspace, so an
+  // E2E here could not tell them apart.
+  test('opens a terminal from the menu\'s shell item', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-newtab-repo')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch New Tab WS',
+      repoDir,
+      'newtab-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    const terminalTabs = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    const before = await terminalTabs.count()
+    await openBranchMenu(page, branchGroupRow(page))
+    await page.locator('menu[popover]:visible').getByRole('menuitem', { name: /\/bin\// }).first().click()
+
+    await expect(terminalTabs).toHaveCount(before + 1)
+    // Under the branch row it was opened from, not in the ungrouped bucket.
+    await expect(branchGroupRow(page)).toContainText('newtab-branch')
+  })
+
+  test('opens the New agent dialog from the menu', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-prefill-repo')
+    const realRepoDir = realpathSync(repoDir)
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Prefill WS',
+      repoDir,
+      'prefill-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    await clickBranchMenuItem(page, branchGroupRow(page), 'New agent...')
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByRole('heading', { name: 'New Agent' })).toBeVisible()
+    // The repository the branch row named. `NewAgentDialog` remaps a worktree
+    // root to the canonical repo root for its git options, exactly as it does
+    // from the tab bar (see 072), so this is the repo root either way.
+    await expect(dialog.getByPlaceholder('Enter path...')).toHaveValue(realRepoDir)
+
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
   })
 
   test('delete branch (worktree variant) removes worktree and branch', async ({
@@ -294,7 +469,7 @@ test.describe('Branch context menu', () => {
     )
   })
 
-  test('change branch dialog opens in switch-to mode with all git options', async ({
+  test('change branch dialog offers all three git options and cancels cleanly', async ({
     page,
     leapmuxServer,
   }) => {
@@ -313,19 +488,15 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    await clickBranchMenuItem(page, branchGroupRow(page), 'Change branch...')
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Switch to branch...')
 
     await expect(page.getByRole('heading', { name: 'Change branch' })).toBeVisible()
-    // The dialog (via GitOptions) does not render the current branch name
-    // as text -- the switch-to picker excludes the current branch and
-    // there's no standalone "current branch" label -- so assert the
-    // default mode state instead: SwitchBranch is preselected.
-    await expect(page.getByRole('dialog').getByRole('radio', { name: 'Switch to branch' })).toBeChecked()
-
-    // Switch-to mode is the default; the three radios are visible.
-    await expect(page.getByRole('dialog').getByText('Switch to branch')).toBeVisible()
-    await expect(page.getByRole('dialog').getByText('Create new branch')).toBeVisible()
-    await expect(page.getByRole('dialog').getByText('Create new worktree')).toBeVisible()
+    // Whichever item opened it, the dialog still offers all three modes: the
+    // menu item preselects a radio, it does not narrow the dialog. Which radio
+    // each item selects is pinned by the mode test above.
+    await expect(page.getByRole('dialog').getByText('Switch to branch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('Create new branch', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog').getByText('Create new worktree', { exact: true })).toBeVisible()
 
     // Cancel closes the dialog without changes.
     await page.getByRole('button', { name: 'Cancel' }).click()

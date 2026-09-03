@@ -1,12 +1,13 @@
 // Per-worker subscriber for the worker's E2EE-only
 // `WatchWorkerPrivateEvents` stream. Decoded events — `TabRenamed`,
-// `FileTabPathRegistered`, `FileTabPathRevoked` — are surfaced to the
+// `TabPayloadRegistered`, `TabPayloadRevoked` — are surfaced to the
 // caller; reconnect happens transparently. The worker emits a one-shot
-// bootstrap reply at subscribe time (one `FileTabPathRegistered` per
-// `worker_file_tabs` row the caller owns) so a late-joining client
-// receives the full path cache before any live events.
+// bootstrap reply at subscribe time (one `TabPayloadRegistered` per
+// `worker_tab_payloads` row the caller owns) so a late-joining client
+// receives the full payload cache before any live events.
 
 import type { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { TabPayloadView } from '~/lib/tabPayload'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { channelManager } from '~/api/workerRpc'
 import {
@@ -15,6 +16,7 @@ import {
 } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
+import { tabPayloadView } from '~/lib/tabPayload'
 
 const log = createLogger('workerPrivateEvents')
 
@@ -27,21 +29,21 @@ interface OpenStreamOpts {
   workerId: string
   onTabRenamed: (evt: { tabId: string, tabType: TabType, title: string, originClientId: string }) => void
   /**
-   * Optional callback for `FileTabPathRegistered` events — fires both
+   * Optional callback for `TabPayloadRegistered` events — fires both
    * during the bootstrap replay and on live updates. Idempotent on the
    * receiver side: it patches `tabMetadata`, which drops a write equal to
    * what is stored.
    *
-   * `workingDir` is the tab's git context as the WORKER resolved it (see
-   * the RPC's proto doc), so a client that learns of the tab here groups it
-   * exactly where the client that opened it did.
+   * `payload.workingDir` is the tab's git context as the WORKER resolved it
+   * (see the RPC's proto doc), so a client that learns of the tab here groups
+   * it exactly where the client that opened it did.
    */
-  onFileTabPathRegistered?: (evt: { tabId: string, filePath: string, workingDir: string }) => void
+  onTabPayloadRegistered?: (evt: { tabId: string, payload: TabPayloadView }) => void
   /**
-   * Optional callback for `FileTabPathRevoked` events. Receiver drops
+   * Optional callback for `TabPayloadRevoked` events. Receiver drops
    * the (tab_id → path) entry from the local cache.
    */
-  onFileTabPathRevoked?: (evt: { tabId: string }) => void
+  onTabPayloadRevoked?: (evt: { tabId: string }) => void
 }
 
 /**
@@ -111,14 +113,20 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                   })
                   break
                 }
-                case 'fileTabPathRegistered': {
+                case 'tabPayloadRegistered': {
                   const r = evt.event.value
-                  opts.onFileTabPathRegistered?.({ tabId: r.tabId, filePath: r.filePath, workingDir: r.workingDir })
+                  // A payload this client cannot read -- a tab kind a newer
+                  // peer registered -- is dropped rather than half-applied:
+                  // patching a partial shape would leave a tab claiming to be
+                  // a FILE with no path.
+                  const payload = tabPayloadView(r.payload)
+                  if (payload)
+                    opts.onTabPayloadRegistered?.({ tabId: r.tabId, payload })
                   break
                 }
-                case 'fileTabPathRevoked': {
+                case 'tabPayloadRevoked': {
                   const r = evt.event.value
-                  opts.onFileTabPathRevoked?.({ tabId: r.tabId })
+                  opts.onTabPayloadRevoked?.({ tabId: r.tabId })
                   break
                 }
               }

@@ -363,6 +363,8 @@ func tabTypeWireName(t leapmuxv1.TabType) string {
 		return "terminal"
 	case leapmuxv1.TabType_TAB_TYPE_FILE:
 		return "file"
+	case leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		return "image"
 	default:
 		return ""
 	}

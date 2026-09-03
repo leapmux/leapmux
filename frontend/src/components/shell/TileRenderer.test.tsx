@@ -129,8 +129,8 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
         newAgentLoadingProvider: () => null,
         newTerminalLoading: () => false,
         newShellLoading: () => false,
-        newAgentDialog: { open: () => {}, close: () => {}, isOpen: () => false },
-        newTerminalDialog: { open: () => {}, close: () => {}, isOpen: () => false },
+        newAgentDialog: { open: () => {}, close: () => {}, value: () => null },
+        newTerminalDialog: { open: () => {}, close: () => {}, value: () => null },
       },
       chrome: {
         isMobileLayout: () => false,

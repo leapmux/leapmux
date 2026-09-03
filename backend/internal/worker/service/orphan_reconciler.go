@@ -31,7 +31,7 @@ import (
 // explicit Trigger() calls (e.g. on worker reconnect).
 type OrphanReconciler struct {
 	queries  *db.Queries
-	files    *FileTabPathStore
+	files    *TabPayloadStore
 	listFn   func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error)
 	now      func() time.Time
 	interval time.Duration
@@ -125,15 +125,15 @@ type OrphanReconcilerOptions struct {
 }
 
 // NewOrphanReconciler binds a reconciler to the worker's local DB
-// queries plus the FileTabPathStore for path mutations. listFn is
+// queries plus the TabPayloadStore for path mutations. listFn is
 // the hub-side ListOwnedTabsForWorker call (injected so tests can
 // substitute a fake).
 //
 // listFn hands back the WHOLE response, not just its tabs: the reap decision
-// needs the owner the response declares (see reconcileFileTabs), and a
+// needs the owner the response declares (see reconcileTabPayloads), and a
 // signature that returned the tab list alone would let a caller drop that owner
 // on the floor and turn a narrow list into a universal absence.
-func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error), opts OrphanReconcilerOptions) *OrphanReconciler {
+func NewOrphanReconciler(queries *db.Queries, files *TabPayloadStore, listFn func(ctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error), opts OrphanReconcilerOptions) *OrphanReconciler {
 	if opts.Interval <= 0 {
 		opts.Interval = time.Hour
 	}
@@ -294,7 +294,7 @@ func (r *OrphanReconciler) Stop() {
 // ownedTabKey identifies one reconcilable tab on both sides of the
 // comparison: the hub's workspace_tab_owned projection and the worker's local
 // rows. userID is part of the key because workspace_tab_owned and
-// worker_file_tabs are both keyed by (user_id, tab_id) -- a FILE tab id is
+// worker_tab_payloads are both keyed by (user_id, tab_id) -- a FILE tab id is
 // unique only within a user, so an owner-blind key looks up user B's local row
 // in a map built from user A's hub rows, misses, and reaps a live tab.
 //
@@ -374,7 +374,7 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// mint gate above.
 	now := r.now()
 	next := make(map[ownedTabKey]time.Time)
-	r.reconcileFileTabs(ctx, hubByKey, owner, now, next)
+	r.reconcileTabPayloads(ctx, hubByKey, owner, now, next)
 	r.reconcileAgents(ctx, hubByKey, now, next)
 	r.reconcileTerminals(ctx, hubByKey, now, next)
 	// Assigned ONLY here, on the path where all three cases ran. Every early
@@ -414,7 +414,7 @@ func (r *OrphanReconciler) reapDue(k ownedTabKey, now time.Time, next map[ownedT
 }
 
 // hasAnyLocalRows reports whether at least one of the three reconciled local
-// tables (worker_file_tabs, agents, terminals) has any row, and whether every
+// tables (worker_tab_payloads, agents, terminals) has any row, and whether every
 // probe actually answered. Used by reconcileOnce to short-circuit before the
 // hub RPC on idle workers.
 //
@@ -428,9 +428,9 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 		return true, true
 	}
 	ok = true
-	fileTabs, err := r.queries.ListAllWorkerFileTabs(ctx)
+	fileTabs, err := r.queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
-		r.logger.Warn("orphan reconciler: probe worker_file_tabs", "err", err)
+		r.logger.Warn("orphan reconciler: probe worker_tab_payloads", "err", err)
 		ok = false
 	}
 	agentIDs, err := r.queries.ListAllAgentIDs(ctx)
@@ -507,7 +507,7 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 	return true
 }
 
-// reconcileFileTabs reaps local file-tab rows the hub no longer lists.
+// reconcileTabPayloads reaps local file-tab rows the hub no longer lists.
 //
 // owner is the single owner the hub response is authoritative about -- exactly
 // one, the calling worker's registrant, because the hub's query binds user_id
@@ -521,17 +521,21 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 // and stating that at the destructive line is what keeps a future reader from
 // widening the read and silently widening the reap with it. Pinned by
 // TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner.
-func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time) {
-	rows, err := r.queries.ListAllWorkerFileTabs(ctx)
+func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time) {
+	rows, err := r.queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
-		r.logger.Warn("orphan reconciler: list worker_file_tabs", "err", err)
+		r.logger.Warn("orphan reconciler: list worker_tab_payloads", "err", err)
 		return
 	}
 	for _, row := range rows {
-		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_FILE, row.TabID, row.UserID)
+		// The row's OWN kind, not a constant: one table now holds both FILE and
+		// IMAGE rows, and keying an IMAGE row as FILE would miss the hub's entry
+		// for it and reap a live tab.
+		tabType := leapmuxv1.TabType(row.TabType)
+		k := newOwnedTabKey(tabType, row.TabID, row.UserID)
 		if _, ok := hubByKey[k]; !ok {
 			// INVARIANT: absence is only evidence of an orphan for the owner
-			// the response covers. ListAllWorkerFileTabs walks EVERY owner's
+			// the response covers. ListAllWorkerTabPayloads walks EVERY owner's
 			// rows, while the hub list is scoped to one. So for any
 			// other owner "not in hubByKey" means "not asked about", not
 			// "deleted", and reaping on that would destroy a live tab (its
@@ -572,7 +576,7 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 			// reconciler reap it. Keeping the link is what leaves the worktree a
 			// GC candidate for reapWorktree to reclaim under its unsaved-work
 			// probe.
-			r.closeTab(leapmuxv1.TabType_TAB_TYPE_FILE, row.UserID, row.TabID)
+			r.closeTab(tabType, row.UserID, row.TabID)
 		}
 	}
 }

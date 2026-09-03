@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import { createEffect, createSignal, Match, on, Show, Switch } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
@@ -22,7 +23,7 @@ import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { useChangeBranchInspect } from '~/hooks/useChangeBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
-import { fieldsForCreateWorktree, GitMode, isChangeBranchMode, useGitModeState } from '~/hooks/useGitModeState'
+import { changeBranchInitialIntent, fieldsForCreateWorktree, GitMode, isChangeBranchMode, useGitModeState } from '~/hooks/useGitModeState'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { flavorFromOs } from '~/lib/paths'
@@ -43,8 +44,6 @@ interface ChangeBranchDialogProps {
    * worktree root for linked-worktree tabs.
    */
   gitToplevel: string
-  /** Workspace to associate any new agent tab with (worktree mode). */
-  workspaceId: string
   /**
    * Current branch label on the row that opened the dialog. Threaded so
    * the dialog can seed `currentBranch` synchronously instead of waiting
@@ -61,6 +60,12 @@ interface ChangeBranchDialogProps {
    * RPC lands.
    */
   isWorktree: boolean
+  /**
+   * The mode the dialog opens on. The branch context menu offers one item per
+   * mode, so the item the user picked decides which radio is already selected
+   * when the dialog paints.
+   */
+  initialMode: ChangeBranchMode
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
   /**
@@ -103,8 +108,8 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   }
   // The dialog renders SwitchBranch / CreateBranch / CreateWorktree
   // (Current is intentionally excluded). Seed the parent intent so
-  // GitOptions paints SwitchBranch selected on first render.
-  const gitMode = useGitModeState({ mode: GitMode.SwitchBranch, checkoutBranch: '', checkoutBranchError: null })
+  // GitOptions paints the caller's mode selected on first render.
+  const gitMode = useGitModeState(changeBranchInitialIntent(props.initialMode))
   // One bundle RPC at dialog open returns path-info + branches + dirty
   // in a single round trip. The resulting pathInfo plugs into GitOptions
   // exactly like useGitPathInfo would; the branches list rides through
@@ -140,10 +145,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   const shellState = useAvailableShells(
     () => {
       if (gitMode.gitMode() === GitMode.CreateWorktree && worktreeTabType() === TabType.TERMINAL) {
-        return {
-          workspaceId: props.workspaceId,
-          workerId: props.workerId,
-        }
+        return { workerId: props.workerId }
       }
       return null
     },
@@ -239,8 +241,12 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
         // The narrowed intent already proves we're in CreateWorktree, so
         // project its fields directly instead of routing through
         // `toGitFields()` (which re-derives the mode from `currentIntent`).
+        // No workspace id: neither OpenAgentRequest nor OpenTerminalRequest has
+        // a field for one -- a Worker stores no workspace, and which workspace
+        // the tab lands in is decided by the CRDT tile the CLIENT places it on.
+        // The key used to be spread in here and was dropped on the wire, which
+        // read as if the Worker filed the tab for a non-active workspace.
         const worktreeArgs = {
-          workspaceId: props.workspaceId,
           workerId: props.workerId,
           workingDir: props.gitToplevel,
           ...fieldsForCreateWorktree(intent),

@@ -12,10 +12,10 @@ LeapMux keeps a workspace's **layout** in sync across every client where you hav
 When a workspace is open in more than one of your clients, these match within about one frame plus one network round-trip:
 
 - **The tiling tree** — splits, grids, and leaf tiles, including dragging a divider to resize.
-- **Tabs** — agent, terminal, and file tabs: whether they exist, their order, which tile they live in, and which Worker hosts them.
+- **Tabs** — agent, terminal, file, and image tabs: whether they exist, their order, which tile they live in, and which Worker hosts them.
 - **Floating windows** — position, size, opacity, and the tiles inside them.
 - **Workspace lifecycle** — creating, renaming, or deleting a workspace updates the sidebar everywhere.
-- **Tab titles and file-tab paths** — these are sent over the Worker's end-to-end-encrypted channel, not the Hub's layout sync, so the Hub never sees them.
+- **Tab titles, file-tab paths, and image-tab references** — these are sent over the Worker's end-to-end-encrypted channel, not the Hub's layout sync, so the Hub never sees them. An image tab carries a reference to the chat message the image came in, never the image itself, so your other clients fetch the picture from the Worker the same way this one did.
 
 For the layout primitives themselves, see [Tabs & Layout](/docs/using/tabs-and-layout/).
 

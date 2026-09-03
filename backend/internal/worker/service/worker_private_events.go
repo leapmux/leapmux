@@ -10,7 +10,7 @@ import (
 )
 
 // PrivateEventsBus is the worker-local pub/sub for E2EE-only tab events
-// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked). It mirrors the
+// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked). It mirrors the
 // hub-side WorkspaceEventBus shape but lives on the worker so titles and
 // paths never leave E2EE.
 //
@@ -22,7 +22,7 @@ import (
 // its first tab's events undelivered.
 //
 // The owner axis is not tenancy bookkeeping the worker gate already covers --
-// it is the same id-uniqueness requirement worker_file_tabs is keyed by (a
+// it is the same id-uniqueness requirement worker_tab_payloads is keyed by (a
 // FILE tab id is minted client-side and unique only within a user). Keying the
 // bus the same way keeps "which rows may this subscriber see?" answered
 // identically at the bus and at the store.
@@ -115,32 +115,31 @@ func (b *PrivateEventsBus) PublishTabRenamed(owner userid.UserID, tabID string, 
 	})
 }
 
-// PublishFileTabPathRegistered broadcasts a FileTabPathRegistered event to
-// owner's subscribers. The path is plaintext on the wire — the bus only
+// PublishTabPayloadRegistered broadcasts a TabPayloadRegistered event to
+// owner's subscribers. The payload is plaintext on the wire — the bus only
 // carries E2EE-bound traffic, so callers must ensure the surrounding
 // transport is E2EE.
 //
-// workingDir is the RESOLVED value the store persisted, not the one the client
-// sent: a peer that groups the tab by what it hears here has to see the same
-// dir the worker will answer branch-context questions with.
-func (b *PrivateEventsBus) PublishFileTabPathRegistered(owner userid.UserID, tabID, filePath, workingDir string) {
+// The payload is the STORED one, not the one the client sent: its working_dir
+// is the resolved value, and a peer that groups the tab by what it hears here
+// has to see the same dir the worker will answer branch-context questions with.
+func (b *PrivateEventsBus) PublishTabPayloadRegistered(owner userid.UserID, tabID string, payload *leapmuxv1.TabPayload) {
 	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
-		Event: &leapmuxv1.WorkerPrivateEvent_FileTabPathRegistered{
-			FileTabPathRegistered: &leapmuxv1.FileTabPathRegistered{
-				TabId:      tabID,
-				FilePath:   filePath,
-				WorkingDir: workingDir,
+		Event: &leapmuxv1.WorkerPrivateEvent_TabPayloadRegistered{
+			TabPayloadRegistered: &leapmuxv1.TabPayloadRegistered{
+				TabId:   tabID,
+				Payload: payload,
 			},
 		},
 	})
 }
 
-// PublishFileTabPathRevoked broadcasts a FileTabPathRevoked event to owner's
+// PublishTabPayloadRevoked broadcasts a TabPayloadRevoked event to owner's
 // subscribers.
-func (b *PrivateEventsBus) PublishFileTabPathRevoked(owner userid.UserID, tabID string) {
+func (b *PrivateEventsBus) PublishTabPayloadRevoked(owner userid.UserID, tabID string) {
 	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
-		Event: &leapmuxv1.WorkerPrivateEvent_FileTabPathRevoked{
-			FileTabPathRevoked: &leapmuxv1.FileTabPathRevoked{
+		Event: &leapmuxv1.WorkerPrivateEvent_TabPayloadRevoked{
+			TabPayloadRevoked: &leapmuxv1.TabPayloadRevoked{
 				TabId: tabID,
 			},
 		},
@@ -150,9 +149,9 @@ func (b *PrivateEventsBus) PublishFileTabPathRevoked(owner userid.UserID, tabID 
 // SnapshotAndSubscribe registers the subscriber under the bus mutex, takes the
 // snapshot after releasing it, then streams that snapshot before any live event.
 // This is the bootstrap-replay pattern the CRDT plan requires for
-// FileTabPathRegistered events: the worker registers the live subscriber, reads
-// the caller's `worker_file_tabs` rows, and sends them as
-// `FileTabPathRegistered` events ahead of any live traffic.
+// TabPayloadRegistered events: the worker registers the live subscriber, reads
+// the caller's `worker_tab_payloads` rows, and sends them as
+// `TabPayloadRegistered` events ahead of any live traffic.
 //
 // Register-then-snapshot, not snapshot-then-register: registering first means an
 // event published during the read is already queued for this subscriber, so the

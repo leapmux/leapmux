@@ -148,11 +148,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ClaimToken: "claim-1",
 	}))
 
-	// worker_file_tabs.created_at via the column DEFAULT on UpsertWorkerFileTab.
-	require.NoError(t, queries.UpsertWorkerFileTab(ctx, gendb.UpsertWorkerFileTabParams{
-		UserID:   "user-1",
-		TabID:    "tab-1",
-		FilePath: "/tmp/file.txt",
+	// worker_tab_payloads.created_at via the column DEFAULT on UpsertWorkerTabPayload.
+	require.NoError(t, queries.UpsertWorkerTabPayload(ctx, gendb.UpsertWorkerTabPayloadParams{
+		UserID:     "user-1",
+		TabID:      "tab-1",
+		TabType:    int64(leapmuxv1.TabType_TAB_TYPE_FILE),
+		Payload:    mustMarshalFilePayload("/tmp/file.txt", ""),
+		WorkingDir: "",
 	}))
 
 	offenders, columns, err := sqlitedb.FindNonCanonicalDatetimes(ctx, sqlDB, "goose_db_version")

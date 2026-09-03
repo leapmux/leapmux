@@ -28,10 +28,11 @@ import { errorText, warningText } from '~/styles/shared.css'
 
 const log = createLogger('DeleteBranchDialog')
 
-function countTabs(tabs: readonly Tab[]): { agents: number, terminals: number, files: number } {
+function countTabs(tabs: readonly Tab[]): { agents: number, terminals: number, files: number, images: number } {
   let agents = 0
   let terminals = 0
   let files = 0
+  let images = 0
   for (const t of tabs) {
     if (isAgentTab(t))
       agents++
@@ -39,8 +40,10 @@ function countTabs(tabs: readonly Tab[]): { agents: number, terminals: number, f
       terminals++
     else if (t.type === TabType.FILE)
       files++
+    else if (t.type === TabType.IMAGE)
+      images++
   }
-  return { agents, terminals, files }
+  return { agents, terminals, files, images }
 }
 
 interface DeleteBranchDialogProps {
@@ -444,6 +447,7 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 agents: isOnlyBranch() ? 0 : tabCounts.agents,
                 terminals: isOnlyBranch() ? 0 : tabCounts.terminals,
                 files: isOnlyBranch() ? 0 : tabCounts.files,
+                images: isOnlyBranch() ? 0 : tabCounts.images,
                 willStop: isWorktree(),
               }}
             />

@@ -185,23 +185,27 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 // of it to the connecting registrant. A row belonging to a stale second owner
 // (ClearState removes state.json, not worker.db, and workers.registered_by is
 // never UPDATEd) would therefore be read as the registrant's, and a colliding
-// client-minted id -- worker_file_tabs is PK'd (user_id, tab_id) precisely because
+// client-minted id -- worker_tab_payloads is PK'd (user_id, tab_id) precisely because
 // those ids are unique only within a user -- would suppress a tombstone the real
 // owner's tab was due, resurrecting a file tab they closed elsewhere.
 func TestBuildTabSync_ReportsFileTabsScopedToTheOwner(t *testing.T) {
 	queries := setupTestDB(t)
 	ctx := context.Background()
 
-	require.NoError(t, queries.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
-		UserID:   "user-1",
-		TabID:    "file-1",
-		FilePath: "/tmp/a.go",
+	require.NoError(t, queries.UpsertWorkerTabPayload(ctx, db.UpsertWorkerTabPayloadParams{
+		UserID:     "user-1",
+		TabID:      "file-1",
+		TabType:    int64(leapmuxv1.TabType_TAB_TYPE_FILE),
+		Payload:    mustMarshalFilePayload("/tmp/a.go", ""),
+		WorkingDir: "",
 	}))
 	// A stale second owner's row, which must NOT be attributed to user-1.
-	require.NoError(t, queries.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
-		UserID:   "user-2",
-		TabID:    "file-2",
-		FilePath: "/tmp/b.go",
+	require.NoError(t, queries.UpsertWorkerTabPayload(ctx, db.UpsertWorkerTabPayloadParams{
+		UserID:     "user-2",
+		TabID:      "file-2",
+		TabType:    int64(leapmuxv1.TabType_TAB_TYPE_FILE),
+		Payload:    mustMarshalFilePayload("/tmp/b.go", ""),
+		WorkingDir: "",
 	}))
 
 	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
@@ -339,7 +343,7 @@ func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
 
 	// Construction must not have left the always-non-nil fields nil.
 	assert.NotNil(t, w.Service.PrivateEvents)
-	assert.NotNil(t, w.Service.FileTabPaths)
+	assert.NotNil(t, w.Service.TabPayloads)
 }
 
 // TestWire_InstallsTheAgentExitHandler pins the one call that gives a dead

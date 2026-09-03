@@ -147,6 +147,20 @@ Long tool results are collapsible (an **Expand** button), and most rows have a *
 Some rows are intentionally hidden to keep the transcript readable — for example, Claude Code suppresses its internal todo-list and tool-search bookkeeping rows. The information still drives the UI (the todo sidebar), it just isn't repeated inline.
 {{< /callout >}}
 
+### Images in tool results
+
+When a tool returns an image — a screenshot from an MCP browser tool, a `Read` on a PNG, a generated picture — the row shows the picture itself, scaled to fit the transcript.
+
+Click one to open it in its own tab, where you can zoom it (fit, 100%, or any step in between) and pan. When the agent said which file the image came from, LeapMux opens that file instead, so you see it at full resolution straight from the Worker.
+
+Not every image renders inline:
+
+- **SVG** is never rendered. An SVG can carry script, and the transcript does not sandbox it.
+- **Images above about 5 MB** show a placeholder rather than being inlined.
+- **An image the agent named by URL** shows an **open ↗** link instead of the picture. Rendering it would fetch from that host, which the transcript never does on its own.
+
+Which providers can return an image at all depends on the provider — Claude Code, Codex, Pi, OpenCode, Kilo, and Goose all can.
+
 ### The todo / plan sidebar
 
 When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's and ZCode's todo tracking, Claude Code's task tools, and other providers' plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.

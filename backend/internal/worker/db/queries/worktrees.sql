@@ -35,7 +35,7 @@ DELETE FROM worktrees WHERE rowid IN (SELECT w.rowid FROM worktrees w WHERE w.de
 
 -- name: AddWorktreeTab :exec
 -- user_id is set only for FILE links (it scopes the worktree_tab_liveness join
--- against worker_file_tabs); AGENT/TERMINAL links pass '' since their ids are
+-- against worker_tab_payloads); AGENT/TERMINAL links pass '' since their ids are
 -- globally unique.
 INSERT INTO worktree_tabs (worktree_id, tab_type, tab_id, user_id) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING;
 

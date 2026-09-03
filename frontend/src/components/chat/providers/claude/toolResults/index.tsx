@@ -2,7 +2,8 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
-import { joinContentParagraphs } from '~/lib/contentBlocks'
+import type { ImageResultSource } from '~/lib/imageBlocks'
+import { splitToolResultContent } from '~/lib/contentBlocks'
 import { isObject, pickObject } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { cachedRenderValue } from '../../../messageRenderCache'
@@ -18,6 +19,7 @@ import { extractToolUseInfo, getMessageContentArray } from '../extractors/assist
 import { claudeBashFromToolResult } from '../extractors/bash'
 import { claudeCreateResultDiff, claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClaudeFileEditTool } from '../extractors/fileEdit'
 import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractors/grepGlob'
+import { claudeImagesFromToolResult } from '../extractors/image'
 import { claudeListAgentsListing } from '../extractors/listAgents'
 import { claudeMcpFromToolResult, isClaudeMcpTool } from '../extractors/mcp'
 import { claudeReadFromToolResult } from '../extractors/read'
@@ -60,6 +62,12 @@ function pickDisplayKind(toolName: string, isPreText: boolean): DisplayKind {
 interface DispatchInfo {
   toolUseResult: Record<string, unknown> | undefined
   resultContent: string
+  /**
+   * Every image the result carries. Kept OUT of `resultContent`: rendered as
+   * Markdown it becomes a megabyte of literal base64 in the `<pre>` bodies
+   * most Claude tools use.
+   */
+  images: ImageResultSource[]
   toolInput: Record<string, unknown> | undefined
   resultData: Record<string, unknown>
   readSource: ReadFileResultSource | null
@@ -191,9 +199,10 @@ export function renderClaudeToolResult(
 
   const dispatch = cachedRenderValue(context, 'claude.toolResult.dispatchState', (): DispatchState => {
     const resultData = toolResult as Record<string, unknown>
-    const resultContent = Array.isArray(resultData.content)
-      ? joinContentParagraphs(resultData.content as Array<Record<string, unknown>>, { text: 'text' })
-      : String(resultData.content || '')
+    const split = Array.isArray(resultData.content)
+      ? splitToolResultContent(resultData.content as Array<Record<string, unknown>>, { text: 'text' })
+      : { text: String(resultData.content || ''), images: [] }
+    const resultContent = split.text
 
     // Extract tool name: prefer span_type (always set for span messages),
     // then tool_use_result, then linked tool_use message.
@@ -201,6 +210,9 @@ export function renderClaudeToolResult(
     const toolUseInfo = context?.toolUseParsed ? extractToolUseInfo(context.toolUseParsed) : null
     const toolName = String(context?.spanType || toolUseResult?.tool_name || toolUseInfo?.toolName || '')
     const toolInput = toolUseInfo?.input
+    // The blocks give order and payload; `tool_use_result` gives dimensions
+    // when the tool has a structured result, and wins for that reason.
+    const images = claudeImagesFromToolResult({ toolUseResult, blockImages: split.images, toolInput })
 
     // Build a Read result source via the shared extractor; null for non-text
     // Read variants (image/notebook/pdf/parts/file_unchanged), which fall
@@ -208,7 +220,7 @@ export function renderClaudeToolResult(
     const readSource = toolName === CLAUDE_TOOL.READ
       ? claudeReadFromToolResult({ toolUseResult, resultContent, toolInput })
       : null
-    return { toolName, toolUseInfo, toolUseResult, resultContent, toolInput, resultData, readSource }
+    return { toolName, toolUseInfo, toolUseResult, resultContent, images, toolInput, resultData, readSource }
   })
 
   // Try the per-tool entry; null means "fall through to MCP/catch-all".
@@ -267,6 +279,7 @@ export function renderClaudeToolResult(
       readFilePath={readFilePath}
       isError={isErrorVal}
       commandResult={commandResult}
+      images={dispatch.images}
       context={context}
     />
   )

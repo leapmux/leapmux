@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { GitMode } from '~/hooks/useGitModeState'
 import { menuOptions, menuTriggerText, pickMenuValue } from '~/test-support/menu'
 import { ChangeBranchDialog } from './ChangeBranchDialog'
 
@@ -75,7 +76,6 @@ function renderDialog(overrides?: Partial<Parameters<typeof ChangeBranchDialog>[
   const props = {
     workerId: 'w1',
     gitToplevel: '/repo',
-    workspaceId: 'ws-1',
     branchName: 'main',
     isWorktree: false,
     availableProviders: [AgentProvider.CLAUDE_CODE],
@@ -84,6 +84,9 @@ function renderDialog(overrides?: Partial<Parameters<typeof ChangeBranchDialog>[
     onAgentCreated: vi.fn(),
     onTerminalCreated: vi.fn(),
     ...overrides,
+    // After the spread, so the merged type stays the three-mode union rather
+    // than widening to the whole GitMode enum.
+    initialMode: overrides?.initialMode ?? GitMode.SwitchBranch,
   }
   render(() => <ChangeBranchDialog {...props} />)
   return props
@@ -108,6 +111,46 @@ describe('changeBranchDialog', () => {
     expect(screen.getByText('Switch to branch')).toBeInTheDocument()
     expect(screen.getByText('Create new branch')).toBeInTheDocument()
     expect(screen.getByText('Create new worktree')).toBeInTheDocument()
+  })
+
+  // The branch context menu offers one item per mode, so the item the user
+  // picked has to be the radio that is already selected. Without the seed all
+  // three items opened on "Switch to branch" and the user had to pick again.
+  describe('the mode it opens on', () => {
+    const cases = [
+      ['Switch to branch', GitMode.SwitchBranch],
+      ['Create new branch', GitMode.CreateBranch],
+      ['Create new worktree', GitMode.CreateWorktree],
+    ] as const
+
+    /** The radio of the mode row labelled `label`. */
+    function radioFor(label: string): HTMLInputElement {
+      const row = screen.getByText(label).closest('label')
+      expect(row).not.toBeNull()
+      return row!.querySelector('input[type="radio"]') as HTMLInputElement
+    }
+
+    for (const [label, mode] of cases) {
+      it(`paints ${label} selected`, async () => {
+        renderDialog({ initialMode: mode })
+        await awaitFormReady()
+
+        expect(radioFor(label).checked).toBe(true)
+        for (const [other] of cases.filter(([l]) => l !== label))
+          expect(radioFor(other).checked).toBe(false)
+      })
+    }
+
+    // The seed carries the mode alone: GitOptions owns the fields and emits a
+    // complete intent on its first flush, so the mode's own sub-form has to be
+    // usable without the user touching a radio.
+    it('renders the picked mode\'s own fields', async () => {
+      renderDialog({ initialMode: GitMode.CreateWorktree })
+      await awaitFormReady()
+
+      expect(screen.getByLabelText('Branch Name')).toBeInTheDocument()
+      expect(screen.getByText('Open as')).toBeInTheDocument()
+    })
   })
 
   it('mount fires exactly one InspectBranchChange RPC (no separate getGitInfo + listGitBranches)', async () => {
@@ -305,6 +348,22 @@ describe('changeBranchDialog', () => {
       path: '/repo',
     })
     await waitFor(() => expect(props.onBranchChanged).toHaveBeenCalled())
+  })
+
+  it('create-branch: submits its own RPC without the user touching a radio', async () => {
+    // Opened straight from "Create new branch...", so the seeded mode has to
+    // reach `dispatchMode` -- a seed that only painted the radio would still
+    // dispatch a checkout.
+    renderDialog({ initialMode: GitMode.CreateBranch })
+    await awaitFormReady()
+
+    const input = screen.getByPlaceholderText('feature-branch') as HTMLInputElement
+    fireEvent.input(input, { target: { value: 'shiny-new' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(workerRpc.createBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerRpc.createBranch).mock.calls[0][1]).toMatchObject({ newBranch: 'shiny-new', path: '/repo' })
+    expect(workerRpc.checkoutBranch).not.toHaveBeenCalled()
   })
 
   it('create-branch: Apply disabled when name collides with an existing branch', async () => {

@@ -49,6 +49,30 @@ export function isChangeBranchMode(mode: GitMode): mode is ChangeBranchMode {
   return CHANGE_BRANCH_MODES.includes(mode as ChangeBranchMode)
 }
 
+/**
+ * The seed intent for a ChangeBranchDialog opened directly on `mode`.
+ *
+ * Every field is empty, because the values belong to GitOptions: it owns the
+ * branch picker, the name input and the base-branch picker, and it emits a
+ * complete intent for its active mode on its first flush. What this seed
+ * carries is the MODE alone, which GitOptions reads once (untracked) to paint
+ * the correct radio on the first render.
+ *
+ * A dialog that seeds nothing paints `SwitchBranch` first and swaps a moment
+ * later, so the three menu items that open this dialog would all flash the
+ * same mode before landing on their own.
+ */
+export function changeBranchInitialIntent(mode: ChangeBranchMode): GitModeIntent {
+  switch (mode) {
+    case GitMode.SwitchBranch:
+      return { mode, checkoutBranch: '', checkoutBranchError: null }
+    case GitMode.CreateBranch:
+      return { mode, createBranch: '', createBranchError: null, createBranchBase: '' }
+    case GitMode.CreateWorktree:
+      return { mode, worktreeBranch: '', worktreeBranchError: null, worktreeBaseBranch: '' }
+  }
+}
+
 export interface GitFields {
   createWorktree: boolean
   worktreeBranch: string

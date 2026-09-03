@@ -2063,10 +2063,10 @@ func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string)
 // getTabWorkingDir resolves the directory a tab's git questions are answered
 // from. Every tab type has one: agents and terminals carry it on their own row,
 // and a file tab carries the working dir of the tab it was opened from (see the
-// worker_file_tabs.working_dir column comment).
+// worker_tab_payloads.working_dir column comment).
 //
 // userID is only consulted for FILE tabs, whose ids are unique within a user
-// rather than globally — worker_file_tabs is keyed by (user_id, tab_id), so the
+// rather than globally — worker_tab_payloads is keyed by (user_id, tab_id), so the
 // owner is half the lookup. AGENT/TERMINAL ids are minted server-side and
 // globally unique, so their callers may pass "" HERE.
 //
@@ -2105,12 +2105,12 @@ func (svc *Service) readTabWorkingDir(ctx context.Context, tabType leapmuxv1.Tab
 			return "", err
 		}
 		return terminalRow.WorkingDir, nil
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		loc, err := svc.FileTabPaths.Get(ctx, userID, tabID)
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		payload, err := svc.TabPayloads.Get(ctx, userID, tabID)
 		if err != nil {
-			return "", fmt.Errorf("resolve file tab working dir: %w", err)
+			return "", fmt.Errorf("resolve tab payload working dir: %w", err)
 		}
-		return loc.WorkingDir, nil
+		return payload.GetWorkingDir(), nil
 	default:
 		return "", errors.New("unsupported tab type")
 	}

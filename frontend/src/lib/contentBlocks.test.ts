@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getMessageContent, joinContentParagraphs, markdownImageFormatter } from './contentBlocks'
+import { getMessageContent, joinContentParagraphs, markdownImageFormatter, splitToolResultContent } from './contentBlocks'
 
 describe('getMessageContent', () => {
   it('returns null for non-object inputs', () => {
@@ -171,5 +171,60 @@ describe('markdownImageFormatter', () => {
       type: 'image',
       source: { type: 'url', url: 'https://example.com/a.png' },
     })).toBe('[image](https://example.com/a.png)')
+  })
+})
+
+describe('splittoolresultcontent', () => {
+  it('returns the same text as joinContentParagraphs with images skipped', () => {
+    const blocks = [
+      { type: 'text', text: 'before' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'text', text: 'after' },
+    ]
+    expect(splitToolResultContent(blocks, { text: 'text' }).text)
+      .toBe(joinContentParagraphs(blocks, { text: 'text' }, () => null))
+  })
+
+  it('keeps the base64 out of the text and hands it back as a source', () => {
+    const { text, images } = splitToolResultContent([
+      { type: 'text', text: 'here is the screenshot' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+    ], { text: 'text' })
+    expect(text).toBe('here is the screenshot')
+    expect(text).not.toContain('base64')
+    expect(images).toEqual([{ data: 'AAAA', mimeType: 'image/png' }])
+  })
+
+  it('preserves wire order across several images', () => {
+    // The order IS the contract: an image tab resolves "image N of this
+    // message" by re-running this walk on the re-fetched message.
+    const { images } = splitToolResultContent([
+      { type: 'image', data: 'first', mimeType: 'image/png' },
+      { type: 'text', text: 'between' },
+      { type: 'image', data: 'second', mimeType: 'image/png' },
+      { type: 'thinking', thinking: 'ignored' },
+      { type: 'image', data: 'third', mimeType: 'image/png' },
+    ], { text: 'text' })
+    expect(images.map(i => i.data)).toEqual(['first', 'second', 'third'])
+  })
+
+  it('collects a payload-less image so the row still reports it', () => {
+    const { text, images } = splitToolResultContent([
+      { type: 'image', mimeType: 'image/png' },
+    ], { text: 'text' })
+    expect(text).toBe('')
+    expect(images).toEqual([{ mimeType: 'image/png' }])
+  })
+
+  it('returns empty halves for null content', () => {
+    expect(splitToolResultContent(null, { text: 'text' })).toEqual({ text: '', images: [] })
+  })
+
+  it('leaves non-image, non-text blocks out of both halves', () => {
+    const { text, images } = splitToolResultContent([
+      { type: 'tool_use', name: 'Bash', input: {} },
+    ], { text: 'text' })
+    expect(text).toBe('')
+    expect(images).toEqual([])
   })
 })

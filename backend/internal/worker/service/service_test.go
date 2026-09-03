@@ -332,7 +332,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	assert.NotNil(t, svc.AgentStartup)
 	assert.NotNil(t, svc.TerminalStartup)
 	assert.NotNil(t, svc.PrivateEvents)
-	assert.NotNil(t, svc.FileTabPaths)
+	assert.NotNil(t, svc.TabPayloads)
 	assert.Equal(t, "/data/x", svc.Output.DataDir, "Output inherits the data dir")
 }
 

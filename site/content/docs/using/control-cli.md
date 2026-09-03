@@ -283,11 +283,11 @@ If the *calling* tab lives in the workspace you're deleting, the [self-target gu
 
 ## Tab commands
 
-The `tab` group is the generic open/close/list/rename surface across all three tab types (agent, terminal, file). Use it for lifecycle operations; use the `agent` and `terminal` groups for type-specific actions.
+The `tab` group is the generic open/close/list/rename surface across every tab type (agent, terminal, file, image). Use it for lifecycle operations; use the `agent` and `terminal` groups for type-specific actions.
 
 | Command | Key flags |
 | --- | --- |
-| `tab list` | `--workspace-id`, `--tab-type agent\|terminal\|file` (output filter) |
+| `tab list` | `--workspace-id`, `--tab-type agent\|terminal\|file\|image` (output filter) |
 | `tab get` | `--tab-id` (type auto-detected) |
 | `tab open` | `--type agent\|terminal\|file` (required) + type-specific flags + [placement flags](#placement-flags) |
 | `tab close` | `--tab-id`, `--force`, `--worktree keep\|push\|discard` |
@@ -300,7 +300,7 @@ On `tab list`, `--tab-type` is an **output filter**, not a resolver constraint. 
 
 ### Opening a tab
 
-`tab open` requires `--type`. The remaining flags depend on the type.
+`tab open` requires `--type`. The remaining flags depend on the type. Image tabs cannot be opened here: one addresses a single image inside a single chat message, which is a selection you make by clicking the picture in a transcript. `tab list` and `tab close` do name them.
 
 **Agent (`--type agent`):**
 

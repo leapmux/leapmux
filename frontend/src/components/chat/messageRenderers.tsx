@@ -165,6 +165,25 @@ export interface RenderContext {
   resolveBackgroundTaskRow?: (rowKey: string) => BackgroundTaskItem | undefined
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
   onOpenSubagent?: (item: BackgroundTaskItem) => void
+  /**
+   * Open an image this row rendered in its own tab.
+   *
+   * `index` addresses the image within its message -- the position the
+   * provider's `toolResultImages` gives it. The handler is assembled where the
+   * message and the agent are both in scope (MessageBubble over ChatView), so
+   * this context carries neither; a renderer only says WHICH image.
+   *
+   * `filePath` is present when the provider stated where the image came from.
+   * The handler opens that file instead, which is the same picture at full
+   * resolution and costs no new tab machinery.
+   *
+   * `title` is the row's own display name, supplied by whichever renderer
+   * mounted the image -- it is the one layer that already computed a human
+   * name for this row, so the tab reads the same as the row it came from
+   * instead of restating the raw tool name. Omit it and the bubble falls back
+   * to the span type.
+   */
+  onOpenImage?: (image: { index: number, filePath?: string, title?: string }) => void
 }
 
 export interface MessageContentRenderer {

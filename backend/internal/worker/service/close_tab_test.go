@@ -644,26 +644,26 @@ func TestEnsureTrackedWorktree_BackfillsExistingFileTab(t *testing.T) {
 	t.Parallel()
 
 	// A FILE tab opened before its worktree was tracked starts unlinked
-	// (linkFileTabToWorktree found no worktrees row at registration time).
+	// (linkTabToWorktree found no worktrees row at registration time).
 	// When the worktree is later adopted, ensureTrackedWorktree's backfill
 	// must link the pre-existing file tab so it ref-counts the worktree —
 	// otherwise a sibling close could `git worktree remove` the dir while
 	// that editor is still open.
 	svc, _, _ := setupTestService(t)
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
 
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "adopt-wt")
 	run(t, repoDir, "git", "worktree", "add", "-b", "adopt", wtDir)
 
 	// Register a FILE tab inside the worktree BEFORE the worktree row
-	// exists, so linkFileTabToWorktree finds no row and leaves it unlinked.
+	// exists, so linkTabToWorktree finds no row and leaves it unlinked.
 	filePath := filepath.Join(wtDir, "file.txt")
 	require.NoError(t, os.WriteFile(filePath, []byte("x"), 0o644))
-	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:   "user-1",
-		TabID:    "adopt-file-tab",
-		FilePath: filePath,
+	require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+		UserID:  "user-1",
+		TabID:   "adopt-file-tab",
+		Payload: fileTabPayload(filePath, ""),
 	}))
 
 	// Adopt the worktree: creates the row and runs the backfill.

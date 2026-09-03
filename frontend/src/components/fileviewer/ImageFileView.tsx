@@ -12,9 +12,21 @@ import { TextFileView } from './TextFileView'
 const WRAPPER_PADDING_X = 16 // matches var(--space-4) used in imageZoomWrapper
 const WRAPPER_PADDING_TOP = 44 // matches toolbar clearance used in imageZoomWrapper
 
-function ImageRender(props: {
+/**
+ * The zoomable image pane: blob URL, fit/actual/scale sizing, pinch-zoom.
+ *
+ * Takes an explicit `mimeType` and `name` rather than a path. It renders bytes
+ * that reached the client, and only some of them came from a file -- an IMAGE
+ * tab shows an image an agent returned inside a chat message, which has a MIME
+ * type on the wire and no extension to sniff one from. `FileViewer` derives
+ * both from its path and passes them in.
+ */
+export function ImageRender(props: {
   content: Uint8Array
-  filePath: string
+  /** MIME type of `content`, for the blob and for the SVG branch. */
+  mimeType: string
+  /** Display name, used as the alt text. */
+  name: string
   zoom: ZoomMode
   onZoomChange: (mode: ZoomMode) => void
 }): JSX.Element {
@@ -30,7 +42,7 @@ function ImageRender(props: {
   const blobUrl = createMemo<string>((prev) => {
     if (prev !== undefined)
       URL.revokeObjectURL(prev)
-    const blob = new Blob([props.content as BlobPart], { type: getImageMimeType(props.filePath) })
+    const blob = new Blob([props.content as BlobPart], { type: props.mimeType })
     return URL.createObjectURL(blob)
   })
 
@@ -127,7 +139,7 @@ function ImageRender(props: {
     return { w: ns.w * s, h: ns.h * s }
   })
 
-  const alt = () => basename(props.filePath) || 'Image'
+  const alt = () => props.name || 'Image'
 
   const handleLoad: JSX.EventHandler<HTMLImageElement, Event> = (e) => {
     const img = e.currentTarget
@@ -180,7 +192,8 @@ export function ImageFileView(props: {
   const renderImage = () => (
     <ImageRender
       content={props.content}
-      filePath={props.filePath}
+      mimeType={getImageMimeType(props.filePath)}
+      name={basename(props.filePath)}
       zoom={zoom()}
       onZoomChange={setZoom}
     />

@@ -1,7 +1,7 @@
 import type { SectionDefContext } from './buildSectionDef'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
-import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
+import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -89,8 +89,8 @@ export interface SidebarCommonProps {
   tabItemOps?: TabItemOps
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
   getTileOrderForWorkspace?: (workspaceId: string) => readonly string[]
-  onChangeBranch?: (ref: BranchRef) => void
-  onDeleteBranch?: (ref: BranchRef) => void
+  /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
+  branchActions?: BranchRefActions
 
   // Workers
   workers: Worker[]
@@ -187,8 +187,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get onTabClick() { return props.onTabClick },
     get tabItemOps() { return props.tabItemOps },
     get getTileOrderForWorkspace() { return props.getTileOrderForWorkspace },
-    get onChangeBranch() { return props.onChangeBranch },
-    get onDeleteBranch() { return props.onDeleteBranch },
+    get branchActions() { return props.branchActions },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },
     get gitToplevel() { return props.gitToplevel },

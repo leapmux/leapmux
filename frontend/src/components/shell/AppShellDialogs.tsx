@@ -5,7 +5,8 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTabOperations } from './useTabOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { DialogState, ToggleDialogState, UpdatableDialogState } from '~/hooks/createDialogState'
+import type { DialogState, UpdatableDialogState } from '~/hooks/createDialogState'
+import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { KeyPinDecision } from '~/lib/keyPinStore'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
@@ -36,6 +37,20 @@ export interface KeyPinConfirmState {
   resolve: (decision: KeyPinDecision) => void
 }
 
+/**
+ * Where a new agent or terminal starts.
+ *
+ * Both fields are optional and travel together in practice: an EMPTY target
+ * means "follow the current tab context", which is what the tab bar's own
+ * new-tab actions and the keyboard shortcuts want. The branch context menu
+ * fills both in from the branch it acts on, so the dialog opens on that
+ * checkout rather than on whatever tab happens to be focused.
+ */
+export interface NewTabTarget {
+  workerId?: string
+  workingDir?: string
+}
+
 export interface ChangeBranchState extends RepoRef {
   workspaceId: string
   /**
@@ -55,6 +70,11 @@ export interface ChangeBranchState extends RepoRef {
    * against the wrong values until the RPC corrects them.
    */
   isWorktree: boolean
+  /**
+   * Which of the three git modes the dialog opens on. The branch context menu
+   * offers one item per mode, so the item the user picked decides the radio.
+   */
+  initialMode: ChangeBranchMode
 }
 
 export interface DeleteBranchState extends RepoRef {
@@ -100,8 +120,10 @@ export interface NewWorkspacePayload {
  * every layer.
  */
 export interface AppShellDialogStates {
-  newAgent: ToggleDialogState
-  newTerminal: ToggleDialogState
+  // Payload dialogs, not toggles: a caller says WHERE the new tab starts. An
+  // empty payload keeps the old behavior (follow the current tab context).
+  newAgent: DialogState<NewTabTarget>
+  newTerminal: DialogState<NewTabTarget>
   newWorkspace: DialogState<NewWorkspacePayload>
   confirmDeleteWs: DialogState<WorkspaceConfirmPayload>
   confirmArchiveWs: DialogState<WorkspaceConfirmPayload>
@@ -232,37 +254,47 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
 
   return (
     <>
-      <Show when={props.dialogs.newAgent.isOpen()}>
-        <NewAgentDialog
-          defaultWorkerId={props.getCurrentTabContext().workerId}
-          defaultWorkingDir={props.getCurrentTabContext().workingDir}
-          availableProviders={props.availableProviders}
-          onRefreshProviders={props.onRefreshProviders}
-          blockedReason={newTabBlockedReason}
-          repoGitStore={props.repoGitStore}
-          onCreated={(agent, opts) => {
-            props.dialogs.newAgent.close()
-            addAgentTabToFocusedTile(agent, opts)
-            requestAnimationFrame(() => props.focusEditor())
-          }}
-          onClose={() => props.dialogs.newAgent.close()}
-        />
+      {/* Both new-tab dialogs are KEYED on their target, like every other
+          payload dialog below: a second `open` with a different branch has to
+          re-point the dialog rather than leave it on the first one. */}
+      <Show when={props.dialogs.newAgent.value()} keyed>
+        {target => (
+          <NewAgentDialog
+            // `||`, not `??`: there is no valid empty worker id or path, so an
+            // empty string is the same "unknown" that `undefined` is, and both
+            // have to fall through to the tab context.
+            defaultWorkerId={target.workerId || props.getCurrentTabContext().workerId}
+            defaultWorkingDir={target.workingDir || props.getCurrentTabContext().workingDir}
+            availableProviders={props.availableProviders}
+            onRefreshProviders={props.onRefreshProviders}
+            blockedReason={newTabBlockedReason}
+            repoGitStore={props.repoGitStore}
+            onCreated={(agent, opts) => {
+              props.dialogs.newAgent.close()
+              addAgentTabToFocusedTile(agent, opts)
+              requestAnimationFrame(() => props.focusEditor())
+            }}
+            onClose={() => props.dialogs.newAgent.close()}
+          />
+        )}
       </Show>
 
-      <Show when={props.dialogs.newTerminal.isOpen()}>
-        <NewTerminalDialog
-          defaultWorkerId={props.getCurrentTabContext().workerId}
-          defaultWorkingDir={props.getCurrentTabContext().workingDir}
-          blockedReason={newTabBlockedReason}
-          repoGitStore={props.repoGitStore}
-          onCreated={(terminalId, workerId, workingDir, title, opts) => {
-            props.dialogs.newTerminal.close()
-            if (!props.activeWorkspace())
-              return
-            addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title, opts)
-          }}
-          onClose={() => props.dialogs.newTerminal.close()}
-        />
+      <Show when={props.dialogs.newTerminal.value()} keyed>
+        {target => (
+          <NewTerminalDialog
+            defaultWorkerId={target.workerId || props.getCurrentTabContext().workerId}
+            defaultWorkingDir={target.workingDir || props.getCurrentTabContext().workingDir}
+            blockedReason={newTabBlockedReason}
+            repoGitStore={props.repoGitStore}
+            onCreated={(terminalId, workerId, workingDir, title, opts) => {
+              props.dialogs.newTerminal.close()
+              if (!props.activeWorkspace())
+                return
+              addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title, opts)
+            }}
+            onClose={() => props.dialogs.newTerminal.close()}
+          />
+        )}
       </Show>
 
       {/* Every payload dialog below renders under a KEYED <Show>, and that is
@@ -337,6 +369,12 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               props.dialogs.confirmArchiveWs.close()
             }}
           >
+            {/* This sentence is NOT true today, and it stays until the behavior
+                matches it: archiving only moves the workspace into the archived
+                section, so every agent process and every PTY keeps running, and
+                the worker's resume sweep starts them again after a restart.
+                Correcting the copy alone would hide the defect.
+                See https://github.com/leapmux/leapmux/issues/446. */}
             <p>Are you sure you want to archive this workspace? All active agents and terminals will be stopped.</p>
           </ConfirmDialog>
         )}
@@ -374,40 +412,41 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           <ChangeBranchDialog
             workerId={state.workerId}
             gitToplevel={state.gitToplevel}
-            workspaceId={state.workspaceId}
             branchName={state.branchName}
             isWorktree={state.isWorktree}
+            initialMode={state.initialMode}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
-            // The guard reason describes the ACTIVE workspace's placement
-            // (the same condition the onAgentCreated/onTerminalCreated
-            // callbacks below gate on) — a dialog opened against another
-            // workspace's branch row places no local tab, so no reason
-            // applies to it.
+            // The guard reason describes the ACTIVE workspace's placement. A
+            // dialog opened against another workspace's branch row selects that
+            // workspace before it places the tab (below), and this reason
+            // cannot answer for a workspace that is not active yet — it reads
+            // the active workspace's layout. `openTabInFocusedTile` still
+            // refuses a workspace whose tree has not arrived, so the tab is
+            // never placed on a tile the hub has never heard of.
             blockedReason={() => state.workspaceId === props.activeWorkspace()?.id
               ? newTabBlockedReason()
               : undefined}
-            // Local-UI tab insertion only applies when the dialog's
-            // target workspace IS the active one — addAgentTabToFocusedTile
-            // and addTerminalTabToFocusedTile place the tab on the ACTIVE
-            // workspace's focused tile, so calling them on a
-            // dialog opened against a non-active workspace's branch row
-            // would land the new tab in the wrong workspace's tree. For
-            // non-active dialogs the new tab still arrives in the target
-            // workspace via its CRDT projection on the next refresh; no
-            // immediate local UI write is needed (and the user isn't
-            // looking at that workspace's tile to feel the latency).
+            // Select the branch's workspace, THEN place. `addAgentTabToFocusedTile`
+            // and `addTerminalTabToFocusedTile` place on the ACTIVE workspace's
+            // focused tile, and the switch is one synchronous signal write, so
+            // the placement that follows resolves against the right tree.
+            //
+            // Without the switch the tab was simply never created: the open RPC
+            // carries no workspace id (neither request message has a field for
+            // one), so nothing server-side files the tab, and the agent or pty
+            // stayed alive on the Worker with no tab to reach it by.
             onAgentCreated={(agent) => {
+              props.onSelectWorkspace(state.workspaceId)
               // No git seed. This dialog reaches the agent branch only in
               // CreateWorktree mode, so the agent lands in a NEW worktree on a
               // different branch than the active tab shows.
-              if (state.workspaceId === props.activeWorkspace()?.id)
-                addAgentTabToFocusedTile(agent, { seedGitFromActiveTab: false })
+              addAgentTabToFocusedTile(agent, { seedGitFromActiveTab: false })
             }}
             onTerminalCreated={(terminalId, workerId, workingDir, title) => {
-              if (state.workspaceId === props.activeWorkspace()?.id)
-                addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
+              props.onSelectWorkspace(state.workspaceId)
+              addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
             }}
             onClose={() => props.dialogs.changeBranch.close()}
           />

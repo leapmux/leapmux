@@ -44,6 +44,12 @@ export interface AffectedTabs {
    * last-tab dialog where the closed tab is itself a FILE tab).
    */
   files: number
+  /**
+   * Image-tab count, counted separately from `files` rather than folded into
+   * it: an IMAGE tab shows an image the agent returned, not a file, and
+   * "1 file will be closed" would name something the user never opened.
+   */
+  images: number
   /** True when these tabs will be stopped; false when they keep running. */
   willStop: boolean
 }
@@ -120,7 +126,7 @@ export const BranchStatusInfo: Component<BranchStatusInfoProps> = (props) => {
           </>
         )}
       </Show>
-      <Show when={props.affectedTabs.agents > 0 || props.affectedTabs.terminals > 0 || props.affectedTabs.files > 0}>
+      <Show when={props.affectedTabs.agents > 0 || props.affectedTabs.terminals > 0 || props.affectedTabs.files > 0 || props.affectedTabs.images > 0}>
         <div>{formatAffectedTabs(props.affectedTabs)}</div>
       </Show>
     </div>
@@ -128,7 +134,7 @@ export const BranchStatusInfo: Component<BranchStatusInfoProps> = (props) => {
 }
 
 // "<agent(s)> and <terminal(s)> will be stopped." reads naturally when
-// at least one process is involved. A FILE-only close has no process
+// at least one process is involved. A viewer-only close has no process
 // to stop, so the sentence collapses to "<n file(s)> will be closed."
 // to avoid the misleading "will be stopped" verb.
 function formatAffectedTabs(t: AffectedTabs): string {
@@ -137,12 +143,18 @@ function formatAffectedTabs(t: AffectedTabs): string {
     processParts.push(pluralize(t.agents, 'agent'))
   if (t.terminals > 0)
     processParts.push(pluralize(t.terminals, 'terminal'))
+  const viewerParts: string[] = []
+  if (t.files > 0)
+    viewerParts.push(pluralize(t.files, 'file'))
+  if (t.images > 0)
+    viewerParts.push(pluralize(t.images, 'image'))
+  const closed = viewerParts.join(' and ')
   if (processParts.length > 0) {
     const verb = t.willStop ? 'will be stopped' : 'will keep running'
     const head = `${processParts.join(' and ')} ${verb}`
-    if (t.files > 0)
-      return `${head}, ${pluralize(t.files, 'file')} will be closed.`
+    if (closed)
+      return `${head}, ${closed} will be closed.`
     return `${head}.`
   }
-  return `${pluralize(t.files, 'file')} will be closed.`
+  return `${closed || pluralize(0, 'file')} will be closed.`
 }

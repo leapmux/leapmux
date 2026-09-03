@@ -1,3 +1,4 @@
+import { fileTabPayload } from '~/lib/tabPayload'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel } from './helpers/api'
 
@@ -25,12 +26,12 @@ test.describe('file-tab E2EE worker round-trip', () => {
     const channel = await getTestChannel(hubUrl, adminToken)
 
     const {
-      RegisterFileTabPathRequestSchema,
-      RegisterFileTabPathResponseSchema,
-      GetFileTabPathRequestSchema,
-      GetFileTabPathResponseSchema,
-      RevokeFileTabPathRequestSchema,
-      RevokeFileTabPathResponseSchema,
+      RegisterTabPayloadRequestSchema,
+      RegisterTabPayloadResponseSchema,
+      GetTabPayloadRequestSchema,
+      GetTabPayloadResponseSchema,
+      RevokeTabPayloadRequestSchema,
+      RevokeTabPayloadResponseSchema,
     } = await import('../../src/generated/proto/leapmux/v1/worker_private_pb')
 
     try {
@@ -40,37 +41,37 @@ test.describe('file-tab E2EE worker round-trip', () => {
       // 1. Register. No workspace is named -- the worker has nowhere to put one.
       await channel.callWorker(
         workerId,
-        'RegisterFileTabPath',
-        RegisterFileTabPathRequestSchema,
-        RegisterFileTabPathResponseSchema,
-        { tabId, filePath },
+        'RegisterTabPayload',
+        RegisterTabPayloadRequestSchema,
+        RegisterTabPayloadResponseSchema,
+        { tabId, payload: fileTabPayload(filePath, '') },
       )
 
       // 2. Get returns the path.
       const got = await channel.callWorker(
         workerId,
-        'GetFileTabPath',
-        GetFileTabPathRequestSchema,
-        GetFileTabPathResponseSchema,
+        'GetTabPayload',
+        GetTabPayloadRequestSchema,
+        GetTabPayloadResponseSchema,
         { tabId },
       )
-      expect(got.filePath).toBe(filePath)
+      expect(got.payload?.kind.case === 'file' && got.payload.kind.value.filePath).toBe(filePath)
 
       // 3. Revoke removes the row (subsequent Get returns NotFound).
       await channel.callWorker(
         workerId,
-        'RevokeFileTabPath',
-        RevokeFileTabPathRequestSchema,
-        RevokeFileTabPathResponseSchema,
+        'RevokeTabPayload',
+        RevokeTabPayloadRequestSchema,
+        RevokeTabPayloadResponseSchema,
         { tabId },
       )
       let revoked = false
       try {
         await channel.callWorker(
           workerId,
-          'GetFileTabPath',
-          GetFileTabPathRequestSchema,
-          GetFileTabPathResponseSchema,
+          'GetTabPayload',
+          GetTabPayloadRequestSchema,
+          GetTabPayloadResponseSchema,
           { tabId },
         )
       }

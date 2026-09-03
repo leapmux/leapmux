@@ -1,12 +1,15 @@
 import type { CustomEditorComponent } from '../types'
 import type { AddressRow } from './networkAddress'
 import type { GetListenStatusResponse } from '~/generated/proto/leapmux/v1/admin_pb'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
+import X from 'lucide-solid/icons/x'
 import { createEffect, createSignal, For, onMount, Show, untrack } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { adminNetworkClient, userClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Alert } from '~/components/common/Alert'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { Spinner } from '~/components/common/Spinner'
 import { StatusLine } from '~/components/common/StatusLine'
@@ -286,14 +289,18 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
                   value={row.port}
                   onInput={e => updateRow(row.id, { port: e.currentTarget.value })}
                 />
+                {/*
+                  No confirmation step: Remove edits the STAGED list only.
+                  Apply is what publishes it, and Cancel puts the row back.
+                */}
                 <button
                   type="button"
-                  class="outline"
+                  class={`outline ${styles.removeButton}`}
                   data-variant="danger"
                   aria-label={`Remove ${toAddress(row)}`}
                   onClick={() => removeRow(row.id)}
                 >
-                  ✕
+                  <Icon icon={X} size="xs" aria-hidden="true" />
                 </button>
               </div>
             )}
@@ -439,7 +446,7 @@ function InterfaceMenu(props: {
           {...triggerProps}
         >
           <span class="clipped">{label()}</span>
-          <span aria-hidden="true">▾</span>
+          <Icon icon={ChevronDown} size="xs" aria-hidden="true" />
         </button>
       )}
     >

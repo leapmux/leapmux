@@ -1,4 +1,4 @@
-import { asContentArray, joinContentParagraphs } from '~/lib/contentBlocks'
+import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
 /**
@@ -30,12 +30,15 @@ export interface PiToolResult {
 /**
  * Join the textual content blocks from a Pi tool result body into a
  * paragraph-separated string. Pi tool results are shaped as
- * `{content: (TextContent | ImageContent)[], details?}`. Image blocks
- * (e.g. `read` on a binary image file) are embedded as Markdown via the
- * helper's default formatter so they survive in any rendering context.
+ * `{content: (TextContent | ImageContent)[], details?}`.
+ *
+ * Image blocks (e.g. `read` on a binary image file) are EXCLUDED. This text
+ * renders into a `<pre>` and reaches the clipboard, and a data URL is a
+ * megabyte of literal base64 in both. `piToolResultImages` renders them as
+ * images instead.
  */
 export function piToolResultText(result: Record<string, unknown> | null | undefined): string {
-  return joinContentParagraphs(asContentArray(result?.content), { text: 'text' })
+  return splitToolResultContent(asContentArray(result?.content), { text: 'text' }).text
 }
 
 export function piToolResult(result: Record<string, unknown> | null | undefined): PiToolResult {

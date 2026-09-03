@@ -771,7 +771,7 @@ func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 
 // registerTabForWorktree associates a tab with a worktree.
 // No-op if worktreeID is empty. Used for AGENT/TERMINAL links only (FILE
-// links go through FileTabPathStore.linkFileTabToWorktree), so user_id is
+// links go through TabPayloadStore.linkTabToWorktree), so user_id is
 // left "" -- agent/terminal ids are globally unique, so neither
 // worktree_tab_liveness nor the by-tab delete queries need the user id to
 // disambiguate them. worktreeTabUserID is the read side of this same rule.
@@ -889,7 +889,7 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 	// bgCtx() (not the request ctx) so a dialog dismissed / RPC cancelled
 	// mid-adoption can't abort the loop partway and leave some FILE tabs
 	// unlinked — the same detached-write rationale as registerTabForWorktree.
-	svc.FileTabPaths.BackfillWorktreeLinks(bgCtx(), canonicalPath)
+	svc.TabPayloads.BackfillWorktreeLinks(bgCtx(), canonicalPath)
 	return stored.ID, nil
 }
 
@@ -1363,19 +1363,22 @@ func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 // worktreeTabUserID returns the user_id a worktree_tabs row carries for a tab
 // of this type. It is the single definition of that convention, shared by
 // every by-tab read and delete so they cannot drift from what
-// registerTabForWorktree / linkFileTabToWorktree wrote.
+// registerTabForWorktree / linkTabToWorktree wrote.
 //
-// FILE links carry the owning user because file tab ids are unique only within
-// a user (worker_file_tabs is keyed by (user_id, tab_id)); AGENT/TERMINAL ids
-// are globally unique, so their links carry "" and callers that only have an
-// agent/terminal in hand need not know the user at all. Normalizing here --
-// rather than at each call site -- means passing the authenticated user for an
-// AGENT close is harmless instead of a silent no-match.
+// FILE and IMAGE links carry the owning user because their tab ids are unique
+// only within a user (worker_tab_payloads is keyed by (user_id, tab_id));
+// AGENT/TERMINAL ids are globally unique, so their links carry "" and callers
+// that only have an agent/terminal in hand need not know the user at all.
+// Normalizing here -- rather than at each call site -- means passing the
+// authenticated user for an AGENT close is harmless instead of a silent
+// no-match.
 func worktreeTabUserID(tabType leapmuxv1.TabType, userID string) string {
-	if tabType == leapmuxv1.TabType_TAB_TYPE_FILE {
+	switch tabType {
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
 		return userID
+	default:
+		return ""
 	}
-	return ""
 }
 
 // unregisterTab drops a tab's worktree association row. Worktree

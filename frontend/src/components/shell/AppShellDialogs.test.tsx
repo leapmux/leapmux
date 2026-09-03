@@ -9,7 +9,8 @@ import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
+import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
+import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
@@ -71,11 +72,15 @@ vi.mock('~/components/shell/NewAgentDialog', async () => {
     // redirects the working directory may not.
     NewAgentDialog: (props: {
       blockedReason?: () => string | undefined
+      defaultWorkerId?: string
+      defaultWorkingDir?: string
       onCreated: (agent: typeof createdAgent, opts: { seedGitFromActiveTab: boolean }) => void
       onClose: () => void
     }) => (
       <>
         <div data-testid="new-agent-stub">{props.blockedReason?.() ?? ''}</div>
+        {/* What the parent resolved the dialog's target to. */}
+        <div data-testid="new-agent-target">{`${props.defaultWorkerId ?? ''}|${props.defaultWorkingDir ?? ''}`}</div>
         <button
           type="button"
           data-testid="new-agent-created"
@@ -96,8 +101,16 @@ vi.mock('~/components/shell/NewAgentDialog', async () => {
 })
 
 vi.mock('~/components/shell/NewTerminalDialog', () => ({
-  NewTerminalDialog: (props: { blockedReason?: () => string | undefined, onClose: () => void }) => (
-    <div data-testid="new-terminal-stub">{props.blockedReason?.() ?? ''}</div>
+  NewTerminalDialog: (props: {
+    blockedReason?: () => string | undefined
+    defaultWorkerId?: string
+    defaultWorkingDir?: string
+    onClose: () => void
+  }) => (
+    <>
+      <div data-testid="new-terminal-stub">{props.blockedReason?.() ?? ''}</div>
+      <div data-testid="new-terminal-target">{`${props.defaultWorkerId ?? ''}|${props.defaultWorkingDir ?? ''}`}</div>
+    </>
   ),
 }))
 
@@ -152,8 +165,8 @@ function makeTab(): Tab {
 
 function makeDialogs(): AppShellDialogStates {
   return {
-    newAgent: createToggleDialog(),
-    newTerminal: createToggleDialog(),
+    newAgent: createDialogState(),
+    newTerminal: createDialogState(),
     newWorkspace: createDialogState(),
     confirmDeleteWs: createDialogState(),
     confirmArchiveWs: createDialogState(),
@@ -180,6 +193,11 @@ function renderDialogs(
   // projected tree. `hasPlaceableTab` asks exactly this, so one knob drives
   // every guard-reason arm.
   const placementTileId = vi.fn(() => opts.placementTileId ?? '')
+  // The branch dialogs SELECT their own workspace before they place a tab, so
+  // the fixture has to supply this one -- an omitted handler used to throw out
+  // of the click handler, which vitest reported as an unhandled error rather
+  // than as a failing test.
+  const onSelectWorkspace = vi.fn()
   // `satisfies` type-checks the fields this fixture DOES fill, so a rename
   // of `closeWorktreeTabs` or a change to the TabContext shape fails to
   // compile. The one widening cast stays at the render call, because each
@@ -194,6 +212,7 @@ function renderDialogs(
     onBranchChanged,
     tabOps: tabOps as unknown as ReturnType<typeof useTabOperations>,
     activeWorkspace,
+    onSelectWorkspace,
     isActiveWorkspaceMutatable: () => opts.mutatable ?? true,
     layoutStore: { placementTileId } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
     repoGitStore,
@@ -205,7 +224,7 @@ function renderDialogs(
     }),
   } satisfies Partial<ComponentProps<typeof AppShellDialogs>>
   render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
-  return { dialogs, onBranchChanged, closeWorktreeTabs, placementTileId }
+  return { dialogs, onBranchChanged, closeWorktreeTabs, placementTileId, onSelectWorkspace }
 }
 
 async function chooseSwitchToAndConfirm(branch: string) {
@@ -383,6 +402,7 @@ describe('appShellDialogs branch dialogs', () => {
       workspaceId: 'ws1',
       branchName: 'feature',
       isWorktree: false,
+      initialMode: GitMode.SwitchBranch,
     })
 
     fireEvent.click(await screen.findByTestId('change-branch-stub'))
@@ -443,39 +463,48 @@ describe('appShellDialogs branch dialogs', () => {
     expect(dialogs.keyPinConfirm.value()).toBeNull()
   })
 
-  // The workspace guard on onAgentCreated / onTerminalCreated had no
-  // coverage: every test left `activeWorkspace` null, so the true branch was
-  // unreachable and an inverted comparison would have stayed green. A tab
-  // may only join the focused tile when the dialog's own workspace IS the
-  // active one; otherwise it lands in the wrong workspace's tree.
-  it('change branch: inserts a created tab only when the dialog targets the active workspace', async () => {
-    const { dialogs, placementTileId } = renderDialogs(() => ({ id: 'ws1' }))
+  // A tab is placed on the ACTIVE workspace's focused tile, so a dialog opened
+  // against another workspace's branch row selects that workspace first. It
+  // used to skip the placement instead, and the tab was then never created at
+  // all: the open RPC carries no workspace id, so nothing server-side files it
+  // and the agent or pty stayed alive with no tab to reach it by.
+  it('change branch: selects the dialog\'s workspace before placing a created tab', async () => {
+    const { dialogs, placementTileId, onSelectWorkspace } = renderDialogs(() => ({ id: 'another-ws' }))
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
       workspaceId: 'ws1',
       branchName: 'feature',
       isWorktree: false,
+      initialMode: GitMode.CreateWorktree,
     })
 
     fireEvent.click(await screen.findByTestId('change-branch-terminal-stub'))
 
-    expect(placementTileId).toHaveBeenCalled()
+    expect(onSelectWorkspace).toHaveBeenCalledWith('ws1')
+    // And the placement runs AFTER the switch, or it would resolve the tile
+    // against the workspace the user is leaving.
+    expect(onSelectWorkspace.mock.invocationCallOrder[0])
+      .toBeLessThan(placementTileId.mock.invocationCallOrder[0])
   })
 
-  it('change branch: skips the tab insertion when the dialog targets another workspace', async () => {
-    const { dialogs, placementTileId } = renderDialogs(() => ({ id: 'another-ws' }))
+  it('change branch: still selects when the dialog already targets the active workspace', async () => {
+    // A no-op switch, and the placement runs either way -- one rule, not a
+    // special case that a future edit could invert for the common path alone.
+    const { dialogs, placementTileId, onSelectWorkspace } = renderDialogs(() => ({ id: 'ws1' }))
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
       workspaceId: 'ws1',
       branchName: 'feature',
       isWorktree: false,
+      initialMode: GitMode.CreateWorktree,
     })
 
     fireEvent.click(await screen.findByTestId('change-branch-terminal-stub'))
 
-    expect(placementTileId).not.toHaveBeenCalled()
+    expect(onSelectWorkspace).toHaveBeenCalledWith('ws1')
+    expect(placementTileId).toHaveBeenCalled()
   })
 
   // The change-branch guard reason describes the ACTIVE workspace's
@@ -490,6 +519,7 @@ describe('appShellDialogs branch dialogs', () => {
       workspaceId: 'ws1',
       branchName: 'feature',
       isWorktree: false,
+      initialMode: GitMode.SwitchBranch,
     })
 
     expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/not ready yet/i)
@@ -503,6 +533,7 @@ describe('appShellDialogs branch dialogs', () => {
       workspaceId: 'ws1',
       branchName: 'feature',
       isWorktree: false,
+      initialMode: GitMode.SwitchBranch,
     })
 
     expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/^$/)
@@ -516,7 +547,7 @@ describe('appShellDialogs branch dialogs', () => {
   describe('new-tab guard reason', () => {
     it('tells the dialogs to block creation when there is no workspace at all', async () => {
       const { dialogs } = renderDialogs(() => null)
-      dialogs.newAgent.open()
+      dialogs.newAgent.open({})
 
       expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/create a workspace first/i)
     })
@@ -524,7 +555,7 @@ describe('appShellDialogs branch dialogs', () => {
     it('blocks while the active workspace has no projected tree yet', async () => {
       // placementTileId '' — the tree never arrived, so nothing can take a tab.
       const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: '' })
-      dialogs.newTerminal.open()
+      dialogs.newTerminal.open({})
 
       expect(await screen.findByTestId('new-terminal-stub')).toHaveTextContent(/not ready yet/i)
     })
@@ -533,9 +564,43 @@ describe('appShellDialogs branch dialogs', () => {
       // An archived workspace keeps its tree, so only the mutatability arm
       // fires — the same refusal every quick-action path applies.
       const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1', mutatable: false })
-      dialogs.newAgent.open()
+      dialogs.newAgent.open({})
 
       expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/archived/i)
+    })
+
+    it('follows the current tab context for an empty target', async () => {
+      const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1' })
+      dialogs.newAgent.open({})
+      dialogs.newTerminal.open({})
+
+      // The tab bar and the shortcuts open with `{}`, and both dialogs must
+      // then start where the focused tab is.
+      expect(await screen.findByTestId('new-agent-target')).toHaveTextContent('w1|/repo')
+      expect(await screen.findByTestId('new-terminal-target')).toHaveTextContent('w1|/repo')
+    })
+
+    it('prefills the branch\'s own checkout when the target names one', async () => {
+      const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1' })
+      dialogs.newAgent.open({ workerId: 'w2', workingDir: '/other/worktree' })
+      dialogs.newTerminal.open({ workerId: 'w2', workingDir: '/other/worktree' })
+
+      // The branch row is often on a different machine than the focused tab,
+      // so neither field may fall back to the tab context here.
+      expect(await screen.findByTestId('new-agent-target')).toHaveTextContent('w2|/other/worktree')
+      expect(await screen.findByTestId('new-terminal-target')).toHaveTextContent('w2|/other/worktree')
+    })
+
+    it('re-points an already-open dialog at a second target', async () => {
+      // The keyed <Show> is what makes this work: an unkeyed one would keep the
+      // first payload's dialog mounted and the user would type into a form
+      // pointed at the branch they no longer picked.
+      const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1' })
+      dialogs.newAgent.open({ workerId: 'w2', workingDir: '/first' })
+      expect(await screen.findByTestId('new-agent-target')).toHaveTextContent('w2|/first')
+
+      dialogs.newAgent.open({ workerId: 'w3', workingDir: '/second' })
+      expect(await screen.findByTestId('new-agent-target')).toHaveTextContent('w3|/second')
     })
 
     it('passes no reason once the workspace can take a tab', async () => {
@@ -543,7 +608,7 @@ describe('appShellDialogs branch dialogs', () => {
         () => ({ id: 'ws1' }),
         { placementTileId: 'tile-1' },
       )
-      dialogs.newAgent.open()
+      dialogs.newAgent.open({})
 
       expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/^$/)
     })
@@ -619,7 +684,7 @@ describe('appShellDialogs agent creation', () => {
   // OpenAgent response carries no git status.
   it('marks the placed agent hydrated and writes no repo entry', async () => {
     const { dialogs, repoGitStore, view, metadata } = renderForCreate()
-    dialogs.newAgent.open()
+    dialogs.newAgent.open({})
 
     fireEvent.click(await screen.findByTestId('new-agent-created'))
 
@@ -641,7 +706,7 @@ describe('appShellDialogs agent creation', () => {
   it('seeds the branch from the active tab when the agent opens in place', async () => {
     const stores = renderForCreate()
     seedActiveTabOnOtherWorker(stores)
-    stores.dialogs.newAgent.open()
+    stores.dialogs.newAgent.open({})
 
     fireEvent.click(await screen.findByTestId('new-agent-created'))
 
@@ -661,7 +726,7 @@ describe('appShellDialogs agent creation', () => {
   it('seeds nothing when the agent is redirected into a worktree', async () => {
     const stores = renderForCreate()
     seedActiveTabOnOtherWorker(stores)
-    stores.dialogs.newAgent.open()
+    stores.dialogs.newAgent.open({})
 
     fireEvent.click(await screen.findByTestId('new-agent-created-worktree'))
 
@@ -671,10 +736,10 @@ describe('appShellDialogs agent creation', () => {
 
   it('closes the dialog once the agent is placed', async () => {
     const { dialogs } = renderForCreate()
-    dialogs.newAgent.open()
+    dialogs.newAgent.open({})
 
     fireEvent.click(await screen.findByTestId('new-agent-created'))
 
-    await waitFor(() => expect(dialogs.newAgent.isOpen()).toBe(false))
+    await waitFor(() => expect(dialogs.newAgent.value()).toBeNull())
   })
 })

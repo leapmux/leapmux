@@ -26,8 +26,8 @@ func TestPrivateEventVisibleGatesRenamesByTabKind(t *testing.T) {
 	terminalRename := &leapmuxv1.WorkerPrivateEvent{Event: &leapmuxv1.WorkerPrivateEvent_TabRenamed{
 		TabRenamed: &leapmuxv1.TabRenamed{TabId: "t1", TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, Title: "secret title"},
 	}}
-	fileEvent := &leapmuxv1.WorkerPrivateEvent{Event: &leapmuxv1.WorkerPrivateEvent_FileTabPathRegistered{
-		FileTabPathRegistered: &leapmuxv1.FileTabPathRegistered{TabId: "f1"},
+	fileEvent := &leapmuxv1.WorkerPrivateEvent{Event: &leapmuxv1.WorkerPrivateEvent_TabPayloadRegistered{
+		TabPayloadRegistered: &leapmuxv1.TabPayloadRegistered{TabId: "f1"},
 	}}
 
 	assert.False(t, privateEventVisible(fileOnly, agentRename),

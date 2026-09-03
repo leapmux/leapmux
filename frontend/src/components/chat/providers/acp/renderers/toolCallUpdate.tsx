@@ -19,6 +19,7 @@ import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../../results/collap
 import { CollapsibleContent } from '../../../results/CollapsibleContent'
 import { commandOutputIsCollapsible, CommandResultBody } from '../../../results/commandResult'
 import { FileEditDiffBody, pickFileEditDiff } from '../../../results/fileEditDiff'
+import { ImageResultList } from '../../../results/imageResult'
 import { CommandInputBody, CommandInputSummary, createCommandInputExpansionState } from '../../../results/multiLineCommandBody'
 import { ReadFileResultBody } from '../../../results/readFileResult'
 import { SearchResultBody } from '../../../results/searchResult'
@@ -29,6 +30,7 @@ import { ToolUseLayout } from '../../../toolRenderers'
 import { renderReadTitle, renderSearchTitle } from '../../../toolTitleRenderers'
 import { acpExecuteFromToolCall } from '../extractors/execute'
 import { acpFileEditFromToolCallContent, acpFileEditFromToolCallRawInput } from '../extractors/fileEdit'
+import { acpImagesFromToolCall } from '../extractors/image'
 import { acpReadFromToolCall } from '../extractors/read'
 import { acpSearchFromToolCall } from '../extractors/search'
 import { acpTerminalFromToolCallContent } from '../extractors/terminal'
@@ -223,6 +225,15 @@ export function ToolCallUpdateMessage(props: {
   // Execute-specific: hide summary when expanded + expandable command.
   const displaySummary = () => expanded() && commandExpandable() ? undefined : summary(!expanded())
 
+  // Images the tool returned. Outside the kind-body switch on purpose: an
+  // OpenCode `read` on a PNG sends a text block AND an image block in the same
+  // update, so an image must not depend on which body kind won.
+  const images = createMemo(() => {
+    const context = props.context
+    const toolUse = props.toolUse
+    return cachedRenderValue(context, 'acp.toolCallUpdate.images', () => acpImagesFromToolCall(toolUse))
+  })
+
   // ACP `{ type: 'terminal', terminalId }` content while a host terminal runs.
   // Badge only — no live streaming in this PR.
   const terminalRef = createMemo(() => {
@@ -268,6 +279,12 @@ export function ToolCallUpdateMessage(props: {
         )}
       >
         {renderKindBody(body(), props.context)}
+      </Show>
+
+      <Show when={images().length > 0}>
+        {/* `fallbackTitle`, not `title()`: the latter may be JSX (a rendered
+            path or search pattern), and a tab name has to be a string. */}
+        <ImageResultList sources={images()} title={fallbackTitle()} context={props.context} />
       </Show>
 
       {/* Error indicator: shown only when there's no output text and no

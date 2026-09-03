@@ -159,8 +159,8 @@ var unscopedOwnerKeyedQueries = map[string]string{
 
 	// The reconciler and the backfill both walk the whole table on purpose;
 	// the per-row owner is read back out and used to scope everything they do
-	// with it (see OrphanReconciler.reconcileFileTabs' ownerScope guard).
-	"ListAllWorkerFileTabs": "the orphan reconciler and the worktree-link backfill walk EVERY owner's rows by design, and re-scope per row from the user_id they read back",
+	// with it (see OrphanReconciler.reconcileTabPayloads' ownerScope guard).
+	"ListAllWorkerTabPayloads": "the orphan reconciler and the worktree-link backfill walk EVERY owner's rows by design, and re-scope per row from the user_id they read back",
 	// worktree_tabs ref-counting is cross-owner BY DEFINITION: the count
 	// exists to stop one user's close from removing a worktree another user
 	// still has a file tab open in.

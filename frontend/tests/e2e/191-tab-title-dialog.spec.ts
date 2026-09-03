@@ -145,14 +145,14 @@ test.describe('Tab title in the create dialogs', () => {
 
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
-    await clickBranchMenuItem(page, branchGroupRow(page), 'Change branch...')
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Switch to branch...')
     await expect(page.getByRole('heading', { name: 'Change branch' })).toBeVisible()
 
     const dialog = page.getByRole('dialog')
     // The field belongs to create-worktree only, the one mode that opens a tab.
     await expect(dialog.getByTestId('title-input')).toHaveCount(0)
 
-    await dialog.getByText('Create new worktree').click()
+    await dialog.getByText('Create new worktree', { exact: true }).click()
     const titleInput = dialog.getByTestId('title-input')
     await expect(titleInput).toHaveValue(/^Agent [A-Z][A-Za-z]+$/)
 

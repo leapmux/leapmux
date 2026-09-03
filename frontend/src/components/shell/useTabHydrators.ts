@@ -2,15 +2,18 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
-import { getFileTabPath, listAgents, listTerminals } from '~/api/workerRpc'
+import { getTabPayload, listAgents, listTerminals } from '~/api/workerRpc'
 import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { resolveSettingsTabFields } from '~/hooks/agentEvents'
 import { createExponentialBackoff } from '~/lib/retry'
 import { sameKeys } from '~/lib/sameKeys'
+import { tabPayloadView } from '~/lib/tabPayload'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { protoToAgentTabFields, tabKey, terminalMetadata } from '~/stores/tab.helpers'
+import { isPayloadBackedTabType } from '~/stores/tab.types'
+import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
 
 /** No axis is in flight. Shared so the common case allocates nothing. */
 const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
@@ -444,11 +447,16 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
     })
   }
 
-  // FILE: GetFileTabPath populates the path/title via worker E2EE. The
-  // WatchWorkerPrivateEvents stream's bootstrap reply covers the
+  // FILE and IMAGE: GetTabPayload populates whatever the tab shows, via worker
+  // E2EE. The WatchWorkerPrivateEvents stream's bootstrap reply covers the
   // late-joiner case, but if a tab lands before the private-event
   // stream has finished its bootstrap, we issue a one-shot
-  // GetFileTabPath so the title renders without a perceptible delay.
+  // GetTabPayload so the title renders without a perceptible delay.
+  //
+  // One hydrator for both kinds because the fetch is one RPC and the patch is
+  // one shared mapping. An IMAGE tab needs this at least as much as a FILE tab
+  // does: without the payload it knows no agent, no seq and no index, so it can
+  // resolve nothing at all.
   //
   // `hydrated` ALONE, with no `!tab.filePath` clause and no second cache. The
   // payload sniff was a stand-in for a flag the local open path forgot to set,
@@ -456,24 +464,31 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   // payload field is forgeable by anything else that writes that field. The
   // separate path cache that used to answer "did the stream already tell us?"
   // is gone too -- the stream marks the tab `hydrated`, because a
-  // `FileTabPathRegistered` IS a worker answer for this exact tab carrying the
+  // `TabPayloadRegistered` IS a worker answer for this exact tab carrying the
   // same payload this fetch returns. One flag, one sweep: a cache keyed by tab
   // id but swept on a different schedule than the row could say "already
   // answered" for a row that no longer exists, and nothing would ever ask again.
   createTabHydration({
     kind: 'per-tab',
-    predicate: tab => tab.type === TabType.FILE && !isHydrated(tab.id) && Boolean(tab.workerId),
+    predicate: tab => isPayloadBackedTabType(tab.type) && !isHydrated(tab.id) && Boolean(tab.workerId),
     fetch: async (tab) => {
       // The predicate already requires a non-empty workerId; this
       // re-check narrows the optional field for TypeScript.
       if (!tab.workerId)
         return
-      const resp = await getFileTabPath(tab.workerId, { tabId: tab.id })
-      // `workingDir` comes along because it is what puts this tab in a branch
-      // group and drives the git-status containment match -- a hydrated tab
-      // without it falls back to matching on the file's own path, which is a
-      // different repo whenever the file was opened from another checkout.
-      opts.metadata.patch(tab.id, { filePath: resp.filePath, workingDir: resp.workingDir })
+      const resp = await getTabPayload(tab.workerId, { tabId: tab.id })
+      const payload = tabPayloadView(resp.payload)
+      // A payload this client cannot read is left un-hydrated on purpose: the
+      // tab then renders as unsupported rather than as an empty FILE tab, and a
+      // client that does understand it still resolves it.
+      if (!payload)
+        return
+      // The patch is `tabPayloadMetadata`, shared with the private-event
+      // stream. `workingDir` comes along because it is what puts this tab in a
+      // branch group and drives the git-status containment match -- a hydrated
+      // tab without it falls back to matching on the file's own path, which is
+      // a different repo whenever the file was opened from another checkout.
+      opts.metadata.patch(tab.id, tabPayloadMetadata(payload))
     },
   })
 

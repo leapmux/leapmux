@@ -134,7 +134,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     isActiveWorkspaceMutatable: () => true,
     activeWorkspace: () => ({ id: storeWorkspaceId } as Workspace),
     getCurrentTabContext: () => ({ workerId: getWorkerId(), workingDir: '/tmp' }),
-    newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
+    newAgentDialog: { open: vi.fn(), close: vi.fn(), value: () => null },
     setNewAgentLoadingProvider: vi.fn(),
     repoGitStore,
   })
@@ -204,6 +204,54 @@ describe('useAgentOperations', () => {
             agentProvider: AgentProvider.CODEX,
             workingDir: '/tmp',
           }))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The branch context menu names WHERE the agent runs. Without the
+    // override, an agent started from a branch row on another machine would
+    // open on whichever worker the focused tab happens to sit on.
+    it('opens on the target\'s worker and directory when one is given', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, { id: 'new-agent', workerId: 'w-2', workingDir: '/other/worktree' }),
+          })
+
+          const { ops } = setup()
+          await flush()
+          // The fixture's tab context is w-1 at /tmp, so a leak from it would
+          // be visible in either field.
+          await ops.handleOpenAgent(AgentProvider.CLAUDE_CODE, { workerId: 'w-2', workingDir: '/other/worktree' })
+
+          expect(mockOpenAgent).toHaveBeenCalledWith('w-2', expect.objectContaining({
+            workerId: 'w-2',
+            workingDir: '/other/worktree',
+          }))
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('falls back to the current tab context when no target is given', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockOpenAgent.mockResolvedValue({
+            agent: create(AgentInfoSchema, { id: 'new-agent', workerId: 'w-1', workingDir: '/tmp' }),
+          })
+
+          const { ops } = setup()
+          await flush()
+          await ops.handleOpenAgent(AgentProvider.CLAUDE_CODE)
+
+          expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({ workingDir: '/tmp' }))
         }
         finally {
           dispose()
@@ -346,7 +394,7 @@ describe('useAgentOperations', () => {
     it('opens the dialog when the working directory is unknown', async () => {
       await createRoot(async (dispose) => {
         try {
-          const newAgentDialog = { open: vi.fn(), close: vi.fn(), isOpen: () => false }
+          const newAgentDialog = { open: vi.fn(), close: vi.fn(), value: () => null }
           const agentSessionStore = createAgentSessionStore()
           const controlStore = createControlStore()
           installTestBridge({ workspaceId: 'ws-1' })

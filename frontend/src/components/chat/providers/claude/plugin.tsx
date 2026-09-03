@@ -20,6 +20,7 @@ import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { ClaudeCodeControlActions, ClaudeCodeControlContent } from './ClaudeCodeControlRequest'
 import { getAssistantContent, joinToolResultText } from './extractors/assistantContent'
+import { claudeToolResultImages } from './extractors/image'
 import { claudeNotificationThreadEntry } from './notifications'
 import { renderClaudeMessage } from './renderMessage'
 import { claudeResultDivider } from './resultDivider'
@@ -391,6 +392,7 @@ const claudeCodePlugin: Provider = {
   clearsThinkingTokensForMessage: () => true,
   renderMessage: renderClaudeMessage,
   toolResultMeta: claudeToolResultMeta,
+  toolResultImages: claudeToolResultImages,
   extractQuotableText: claudeExtractQuotableText,
   previewText: claudeMarkPreview,
   // Claude's native control response IS the neutral behavior envelope, so its derivation is the

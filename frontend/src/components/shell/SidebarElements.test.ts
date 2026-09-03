@@ -1,5 +1,6 @@
 import type { SidebarElementsOpts } from './SidebarElements'
 import { describe, expect, it, vi } from 'vitest'
+import { stubBranchRefActions } from '~/test-support/branchMenu'
 import { buildCommonSidebarProps } from './SidebarElements'
 
 /**
@@ -70,8 +71,7 @@ const STATIC_PASSTHROUGHS = new Set([
   'onTabClick',
   'getTileOrderForWorkspace',
   'tabItemOps',
-  'onChangeBranch',
-  'onDeleteBranch',
+  'branchActions',
 ])
 
 /** Counts every reactive read so a test can assert the build performed none. */
@@ -152,6 +152,9 @@ function trackedOpts() {
     onRegisterWorker: noop,
     onTabClick: noop,
     getTileOrderForWorkspace: () => [],
+    // A real bundle, not omitted: the pass-through assertion below compares
+    // identities, and two `undefined`s compare equal without proving anything.
+    branchActions: stubBranchRefActions(),
   } as unknown as SidebarElementsOpts
   return { opts, reads }
 }
@@ -180,7 +183,7 @@ describe('buildCommonSidebarProps', () => {
     const { opts } = trackedOpts()
     const props = buildCommonSidebarProps(opts)
 
-    expect(props.onDeleteBranch).toBe((opts as { onDeleteBranch?: unknown }).onDeleteBranch)
+    expect(props.branchActions).toBe((opts as { branchActions?: unknown }).branchActions)
     expect(props.gitStatusStore).toBe(opts.gitStatusStore)
     expect(props.workspaces).toEqual([])
   })

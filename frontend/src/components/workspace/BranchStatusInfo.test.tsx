@@ -36,6 +36,7 @@ function affectedTabs(overrides: Partial<AffectedTabs> = {}): AffectedTabs {
     agents: 0,
     terminals: 0,
     files: 0,
+    images: 0,
     willStop: true,
     ...overrides,
   }

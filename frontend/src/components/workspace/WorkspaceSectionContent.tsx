@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { BranchRef } from './WorkspaceTabTree'
+import type { BranchRefActions } from './branchActions'
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { TabType, Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -60,7 +60,11 @@ export interface WorkspaceSectionContentProps {
   getTileOrderForWorkspace: (workspaceId: string) => readonly string[]
   onTabClick: (type: TabType, id: string) => void
   tabItemOps?: TabItemOps
-  readOnly?: boolean
+  // No `readOnly` prop: this component derives it per workspace from
+  // `isArchived` below, so no caller can hand one row a value that disagrees
+  // with its own archived state. The prop it used to forward had no caller at
+  // all -- a leftover from workspace sharing, when a workspace could be
+  // read-only without being archived.
   /**
    * Reactive lookup for worker display info. Forwarded to
    * {@link WorkspaceTabTree} to disambiguate same-name branches that
@@ -68,8 +72,8 @@ export interface WorkspaceSectionContentProps {
    */
   workerInfoFn?: (id: string) => WorkerInfo | null
   isWorkerKnownOnline?: (workerId: string) => boolean
-  onChangeBranch?: (ref: BranchRef) => void
-  onDeleteBranch?: (ref: BranchRef) => void
+  /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
+  branchActions?: BranchRefActions
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -323,12 +327,16 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                             props.onSelect(id)
                         }}
                         tabItemOps={props.tabItemOps}
-                        readOnly={props.readOnly}
+                        // Per WORKSPACE, not per sidebar: this section lists
+                        // several, and only some of them are archived. The tab
+                        // bar derives its own copy the same way, from
+                        // `isActiveWorkspaceArchived`, and these are the same
+                        // tabs it renders.
+                        archived={props.isArchived(id)}
                         workspaceId={id}
                         workerInfoFn={props.workerInfoFn}
                         isWorkerKnownOnline={props.isWorkerKnownOnline}
-                        onChangeBranch={props.onChangeBranch}
-                        onDeleteBranch={props.onDeleteBranch}
+                        branchActions={props.branchActions}
                         repoGitStore={props.repoGitStore}
                       />
                     </div>

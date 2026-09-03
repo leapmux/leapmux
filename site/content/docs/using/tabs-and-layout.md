@@ -1,11 +1,11 @@
 ---
 title: "Tabs & Layout"
-description: "Build a workspace layout in LeapMux: divide the canvas into tiles, fill them with agent, terminal, and file tabs, arrange splits and grids, and float panes."
+description: "Build a workspace layout in LeapMux: divide the canvas into tiles, fill them with agent, terminal, file, and image tabs, arrange splits and grids, and float panes."
 type: docs
 weight: 2
 ---
 
-The center of every workspace is a tiling canvas. You divide it into **tiles** (rectangular panes) and fill each tile with **tabs** (agents, terminals, or files). You arrange tiles as splits or grids. When a pane must float above everything else, pop a tab out into a movable, resizable **floating window**. This chapter explains every part of that workflow.
+The center of every workspace is a tiling canvas. You divide it into **tiles** (rectangular panes) and fill each tile with **tabs** (agents, terminals, files, or images). You arrange tiles as splits or grids. When a pane must float above everything else, pop a tab out into a movable, resizable **floating window**. This chapter explains every part of that workflow.
 
 The layout you build is part of the workspace, not just your local view: the tile tree is synced across reloads and across all of your devices. (Focus and floating-window stacking order stay local to your client.) See [Device Sync](/docs/using/device-sync/) for what does and does not sync.
 
@@ -59,7 +59,7 @@ A small dot on a tab (a **notification indicator**) means the tab has unseen act
 Double-click an **agent** or **terminal** tab to rename it inline. Press `Enter` to commit, `Escape` to cancel; clicking away also commits. Empty or unchanged names are ignored.
 
 {{< callout type="info" >}}
-File tabs cannot be renamed, and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
+File and image tabs cannot be renamed — their titles come from what they show — and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
 {{< /callout >}}
 
 The New agent dialog pre-fills the Title field with a suggestion: `Agent <Name>`, from a shared pool. Accept the suggestion, or type your own name.
@@ -70,7 +70,7 @@ To keep a name, type it in the dialog or rename the tab later. Plan mode then le
 
 ### Closing tabs
 
-Close a tab with the **X** on the tab, by **middle-clicking** it, or with `Cmd/Ctrl + W` for the active tab. In a read-only workspace, only file tabs can be closed.
+Close a tab with the **X** on the tab, by **middle-clicking** it, or with `Cmd/Ctrl + W` for the active tab. In a read-only workspace, only file and image tabs can be closed.
 
 Closing certain tabs triggers a confirmation:
 

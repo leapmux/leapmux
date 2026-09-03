@@ -1,4 +1,5 @@
 import type { McpContentItem, McpToolCallSource } from '../../../results/mcpToolCall'
+import { parseImageBlock } from '~/lib/imageBlocks'
 import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { CODEX_ITEM, CODEX_STATUS } from '~/types/toolMessages'
@@ -62,12 +63,9 @@ function fromDynamicToolCall(item: Record<string, unknown>): McpToolCallSource {
     const obj = entry as Record<string, unknown>
     if (obj.type === 'inputText' && typeof obj.text === 'string')
       return [{ type: 'text', text: obj.text as string }]
-    if (obj.type === 'inputImage') {
-      return [{
-        type: 'image',
-        urlOrData: pickString(obj, 'imageUrl', undefined),
-      }]
-    }
+    const image = parseImageBlock(obj)
+    if (image)
+      return [{ type: 'image', source: image }]
     return [{ type: 'unknown', raw: entry }]
   })
 

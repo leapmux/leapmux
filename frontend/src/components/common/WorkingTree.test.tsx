@@ -71,6 +71,39 @@ describe('workingTreeIcon (WorkingTreeIcon)', () => {
     expect(branch.container.querySelector('[data-testid="worktree-icon"]')).toBeNull()
   })
 
+  // The testids above prove only that two branches exist. This proves the two
+  // are TELLABLE APART: one silhouette in two weights, and the fill is the whole
+  // difference. A refactor that pointed both kinds at the same drawing would
+  // still pass every testid assertion.
+  it('fills the nodes of a worktree glyph and leaves a branch glyph open', () => {
+    const worktree = render(() => <WorkingTreeIcon isWorktree size="sm" />)
+    const branch = render(() => <WorkingTreeIcon isWorktree={false} size="sm" />)
+
+    const filled = [...worktree.container.querySelectorAll('circle')]
+    const open = [...branch.container.querySelectorAll('circle')]
+
+    expect(filled).toHaveLength(2)
+    expect(filled.every(c => c.getAttribute('fill') === 'currentColor')).toBe(true)
+    expect(open).toHaveLength(2)
+    expect(open.some(c => c.getAttribute('fill') === 'currentColor')).toBe(false)
+  })
+
+  // Redrawn rather than imported, so the nodes must still sit on lucide's own
+  // `git-branch` geometry. A glyph that drifted off it would misalign against
+  // the branch glyph in the row above it.
+  it('keeps the worktree glyph on the same geometry as the branch glyph', () => {
+    const worktree = render(() => <WorkingTreeIcon isWorktree size="sm" />)
+    const branch = render(() => <WorkingTreeIcon isWorktree={false} size="sm" />)
+
+    const arc = (r: ReturnType<typeof render>) => r.container.querySelector('path')!.getAttribute('d')
+    const nodes = (r: ReturnType<typeof render>) => [...r.container.querySelectorAll('circle')]
+      .map(c => `${c.getAttribute('cx')},${c.getAttribute('cy')},${c.getAttribute('r')}`)
+      .toSorted()
+
+    expect(arc(worktree)).toBe(arc(branch))
+    expect(nodes(worktree)).toEqual(nodes(branch))
+  })
+
   it('passes the caller class through to the svg', () => {
     const { container } = render(() => <WorkingTreeIcon isWorktree size="sm" class="group-icon" />)
 
@@ -98,10 +131,16 @@ describe('workingTreeIcon (WorkingTreeIcon)', () => {
   // prints the noun in text beside the glyph, where a second announcement is
   // noise. lucide decides `aria-hidden` by whether a role/aria key is PRESENT,
   // so this also pins that the component passes no `role: undefined` key.
+  // BOTH kinds, because only one of them is a lucide icon. The worktree glyph
+  // is hand-drawn on `SvgIconFrame`, which copies lucide's rule for exactly
+  // this reason: the two swap places in one `icon` prop, so a reader that hears
+  // one of them and not the other is the defect.
   it('stays out of the accessibility tree with no label', () => {
-    const { container } = render(() => <WorkingTreeIcon isWorktree={false} size="xs" />)
+    const branch = render(() => <WorkingTreeIcon isWorktree={false} size="xs" />)
+    expect(branch.container.querySelector('[data-testid="branch-icon"]')!.getAttribute('aria-hidden')).toBe('true')
 
-    expect(container.querySelector('[data-testid="branch-icon"]')!.getAttribute('aria-hidden')).toBe('true')
+    const worktree = render(() => <WorkingTreeIcon isWorktree size="xs" />)
+    expect(worktree.container.querySelector('[data-testid="worktree-icon"]')!.getAttribute('aria-hidden')).toBe('true')
   })
 })
 

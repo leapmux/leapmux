@@ -25,8 +25,10 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
+import { fileTabPayload, imageTabPayload } from '~/lib/tabPayload'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { descendantAgentTabs, planOptimisticRepoGit, tabKey } from '~/stores/tab.helpers'
+import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
@@ -227,15 +229,16 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   }
 
   /**
-   * Close a FILE tab with a pre-determined worktree action. Mirrors
-   * the shape of `agentOps.handleAgentClose` / `termOps.handleTerminalClose`
-   * so the three tab types follow the same pattern (sync local
-   * cleanup + fire-and-forget worker RPC + toast on failure). The
+   * Close a payload-backed tab (FILE or IMAGE) with a pre-determined worktree
+   * action. Mirrors the shape of `agentOps.handleAgentClose` /
+   * `termOps.handleTerminalClose` so every tab type follows the same pattern
+   * (sync local cleanup + fire-and-forget worker RPC + toast on failure). The
    * worker drives the unified closeTabCommon flow on its side; the
    * revoke is keyed by tabId -- as every tab-close RPC now is, so it needs no
-   * workspaceId.
+   * workspaceId, and it needs no tab TYPE either: the worker reads the kind off
+   * the row it is about to delete.
    */
-  const handleFileClose = (tabId: string, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
+  const handlePayloadTabClose = (tabId: string, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
     if (!workerId) {
       // No worker to send the revoke to. A REMOVE therefore can't
       // reach the worktree — surface it rather than letting the caller
@@ -243,7 +246,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       warnWorktreeUnreachable(worktreeAction)
       return Promise.resolve(undefined)
     }
-    return awaitCloseResult(workerRpc.revokeFileTabPath(workerId, { tabId, worktreeAction }), 'Failed to close file')
+    return awaitCloseResult(workerRpc.revokeTabPayload(workerId, { tabId, worktreeAction }), 'Failed to close tab')
   }
 
   /**
@@ -260,7 +263,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * its commit phase, so adding here would leave the key set forever
    * for the normal close flow. The sidebar X button concurrent-click
    * window is bounded by handleAgentClose / handleTerminalClose /
-   * revokeFileTabPath's own per-tab dedup on the worker side
+   * revokeTabPayload's own per-tab dedup on the worker side
    * (idempotent close).
    */
   const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
@@ -289,7 +292,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     else if (tab.type === TabType.TERMINAL) {
       closeResult = termOps.handleTerminalClose(tab.id, worktreeAction)
     }
-    else if (tab.type === TabType.FILE) {
+    else if (isPayloadBackedTabType(tab.type)) {
       // Mirrors handleAgentClose / handleTerminalClose: sync local
       // cleanup first so the tab disappears immediately, then the
       // fire-and-forget worker RPC. The worker drives closeTabCommon
@@ -298,7 +301,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // the AGENT / TERMINAL last-close behavior.
       emitRemoveTab(tab.type, tab.id)
       if (tab.workerId) {
-        closeResult = handleFileClose(tab.id, tab.workerId, worktreeAction)
+        closeResult = handlePayloadTabClose(tab.id, tab.workerId, worktreeAction)
       }
       else {
         warnWorktreeUnreachable(worktreeAction)
@@ -525,7 +528,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // The worker list positively reports this worker offline. We can't ask
       // it about worktree state, so skip the dialog and fall through to
       // commit. The downstream worker RPCs (closeAgent / closeTerminal /
-      // revokeFileTabPath) are already fire-and-forget — they'll fail the
+      // revokeTabPayload) are already fire-and-forget — they'll fail the
       // same way, get caught, and just toast. The CRDT tombstone still runs
       // and removes the row; the worker's orphan reconciler stops the process
       // when it next learns the tab is gone.
@@ -668,10 +671,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // The tab exists, so the optimistic repo copy now has a reader.
     gitSeed.commit()
 
-    // E2EE worker-side path registration. The hub never sees the path; the
-    // worker persists `(user_id, tab_id, file_path, working_dir)` and emits
-    // FileTabPathRegistered on its OWN private-event stream so peer clients
-    // learn the path and the resolved working dir.
+    // E2EE worker-side payload registration. The hub never sees the path; the
+    // worker persists `(user_id, tab_id, tab_type, payload, working_dir)` and
+    // emits TabPayloadRegistered on its OWN private-event stream so peer
+    // clients learn the path and the resolved working dir.
     //
     // `workingDir` is what makes the worker able to answer branch-context
     // questions about this tab at all -- the last-tab close inspection, the
@@ -686,14 +689,86 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     //
     // Fire-and-forget — failure here doesn't unmount the locally-added tab; the
     // user can retry by re-opening.
-    workerRpc.registerFileTabPath(ctx.workerId, {
+    workerRpc.registerTabPayload(ctx.workerId, {
       tabId,
-      filePath: path,
-      workingDir: ctx.workingDir,
+      payload: fileTabPayload(path, ctx.workingDir),
     }).catch(() => {
       // Roll back the optimistic add so the user sees the failure surface (and
       // isn't left with a tab whose path peers can't resolve).
       emitRemoveTab(TabType.FILE, tabId)
+    })
+  }
+
+  const generateImageTabId = makeIdGenerator('image')
+  /**
+   * Open one image an agent returned inside a chat message in its own tab.
+   *
+   * The counterpart to `handleFileOpen`, and deliberately the same five steps:
+   * dedupe, placement pre-check, `openTabInFocusedTile`, then the E2EE payload
+   * registration with a rollback. What differs is only WHAT is registered --
+   * a message reference instead of a path -- because the two are the same class
+   * of secret and take the same route to the worker.
+   *
+   * An image whose provider named a file goes through `handleFileOpen`
+   * instead (see `ImageResultView`'s click handler): the file on disk is the
+   * same picture at full resolution, and it costs no new tab.
+   */
+  const handleImageOpen = (image: { agentId: string, seq: bigint, imageIndex: number, title: string }) => {
+    const ctx = getCurrentTabContext()
+    if (!ctx.workerId)
+      return
+
+    const existingTab = view.forWorkspace(getActiveWorkspaceId() ?? '').find(
+      t => t.type === TabType.IMAGE
+        && t.imageAgentId === image.agentId
+        && t.imageSeq === image.seq
+        && t.imageIndex === image.imageIndex
+        && t.workerId === ctx.workerId,
+    )
+    if (existingTab) {
+      selection.setActive(existingTab)
+      if (existingTab.tileId)
+        focusTile(layoutStore, floatingWindowStore, existingTab.tileId, existingTab.workspaceId)
+      return
+    }
+
+    const tabId = generateImageTabId()
+    const gitSeed = planOptimisticRepoGit(opts.repoGitStore, activeTab(), {
+      workerId: ctx.workerId,
+      workingDir: ctx.workingDir,
+    })
+    const placedTileId = openTabInFocusedTile(
+      { view, layoutStore, selection, metadata },
+      { type: TabType.IMAGE, id: tabId, workerId: ctx.workerId },
+      {
+        ...gitSeed.fields,
+        workingDir: ctx.workingDir,
+        title: image.title,
+        imageAgentId: image.agentId,
+        imageSeq: image.seq,
+        imageIndex: image.imageIndex,
+        // This path already knows everything the payload hydrator would fetch,
+        // so say so -- the local open paths are required to
+        // (`SharedMeta.hydrated`).
+        hydrated: true,
+      },
+    )
+    // A refused placement added no tab. Registering the payload anyway would
+    // persist a worker-side row (and broadcast it to peers) for a tab id no
+    // tree holds -- a phantom the reconciler only sweeps an hour later.
+    if (!placedTileId) {
+      showWarnToast('Cannot open the image', new Error('The workspace is not ready for a new tab yet.'))
+      return
+    }
+    gitSeed.commit()
+
+    workerRpc.registerTabPayload(ctx.workerId, {
+      tabId,
+      payload: imageTabPayload({ ...image, workingDir: ctx.workingDir }),
+    }).catch(() => {
+      // Roll back the optimistic add so the user sees the failure surface (and
+      // isn't left with a tab peers can't resolve).
+      emitRemoveTab(TabType.IMAGE, tabId)
     })
   }
 
@@ -712,6 +787,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     closeTabWithAction,
     closeWorktreeTabsAndReport,
     handleFileOpen,
+    handleImageOpen,
     setIsTabEditing: (fn: () => boolean) => { isTabEditing = fn },
   }
 }

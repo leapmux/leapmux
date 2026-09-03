@@ -1,6 +1,6 @@
 import type { ContentBlock } from '~/lib/contentBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { asContentArray, getMessageContent, joinContentParagraphs } from '~/lib/contentBlocks'
+import { asContentArray, getMessageContent, splitToolResultContent } from '~/lib/contentBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
@@ -47,6 +47,12 @@ export function extractToolUseInfo(parsed: ParsedMessageContent): { toolName: st
  * nested Anthropic-style block array (text blocks). Returns null when neither yields text. The single
  * home for the string-vs-array unwrap -- the fiddly part -- shared by {@link extractToolResultText}
  * (the FIRST tool_result) and {@link joinToolResultText} (EVERY tool_result), so the two can't drift.
+ *
+ * IMAGE BLOCKS ARE EXCLUDED. This text reaches the clipboard (the toolbar's
+ * copy) and the scroll rail's preview, and neither can do anything with a
+ * megabyte of base64 -- a `Read` on a screenshot used to fill the clipboard
+ * with one. The images are rendered as images instead; see
+ * `claudeImagesFromToolResult`.
  */
 function toolResultBlockText(block: ContentBlock): string | null {
   const inner = block.content
@@ -55,7 +61,7 @@ function toolResultBlockText(block: ContentBlock): string | null {
   const nested = asContentArray(inner)
   if (!nested)
     return null
-  return joinContentParagraphs(nested, { text: 'text' }) || null
+  return splitToolResultContent(nested, { text: 'text' }).text || null
 }
 
 /**

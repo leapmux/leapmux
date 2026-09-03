@@ -32,6 +32,7 @@ import {
 import { PiControlActions, PiControlContent } from './controls'
 import { extractPiBash } from './extractors/bash'
 import { extractPiRead, piResolveDiffSources } from './extractors/fileEdit'
+import { piToolResultImages } from './extractors/image'
 import { piExtractTool } from './extractors/toolCommon'
 import { piContentText, piIsThinkingOnly } from './messageContent'
 import {
@@ -395,6 +396,7 @@ const piPlugin: Provider = {
   resultDivider: piResultDivider,
 
   toolResultMeta: piToolResultMeta,
+  toolResultImages: piToolResultImages,
 
   extractQuotableText(category: MessageCategory, parsed: ParsedMessageContent): string | null {
     const obj = parsed.parentObject

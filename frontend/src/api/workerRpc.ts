@@ -60,9 +60,9 @@ import type {
   GetWorkerSystemInfoResponse,
 } from '~/generated/proto/leapmux/v1/worker_pb'
 import type {
-  GetFileTabPathResponse,
-  RegisterFileTabPathResponse,
-  RevokeFileTabPathResponse,
+  GetTabPayloadResponse,
+  RegisterTabPayloadResponse,
+  RevokeTabPayloadResponse,
 } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type {
   CleanupWorkspaceResponse,
@@ -168,12 +168,12 @@ import {
   GetWorkerSystemInfoResponseSchema,
 } from '~/generated/proto/leapmux/v1/worker_pb'
 import {
-  GetFileTabPathRequestSchema,
-  GetFileTabPathResponseSchema,
-  RegisterFileTabPathRequestSchema,
-  RegisterFileTabPathResponseSchema,
-  RevokeFileTabPathRequestSchema,
-  RevokeFileTabPathResponseSchema,
+  GetTabPayloadRequestSchema,
+  GetTabPayloadResponseSchema,
+  RegisterTabPayloadRequestSchema,
+  RegisterTabPayloadResponseSchema,
+  RevokeTabPayloadRequestSchema,
+  RevokeTabPayloadResponseSchema,
 } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import {
   CleanupWorkspaceRequestSchema,
@@ -357,25 +357,25 @@ export function cleanupWorkspace(workerId: string, req: MessageInitShape<typeof 
 // File-tab paths (E2EE-only — hub never sees the path)
 // ---------------------------------------------------------------------------
 
-export function registerFileTabPath(
+export function registerTabPayload(
   workerId: string,
-  req: MessageInitShape<typeof RegisterFileTabPathRequestSchema>,
-): Promise<RegisterFileTabPathResponse> {
-  return callWorker(workerId, 'RegisterFileTabPath', RegisterFileTabPathRequestSchema, RegisterFileTabPathResponseSchema, req)
+  req: MessageInitShape<typeof RegisterTabPayloadRequestSchema>,
+): Promise<RegisterTabPayloadResponse> {
+  return callWorker(workerId, 'RegisterTabPayload', RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema, req)
 }
 
-export function getFileTabPath(
+export function getTabPayload(
   workerId: string,
-  req: MessageInitShape<typeof GetFileTabPathRequestSchema>,
-): Promise<GetFileTabPathResponse> {
-  return callWorker(workerId, 'GetFileTabPath', GetFileTabPathRequestSchema, GetFileTabPathResponseSchema, req)
+  req: MessageInitShape<typeof GetTabPayloadRequestSchema>,
+): Promise<GetTabPayloadResponse> {
+  return callWorker(workerId, 'GetTabPayload', GetTabPayloadRequestSchema, GetTabPayloadResponseSchema, req)
 }
 
-export function revokeFileTabPath(
+export function revokeTabPayload(
   workerId: string,
-  req: MessageInitShape<typeof RevokeFileTabPathRequestSchema>,
-): Promise<RevokeFileTabPathResponse> {
-  return callWorker(workerId, 'RevokeFileTabPath', RevokeFileTabPathRequestSchema, RevokeFileTabPathResponseSchema, req)
+  req: MessageInitShape<typeof RevokeTabPayloadRequestSchema>,
+): Promise<RevokeTabPayloadResponse> {
+  return callWorker(workerId, 'RevokeTabPayload', RevokeTabPayloadRequestSchema, RevokeTabPayloadResponseSchema, req)
 }
 
 // ---------------------------------------------------------------------------

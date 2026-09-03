@@ -1,47 +1,27 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../messageRenderers'
-import { createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
+import type { ImageResultSource } from '~/lib/imageBlocks'
+import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
-import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
+import { parseImageBlock } from '~/lib/imageBlocks'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { pickFirstString, pickString } from '~/lib/jsonPick'
+import { isObject, pickString } from '~/lib/jsonPick'
 import { renderMarkdownForContext } from '../messageRenderers'
 import {
-  MCP_IMAGE_MAX_HEIGHT_PX,
-  mcpImage,
-  mcpImageRow,
   toolInputSummary,
   toolMessage,
   toolResultContent,
   toolResultContentPre,
   toolResultError,
 } from '../toolStyles.css'
+import { ImageResultView } from './imageResult'
 
 /** A single MCP content item produced by the server. */
 export type McpContentItem
   = | { type: 'text', text: string }
-    | { type: 'image', mimeType?: string, urlOrData?: string }
+    | { type: 'image', source: ImageResultSource }
     | { type: 'resource', uri: string, mimeType?: string }
     | { type: 'unknown', raw: unknown }
-
-/**
- * MIME types we will render inline. SVG is intentionally excluded — SVGs can
- * carry script and we don't sandbox them.
- */
-const RENDERABLE_IMAGE_MIME_TYPES = new Set<string>([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/avif',
-])
-
-/**
- * Cap on the base64-encoded length of an inline image. Beyond this we
- * fall back to the placeholder rather than constructing a giant data URL.
- * 7 MB base64 ≈ 5 MB raw — comfortably covers screenshot-sized images.
- */
-const MAX_INLINE_IMAGE_BASE64_LEN = 7 * 1024 * 1024
 
 export type McpToolCallStatus = 'inProgress' | 'completed' | 'failed'
 
@@ -80,19 +60,18 @@ export function mcpToolCallDisplayName(source: { server: string, tool: string })
  * keeps anything else as `unknown` for raw-JSON display.
  */
 export function parseMcpContentItem(raw: unknown): McpContentItem {
-  if (raw === null || typeof raw !== 'object')
+  if (!isObject(raw))
     return { type: 'unknown', raw }
-  const obj = raw as Record<string, unknown>
+  const obj = raw
   const t = pickString(obj, 'type')
   if (t === 'text' && typeof obj.text === 'string')
     return { type: 'text', text: obj.text as string }
-  if (t === 'image') {
-    return {
-      type: 'image',
-      mimeType: pickString(obj, 'mimeType', undefined),
-      urlOrData: pickFirstString(obj, ['data', 'url']),
-    }
-  }
+  // `parseImageBlock` also accepts the Anthropic `source:{...}` shape, which
+  // Claude tool_result content blocks use. This parser read only the flat
+  // `data`/`url` keys, so an Anthropic-shaped image rendered as `[image]`.
+  const image = parseImageBlock(obj)
+  if (image)
+    return { type: 'image', source: image }
   if (t === 'resource' && typeof obj.uri === 'string') {
     return {
       type: 'resource',
@@ -113,6 +92,15 @@ export function McpToolCallBody(props: {
   source: McpToolCallSource
   context?: RenderContext
 }): JSX.Element {
+  // Each image's position among the IMAGES of this message, which is what an
+  // image tab addresses -- not its position among the content items, which
+  // counts the text blocks between them. `Provider.toolResultImages` produces
+  // the same ordering from the same blocks, so index N here and index N there
+  // are the same picture.
+  const imageOrdinals = createMemo(() => {
+    let seen = 0
+    return props.source.content.map(item => item.type === 'image' ? seen++ : -1)
+  })
   return (
     <div class={toolMessage}>
       <Show when={props.source.argsJson}>
@@ -121,7 +109,14 @@ export function McpToolCallBody(props: {
       </Show>
       <Show when={props.source.content.length > 0}>
         <For each={props.source.content}>
-          {item => <McpContentItemView item={item} context={props.context} />}
+          {(item, index) => (
+            <McpContentItemView
+              item={item}
+              imageIndex={imageOrdinals()[index()]}
+              title={mcpToolCallDisplayName(props.source)}
+              context={props.context}
+            />
+          )}
         </For>
       </Show>
       <Show when={props.source.structuredJson}>
@@ -135,7 +130,7 @@ export function McpToolCallBody(props: {
   )
 }
 
-function McpContentItemView(props: { item: McpContentItem, context?: RenderContext }): JSX.Element {
+function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, title?: string, context?: RenderContext }): JSX.Element {
   const markdownHtml = (text: string) => renderMarkdownForContext(text, props.context)
   return (
     <Switch>
@@ -146,7 +141,12 @@ function McpContentItemView(props: { item: McpContentItem, context?: RenderConte
         />
       </Match>
       <Match when={props.item.type === 'image'}>
-        <McpImageView item={props.item as { type: 'image', mimeType?: string, urlOrData?: string }} premeasureMode={props.context?.premeasureMode} />
+        <ImageResultView
+          source={(props.item as { type: 'image', source: ImageResultSource }).source}
+          index={props.imageIndex}
+          title={props.title}
+          context={props.context}
+        />
       </Match>
       <Match when={props.item.type === 'resource'}>
         <McpResourceView item={props.item as { type: 'resource', uri: string, mimeType?: string }} />
@@ -157,170 +157,6 @@ function McpContentItemView(props: { item: McpContentItem, context?: RenderConte
         </div>
       </Match>
     </Switch>
-  )
-}
-
-/**
- * Decision-tree for rendering an MCP image content block:
- *
- *   - Inline base64 + allowlisted MIME + under size cap → `<img src="data:...">`.
- *   - Already-formed `data:` URL with allowlisted MIME → render as-is.
- *   - http(s) URL → not rendered inline; the placeholder shows the URL as a
- *     link so the user can open it in a new tab.
- *   - Anything else → text placeholder so the user knows an image was
- *     returned but we're not rendering it (unknown MIME, bare base64
- *     without MIME, oversized inline data, etc.).
- */
-export function imageRenderInfo(item: { type: 'image', mimeType?: string, urlOrData?: string }): {
-  src?: string
-  via?: 'inline'
-  reason?: 'no-data' | 'unsupported-mime' | 'too-large' | 'external-url' | 'unknown-shape'
-} {
-  const data = item.urlOrData
-  if (!data)
-    return { reason: 'no-data' }
-
-  // Already a complete data: URL — accept iff its MIME is allowlisted.
-  const DATA_URL_PREFIX = 'data:'
-  if (data.startsWith(DATA_URL_PREFIX)) {
-    const comma = data.indexOf(',')
-    if (comma < 0)
-      return { reason: 'unknown-shape' }
-    const meta = data.slice(DATA_URL_PREFIX.length, comma).toLowerCase()
-    const semi = meta.indexOf(';')
-    const mime = (semi < 0 ? meta : meta.slice(0, semi)).toLowerCase()
-    if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
-      return { reason: 'unsupported-mime' }
-    if (data.length - comma - 1 > MAX_INLINE_IMAGE_BASE64_LEN)
-      return { reason: 'too-large' }
-    return { src: data, via: 'inline' }
-  }
-
-  // http(s) URL — show as an opt-in external link via the placeholder.
-  if (data.startsWith('http://') || data.startsWith('https://'))
-    return { reason: 'external-url' }
-
-  // Plain base64 — only render when MIME is explicitly provided + allowlisted.
-  const mime = (item.mimeType ?? '').toLowerCase()
-  if (!RENDERABLE_IMAGE_MIME_TYPES.has(mime))
-    return { reason: 'unsupported-mime' }
-  if (data.length > MAX_INLINE_IMAGE_BASE64_LEN)
-    return { reason: 'too-large' }
-  return { src: `data:${mime};base64,${data}`, via: 'inline' }
-}
-
-/**
- * Inline style reserving an image's exact final box before it decodes, so
- * the decode is layout-neutral and the row's measured height never changes:
- *   height = min(h, h/w * containerWidth, MAX) is what auto layout yields
- *   after load; `aspect-ratio` + this width reproduces it exactly.
- */
-export function imageReservationStyle(dims: { width: number, height: number }): Record<string, string> {
-  const widthAtMaxHeight = (MCP_IMAGE_MAX_HEIGHT_PX * dims.width / dims.height).toFixed(2)
-  return {
-    'aspect-ratio': `${dims.width} / ${dims.height}`,
-    'width': `min(${dims.width}px, 100%, ${widthAtMaxHeight}px)`,
-  }
-}
-
-export function imageReservationMatchesDecoded(
-  dims: { width: number, height: number },
-  decoded: { naturalWidth: number, naturalHeight: number },
-): boolean {
-  return decoded.naturalWidth === dims.width && decoded.naturalHeight === dims.height
-}
-
-function McpImageView(props: {
-  item: { type: 'image', mimeType?: string, urlOrData?: string }
-  premeasureMode?: boolean
-}): JSX.Element {
-  const info = createMemo(() => imageRenderInfo(props.item))
-  const dims = createMemo(() => {
-    const src = info().src
-    return src ? sniffImageDimensionsFromDataUrl(src) : null
-  })
-  // Flips when the decoded image disagrees with the sniffed dimensions
-  // (sniffer bug / exotic file): the reservation is dropped and layout falls
-  // back to natural sizing, so a wrong sniff can never permanently distort
-  // the box — it just degrades to today's measure-on-load behavior.
-  const [reservationBroken, setReservationBroken] = createSignal(false)
-  const reserved = () => (reservationBroken() ? null : dims())
-
-  const sizeStyle = () => {
-    const d = reserved()
-    return d ? imageReservationStyle(d) : undefined
-  }
-
-  const verifyReservation = (img: HTMLImageElement) => {
-    const d = dims()
-    if (!d || reservationBroken())
-      return
-    const { naturalWidth: nw, naturalHeight: nh } = img
-    // naturalWidth/naturalHeight are post-EXIF-orientation in modern
-    // browsers, matching the sniffer's own orientation handling.
-    if (nw > 0 && nh > 0 && !imageReservationMatchesDecoded(d, { naturalWidth: nw, naturalHeight: nh }))
-      setReservationBroken(true)
-  }
-
-  return (
-    <Show
-      when={info().src}
-      fallback={<McpImagePlaceholder item={props.item} reason={info().reason} />}
-    >
-      <div class={mcpImageRow}>
-        <img
-          class={mcpImage}
-          style={sizeStyle()}
-          src={info().src}
-          alt={props.item.mimeType ?? 'image'}
-          loading={props.premeasureMode ? 'eager' : 'lazy'}
-          decoding="async"
-          referrerpolicy="no-referrer"
-          data-size-reserved={reserved() ? '1' : undefined}
-          onLoad={e => verifyReservation(e.currentTarget)}
-        />
-      </div>
-    </Show>
-  )
-}
-
-function McpImagePlaceholder(props: {
-  item: { type: 'image', mimeType?: string, urlOrData?: string }
-  reason?: 'no-data' | 'unsupported-mime' | 'too-large' | 'external-url' | 'unknown-shape'
-}): JSX.Element {
-  const looksLikeUrl = () => {
-    const d = props.item.urlOrData ?? ''
-    return d.startsWith('http://') || d.startsWith('https://')
-  }
-  const label = () => {
-    const mime = props.item.mimeType
-    const suffix = mime ? `: ${mime}` : ''
-    if (props.reason === 'too-large')
-      return `[image${suffix} — too large to render inline]`
-    if (props.reason === 'unsupported-mime')
-      return `[image${suffix} — unsupported format]`
-    return `[image${suffix}]`
-  }
-  return (
-    <div class={mcpImageRow}>
-      <Show
-        when={looksLikeUrl()}
-        fallback={<div class={toolInputSummary}>{label()}</div>}
-      >
-        <div class={toolInputSummary}>
-          {label()}
-          {' — '}
-          <a
-            href={props.item.urlOrData}
-            target="_blank"
-            rel="noopener noreferrer nofollow"
-            referrerpolicy="no-referrer"
-          >
-            open ↗
-          </a>
-        </div>
-      </Show>
-    </div>
   )
 }
 

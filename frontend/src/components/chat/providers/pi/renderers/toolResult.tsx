@@ -7,10 +7,12 @@ import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { CommandResultBody } from '../../../results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from '../../../results/fileEditDiff'
+import { ImageResultList } from '../../../results/imageResult'
 import { ReadFileResultBody } from '../../../results/readFileResult'
 import { toolResultContentPre } from '../../../toolStyles.css'
 import { extractPiBash, piBashToCommandSource } from '../extractors/bash'
 import { extractPiEdit, extractPiRead, extractPiWrite, resolvePiResultDiff } from '../extractors/fileEdit'
+import { piToolResultImages } from '../extractors/image'
 import { piExtractTool } from '../extractors/toolCommon'
 
 interface RendererProps {
@@ -165,14 +167,23 @@ const FallbackToolResultRenderer: ToolResultRenderer = props => <PiGenericResult
 export function PiToolResultRenderer(props: RendererProps): JSX.Element {
   const payload = createMemo(() => isObject(props.parsed) ? props.parsed : null)
   const toolName = createMemo(() => pickString(payload() ?? {}, 'toolName'))
+  // Mounted once for every tool rather than inside the per-tool renderers: a
+  // `read` on a PNG returns an image and no cat-n lines (so `PiReadResult`
+  // renders nothing), and any MCP-backed tool can return one.
+  const images = createMemo(() => piToolResultImages(payload(), undefined, props.context?.toolUseParsed))
   return (
     <Show when={payload()}>
       {p => (
-        <Dynamic
-          component={TOOL_RESULT_RENDERERS[toolName()] ?? FallbackToolResultRenderer}
-          payload={p()}
-          context={props.context}
-        />
+        <>
+          <Dynamic
+            component={TOOL_RESULT_RENDERERS[toolName()] ?? FallbackToolResultRenderer}
+            payload={p()}
+            context={props.context}
+          />
+          <Show when={images().length > 0}>
+            <ImageResultList sources={images()} title={toolName()} context={props.context} />
+          </Show>
+        </>
       )}
     </Show>
   )

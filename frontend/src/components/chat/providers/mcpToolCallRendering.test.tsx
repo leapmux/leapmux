@@ -3,6 +3,7 @@ import type { RenderContext } from '../messageRenderers'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { pngBase64 } from '~/test-support/pngFixture'
 import './claude'
 import './codex'
 import './testMocks'
@@ -110,33 +111,10 @@ describe('claude MCP tool_result rendering', () => {
     expect(img?.getAttribute('loading')).toBe('eager')
   })
 
-  /** Minimal PNG header (signature + IHDR) declaring the given dimensions. */
-  function pngBase64(width: number, height: number): string {
-    const u32 = (v: number) => [(v >>> 24) & 0xFF, (v >>> 16) & 0xFF, (v >>> 8) & 0xFF, v & 0xFF]
-    const bytes = [
-      0x89,
-      0x50,
-      0x4E,
-      0x47,
-      0x0D,
-      0x0A,
-      0x1A,
-      0x0A,
-      ...u32(13),
-      0x49,
-      0x48,
-      0x44,
-      0x52,
-      ...u32(width),
-      ...u32(height),
-    ]
-    return btoa(String.fromCharCode(...bytes))
-  }
-
   // NOTE: jsdom's CSS engine drops `min()` widths and `aspect-ratio`
   // declarations, so these tests assert the reservation lifecycle via the
   // data attribute; the exact style formula is unit-tested in
-  // results/mcpToolCall.test.tsx (imageReservationStyle).
+  // results/imageResult.test.ts (imageReservationStyle).
   it('reserves the intrinsic box for images with a sniffable header', () => {
     const parsed = makeMcpToolResult([
       { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },

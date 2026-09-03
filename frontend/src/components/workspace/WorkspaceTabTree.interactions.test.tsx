@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
+import { stubBranchRefActions } from '~/test-support/branchMenu'
 import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
 import { label as workingTreeLabel } from '../common/WorkingTree.css'
 import { labelWithStats } from '../tree/sharedTree.css'
@@ -157,7 +159,7 @@ describe('workspaceTabTree interactions', () => {
     expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' })
   })
 
-  it('hides close controls for agent and terminal tabs in readOnly mode', () => {
+  it('hides close controls for agent and terminal tabs in archived mode', () => {
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -167,7 +169,7 @@ describe('workspaceTabTree interactions', () => {
         ]}
         activeTabKey={null}
         onTabClick={() => {}}
-        readOnly
+        archived
         workspaceId="ws-1"
       />
     ))
@@ -175,14 +177,14 @@ describe('workspaceTabTree interactions', () => {
     expect(screen.queryByTestId('workspace-tab-close')).not.toBeInTheDocument()
   })
 
-  it('keeps file tab close control in readOnly mode', () => {
+  it('keeps file tab close control in archived mode', () => {
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
         tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
         activeTabKey={null}
         onTabClick={() => {}}
-        readOnly
+        archived
         workspaceId="ws-1"
       />
     ))
@@ -278,8 +280,7 @@ describe('workspaceTabTree interactions', () => {
   }
 
   it('opens the branch menu and fires onChangeBranch with the row identity', async () => {
-    const onChangeBranch = vi.fn()
-    const onDeleteBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -287,8 +288,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={onDeleteBranch}
+        branchActions={branchActions}
       />
     ))
 
@@ -297,20 +297,80 @@ describe('workspaceTabTree interactions', () => {
     const trigger = branchRow.querySelector('button') as HTMLButtonElement
     await fireEvent.click(trigger)
 
-    await fireEvent.click(screen.getByText('Change branch...'))
-    expect(onChangeBranch).toHaveBeenCalledTimes(1)
-    expect(onChangeBranch.mock.calls[0][0]).toMatchObject({
+    await fireEvent.click(screen.getByText('Switch to branch...'))
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
+    expect(branchActions.onChangeBranch.mock.calls[0][0]).toMatchObject({
       workspaceId: 'ws-1',
       workerId: 'w1',
       gitToplevel: '/home/user/Workspaces/r',
       branchName: 'feature',
     })
-    expect(onDeleteBranch).not.toHaveBeenCalled()
+    expect(branchActions.onDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  // The mode is the whole reason there are three items: each opens the same
+  // dialog on its own radio.
+  it('fires each change item with its own git mode', async () => {
+    const branchActions = stubBranchRefActions()
+    render(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={[gitTab('a1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        branchActions={branchActions}
+      />
+    ))
+    const branchRow = screen.getByTestId('tab-tree-branch-group')
+    await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+
+    for (const [label, mode] of [
+      ['Switch to branch...', GitMode.SwitchBranch],
+      ['Create new branch...', GitMode.CreateBranch],
+      ['Create new worktree...', GitMode.CreateWorktree],
+    ] as const) {
+      await fireEvent.click(screen.getByText(label))
+      expect(branchActions.onChangeBranch).toHaveBeenLastCalledWith(
+        expect.objectContaining({ branchName: 'feature' }),
+        mode,
+      )
+    }
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(3)
+  })
+
+  // The new-tab items act on the ROW's checkout, not on the focused tab's, so
+  // the ref has to reach them exactly as it reaches the branch dialogs.
+  it('fires the new-tab items with the row identity', async () => {
+    const branchActions = stubBranchRefActions()
+    render(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={[gitTab('a1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        branchActions={branchActions}
+      />
+    ))
+    const branchRow = screen.getByTestId('tab-tree-branch-group')
+    await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+
+    await fireEvent.click(screen.getByText('New agent...'))
+    await fireEvent.click(screen.getByText('New terminal...'))
+
+    for (const spy of [branchActions.onNewAgentAdvanced, branchActions.onNewTerminalAdvanced]) {
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(spy.mock.calls[0][0]).toMatchObject({
+        workspaceId: 'ws-1',
+        workerId: 'w1',
+        gitToplevel: '/home/user/Workspaces/r',
+      })
+    }
   })
 
   it('fires onDeleteBranch with the tabs in the branch group', async () => {
-    const onChangeBranch = vi.fn()
-    const onDeleteBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -318,8 +378,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={onDeleteBranch}
+        branchActions={branchActions}
       />
     ))
 
@@ -327,20 +386,19 @@ describe('workspaceTabTree interactions', () => {
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
     await fireEvent.click(screen.getByText('Delete branch...'))
 
-    expect(onDeleteBranch).toHaveBeenCalledTimes(1)
-    const ref = onDeleteBranch.mock.calls[0][0]
+    expect(branchActions.onDeleteBranch).toHaveBeenCalledTimes(1)
+    const ref = branchActions.onDeleteBranch.mock.calls[0][0]
     expect(ref).toMatchObject({
       workerId: 'w1',
       gitToplevel: '/home/user/Workspaces/r',
       branchName: 'feature',
     })
     expect(ref.tabs.map((t: Tab) => t.id).toSorted()).toEqual(['a1', 'a2'])
-    expect(onChangeBranch).not.toHaveBeenCalled()
+    expect(branchActions.onChangeBranch).not.toHaveBeenCalled()
   })
 
   it('disables both branch actions when the row\'s worker is known offline', async () => {
-    const onChangeBranch = vi.fn()
-    const onDeleteBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -349,8 +407,7 @@ describe('workspaceTabTree interactions', () => {
         onTabClick={() => {}}
         workspaceId="ws-1"
         isWorkerKnownOnline={() => false}
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={onDeleteBranch}
+        branchActions={branchActions}
       />
     ))
 
@@ -359,7 +416,7 @@ describe('workspaceTabTree interactions', () => {
 
     // Disabled, not hidden: the row keeps its menu so the absence of the
     // action is explained rather than looking like a missing feature.
-    const change = screen.getByText('Change branch...') as HTMLButtonElement
+    const change = screen.getByText('Switch to branch...') as HTMLButtonElement
     const del = screen.getByText('Delete branch...') as HTMLButtonElement
     expect(change.disabled).toBe(true)
     expect(del.disabled).toBe(true)
@@ -369,12 +426,12 @@ describe('workspaceTabTree interactions', () => {
     // And a click cannot get through to the dialog.
     await fireEvent.click(change)
     await fireEvent.click(del)
-    expect(onChangeBranch).not.toHaveBeenCalled()
-    expect(onDeleteBranch).not.toHaveBeenCalled()
+    expect(branchActions.onChangeBranch).not.toHaveBeenCalled()
+    expect(branchActions.onDeleteBranch).not.toHaveBeenCalled()
   })
 
   it('leaves both branch actions enabled when the row\'s worker is online', async () => {
-    const onChangeBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -383,19 +440,18 @@ describe('workspaceTabTree interactions', () => {
         onTabClick={() => {}}
         workspaceId="ws-1"
         isWorkerKnownOnline={workerId => workerId === 'w1'}
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={() => {}}
+        branchActions={branchActions}
       />
     ))
 
     const branchRow = screen.getByTestId('tab-tree-branch-group')
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
 
-    const change = screen.getByText('Change branch...') as HTMLButtonElement
+    const change = screen.getByText('Switch to branch...') as HTMLButtonElement
     expect(change.disabled).toBe(false)
     expect(change.title).toBe('')
     await fireEvent.click(change)
-    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
   })
 
   /**
@@ -405,7 +461,7 @@ describe('workspaceTabTree interactions', () => {
    * the user can act on.
    */
   it('leaves the branch actions enabled when worker liveness is unknown', async () => {
-    const onChangeBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -413,15 +469,14 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={() => {}}
+        branchActions={branchActions}
       />
     ))
 
     const branchRow = screen.getByTestId('tab-tree-branch-group')
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
-    await fireEvent.click(screen.getByText('Change branch...'))
-    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+    await fireEvent.click(screen.getByText('Switch to branch...'))
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
   })
 
   /**
@@ -432,7 +487,7 @@ describe('workspaceTabTree interactions', () => {
    */
   it('re-enables the branch actions when the worker comes back online', async () => {
     const [online, setOnline] = createSignal(false)
-    const onChangeBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -441,19 +496,18 @@ describe('workspaceTabTree interactions', () => {
         onTabClick={() => {}}
         workspaceId="ws-1"
         isWorkerKnownOnline={() => online()}
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={() => {}}
+        branchActions={branchActions}
       />
     ))
 
     const branchRow = screen.getByTestId('tab-tree-branch-group')
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
-    expect((screen.getByText('Change branch...') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByText('Switch to branch...') as HTMLButtonElement).disabled).toBe(true)
 
     setOnline(true)
-    expect((screen.getByText('Change branch...') as HTMLButtonElement).disabled).toBe(false)
-    await fireEvent.click(screen.getByText('Change branch...'))
-    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+    expect((screen.getByText('Switch to branch...') as HTMLButtonElement).disabled).toBe(false)
+    await fireEvent.click(screen.getByText('Switch to branch...'))
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
   })
 
   /**
@@ -473,8 +527,7 @@ describe('workspaceTabTree interactions', () => {
         onTabClick={() => {}}
         workspaceId="ws-1"
         isWorkerKnownOnline={workerId => workerId === 'w1'}
-        onChangeBranch={() => {}}
-        onDeleteBranch={() => {}}
+        branchActions={stubBranchRefActions()}
       />
     ))
 
@@ -490,7 +543,7 @@ describe('workspaceTabTree interactions', () => {
     const disabledByBranch = new Map<string, boolean>()
     for (const row of rows) {
       await fireEvent.click(row.querySelector('button') as HTMLButtonElement)
-      const items = screen.getAllByText('Change branch...') as HTMLButtonElement[]
+      const items = screen.getAllByText('Switch to branch...') as HTMLButtonElement[]
       const own = items.find(i => row.contains(i))
       expect(own, 'each row must render its own menu item').toBeTruthy()
       disabledByBranch.set(row.textContent ?? '', own!.disabled)
@@ -506,22 +559,47 @@ describe('workspaceTabTree interactions', () => {
     expect(onlineRow?.[1], 'the row on the ONLINE worker must stay enabled').toBe(false)
   })
 
-  it('hides the branch menu when readOnly is true', () => {
-    render(() => (
-      <WorkspaceTabTree
-        repoGitStore={repoGitStore}
-        tabs={[gitTab('a1')]}
-        activeTabKey={null}
-        onTabClick={() => {}}
-        workspaceId="ws-1"
-        readOnly
-        onChangeBranch={vi.fn()}
-        onDeleteBranch={vi.fn()}
-      />
-    ))
-    const branchRow = screen.getByTestId('tab-tree-branch-group')
-    // No buttons in the row.
-    expect(branchRow.querySelector('button')).toBeNull()
+  // An archived workspace takes no branch change and no new tab, and every item
+  // of this menu is one or the other -- so there is nothing left to dim and the
+  // row carries no menu, exactly as the `(no branch)` row does.
+  describe('on an archived workspace', () => {
+    function renderArchived(archived: boolean) {
+      const branchActions = stubBranchRefActions()
+      render(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={[gitTab('a1')]}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          archived={archived}
+          branchActions={branchActions}
+        />
+      ))
+      return { branchActions, branchRow: screen.getByTestId('tab-tree-branch-group') }
+    }
+
+    it('renders no branch menu at all', () => {
+      const { branchRow } = renderArchived(true)
+      expect(branchRow.querySelector('button')).toBeNull()
+      // Not merely the trigger: no item of any section may be reachable.
+      for (const label of ['Switch to branch...', 'Create new branch...', 'Create new worktree...', 'Delete branch...', 'New agent...', 'New terminal...'])
+        expect(screen.queryByText(label)).toBeNull()
+    })
+
+    it('keeps the row itself, with its label', () => {
+      // The row is still worth reading -- it groups the workspace's tabs and
+      // carries the diff badge. Only its actions go.
+      const { branchRow } = renderArchived(true)
+      expect(branchRow).toBeInTheDocument()
+      expect(branchRow.textContent).toContain('feature')
+    })
+
+    it('keeps the menu while the workspace is not archived', () => {
+      const { branchRow } = renderArchived(false)
+      expect(branchRow.querySelector('button')).not.toBeNull()
+      expect(screen.getByText('Switch to branch...')).toBeInTheDocument()
+    })
   })
 
   it('hides the branch menu when no menu callbacks are supplied', () => {
@@ -538,39 +616,11 @@ describe('workspaceTabTree interactions', () => {
     expect(branchRow.querySelector('button')).toBeNull()
   })
 
-  it('hides the branch menu when only onChangeBranch is supplied', () => {
-    // BranchContextMenu renders both items unconditionally — a condition of
-    // `onChangeBranch && onDeleteBranch` on the wrapper Show is what makes
-    // a partial-callback caller a no-show rather than a half-broken
-    // menu where one item silently no-ops.
-    render(() => (
-      <WorkspaceTabTree
-        repoGitStore={repoGitStore}
-        tabs={[gitTab('a1')]}
-        activeTabKey={null}
-        onTabClick={() => {}}
-        workspaceId="ws-1"
-        onChangeBranch={vi.fn()}
-      />
-    ))
-    const branchRow = screen.getByTestId('tab-tree-branch-group')
-    expect(branchRow.querySelector('button')).toBeNull()
-  })
-
-  it('hides the branch menu when only onDeleteBranch is supplied', () => {
-    render(() => (
-      <WorkspaceTabTree
-        repoGitStore={repoGitStore}
-        tabs={[gitTab('a1')]}
-        activeTabKey={null}
-        onTabClick={() => {}}
-        workspaceId="ws-1"
-        onDeleteBranch={vi.fn()}
-      />
-    ))
-    const branchRow = screen.getByTestId('tab-tree-branch-group')
-    expect(branchRow.querySelector('button')).toBeNull()
-  })
+  // A partially-wired caller has no test of its own any more, and cannot have
+  // one: `branchActions` is a single bundle whose six members are all required,
+  // so a caller that wires some of them does not compile. The two cases this
+  // replaces existed only because the menu took one prop per action, which let
+  // a half-wired caller render a menu whose other item silently did nothing.
 
   it('passes the unified BranchRef shape (workspaceId + tabs + isWorktree) to both handlers', async () => {
     // Pin the BranchRef unification contract: both onChangeBranch and
@@ -579,8 +629,7 @@ describe('workspaceTabTree interactions', () => {
     // `workspaceId` (Change's requirement), `tabs` (Delete's requirement),
     // AND `isWorktree` (ChangeBranchDialog reads this to seed its
     // path-info shape) regardless of which handler fired.
-    const onChangeBranch = vi.fn()
-    const onDeleteBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -588,22 +637,21 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={onDeleteBranch}
+        branchActions={branchActions}
       />
     ))
 
     const branchRow = screen.getByTestId('tab-tree-branch-group')
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
-    await fireEvent.click(screen.getByText('Change branch...'))
-    const changeRef = onChangeBranch.mock.calls[0][0]
+    await fireEvent.click(screen.getByText('Switch to branch...'))
+    const changeRef = branchActions.onChangeBranch.mock.calls[0][0]
     expect(changeRef.workspaceId).toBe('ws-1')
     expect(changeRef.tabs.map((t: Tab) => t.id).toSorted()).toEqual(['a1', 'a2'])
     expect(changeRef.isWorktree).toBe(false)
 
     await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
     await fireEvent.click(screen.getByText('Delete branch...'))
-    const deleteRef = onDeleteBranch.mock.calls[0][0]
+    const deleteRef = branchActions.onDeleteBranch.mock.calls[0][0]
     expect(deleteRef.workspaceId).toBe('ws-1')
     expect(deleteRef.tabs.map((t: Tab) => t.id).toSorted()).toEqual(['a1', 'a2'])
     expect(deleteRef.isWorktree).toBe(false)
@@ -861,7 +909,7 @@ describe('workspaceTabTree interactions', () => {
       workerId: 'w1',
       gitToplevel: toplevel,
     } as Tab
-    const onDeleteBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -869,8 +917,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={vi.fn()}
-        onDeleteBranch={onDeleteBranch}
+        branchActions={branchActions}
       />
     ))
     const branchRow = screen.getByTestId('tab-tree-branch-group')
@@ -878,7 +925,7 @@ describe('workspaceTabTree interactions', () => {
     // The menu names what it destroys, so a worktree row offers "Delete
     // worktree..." -- see BranchContextMenu.isWorktree.
     await fireEvent.click(screen.getByText('Delete worktree...'))
-    expect(onDeleteBranch.mock.calls[0][0].isWorktree).toBe(true)
+    expect(branchActions.onDeleteBranch.mock.calls[0][0].isWorktree).toBe(true)
   })
 
   // ----- Per-row DropdownMenu mount invariants --------------------------
@@ -940,20 +987,18 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={vi.fn()}
-        onDeleteBranch={vi.fn()}
+        branchActions={stubBranchRefActions()}
       />
     ))
     expect(screen.getAllByTestId('tab-tree-branch-group')).toHaveLength(4)
-    expect(screen.getAllByText('Change branch...')).toHaveLength(4)
+    expect(screen.getAllByText('Switch to branch...')).toHaveLength(4)
     expect(screen.getAllByText('Delete branch...')).toHaveLength(4)
     expect(branchRowMenus()).toHaveLength(4)
   })
 
   it('does not mount a row menu when neither callback is supplied', () => {
-    // The per-row <Show when={!readOnly && (onChangeBranch || onDeleteBranch)}>
-    // gate keeps the BranchContextMenu out of the DOM when neither
-    // action is wired.
+    // The per-row <Show when={!archived && ... ? branchActions : undefined}>
+    // gate keeps the BranchContextMenu out of the DOM when no bundle is wired.
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -964,7 +1009,7 @@ describe('workspaceTabTree interactions', () => {
       />
     ))
     expect(branchRowMenus()).toHaveLength(0)
-    expect(screen.queryByText('Change branch...')).toBeNull()
+    expect(screen.queryByText('Switch to branch...')).toBeNull()
   })
 
   it('hides the row menu on the synthetic "(no branch)" group (detached HEAD)', () => {
@@ -993,17 +1038,16 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={vi.fn()}
-        onDeleteBranch={vi.fn()}
+        branchActions={stubBranchRefActions()}
       />
     ))
     expect(screen.getAllByTestId('tab-tree-branch-group')).toHaveLength(1)
     expect(branchRowMenus()).toHaveLength(0)
-    expect(screen.queryByText('Change branch...')).toBeNull()
+    expect(screen.queryByText('Switch to branch...')).toBeNull()
     expect(screen.queryByText('Delete branch...')).toBeNull()
   })
 
-  it('does not mount any row menu in readOnly mode', () => {
+  it('does not mount any row menu in archived mode', () => {
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -1011,9 +1055,8 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        readOnly
-        onChangeBranch={vi.fn()}
-        onDeleteBranch={vi.fn()}
+        archived
+        branchActions={stubBranchRefActions()}
       />
     ))
     expect(branchRowMenus()).toHaveLength(0)
@@ -1079,7 +1122,7 @@ describe('workspaceTabTree interactions', () => {
     // loop's closure. Picking the same action from different rows must
     // dispatch with that row's gitToplevel — no shared menuRow signal
     // to misroute across rows.
-    const onChangeBranch = vi.fn()
+    const branchActions = stubBranchRefActions()
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
@@ -1090,8 +1133,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         workspaceId="ws-1"
-        onChangeBranch={onChangeBranch}
-        onDeleteBranch={vi.fn()}
+        branchActions={branchActions}
       />
     ))
     const [rowA, rowB] = screen.getAllByTestId('tab-tree-branch-group')
@@ -1099,10 +1141,10 @@ describe('workspaceTabTree interactions', () => {
     const dropdownB = rowB.querySelector('ot-dropdown') as HTMLElement
 
     await fireEvent.click(within(dropdownB).getByRole('button'))
-    await fireEvent.click(within(dropdownB).getByText('Change branch...'))
+    await fireEvent.click(within(dropdownB).getByText('Switch to branch...'))
 
-    expect(onChangeBranch).toHaveBeenCalledTimes(1)
-    expect(onChangeBranch.mock.calls[0][0]).toMatchObject({
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(1)
+    expect(branchActions.onChangeBranch.mock.calls[0][0]).toMatchObject({
       workspaceId: 'ws-1',
       workerId: 'w1',
       gitToplevel: '/home/user/Workspaces/r-feature-2',
@@ -1111,9 +1153,9 @@ describe('workspaceTabTree interactions', () => {
 
     // And row A's menu items, untouched, never fire B's handler.
     await fireEvent.click(within(dropdownA).getByRole('button'))
-    await fireEvent.click(within(dropdownA).getByText('Change branch...'))
-    expect(onChangeBranch).toHaveBeenCalledTimes(2)
-    expect(onChangeBranch.mock.calls[1][0]).toMatchObject({
+    await fireEvent.click(within(dropdownA).getByText('Switch to branch...'))
+    expect(branchActions.onChangeBranch).toHaveBeenCalledTimes(2)
+    expect(branchActions.onChangeBranch.mock.calls[1][0]).toMatchObject({
       gitToplevel: '/home/user/Workspaces/r-feature-1',
       branchName: 'feature-1',
     })
@@ -1565,7 +1607,7 @@ describe('workspaceTabTree interactions', () => {
      * wrong set.
      */
     it('hands the branch dialogs the live tabs, not the cached ones', async () => {
-      const onDeleteBranch = vi.fn()
+      const branchActions = stubBranchRefActions()
       const [tabs, setTabs] = createSignal<Tab[]>([bareAgent])
       render(() => (
         <WorkspaceTabTree
@@ -1574,8 +1616,7 @@ describe('workspaceTabTree interactions', () => {
           activeTabKey={null}
           onTabClick={() => {}}
           workspaceId="ws-1"
-          onChangeBranch={() => {}}
-          onDeleteBranch={onDeleteBranch}
+          branchActions={branchActions}
         />
       ))
 
@@ -1584,8 +1625,8 @@ describe('workspaceTabTree interactions', () => {
       await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
       await fireEvent.click(screen.getByText('Delete branch...'))
 
-      expect(onDeleteBranch).toHaveBeenCalledTimes(1)
-      expect(onDeleteBranch.mock.calls[0][0].tabs.map((t: Tab) => t.title)).toEqual(['Agent Kiwi'])
+      expect(branchActions.onDeleteBranch).toHaveBeenCalledTimes(1)
+      expect(branchActions.onDeleteBranch.mock.calls[0][0].tabs.map((t: Tab) => t.title)).toEqual(['Agent Kiwi'])
     })
   })
 

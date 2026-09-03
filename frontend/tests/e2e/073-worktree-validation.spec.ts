@@ -27,14 +27,18 @@ test.describe('Worktree Validation', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Error Test WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Error Test WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible()
-    await page.getByText('Create new worktree').click()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
+    await page.getByText('Create new worktree', { exact: true }).click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
@@ -85,8 +89,8 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible()
-    await page.getByText('Create new worktree').click()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
+    await page.getByText('Create new worktree', { exact: true }).click()
 
     // Read initial branch name
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
@@ -120,13 +124,17 @@ test.describe('Worktree Validation', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Switch Validate WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Switch Validate WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
 
-    await expect(page.getByText('Switch to branch')).toBeVisible()
-    await page.getByText('Switch to branch').click()
+    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
+    await page.getByText('Switch to branch', { exact: true }).click()
 
     // Create button should be disabled until a branch is selected
     const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
@@ -152,7 +160,11 @@ test.describe('Worktree Validation', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Use WT Validate WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Use WT Validate WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
@@ -181,7 +193,11 @@ test.describe('Worktree Validation', () => {
     await openNewWorkspaceDialog(page)
     await waitForWorker(page)
 
-    await page.getByPlaceholder('New Workspace').fill('Current Validate WS')
+    // By ROLE and NAME, not by placeholder: the field's placeholder became
+    // "Type a name" when the dialog started generating a title, so
+    // `getByPlaceholder('New Workspace')` matched nothing and waited out its
+    // whole timeout. `fill` replaces the generated name.
+    await page.getByRole('textbox', { name: 'Title' }).fill('Current Validate WS')
 
     const dialog = page.getByRole('dialog')
     await setWorkingDir(page, repoDir)
@@ -219,7 +235,7 @@ test.describe('Worktree Validation', () => {
     // Navigate to first repo and select "Create new branch"
     await setWorkingDir(page, repo1)
     await expect(page.getByText('Use current state')).toBeVisible()
-    await page.getByText('Create new branch').click()
+    await page.getByText('Create new branch', { exact: true }).click()
 
     // Verify sub-controls are visible
     await expect(dialog.getByText('Branch Name')).toBeVisible()
@@ -239,7 +255,7 @@ test.describe('Worktree Validation', () => {
 
     // The reset is per-repo-switch, not a one-shot: picking a mode in the new
     // repo works, and switching back resets that one too.
-    await page.getByText('Create new worktree').click()
+    await page.getByText('Create new worktree', { exact: true }).click()
     await expect(page.getByText('Worktree path:')).toBeVisible()
 
     await setWorkingDir(page, repo1)
@@ -271,8 +287,8 @@ test.describe('Worktree Validation', () => {
 
     // Navigate to repo1 and select "Switch to branch"
     await setWorkingDir(page, repo1)
-    await expect(page.getByText('Switch to branch')).toBeVisible()
-    await page.getByText('Switch to branch').click()
+    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
+    await page.getByText('Switch to branch', { exact: true }).click()
 
     // Wait for branches to load — should contain alpha-branch
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
@@ -286,7 +302,7 @@ test.describe('Worktree Validation', () => {
     // repo2 rather than served from repo1's cache.
     await setWorkingDir(page, repo2)
     await expect(page.getByText('Use current state')).toBeVisible()
-    await page.getByText('Switch to branch').click()
+    await page.getByText('Switch to branch', { exact: true }).click()
 
     // Branch list should update — should contain beta-branch, not alpha-branch
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
@@ -317,8 +333,8 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Select "Switch to branch" to see the branch list
-    await expect(page.getByText('Switch to branch')).toBeVisible()
-    await page.getByText('Switch to branch').click()
+    await expect(page.getByText('Switch to branch', { exact: true })).toBeVisible()
+    await page.getByText('Switch to branch', { exact: true }).click()
     await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
 
     // Initially, only "main" should be listed
@@ -363,8 +379,8 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Select "Create new branch"
-    await expect(page.getByText('Create new branch')).toBeVisible()
-    await page.getByText('Create new branch').click()
+    await expect(page.getByText('Create new branch', { exact: true })).toBeVisible()
+    await page.getByText('Create new branch', { exact: true }).click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })
@@ -407,8 +423,8 @@ test.describe('Worktree Validation', () => {
     await setWorkingDir(page, repoDir)
 
     // Select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible()
-    await page.getByText('Create new worktree').click()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
+    await page.getByText('Create new worktree', { exact: true }).click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     const createBtn = dialog.getByRole('button', { name: 'Create', exact: true })

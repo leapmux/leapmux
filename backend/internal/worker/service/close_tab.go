@@ -84,36 +84,38 @@ func closeWorktreeDispositionFor(action leapmuxv1.WorktreeAction, linkPolicy wor
 	return keepWorktreeOnClose
 }
 
-// closeFileTabCommon drives the shared closeTabCommon flow for FILE
-// tabs. It exists so the FILE close path uses the same worktree-tab
-// link drop and conditional `git worktree remove` machinery as
-// CloseAgent / CloseTerminal — the only file-tab specific work is
-// dropping the worker_file_tab row (which doubles as the
-// FileTabPathRevoked emit). stopProcess is a noop because file tabs
-// own no process on the worker.
+// closePayloadTabCommon drives the shared closeTabCommon flow for a
+// payload-backed tab (FILE or IMAGE). It exists so their close path uses the
+// same worktree-tab link drop and conditional `git worktree remove` machinery
+// as CloseAgent / CloseTerminal — the only payload-specific work is dropping
+// the worker_tab_payloads row (which doubles as the TabPayloadRevoked emit).
+// stopProcess is a noop because such tabs own no process on the worker.
 //
-// Two callers: the RevokeFileTabPath RPC (with dropWorktreeLink) and the orphan
+// tabType is the tab's OWN kind, not a constant: the worktree_tabs link row
+// carries it, so closing an IMAGE tab as FILE would leave the link standing.
+//
+// Two callers: the RevokeTabPayload RPC (with dropWorktreeLink) and the orphan
 // reconciler via CloseFileTabForReconcile (with keepWorktreeLinkForReconciler).
 // The reconciler used to hand-roll its own teardown here to avoid the
 // worktree-removal branch, but an UNSPECIFIED action never enters that branch
 // anyway -- and dropping the link, as the hand-rolled version did, strands the
 // worktree directory permanently.
-func (svc *Service) closeFileTabCommon(userID, tabID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
+func (svc *Service) closePayloadTabCommon(userID, tabID string, tabType leapmuxv1.TabType, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
 	return svc.closeTabCommon(
-		leapmuxv1.TabType_TAB_TYPE_FILE,
+		tabType,
 		tabID,
 		userID,
 		action,
 		linkPolicy,
 		func() {},
 		func() (bool, error) {
-			err := svc.FileTabPaths.RevokeRow(bgCtx(), userID, tabID)
+			err := svc.TabPayloads.RevokeRow(bgCtx(), userID, tabID)
 			// Idempotent: the row may have been deleted by a concurrent close, or
 			// by a CleanupWorkspace that left the worktree link as a strand.
 			// closeTabCommon proceeds to drop the worktree link regardless -- but
 			// it now learns that no live row was retired, which is what stops a
 			// REMOVE from force-removing a directory nobody was asked about.
-			if errors.Is(err, ErrFileTabPathNotFound) {
+			if errors.Is(err, ErrTabPayloadNotFound) {
 				return false, nil
 			}
 			return err == nil, err
@@ -122,14 +124,14 @@ func (svc *Service) closeFileTabCommon(userID, tabID string, action leapmuxv1.Wo
 }
 
 // closeTabCommon runs the shared tab-close flow for the CloseAgent /
-// CloseTerminal / RevokeFileTabPath handlers. The handlers are
+// CloseTerminal / RevokeTabPayload handlers. The handlers are
 // registered as tracked dispatcher methods (RegisterTracked) so the
 // dispatcher's bound Cleanup WaitGroup is Add(1)'d synchronously
 // BEFORE the dispatched goroutine launches — Shutdown.Wait can't slip
 // past an in-flight close. closeTabCommon itself stays free of
 // Cleanup.Add to avoid the inside-goroutine-Add race the
 // dispatcher-level tracking was introduced to fix. The orphan
-// reconciler does NOT route through here (see closeFileTabCommon): it
+// reconciler does NOT route through here (see closePayloadTabCommon): it
 // drops the worktree link directly so it never takes the
 // worktree-removal branch below.
 //
@@ -419,6 +421,8 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 		return "Failed to close terminal"
 	case leapmuxv1.TabType_TAB_TYPE_FILE:
 		return "Failed to close file"
+	case leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		return "Failed to close image"
 	default:
 		return "Failed to close tab"
 	}
@@ -600,9 +604,10 @@ func (svc *Service) closeTabForConvergence(
 		svc.closeAgentTabCommon(userID, tabID, action, linkPolicy)
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		svc.closeTerminalTabCommon(userID, tabID, action, linkPolicy)
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		// A file tab owns no process, so this reduces to dropping its row.
-		svc.closeFileTabCommon(userID, tabID, action, linkPolicy)
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		// A payload-backed tab owns no process, so this reduces to dropping its
+		// row.
+		svc.closePayloadTabCommon(userID, tabID, tabType, action, linkPolicy)
 	case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
 		slog.Warn("convergence close: unsupported tab type", "tab_id", tabID, "tab_type", tabType)
 	}

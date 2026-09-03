@@ -18,6 +18,12 @@ import { style } from '@vanilla-extract/css'
 // builds one host for both the hidden measuring copy and the real row, so the
 // measured height already includes the badge. Do not suppress the badge in
 // premeasure mode -- every wrapping-title row would then measure one line short.
+//
+// The header puts this smaller text on the title's baseline (`align-items:
+// baseline` on toolUseHeader). Set no `line-height` here: this text is 12px
+// beside a 14px title, so a taller line box hangs below the shared baseline and
+// makes every tool header 1px taller. The 1.6 that the badge inherits gives a
+// shorter box than the title's, which is what the baseline alignment expects.
 export const root = style({
   flexShrink: 0,
   whiteSpace: 'nowrap',

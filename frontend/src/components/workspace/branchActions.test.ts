@@ -1,8 +1,12 @@
+import type { BranchRef } from './WorkspaceTabTree'
 import type { Tab } from '~/stores/tab.types'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { GitMode } from '~/hooks/useGitModeState'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
-import { focusedBranchAction, WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
+import { stubBranchRefActions } from '~/test-support/branchMenu'
+import { bindBranchActions, focusedBranchAction, WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
 
 function tab(overrides: {
   id?: string
@@ -171,5 +175,66 @@ describe('focusedBranchAction ref', () => {
 
     expect(ref.branchName).toBe('renamed')
     expect(ref.tabs.map(t => t.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('bindBranchActions', () => {
+  const ref = { workspaceId: 'ws1', workerId: 'w1', gitToplevel: '/repo', isWorktree: false, branchName: 'main', tabs: [] } as BranchRef
+
+  it('passes the ref first and the action\'s own arguments after it', () => {
+    const actions = stubBranchRefActions()
+    const bound = bindBranchActions(actions, () => ref)
+
+    bound.onChangeBranch(GitMode.CreateWorktree)
+    bound.onDeleteBranch()
+    bound.onNewAgent(AgentProvider.CODEX)
+    bound.onNewAgentAdvanced()
+    bound.onNewTerminalWithShell('/bin/zsh')
+    bound.onNewTerminalAdvanced()
+
+    expect(actions.onChangeBranch).toHaveBeenCalledWith(ref, GitMode.CreateWorktree)
+    expect(actions.onDeleteBranch).toHaveBeenCalledWith(ref)
+    expect(actions.onNewAgent).toHaveBeenCalledWith(ref, AgentProvider.CODEX)
+    expect(actions.onNewAgentAdvanced).toHaveBeenCalledWith(ref)
+    expect(actions.onNewTerminalWithShell).toHaveBeenCalledWith(ref, '/bin/zsh')
+    expect(actions.onNewTerminalAdvanced).toHaveBeenCalledWith(ref)
+  })
+
+  // Building a ref walks every tab of the workspace, and the sidebar mounts one
+  // menu per branch row. Binding must cost nothing until an item is clicked.
+  it('builds no ref until an action runs', () => {
+    const buildRef = vi.fn(() => ref)
+    const bound = bindBranchActions(stubBranchRefActions(), buildRef)
+    expect(buildRef).not.toHaveBeenCalled()
+    bound.onDeleteBranch()
+    expect(buildRef).toHaveBeenCalledTimes(1)
+  })
+
+  // A row survives a tree rebuild that swaps its branch object, so the ref has
+  // to come from the branch the row shows at CLICK time.
+  it('reads the builder at click time, not at bind time', () => {
+    const actions = stubBranchRefActions()
+    let current = ref
+    const bound = bindBranchActions(actions, () => current)
+    const moved = { ...ref, branchName: 'feature' } as BranchRef
+    current = moved
+    bound.onDeleteBranch()
+    expect(actions.onDeleteBranch).toHaveBeenCalledWith(moved)
+  })
+
+  // The composer's refused case: focusedBranchAction withheld the builder and
+  // supplied the reason that disables every item, so nothing should reach the
+  // handlers if an item somehow fires anyway.
+  it('does nothing when the builder answers undefined', () => {
+    const actions = stubBranchRefActions()
+    const bound = bindBranchActions(actions, () => undefined)
+    bound.onChangeBranch(GitMode.SwitchBranch)
+    bound.onDeleteBranch()
+    bound.onNewAgent(AgentProvider.CODEX)
+    bound.onNewAgentAdvanced()
+    bound.onNewTerminalWithShell('/bin/zsh')
+    bound.onNewTerminalAdvanced()
+    for (const fn of Object.values(actions))
+      expect(fn).not.toHaveBeenCalled()
   })
 })

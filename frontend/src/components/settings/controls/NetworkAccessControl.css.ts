@@ -72,6 +72,24 @@ export const interfaceTrigger = style({
 export const portInput = style({
   width: '6.5rem',
   fontFamily: 'var(--font-mono)',
+  /*
+   * Oat gives every input a `margin-block-start` for the gap under its label.
+   * This one has no label above it -- it sits in a flex row beside two buttons
+   * -- and `align-items: center` centres the MARGIN box, so that margin pushed
+   * the field half a step below the interface menu and the remove button.
+   */
+  marginBlockStart: 0,
+})
+
+/**
+ * The remove button, narrowed to its icon.
+ *
+ * Only the horizontal padding changes: the vertical padding is what makes this
+ * button the same height as the port field beside it, and Oat's `.icon` class
+ * drops padding on both axes.
+ */
+export const removeButton = style({
+  paddingInline: 'var(--space-3)',
 })
 
 /** The preview of what the hub will serve after Apply. */

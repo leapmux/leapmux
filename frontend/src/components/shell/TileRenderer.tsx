@@ -1,4 +1,5 @@
 import type { Component, JSX } from 'solid-js'
+import type { NewTabTarget } from './AppShellDialogs'
 import type { CloseFlow } from './closeFlow'
 import type { createMobileOverlayState } from './MobileLayout'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
@@ -8,9 +9,9 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentLifecycleProps, ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
-import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
+import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { ToggleDialogState } from '~/hooks/createDialogState'
+import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -22,7 +23,7 @@ import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore, SplitOrientation, TilePredicates } from '~/stores/layout.store'
 import type { LayoutOwner } from '~/stores/layoutOwner'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
+import type { AgentTab, FileTab, ImageTab, Tab, TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -30,13 +31,14 @@ import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
+import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
-import { focusedBranchAction } from '~/components/workspace/branchActions'
+import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
 import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -118,8 +120,8 @@ interface TileRendererOpts {
     newAgentLoadingProvider: () => AgentProvider | null
     newTerminalLoading: () => boolean
     newShellLoading: () => boolean
-    newAgentDialog: ToggleDialogState
-    newTerminalDialog: ToggleDialogState
+    newAgentDialog: DialogState<NewTabTarget>
+    newTerminalDialog: DialogState<NewTabTarget>
   }
   /** Shell chrome state and the mobile overlay owner. */
   chrome: {
@@ -148,16 +150,21 @@ interface TileRendererOpts {
    */
   onOpenBackgroundTask?: (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => void
   /**
-   * Branch-action callbacks for the composer's WorkingTreeChip. Each receives a
-   * fully-built {@link BranchRef} (the focused agent's repo + the tabs on its
-   * branch); the shell opens the Change/Delete Branch dialog from it. Omit to
+   * Open an image an agent returned in its own tab. Receives the agent the row
+   * belongs to plus the message identity the bubble stamped; the shell resolves
+   * it to either a FILE tab (when the provider named a file) or an IMAGE tab.
+   */
+  onOpenChatImage?: (image: { agentId: string, seq: bigint, index: number, filePath?: string, title: string }) => void
+  /**
+   * Branch-menu callbacks for the composer's branch chip. Each receives a
+   * fully-built `BranchRef` (the focused agent's repo + the tabs on its
+   * branch); the shell opens the dialogs and the new tabs from it. Omit to
    * keep the chip non-interactive.
    */
   branch?: {
-    onChangeBranch?: (ref: BranchRef) => void
-    onDeleteBranch?: (ref: BranchRef) => void
+    actions?: BranchRefActions
     /**
-     * Whether the branch's Worker is reachable. Both branch actions run on the
+     * Whether the branch's Worker is reachable. Every branch action runs on the
      * machine the repository is on, so the composer's branch chip disables
      * them when it is not — the same guard the sidebar's branch row applies.
      */
@@ -543,6 +550,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // so resolve up to the root for a child tab. Only roots key a registry, so a
   // child ChatView correctly shows no chip (empty).
   const bgRootFor = (agentId: string): string => rootAgentIdFor((id: string) => view.getAgentTab(id), agentId)
+  // The store DATA ops an IMAGE tab resolves its reference through. Built once
+  // and shared by every image pane, mirroring how the scroll rail hands the same
+  // two ops to `warmMarkPreview` -- the modules that use them are component-layer
+  // and must not import the DI'd store themselves.
+  const chatImageDeps = {
+    getLoadedMessageBySeq: chatStore.getLoadedMessageBySeq,
+    fetchMessageBySeq: chatStore.fetchMessageBySeq,
+  }
   const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
   // Scoped in the store beside the other registry-scoping rules; see
   // chipTasksFor for why a child tab must not show its parent's count.
@@ -576,6 +591,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // background tasks. The root entry in the watch plan delivers the live updates.
   const todosFor = (agentId: string) => chatStore.todos.get(bgRootFor(agentId))
   const onOpenBackgroundTask = opts.onOpenBackgroundTask
+  const onOpenChatImage = opts.onOpenChatImage
 
   /**
    * The pop-out / pop-in affordance for ONE tab of a tile.
@@ -610,7 +626,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         tileId={tileId}
         tabs={view.forTile(tileId)}
         activeTabKey={selection.activeKeyForTile(tileId)}
-        readOnly={isActiveWorkspaceArchived()}
+        archived={isActiveWorkspaceArchived()}
         closingTabKeys={closingTabKeys()}
         isEditingRef={(fn) => { setIsTabEditing(fn) }}
         onSelect={(tab) => {
@@ -624,8 +640,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
           onNewAgent: agentOps.handleOpenAgent,
           onNewTerminal: termOps.handleOpenTerminal,
           onNewTerminalWithShell: termOps.handleOpenTerminalWithShell,
-          onNewAgentAdvanced: () => newAgentDialog.open(),
-          onNewTerminalAdvanced: () => newTerminalDialog.open(),
+          // An empty target: the tab bar acts on the tab the user is looking
+          // at, so both dialogs follow the current tab context.
+          onNewAgentAdvanced: () => newAgentDialog.open({}),
+          onNewTerminalAdvanced: () => newTerminalDialog.open({}),
           availableProviders: agentOps.availableProviders(),
           availableShells: termOps.availableShells(),
           defaultShell: termOps.defaultShell(),
@@ -720,22 +738,29 @@ export function createTileRenderer(opts: TileRendererOpts) {
       const t = tab()
       return t?.type === TabType.FILE ? t : null
     }
-    // One pass over the tile's tabs produces buckets for the three For loops
+    const imageTab = () => {
+      const t = tab()
+      return t?.type === TabType.IMAGE ? t : null
+    }
+    // One pass over the tile's tabs produces buckets for the four For loops
     // below. The source `getTabsForTile` is itself memoised, so this memo only
     // re-runs when something in the tile actually changed.
     const tabsByType = createMemo(() => {
       const agent: AgentTab[] = []
       const file: FileTab[] = []
+      const image: ImageTab[] = []
       const terminal: TerminalTab[] = []
       for (const t of view.forTile(tileId)) {
         if (t.type === TabType.AGENT)
           agent.push(t)
         else if (t.type === TabType.FILE)
           file.push(t)
+        else if (t.type === TabType.IMAGE)
+          image.push(t)
         else if (t.type === TabType.TERMINAL)
           terminal.push(t)
       }
-      return { agent, file, terminal }
+      return { agent, file, image, terminal }
     })
     // The panes below key their `<For>`s on TAB IDs, not on the `Tab` objects.
     //
@@ -755,6 +780,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // INSIDE the row, which is where a change should land.
     const tileAgentTabIds = createStableKeys(() => tabsByType().agent, t => t.id)
     const tileFileTabIds = createStableKeys(() => tabsByType().file, t => t.id)
+    const tileImageTabIds = createStableKeys(() => tabsByType().image, t => t.id)
     const tileTerminals = () => tabsByType().terminal
     const agentScrollStates = new Map<string, () => SavedViewportScroll | undefined>()
     const agentScrollToBottoms = new Map<string, () => void>()
@@ -839,6 +865,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get backgroundTasks() { return chipTasks() },
               get registryRows() { return rootTasks() },
               onOpenSubagent: onOpenBackgroundTask,
+              onOpenImage: onOpenChatImage
+                ? image => onOpenChatImage({ ...image, agentId })
+                : undefined,
               get todos() { return todosFor(agentId) },
             }
 
@@ -1027,6 +1056,30 @@ export function createTileRenderer(opts: TileRendererOpts) {
           }}
         </For>
 
+        <For each={tileImageTabIds()}>
+          {(imageTabId) => {
+            // Resolved reactively from the id, for the same reason the FILE
+            // pane above is: the row must survive a metadata change instead of
+            // remounting the viewer -- and remounting here would re-fetch the
+            // message and reset the zoom.
+            const it = createMemo(() => view.getImageTab(imageTabId))
+            return (
+              <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: imageTab()?.id !== imageTabId }}>
+                <Show when={it()?.imageAgentId && it()?.imageSeq !== undefined}>
+                  <ChatImageViewer
+                    workerId={it()?.workerId ?? ''}
+                    agentId={it()?.imageAgentId ?? ''}
+                    seq={it()?.imageSeq ?? 0n}
+                    imageIndex={it()?.imageIndex ?? 0}
+                    title={it()?.title}
+                    deps={chatImageDeps}
+                  />
+                </Show>
+              </div>
+            )
+          }}
+        </For>
+
         <Show when={!tab() && activeWorkspace()}>
           <EmptyTilePlaceholder
             archived={isActiveWorkspaceArchived()}
@@ -1098,6 +1151,19 @@ export function createTileRenderer(opts: TileRendererOpts) {
       isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
     })
     const branchDisabledReason = () => branchAction().disabledReason
+    // The menu takes its actions already bound to this branch. `buildRef` is
+    // the lazy half of `branchAction`, so binding costs nothing until an item
+    // is clicked, and it is read INSIDE the bound closure so a guard that
+    // refuses later is honoured at click time rather than at bind time.
+    // `undefined` only when the shell wired no handlers at all — the chip then
+    // has no menu to open.
+    const branchMenuActions = (): BranchMenuActions | undefined => {
+      const actions = branchCallbacks?.actions
+      return actions
+        // eslint-disable-next-line solid/reactivity -- read at CLICK time on purpose: an untracked read here would freeze the ref at bind time, which is the staleness this closure exists to avoid
+        ? bindBranchActions(actions, () => branchAction().buildRef?.())
+        : undefined
+    }
     const focusedAgentTab = () => view.getAgentTab(agentId())
     return (
       <AgentEditorPanel
@@ -1201,16 +1267,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentThinking(agentId())}
-        onChangeBranch={() => {
-          const build = branchAction().buildRef
-          if (build)
-            branchCallbacks?.onChangeBranch?.(build())
-        }}
-        onDeleteBranch={() => {
-          const build = branchAction().buildRef
-          if (build)
-            branchCallbacks?.onDeleteBranch?.(build())
-        }}
+        branchActions={branchMenuActions()}
+        branchWorkerId={branchAction().workerId ?? ''}
         branchDisabledReason={branchDisabledReason()}
         containerHeight={props.containerHeight}
       />

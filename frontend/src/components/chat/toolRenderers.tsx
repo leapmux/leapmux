@@ -6,6 +6,7 @@ import type { CommandResultSource } from './results/commandResult'
 import type { FileEditDiffSource } from './results/fileEditDiff'
 import type { TokenGate } from './useAsyncCodeTokens'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
+import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { CachedToken } from '~/lib/tokenCache'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
@@ -21,6 +22,7 @@ import { canHighlightBySize, COLLAPSED_RESULT_ROWS } from './results/collapse'
 import { CollapsibleContent } from './results/CollapsibleContent'
 import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
+import { ImageResultList } from './results/imageResult'
 import { parseReadContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
 import { ToolHeaderActions } from './ToolHeaderActions'
@@ -380,6 +382,14 @@ export function ToolResultMessage(props: {
    * CommandResultBody for the canonical status header + output rendering.
    */
   commandResult?: CommandResultSource | null
+  /**
+   * Images the tool returned, rendered under the body.
+   *
+   * Outside the diff/error/body branching on purpose: a result can carry text
+   * AND an image (an MCP server's summary beside its screenshot), and a `Read`
+   * on a PNG carries an image and no text at all.
+   */
+  images?: ImageResultSource[]
   context?: RenderContext
 }): JSX.Element {
   const diffView = () => props.context?.diffView?.() ?? 'unified'
@@ -400,48 +410,57 @@ export function ToolResultMessage(props: {
   // tool results don't grow a redundant "Success" line.
   const showStatusHeader = () => props.isError === true || (isBashLike() && props.isError !== undefined)
   return (
-    <Show
-      when={!props.commandResult}
-      fallback={<CommandResultBody source={props.commandResult!} context={props.context} />}
-    >
-      <div class={toolMessage} data-tool-message>
-        <Show when={showStatusHeader()}>
-          <div class={toolUseHeader}>
-            <span class={`${inlineFlex} ${toolUseIcon}`}>
-              <Icon icon={statusIcon()} size="md" />
-            </span>
-            <span class={toolInputText}>
-              {props.isError ? 'Error' : 'Success'}
-              <Show when={props.statusDetail}>
-                {detail => ` (${detail()})`}
-              </Show>
-            </span>
-          </div>
-        </Show>
-        <Show
-          when={!errorText() && props.isError !== true}
-          fallback={<div class={toolResultError}>{errorText() ?? props.resultContent}</div>}
-        >
-          <Show
-            when={renderableDiff()}
-            fallback={
-              props.displayKind === 'read'
-                ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded(), props.context)
-                : (
-                    <CollapsibleContent
-                      kind={props.displayKind === 'markdown' ? 'markdown-tool-result' : 'ansi-or-pre'}
-                      text={normalizedResultContent()}
-                      display={displayContent()}
-                      isCollapsed={isCollapsed()}
-                      context={props.context}
-                    />
-                  )
-            }
-          >
-            {src => <FileEditDiffBody source={src()} view={diffView()} context={props.context} />}
+    <>
+      <Show
+        when={!props.commandResult}
+        fallback={<CommandResultBody source={props.commandResult!} context={props.context} />}
+      >
+        <div class={toolMessage} data-tool-message>
+          <Show when={showStatusHeader()}>
+            <div class={toolUseHeader}>
+              <span class={`${inlineFlex} ${toolUseIcon}`}>
+                <Icon icon={statusIcon()} size="md" />
+              </span>
+              <span class={toolInputText}>
+                {props.isError ? 'Error' : 'Success'}
+                <Show when={props.statusDetail}>
+                  {detail => ` (${detail()})`}
+                </Show>
+              </span>
+            </div>
           </Show>
-        </Show>
-      </div>
-    </Show>
+          <Show
+            when={!errorText() && props.isError !== true}
+            fallback={<div class={toolResultError}>{errorText() ?? props.resultContent}</div>}
+          >
+            <Show
+              when={renderableDiff()}
+              fallback={
+                props.displayKind === 'read'
+                  ? renderReadOrPre(props.resultContent, props.readFilePath, !expanded(), props.context)
+                  : (
+                      <CollapsibleContent
+                        kind={props.displayKind === 'markdown' ? 'markdown-tool-result' : 'ansi-or-pre'}
+                        text={normalizedResultContent()}
+                        display={displayContent()}
+                        isCollapsed={isCollapsed()}
+                        context={props.context}
+                      />
+                    )
+              }
+            >
+              {src => <FileEditDiffBody source={src()} view={diffView()} context={props.context} />}
+            </Show>
+          </Show>
+        </div>
+      </Show>
+      {/* Outside the branch above: a Bash whose stdout was a data URI renders
+          through CommandResultBody, and its ONLY output is the image. */}
+      <Show when={props.images?.length}>
+        <div class={toolMessage}>
+          <ImageResultList sources={props.images!} context={props.context} />
+        </div>
+      </Show>
+    </>
   )
 }

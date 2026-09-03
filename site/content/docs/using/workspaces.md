@@ -1,6 +1,6 @@
 ---
 title: "Workspaces"
-description: "The top-level container in LeapMux for tiled agent, terminal, and file tabs: create, rename, delete, organize, and switch between workspaces."
+description: "The top-level container in LeapMux for tiled agent, terminal, file, and image tabs: create, rename, delete, organize, and switch between workspaces."
 type: docs
 weight: 1
 ---
@@ -91,7 +91,7 @@ Expand a workspace to see its tabs organized as a tree:
 - A group whose worktree has no current branch (for example, a detached HEAD) is labeled **(no branch)** and offers no branch actions.
 - Branch rows carry an icon for the kind of checkout — a branch in the main repository, or a linked worktree — and expose a change and a delete action when the branch has a real name. See [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
-Each tab leaf shows the tab's type icon and label. For closable tabs, a close **×** button appears (middle-click also closes them). Double-click an agent or terminal leaf to rename it inline; file tabs are not renamable.
+Each tab leaf shows the tab's type icon and label. For closable tabs, a close **×** button appears (middle-click also closes them). Double-click an agent or terminal leaf to rename it inline; file and image tabs are not renamable.
 
 Clicking a tab leaf in a workspace that is not currently active switches to that workspace and activates the chosen tab. Repo and branch collapse state is remembered per workspace across reloads.
 

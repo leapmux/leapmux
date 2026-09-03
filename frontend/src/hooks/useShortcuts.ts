@@ -1,10 +1,10 @@
 import type { Accessor } from 'solid-js'
-import type { NewWorkspacePayload } from '~/components/shell/AppShellDialogs'
+import type { NewTabTarget, NewWorkspacePayload } from '~/components/shell/AppShellDialogs'
 import type { TabContext } from '~/components/shell/tabContext'
 import type { useAgentOperations } from '~/components/shell/useAgentOperations'
 import type { useTabOperations } from '~/components/shell/useTabOperations'
 import type { useTerminalOperations } from '~/components/shell/useTerminalOperations'
-import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
+import type { DialogState } from '~/hooks/createDialogState'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { createLayoutStore, SplitOrientation } from '~/stores/layout.store'
 import type { Tab } from '~/stores/tab.types'
@@ -35,8 +35,8 @@ interface UseShortcutsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
 
-  newAgentDialog: ToggleDialogState
-  newTerminalDialog: ToggleDialogState
+  newAgentDialog: DialogState<NewTabTarget>
+  newTerminalDialog: DialogState<NewTabTarget>
   newWorkspaceDialog: DialogState<NewWorkspacePayload>
   hasActiveWorkspace: Accessor<boolean>
   toggleFloatingTab: () => void
@@ -70,6 +70,7 @@ const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = {
   [TabType.AGENT]: 'agent',
   [TabType.TERMINAL]: 'terminal',
   [TabType.FILE]: 'file',
+  [TabType.IMAGE]: 'image',
 }
 
 // FFI contract: must match SHOW_PREFERENCES_MENU_ID in desktop/rust/src/main.rs.
@@ -134,12 +135,14 @@ export function useShortcuts(props: UseShortcutsProps): void {
       newWorkspaceDialog.open({})
       return
     }
-    newAgentDialog.open()
+    // An empty target: the shortcut is about the tab the user is looking at,
+    // so the dialog follows the current tab context.
+    newAgentDialog.open({})
   }, 'App')
   cmd('app.newTerminalDialog', 'New Terminal Dialog', () => {
     if (!hasActiveWorkspace())
       return
-    newTerminalDialog.open()
+    newTerminalDialog.open({})
   }, 'App')
   cmd('app.newWorkspaceDialog', 'New Workspace Dialog', () => newWorkspaceDialog.open({}), 'App')
   cmd('app.refreshDirectoryTree', 'Refresh Directory Tree', () => refreshFileTree(), 'Files')

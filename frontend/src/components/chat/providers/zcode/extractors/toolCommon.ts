@@ -41,6 +41,14 @@ export interface ZCodeToolUpdate {
  * `content` is the text the model received. `display` is the app-server's own
  * rendering hint, and it is the ONLY place a structured diff arrives. `perf.detail`
  * carries the per-kind telemetry a command's exit code lives in.
+ *
+ * `content` is a STRING, never a content-block array, so ZCode is the one
+ * provider with no tool-result images to render. Its Read tool does build an
+ * image part (`{type:'image', mediaType, dataUrl}`) for the model, but the
+ * app-server text-ifies every media part into a `[Attached image/png]`
+ * placeholder before the event reaches LeapMux. If a later app-server forwards
+ * the part instead, `~/lib/imageBlocks` already parses that shape and only the
+ * wiring here would be missing.
  */
 export interface ZCodeToolResult {
   success: boolean

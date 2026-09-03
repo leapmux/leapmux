@@ -144,6 +144,13 @@ export interface MessageBubbleHost {
   /** Open (or activate, or revive) a subagent's tab from its registry row. */
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /**
+   * Open an image a row rendered in its own tab.
+   *
+   * `seq` is stamped by the bubble, which is the only layer that holds the
+   * message; a renderer says only which image of its own row it means.
+   */
+  onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
+  /**
    * Live command stream for this message's span, as a thunk so the host
    * literal stays cheap to construct: callers do the lookup only when a
    * renderer reads it.
@@ -297,6 +304,31 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return onReply ? (text: string) => onReply(formatChatQuote(text)) : undefined
   })
 
+  // Stamp the message identity a renderer cannot know onto the open request.
+  // Defined once so `renderContext.onOpenImage` keeps one identity across
+  // reads -- a getter that built the closure per read would hand every reader a
+  // different function and defeat the memos that capture it.
+  //
+  // The renderer's own `title` wins, because it is the layer that already has a
+  // human name for the row -- an MCP body says "Playwright / screenshot" where
+  // the span type says `mcp__playwright__screenshot`. Re-deriving that name
+  // here would mean teaching a shared layer one provider's tool-name
+  // convention, and it would be a second derivation of a name the renderer
+  // computed a moment earlier. The span type is the fallback for a row whose
+  // renderer has nothing better.
+  //
+  // Safe to take from the render pass because the title is STORED in the tab
+  // payload at open time and read back from it -- unlike `index`, nothing ever
+  // re-derives it, so there is no second side for it to disagree with.
+  const openImage = (image: { index: number, filePath?: string, title?: string }) => {
+    props.host?.onOpenImage?.({
+      seq: props.message.seq,
+      index: image.index,
+      filePath: image.filePath,
+      title: image.title || props.message.spanType || 'Image',
+    })
+  }
+
   // Build render context for message renderers. A plain object literal with
   // getter accessors for reactive fields gives stable identity (allocated once
   // per component setup) AND per-field reactivity — body components track only
@@ -309,6 +341,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get onReply() { return wrappedOnReply() },
     get resolveBackgroundTaskRow() { return props.host?.resolveBackgroundTaskRow },
     get onOpenSubagent() { return props.host?.onOpenSubagent },
+    get onOpenImage() { return props.host?.onOpenImage ? openImage : undefined },
     get onCopyJson() { return copyJson },
     get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },
     get createdAt() { return props.message.createdAt },

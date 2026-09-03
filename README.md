@@ -77,7 +77,7 @@ The rest of this README is for people building LeapMux from source or hacking on
 
 Before you begin, ensure you have the following installed:
 
-- **Go** 1.27.0 or later
+- **Go** 1.27.1 or later
 - **Node.js** 24 or later
 - **Bun** 1.4.0 or later - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)

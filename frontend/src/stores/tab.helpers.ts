@@ -11,7 +11,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { repoKey, repoKeyFromTab, upsertRepoGitFromProtoStatus } from './repoGit'
-import { isTerminalTab } from './tab.types'
+import { isPayloadBackedTabType, isTerminalTab } from './tab.types'
 
 /**
  * Module note: helpers over `Tab` records — no signals. Lives in its own
@@ -675,6 +675,10 @@ export function tabDisplayLabel(tab: Tab): string {
     return tab.ptyTitle
   if (tab.type === TabType.FILE)
     return (tab.filePath ? basename(tab.filePath) : '') || 'File'
+  // An IMAGE tab's name comes from its payload, which the tab strip reads as
+  // `title` above; this is the pre-hydration placeholder.
+  if (tab.type === TabType.IMAGE)
+    return 'Image'
   return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
 }
 
@@ -743,8 +747,20 @@ export function parseTabKey(key: string): { type: TabType, id: string } | null {
   return { type: typeNum as TabType, id: key.slice(idx + 1) }
 }
 
-export function canCloseTab(readOnly: boolean | undefined, tab: Tab): boolean {
-  return !readOnly || tab.type === TabType.FILE
+/**
+ * Whether a tab may be closed from a surface that renders `archived`'s
+ * workspace.
+ *
+ * An archived workspace takes no mutation, so its agent and terminal tabs keep
+ * no close control. A PAYLOAD-BACKED tab is the exception: it holds a file or an
+ * image the client opened for itself, with nothing running behind it, so
+ * closing one changes nothing on the Worker.
+ *
+ * Shared by the tab bar and the sidebar tree, which render the same tabs and
+ * must not disagree about which of them close.
+ */
+export function canCloseTab(archived: boolean | undefined, tab: Tab): boolean {
+  return !archived || isPayloadBackedTabType(tab.type)
 }
 
 /**

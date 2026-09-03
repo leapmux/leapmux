@@ -2,6 +2,7 @@ import type { FileDiffBase, FileOpenSource, FileViewMode } from './tab.types'
 import type { AgentProvider, AgentStatus, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
+import type { TabPayloadView } from '~/lib/tabPayload'
 import { createEffect, createMemo } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
 import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
@@ -162,8 +163,9 @@ export interface StartupMeta {
 
 export interface FileMeta {
   /**
-   * Registered with the worker over E2EE so peers can resolve it; the hub never
-   * sees a file path, which is why it cannot live in the CRDT.
+   * Registered with the worker over E2EE (`RegisterTabPayload`) so peers can
+   * resolve it; the hub never sees a file path, which is why it cannot live in
+   * the CRDT.
    */
   filePath?: string
   fileOpenSource?: FileOpenSource
@@ -186,14 +188,58 @@ export interface FileMeta {
 }
 
 /**
+ * An IMAGE tab: one image an agent returned inside one chat message.
+ *
+ * Deliberately a REFERENCE and not the bytes. The pixels already live in the
+ * chat store (or one `GetAgentMessage` away), and copying a screenshot into tab
+ * state would put it in a layer that is swept, mirrored and persisted for
+ * reasons that have nothing to do with images. The three fields travel to the
+ * worker over E2EE for the same reason `filePath` does: message seqs are
+ * worker-local, and which one a user opened is a fact about their reading.
+ */
+export interface ImageMeta {
+  /** The agent whose transcript holds the message. */
+  imageAgentId?: string
+  /** Per-agent message seq. */
+  imageSeq?: bigint
+  /** Which image of that message, in `Provider.toolResultImages` order. */
+  imageIndex?: number
+}
+
+/**
  * Everything about a tab the CRDT does not carry. The intersection is what
  * `patch` accepts, so a caller may still write any field -- see `SharedMeta`
  * for why that laxity is deliberate rather than an oversight.
  */
-export type TabMetadata = SharedMeta & AgentMeta & TerminalMeta & StartupMeta & FileMeta
+export type TabMetadata = SharedMeta & AgentMeta & TerminalMeta & StartupMeta & FileMeta & ImageMeta
 
 /** Narrowing helpers for callers that only hold a `FileViewMode`-ish value. */
 export type { FileDiffBase, FileViewMode }
+
+/**
+ * The metadata patch a decoded `TabPayload` implies.
+ *
+ * Two callers write it -- the private-event stream (bootstrap replay and live
+ * updates) and the one-shot hydrator a late joiner runs -- and they must agree
+ * field for field, because both mark the tab `hydrated` and whichever runs
+ * second is what the tab keeps.
+ *
+ * `|| undefined` on the strings because they arrive as proto3 fields: an absent
+ * one is `''`, and `mergeDefined` treats a real `''` as a CLEARING write rather
+ * than as "no opinion".
+ */
+export function tabPayloadMetadata(payload: TabPayloadView): TabMetadata {
+  const shared: TabMetadata = { workingDir: payload.workingDir || undefined, hydrated: true }
+  if (payload.kind === 'file')
+    return { ...shared, filePath: payload.filePath || undefined }
+  return {
+    ...shared,
+    title: payload.title || undefined,
+    imageAgentId: payload.agentId || undefined,
+    imageSeq: payload.seq,
+    imageIndex: payload.imageIndex,
+  }
+}
 
 /**
  * The tab ids a metadata sweep must treat as live: the CRDT holds an

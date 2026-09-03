@@ -607,7 +607,7 @@ func (s ownerGuardScope) isSharedGuardCall(call *ast.CallExpr) bool {
 // id that never passed through the type: OwnerFilter is `IsZero -> refuse, else
 // unwrap`, and New is `empty -> refuse, else mint` with String() as the unwrap.
 // The worker binds owner columns from ids it holds as plain strings (a
-// worker_file_tabs row's user_id, a normalized worktree link owner), so without
+// worker_tab_payloads row's user_id, a normalized worktree link owner), so without
 // New the only guard reachable there would be no guard at all -- and the whole
 // point of moving OwnerFilter into package userid was that the worker can call
 // it. A name that merely LOOKS generic is not a risk here: the package is

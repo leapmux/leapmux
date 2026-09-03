@@ -1121,9 +1121,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		})
 
 	// WatchWorkerPrivateEvents streams this worker's private tab events
-	// (TabRenamed, FileTabPathRegistered, FileTabPathRevoked) over the
+	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked) over the
 	// existing E2EE channel. The bootstrap-replay sends one
-	// FileTabPathRegistered per worker_file_tabs row the caller owns before
+	// TabPayloadRegistered per worker_tab_payloads row the caller owns before
 	// any live events.
 	//
 	// SnapshotAndSubscribe drives the stream lifetime off a cancellable
@@ -1156,7 +1156,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 					// Use the cancellable stream ctx, not bgCtx: a client cancel
 					// frame during a slow/large snapshot must retire the stream
 					// rather than waiting out the SQLite busy timeout.
-					snapshot, err := svc.FileTabPaths.SnapshotForOwner(ctx, owner)
+					snapshot, err := svc.TabPayloads.SnapshotForOwner(ctx, owner)
 					if err != nil {
 						return nil
 					}
@@ -1165,7 +1165,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				func(evt *leapmuxv1.WorkerPrivateEvent) error {
 					// Per-EVENT-KIND gates, mirroring the partition WatchEvents
 					// applies: this bus multiplexes agent and terminal tab
-					// renames beside the file-tab events, and a rename's title
+					// renames beside the tab-payload events, and a rename's title
 					// is exactly what the agent:read / terminal:read scopes
 					// govern. A caller granted file:read alone keeps the
 					// file-tab events and the renames of file tabs, and hears
@@ -1183,42 +1183,42 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			)
 		})
 
-	// RegisterFileTabPath writes the (tab_id -> path) registry row. The
+	// RegisterTabPayload writes the (tab_id -> payload) registry row. The
 	// write must survive a client disconnect, otherwise a subsequent
-	// GetFileTabPath from a sibling client would see a stale "not found".
+	// GetTabPayload from a sibling client would see a stale "not found".
 	// Dispatcher ctx is intentionally not threaded.
-	registerOwnerGated(d, "RegisterFileTabPath", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain,
-		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RegisterFileTabPathRequest, sender channel.ResponseWriter) {
-			if r.GetTabId() == "" || r.GetFilePath() == "" {
-				sendInvalidArgument(sender, "tab_id, file_path are required")
+	registerOwnerGated(d, "RegisterTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain,
+		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RegisterTabPayloadRequest, sender channel.ResponseWriter) {
+			if r.GetTabId() == "" || r.GetPayload() == nil {
+				sendInvalidArgument(sender, "tab_id, payload are required")
 				return
 			}
-			if err := svc.FileTabPaths.Register(bgCtx(), RegisterFileTabPathParams{
-				UserID:   caller.UserID.String(),
-				TabID:    r.GetTabId(),
-				FilePath: r.GetFilePath(),
-				// Passed through raw: an empty working_dir is the documented
-				// "no originating tab" case, and judging a non-empty one is the
-				// store's job, not this handler's. `normalizeWorkingDir` does
-				// both there -- fills the empty case from the file's own
-				// directory, and REFUSES a relative one, because `git -C` reads
-				// a relative path against the worker process's cwd and would
-				// quietly answer for the wrong repository rather than fail. A
-				// bogus but absolute dir is left to degrade the way a deleted
-				// working dir does: the git probes fail and the close path
-				// takes its tolerant branch.
-				WorkingDir: r.GetWorkingDir(),
+			// The payload -- including its working_dir -- is passed through
+			// raw: an empty working_dir is the documented "no originating tab"
+			// case, and judging a non-empty one is the store's job, not this
+			// handler's. `normalizeWorkingDir` does both there -- fills the
+			// empty case from the file's own directory, and REFUSES a relative
+			// one, because `git -C` reads a relative path against the worker
+			// process's cwd and would quietly answer for the wrong repository
+			// rather than fail. A bogus but absolute dir is left to degrade the
+			// way a deleted working dir does: the git probes fail and the close
+			// path takes its tolerant branch. Per-kind required fields are
+			// likewise the store's (see tabPayloadType).
+			if err := svc.TabPayloads.Register(bgCtx(), RegisterTabPayloadParams{
+				UserID:  caller.UserID.String(),
+				TabID:   r.GetTabId(),
+				Payload: r.GetPayload(),
 			}); err != nil {
-				sendInternalError(sender, err.Error())
+				sendInvalidArgument(sender, err.Error())
 				return
 			}
-			sendProtoResponse(sender, &leapmuxv1.RegisterFileTabPathResponse{})
+			sendProtoResponse(sender, &leapmuxv1.RegisterTabPayloadResponse{})
 		})
 
-	// GetFileTabPath is a synchronous read-only handler: the response is
+	// GetTabPayload is a synchronous read-only handler: the response is
 	// the only side effect, so the inbound dispatcher ctx is threaded
 	// through the store lookup to fail-fast on disconnect.
-	registerOwnerGated(d, "GetFileTabPath", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetFileTabPathRequest, sender channel.ResponseWriter) {
+	registerOwnerGated(d, "GetTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetTabPayloadRequest, sender channel.ResponseWriter) {
 		if r.GetTabId() == "" {
 			sendInvalidArgument(sender, "tab_id is required")
 			return
@@ -1226,22 +1226,19 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// The lookup binds the caller as half the (user_id, tab_id) key, so a
 		// tab id another user minted resolves to NOT_FOUND rather than to
 		// their row -- which is the whole reason the store is owner-keyed.
-		loc, err := svc.FileTabPaths.Get(ctx, caller.UserID.String(), r.GetTabId())
+		payload, err := svc.TabPayloads.Get(ctx, caller.UserID.String(), r.GetTabId())
 		if err != nil {
-			if errors.Is(err, ErrFileTabPathNotFound) {
-				sendNotFoundError(sender, "file tab path not found")
+			if errors.Is(err, ErrTabPayloadNotFound) {
+				sendNotFoundError(sender, "tab payload not found")
 				return
 			}
 			sendInternalError(sender, err.Error())
 			return
 		}
-		sendProtoResponse(sender, &leapmuxv1.GetFileTabPathResponse{
-			FilePath:   loc.FilePath,
-			WorkingDir: loc.WorkingDir,
-		})
+		sendProtoResponse(sender, &leapmuxv1.GetTabPayloadResponse{Payload: payload})
 	})
 
-	// RevokeFileTabPath deletes the (tab_id -> path) row and runs the
+	// RevokeTabPayload deletes the (tab_id -> payload) row and runs the
 	// shared closeTabCommon flow so the worktree-tab link (and any
 	// resulting `git worktree remove` when the user picked Delete in
 	// the last-tab dialog) is handled identically to CloseAgent /
@@ -1249,12 +1246,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// same reason as the register handler -- otherwise a stale row would
 	// survive past the user's intended revocation. Dispatcher ctx is
 	// intentionally not threaded.
-	registerOwnerGated(d, "RevokeFileTabPath", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.RevokeFileTabPathRequest, sender channel.ResponseWriter) {
+	registerOwnerGated(d, "RevokeTabPayload", leapmuxv1.Scope_SCOPE_FILE_READ, dispatchTracked, func(_ context.Context, caller channel.Caller, r *leapmuxv1.RevokeTabPayloadRequest, sender channel.ResponseWriter) {
 		if r.GetTabId() == "" {
 			sendInvalidArgument(sender, "tab_id is required")
 			return
 		}
-		// The method gate is file:read because the registry row is file-tab
+		// The method gate is file:read because the registry row is tab
 		// bookkeeping, but the WORKTREE_ACTION_REMOVE leg runs `git worktree
 		// remove --force` and `git branch -D` -- a destructive write that
 		// scope.proto places under git:write ("manage a worktree"), the same
@@ -1274,10 +1271,20 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// (and any user-requested `git worktree remove`) is handled
 		// identically to CloseAgent / CloseTerminal. It is idempotent: a
 		// tab already revoked (or one this caller never owned) drops through
-		// RevokeRow's ErrFileTabPathNotFound arm and still clears any
+		// RevokeRow's ErrTabPayloadNotFound arm and still clears any
 		// worktree link, so no pre-flight existence read is needed.
-		result := svc.closeFileTabCommon(caller.UserID.String(), r.GetTabId(), r.GetWorktreeAction(), dropWorktreeLink)
-		sendProtoResponse(sender, &leapmuxv1.RevokeFileTabPathResponse{Result: result})
+		// The stored kind decides which worktree_tabs link to drop -- the link
+		// row carries the tab type, so closing an IMAGE tab with FILE would
+		// leave its link behind. A tab whose row is already gone has no kind to
+		// read; FILE is the fallback, and it costs nothing because such a link
+		// is already dead to worktree_tab_liveness (no backing row means
+		// is_live = 0) and the worktree GC reaps it either way.
+		tabType, err := svc.TabPayloads.TabTypeOf(bgCtx(), caller.UserID.String(), r.GetTabId())
+		if err != nil {
+			tabType = leapmuxv1.TabType_TAB_TYPE_FILE
+		}
+		result := svc.closePayloadTabCommon(caller.UserID.String(), r.GetTabId(), tabType, r.GetWorktreeAction(), dropWorktreeLink)
+		sendProtoResponse(sender, &leapmuxv1.RevokeTabPayloadResponse{Result: result})
 	})
 
 	// ListAvailableProviders enumerates the agent CLIs installed on this

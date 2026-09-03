@@ -2,6 +2,7 @@ import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { WorkingTreeChip } from './WorkingTreeChip'
 
@@ -36,8 +37,8 @@ function renderChip(overrides: Partial<WorkingTreeInfo> & { disabledReason?: str
     <WorkingTreeChip
       workingTree={workingTree}
       disabledReason={overrides.disabledReason}
-      onChangeBranch={() => {}}
-      onDeleteBranch={() => {}}
+      workerId="w-1"
+      actions={stubBranchMenuActions()}
     />
   ))
   return screen.queryByTestId('composer-branch-trigger')
@@ -116,6 +117,18 @@ describe('workingTreeChip', () => {
 
   it('renders nothing for an empty branch name', () => {
     expect(renderChip({ name: '' })).toBeNull()
+  })
+
+  // The chip is a trigger. Without a bundle behind it, it would open a menu
+  // whose every item does nothing, which is worse than no chip at all.
+  it('renders nothing when the shell wired no actions', () => {
+    render(() => (
+      <WorkingTreeChip
+        workingTree={{ isWorktree: false, name: 'main', directory: '/repo' }}
+        workerId="w-1"
+      />
+    ))
+    expect(screen.queryByTestId('composer-branch-trigger')).toBeNull()
   })
 
   // The worker's own path rule, threaded from the panel. Without it the chip

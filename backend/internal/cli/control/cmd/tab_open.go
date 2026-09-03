@@ -19,7 +19,7 @@ import (
 //   - terminal  → calls worker OpenTerminal (creates a real terminal
 //     record), then writes the CRDT batch.
 //   - file      → registers the path worker-side over E2EE via
-//     `RegisterFileTabPath`, then writes the CRDT batch.
+//     `RegisterTabPayload`, then writes the CRDT batch.
 //
 // Required-flag defaults are read from LEAPMUX_CONTROL_* env vars when
 // the user runs from inside a remote-enabled agent/terminal, so the
@@ -60,6 +60,15 @@ func RunTabOpen(rawCtx any, args []string) error {
 	tt, ok := resolve.ParseTabType(tabType)
 	if !ok {
 		return control.EmitError("invalid_request", "--type must be agent|terminal|file")
+	}
+	// IMAGE parses (so `tab list --tab-type image` and `tab close` can name
+	// one) but cannot be OPENED here. An image tab addresses one image inside
+	// one chat message -- agent id, message seq, and which image of that
+	// message -- which is a selection a person makes by clicking the picture in
+	// a transcript. There is no flag spelling of it a caller could reasonably
+	// produce, and a tab opened without that reference resolves to nothing.
+	if tt == leapmuxv1.TabType_TAB_TYPE_IMAGE {
+		return control.EmitError("invalid_request", "--type=image is opened by clicking an image in a transcript, not from the CLI")
 	}
 	if tt == leapmuxv1.TabType_TAB_TYPE_FILE && filePath == "" {
 		return control.EmitError("invalid_request", "--path is required for --type=file")
@@ -252,18 +261,20 @@ func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position str
 	}
 }
 
-// registerFileTabPath invokes the worker's `RegisterFileTabPath`
+// registerFileTabPath invokes the worker's `RegisterTabPayload`
 // inner-RPC over E2EE so the file path stays off the hub. The
 // returned response is empty on success; any worker-side error is
 // surfaced as a wrapped codedRPCError.
 func registerFileTabPath(ctx context.Context, c *control.Client, workerID, tabID, filePath, workingDir string) error {
-	req := &leapmuxv1.RegisterFileTabPathRequest{
-		TabId:      tabID,
-		FilePath:   filePath,
-		WorkingDir: workingDir,
+	req := &leapmuxv1.RegisterTabPayloadRequest{
+		TabId: tabID,
+		Payload: &leapmuxv1.TabPayload{
+			WorkingDir: workingDir,
+			Kind:       &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}},
+		},
 	}
-	var resp leapmuxv1.RegisterFileTabPathResponse
-	return callInnerRPCBest(ctx, c, workerID, "RegisterFileTabPath", req, &resp)
+	var resp leapmuxv1.RegisterTabPayloadResponse
+	return callInnerRPCBest(ctx, c, workerID, "RegisterTabPayload", req, &resp)
 }
 
 // findWorkerForWorkspaceInState returns the first worker_id hosting a

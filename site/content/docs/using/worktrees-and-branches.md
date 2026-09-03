@@ -44,16 +44,31 @@ A working directory with no current branch carries a state label instead. **`(no
 
 ### The branch context menu
 
-Each branch row has a **`...`** context menu with exactly two items:
+Each branch row has a **`...`** context menu. Right-click the row, or press and hold it on a touch screen, to open the same menu.
 
 | Item | What it does |
 |---|---|
-| **Change branch...** | Opens the [Change branch dialog](#changing-the-branch-on-a-tab). |
+| **Switch to branch...** | Opens the [Change branch dialog](#changing-the-branch-on-a-tab) on **Switch to branch**. |
+| **Create new branch...** | Opens the same dialog on **Create new branch**. |
+| **Create new worktree...** | Opens the same dialog on **Create new worktree**. |
 | **Delete worktree...** / **Delete branch...** | Opens the [delete dialog](#deleting-a-branch-or-a-worktree) (styled in red). |
 
-The change item keeps one name on both kinds, because a worktree has a branch checked out and the dialog changes that branch either way. The delete item is named after what it removes: **Delete worktree...** on a linked worktree, which removes a directory, and **Delete branch...** on a branch in the main checkout, which does not.
+The three change items open one dialog and differ only in which mode it starts on, so the item you pick names what you then see. You can still switch modes inside the dialog. They keep one set of names on both kinds of row, because a worktree has a branch checked out and the dialog changes that branch either way. The delete item is named after what it removes: **Delete worktree...** on a linked worktree, which removes a directory, and **Delete branch...** on a branch in the main checkout, which does not.
 
-Both items act through the Worker that hosts the repository. LeapMux greys them out, with the reason on hover, while that Worker is offline. The `(no branch)` row carries no menu at all, because it has no branch to change or delete.
+Below the delete item, the menu carries an **Agents** section and a **Terminals** section — the same ones the tab bar's **`+`** menu holds, acting on this branch instead of on the focused tab:
+
+| Item | What it does |
+|---|---|
+| An agent glyph | Opens an agent with that provider on this branch's checkout, with no dialog. |
+| **New agent...** | Opens the **New agent** dialog, pre-filled with this branch's Worker and directory. |
+| **New terminal...** | Opens the **New terminal** dialog, pre-filled the same way. |
+| A shell path | Opens a terminal with that shell on this branch's checkout, with no dialog. |
+
+The two lists name the **branch's own Worker**, not the Worker the focused tab sits on, and LeapMux loads them when you open the menu. The new tab joins the branch's workspace: LeapMux makes that workspace active first when the branch row belongs to one you are not looking at.
+
+Every item acts through the Worker that hosts the repository. LeapMux greys them all out, with the reason on hover, while that Worker is offline.
+
+Two rows carry no menu at all, because there would be nothing in it to enable. The `(no branch)` row has no branch to act on. And a row in an **archived** workspace has nothing it may do: every item either changes branch state or opens a tab, and an archived workspace takes neither. Unarchive the workspace to get the menu back.
 
 {{< callout type="info" >}}
 A detached-HEAD row keeps its menu, because its short-SHA label is a real label. The branch delete fails there — the row identifies a commit, not a branch — and only after LeapMux switches the working directory to the branch you picked. Use **Create new branch** first to get onto a real branch.
@@ -61,7 +76,7 @@ A detached-HEAD row keeps its menu, because its short-SHA label is a real label.
 
 ### The branch chip in the composer
 
-The composer's status bar carries the same two items behind a branch-name chip, so you can change or delete the branch without opening the sidebar. The chip carries the same kind icon as the sidebar row, and hovering it gives the same **Worktree branch** / **Branch** and **Directory** rows. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the **[+]** menu's own branch row keeps the icon, the hover rows and both actions.
+The composer's status bar carries the same menu behind a branch-name chip, so you can act on the branch without opening the sidebar. The chip carries the same kind icon as the sidebar row, and hovering it gives the same **Worktree branch** / **Branch** and **Directory** rows. The chip appears when the focused agent reports a branch. Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip; the **[+]** menu's own branch row keeps the icon, the hover rows and every item.
 
 ## Choosing a branch or worktree when you open a tab
 
@@ -133,7 +148,7 @@ Create new worktree is the right choice for "start a fresh task in isolation." U
 
 ## Changing the branch on a tab
 
-Open the branch row's **`...`** menu and choose **Change branch...** to open the **Change branch** dialog. It works on one repository working directory. It offers three of the five modes: **Switch to branch** (the default), **Create new branch**, and **Create new worktree**.
+Open the branch row's **`...`** menu and choose **Switch to branch...**, **Create new branch...** or **Create new worktree...** to open the **Change branch** dialog on that mode. It works on one repository working directory. It offers three of the five modes: **Switch to branch**, **Create new branch**, and **Create new worktree**.
 
 What each mode does on **Apply**:
 

@@ -3,6 +3,7 @@ import type { DiffStats } from '~/stores/repoGit'
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { ComposerStatusBar } from './ComposerStatusBar'
 import '~/components/chat/providers'
@@ -54,8 +55,8 @@ function renderBar(
       workingTree={workingTree}
       optionValues={{}}
       onSettingChange={() => {}}
-      onChangeBranch={() => {}}
-      onDeleteBranch={() => {}}
+      branchActions={stubBranchMenuActions()}
+      branchWorkerId="w-1"
       infoTrigger={() => <span data-testid="info" />}
       disabledReason={extra.disabledReason}
       branchDisabledReason={extra.branchDisabledReason}

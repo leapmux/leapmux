@@ -136,10 +136,27 @@ export interface FileTab extends BaseTab {
 }
 
 /**
+ * IMAGE tab. One image an agent returned inside one chat message, opened on its
+ * own so it can be zoomed.
+ *
+ * A REFERENCE, not the bytes: `(agentId, seq, imageIndex)` addresses the image
+ * and the client resolves it from the chat store, or with the one
+ * `GetAgentMessage` the scroll rail already makes for its own previews. Copying
+ * a screenshot into tab state would put it in a layer that is swept, mirrored
+ * and persisted for reasons that have nothing to do with images.
+ */
+export interface ImageTab extends BaseTab {
+  type: TabType.IMAGE
+  imageAgentId?: string
+  imageSeq?: bigint
+  imageIndex?: number
+}
+
+/**
  * Discriminated union of every tab kind. Narrow with `switch (tab.type)`
  * or the per-kind guards below.
  */
-export type Tab = AgentTab | TerminalTab | FileTab
+export type Tab = AgentTab | TerminalTab | FileTab | ImageTab
 
 export function isAgentTab(t: Tab): t is AgentTab {
   return t.type === TabType.AGENT
@@ -151,6 +168,29 @@ export function isTerminalTab(t: Tab): t is TerminalTab {
 
 export function isFileTab(t: Tab): t is FileTab {
   return t.type === TabType.FILE
+}
+
+export function isImageTab(t: Tab): t is ImageTab {
+  return t.type === TabType.IMAGE
+}
+
+/**
+ * True for the tab kinds whose contents live in a worker-side `TabPayload`
+ * rather than in the CRDT.
+ *
+ * AGENT and TERMINAL tabs are resolved by their own worker RPCs (ListAgents /
+ * ListTerminals) against ids the server minted. FILE and IMAGE tabs carry
+ * client-minted ids and a payload the hub must never see, so they share one
+ * register / replay / re-read / revoke path -- and every consumer of that path
+ * asks this question rather than listing the two types again.
+ *
+ * The user-facing rules follow from the same property, which is why they ask it
+ * too rather than growing their own list: such a tab has no server-side name to
+ * rename (its title comes from the payload), it owns no process, and closing it
+ * is a row delete -- so a read-only viewer may still close one.
+ */
+export function isPayloadBackedTabType(type: TabType): boolean {
+  return type === TabType.FILE || type === TabType.IMAGE
 }
 
 /** The tab field that links a tab to its repo-keyed git store entry. */

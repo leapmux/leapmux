@@ -363,7 +363,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// cancelled on ctx done.
 	reconciler := service.NewOrphanReconciler(
 		queries,
-		svc.FileTabPaths,
+		svc.TabPayloads,
 		func(rctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 			return p.Client.ListOwnedTabsForWorker(rctx)
 		},
@@ -491,6 +491,7 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 		leapmuxv1.TabType_TAB_TYPE_FILE,
+		leapmuxv1.TabType_TAB_TYPE_IMAGE,
 		leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED,
 	} {
 		var ids []string
@@ -502,18 +503,24 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 			ids, err = queries.ListAllAgentIDs(ctx)
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 			ids, err = queries.ListAllTerminalIDs(ctx)
-		case leapmuxv1.TabType_TAB_TYPE_FILE:
-			// A file tab's CRDT row carries a worker_id (the frontend stamps
-			// ctx.workerId and the validator rejects a live tab without one), so it
-			// lands in workspace_tab_owned and comes back from ListOwnedByWorker,
-			// which applies no tab-type filter. Omitting this arm tombstoned every
-			// file tab on the worker on every single reconnect.
+		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
+			// A payload-backed tab's CRDT row carries a worker_id (the frontend
+			// stamps ctx.workerId and the validator rejects a live tab without
+			// one), so it lands in workspace_tab_owned and comes back from
+			// ListOwnedByWorker, which applies no tab-type filter. Omitting this
+			// arm tombstoned every file tab on the worker on every single
+			// reconnect.
 			//
-			// Scoped to the owner, unlike the two above: worker_file_tabs is PK'd on
-			// (user_id, tab_id) because file-tab ids are client-minted and unique
+			// Scoped to the owner, unlike the two above: worker_tab_payloads is PK'd on
+			// (user_id, tab_id) because these tab ids are client-minted and unique
 			// only within a user, and a stale second owner's rows can outlive a
 			// deregister (ClearState removes state.json, not worker.db).
-			ids, err = fileTabIDsForOwner(ctx, queries, owner)
+			//
+			// Filtered by KIND as well, because one table now holds both: a row
+			// reported under the wrong type would be tombstoned by the hub, which
+			// matches nothing, and the real row would go unreported and be
+			// tombstoned for real.
+			ids, err = payloadTabIDsForOwner(ctx, queries, owner, tabType)
 		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
 			// Not a hostable tab type; nothing to report.
 			continue
@@ -529,19 +536,20 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 	return &leapmuxv1.WorkerTabInventory{Tabs: tabs}, nil
 }
 
-// fileTabIDsForOwner returns owner's file-tab ids, dropping any row belonging to
-// a different user. See the FILE arm of BuildTabSync for why the filter matters.
-func fileTabIDsForOwner(ctx context.Context, queries *db.Queries, owner userid.UserID) ([]string, error) {
-	rows, err := queries.ListAllWorkerFileTabs(ctx)
+// payloadTabIDsForOwner returns owner's tab ids of one payload-backed kind,
+// dropping any row belonging to a different user or a different kind. See the
+// FILE/IMAGE arm of BuildTabSync for why both filters matter.
+func payloadTabIDsForOwner(ctx context.Context, queries *db.Queries, owner userid.UserID, tabType leapmuxv1.TabType) ([]string, error) {
+	rows, err := queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
 		return nil, err
 	}
 	ids := make([]string, 0, len(rows))
-	for _, ft := range rows {
-		if !owner.Matches(ft.UserID) {
+	for _, row := range rows {
+		if !owner.Matches(row.UserID) || leapmuxv1.TabType(row.TabType) != tabType {
 			continue
 		}
-		ids = append(ids, ft.TabID)
+		ids = append(ids, row.TabID)
 	}
 	return ids, nil
 }

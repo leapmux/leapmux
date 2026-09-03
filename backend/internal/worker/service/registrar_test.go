@@ -164,11 +164,11 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			seed: func(*testing.T, *Service) {},
 			register: func(r registrar, method string, block func()) {
 				registerOwnerGated(r, method, leapmuxv1.Scope_SCOPE_WORKER_READ, dispatchTracked,
-					func(context.Context, channel.Caller, *leapmuxv1.RevokeFileTabPathRequest, channel.ResponseWriter) {
+					func(context.Context, channel.Caller, *leapmuxv1.RevokeTabPayloadRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
-			req: &leapmuxv1.RevokeFileTabPathRequest{TabId: "tab-1"},
+			req: &leapmuxv1.RevokeTabPayloadRequest{TabId: "tab-1"},
 		},
 	}
 	for _, tc := range cases {

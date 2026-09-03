@@ -41,7 +41,7 @@ func HasPathPrefix(path, prefix string) bool {
 //
 // The fallback is CLEANED rather than returned verbatim because the result is
 // used as a map key and as a stored column (gitIndexLock, worktrees.worktree_path,
-// FileTabPathStore). EvalSymlinks cleans on the success path, so returning the
+// TabPayloadStore). EvalSymlinks cleans on the success path, so returning the
 // raw string on failure made the same directory hash two ways depending on
 // whether it happened to resolve -- and for gitIndexLock that means two mutexes
 // for one repository, which is precisely the failure the lock exists to prevent.

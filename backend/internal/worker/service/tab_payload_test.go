@@ -22,16 +22,16 @@ import (
 // absTestPath renders a POSIX-style path literal as a NATIVE absolute path, for
 // the fixtures in this file and in orphan_reconciler_test.go.
 //
-// The absoluteness guards these tests drive -- FileTabPathStore.Register's
+// The absoluteness guards these tests drive -- TabPayloadStore.Register's
 // filepath.IsAbs on file_path, and normalizeWorkingDir's on working_dir -- are
 // platform-specific, and a rooted-but-driveless "/repo/a.go" is NOT absolute on
 // Windows. Hardcoded POSIX literals therefore made every Register below fail
 // there with `file_path must be absolute`, for a reason no test here meant to
-// assert -- and made TestFileTabPath_RegisterRefusesRelativeWorkingDir pass for
+// assert -- and made TestTabPayload_RegisterRefusesRelativeWorkingDir pass for
 // the wrong one, since it never reached the working_dir guard it exists to pin.
 //
 // The paths stay fictional and never reach the filesystem: nothing here opens a
-// file, and Register's only disk touch is linkFileTabToWorktree's best-effort
+// file, and Register's only disk touch is linkTabToWorktree's best-effort
 // `git rev-parse` probe, which fails the same way on a nonexistent directory on
 // every platform. They only have to be absolute, and to survive the round trip
 // through the database unchanged (Register stores file_path verbatim and
@@ -56,9 +56,9 @@ var testPathVolume = func() string {
 	return filepath.VolumeName(wd)
 }()
 
-// newFileTabPathTestStore creates a worker DB and FileTabPathStore for
+// newTabPayloadTestStore creates a worker DB and TabPayloadStore for
 // tests. Returns the store along with the bus so tests can subscribe.
-func newFileTabPathTestStore(t *testing.T) (*service.FileTabPathStore, *service.PrivateEventsBus, *db.Queries) {
+func newTabPayloadTestStore(t *testing.T) (*service.TabPayloadStore, *service.PrivateEventsBus, *db.Queries) {
 	t.Helper()
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func newFileTabPathTestStore(t *testing.T) (*service.FileTabPathStore, *service.
 	q := db.New(sqlDB)
 	bus := service.NewPrivateEventsBus()
 	t.Cleanup(bus.Stop)
-	return service.NewFileTabPathStore(q, bus), bus, q
+	return service.NewTabPayloadStore(q, bus), bus, q
 }
 
 // TestAbsTestPath_IsAbsoluteOnEveryHost pins the one property every fixture in
@@ -85,18 +85,18 @@ func TestAbsTestPath_IsAbsoluteOnEveryHost(t *testing.T) {
 	}
 }
 
-func TestFileTabPath_RegisterAndGet(t *testing.T) {
+func TestTabPayload_RegisterAndGet(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"), WorkingDir: absTestPath("/repo"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayloadIn(absTestPath("/repo/pkg/README.md"), absTestPath("/repo")),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, absTestPath("/repo/pkg/README.md"), loc.FilePath)
-	assert.Equal(t, absTestPath("/repo"), loc.WorkingDir,
+	assert.Equal(t, absTestPath("/repo/pkg/README.md"), loc.GetFile().GetFilePath())
+	assert.Equal(t, absTestPath("/repo"), loc.GetWorkingDir(),
 		"the originating tab's working dir is stored as given, not re-derived from the file's own directory")
 }
 
@@ -104,17 +104,17 @@ func TestFileTabPath_RegisterAndGet(t *testing.T) {
 // --type=file` builds its tab entirely CLI-side -- still gets a usable working
 // dir, because every reader of the column treats it as authoritative and a
 // blank one would make the file tab unanswerable to `git -C`.
-func TestFileTabPath_RegisterWithoutWorkingDirFallsBackToFileDir(t *testing.T) {
+func TestTabPayload_RegisterWithoutWorkingDirFallsBackToFileDir(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayload(absTestPath("/repo/pkg/README.md")),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, absTestPath("/repo/pkg"), loc.WorkingDir)
+	assert.Equal(t, absTestPath("/repo/pkg"), loc.GetWorkingDir())
 }
 
 // Whitespace is not a working dir. The fallback is keyed on "the caller named
@@ -122,17 +122,17 @@ func TestFileTabPath_RegisterWithoutWorkingDirFallsBackToFileDir(t *testing.T) {
 // otherwise the column holds a string `git -C` rejects, and the close path
 // degrades to its tolerant no-prompt branch for a tab that has a perfectly good
 // repo one directory up.
-func TestFileTabPath_RegisterTreatsBlankWorkingDirAsAbsent(t *testing.T) {
+func TestTabPayload_RegisterTreatsBlankWorkingDirAsAbsent(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"), WorkingDir: "   ",
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayloadIn(absTestPath("/repo/pkg/README.md"), "   "),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, absTestPath("/repo/pkg"), loc.WorkingDir)
+	assert.Equal(t, absTestPath("/repo/pkg"), loc.GetWorkingDir())
 }
 
 // A relative working dir is refused for the same reason a relative file_path
@@ -141,14 +141,14 @@ func TestFileTabPath_RegisterTreatsBlankWorkingDirAsAbsent(t *testing.T) {
 // quietly answers for whatever repository the worker happens to sit in. Stored,
 // it would let a file tab's close inspection report another repo's branch and
 // dirty state, and `--worktree=push` commit and push that repo.
-func TestFileTabPath_RegisterRefusesRelativeWorkingDir(t *testing.T) {
+func TestTabPayload_RegisterRefusesRelativeWorkingDir(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
 	for _, dir := range []string{".", "..", "../peer-repo", "src", "./x"} {
-		err := store.Register(ctx, service.RegisterFileTabPathParams{
-			UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"), WorkingDir: dir,
+		err := store.Register(ctx, service.RegisterTabPayloadParams{
+			UserID: "user-1", TabID: "t1", Payload: filePayloadIn(absTestPath("/repo/pkg/README.md"), dir),
 		})
 		require.Error(t, err, "working_dir %q must be refused", dir)
 		// The WORKING_DIR guard, named: file_path's guard rejects with the same
@@ -157,7 +157,7 @@ func TestFileTabPath_RegisterRefusesRelativeWorkingDir(t *testing.T) {
 		// what happened on Windows while these fixtures were POSIX literals.
 		assert.Contains(t, err.Error(), "working_dir must be absolute")
 		_, getErr := store.Get(ctx, "user-1", "t1")
-		assert.ErrorIs(t, getErr, service.ErrFileTabPathNotFound,
+		assert.ErrorIs(t, getErr, service.ErrTabPayloadNotFound,
 			"a refused registration must not leave a row behind")
 	}
 }
@@ -166,38 +166,38 @@ func TestFileTabPath_RegisterRefusesRelativeWorkingDir(t *testing.T) {
 // different tab's context) must move the working dir with the path. The upsert
 // updates both columns or the tab answers branch questions from where it used
 // to live.
-func TestFileTabPath_RegisterOverwritesWorkingDir(t *testing.T) {
+func TestTabPayload_RegisterOverwritesWorkingDir(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/a.go"), WorkingDir: absTestPath("/repo"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayloadIn(absTestPath("/repo/a.go"), absTestPath("/repo")),
 	}))
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/wt/a.go"), WorkingDir: absTestPath("/wt"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayloadIn(absTestPath("/wt/a.go"), absTestPath("/wt")),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, absTestPath("/wt/a.go"), loc.FilePath)
-	assert.Equal(t, absTestPath("/wt"), loc.WorkingDir)
+	assert.Equal(t, absTestPath("/wt/a.go"), loc.GetFile().GetFilePath())
+	assert.Equal(t, absTestPath("/wt"), loc.GetWorkingDir())
 }
 
-func TestFileTabPath_GetMissingReturnsNotFound(t *testing.T) {
+func TestTabPayload_GetMissingReturnsNotFound(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	_, err := store.Get(context.Background(), "user-1", "ghost")
-	assert.ErrorIs(t, err, service.ErrFileTabPathNotFound)
+	assert.ErrorIs(t, err, service.ErrTabPayloadNotFound)
 }
 
-func TestFileTabPath_RevokeRemovesAndEmits(t *testing.T) {
+func TestTabPayload_RevokeRemovesAndEmits(t *testing.T) {
 	t.Parallel()
 
-	store, bus, _ := newFileTabPathTestStore(t)
+	store, bus, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/a.go"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayload(absTestPath("/repo/a.go")),
 	}))
 
 	// Subscribe as the owner; expect a Revoked event after revoke.
@@ -216,15 +216,15 @@ func TestFileTabPath_RevokeRemovesAndEmits(t *testing.T) {
 
 	select {
 	case evt := <-got:
-		require.NotNil(t, evt.GetFileTabPathRevoked(), "expected FileTabPathRevoked")
-		assert.Equal(t, "t1", evt.GetFileTabPathRevoked().GetTabId())
+		require.NotNil(t, evt.GetTabPayloadRevoked(), "expected TabPayloadRevoked")
+		assert.Equal(t, "t1", evt.GetTabPayloadRevoked().GetTabId())
 	case <-time.After(time.Second):
 		t.Fatal("revoke did not produce a private event")
 	}
 
 	// Row gone.
 	_, err := store.Get(ctx, "user-1", "t1")
-	assert.ErrorIs(t, err, service.ErrFileTabPathNotFound)
+	assert.ErrorIs(t, err, service.ErrTabPayloadNotFound)
 }
 
 // The bootstrap snapshot replays every row the CALLER owns, and only those.
@@ -235,31 +235,31 @@ func TestFileTabPath_RevokeRemovesAndEmits(t *testing.T) {
 // single-user worker; seeding it deliberately is the only way to show the SQL
 // binds user_id, so a future edit that drops the predicate (returning to the
 // whole-table walk this replaced) fails here rather than leaking silently.
-func TestFileTabPath_SnapshotForOwnerBindsTheOwner(t *testing.T) {
+func TestTabPayload_SnapshotForOwnerBindsTheOwner(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
+	store, _, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/mine-a")}))
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t2", FilePath: absTestPath("/mine-b")}))
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-2", TabID: "t3", FilePath: absTestPath("/theirs")}))
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: filePayload(absTestPath("/mine-a"))}))
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t2", Payload: filePayload(absTestPath("/mine-b"))}))
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-2", TabID: "t3", Payload: filePayload(absTestPath("/theirs"))}))
 
 	mine, err := store.SnapshotForOwner(ctx, userid.MustNew("user-1"))
 	require.NoError(t, err)
 	require.Len(t, mine, 2, "every row the caller owns is replayed, whatever workspace its tab is in")
 	paths := []string{
-		mine[0].GetFileTabPathRegistered().GetFilePath(),
-		mine[1].GetFileTabPathRegistered().GetFilePath(),
+		mine[0].GetTabPayloadRegistered().GetPayload().GetFile().GetFilePath(),
+		mine[1].GetTabPayloadRegistered().GetPayload().GetFile().GetFilePath(),
 	}
 	assert.ElementsMatch(t, []string{absTestPath("/mine-a"), absTestPath("/mine-b")}, paths)
 
 	theirs, err := store.SnapshotForOwner(ctx, userid.MustNew("user-2"))
 	require.NoError(t, err)
 	require.Len(t, theirs, 1)
-	assert.Equal(t, absTestPath("/theirs"), theirs[0].GetFileTabPathRegistered().GetFilePath())
+	assert.Equal(t, absTestPath("/theirs"), theirs[0].GetTabPayloadRegistered().GetPayload().GetFile().GetFilePath())
 
 	// An unminted owner reaches no row, rather than falling back to every row.
 	none, err := store.SnapshotForOwner(ctx, userid.UserID{})
@@ -267,13 +267,13 @@ func TestFileTabPath_SnapshotForOwnerBindsTheOwner(t *testing.T) {
 	assert.Empty(t, none, "a zero owner selects nothing")
 }
 
-func TestFileTabPath_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
+func TestTabPayload_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 	t.Parallel()
 
-	store, bus, _ := newFileTabPathTestStore(t)
+	store, bus, _ := newTabPayloadTestStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "tBootstrap", FilePath: absTestPath("/repo/seed"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "tBootstrap", Payload: filePayload(absTestPath("/repo/seed")),
 	}))
 
 	// SnapshotAndSubscribe must replay the existing row before any
@@ -301,8 +301,8 @@ func TestFileTabPath_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 
 	// A live Register after subscribe should arrive after the bootstrap
 	// snapshot.
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "tLive", FilePath: absTestPath("/repo/live"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "tLive", Payload: filePayload(absTestPath("/repo/live")),
 	}))
 
 	collected := []*leapmuxv1.WorkerPrivateEvent{}
@@ -316,18 +316,18 @@ func TestFileTabPath_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 		}
 	}
 	// The first event must be the bootstrap row (tBootstrap).
-	assert.Equal(t, "tBootstrap", collected[0].GetFileTabPathRegistered().GetTabId())
-	assert.Equal(t, "tLive", collected[1].GetFileTabPathRegistered().GetTabId())
+	assert.Equal(t, "tBootstrap", collected[0].GetTabPayloadRegistered().GetTabId())
+	assert.Equal(t, "tLive", collected[1].GetTabPayloadRegistered().GetTabId())
 }
 
-func TestFileTabPath_RegisterRequiresAllFields(t *testing.T) {
+func TestTabPayload_RegisterRequiresAllFields(t *testing.T) {
 	t.Parallel()
 
-	store, _, _ := newFileTabPathTestStore(t)
-	cases := []service.RegisterFileTabPathParams{
-		{UserID: "", TabID: "t1", FilePath: absTestPath("/p")},
-		{UserID: "user-1", TabID: "", FilePath: absTestPath("/p")},
-		{UserID: "user-1", TabID: "t1", FilePath: ""},
+	store, _, _ := newTabPayloadTestStore(t)
+	cases := []service.RegisterTabPayloadParams{
+		{UserID: "", TabID: "t1", Payload: filePayload(absTestPath("/p"))},
+		{UserID: "user-1", TabID: "", Payload: filePayload(absTestPath("/p"))},
+		{UserID: "user-1", TabID: "t1", Payload: filePayload("")},
 	}
 	for _, c := range cases {
 		err := store.Register(context.Background(), c)
@@ -335,8 +335,8 @@ func TestFileTabPath_RegisterRequiresAllFields(t *testing.T) {
 	}
 }
 
-// TestFileTabPathStore_RefusesBlankOwner pins the blank-owner floor on
-// worker_file_tabs from BOTH ends.
+// TestTabPayloadStore_RefusesBlankOwner pins the blank-owner floor on
+// worker_tab_payloads from BOTH ends.
 //
 // The table is keyed by (user_id, tab_id), so a blank user_id is not "no
 // filter" -- it is half the row's identity gone missing. The floor is now two
@@ -349,25 +349,27 @@ func TestFileTabPath_RegisterRequiresAllFields(t *testing.T) {
 // property and is asserted first. The Go guards stay pinned against a real
 // owner's row, since they defend the caller-side mistake (a lost tenant) that
 // no constraint can catch.
-func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
+func TestTabPayloadStore_RefusesBlankOwner(t *testing.T) {
 	t.Parallel()
 
-	store, _, q := newFileTabPathTestStore(t)
+	store, _, q := newTabPayloadTestStore(t)
 	ctx := context.Background()
 
 	// The schema floor. This is the assertion that makes the blank-owner row
 	// unrepresentable rather than merely unreachable through one API: the
 	// worker's database has no users table, so the hub's REFERENCES users(id)
 	// cannot reach here and a CHECK is the only available floor.
-	require.Error(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
-		UserID:   "",
-		TabID:    "shared-tab",
-		FilePath: absTestPath("/blank/a.go"),
+	require.Error(t, q.UpsertWorkerTabPayload(ctx, db.UpsertWorkerTabPayloadParams{
+		UserID:     "",
+		TabID:      "shared-tab",
+		TabType:    int64(leapmuxv1.TabType_TAB_TYPE_FILE),
+		Payload:    mustMarshalFilePayload(absTestPath("/blank/a.go"), ""),
+		WorkingDir: "",
 	}), "the schema must refuse a blank owner even when sqlc is driven directly")
 
 	// A real owner's row, which every control below resolves against.
-	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "shared-tab", FilePath: absTestPath("/real/a.go"),
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "shared-tab", Payload: filePayload(absTestPath("/real/a.go")),
 	}))
 
 	// The Go guards. Each pairs a blank-owner refusal with a real-owner
@@ -376,17 +378,17 @@ func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
 	t.Run("get", func(t *testing.T) {
 		_, err := store.Get(ctx, "", "shared-tab")
 		require.Error(t, err)
-		assert.NotErrorIs(t, err, service.ErrFileTabPathNotFound,
+		assert.NotErrorIs(t, err, service.ErrTabPayloadNotFound,
 			"a blank owner is a caller bug, not a missing row")
 
 		loc, err := store.Get(ctx, "user-1", "shared-tab")
 		require.NoError(t, err, "control: a real owner still resolves")
-		assert.Equal(t, absTestPath("/real/a.go"), loc.FilePath)
+		assert.Equal(t, absTestPath("/real/a.go"), loc.GetFile().GetFilePath())
 	})
 
 	t.Run("revoke", func(t *testing.T) {
 		require.Error(t, store.RevokeRow(ctx, "", "shared-tab"))
-		_, err := q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{UserID: "user-1", TabID: "shared-tab"})
+		_, err := q.GetWorkerTabPayload(ctx, db.GetWorkerTabPayloadParams{UserID: "user-1", TabID: "shared-tab"})
 		require.NoError(t, err, "a blank-owner revoke must delete nothing")
 
 		require.NoError(t, store.RevokeRow(ctx, "user-1", "shared-tab"),
@@ -396,4 +398,97 @@ func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
 	// A blank tab id is refused on the same footing.
 	_, err := store.Get(ctx, "user-1", "")
 	assert.Error(t, err)
+}
+
+// TestTabPayload_ImageArm covers the IMAGE half of the store: what it accepts,
+// what it refuses, and that a round trip preserves the reference.
+//
+// The refusals matter more here than for a file path. A FILE tab with a bad
+// path shows an error and the user retries; an IMAGE tab whose reference cannot
+// address a message resolves to nothing forever, with no way for the user to
+// tell why, so the door is the right place to stop it.
+func TestTabPayload_ImageArm(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newTabPayloadTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "img-1", Payload: imagePayload("agent-1", 42, 1, absTestPath("/repo")),
+	}))
+
+	got, err := store.Get(ctx, "user-1", "img-1")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-1", got.GetImage().GetAgentId())
+	assert.Equal(t, int64(42), got.GetImage().GetSeq())
+	assert.Equal(t, int32(1), got.GetImage().GetImageIndex())
+	assert.Equal(t, absTestPath("/repo"), got.GetWorkingDir())
+	// The pixels are the one thing that must never be here.
+	assert.Nil(t, got.GetFile())
+
+	// The kind is stored beside the blob so a reader that only needs it -- the
+	// close path picking which worktree link to drop -- pays nothing for the
+	// payload.
+	tabType, err := store.TabTypeOf(ctx, "user-1", "img-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_IMAGE, tabType)
+
+	for _, c := range []struct {
+		name    string
+		payload *leapmuxv1.TabPayload
+	}{
+		{"no agent id", imagePayload("", 42, 0, "")},
+		{"zero seq", imagePayload("agent-1", 0, 0, "")},
+		{"negative seq", imagePayload("agent-1", -1, 0, "")},
+		{"negative index", imagePayload("agent-1", 42, -1, "")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := store.Register(ctx, service.RegisterTabPayloadParams{
+				UserID: "user-1", TabID: "img-bad", Payload: c.payload,
+			})
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestTabPayload_RefusesAPayloadNamingNoKind pins the default arm: a payload
+// whose oneof is unset names no tab, so there is nothing to store it as.
+func TestTabPayload_RefusesAPayloadNamingNoKind(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newTabPayloadTestStore(t)
+	err := store.Register(context.Background(), service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "t1", Payload: &leapmuxv1.TabPayload{WorkingDir: absTestPath("/repo")},
+	})
+	require.Error(t, err)
+}
+
+// TestTabPayload_ImageWorkingDirIsNotDerived pins the one place the two kinds
+// genuinely differ: a FILE tab with no stated working dir falls back to the
+// file's own directory, and an IMAGE tab has no file to fall back to. An
+// unnamed one stays blank and simply joins no branch group -- inventing a
+// directory for it would put the tab in a repo the user never opened it from.
+func TestTabPayload_ImageWorkingDirIsNotDerived(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newTabPayloadTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "img-1", Payload: imagePayload("agent-1", 7, 0, ""),
+	}))
+
+	got, err := store.Get(ctx, "user-1", "img-1")
+	require.NoError(t, err)
+	assert.Empty(t, got.GetWorkingDir())
+}
+
+func imagePayload(agentID string, seq int64, imageIndex int32, workingDir string) *leapmuxv1.TabPayload {
+	return &leapmuxv1.TabPayload{
+		WorkingDir: workingDir,
+		Kind: &leapmuxv1.TabPayload_Image{Image: &leapmuxv1.ImageTabPayload{
+			AgentId:    agentID,
+			Seq:        seq,
+			ImageIndex: imageIndex,
+		}},
+	}
 }

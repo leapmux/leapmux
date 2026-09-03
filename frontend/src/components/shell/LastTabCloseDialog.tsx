@@ -15,6 +15,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { useWorkerHomeDir } from '~/hooks/useWorkerHomeDir'
 import { createLogger } from '~/lib/logger'
 import { flavorFromOs } from '~/lib/paths'
+import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
 
@@ -147,14 +148,14 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             agents: props.state.tabType === TabType.AGENT ? 1 : 0,
             terminals: props.state.tabType === TabType.TERMINAL ? 1 : 0,
             files: props.state.tabType === TabType.FILE ? 1 : 0,
-            // AGENT / TERMINAL closes stop a running process; FILE
-            // closes only drop a viewer. The dialog uses willStop to
-            // pick the verb ("will be stopped" vs. "will keep running"),
-            // and a closed FILE tab is just gone — there's no process
-            // to stop or keep — so the more accurate phrasing is
-            // "will keep running" for the (zero) agents/terminals when
-            // the user closes a FILE tab.
-            willStop: props.state.tabType !== TabType.FILE,
+            images: props.state.tabType === TabType.IMAGE ? 1 : 0,
+            // AGENT / TERMINAL closes stop a running process; a FILE or
+            // IMAGE close only drops a viewer. The dialog uses willStop
+            // to pick the verb ("will be stopped" vs. "will keep
+            // running"), and a closed viewer tab is just gone — there's
+            // no process to stop or keep — so the more accurate phrasing
+            // is "will keep running" for the (zero) agents/terminals.
+            willStop: !isPayloadBackedTabType(props.state.tabType),
           }}
         />
         {/* Why the Delete button below is unavailable. The worker's removal

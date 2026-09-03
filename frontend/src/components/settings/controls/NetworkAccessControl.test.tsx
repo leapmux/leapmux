@@ -338,6 +338,27 @@ describe('networkAccessControl', () => {
     expect(options).toEqual(['All interfaces', '192.168.1.24', '127.0.0.1 (loopback)'])
   })
 
+  // Lucide icons, never a text glyph. A unicode arrow renders in whatever font
+  // the platform substitutes for it, at a size and a baseline nothing here
+  // controls, and it matches none of the other triggers in this dialog.
+  //
+  // The accessible names are asserted with them: the icons are decoration, and
+  // the remove button still has to state WHICH address it removes -- eight of
+  // them stand in this list at the cap.
+  it('draws the trigger chevron and the remove mark as icons', async () => {
+    render(() => <NetworkAccessControl binding={fakeBinding({ addresses: ['*:4327'] })} />)
+    const row = (await screen.findAllByTestId('network-address-row'))[0]!
+
+    const trigger = within(row).getByTestId('network-interface-trigger')
+    expect(trigger.querySelector('svg')).not.toBeNull()
+    expect(trigger).toHaveTextContent('All interfaces')
+    expect(trigger.textContent).not.toMatch(/[▾▼]/)
+
+    const remove = within(row).getByRole('button', { name: 'Remove *:4327' })
+    expect(remove.querySelector('svg')).not.toBeNull()
+    expect(remove.textContent).not.toMatch(/[✕✖×]/)
+  })
+
   // The picker groups by interface, so an address is read beside the interface
   // that holds it rather than as a bare literal.
   it('groups the addresses under their interface', async () => {

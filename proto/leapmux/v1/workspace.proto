@@ -11,6 +11,10 @@ enum TabType {
   TAB_TYPE_AGENT = 1;
   TAB_TYPE_TERMINAL = 2;
   TAB_TYPE_FILE = 3;
+  // A single image an agent returned inside a chat message, opened in its own
+  // tab. Holds no pixels: the tab addresses `(agent_id, seq, image_index)` and
+  // the client re-fetches the message. See ImageTabPayload.
+  TAB_TYPE_IMAGE = 4;
 }
 
 // WorkspaceService manages workspace metadata + read-only tab views.

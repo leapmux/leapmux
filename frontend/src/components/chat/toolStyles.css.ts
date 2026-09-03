@@ -1,7 +1,7 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
-import { clippedText } from '~/styles/shared.css'
+import { clippedText, controlReset } from '~/styles/shared.css'
 import { codeSurface } from './shikiTokenColors.css'
 import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.geometry'
 
@@ -13,16 +13,30 @@ export const toolMessage = style({
 })
 
 // Tool use header: "» ToolName(...)"
-// Uses flex-start so multi-line titles keep icon + actions on the first line.
+//
+// The items share ONE baseline, so the title and the smaller text beside it --
+// the running badge at var(--text-8) -- sit on the same line of type. Under
+// flex-start each item keeps its own line box instead, and `line-height: 1.6`
+// is a number, so a smaller font-size gives a shorter box: the badge's text
+// then floated 2px above the title's.
+//
+// A multi-line title still keeps the icon and the actions on the first line,
+// because baseline alignment uses an item's FIRST baseline. Those two opt out
+// of it below. Neither has a text baseline to share -- each is a flex box that
+// centres its content in a box of one line -- and a flex box with no
+// baseline-aligned child synthesizes one from its border box, which makes every
+// header 4px taller.
 export const toolUseHeader = style({
   display: 'flex',
-  alignItems: 'flex-start',
+  alignItems: 'baseline',
   gap: 'var(--space-1)',
   color: 'var(--muted-foreground)',
 })
 
-// Icon styling — also used on the wrapper <span> so it acts as a flex-start-aligned
-// line-height box, keeping the icon vertically centred on the first text line.
+// Icon styling — also used on the wrapper <span> so it acts as a line-height
+// box, keeping the icon vertically centred on the first text line. The box is
+// top-aligned by the globalStyle below, which reaches only the copy inside a
+// tool header; `thinkingHeader` takes this class as well.
 export const toolUseIcon = style({
   color: 'var(--muted-foreground)',
   height: '1lh',
@@ -213,9 +227,29 @@ export const toolHeaderTimestamp = style({
   lineHeight: 1,
 })
 
-// Inside tool-use headers, right-align the actions area
+// The icon and the actions carry a box of one line and centre their content in
+// it, so both take the top of the header rather than the baseline the text
+// items share (see toolUseHeader). The actions area is right-aligned as well.
+//
+// Both rules are scoped to the header on purpose. `toolUseIcon` also sits in
+// `thinkingHeader`, and `toolHeaderActions` also sits in the message rows (see
+// the globalStyles on messageRow in ./messageStyles.css.ts), where a different
+// container decides the alignment.
+//
+// A DESCENDANT selector, and a child combinator is wrong here. `<Tooltip>`
+// wraps the icon in a `display: contents` span, which removes the wrapper's BOX
+// but leaves the element in the DOM tree that a selector walks -- so the icon is
+// a flex item of the header and NOT a DOM child of it. Under `>` this rule
+// matches nothing, the icon keeps the header's baseline alignment, and the
+// browser synthesizes its baseline at the bottom of its 1lh box: the title then
+// sits 3px lower than the icon and the header grows to match.
+globalStyle(`${toolUseHeader} .${toolUseIcon}`, {
+  alignSelf: 'flex-start',
+})
+
 globalStyle(`${toolUseHeader} .${toolHeaderActions}`, {
   marginLeft: 'auto',
+  alignSelf: 'flex-start',
 })
 
 // Body content indent for tool_use renderers. The transparent border-
@@ -264,15 +298,16 @@ export const webSearchLinkDomain = style({
   whiteSpace: 'nowrap',
 })
 
-// MCP image content. Constrained so a 4K screenshot doesn't take over the
-// chat layout; the image keeps its aspect ratio and shrinks to fit.
+// An image inside a tool result -- an MCP content block, a Read on a PNG, a
+// screenshot. Constrained so a 4K screenshot doesn't take over the chat
+// layout; the image keeps its aspect ratio and shrinks to fit.
 // Exported so the renderer can reserve the exact final box (via inline
-// aspect-ratio/width) for images whose intrinsic size it can sniff.
-export const MCP_IMAGE_MAX_HEIGHT_PX = 320
-export const mcpImage = style({
+// aspect-ratio/width) for images whose intrinsic size it knows.
+export const TOOL_IMAGE_MAX_HEIGHT_PX = 320
+export const toolImage = style({
   display: 'block',
   maxWidth: '100%',
-  maxHeight: `${MCP_IMAGE_MAX_HEIGHT_PX}px`,
+  maxHeight: `${TOOL_IMAGE_MAX_HEIGHT_PX}px`,
   width: 'auto',
   height: 'auto',
   objectFit: 'contain',
@@ -282,9 +317,28 @@ export const mcpImage = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Wrapper around an MCP image link/placeholder so it sits on its own line
-// with the same spacing as toolInputSummary.
-export const mcpImageRow = style({
+// The click target that opens a tool-result image in its own tab.
+//
+// `controlReset` because Oat's base layer paints every `button` as a solid
+// primary pill; without the reset the image would sit inside a filled button
+// with 8px/16px padding. The reset is LAYERED, so the block/cursor below
+// survive it. `display: block` (not inline-flex) keeps the button's box the
+// image's own box, which is what the intrinsic-size reservation assumes.
+export const toolImageButton = style([controlReset, {
+  display: 'block',
+  cursor: 'zoom-in',
+  borderRadius: 'var(--radius-medium)',
+  selectors: {
+    '&:focus-visible': {
+      outline: '2px solid var(--primary)',
+      outlineOffset: '2px',
+    },
+  },
+}])
+
+// Wrapper around a tool-result image, link or placeholder so it sits on its
+// own line with the same spacing as toolInputSummary.
+export const toolImageRow = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-1)',
@@ -294,15 +348,19 @@ export const mcpImageRow = style({
 
 // The SendMessage card's recipient, when it resolves to a subagent tab.
 //
-// `all: unset` first, because Oat's base layer paints every `button` as a solid
+// `controlReset`, because Oat's base layer paints every `button` as a solid
 // primary pill -- inline-flex, 8px/16px padding, a border and a radius -- and a
 // class that sets only colour leaves all of it standing. Without the reset the
 // recipient rendered as a filled button inside the one-line tool header, and the
 // row changed height the moment the registry hydrated and turned the plain span
 // into that button.
-export const toolRecipientLink = style([{ all: 'unset' }, clippedText, {
-  // `all: unset` is its own composed layer, FIRST, so the clipping and the
-  // colours below survive it rather than being reset by it.
+//
+// That reset is LAYERED, so it cannot erase the clipping that `clippedText`
+// declares, or the colours below. A bare `{ all: 'unset' }` in this list could:
+// it ties with `clippedText` on specificity and wins whenever the bundler emits
+// `~/styles/shared.css.ts` first, and the recipient then wraps instead of ending
+// in an ellipsis.
+export const toolRecipientLink = style([controlReset, clippedText, {
   cursor: 'pointer',
   color: 'var(--primary)',
   textDecoration: 'underline',

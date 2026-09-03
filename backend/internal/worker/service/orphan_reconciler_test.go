@@ -20,7 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
 
-// newOrphanReconcilerHarness builds a worker DB + FileTabPathStore +
+// newOrphanReconcilerHarness builds a worker DB + TabPayloadStore +
 // reconciler and returns the lever to inject the hub's view via a
 // mutable response the test owns.
 //
@@ -30,7 +30,7 @@ import (
 // nothing at all about anyone else.
 func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptions) (
 	*db.Queries,
-	*service.FileTabPathStore,
+	*service.TabPayloadStore,
 	*service.OrphanReconciler,
 	func(string, []*leapmuxv1.OwnedTab, error),
 	*recordingTeardown,
@@ -43,7 +43,7 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	q := db.New(sqlDB)
 	bus := service.NewPrivateEventsBus()
 	t.Cleanup(bus.Stop)
-	files := service.NewFileTabPathStore(q, bus)
+	files := service.NewTabPayloadStore(q, bus)
 
 	// Guarded: Run drives listFn on its own goroutine, so a test that changes
 	// the hub's answer while the reconciler is running (to model a channel
@@ -95,8 +95,8 @@ func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 	ctx := context.Background()
 
 	// Local row that the hub no longer knows about.
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, nil)
 
@@ -104,7 +104,7 @@ func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 	// the Trigger test below.
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	rows, err := q.ListAllWorkerFileTabs(ctx)
+	rows, err := q.ListAllWorkerTabPayloads(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, rows, "stale local file tab should have been revoked")
 }
@@ -157,7 +157,7 @@ func TestOrphanReconciler_Terminal_MissingOnHub_Closed(t *testing.T) {
 // to fake.
 type recordingTeardown struct {
 	q     *db.Queries
-	files *service.FileTabPathStore
+	files *service.TabPayloadStore
 
 	agents    []string
 	terminals []string
@@ -170,8 +170,8 @@ type recordingTeardown struct {
 // job: spot staleness and hand off) and the result.
 //
 // It is faithful to what CloseTabForReconcile does under dropWorktreeLink for a
-// FILE tab -- delete the worker_file_tabs row -- and it drives the real
-// FileTabPathStore, so the tests still assert against real storage rather than
+// payload-backed tab -- delete the worker_tab_payloads row -- and it drives the real
+// TabPayloadStore, so the tests still assert against real storage rather than
 // against what a mock was told to return.
 //
 // One method, not three: it replaces the old per-type fakes, which existed to
@@ -185,7 +185,7 @@ func (r *recordingTeardown) closeTab(tabType leapmuxv1.TabType, userID, tabID st
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		r.terminals = append(r.terminals, tabID)
 		_, _ = r.q.CloseTerminal(ctx, tabID)
-	case leapmuxv1.TabType_TAB_TYPE_FILE:
+	case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
 		r.fileTabs = append(r.fileTabs, tabID)
 		_ = r.files.RevokeRow(ctx, userID, tabID)
 	case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
@@ -270,8 +270,8 @@ func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) 
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "live", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "live", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -281,7 +281,7 @@ func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) 
 	require.False(t, runOnce(ctx, rec),
 		"a failed hub leg must report NON-convergence -- that bool is what the retry backoff keys off")
 
-	rows, err := q.ListAllWorkerFileTabs(ctx)
+	rows, err := q.ListAllWorkerTabPayloads(ctx)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1, "list error must not revoke live rows")
 	agent, err := q.GetAgentByID(ctx, "live-agent")
@@ -299,25 +299,25 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, nil)
 
 	go rec.Run(ctx)
 	// Run kicks off one pass at start; wait for it to settle.
 	require.Eventually(t, func() bool {
-		rows, err := q.ListAllWorkerFileTabs(ctx)
+		rows, err := q.ListAllWorkerTabPayloads(ctx)
 		return err == nil && len(rows) == 0
 	}, 2*time.Second, 10*time.Millisecond, "startup pass should revoke the orphan")
 
 	// Add another orphan and confirm Trigger fires a fresh pass.
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost2", FilePath: absTestPath("/r/b.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "ghost2", Payload: filePayload(absTestPath("/r/b.go")),
 	}))
 	rec.Trigger()
 	require.Eventually(t, func() bool {
-		rows, err := q.ListAllWorkerFileTabs(ctx)
+		rows, err := q.ListAllWorkerTabPayloads(ctx)
 		return err == nil && len(rows) == 0
 	}, 2*time.Second, 10*time.Millisecond, "Trigger should run another pass")
 
@@ -346,8 +346,8 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	// The startup pass and any retry before the switch below both fail.
 	setFake("user-1", nil, errors.New("channel not ready"))
@@ -356,7 +356,7 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 	// The failing passes must not reap anything -- a hub answer we never got
 	// says nothing about which tabs still exist.
 	require.Never(t, func() bool {
-		rows, err := q.ListAllWorkerFileTabs(ctx)
+		rows, err := q.ListAllWorkerTabPayloads(ctx)
 		return err == nil && len(rows) == 0
 	}, 500*time.Millisecond, 50*time.Millisecond, "a failed hub list must not reap")
 
@@ -364,7 +364,7 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 	// pick this up.
 	setFake("user-1", nil, nil)
 	require.Eventually(t, func() bool {
-		rows, err := q.ListAllWorkerFileTabs(ctx)
+		rows, err := q.ListAllWorkerTabPayloads(ctx)
 		return err == nil && len(rows) == 0
 	}, 10*time.Second, 20*time.Millisecond,
 		"a pass whose hub leg failed must be retried without waiting for the interval")
@@ -399,7 +399,7 @@ func runOnce(ctx context.Context, rec *service.OrphanReconciler) bool {
 // TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner pins the owner axis
 // of the reconciler's hub-vs-local comparison.
 //
-// ListAllWorkerFileTabs walks EVERY user's rows and the hub's owned-tab view is
+// ListAllWorkerTabPayloads walks EVERY user's rows and the hub's owned-tab view is
 // keyed by (user_id, tab_id), so two owners can legitimately appear with the
 // same client-minted FILE tab id. Keying the comparison by (tab_type, tab_id)
 // alone collapses them into one map entry -- last one wins -- and every local
@@ -412,11 +412,11 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	ctx := context.Background()
 
 	const sharedTabID = "file-1700000000000-1"
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: sharedTabID, FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-a", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/a.go")),
 	}))
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-b", TabID: sharedTabID, FilePath: absTestPath("/r/b.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/b.go")),
 	}))
 
 	// The hub knows both rows, each naming its own owner. Neither is absent,
@@ -429,12 +429,12 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	byUser := fileTabsByUser(t, q, ctx)
+	byUser := tabPayloadsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a")
 	require.Contains(t, byUser, "user-b")
-	assert.Equal(t, absTestPath("/r/a.go"), byUser["user-a"].FilePath,
+	assert.Equal(t, absTestPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
 		"user-a must be reconciled against user-a's hub row, not user-b's")
-	assert.Equal(t, absTestPath("/r/b.go"), byUser["user-b"].FilePath,
+	assert.Equal(t, absTestPath("/r/b.go"), filePathOf(t, byUser["user-b"]),
 		"user-b's row must survive on its own hub row")
 }
 
@@ -456,11 +456,11 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 	ctx := context.Background()
 
 	const sharedTabID = "file-1700000000000-1"
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: sharedTabID, FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-a", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/a.go")),
 	}))
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-b", TabID: sharedTabID, FilePath: absTestPath("/r/b.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/b.go")),
 	}))
 
 	// Only user-a's tab survives at the hub.
@@ -470,9 +470,9 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	byUser := fileTabsByUser(t, q, ctx)
+	byUser := tabPayloadsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a", "the hub-known owner's row must survive")
-	assert.Equal(t, absTestPath("/r/a.go"), byUser["user-a"].FilePath,
+	assert.Equal(t, absTestPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
 		"and must not be confused with a stranger's row")
 	assert.NotContains(t, byUser, "user-b",
 		"the owner the hub no longer knows about must be reaped, not shielded by the collision")
@@ -483,7 +483,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 //
 // The hub's query binds user_id, so its response enumerates ONE owner's tabs.
 // This reconciler reaps by absence -- "not in the hub list" means "the CRDT
-// dropped it" -- and ListAllWorkerFileTabs walks every owner's local rows. Read
+// dropped it" -- and ListAllWorkerTabPayloads walks every owner's local rows. Read
 // a one-owner list as a universal absence and every other owner's live file
 // tabs are destroyed (worktree link dropped, then the row revoked) on the next
 // tick. That is a live data-loss bug, not a latent one, which is why the
@@ -494,11 +494,11 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: "file-a", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-a", TabID: "file-a", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-b", TabID: "file-b", FilePath: absTestPath("/r/b.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-b", TabID: "file-b", Payload: filePayload(absTestPath("/r/b.go")),
 	}))
 	// Link user-b's tab to a worktree: the reap drops that link FIRST, so an
 	// unscoped reap is observable here even before the file-tab row goes.
@@ -518,7 +518,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 
 	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
-	byUser := fileTabsByUser(t, q, ctx)
+	byUser := tabPayloadsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a", "the in-scope owner's listed tab must survive")
 	require.Contains(t, byUser, "user-b",
 		"a row owned by a user the response does not cover must be left alone, not reaped")
@@ -542,8 +542,8 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: "file-a", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-a", TabID: "file-a", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-a", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -553,7 +553,7 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 	require.False(t, runOnce(ctx, rec),
 		"an undeclared owner scope reaps nothing and must not claim to have converged")
 
-	rows, err := q.ListAllWorkerFileTabs(ctx)
+	rows, err := q.ListAllWorkerTabPayloads(ctx)
 	require.NoError(t, err)
 	assert.Len(t, rows, 1, "an unscoped response must not revoke file tabs")
 	agent, err := q.GetAgentByID(ctx, "agent-a")
@@ -561,14 +561,14 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 	assert.False(t, agent.ClosedAt.Valid, "an unscoped response must not close agents either")
 }
 
-// fileTabsByUser indexes every worker_file_tabs row by owner. The tests above
+// tabPayloadsByUser indexes every worker_tab_payloads row by owner. The tests above
 // deliberately share one tab id across owners, so the owner is the only usable
 // index key.
-func fileTabsByUser(t *testing.T, q *db.Queries, ctx context.Context) map[string]db.WorkerFileTab {
+func tabPayloadsByUser(t *testing.T, q *db.Queries, ctx context.Context) map[string]db.WorkerTabPayload {
 	t.Helper()
-	rows, err := q.ListAllWorkerFileTabs(ctx)
+	rows, err := q.ListAllWorkerTabPayloads(ctx)
 	require.NoError(t, err)
-	out := make(map[string]db.WorkerFileTab, len(rows))
+	out := make(map[string]db.WorkerTabPayload, len(rows))
 	for _, r := range rows {
 		out[r.UserID] = r
 	}
@@ -651,8 +651,8 @@ func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, errors.New("channel not ready"))
 
@@ -672,7 +672,7 @@ func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 	// here proves the retry case reports as well as the first pass.
 	setFake("user-1", nil, nil)
 	require.Eventually(t, func() bool {
-		rows, err := q.ListAllWorkerFileTabs(ctx)
+		rows, err := q.ListAllWorkerTabPayloads(ctx)
 		if err != nil || len(rows) != 0 {
 			return false
 		}
@@ -701,14 +701,14 @@ func TestOrphanReconciler_NoOnConvergedHookIsFine(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, nil)
 
 	go rec.Run(ctx)
 	require.Eventually(t, func() bool {
-		rows, err := q.ListAllWorkerFileTabs(ctx)
+		rows, err := q.ListAllWorkerTabPayloads(ctx)
 		return err == nil && len(rows) == 0
 	}, 10*time.Second, 20*time.Millisecond,
 		"a converged pass with no hook must complete rather than panic on a nil func")

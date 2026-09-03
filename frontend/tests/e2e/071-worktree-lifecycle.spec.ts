@@ -52,8 +52,8 @@ test.describe('Worktree Lifecycle', () => {
     await setWorkingDir(page, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree')).toBeVisible()
-    await page.getByText('Create new worktree').click()
+    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
+    await page.getByText('Create new worktree', { exact: true }).click()
 
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
     await branchInput.clear()

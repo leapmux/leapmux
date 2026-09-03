@@ -319,6 +319,13 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 // anybody asks of this feature.
 type resumeSkipReason string
 
+// There is deliberately no arm for an ARCHIVED workspace, and today there
+// cannot be one: a Worker stores no workspace (see OpenAgentRequest in
+// agent.proto). Archiving a workspace also stops none of its agents, so their
+// rows stay open and this sweep starts every one of them again after a restart.
+// The fix is a design decision -- close the tabs at archive time, or give the
+// Worker the workspace -- and it is tracked in
+// https://github.com/leapmux/leapmux/issues/446.
 const (
 	resumeSkipAlreadyRunning resumeSkipReason = "already running"
 	resumeSkipClosed         resumeSkipReason = "tab closed since the sweep listed it"

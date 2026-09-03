@@ -2,7 +2,7 @@ import type { Accessor } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
-import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
+import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -54,8 +54,8 @@ export interface SectionDefContext {
   tabItemOps?: TabItemOps
   /** Tile ids in top-left-first traversal order for `workspaceId`. */
   getTileOrderForWorkspace?: (workspaceId: string) => readonly string[]
-  onChangeBranch?: (ref: BranchRef) => void
-  onDeleteBranch?: (ref: BranchRef) => void
+  /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
+  branchActions?: BranchRefActions
 
   // Files section
   workerId: string
@@ -166,8 +166,7 @@ export function buildSectionDef(
           tabItemOps={ctx.tabItemOps}
           workerInfoFn={ctx.workerInfoFn}
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
-          onChangeBranch={ctx.onChangeBranch}
-          onDeleteBranch={ctx.onDeleteBranch}
+          branchActions={ctx.branchActions}
           repoGitStore={ctx.gitStatusStore}
         />
       ),

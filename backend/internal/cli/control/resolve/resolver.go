@@ -110,6 +110,8 @@ func ParseTabType(s string) (leapmuxv1.TabType, bool) {
 		return leapmuxv1.TabType_TAB_TYPE_TERMINAL, true
 	case "file", "TAB_TYPE_FILE":
 		return leapmuxv1.TabType_TAB_TYPE_FILE, true
+	case "image", "TAB_TYPE_IMAGE":
+		return leapmuxv1.TabType_TAB_TYPE_IMAGE, true
 	default:
 		return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, false
 	}
