@@ -874,29 +874,6 @@ export const AppShell: Component = () => {
   )
   // Open a subagent tab from a Background tasks row. Built once here and shared
   // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
-  /**
-   * Open an image an agent returned inside a chat message.
-   *
-   * Two destinations, decided by whether the provider named a file. When it
-   * did -- Claude's `Read`, Pi's `read`, an ACP block with a `file://` uri,
-   * Codex's saved generation -- the file on disk is the same picture at full
-   * resolution and opens through the ordinary file path, so no image tab is
-   * created at all. Only an image that exists nowhere but in the transcript
-   * (an MCP screenshot, a `Bash` data URI) becomes an IMAGE tab.
-   */
-  const onOpenChatImage = (image: { agentId: string, seq: bigint, index: number, filePath?: string, title: string }) => {
-    if (image.filePath) {
-      tabOps.handleFileOpen(image.filePath)
-      return
-    }
-    tabOps.handleImageOpen({
-      agentId: image.agentId,
-      seq: image.seq,
-      imageIndex: image.index,
-      title: image.title,
-    })
-  }
-
   const onOpenBackgroundTask = (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => {
     if (!item.childAgentId)
       return
@@ -1047,7 +1024,7 @@ export const AppShell: Component = () => {
     },
     settingsLoading,
     onOpenBackgroundTask,
-    onOpenChatImage,
+    onOpenChatImage: tabOps.handleChatImageOpen,
     branch: {
       actions: branchActions,
       isWorkerKnownOnline: workerId => isWorkerKnownOnline(workerSection.workers(), workerId),

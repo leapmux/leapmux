@@ -292,6 +292,83 @@ describe('useTabOperations', () => {
       })
     })
 
+    // The routing rule the whole click path rests on. The transcript's copy of
+    // an image the agent read from disk is a downsample it sent to its model, so
+    // a named path has to reach the FILE viewer instead -- same picture, full
+    // resolution, straight off the Worker.
+    it('handleChatImageOpen opens the FILE itself when the provider named a path', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 0,
+            filePath: '/repo/shot.png',
+            title: 'Read',
+          })
+          await flush()
+
+          const tabs = view.forWorkspace('ws-test')
+          expect(tabs.filter(t => t.type === TabType.IMAGE)).toHaveLength(0)
+          const files = tabs.filter(t => t.type === TabType.FILE)
+          expect(files).toHaveLength(1)
+          expect(files[0]).toMatchObject({ filePath: '/repo/shot.png' })
+          // A FILE payload, so a peer resolves it as a path and not as a
+          // message reference it would have to fetch an agent message for.
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          const [, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
+          expect(req).toMatchObject({ payload: { kind: { case: 'file' } } })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleChatImageOpen opens an IMAGE tab when the image exists only in the transcript', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          // No filePath: an MCP screenshot, or a Bash whose stdout was a data
+          // URI. Nothing on disk to open, so the reference is the only route.
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 3, title: 'screenshot' })
+          await flush()
+
+          const tabs = view.forWorkspace('ws-test')
+          expect(tabs.filter(t => t.type === TabType.FILE)).toHaveLength(0)
+          const images = tabs.filter(t => t.type === TabType.IMAGE)
+          expect(images).toHaveLength(1)
+          // `index` becomes `imageIndex`, which is what the viewer resolves by.
+          expect(images[0]).toMatchObject({ imageAgentId: 'agent-a', imageSeq: 42n, imageIndex: 3 })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // `''` is "no path", not a path. An extractor that fills `filePath` from a
+    // field the wire left blank produces one, and routing it to the FILE branch
+    // would open a viewer on the empty path -- which the worker refuses, so the
+    // user would get a broken tab instead of the picture they clicked.
+    it('handleChatImageOpen treats an empty path as no path', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, filePath: '', title: 'shot' })
+          await flush()
+
+          const tabs = view.forWorkspace('ws-test')
+          expect(tabs.filter(t => t.type === TabType.FILE)).toHaveLength(0)
+          expect(tabs.filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
     it('handleFileOpen seeds the new tab with the originating tab\'s git group', async () => {
       await createRoot(async (dispose) => {
         try {

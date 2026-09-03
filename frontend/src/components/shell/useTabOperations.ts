@@ -779,6 +779,41 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     setFileTreePath(ctx.workingDir || '~')
   })
 
+  /**
+   * Open an image a chat row was clicked on, in whichever tab kind can show it
+   * best.
+   *
+   * The whole decision is whether the provider named a file. When it did --
+   * Claude's `Read`, Pi's `read`, an ACP block with a `file://` uri, Codex's
+   * saved generation -- that file on disk is the SAME picture at full
+   * resolution, so it opens as an ordinary FILE tab and no image tab is created
+   * at all. The transcript's copy is a downsample the agent sent to its model.
+   * Only an image that exists nowhere but in the transcript (an MCP screenshot,
+   * a `Bash` data URI) becomes an IMAGE tab.
+   *
+   * It lives here rather than at the click site because both destinations do,
+   * and a caller that had to choose between them could route half the images to
+   * a tab kind that shows a smaller picture than the one on disk.
+   */
+  const handleChatImageOpen = (image: {
+    agentId: string
+    seq: bigint
+    index: number
+    filePath?: string
+    title: string
+  }) => {
+    if (image.filePath) {
+      handleFileOpen(image.filePath)
+      return
+    }
+    handleImageOpen({
+      agentId: image.agentId,
+      seq: image.seq,
+      imageIndex: image.index,
+      title: image.title,
+    })
+  }
+
   return {
     closingTabKeys,
     lastTabConfirmDialog,
@@ -788,6 +823,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     closeWorktreeTabsAndReport,
     handleFileOpen,
     handleImageOpen,
+    handleChatImageOpen,
     setIsTabEditing: (fn: () => boolean) => { isTabEditing = fn },
   }
 }

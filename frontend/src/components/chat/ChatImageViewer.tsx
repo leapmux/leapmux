@@ -84,6 +84,17 @@ export function ChatImageViewer(props: {
           {(resolution() as { status: 'error', message: string }).message}
         </div>
       </Match>
+      {/* Resolved, and the bytes will not decode. `ImageResultView` renders a
+          click target only for an image it draws inline, so an image with no
+          payload -- or one the agent named by URL -- reaches no tab today and
+          this arm is unreachable. It exists because the alternative to being
+          wrong about that is the `fallback` below: "Loading image…" forever,
+          on a tab that will never load. A sentence beats a spinner. */}
+      <Match when={resolution().status === 'ready'}>
+        <div class={styles.errorState}>
+          This image cannot be displayed here.
+        </div>
+      </Match>
     </Switch>
   )
 }

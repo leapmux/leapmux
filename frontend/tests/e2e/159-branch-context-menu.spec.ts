@@ -237,6 +237,74 @@ test.describe('Branch context menu', () => {
     await expect(branchGroupRow(page)).toContainText('glyph-branch')
   })
 
+  // Decision 1 of the design, and the half no unit test can reach: the sidebar
+  // lists EVERY workspace's tree, so a branch row often belongs to a workspace
+  // the user is not looking at. The new tab is placed on the ACTIVE workspace's
+  // focused tile, so the row's own workspace has to become active first -- and
+  // in the same tick, because the placement follows the switch synchronously.
+  // Without it the pty is created on the Worker and no tab ever references it.
+  //
+  // Both workspaces sit on the one Worker the fixture starts, so this pins the
+  // WORKSPACE axis only. The Worker axis is the branch row's own `workerId`,
+  // which the unit tests pin per row.
+  test('a new tab from another workspace\'s branch row switches to that workspace', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const homeRepo = createGitRepo(dataDir, 'branch-home-repo')
+    const awayRepo = createGitRepo(dataDir, 'branch-away-repo')
+
+    const homeWs = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Home WS',
+      homeRepo,
+      'home-branch',
+    )
+    const awayWs = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Away WS',
+      awayRepo,
+      'away-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    // AWAY first, so its tree is hydrated and its branch row is on screen while
+    // HOME is the active one. A workspace the session never activated may still
+    // be waiting on the git status its branch grouping is derived from, and the
+    // row this test clicks would not exist yet.
+    await openWorkspace(page, awayWs)
+    await openWorkspace(page, homeWs)
+    await expect(workspaceRow(page, homeWs)).toHaveAttribute('data-active', 'true')
+    await expect(workspaceRow(page, awayWs)).toHaveAttribute('data-active', 'false')
+
+    // Scoped to the AWAY subtree: `branchGroupRow` takes the first visible row
+    // in the whole sidebar, which is the active workspace's. `:visible` as well,
+    // because the shell mounts the sidebar twice.
+    const awayBranchRow = page
+      .locator(`[data-testid="workspace-children-${awayWs}"] [data-testid="tab-tree-branch-group"]:visible`)
+      .first()
+    await expect(awayBranchRow).toContainText('away-branch')
+
+    const terminalTabs = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    const before = await terminalTabs.count()
+    await openBranchMenu(page, awayBranchRow)
+    await page.locator('menu[popover]:visible').getByRole('menuitem', { name: /\/bin\// }).first().click()
+
+    // The switch, then the tab -- in that order, which is the whole point.
+    await expect(workspaceRow(page, awayWs)).toHaveAttribute('data-active', 'true')
+    await expect(workspaceRow(page, homeWs)).toHaveAttribute('data-active', 'false')
+    await expect(terminalTabs).toHaveCount(before + 1)
+    // Filed under the branch it was opened from, in the workspace that owns it.
+    await expect(
+      page.locator(`[data-testid="workspace-children-${awayWs}"] [data-testid="tab-tree-branch-group"]:visible`).first(),
+    ).toContainText('away-branch')
+  })
+
   test('opens the New agent dialog from the menu', async ({
     page,
     leapmuxServer,
