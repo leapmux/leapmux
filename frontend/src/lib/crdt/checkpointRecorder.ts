@@ -179,8 +179,8 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
    */
   let base: 'pending' | 'none' | 'ready'
   /**
-   * A rewrite was asked for while `base` was `pending`, and still owes an
-   * answer.
+   * A rewrite was asked for while the base or another rewrite was pending, and
+   * still needs an answer.
    *
    * The hold has to DEFER the request, not drop it, and the two are easy to
    * confuse because the threshold-driven trigger re-arms itself on the next
@@ -401,8 +401,15 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
 
   /** Returns whether a checkpoint write was actually ISSUED. */
   function rewriteCheckpoint(): boolean {
-    if (disposed || writing)
+    if (disposed)
       return false
+    if (writing) {
+      // The current delta is already serialized. Retain this request so any
+      // entity dirtied after that snapshot gets another rewrite when the
+      // current write settles.
+      heldRewrite = true
+      return false
+    }
     if (base === 'pending') {
       // A rewrite would serialize a base the in-flight adoption is about to
       // replace wholesale, and its truncate would race the adoption's own.
@@ -447,6 +454,7 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
           // exactly as they were, or the entities this attempt described would
           // never be written again.
           nextCompactAt = opLogCount + threshold
+          heldRewrite = false
           return
         }
         // The truncate landed, so the on-disk log is empty whichever lineage
@@ -459,6 +467,8 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
           // Invalidated after this write serialized. Its chunks describe the
           // superseded lineage, so leave needsRebase and the base phase standing
           // and let the retry re-base with a FULL rewrite.
+          if (heldRewrite)
+            rewriteCheckpoint()
           return
         }
         needsRebase = false
@@ -468,10 +478,13 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
         // so clearing the whole set would strand them.
         for (const key of writtenKeys)
           dirty.delete(key)
+        if (heldRewrite)
+          rewriteCheckpoint()
       })
       .catch(() => {
         writing = false
         nextCompactAt = opLogCount + threshold
+        heldRewrite = false
       }))
     return true
   }

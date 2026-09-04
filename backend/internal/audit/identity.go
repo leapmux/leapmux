@@ -39,7 +39,7 @@ var identityComparisonSites = map[string]string{
 	// stronger notice is the safe answer for an actor the hub cannot identify.
 	"internal/hub/service.issuedByAnotherPerson": "TestIssuedByAnotherPerson_BlankIdKeepsTheAlarm",
 	// The package's other resource-ownership predicate.
-	"internal/hub/service.(*SectionService).requireOwnedSection": "TestMoveSectionDeniesZeroCallerOnBlankOwnedSection",
+	"internal/hub/service.requireOwnedSection": "TestMoveSectionDeniesZeroCallerOnBlankOwnedSection",
 	// Decides whether a request may see one registered app. A PRIVATE app is
 	// visible to its owner alone, so a zero caller must resolve none: an
 	// unauthenticated stage (the device-code first hop) reaches hub-wide apps

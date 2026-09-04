@@ -23,7 +23,8 @@ type startupCallbacks struct {
 	// decided about the worktree, and whether such a close happened at all.
 	// failStartup needs both: see rollbackGitModeAfterStartup. Read through
 	// closeRaced rather than called directly.
-	closeDisposition func() (closeWorktreeDisposition, bool)
+	closeDisposition   func() (closeWorktreeDisposition, bool)
+	archiveDisposition func() (archived, phase0Complete bool)
 }
 
 // closeRaced reports the decision a close recorded against this startup.
@@ -37,6 +38,13 @@ func (cb startupCallbacks) closeRaced() (closeWorktreeDisposition, bool) {
 		return keepWorktreeOnClose, false
 	}
 	return cb.closeDisposition()
+}
+
+func (cb startupCallbacks) archived() (bool, bool) {
+	if cb.archiveDisposition == nil {
+		return false, false
+	}
+	return cb.archiveDisposition()
 }
 
 // runStartupPhase0 broadcasts the per-mode label (if any) and executes
@@ -64,6 +72,13 @@ func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb s
 // Those arrive here, not on the close-detected branch, which is why the
 // rollback has to consult the disposition on this path too.
 func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbacks) {
+	_, closeRaced := cb.closeRaced()
+	if archived, phase0Complete := cb.archived(); archived && !closeRaced {
+		if gm.Rollback.HasPartialMutation() && !phase0Complete {
+			svc.rollbackGitMode(gm)
+		}
+		return
+	}
 	if gm.Rollback.HasPartialMutation() {
 		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
 			cb.setMessage(label)
@@ -94,6 +109,7 @@ func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbac
 func (svc *Service) linkWorktreeAfterPhase0(reg *startupCore, h *startupEntry, worktreeID string, tabType leapmuxv1.TabType, tabID string, closedInDB bool) {
 	disposition, raced := reg.dispositionOf(h)
 	svc.registerTabForWorktreeAfterClose(worktreeID, tabType, tabID, closedInDB || raced, disposition)
+	reg.markPhase0Complete(h)
 }
 
 // finishStartupAfterClose is the tail both startup goroutines run when their
@@ -125,6 +141,9 @@ func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.AgentStartup.dispositionOf(h)
 		},
+		archiveDisposition: func() (bool, bool) {
+			return svc.AgentStartup.archiveDisposition(h)
+		},
 	}
 }
 
@@ -140,6 +159,9 @@ func (svc *Service) terminalStartupCallbacks(terminalID string, h *startupEntry)
 		registryFail:      func(errMsg string) { svc.TerminalStartup.fail(terminalID, errMsg) },
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.TerminalStartup.dispositionOf(h)
+		},
+		archiveDisposition: func() (bool, bool) {
+			return svc.TerminalStartup.archiveDisposition(h)
 		},
 	}
 }

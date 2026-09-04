@@ -50,7 +50,7 @@ func (s *workspaceTabIndexStore) BulkDeleteOwned(ctx context.Context, keys []sto
 	return bulkDeleteTabs(ctx, s.conn.exec, "workspace_tab_owned", keys)
 }
 
-func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.ListOwnedTabsByWorkerParams) ([]store.WorkspaceTabRow, error) {
+func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.ListOwnedTabsByWorkerParams) ([]store.WorkerTabStateRow, error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// An unminted caller owns nothing; binding "" would MATCH every
@@ -58,13 +58,16 @@ func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.
 		return nil, nil
 	}
 	rows, err := s.conn.q.ListOwnedTabsByWorker(ctx, gendb.ListOwnedTabsByWorkerParams{
-		UserID:   owner,
-		WorkerID: p.WorkerID,
+		ArchivedSectionType:  leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+		ArchivedArchiveState: int64(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED),
+		ActiveArchiveState:   int64(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE),
+		UserID:               owner,
+		WorkerID:             p.WorkerID,
 	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return store.MapSlice(rows, ownedTabRowFromDB), nil
+	return store.MapSlice(rows, ownedTabStateRowFromDB), nil
 }
 
 func (s *workspaceTabIndexStore) ListOwnedTabsByWorkspace(ctx context.Context, p store.ListOwnedTabsByWorkspaceParams) ([]store.OwnedTabRef, error) {
@@ -219,6 +222,17 @@ func ownedTabRefFromDB(r gendb.ListOwnedTabsByWorkspaceRow) store.OwnedTabRef {
 		WorkerID: r.WorkerID,
 		TabType:  leapmuxv1.TabType(r.TabType),
 		TabID:    r.TabID,
+	}
+}
+
+func ownedTabStateRowFromDB(r gendb.ListOwnedTabsByWorkerRow) store.WorkerTabStateRow {
+	return store.WorkerTabStateRow{
+		UserID:       r.UserID,
+		WorkspaceID:  r.WorkspaceID,
+		TabType:      leapmuxv1.TabType(r.TabType),
+		TabID:        r.TabID,
+		WorkerID:     r.WorkerID,
+		ArchiveState: leapmuxv1.WorkspaceArchiveState(r.ArchiveState),
 	}
 }
 

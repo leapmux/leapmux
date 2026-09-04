@@ -149,6 +149,12 @@ RETURNING *;
 -- name: SetAgentStartupError :exec
 UPDATE agents SET startup_error = ? WHERE id = ?;
 
+-- SetAgentWorkspaceArchived changes only the cached workspace lifecycle state.
+-- The row stays open, and all transcript and worktree data stays unchanged.
+-- name: SetAgentWorkspaceArchived :execrows
+UPDATE agents SET workspace_archived = sqlc.arg(workspace_archived)
+WHERE id = sqlc.arg(id) AND workspace_archived <> sqlc.arg(workspace_archived);
+
 -- name: UpdateAgentHomeDir :exec
 UPDATE agents SET home_dir = ? WHERE id = ?;
 
@@ -257,6 +263,13 @@ SELECT tree.id FROM tree;
 -- state sweep keeps seeing them.
 -- name: ListAllOpenRootAgentIDs :many
 SELECT id FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL;
+
+-- ListRootAgentIDsForResume excludes archived rows before the resume scheduler
+-- dispatches them. The orphan reconciler uses ListAllOpenRootAgentIDs instead,
+-- because it must still reap an archived tab that the Hub deleted.
+-- name: ListRootAgentIDsForResume :many
+SELECT id FROM agents
+WHERE closed_at IS NULL AND parent_agent_id IS NULL AND workspace_archived = 0;
 
 
 -- ListSessionsForResume lists the resume handles this worker recorded for one

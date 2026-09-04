@@ -222,6 +222,8 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     openTerminalCore({ shell, target, setLoading: props.setNewShellLoading })
 
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
+    if (!props.isActiveWorkspaceMutatable())
+      return
     const tab = props.view.getTerminalTab(terminalId)
     if (!tab)
       return

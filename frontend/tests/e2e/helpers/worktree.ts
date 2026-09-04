@@ -428,7 +428,7 @@ export async function listTerminalsViaAPI(
   token: string,
   workerId: string,
   workspaceId: string,
-): Promise<Array<{ id: string, title: string }>> {
+): Promise<Array<{ id: string, title: string, status: number, exited: boolean }>> {
   const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
     method: 'POST',
     headers: authedHeaders(token),
@@ -455,7 +455,12 @@ export async function listTerminalsViaAPI(
       ListTerminalsResponseSchema,
       { tabIds: terminalTabIds },
     )
-    return (resp.terminals ?? []).map(t => ({ id: t.terminalId, title: t.title }))
+    return (resp.terminals ?? []).map(t => ({
+      id: t.terminalId,
+      title: t.title,
+      status: t.status,
+      exited: t.exited,
+    }))
   }
   catch {
     // Treat as transient so a caller polling this converges instead of

@@ -775,8 +775,8 @@ export interface WorkspaceTabTreeProps {
   tabItemOps?: TabItemOps
   /**
    * The workspace this tree belongs to is archived, so its rows offer no
-   * mutation: no branch menu, no close and no rename. A payload-backed tab
-   * keeps its close -- see `canCloseTab`, which the tab bar shares.
+   * mutation: no branch menu, no close, and no rename. See `canCloseTab`,
+   * which the tab bar shares.
    *
    * Named for the FACT rather than for the effect (this prop was `readOnly`).
    * Archival is the only thing that blocks mutation -- access is owner-only, and

@@ -194,6 +194,10 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if svc.refuseIfShuttingDown(sender) {
 				return
 			}
+			if dbTerm.WorkspaceArchived != 0 {
+				sendFailedPrecondition(sender, "terminal belongs to an archived workspace")
+				return
+			}
 			// Reject overlapping restarts: a previous startup hasn't broadcast
 			// READY/FAILED yet (could be the original OpenTerminal still in
 			// flight, or a back-to-back restart).
@@ -549,7 +553,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 // stretch the RPC latency the user sees.
 func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler, h *startupEntry) {
 	terminalID := opts.ID
-	defer svc.TerminalStartup.finish()
+	defer svc.TerminalStartup.finishEntry(h)
 
 	// Mint the remote-IPC token before phase 0 so the cleanup is in the
 	// map by the time any concurrent CloseTerminal calls terminalCleanups.run.
@@ -629,7 +633,8 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// registering in-memory metadata. Single narrow query — avoids
 	// re-reading the screen BLOB the handler entry already fetched.
 	postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	if postSpawnErr == nil && postSpawn.ClosedAt.Valid {
+	_, closeRaced := svc.TerminalStartup.dispositionOf(h)
+	if closeRaced || (postSpawnErr == nil && postSpawn.ClosedAt.Valid) {
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
@@ -637,7 +642,15 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		svc.finishStartupAfterClose(&svc.TerminalStartup.startupCore, h, terminalID, gm)
 		return
 	}
-
+	archiveStopped, _ := svc.TerminalStartup.archiveDisposition(h)
+	if archiveStopped || (postSpawnErr == nil && postSpawn.WorkspaceArchived != 0) {
+		if startErr == nil {
+			svc.Terminals.StopTerminal(terminalID)
+			svc.Terminals.WaitForExit(terminalID)
+		}
+		svc.TerminalStartup.succeed(terminalID)
+		return
+	}
 	if startErr != nil {
 		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", startErr)
 		svc.failTerminalStartup(terminalID, gm, startErr, h)
@@ -682,7 +695,7 @@ func (svc *Service) runTerminalRestart(
 	h *startupEntry,
 ) {
 	terminalID := opts.ID
-	defer svc.TerminalStartup.finish()
+	defer svc.TerminalStartup.finishEntry(h)
 
 	// Swap the previous spawn's LEAPMUX_CONTROL_* token for a fresh one.
 	// remintControlIPC owns the ORDER -- retire, then mint -- because both
@@ -729,7 +742,9 @@ func (svc *Service) runTerminalRestart(
 	// by its own RemoveTerminal call instead. The title column from the
 	// same row is unused on the restart path (titles don't change
 	// across restart), so it's read-and-discarded.
-	if postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil && postSpawn.ClosedAt.Valid {
+	postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
+	_, closeRaced := svc.TerminalStartup.dispositionOf(h)
+	if closeRaced || (fetchErr == nil && postSpawn.ClosedAt.Valid) {
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
@@ -737,7 +752,15 @@ func (svc *Service) runTerminalRestart(
 		svc.TerminalStartup.succeed(terminalID)
 		return
 	}
-
+	archiveStopped, _ := svc.TerminalStartup.archiveDisposition(h)
+	if archiveStopped || (fetchErr == nil && postSpawn.WorkspaceArchived != 0) {
+		if startErr == nil {
+			svc.Terminals.StopTerminal(terminalID)
+			svc.Terminals.WaitForExit(terminalID)
+		}
+		svc.TerminalStartup.succeed(terminalID)
+		return
+	}
 	if startErr != nil {
 		slog.Error("failed to restart terminal", "terminal_id", terminalID, "error", startErr)
 		// No git-mode mutation in the restart path — pass a zero result so

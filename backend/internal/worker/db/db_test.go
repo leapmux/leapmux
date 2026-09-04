@@ -51,6 +51,29 @@ func TestMigrate(t *testing.T) {
 	}
 }
 
+func TestMigrate_SeedsActiveArchiveState(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, db.Migrate(context.Background(), sqlDB))
+	require.NoError(t, func() error {
+		_, err := sqlDB.Exec(`INSERT INTO agents (id) VALUES ('agent-1')`)
+		return err
+	}())
+	require.NoError(t, func() error {
+		_, err := sqlDB.Exec(`INSERT INTO terminals (id) VALUES ('terminal-1')`)
+		return err
+	}())
+
+	var agentArchived, terminalArchived int64
+	require.NoError(t, sqlDB.QueryRow(`SELECT workspace_archived FROM agents WHERE id = 'agent-1'`).Scan(&agentArchived))
+	require.NoError(t, sqlDB.QueryRow(`SELECT workspace_archived FROM terminals WHERE id = 'terminal-1'`).Scan(&terminalArchived))
+	assert.Zero(t, agentArchived)
+	assert.Zero(t, terminalArchived)
+}
+
 func TestMigrate_Idempotent(t *testing.T) {
 	sqlDB, err := db.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)

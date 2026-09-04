@@ -33,7 +33,7 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	*db.Queries,
 	*service.TabPayloadStore,
 	*service.OrphanReconciler,
-	func(string, []*leapmuxv1.OwnedTab, error),
+	func(string, []*leapmuxv1.WorkerTabState, error),
 	*recordingTeardown,
 ) {
 	t.Helper()
@@ -66,6 +66,14 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	if opts.CloseTab == nil {
 		opts.CloseTab = teardown.closeTab
 	}
+	if opts.ApplyArchiveState == nil {
+		opts.ApplyArchiveState = func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+			return nil, nil
+		}
+	}
+	if opts.ResumeAgents == nil {
+		opts.ResumeAgents = func([]string) {}
+	}
 	// These tests assert WHAT a reap does, not WHEN it is due, and they drive
 	// single passes on a real clock. Disable the grace so each one still reaps
 	// in one pass. The grace itself has its own tests, which drive a fake clock
@@ -74,10 +82,15 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 		opts.TabGrace = -1
 	}
 	rec := service.NewOrphanReconciler(q, listFn, opts)
-	setFake := func(ownerUserID string, tabs []*leapmuxv1.OwnedTab, err error) {
+	setFake := func(ownerUserID string, tabs []*leapmuxv1.WorkerTabState, err error) {
 		fakeMu.Lock()
 		defer fakeMu.Unlock()
-		fakeResp = &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: ownerUserID, Tabs: tabs}
+		for _, tab := range tabs {
+			if tab.GetArchiveState() == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED {
+				tab.ArchiveState = leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE
+			}
+		}
+		fakeResp = &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: ownerUserID, TabStates: tabs}
 		fakeErr = err
 	}
 	return q, files, rec, setFake, teardown
@@ -253,7 +266,7 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
-	setFake("user-1", []*leapmuxv1.OwnedTab{
+	setFake("user-1", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
 	}, nil)
 
@@ -263,6 +276,90 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, agent.ClosedAt.Valid, "agent still referenced by hub must stay open")
 	assert.Empty(t, teardown.agents, "live agent must NOT receive a stop signal")
+}
+
+func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
+	t.Parallel()
+
+	var calls []leapmuxv1.WorkspaceArchiveState
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
+		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) ([]string, error) {
+			calls = append(calls, state)
+			require.Equal(t, "agent-archived", tabs[0].GetTabId())
+			return nil, nil
+		},
+	})
+	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-archived", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	setFake("user-1", []*leapmuxv1.WorkerTabState{{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-archived",
+		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+	}}, nil)
+
+	require.True(t, runOnce(t.Context(), rec))
+	assert.Equal(t, []leapmuxv1.WorkspaceArchiveState{
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+	}, calls)
+	assert.Empty(t, teardown.agents)
+}
+
+func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing.T) {
+	t.Parallel()
+
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
+		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+			return nil, assert.AnError
+		},
+	})
+	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-live", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	setFake("user-1", []*leapmuxv1.WorkerTabState{{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-live",
+		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+	}}, nil)
+
+	assert.False(t, runOnce(t.Context(), rec))
+	assert.Empty(t, teardown.agents)
+}
+
+func TestOrphanReconciler_DefersUnarchiveResumeUntilThePassConverges(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	firstApply := true
+	var resumed []string
+	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
+		Now:      func() time.Time { return now },
+		TabGrace: 10 * time.Second,
+		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+			if firstApply {
+				firstApply = false
+				return []string{"agent-active"}, nil
+			}
+			return nil, nil
+		},
+		ResumeAgents: func(agentIDs []string) {
+			resumed = append(resumed, agentIDs...)
+		},
+	})
+	for _, agentID := range []string{"agent-active", "agent-stale"} {
+		require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
+			ID: agentID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		}))
+	}
+	setFake("user-1", []*leapmuxv1.WorkerTabState{{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-active",
+		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+	}}, nil)
+
+	assert.False(t, runOnce(t.Context(), rec), "the stale tab still waits for its close grace")
+	assert.Empty(t, resumed, "unarchive must not resume before orphan deletion finishes")
+
+	now = now.Add(11 * time.Second)
+	assert.True(t, runOnce(t.Context(), rec))
+	assert.Equal(t, []string{"agent-active"}, resumed)
 }
 
 func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) {
@@ -423,7 +520,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	// The hub knows both rows, each naming its own owner. Neither is absent,
 	// so neither is reaped -- and the owner-keyed comparison is what makes that
 	// true for BOTH: an owner-blind key would collapse them into one entry.
-	setFake("user-a", []*leapmuxv1.OwnedTab{
+	setFake("user-a", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-a"},
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-b"},
 	}, nil)
@@ -465,7 +562,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 	}))
 
 	// Only user-a's tab survives at the hub.
-	setFake("user-b", []*leapmuxv1.OwnedTab{
+	setFake("user-b", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-a"},
 	}, nil)
 
@@ -513,7 +610,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 
 	// A response scoped to user-a, listing user-a's live tab. It says nothing
 	// about user-b -- who is not "absent", merely not asked about.
-	setFake("user-a", []*leapmuxv1.OwnedTab{
+	setFake("user-a", []*leapmuxv1.WorkerTabState{
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a", UserId: "user-a"},
 	}, nil)
 

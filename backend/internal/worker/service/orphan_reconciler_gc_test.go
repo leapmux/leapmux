@@ -12,6 +12,12 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
+func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+	return nil, nil
+}
+
+func ignoreAgentResume([]string) {}
+
 // These exercise the worktree-GC two-pass logic directly via the
 // unexported reconcileOnce (so each call is exactly one pass and the
 // prevOrphanWorktrees state carries between them) with a fake ReapWorktree
@@ -261,8 +267,10 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	// TabGrace -1: this test asserts WHAT the teardown does, not when it is due.
 	// TestReconcileTabs_* below covers the grace itself.
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab: svc.CloseTabForReconcile,
-		TabGrace: -1,
+		CloseTab:          svc.CloseTabForReconcile,
+		ApplyArchiveState: ignoreArchiveState,
+		ResumeAgents:      ignoreAgentResume,
+		TabGrace:          -1,
 	})
 	rec.reconcileOnce(ctx)
 
@@ -366,7 +374,9 @@ func TestReconcileOnce_LocalProbeFailureIsNotConvergence(t *testing.T) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab: svc.CloseTabForReconcile,
+		CloseTab:          svc.CloseTabForReconcile,
+		ApplyArchiveState: ignoreArchiveState,
+		ResumeAgents:      ignoreAgentResume,
 	})
 
 	// A healthy, genuinely idle worker converges and skips the hub RPC.
@@ -410,9 +420,11 @@ func TestReconcileTabs_DefersTheReapUntilTheGraceElapses(t *testing.T) {
 	}
 	clock := time.Now()
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab: svc.CloseTabForReconcile,
-		Now:      func() time.Time { return clock },
-		TabGrace: 10 * time.Second,
+		CloseTab:          svc.CloseTabForReconcile,
+		ApplyArchiveState: ignoreArchiveState,
+		ResumeAgents:      ignoreAgentResume,
+		Now:               func() time.Time { return clock },
+		TabGrace:          10 * time.Second,
 	})
 
 	assert.False(t, rec.reconcileOnce(ctx),
@@ -446,17 +458,20 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 		resp := &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}
 		if present {
-			resp.Tabs = []*leapmuxv1.OwnedTab{{
+			resp.TabStates = []*leapmuxv1.WorkerTabState{{
 				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "flapping-agent",
+				ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 			}}
 		}
 		return resp, nil
 	}
 	clock := time.Now()
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab: svc.CloseTabForReconcile,
-		Now:      func() time.Time { return clock },
-		TabGrace: 10 * time.Second,
+		CloseTab:          svc.CloseTabForReconcile,
+		ApplyArchiveState: ignoreArchiveState,
+		ResumeAgents:      ignoreAgentResume,
+		Now:               func() time.Time { return clock },
+		TabGrace:          10 * time.Second,
 	})
 
 	rec.reconcileOnce(ctx) // absent: starts the clock
@@ -497,9 +512,11 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 	}
 	clock := time.Now()
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab: svc.CloseTabForReconcile,
-		Now:      func() time.Time { return clock },
-		TabGrace: 10 * time.Second,
+		CloseTab:          svc.CloseTabForReconcile,
+		ApplyArchiveState: ignoreArchiveState,
+		ResumeAgents:      ignoreAgentResume,
+		Now:               func() time.Time { return clock },
+		TabGrace:          10 * time.Second,
 	})
 
 	rec.reconcileOnce(ctx)

@@ -15,7 +15,9 @@ service SectionService {
   rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse);
   // Move a section to a different sidebar and/or position.
   rpc MoveSection(MoveSectionRequest) returns (MoveSectionResponse);
-  // Move a workspace to a different section at a given position.
+  // Move a workspace to a different section at a given position. This method
+  // cannot move a workspace into or out of Archived. Use
+  // WorkspaceService.SetWorkspaceArchiveState for that lifecycle change.
   rpc MoveWorkspace(MoveWorkspaceRequest) returns (MoveWorkspaceResponse);
 }
 

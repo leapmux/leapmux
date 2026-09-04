@@ -357,10 +357,9 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// CONVERGED pass -- see the OnConverged hook below for the reason.
 	resumer := svc.NewAgentResumer()
 
-	// Periodic orphan reconciler: walks worker-local rows against the hub's
-	// CRDT-derived workspace_tab_owned view and drops the rows the CRDT no
-	// longer agrees with. Runs once at startup and every hour after;
-	// cancelled on ctx done.
+	// Periodic reconciler: applies authoritative archive state and drops local
+	// rows that the Hub no longer owns. It runs once at startup and every hour
+	// after that. The context stops it.
 	reconciler := service.NewOrphanReconciler(
 		queries,
 		func(rctx context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
@@ -371,8 +370,10 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 			// strands (no live tab references them). Backstops the startup
 			// link guards so a close that raced startup can't leak the
 			// worktree dir.
-			ReapWorktree: svc.ReapOrphanWorktree,
-			CloseTab:     svc.CloseTabForReconcile,
+			ReapWorktree:      svc.ReapOrphanWorktree,
+			CloseTab:          svc.CloseTabForReconcile,
+			ApplyArchiveState: svc.ApplyTabArchiveStateForReconcile,
+			ResumeAgents:      func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
 			// The resume sweep's start signal, and the reason it is this and not
 			// "the worker finished wiring". A converged pass is the first moment
 			// two things are BOTH true: the Hub delivered this worker's owner (no

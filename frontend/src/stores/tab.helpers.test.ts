@@ -1062,18 +1062,9 @@ describe('canCloseTab and canRenameTab', () => {
     expect(canRenameTab(false, terminal)).toBe(true)
   })
 
-  // An archived workspace takes no mutation, and an agent or a terminal has a
-  // process behind it that closing would stop.
-  it('refuses to close a process-backed tab in an archived workspace', () => {
-    expect(canCloseTab(true, agent)).toBe(false)
-    expect(canCloseTab(true, terminal)).toBe(false)
-  })
-
-  // A payload-backed tab is the exception: it owns no process, so closing one
-  // changes nothing on the Worker.
-  it('still closes a payload-backed tab in an archived workspace', () => {
-    expect(canCloseTab(true, file)).toBe(true)
-    expect(canCloseTab(true, image)).toBe(true)
+  it('refuses to close every tab type in an archived workspace', () => {
+    for (const tab of [agent, terminal, file, image])
+      expect(canCloseTab(true, tab)).toBe(false)
   })
 
   // A payload-backed tab takes its title from what it SHOWS, so a user-typed

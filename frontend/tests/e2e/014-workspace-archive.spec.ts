@@ -1,7 +1,11 @@
 import path from 'node:path'
+import { AgentStatus } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openTreeContextMenu, openWorkspace, treeRow, workspaceRow } from './helpers/ui'
+import { cleanupWorkspaceViaAPI, createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { sendActiveTerminalInput, typeInTerminal, waitForTerminalText } from './helpers/terminal'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openTerminalViaUI, openTreeContextMenu, openWorkspace, treeRow, workspaceRow } from './helpers/ui'
+import { listAgentsViaAPI, listTerminalsViaAPI } from './helpers/worktree'
+import { ensureWorkerOnline, processTest, restartWorker, stopWorker, waitForWorkerOffline } from './process-control-fixtures'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -19,7 +23,7 @@ async function openContextMenu(item: ReturnType<import('@playwright/test').Page[
   await item.locator('button').first().click()
 }
 
-test.describe('Workspace Archive', () => {
+test.describe('workspace archive', () => {
   test('should archive workspace via context menu with confirmation dialog', async ({ page, authenticatedWorkspace }) => {
     const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
@@ -162,7 +166,76 @@ test.describe('Workspace Archive', () => {
     await expect(page.locator('[data-testid="agent-editor-panel"]')).not.toBeVisible()
   })
 
-  test('should allow closing file tabs in archived workspace', async ({ page, leapmuxServer }) => {
+  test('stops processes, preserves content, and resumes only the agent', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = authenticatedWorkspace.workspaceId
+    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    const agentId = await agentTab.getAttribute('data-tab-id')
+    expect(agentId).toBeTruthy()
+    await expect.poll(async () => {
+      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      return agents.find(agent => agent.id === agentId)?.status
+    }).toBe(AgentStatus.ACTIVE)
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await editor.click()
+    await page.keyboard.type(ARITHMETIC_PROMPT)
+    await page.keyboard.press('Meta+Enter')
+    await expectAssistantAnswer(page)
+
+    await openTerminalViaUI(page)
+    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]').first()
+    await expect(terminalTab).toBeVisible()
+    const terminalId = await terminalTab.getAttribute('data-tab-id')
+    expect(terminalId).toBeTruthy()
+    await typeInTerminal(page, 'echo ARCHIVE_SCREEN_PRESERVED')
+    await waitForTerminalText(page, 'ARCHIVE_SCREEN_PRESERVED')
+
+    const workspaceItem = workspaceRow(page, workspaceId)
+    await openContextMenu(workspaceItem)
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
+    await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+    await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
+
+    await expect.poll(async () => {
+      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      return agents.find(agent => agent.id === agentId)?.status
+    }).toBe(AgentStatus.INACTIVE)
+    await expect.poll(async () => {
+      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      return terminals.find(terminal => terminal.id === terminalId)?.exited
+    }).toBe(true)
+    await expect(agentTab).toBeVisible()
+    await expect(terminalTab).toBeVisible()
+    await agentTab.click()
+    await expectAssistantAnswer(page)
+    await terminalTab.click()
+    await waitForTerminalText(page, 'ARCHIVE_SCREEN_PRESERVED')
+
+    await page.evaluate(() => {
+      ;(window as unknown as { __archiveRestartCalls?: number }).__archiveRestartCalls = 0
+      window.addEventListener('leapmux:rpc-send', ((event: CustomEvent<{ method?: string }>) => {
+        if (event.detail?.method === 'RestartTerminal') {
+          const state = window as unknown as { __archiveRestartCalls?: number }
+          state.__archiveRestartCalls = (state.__archiveRestartCalls ?? 0) + 1
+        }
+      }) as EventListener)
+    })
+    expect(await sendActiveTerminalInput(page, '\r')).toBe(true)
+    expect(await page.evaluate(() => (window as unknown as { __archiveRestartCalls?: number }).__archiveRestartCalls)).toBe(0)
+
+    await openContextMenu(workspaceItem)
+    await page.getByRole('menuitem', { name: 'Unarchive', exact: true }).click()
+    await expect.poll(async () => {
+      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      return agents.find(agent => agent.id === agentId)?.status
+    }).toBe(AgentStatus.ACTIVE)
+    await expect.poll(async () => {
+      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      return terminals.find(terminal => terminal.id === terminalId)?.exited
+    }).toBe(true)
+  })
+
+  test('should keep file tabs uncloseable in an archived workspace', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Tab Close')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
@@ -189,16 +262,10 @@ test.describe('Workspace Archive', () => {
       const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
       await expect(agentTab.locator('[data-testid="tab-close"]')).not.toBeVisible()
 
-      // File tab should still be visible with a close button
+      // The file tab stays visible, but archival blocks every tab mutation.
       await expect(fileTab).toBeVisible()
       const closeButton = fileTab.locator('[data-testid="tab-close"]')
-      await expect(closeButton).toBeVisible()
-
-      // Click the close button to close the file tab
-      await closeButton.click()
-
-      // File tab should be gone
-      await expect(fileTab).not.toBeVisible()
+      await expect(closeButton).not.toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -315,5 +382,46 @@ test.describe('Workspace Archive', () => {
 
     // Workspace should be gone
     await expect(workspaceItem).not.toBeVisible()
+  })
+})
+
+processTest.describe('workspace archive reconciliation', () => {
+  processTest('prevents agent resume when archival happens while the Worker is offline', async ({ separateHubWorker, page }) => {
+    await ensureWorkerOnline(separateHubWorker)
+    const { hubUrl, adminToken, workerId } = separateHubWorker
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Offline Archive')
+    const agentId = await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+      await expect.poll(async () => {
+        const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+        return agents.find(agent => agent.id === agentId)?.status
+      }).toBe(AgentStatus.ACTIVE)
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await editor.click()
+      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await page.keyboard.press('Meta+Enter')
+      await expectAssistantAnswer(page)
+
+      await stopWorker()
+      await waitForWorkerOffline(hubUrl, adminToken)
+      const workspaceItem = workspaceRow(page, workspaceId)
+      await openContextMenu(workspaceItem)
+      await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
+      await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
+      await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
+
+      await restartWorker(separateHubWorker)
+      await expect.poll(async () => {
+        const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+        return agents.find(agent => agent.id === agentId)?.status
+      }).toBe(AgentStatus.INACTIVE)
+    }
+    finally {
+      await restartWorker(separateHubWorker).catch(() => {})
+      await cleanupWorkspaceViaAPI(hubUrl, adminToken, workerId, workspaceId).catch(() => {})
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
   })
 })

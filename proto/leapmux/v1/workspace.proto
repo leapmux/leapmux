@@ -17,6 +17,14 @@ enum TabType {
   TAB_TYPE_IMAGE = 4;
 }
 
+// WorkspaceArchiveState identifies whether a workspace accepts mutations and
+// whether its Worker-hosted processes may run.
+enum WorkspaceArchiveState {
+  WORKSPACE_ARCHIVE_STATE_UNSPECIFIED = 0;
+  WORKSPACE_ARCHIVE_STATE_ACTIVE = 1;
+  WORKSPACE_ARCHIVE_STATE_ARCHIVED = 2;
+}
+
 // WorkspaceService manages workspace metadata + read-only tab views.
 // Layout / tab mutations live on UserCRDT (see user_ops.proto). The
 // WorkspaceCreated / WorkspaceRenamed / WorkspaceDeleted lifecycle
@@ -27,6 +35,10 @@ service WorkspaceService {
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
+  // SetWorkspaceArchiveState moves a workspace across the archive boundary.
+  // The Hub computes its destination and returns the Worker fan-out from the
+  // same transaction. An idempotent request returns no Worker groups.
+  rpc SetWorkspaceArchiveState(SetWorkspaceArchiveStateRequest) returns (SetWorkspaceArchiveStateResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   // ListTabs returns the materialized tab list across one or more
   // workspaces. Reads `workspace_tab_rendered`.
@@ -93,6 +105,15 @@ message RenameWorkspaceRequest {
 }
 
 message RenameWorkspaceResponse {}
+
+message SetWorkspaceArchiveStateRequest {
+  string workspace_id = 1;
+  WorkspaceArchiveState archive_state = 2;
+}
+
+message SetWorkspaceArchiveStateResponse {
+  repeated WorkerTabs worker_tabs = 1;
+}
 
 message DeleteWorkspaceRequest {
   string workspace_id = 1;
@@ -186,6 +207,16 @@ message CleanupWorkspaceResponse {
   // Worktree reclamation happens through the orphan reconciler, which reports
   // nothing back on this call.
 }
+
+// SetTabArchiveStateRequest applies the Hub's workspace state to the local
+// rows for the listed tabs. A Worker stores no workspace identifier, so the
+// Hub supplies the authoritative tab set.
+message SetTabArchiveStateRequest {
+  repeated TabRef tabs = 1;
+  WorkspaceArchiveState archive_state = 2;
+}
+
+message SetTabArchiveStateResponse {}
 
 // --- Event Streaming (per-agent / per-terminal) ---
 

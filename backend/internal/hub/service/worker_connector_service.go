@@ -731,7 +731,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	// rows can collide. It would not be safe across owners -- tab ids are
 	// client-chosen, and the worker's report carries no user axis at all, so a
 	// cross-owner collision would be unresolvable on this side.
-	hubByKey := make(map[tabKey]store.WorkspaceTabRow, len(hubTabs))
+	hubByKey := make(map[tabKey]store.WorkerTabStateRow, len(hubTabs))
 	for _, ht := range hubTabs {
 		hubByKey[tabKey{tabType: ht.TabType, tabID: ht.TabID}] = ht
 	}

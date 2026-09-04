@@ -47,7 +47,17 @@ WHERE t.user_id = k.user_id AND t.tab_id = k.tab_id;
 -- selects across tenants. user_id is the tenancy axis; worker_id
 -- narrows within it.
 -- name: ListOwnedTabsByWorker :many
-SELECT * FROM workspace_tab_owned WHERE user_id = $1 AND worker_id = $2 ORDER BY workspace_id, position;
+SELECT wto.user_id, wto.workspace_id, wto.tab_type, wto.tab_id, wto.worker_id,
+       CASE WHEN ws.section_type = sqlc.arg(archived_section_type)
+            THEN sqlc.arg(archived_archive_state)::INTEGER
+            ELSE sqlc.arg(active_archive_state)::INTEGER END AS archive_state
+FROM workspace_tab_owned wto
+LEFT JOIN workspace_section_items wsi
+  ON wsi.user_id = wto.user_id AND wsi.workspace_id = wto.workspace_id
+LEFT JOIN workspace_sections ws
+  ON ws.id = wsi.section_id AND ws.user_id = wto.user_id
+WHERE wto.user_id = sqlc.arg(user_id) AND wto.worker_id = sqlc.arg(worker_id)
+ORDER BY wto.workspace_id, wto.position;
 
 -- ListOwnedTabsByWorkspace binds user_id as well as workspace_id. A
 -- workspace's owner does not constrain the user_id of rows written against

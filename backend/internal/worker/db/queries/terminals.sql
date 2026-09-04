@@ -48,9 +48,9 @@ SELECT id FROM terminals WHERE id = ?;
 -- runTerminalRestart. closed_at drives the close-race teardown; title
 -- absorbs the value the frontend may have persisted between the
 -- handler returning and StartTerminal registering in-memory metadata
--- (restart ignores the title field). Two columns in one round-trip,
+-- (restart ignores the title field). Three columns in one round-trip,
 -- avoiding the SELECT * scan of the screen BLOB.
-SELECT closed_at, title FROM terminals WHERE id = ?;
+SELECT closed_at, title, workspace_archived FROM terminals WHERE id = ?;
 
 -- name: GetTerminalForRestart :one
 -- Restart hot path: returns the metadata the handler needs to respawn
@@ -61,7 +61,7 @@ SELECT closed_at, title FROM terminals WHERE id = ?;
 -- in the common case (in-memory entry still present, Respawn carries
 -- the live buffer forward and length is ignored).
 SELECT working_dir, shell_start_dir, shell, cols, rows,
-       length(screen) AS screen_length
+       length(screen) AS screen_length, workspace_archived
 FROM terminals WHERE id = ?;
 
 -- name: CloseTerminal :execresult
@@ -103,3 +103,9 @@ DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.cl
 
 -- name: SetTerminalStartupError :exec
 UPDATE terminals SET startup_error = ? WHERE id = ?;
+
+-- SetTerminalWorkspaceArchived changes only the cached workspace lifecycle
+-- state. The row, final screen, and worktree link stay unchanged.
+-- name: SetTerminalWorkspaceArchived :execrows
+UPDATE terminals SET workspace_archived = sqlc.arg(workspace_archived)
+WHERE id = sqlc.arg(id) AND workspace_archived <> sqlc.arg(workspace_archived);

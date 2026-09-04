@@ -128,7 +128,7 @@ function addTerminal(
   stores.metadata.patch(id, meta)
 }
 
-function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}) {
+function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}, isMutatable = true) {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>({ id: 'ws-1' } as Workspace)
@@ -154,7 +154,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       selection: stores.selection,
       layoutStore: stores.layoutStore,
       activeWorkspace,
-      isActiveWorkspaceMutatable: () => true,
+      isActiveWorkspaceMutatable: () => isMutatable,
       getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
       newTerminalDialog: { open: () => {}, close: () => {}, value: () => null },
       setNewTerminalLoading: () => {},
@@ -578,6 +578,13 @@ describe('useterminaloperations.handleterminalinput', () => {
       cols: 100,
       rows: 30,
     })
+  })
+
+  it.each([TerminalStatus.READY, TerminalStatus.EXITED])('suppresses input for status %s while archived', async (status) => {
+    const { ops } = setup(status, {}, false)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(sendInputMock).not.toHaveBeenCalled()
+    expect(restartTerminalMock).not.toHaveBeenCalled()
   })
 
   it('ignores non-Enter input on an EXITED terminal', async () => {

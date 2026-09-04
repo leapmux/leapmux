@@ -448,11 +448,9 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     await recorder.dispose()
   })
 
-  it('keeps entities dirtied WHILE a write was in flight', async () => {
-    // The write's success handler clears only the keys it actually serialized.
-    // Clearing the whole set would strand an entity changed between the
-    // serialize and the IDB commit -- its chunk stale on disk, and nothing left
-    // to say so.
+  it('rewrites entities dirtied while a write was in flight', async () => {
+    // The first success clears only the keys it serialized. The rewrite request
+    // from the second frame runs afterwards and drains that later dirty key.
     const mgr = fakeMgr()
     await writeBase(confirmed(mgr))
     const recorder = createCheckpointRecorder({
@@ -472,7 +470,9 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     await settle()
 
     expect(recorder.dirtyKeys.has('node:first')).toBe(false)
-    expect(recorder.dirtyKeys.has('node:second')).toBe(true)
+    expect(recorder.dirtyKeys.has('node:second')).toBe(false)
+    expect(keysOf(lastDelta().upserts)).toContain('node:second')
+    expect((await persistedChunks()).has('node:second')).toBe(true)
     await recorder.dispose()
   })
 
@@ -1016,7 +1016,7 @@ describe('createCheckpointRecorder rebase gating', () => {
     recorder.record(nodeFrame('after', 'M'))
     await settle()
 
-    expect(keysOf(lastDelta().upserts)).toContain('node:N')
+    expect(storeSpy.deltas.some(delta => keysOf(delta.upserts).includes('node:N'))).toBe(true)
     expect((await persistedChunks()).get('node:N')).not.toBe(before)
     await recorder.dispose()
   })
@@ -1028,6 +1028,7 @@ describe('createCheckpointRecorder rebase gating', () => {
     // of the WRONG lineage -- the precise failure the flag exists to prevent.
     const mgr = fakeMgr()
     await writeBase()
+    const writesBeforeRecorder = storeSpy.deltas.length
     const recorder = createCheckpointRecorder({
       userId: USER,
       clientId: CLIENT,
@@ -1042,8 +1043,11 @@ describe('createCheckpointRecorder rebase gating', () => {
     recorder.onCheckpointReset()
     await settle()
 
-    // The rebase must still be pending, so the next rewrite is FULL.
-    expect(recorder.needsFullRewrite).toBe(true)
+    // The stale incremental write cannot clear the reset. Its deferred
+    // successor must run as a full rewrite before the recorder becomes ready.
+    expect(storeSpy.deltas).toHaveLength(writesBeforeRecorder + 2)
+    expect(lastDelta().full).toBe(true)
+    expect(recorder.needsFullRewrite).toBe(false)
     await recorder.dispose()
   })
 })

@@ -1136,13 +1136,13 @@ export const AppShell: Component = () => {
       confirmEmptyArchiveDialog.open({ count, resolve })
     })
 
-  // Post-archive cleanup
+  // Clear transient write state for every agent in the archived workspace.
   const handlePostArchiveWorkspace = (workspaceId: string) => {
-    if (workspace.activeWorkspaceId() === workspaceId) {
-      for (const tab of tabView.forWorkspace(workspaceId)) {
-        if (tab.type === TabType.AGENT)
-          controlStore.clearAgent(tab.id)
-      }
+    for (const tab of tabView.forWorkspace(workspaceId)) {
+      if (tab.type !== TabType.AGENT)
+        continue
+      controlStore.clearAgent(tab.id)
+      chatStore.failPendingOutbound(tab.id, 'Workspace archived before the message was sent')
     }
   }
 

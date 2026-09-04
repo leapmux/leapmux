@@ -10,6 +10,29 @@ import (
 // registerCleanupHandlers registers workspace cleanup inner RPC handlers.
 func registerCleanupHandlers(d registrar, svc *Service) {
 	registerOwnerGated(d, "CleanupWorkspace", leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE, dispatchTracked, handleCleanupWorkspace(svc))
+	registerOwnerGated(d, "SetTabArchiveState", leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE, dispatchTracked, handleSetTabArchiveState(svc))
+}
+
+func handleSetTabArchiveState(svc *Service) func(context.Context, channel.Caller, *leapmuxv1.SetTabArchiveStateRequest, channel.ResponseWriter) {
+	return func(_ context.Context, _ channel.Caller, req *leapmuxv1.SetTabArchiveStateRequest, sender channel.ResponseWriter) {
+		if _, err := workspaceArchiveFlag(req.GetArchiveState()); err != nil {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
+		if _, _, err := archiveTabIDs(req.GetTabs()); err != nil {
+			sendInvalidArgument(sender, err.Error())
+			return
+		}
+		resumeAgentIDs, err := svc.applyTabArchiveState(bgCtx(), req.GetArchiveState(), req.GetTabs())
+		if err != nil {
+			sendInternalError(sender, err.Error())
+			return
+		}
+		if len(resumeAgentIDs) > 0 {
+			svc.NewAgentResumer().Schedule(bgCtx(), resumeAgentIDs)
+		}
+		sendProtoResponse(sender, &leapmuxv1.SetTabArchiveStateResponse{})
+	}
 }
 
 // handleCleanupWorkspace tears down the local resources behind the tabs a

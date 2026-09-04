@@ -22,6 +22,31 @@ func beginForTest(t *testing.T, r *startupCore, id string) {
 	})
 }
 
+func TestStartupCore_ArchiveCancellationIsDistinctFromCloseAndFailure(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	cancelled := false
+	handle := core.begin("archive-tab", func() { cancelled = true })
+	require.NotNil(t, handle)
+	core.markPhase0Complete(handle)
+
+	archivedHandle := core.cancelForArchive("archive-tab")
+	require.Same(t, handle, archivedHandle)
+	archived, phase0Complete := core.archiveDisposition(handle)
+	assert.True(t, archived)
+	assert.True(t, phase0Complete)
+	assert.True(t, cancelled)
+	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("archive-tab", time.Hour),
+		"an archived stop must not report a permanent close")
+	_, _, _, present := core.snapshot("archive-tab")
+	assert.False(t, present, "an archived stop must not leave a startup failure")
+
+	core.finishEntry(handle)
+	core.waitForFinished(handle)
+	core.WaitForInFlight()
+}
+
 // TestStartupCore_ClearPendingResize_DrainsSignal pins the contract
 // that clearPendingResize empties the buffered resizeSignal along with
 // the hasPendingResize bool. Without the drain, a later

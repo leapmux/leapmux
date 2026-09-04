@@ -293,6 +293,11 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 		ownerGatedProbe{"CleanupWorkspace", "CleanupWorkspace", func() proto.Message {
 			return &leapmuxv1.CleanupWorkspaceRequest{}
 		}},
+		ownerGatedProbe{"SetTabArchiveState", "SetTabArchiveState", func() proto.Message {
+			return &leapmuxv1.SetTabArchiveStateRequest{
+				ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+			}
+		}},
 		ownerGatedProbe{"GetTabPayload", "GetTabPayload", func() proto.Message {
 			return &leapmuxv1.GetTabPayloadRequest{TabId: "tab-1"}
 		}},

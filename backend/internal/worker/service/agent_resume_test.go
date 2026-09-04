@@ -157,6 +157,24 @@ func TestAgentResume_RestoresUsedAgents(t *testing.T) {
 	assert.Equal(t, []string{"agent-resumed"}, rec.ids())
 }
 
+func TestAgentResume_SkipsArchivedAgents(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	seedOpenAgent(t, svc, "agent-archived", true)
+	_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{
+		WorkspaceArchived: 1,
+		ID:                "agent-archived",
+	})
+	require.NoError(t, err)
+
+	runSweep(t, svc)
+
+	assert.Empty(t, recorder.ids())
+}
+
 // TestAgentResume_UsesTheBackgroundStartPath pins which manager entry point the
 // sweep reaches, which the shared recorder cannot see because it stubs both.
 //

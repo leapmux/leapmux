@@ -123,8 +123,7 @@ interface TabBarProps {
   activeTabKey: string | null
   /**
    * The workspace these tabs belong to is archived, so the strip offers no
-   * mutation: no close (except a payload-backed tab -- see `canCloseTab`), no
-   * rename, and no middle-click close.
+   * mutation. It offers no close, rename, or middle-click close.
    *
    * Was `readOnly`. Archival is the only thing that blocks mutation, so the two
    * were one concept under two names; the sidebar tree carries the same flag.

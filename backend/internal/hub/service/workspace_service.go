@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/lexorank"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -21,8 +22,13 @@ import (
 // This service owns the workspace metadata table plus read-only tab
 // views fed by the CRDT manager's workspace_tab_rendered index.
 type WorkspaceService struct {
-	store    store.Store
-	registry *crdt.Registry
+	store           store.Store
+	registry        *crdt.Registry
+	reconcileNudger workspaceReconcileNudger
+}
+
+type workspaceReconcileNudger interface {
+	NudgeReconcile(workerID string)
 }
 
 // NewWorkspaceService creates a new WorkspaceService. registry is optional;
@@ -37,10 +43,12 @@ type WorkspaceService struct {
 func NewWorkspaceService(
 	st store.Store,
 	registry *crdt.Registry,
+	reconcileNudger workspaceReconcileNudger,
 ) *WorkspaceService {
 	return &WorkspaceService{
-		store:    st,
-		registry: registry,
+		store:           st,
+		registry:        registry,
+		reconcileNudger: reconcileNudger,
 	}
 }
 
@@ -313,6 +321,110 @@ func (s *WorkspaceService) RenameWorkspace(
 	}
 
 	return connect.NewResponse(&leapmuxv1.RenameWorkspaceResponse{}), nil
+}
+
+// SetWorkspaceArchiveState moves a workspace across the archive boundary and
+// returns the authoritative Worker fan-out from the same transaction.
+func (s *WorkspaceService) SetWorkspaceArchiveState(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.SetWorkspaceArchiveStateRequest],
+) (*connect.Response[leapmuxv1.SetWorkspaceArchiveStateResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectDelegationBearer(user, "workspace lifecycle mutation"); err != nil {
+		return nil, err
+	}
+
+	requested := req.Msg.GetArchiveState()
+	if requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE &&
+		requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("archive_state must be ACTIVE or ARCHIVED"))
+	}
+
+	workspaceID := req.Msg.GetWorkspaceId()
+	var workerTabs []*leapmuxv1.WorkerTabs
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can modify workspace state"); err != nil {
+			return err
+		}
+
+		currentlyArchived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return fmt.Errorf("read workspace archive state: %w", err)
+		}
+		requestArchived := requested == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
+		if currentlyArchived == requestArchived {
+			workerTabs = nil
+			return nil
+		}
+
+		destinationType := leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS
+		if requestArchived {
+			destinationType = leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+		}
+		sections, err := tx.WorkspaceSections().ListByUserID(ctx, user.ID)
+		if err != nil {
+			return fmt.Errorf("list workspace sections: %w", err)
+		}
+		var destinationID string
+		for _, section := range sections {
+			if section.SectionType == destinationType {
+				destinationID = section.ID
+				break
+			}
+		}
+		if destinationID == "" {
+			return fmt.Errorf("built-in destination section %s not found", destinationType)
+		}
+
+		items, err := tx.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+		if err != nil {
+			return fmt.Errorf("list workspace section items: %w", err)
+		}
+		lastPosition := ""
+		for _, item := range items {
+			if item.SectionID == destinationID {
+				lastPosition = item.Position
+			}
+		}
+		if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+			SectionID:   destinationID,
+			Position:    lexorank.After(lastPosition),
+		}); err != nil {
+			return fmt.Errorf("move workspace across archive boundary: %w", err)
+		}
+
+		tabs, err := tx.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return fmt.Errorf("list workspace tabs: %w", err)
+		}
+		workerTabs = groupTabsByWorker(tabs)
+		return nil
+	})
+	if err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	if s.reconcileNudger != nil {
+		for _, tabs := range workerTabs {
+			s.reconcileNudger.NudgeReconcile(tabs.GetWorkerId())
+		}
+	}
+	return connect.NewResponse(&leapmuxv1.SetWorkspaceArchiveStateResponse{WorkerTabs: workerTabs}), nil
 }
 
 func (s *WorkspaceService) DeleteWorkspace(

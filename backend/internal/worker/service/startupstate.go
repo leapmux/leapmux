@@ -30,6 +30,7 @@ const failedEntryTTL = 5 * time.Minute
 //     PTY was registered in the Manager, so runTerminalStartup can apply
 //     it the moment StartTerminal returns.
 type startupEntry struct {
+	id string
 	// failed is set once startup fails terminally. While false and cancel
 	// is non-nil, startup is still in progress (STARTING).
 	failed       bool
@@ -76,6 +77,8 @@ type startupEntry struct {
 	// goroutine is reading.
 	closeDisposition closeWorktreeDisposition
 	closeRaced       bool
+	archiveStopped   bool
+	phase0Complete   bool
 	// done is closed when this startup stops being IN FLIGHT -- when succeed,
 	// fail or cancelAndClear takes the entry out of the map. awaitInFlight
 	// waits on it, so a caller that finds the id claimed can wait for the claim
@@ -85,6 +88,10 @@ type startupEntry struct {
 	// finished record with no goroutine behind it, and awaitInFlight skips a
 	// failed entry for the same reason begin does not refuse on one.
 	done chan struct{}
+	// finished closes after the startup goroutine completes its trailing
+	// rollback and cleanup work. Archival waits on it before it permits an
+	// unarchive resume to register replacement resources for the same tab.
+	finished chan struct{}
 }
 
 // release closes e.done, so every awaitInFlight waiting on this startup stops
@@ -134,9 +141,10 @@ func (systemStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
 // work so callers — test cleanups and future graceful-shutdown paths —
 // observe the filesystem and DB in a quiescent state.
 type startupCore struct {
-	mu      sync.Mutex
-	entries map[string]*startupEntry
-	wg      sync.WaitGroup
+	mu       sync.Mutex
+	entries  map[string]*startupEntry
+	inflight map[string]*startupEntry
+	wg       sync.WaitGroup
 	// clock is the time source awaitInFlight limits its wait with. Set once by
 	// newStartupCore and never reassigned in production, so a waiter reads it
 	// without the mutex; a test substitutes a fake before it starts one.
@@ -144,7 +152,11 @@ type startupCore struct {
 }
 
 func newStartupCore() startupCore {
-	return startupCore{entries: make(map[string]*startupEntry), clock: systemStartupClock{}}
+	return startupCore{
+		entries:  make(map[string]*startupEntry),
+		inflight: make(map[string]*startupEntry),
+		clock:    systemStartupClock{},
+	}
 }
 
 // begin records an entry in STARTING state, adds one to the in-flight counter,
@@ -176,11 +188,14 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 		return nil
 	}
 	entry := &startupEntry{
+		id:           id,
 		cancel:       cancel,
 		resizeSignal: make(chan struct{}, 1),
 		done:         make(chan struct{}),
+		finished:     make(chan struct{}),
 	}
 	r.entries[id] = entry
+	r.inflight[id] = entry
 	r.wg.Add(1)
 	return entry
 }
@@ -248,6 +263,18 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 // the handle the goroutine is about to drop, so it is collected with it.
 func (r *startupCore) finish() {
 	r.wg.Done()
+}
+
+func (r *startupCore) finishEntry(entry *startupEntry) {
+	if entry != nil && entry.finished != nil {
+		r.mu.Lock()
+		if r.inflight[entry.id] == entry {
+			delete(r.inflight, entry.id)
+		}
+		r.mu.Unlock()
+		close(entry.finished)
+	}
+	r.finish()
 }
 
 // WaitForInFlight blocks until every startup goroutine counted by begin
@@ -326,11 +353,16 @@ func (r *startupCore) fail(id, startupError string) {
 func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposition) {
 	r.mu.Lock()
 	entry := r.entries[id]
-	delete(r.entries, id)
+	if entry == nil {
+		entry = r.inflight[id]
+	}
 	if entry != nil {
 		entry.closeDisposition = disposition
 		entry.closeRaced = true
-		entry.release()
+		if r.entries[id] == entry {
+			delete(r.entries, id)
+			entry.release()
+		}
 	}
 	r.mu.Unlock()
 	if entry == nil {
@@ -342,6 +374,58 @@ func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposi
 	if entry.cancel != nil {
 		entry.cancel()
 	}
+}
+
+// cancelForArchive stops an in-flight startup without marking the tab closed
+// or failed. It returns the startup handle so archival can wait for all
+// rollback and resource cleanup work to finish.
+func (r *startupCore) cancelForArchive(id string) *startupEntry {
+	r.mu.Lock()
+	entry := r.inflight[id]
+	if entry != nil {
+		// A permanent close carries the user's worktree decision and wins if
+		// both lifecycle operations reach the same startup.
+		entry.archiveStopped = !entry.closeRaced
+		if r.entries[id] == entry {
+			delete(r.entries, id)
+			entry.release()
+		}
+	}
+	r.mu.Unlock()
+	if entry == nil {
+		return nil
+	}
+	if entry.evictTimer != nil {
+		entry.evictTimer.Stop()
+	}
+	if entry.cancel != nil {
+		entry.cancel()
+	}
+	return entry
+}
+
+func (r *startupCore) waitForFinished(entry *startupEntry) {
+	if entry != nil && entry.finished != nil {
+		<-entry.finished
+	}
+}
+
+func (r *startupCore) markPhase0Complete(entry *startupEntry) {
+	if entry == nil {
+		return
+	}
+	r.mu.Lock()
+	entry.phase0Complete = true
+	r.mu.Unlock()
+}
+
+func (r *startupCore) archiveDisposition(entry *startupEntry) (archived, phase0Complete bool) {
+	if entry == nil {
+		return false, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return entry.archiveStopped, entry.phase0Complete
 }
 
 // setPendingResize records the latest ResizeTerminal dims for id. Returns

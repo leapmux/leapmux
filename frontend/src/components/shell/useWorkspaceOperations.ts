@@ -9,6 +9,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { canReorderWithinSection, sectionFilterQuery, workspaceSortOrder } from '~/components/workspace/workspaceListState'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
+import { WorkspaceArchiveState } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { appendPosition, mid } from '~/lib/lexorank'
 import { cleanName } from '~/lib/validate'
 import { filterWorkspaces, sortWorkspaces } from '~/lib/workspaceSort'
@@ -267,15 +268,65 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       if (!confirmed)
         return
     }
-    await moveWorkspace(workspaceId, archivedSection.id)
-    props.onPostArchiveWorkspace?.(workspaceId)
+    const done = startWorkspaceLoading(workspaceId)
+    try {
+      const resp = await workspaceClient.setWorkspaceArchiveState({
+        workspaceId,
+        archiveState: WorkspaceArchiveState.ARCHIVED,
+      })
+      // Apply the Hub state before any Worker fan-out. Every local surface now
+      // treats the workspace as read-only while its processes stop.
+      store.moveWorkspace(workspaceId, archivedSection.id, appendPosition(store.getItemsForSection(archivedSection.id)))
+      await props.loadSections()
+      props.onPostArchiveWorkspace?.(workspaceId)
+      const results = await Promise.allSettled(resp.workerTabs.map(workerTabs =>
+        workerRpc.setTabArchiveState(workerTabs.workerId, {
+          tabs: workerTabs.tabs,
+          archiveState: WorkspaceArchiveState.ARCHIVED,
+        }),
+      ))
+      const failure = results.find(result => result.status === 'rejected')
+      if (failure?.status === 'rejected')
+        showWarnToast('Workspace archived, but a Worker did not stop its tabs', failure.reason)
+    }
+    catch (err) {
+      showWarnToast('Failed to archive workspace', err)
+    }
+    finally {
+      done()
+    }
   }
 
   const unarchiveWorkspace = async (workspaceId: string) => {
     const inProgressSection = store.getInProgressSection()
     if (!inProgressSection)
       return
-    await moveWorkspace(workspaceId, inProgressSection.id)
+    const done = startWorkspaceLoading(workspaceId)
+    try {
+      const resp = await workspaceClient.setWorkspaceArchiveState({
+        workspaceId,
+        archiveState: WorkspaceArchiveState.ACTIVE,
+      })
+      // Clear the Worker cache before the section refresh makes the workspace
+      // writable again. The Hub state stays active if a Worker call fails.
+      const results = await Promise.allSettled(resp.workerTabs.map(workerTabs =>
+        workerRpc.setTabArchiveState(workerTabs.workerId, {
+          tabs: workerTabs.tabs,
+          archiveState: WorkspaceArchiveState.ACTIVE,
+        }),
+      ))
+      store.moveWorkspace(workspaceId, inProgressSection.id, appendPosition(store.getItemsForSection(inProgressSection.id)))
+      await props.loadSections()
+      const failure = results.find(result => result.status === 'rejected')
+      if (failure?.status === 'rejected')
+        showWarnToast('Workspace unarchived, but a Worker did not update its tabs', failure.reason)
+    }
+    catch (err) {
+      showWarnToast('Failed to unarchive workspace', err)
+    }
+    finally {
+      done()
+    }
   }
 
   const findFirstNonArchivedWorkspaceId = (): string | null => {
@@ -370,25 +421,13 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     return store.getItemsForSection(archivedSection.id).map(i => i.workspaceId)
   }
 
-  /**
-   * Move every archived workspace back to In progress.
-   *
-   * SEQUENTIAL, and that is the whole implementation note. `moveWorkspace`
-   * computes `appendPosition(getItemsForSection(...))`, which reads
-   * `items.at(-1)` BEFORE its await while the store write lands after it -- so a
-   * parallel fan-out hands every call the identical lexorank and the sidebar
-   * shuffles the whole set on the next refresh.
-   *
-   * There is no transaction: each move is its own RPC, so a failure part way
-   * through leaves the archive partly emptied. Each failed move raises its own
-   * warning toast, which is the whole safety story.
-   */
+  /** Move every archived workspace back to In progress, in order. */
   const unarchiveAll = async () => {
     const inProgressSection = store.getInProgressSection()
     if (!inProgressSection)
       return
     for (const workspaceId of archivedWorkspaceIds())
-      await moveWorkspace(workspaceId, inProgressSection.id)
+      await unarchiveWorkspace(workspaceId)
   }
 
   /**

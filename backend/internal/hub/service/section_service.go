@@ -365,7 +365,11 @@ func nextSectionPosition(sections []store.WorkspaceSection, sidebar leapmuxv1.Si
 }
 
 func (s *SectionService) requireOwnedSection(ctx context.Context, userID userid.UserID, sectionID string) (*store.WorkspaceSection, error) {
-	section, err := s.store.WorkspaceSections().GetByID(ctx, sectionID)
+	return requireOwnedSection(ctx, s.store, userID, sectionID)
+}
+
+func requireOwnedSection(ctx context.Context, st store.Store, userID userid.UserID, sectionID string) (*store.WorkspaceSection, error) {
+	section, err := st.WorkspaceSections().GetByID(ctx, sectionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
@@ -450,18 +454,50 @@ func (s *SectionService) MoveWorkspace(
 		return nil, err
 	}
 
-	workspaceID := req.Msg.GetWorkspaceId()
-
-	if _, err := s.requireOwnedSection(ctx, user.ID, req.Msg.GetSectionId()); err != nil {
-		return nil, err
-	}
-
-	if err := s.store.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-		UserID:      user.ID,
-		WorkspaceID: workspaceID,
-		SectionID:   req.Msg.GetSectionId(),
-		Position:    req.Msg.GetPosition(),
+	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		workspaceID := req.Msg.GetWorkspaceId()
+		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can move workspace"); err != nil {
+			return err
+		}
+		destination, err := requireOwnedSection(ctx, tx, user.ID, req.Msg.GetSectionId())
+		if err != nil {
+			return err
+		}
+		switch destination.SectionType {
+		case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+			leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+			leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
+			// These section types contain workspaces.
+		default:
+			return connect.NewError(connect.CodeInvalidArgument,
+				fmt.Errorf("section %s cannot contain workspaces", destination.ID))
+		}
+		currentlyArchived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return fmt.Errorf("read workspace archive state: %w", err)
+		}
+		destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+		if currentlyArchived != destinationArchived {
+			return connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("MoveWorkspace cannot move a workspace into or out of Archived"))
+		}
+		if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+			SectionID:   destination.ID,
+			Position:    req.Msg.GetPosition(),
+		}); err != nil {
+			return err
+		}
+		return nil
 	}); err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 

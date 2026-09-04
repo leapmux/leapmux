@@ -63,6 +63,14 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 	}
 }
 
+func refuseArchivedAgent(sender channel.ResponseWriter, row db.Agent) bool {
+	if row.WorkspaceArchived == 0 {
+		return false
+	}
+	sendFailedPrecondition(sender, "agent belongs to an archived workspace")
+	return true
+}
+
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d registrar, svc *Service) {
 	registerOwnerGated(d, "OpenAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
@@ -262,7 +270,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 				slog.Error("refusing to start agent without an identity", "agent_id", agentID, "error", err)
 				sendInternalError(sender, "failed to start agent")
-				svc.AgentStartup.finish()
+				svc.AgentStartup.finishEntry(startupHandle)
 				return
 			}
 
@@ -314,6 +322,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendAgentMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendAgentMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			if refuseArchivedAgent(sender, dbAgent) {
+				return
+			}
 
 			// Reject sends only on permanent startup failure — STARTING
 			// messages are queued on the frontend and dispatched on the
@@ -533,6 +544,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendAgentRawMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			if refuseArchivedAgent(sender, dbAgent) {
+				return
+			}
 			// A child agent has no process and no raw-control surface; reject.
 			if dbAgent.ParentAgentID.Valid {
 				sendFailedPrecondition(sender, "this subagent cannot be messaged")
@@ -979,6 +993,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "UpdateAgentSettings", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateAgentSettingsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			if refuseArchivedAgent(sender, dbAgent) {
+				return
+			}
 
 			// A virtual child agent has no process and no settings of its own
 			// (it inherits the owner's). Reject before the optimistic DB write
@@ -1051,6 +1068,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendControlResponse", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			if refuseArchivedAgent(sender, dbAgent) {
+				return
+			}
 
 			// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
 			// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
@@ -1841,7 +1861,7 @@ func (svc *Service) agentsHasAgentFor(agentRow *db.Agent, rootID string) bool {
 // {provider}…") rather than overlapping noise.
 func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options, h *startupEntry) {
 	agentID := agentOpts.AgentID
-	defer svc.AgentStartup.finish()
+	defer svc.AgentStartup.finishEntry(h)
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
 
 	// Phase 0: execute the git-mode mutation (worktree add, branch create,
@@ -1907,14 +1927,22 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if fetchErr == nil {
 		dbAgent = latest
 	}
-	if fetchErr == nil && dbAgent.ClosedAt.Valid {
+	_, closeRaced := svc.AgentStartup.dispositionOf(h)
+	if closeRaced || (fetchErr == nil && dbAgent.ClosedAt.Valid) {
 		if startErr == nil {
 			svc.Agents.StopAgent(agentID)
 		}
 		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
 		return
 	}
-
+	archiveStopped, _ := svc.AgentStartup.archiveDisposition(h)
+	if archiveStopped || (fetchErr == nil && dbAgent.WorkspaceArchived != 0) {
+		if startErr == nil {
+			svc.Agents.StopAndWaitAgent(agentID)
+		}
+		svc.AgentStartup.succeed(agentID)
+		return
+	}
 	if startErr != nil {
 		slog.Error("failed to start agent", "agent_id", agentID, "error", startErr)
 		svc.failAgentStartup(&dbAgent, gm, startErr, gitStatus, h)
@@ -1981,6 +2009,24 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	running := true
 	if relaunch {
 		activeDbAgent, running = svc.relaunchForStartupSettingsChange(agentID, dbAgent.AgentProvider, latestOpts, activeDbAgent)
+	}
+	archiveStopped, _ = svc.AgentStartup.archiveDisposition(h)
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
+		activeDbAgent = latest
+	}
+	_, closeRaced = svc.AgentStartup.dispositionOf(h)
+	if closeRaced || activeDbAgent.ClosedAt.Valid {
+		if running {
+			svc.Agents.StopAndWaitAgent(agentID)
+		}
+		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
+		return
+	}
+	if archiveStopped || activeDbAgent.WorkspaceArchived != 0 {
+		if running {
+			svc.Agents.StopAndWaitAgent(agentID)
+		}
+		return
 	}
 
 	activeOptions := loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider)
@@ -3128,6 +3174,9 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if dbAgent.ClosedAt.Valid {
 		return fmt.Errorf("agent %s is closed; it takes no new process", agentID)
 	}
+	if dbAgent.WorkspaceArchived != 0 {
+		return fmt.Errorf("agent %s belongs to an archived workspace; it takes no new process", agentID)
+	}
 
 	var resumeSessionID string
 	if preResolvedResumeSessionID != nil {
@@ -3145,11 +3194,12 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// message that lands in that window used to spawn a second process for the
 	// same tab.
 	startupCtx, cancel := context.WithCancel(bgCtx())
-	if handle := svc.AgentStartup.begin(agentID, cancel); handle == nil {
+	handle := svc.AgentStartup.begin(agentID, cancel)
+	if handle == nil {
 		cancel()
 		return fmt.Errorf("agent %s already has a startup in progress", agentID)
 	}
-	defer svc.AgentStartup.finish()
+	defer svc.AgentStartup.finishEntry(handle)
 	// succeed() on BOTH outcomes, because it only means "drop the override and
 	// derive the status from the manager again". fail() would report
 	// STARTUP_FAILED, which refuses the user's next message for the whole

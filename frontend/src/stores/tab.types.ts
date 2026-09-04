@@ -185,10 +185,9 @@ export function isImageTab(t: Tab): t is ImageTab {
  * register / replay / re-read / revoke path -- and every consumer of that path
  * asks this question rather than listing the two types again.
  *
- * The user-facing rules follow from the same property, which is why they ask it
- * too rather than growing their own list: such a tab has no server-side name to
- * rename (its title comes from the payload), it owns no process, and closing it
- * is a row delete -- so a read-only viewer may still close one.
+ * The user-facing rename rule follows from the same property: such a tab has no
+ * server-side name to rename because its title comes from the payload. Archive
+ * state still blocks closing every tab type.
  */
 export function isPayloadBackedTabType(type: TabType): boolean {
   return type === TabType.FILE || type === TabType.IMAGE

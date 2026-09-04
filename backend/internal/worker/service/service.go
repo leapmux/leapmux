@@ -180,6 +180,8 @@ type Service struct {
 	// One field for both, composed at the call site: bootstrap starts the loops
 	// and is therefore the only place that knows what order they must stop in.
 	stopBackgroundLoops func()
+	resumeSchedulerMu   sync.Mutex
+	agentResumer        *AgentResumer
 
 	// agentCleanups / terminalCleanups hold per-tab cleanup callbacks
 	// registered by spawn*RemoteIPC and fired on close (or before a
@@ -198,6 +200,10 @@ type Service struct {
 	// contend. Entries are never deleted (bounded by the worker's
 	// distinct-worktree count over its lifetime).
 	worktreeRemovalLocks sync.Map
+	// archiveStateMu serializes archive and unarchive effects. The database
+	// state and process state must change in the same order when two lifecycle
+	// requests overlap.
+	archiveStateMu sync.Mutex
 
 	// gitIndexLocks serializes INDEX-MUTATING git commands per repository:
 	// `worktree add`/`remove`, `checkout`, `checkout -b`, `branch -D`, `add -A`,

@@ -71,7 +71,7 @@ func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ownerID, _, wsID, ownerTile, strangerTile := renderedTabCollision(t, st)
 
-	svc := service.NewWorkspaceService(st, nil)
+	svc := service.NewWorkspaceService(st, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(ownerID)})
 
 	resp, err := svc.GetTab(ctx, connect.NewRequest(&leapmuxv1.GetTabRequest{
@@ -126,7 +126,7 @@ func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 		require.NoError(t, st.WorkspaceTabIndex().UpsertRendered(ctx, row))
 	}
 
-	svc := service.NewWorkspaceService(st, nil)
+	svc := service.NewWorkspaceService(st, nil, nil)
 	locate := func(userID string) *connect.Response[leapmuxv1.LocateTabResponse] {
 		t.Helper()
 		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(userID)})

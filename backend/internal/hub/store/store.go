@@ -365,12 +365,13 @@ type WorkspaceTabIndexStore interface {
 	// invariant broke.
 	BulkDeleteOwned(ctx context.Context, keys []TabIndexKey) error
 	// ListOwnedByWorker returns p.UserID's owned tabs hosted by p.WorkerID.
+	// Each row includes the archive state derived from its current section.
 	// The result is authoritative ONLY for that owner: the worker's orphan
 	// reconciler infers "absent here means orphaned" from it, so a response
 	// must declare the owner it covers (see leapmuxv1.
 	// ListOwnedTabsForWorkerResponse.owner_user_id) rather than let a
 	// narrower scope read as a wider absence. A zero UserID returns nil.
-	ListOwnedByWorker(ctx context.Context, p ListOwnedTabsByWorkerParams) ([]WorkspaceTabRow, error)
+	ListOwnedByWorker(ctx context.Context, p ListOwnedTabsByWorkerParams) ([]WorkerTabStateRow, error)
 	// ListOwnedTabsByWorkspace returns every tab p.UserID holds in
 	// p.WorkspaceID, as (worker_id, tab_type, tab_id). A zero UserID returns
 	// nil. Owner-scoped because the caller cannot filter a foreign owner's rows

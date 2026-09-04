@@ -221,15 +221,16 @@ var procedureScopes = map[string]ScopeRequirement{
 	leapmuxv1connect.AppServiceDeleteAppProcedure:              Requires(leapmuxv1.Scope_SCOPE_ADMIN_APPS),
 
 	// --- WorkspaceService ---------------------------------------------------
-	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:  Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
-	leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:    Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
-	leapmuxv1connect.WorkspaceServiceListTabsProcedure:        Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
-	leapmuxv1connect.WorkspaceServiceGetTabProcedure:          Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
-	leapmuxv1connect.WorkspaceServiceLocateTabProcedure:       Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
-	leapmuxv1connect.WorkspaceServiceLocateTileProcedure:      Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
-	leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure: Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
-	leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure: Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
-	leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure: Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
+	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:           Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+	leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:             Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+	leapmuxv1connect.WorkspaceServiceListTabsProcedure:                 Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+	leapmuxv1connect.WorkspaceServiceGetTabProcedure:                   Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+	leapmuxv1connect.WorkspaceServiceLocateTabProcedure:                Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+	leapmuxv1connect.WorkspaceServiceLocateTileProcedure:               Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
+	leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure:          Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
+	leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure:          Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
+	leapmuxv1connect.WorkspaceServiceSetWorkspaceArchiveStateProcedure: Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
+	leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure:          Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_WRITE),
 
 	// --- SectionService: the sidebar's own layout ---------------------------
 	leapmuxv1connect.SectionServiceListSectionsProcedure:  Requires(leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
