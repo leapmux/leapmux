@@ -19,10 +19,11 @@
     "envVars": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["devEndpoint", "binaryHash"],
+      "required": ["devEndpoint", "binaryHash", "devFrontend"],
       "properties": {
         "devEndpoint": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
-        "binaryHash": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+        "binaryHash": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "devFrontend": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
       }
     },
     "tauriEvents": {

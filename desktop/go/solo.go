@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/solo"
 )
 
@@ -45,15 +47,33 @@ func (rt *soloRuntime) silenceWatcher() {
 	rt.stoppingOnce.Do(func() { close(rt.stopping) })
 }
 
+// desktopSoloConfig is the solo.Config the desktop sidecar always starts with.
+//
+// NoTCP keeps the packaged app off a default TCP port. When Rust's debug spawn
+// sets LEAPMUX_HUB_DEV_FRONTEND, Args enable the hub DevProxy so Network Access
+// extra listen addresses reach the same Vite/Bun server the webview uses.
+// Release builds leave the env unset and keep the embedded SPA.
+func desktopSoloConfig(devFrontend string) solo.Config {
+	cfg := solo.Config{
+		SkipBanner: true,
+		NoTCP:      true,
+	}
+	if devFrontend != "" {
+		cfg.Args = []string{"-dev-frontend", devFrontend}
+	}
+	return cfg
+}
+
+func desktopSoloConfigFromEnv() solo.Config {
+	return desktopSoloConfig(os.Getenv(contracts.EnvDevFrontend))
+}
+
 // defaultStartSolo launches a Hub and Worker in-process via the solo package.
 // NoTCP is set so no TCP port is opened. It is the default for App.startSolo,
 // which is a function field so tests can substitute a blocking startup and
 // assert lifecycleMu is not held across it.
 func (a *App) defaultStartSolo(ctx context.Context) (*soloRuntime, error) {
-	inst, err := solo.Start(ctx, solo.Config{
-		SkipBanner: true,
-		NoTCP:      true,
-	})
+	inst, err := solo.Start(ctx, desktopSoloConfigFromEnv())
 	if err != nil {
 		return nil, err
 	}

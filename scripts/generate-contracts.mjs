@@ -1397,11 +1397,13 @@ export function usernameConstName(name) {
 export const DESKTOP_GO_ENV_NAMES = {
   devEndpoint: 'EnvDevEndpoint',
   binaryHash: 'EnvBinaryHash',
+  devFrontend: 'EnvDevFrontend',
 }
 
 export const DESKTOP_RS_ENV_NAMES = {
   devEndpoint: 'ENV_DEV_ENDPOINT',
   binaryHash: 'ENV_BINARY_HASH',
+  devFrontend: 'ENV_DEV_FRONTEND',
 }
 
 export const DESKTOP_RS_EVENT_NAMES = {
@@ -1520,7 +1522,8 @@ export const DESKTOP_TS_WINDOW_MODE_NAMES = {
 }
 
 export function checkDesktop(d) {
-  mustBe(d.envVars.devEndpoint !== d.envVars.binaryHash, 'desktop.json', 'the two env vars must be distinct names')
+  const envNames = Object.values(d.envVars)
+  mustBe(new Set(envNames).size === envNames.length, 'desktop.json', 'two env vars share one name')
   const events = Object.values(d.tauriEvents)
   mustBe(new Set(events).size === events.length, 'desktop.json', 'two Tauri events share one name')
   checkTableCoverage('desktop.json', 'envVars', Object.keys(d.envVars), [

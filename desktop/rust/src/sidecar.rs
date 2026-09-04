@@ -31,7 +31,7 @@ use crate::sidecar_ipc::{
 use crate::sidecar_ipc::{finalize_sidecar_streams, SidecarReader, SidecarWriter};
 use crate::{
     SidecarMetadata, DEV_SIDECAR_CONNECT_TIMEOUT, DEV_SIDECAR_SHUTDOWN_TIMEOUT, ENV_BINARY_HASH,
-    ENV_DEV_ENDPOINT, SIDECAR_PROTOCOL_VERSION,
+    ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, SIDECAR_PROTOCOL_VERSION,
 };
 // `get_sidecar_info_request` / `check_response` / `sidecar_info_from_response`
 // back the unix `fetch_sidecar_info` handshake; the Windows twin lives in
@@ -112,10 +112,16 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
     }
     cleanup_dev_sidecar_artifacts(&endpoint, &metadata_path);
 
+    // Same URL as tauri.conf.json build.devUrl and DesktopShell's debug
+    // local_app_url. Without it, TCP extra listen addresses serve the
+    // embedded SPA from the sidecar binary instead of the Vite/Bun server.
+    const DEV_FRONTEND_URL: &str = "http://localhost:4328";
+
     let mut command = Command::new(sidecar_path);
     command
         .env(ENV_DEV_ENDPOINT, &endpoint)
         .env(ENV_BINARY_HASH, &binary_hash)
+        .env(ENV_DEV_FRONTEND, DEV_FRONTEND_URL)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
