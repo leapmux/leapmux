@@ -1,6 +1,12 @@
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
-import { BOOT_SPLASH_LABEL, BOOT_SPLASH_PHASES } from '~/lib/bootSplashTheme'
+import {
+  BOOT_SPLASH_CORE_PHASES,
+  BOOT_SPLASH_LABEL,
+  BOOT_SPLASH_PHASES,
+  BOOT_SPLASH_SHELL_PHASES,
+  BOOT_SPLASH_SHELL_ROW_CLASS,
+} from '~/lib/bootSplashTheme'
 import { BootSplash, BootSplashProgress } from './BootSplash'
 
 describe('boot splash component', () => {
@@ -19,7 +25,7 @@ describe('boot splash component', () => {
 
   // The checklist is the second of the two trees that must stay one design
   // (the static one is covered in `bootSplashTheme.test.ts`). Rows come from
-  // the shared phase array, and state changes only via CSS on the phase
+  // the shared phase arrays, and state changes only via CSS on the phase
   // attribute — the DOM here is identical in both trees.
   it('renders every checklist row from the shared phases, in order', () => {
     const { container } = render(() => <BootSplash />)
@@ -29,6 +35,22 @@ describe('boot splash component', () => {
     for (const [index, phase] of BOOT_SPLASH_PHASES.entries()) {
       expect(rows[index]).toHaveClass(`boot-splash-row-${phase.key}`)
       expect(rows[index]!.querySelector('.boot-splash-progress-label')).toHaveTextContent(phase.label)
+    }
+  })
+
+  it('marks only the shell phases with the shell row class', () => {
+    const { container } = render(() => <BootSplashProgress />)
+
+    expect(container.querySelectorAll(`.${BOOT_SPLASH_SHELL_ROW_CLASS}`)).toHaveLength(
+      BOOT_SPLASH_SHELL_PHASES.length,
+    )
+    for (const phase of BOOT_SPLASH_CORE_PHASES) {
+      const row = container.querySelector(`.boot-splash-row-${phase.key}`)
+      expect(row).not.toHaveClass(BOOT_SPLASH_SHELL_ROW_CLASS)
+    }
+    for (const phase of BOOT_SPLASH_SHELL_PHASES) {
+      const row = container.querySelector(`.boot-splash-row-${phase.key}`)
+      expect(row).toHaveClass(BOOT_SPLASH_SHELL_ROW_CLASS)
     }
   })
 

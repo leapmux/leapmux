@@ -96,6 +96,14 @@ describe('useWorkspaceLoader', () => {
 
     expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load sections', expect.any(Error))
     expect(sectionStore.state.error).toBe('hub unavailable')
+    // Both outcomes mark loaded: AppShell's boot overlay waits on it.
+    expect(sectionStore.state.loaded).toBe(true)
+  })
+
+  it('marks sections loaded after a successful mount load', async () => {
+    const { sectionStore } = mount()
+    await settle()
+    expect(sectionStore.state.loaded).toBe(true)
   })
 
   it('does not toast a workspace load that failed because the link dropped', async () => {

@@ -8,6 +8,7 @@
   "required": [
     "_readme",
     "envVars",
+    "devFrontendUrl",
     "tauriEvents",
     "windowBehavior",
     "launchVisibility",
@@ -19,11 +20,17 @@
     "envVars": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["devEndpoint", "binaryHash"],
+      "required": ["devEndpoint", "binaryHash", "devFrontend"],
       "properties": {
         "devEndpoint": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
-        "binaryHash": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+        "binaryHash": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "devFrontend": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
       }
+    },
+    "devFrontendUrl": {
+      "type": "string",
+      "pattern": "^https?://[^\\s]+$",
+      "description": "Vite/Bun DEV origin for the debug webview and the sidecar DevProxy. Must match tauri.conf.json build.devUrl. Emitted to Go and Rust only."
     },
     "tauriEvents": {
       "type": "object",

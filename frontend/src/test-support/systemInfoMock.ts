@@ -95,6 +95,7 @@ export const systemInfoMock = {
   isSoloMode: () => state().soloMode,
   isAutoAuthenticated: () => state().autoAuthenticated,
   passwordSetupRequired: () => state().passwordSetupRequired,
+  isPasswordSetupGate: () => state().passwordSetupRequired && state().autoAuthenticated,
   soloPasswordSet: () => state().soloPasswordSet,
   isSignupEnabled: () => state().signupEnabled,
   isSetupRequired: () => state().setupRequired,

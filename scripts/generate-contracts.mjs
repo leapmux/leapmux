@@ -1397,11 +1397,13 @@ export function usernameConstName(name) {
 export const DESKTOP_GO_ENV_NAMES = {
   devEndpoint: 'EnvDevEndpoint',
   binaryHash: 'EnvBinaryHash',
+  devFrontend: 'EnvDevFrontend',
 }
 
 export const DESKTOP_RS_ENV_NAMES = {
   devEndpoint: 'ENV_DEV_ENDPOINT',
   binaryHash: 'ENV_BINARY_HASH',
+  devFrontend: 'ENV_DEV_FRONTEND',
 }
 
 export const DESKTOP_RS_EVENT_NAMES = {
@@ -1520,7 +1522,8 @@ export const DESKTOP_TS_WINDOW_MODE_NAMES = {
 }
 
 export function checkDesktop(d) {
-  mustBe(d.envVars.devEndpoint !== d.envVars.binaryHash, 'desktop.json', 'the two env vars must be distinct names')
+  const envNames = Object.values(d.envVars)
+  mustBe(new Set(envNames).size === envNames.length, 'desktop.json', 'two env vars share one name')
   const events = Object.values(d.tauriEvents)
   mustBe(new Set(events).size === events.length, 'desktop.json', 'two Tauri events share one name')
   checkTableCoverage('desktop.json', 'envVars', Object.keys(d.envVars), [
@@ -1567,6 +1570,11 @@ export function checkDesktop(d) {
     ['DESKTOP_RS_WINDOW_MODE_NAMES', DESKTOP_RS_WINDOW_MODE_NAMES],
     ['DESKTOP_TS_WINDOW_MODE_NAMES', DESKTOP_TS_WINDOW_MODE_NAMES],
   ])
+  mustBe(
+    typeof d.devFrontendUrl === 'string' && d.devFrontendUrl.length > 0,
+    'desktop.json',
+    'devFrontendUrl must be a non-empty URL string',
+  )
   return {}
 }
 
@@ -1587,6 +1595,10 @@ ${goConstBlock(Object.keys(DESKTOP_GO_ENV_NAMES).map(k => ({ name: DESKTOP_GO_EN
 // bootstrap up to channelwire.UserEventsReadLimit -- plus its Frame/Event
 // proto envelope; the Rust shell enforces the same cap on read.
 const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}
+
+// DevFrontendURL is the Vite/Bun DEV origin the Rust debug spawn writes into
+// LEAPMUX_HUB_DEV_FRONTEND. It must match tauri.conf.json build.devUrl.
+const DevFrontendURL = ${jsonString(d.devFrontendUrl)}
 
 // The enum tokens of the Desktop account settings. usersettings/keys.go builds
 // each key's enum catalogue from these, and validateEnum derives the write-path
@@ -1677,6 +1689,11 @@ ${events}
 /// Frame cap the shell enforces on the sidecar IPC wire (the Go twin is
 /// contracts.MaxFrameSizeBytes).
 pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};
+
+/// Vite/Bun DEV origin for the debug webview and the sidecar DevProxy
+/// (the Go twin is contracts.DevFrontendURL). Must match tauri.conf.json
+/// build.devUrl.
+pub const DEV_FRONTEND_URL: &str = ${rustString(d.devFrontendUrl)};
 
 /// Enum tokens of the Desktop account settings, as the webview sends them in
 /// the \`set_desktop_behavior\` payload (the Go twin is the

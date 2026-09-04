@@ -31,7 +31,7 @@ use crate::sidecar_ipc::{
 use crate::sidecar_ipc::{finalize_sidecar_streams, SidecarReader, SidecarWriter};
 use crate::{
     SidecarMetadata, DEV_SIDECAR_CONNECT_TIMEOUT, DEV_SIDECAR_SHUTDOWN_TIMEOUT, ENV_BINARY_HASH,
-    ENV_DEV_ENDPOINT, SIDECAR_PROTOCOL_VERSION,
+    ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, SIDECAR_PROTOCOL_VERSION,
 };
 // `get_sidecar_info_request` / `check_response` / `sidecar_info_from_response`
 // back the unix `fetch_sidecar_info` handshake; the Windows twin lives in
@@ -86,12 +86,13 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
             if info.protocol_version == SIDECAR_PROTOCOL_VERSION
                 && info.binary_hash == binary_hash =>
         {
-            write_sidecar_metadata(&metadata_path, &endpoint, &binary_hash)?;
-            return Ok(SidecarBootstrap {
-                child: None,
-                reader,
-                writer,
-            });
+            // Do not reuse: a live process from before LEAPMUX_HUB_DEV_FRONTEND
+            // (or started without it) would keep TCP extras on the embedded SPA.
+            // Drop the streams and ask it to exit so the spawn below sets the env.
+            drop((reader, writer));
+            if !request_sidecar_shutdown(&endpoint) {
+                endpoint = private_endpoint;
+            }
         }
         // Ours, but a stale build or protocol. Ask it to go; if it ignores us, leave
         // it holding the path.
@@ -112,10 +113,14 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
     }
     cleanup_dev_sidecar_artifacts(&endpoint, &metadata_path);
 
+    // Same URL as tauri.conf.json build.devUrl and contracts.devFrontendUrl
+    // (crate::DEV_FRONTEND_URL). Without it, TCP extra listen addresses serve
+    // the embedded SPA from the sidecar binary instead of the Vite/Bun server.
     let mut command = Command::new(sidecar_path);
     command
         .env(ENV_DEV_ENDPOINT, &endpoint)
         .env(ENV_BINARY_HASH, &binary_hash)
+        .env(ENV_DEV_FRONTEND, crate::DEV_FRONTEND_URL)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
@@ -156,6 +161,10 @@ fn bootstrap_dev_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String
 
 fn spawn_stdio_sidecar(sidecar_path: &Path) -> Result<SidecarBootstrap, String> {
     let mut command = Command::new(sidecar_path);
+    // Packaged/release must not inherit a leaked LEAPMUX_HUB_DEV_FRONTEND from
+    // the parent environment — that would enable DevProxy onto a URL that is
+    // not running. Debug spawn sets the env explicitly in bootstrap_dev_sidecar.
+    command.env_remove(ENV_DEV_FRONTEND);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

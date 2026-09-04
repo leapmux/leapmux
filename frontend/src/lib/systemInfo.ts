@@ -145,6 +145,15 @@ export function passwordSetupRequired(): boolean {
 }
 
 /**
+ * Whether AuthGuard and Auth bootstrap must take the password-setup path
+ * instead of the shell. True only when the hub auto-authenticates AND still
+ * requires a password to be set.
+ */
+export function isPasswordSetupGate(): boolean {
+  return passwordSetupRequired() && isAutoAuthenticated()
+}
+
+/**
  * Whether the solo hub's single account holds a password.
  *
  * The HUB's rule, which is what the Network access panel asks: publishing an

@@ -3,10 +3,14 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  BOOT_SPLASH_CORE_PHASES,
   BOOT_SPLASH_ICON_HEIGHT,
   BOOT_SPLASH_ICON_WIDTH,
   BOOT_SPLASH_LABEL,
   BOOT_SPLASH_PHASES,
+  BOOT_SPLASH_SHELL_ATTRIBUTE,
+  BOOT_SPLASH_SHELL_PHASES,
+  BOOT_SPLASH_SHELL_ROW_CLASS,
   BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
   bootSplashDocumentCss,
@@ -188,11 +192,11 @@ test.describe('boot splash layout across the app stylesheet', () => {
  * does the rest. Two things only a layout engine can check:
  *
  * - the logo and the label hold STILL while the checklist advances (rows
- *   change state by opacity alone, and `ready` fades in place rather than
- *   collapsing), measured with oat's sheet present so the list element rules
- *   the splash must neutralize are in play;
- * - the attribute actually maps to done checks, an active row, and the
- *   `ready` fade.
+ *   change state by opacity alone, and `ready` keeps the list in place rather
+ *   than collapsing), measured with oat's sheet present so the list element
+ *   rules the splash must neutralize are in play;
+ * - the attribute actually maps to done checks, an active row, and a visible
+ *   finished checklist on `ready`.
  */
 test.describe('boot splash progress checklist', () => {
   const check = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="boot-splash-progress-check"><polyline points="20 6 9 17 4 12"/></svg>`
@@ -201,12 +205,16 @@ test.describe('boot splash progress checklist', () => {
     + '<span class="boot-splash-progress-dot"></span>'
     + '<span class="boot-splash-progress-dot"></span>'
     + '</span>'
-  const rows = BOOT_SPLASH_PHASES.map(phase =>
-    `<li class="boot-splash-progress-row boot-splash-row-${phase.key}">`
+  const rowMarkup = (phase: { key: string, label: string }, shell: boolean) =>
+    `<li class="boot-splash-progress-row boot-splash-row-${phase.key}`
+    + `${shell ? ` ${BOOT_SPLASH_SHELL_ROW_CLASS}` : ''}">`
     + `<span class="boot-splash-progress-label">${phase.label}</span>`
     + `<span class="boot-splash-progress-status">${check}${dots}</span>`
-    + '</li>',
-  ).join('')
+    + '</li>'
+  const rows = [
+    ...BOOT_SPLASH_CORE_PHASES.map(phase => rowMarkup(phase, false)),
+    ...BOOT_SPLASH_SHELL_PHASES.map(phase => rowMarkup(phase, true)),
+  ].join('')
   const markup = `<div id="${BOOT_SPLASH_STATIC_ID}" data-testid="${BOOT_SPLASH_TEST_ID}" role="status">`
     + '<div class="boot-splash-loading">'
     + `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${BOOT_SPLASH_ICON_WIDTH}" height="${BOOT_SPLASH_ICON_HEIGHT}" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0D9488" /></svg>`
@@ -232,7 +240,9 @@ test.describe('boot splash progress checklist', () => {
       }
     })
 
-    // No attribute yet: `initializing` is the active row.
+    // No attribute yet: `initializing` is the active row. Shell rows stay in
+    // the layout (visibility:hidden) without data-boot-shell, so phase
+    // advances never grow the column — the same contract login/signup see.
     const baseline = await read()
     expect(baseline.gap).toBe(16)
     for (const key of [...BOOT_SPLASH_PHASES.map(p => p.key), 'ready']) {
@@ -241,9 +251,16 @@ test.describe('boot splash progress checklist', () => {
       }, key)
       expect(await read(), `phase ${key}`).toEqual(baseline)
     }
+
+    // Revealing shell rows must not move the logo or label either — including
+    // after more BOOT_SPLASH_SHELL_PHASES entries land in the markup.
+    await page.evaluate((attr) => {
+      document.documentElement.setAttribute(attr, '')
+    }, BOOT_SPLASH_SHELL_ATTRIBUTE)
+    expect(await read(), 'after data-boot-shell').toEqual(baseline)
   })
 
-  test('maps the attribute to done checks, one active row, and the ready fade', async ({ page }) => {
+  test('maps the attribute to done checks, one active row, and a visible ready list', async ({ page }) => {
     // Opacity transitions would make every read a race with the animation;
     // reduced motion switches them off, which is exactly the steady state.
     await page.emulateMedia({ reducedMotion: 'reduce' })
@@ -274,7 +291,52 @@ test.describe('boot splash progress checklist', () => {
     await page.evaluate(() => {
       document.documentElement.setAttribute('data-boot-phase', 'ready')
     })
+    // ready without data-boot-shell (login/signup): checklist fades out.
     await expect.poll(() => opacity('.boot-splash-row-session .boot-splash-progress-check')).toBe('1')
+    await expect.poll(() => opacity('.boot-splash-row-initializing .boot-splash-progress-check')).toBe('1')
     await expect.poll(() => opacity('.boot-splash-progress')).toBe('0')
+
+    await page.evaluate((attr) => {
+      document.documentElement.setAttribute(attr, '')
+    }, BOOT_SPLASH_SHELL_ATTRIBUTE)
+    // Shell path keeps the finished checklist readable under AppShell.
+    await expect.poll(() => opacity('.boot-splash-progress')).toBe('1')
+  })
+
+  test('keeps shell rows invisible off the shell path, and shows them with data-boot-shell', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${markup}</div>`)
+
+    const styleOf = (selector: string) =>
+      page.locator(selector).evaluate((el) => {
+        const s = getComputedStyle(el)
+        return { display: s.display, visibility: s.visibility }
+      })
+
+    // Still display:grid (layout reserved); only visibility hides them.
+    expect(await styleOf('.boot-splash-row-workspaces')).toEqual({ display: 'grid', visibility: 'hidden' })
+    expect(await styleOf('.boot-splash-row-tabs')).toEqual({ display: 'grid', visibility: 'hidden' })
+    expect(await styleOf('.boot-splash-row-session')).toEqual({ display: 'grid', visibility: 'visible' })
+
+    await page.evaluate((attr) => {
+      document.documentElement.setAttribute(attr, '')
+      document.documentElement.setAttribute('data-boot-phase', 'workspaces')
+    }, BOOT_SPLASH_SHELL_ATTRIBUTE)
+
+    expect(await styleOf('.boot-splash-row-workspaces')).toEqual({ display: 'grid', visibility: 'visible' })
+    expect(await styleOf('.boot-splash-row-tabs')).toEqual({ display: 'grid', visibility: 'visible' })
+    await expect.poll(() =>
+      page.locator('.boot-splash-row-session .boot-splash-progress-check')
+        .evaluate(el => getComputedStyle(el).opacity),
+    ).toBe('1')
+    expect(await page.locator('.boot-splash-row-workspaces .boot-splash-progress-dots')
+      .evaluate(el => getComputedStyle(el).opacity)).toBe('1')
+  })
+
+  test('fades the splash in on first paint, and skips the entrance under reduced motion', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${markup}</div>`)
+    const opacity = await page.locator(`#${BOOT_SPLASH_STATIC_ID}`).evaluate(el => getComputedStyle(el).opacity)
+    expect(opacity).toBe('1')
   })
 })

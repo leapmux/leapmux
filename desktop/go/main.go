@@ -18,6 +18,9 @@ import (
 //	  to an already-running sidecar across reloads.
 //	envBinaryHash — hash the Rust shell computed from the sidecar binary;
 //	  the sidecar reports it back so the shell can detect stale processes.
+//	EnvDevFrontend — debug-only URL of the Vite/Bun frontend. When set,
+//	  solo starts with -dev-frontend so TCP extra listen addresses proxy
+//	  to that server (see desktopSoloConfig). Release builds leave it unset.
 const (
 	envDevEndpoint = contracts.EnvDevEndpoint
 	envBinaryHash  = contracts.EnvBinaryHash

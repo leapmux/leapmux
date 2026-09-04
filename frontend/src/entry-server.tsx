@@ -1,5 +1,6 @@
 import { createHandler, StartServer } from '@solidjs/start/server'
 import { BootSplashIcon, BootSplashProgress } from '~/components/common/BootSplash'
+import { BootDocumentHeadAssets } from '~/lib/BootDocumentHeadAssets'
 import {
   BOOT_SPLASH_FAIL_TITLE,
   BOOT_SPLASH_LABEL,
@@ -14,10 +15,14 @@ import {
   bootThemeScript,
 } from '~/lib/bootSplashTheme'
 import { frontendBuildInfo } from '~/lib/buildEnv'
+import { minifyInlineCss } from '~/lib/minifyInlineCss'
+
+/** Splash CSS minified once at module load — the source string is fixed. */
+const BOOT_SPLASH_DOCUMENT_CSS = minifyInlineCss(bootSplashDocumentCss())
 
 export default createHandler(() => (
   <StartServer
-    document={({ assets, children, scripts }) => (
+    document={({ children, scripts }) => (
       <html
         lang="en"
         data-version={frontendBuildInfo.version || undefined}
@@ -66,9 +71,10 @@ export default createHandler(() => (
           {/*
             Zero-JS splash polarity + html/body fill until the app stylesheet
             takes over. `bootSplashDocumentCss` is the only splash stylesheet
-            — Solid's `BootSplash` matches via `[data-testid]`.
+            — Solid's `BootSplash` matches via `[data-testid]`. Minify at emit
+            so the source stays readable and the inline block stays small.
           */}
-          <style>{bootSplashDocumentCss()}</style>
+          <style>{BOOT_SPLASH_DOCUMENT_CSS}</style>
           {/*
             Do NOT preload Hack NF faces here. Each face is ~1.1 MB; the LTE
             cold-start tracer ranked even a single Regular preload as ~50% of
@@ -84,7 +90,12 @@ export default createHandler(() => (
             `bootThemeScript`.
           */}
           <script>{bootThemeScript()}</script>
-          {assets}
+          {/*
+            Ignore StartServer's pre-rendered `assets` prop. Re-read the raw
+            asset list and emit: deferred app stylesheets (after splash paint)
+            and a single client-entry modulepreload. See BootDocumentHeadAssets.
+          */}
+          <BootDocumentHeadAssets />
         </head>
         <body>
           {/*

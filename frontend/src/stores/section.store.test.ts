@@ -20,6 +20,18 @@ describe('createSectionStore', () => {
       expect(store.state.items).toEqual([])
       expect(store.state.loading).toBe(false)
       expect(store.state.error).toBeNull()
+      expect(store.state.loaded).toBe(false)
+      dispose()
+    })
+  })
+
+  it('markLoaded flips loaded and never clears it', () => {
+    createRoot((dispose) => {
+      const store = createSectionStore()
+      store.markLoaded()
+      expect(store.state.loaded).toBe(true)
+      store.markLoaded()
+      expect(store.state.loaded).toBe(true)
       dispose()
     })
   })

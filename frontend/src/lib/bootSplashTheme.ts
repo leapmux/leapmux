@@ -79,10 +79,16 @@ export const BOOT_SPLASH_LABEL = 'Loading LeapMux…'
  * The attribute advances in this order: the document script
  * (`bootPhaseScript`) marks `loading-bundles` once the splash markup is
  * parsed, `entry-client` marks `mounting` when the entry graph executes,
- * and `AuthProvider.bootstrap` marks `system-info` → `session` → `ready`
- * around its two hub RPCs.
+ * `AuthProvider.bootstrap` marks `system-info` → `session`, then either
+ * `ready` (signed-out / non-shell) or `workspaces` (authenticated shell).
+ * AppShell then marks `tabs` → `ready` around its list and CRDT wait.
+ *
+ * {@link BOOT_SPLASH_SHELL_PHASES} sit after the core rows. They stay in the
+ * layout from first paint and only become visible when {@link setBootShell}
+ * opts the document into the shell path — login, signup, and password-setup
+ * never show them, and revealing them never moves the logo or core rows.
  */
-export const BOOT_SPLASH_PHASES = [
+export const BOOT_SPLASH_CORE_PHASES = [
   { key: 'initializing', label: 'Initializing' },
   { key: 'loading-bundles', label: 'Loading bundles' },
   { key: 'mounting', label: 'Mounting application' },
@@ -90,19 +96,58 @@ export const BOOT_SPLASH_PHASES = [
   { key: 'session', label: 'Restoring session' },
 ] as const
 
+/** Shell-only rows: workspaces list, then CRDT tabs. Hidden off the shell path. */
+export const BOOT_SPLASH_SHELL_PHASES = [
+  { key: 'workspaces', label: 'Loading workspaces' },
+  { key: 'tabs', label: 'Restoring tabs' },
+] as const
+
+/** Core then shell — the full ordered checklist the phase CSS walks. */
+export const BOOT_SPLASH_PHASES = [
+  ...BOOT_SPLASH_CORE_PHASES,
+  ...BOOT_SPLASH_SHELL_PHASES,
+] as const
+
 export type BootPhaseKey = (typeof BOOT_SPLASH_PHASES)[number]['key']
 
-/** Terminal phase: every row checked, the checklist fades. Not a row. */
+/** Finished phase: every visible row checked. Not a row. */
 export const BOOT_PHASE_READY = 'ready'
+
+/**
+ * Fade duration for the splash entrance and for the exit crossfade over the
+ * ready shell. One number so the CSS transition and the AppShell unmount
+ * timer cannot drift.
+ */
+export const BOOT_SPLASH_ENTER_MS = 220
 
 export type BootPhase = BootPhaseKey | typeof BOOT_PHASE_READY
 
 /** Attribute on `<html>` that carries the current boot phase to the CSS. */
 export const BOOT_SPLASH_PHASE_ATTRIBUTE = 'data-boot-phase'
 
+/**
+ * Attribute on `<html>` that reveals {@link BOOT_SPLASH_SHELL_PHASES}.
+ * Set only on the authenticated AppShell path; absent on login/signup/etc.
+ */
+export const BOOT_SPLASH_SHELL_ATTRIBUTE = 'data-boot-shell'
+
+/** Class on each shell-only checklist row; CSS hides it without the attribute. */
+export const BOOT_SPLASH_SHELL_ROW_CLASS = 'boot-splash-progress-shell'
+
 /** Client-side phase advance; see {@link BOOT_SPLASH_PHASES} for the order. */
 export function setBootPhase(phase: BootPhase): void {
   document.documentElement.setAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE, phase)
+}
+
+/**
+ * Show or hide the shell-only checklist rows. `true` on the AppShell path;
+ * `false` on login/signup/password-setup and on logout.
+ */
+export function setBootShell(enabled: boolean): void {
+  if (enabled)
+    document.documentElement.setAttribute(BOOT_SPLASH_SHELL_ATTRIBUTE, '')
+  else
+    document.documentElement.removeAttribute(BOOT_SPLASH_SHELL_ATTRIBUTE)
 }
 
 export const BOOT_SPLASH_ICON_WIDTH = 64
@@ -172,7 +217,15 @@ export const BOOT_SPLASH_FAIL_TIMEOUT_DETAIL
  * (check visible, label half-muted), the phase's own row is active (full
  * label, pulsing dots), rows below stay pending. With no attribute at all the
  * first row is active — the document has rendered but `bootPhaseScript` has
- * not run yet. `ready` checks every row and fades the whole list in place.
+ * not run yet. `ready` checks every row. Without `data-boot-shell` the list
+ * fades out (login/signup). With `data-boot-shell`, AppShell keeps this splash
+ * up until workspaces and tabs land, so the finished checklist stays readable.
+ *
+ * Shell-only rows (`BOOT_SPLASH_SHELL_PHASES`) stay in the layout from first
+ * paint and use `visibility:hidden` until `data-boot-shell` is set, so
+ * login/signup never show them and revealing them cannot move the logo or
+ * core rows. Phase selectors still cover those keys; when the rows are
+ * invisible the painted state is simply unseen.
  *
  * Selectors are deliberately unscoped: the `boot-splash-progress-*` classes
  * exist only inside the two splash trees, and the phase attribute persists on
@@ -197,13 +250,27 @@ function bootProgressPhaseCss(): string {
   const unstarted = `html:not([${attr}])`
   const ready = `html[${attr}="${BOOT_PHASE_READY}"]`
   const all = BOOT_SPLASH_PHASES.map(p => p.key)
+  const shellAttr = BOOT_SPLASH_SHELL_ATTRIBUTE
+  const shellRow = BOOT_SPLASH_SHELL_ROW_CLASS
+  const id = BOOT_SPLASH_STATIC_ID
+  const testId = BOOT_SPLASH_TEST_ID
+  // Keep `display:grid` from the shared row rule. Hiding with visibility (not
+  // display:none) reserves the row height from first paint, so toggling
+  // data-boot-shell — or adding another BOOT_SPLASH_SHELL_PHASES entry —
+  // cannot shift the logo or label.
   return [
+    `#${id} .${shellRow},[data-testid="${testId}"] .${shellRow}{visibility:hidden}`,
+    `html[${shellAttr}] #${id} .${shellRow},html[${shellAttr}] [data-testid="${testId}"] .${shellRow}{visibility:visible}`,
     phases,
     rows(unstarted, [BOOT_SPLASH_PHASES[0].key], ' .boot-splash-progress-label', 'opacity:1'),
     rows(unstarted, [BOOT_SPLASH_PHASES[0].key], ' .boot-splash-progress-dots', 'opacity:1'),
     rows(ready, all, ' .boot-splash-progress-label', 'opacity:.6'),
     rows(ready, all, ' .boot-splash-progress-check', 'opacity:1'),
-    `${ready} .boot-splash-progress{opacity:0}`,
+    // Non-shell paths (login/signup): fade the finished checklist before
+    // AuthGuard unmounts the splash. Shell path keeps the list visible under
+    // AppShell's overlay until tabs land (`data-boot-shell`).
+    `html[${attr}="${BOOT_PHASE_READY}"]:not([${shellAttr}]) #${id} .boot-splash-progress,`
+    + `html[${attr}="${BOOT_PHASE_READY}"]:not([${shellAttr}]) [data-testid="${testId}"] .boot-splash-progress{opacity:0}`,
   ].join('')
 }
 
@@ -303,7 +370,16 @@ body{
   line-height:${BOOT_SPLASH_LINE_HEIGHT};
   background:${lightBg};
   color:${lightFg};
+  animation:boot-splash-enter ${BOOT_SPLASH_ENTER_MS}ms ease-out both;
 }
+/*
+  Entrance is for cold first paint only. Once the phase attribute has moved
+  past initializing, a Solid splash that replaces the static node (or that
+  AppShell overlays after AuthGuard) must stay opaque — a second fade would
+  blink the logo the user is already reading.
+*/
+html[${BOOT_SPLASH_PHASE_ATTRIBUTE}]:not([${BOOT_SPLASH_PHASE_ATTRIBUTE}="initializing"]) [data-testid="${testId}"]:not(#${id}){animation:none}
+@keyframes boot-splash-enter{from{opacity:0}to{opacity:1}}
 #${id}{min-height:100%}
 [data-testid="${testId}"]:not(#${id}){min-height:100dvh}
 @media (prefers-color-scheme: dark){
@@ -394,7 +470,7 @@ html[data-theme="dark"] #${id},html[data-theme="dark"] [data-testid="${testId}"]
 @keyframes boot-splash-dot{0%,100%{opacity:.2}50%{opacity:1}}
 ${bootProgressPhaseCss()}
 @media (prefers-reduced-motion: reduce){
-  #${id} .boot-splash-label,[data-testid="${testId}"] .boot-splash-label,.boot-splash-progress-dot{animation:none}
+  #${id},[data-testid="${testId}"],#${id} .boot-splash-label,[data-testid="${testId}"] .boot-splash-label,.boot-splash-progress-dot{animation:none}
   .boot-splash-progress,.boot-splash-progress-label,.boot-splash-progress-check,.boot-splash-progress-dots{transition:none}
 }
 `.trim()

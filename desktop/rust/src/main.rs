@@ -160,7 +160,9 @@ const CACHED_CONFIG_TIMEOUT: Duration = Duration::from_secs(5);
 mod contracts_generated {
     include!("generated/contracts.rs");
 }
-pub(crate) use contracts_generated::{ENV_BINARY_HASH, ENV_DEV_ENDPOINT, MAX_FRAME_SIZE_BYTES};
+pub(crate) use contracts_generated::{
+    DEV_FRONTEND_URL, ENV_BINARY_HASH, ENV_DEV_ENDPOINT, ENV_DEV_FRONTEND, MAX_FRAME_SIZE_BYTES,
+};
 
 /// The shell's own record of the dev sidecar it last bootstrapped, written for
 /// human/debug inspection and read back by nothing.
@@ -424,7 +426,7 @@ impl DesktopShell {
     /// the launcher defaults until that call completes.
     fn connect(app_handle: AppHandle) -> Result<Self, String> {
         let local_app_url = if cfg!(debug_assertions) {
-            "http://localhost:4328".to_string()
+            crate::DEV_FRONTEND_URL.to_string()
         } else {
             "tauri://localhost".to_string()
         };

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
-import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, passwordSetupRequired, refreshSnapshot, soloPasswordSet } from './systemInfo'
+import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, passwordSetupRequired, refreshSnapshot, soloPasswordSet } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
@@ -428,5 +428,28 @@ describe('the solo connection facts', () => {
 
     expect(passwordSetupRequired()).toBe(true)
     expect(soloPasswordSet()).toBe(false)
+  })
+
+  it('isPasswordSetupGate is true only when both halves hold', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      autoAuthenticated: true,
+      passwordSetupRequired: true,
+    }))
+    await loadSystemInfo(true)
+    expect(isPasswordSetupGate()).toBe(true)
+
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      autoAuthenticated: true,
+      passwordSetupRequired: false,
+    }))
+    await loadSystemInfo(true)
+    expect(isPasswordSetupGate()).toBe(false)
+
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      autoAuthenticated: false,
+      passwordSetupRequired: true,
+    }))
+    await loadSystemInfo(true)
+    expect(isPasswordSetupGate()).toBe(false)
   })
 })

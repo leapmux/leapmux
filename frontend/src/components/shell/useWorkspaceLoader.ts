@@ -94,8 +94,12 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
       showWarnToastUnlessDisconnected('Failed to load sections', err)
     }
     finally {
-      if (seq === sectionSeq)
+      if (seq === sectionSeq) {
         sectionStore.setLoading(false)
+        // Marked on BOTH outcomes: AppShell's boot overlay waits on `loaded`
+        // the same way it waits on the workspace list — "an attempt finished".
+        sectionStore.markLoaded()
+      }
     }
   }
 
