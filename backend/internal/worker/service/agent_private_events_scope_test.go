@@ -1,15 +1,38 @@
 package service
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
+
+// TestPrivateEventFixturesStateAKindOnEveryHost pins the precondition every
+// case below depends on, against the SAME tabPayloadType the code under test
+// calls: each fixture payload must state a kind on the running host.
+//
+// privateEventVisible fails closed on a payload it cannot classify, so a
+// fixture the host rejects makes a visibility assertion fail while reporting
+// the scope gate -- the behavior the test exists to pin and the one part of it
+// that is correct. This case reports the fixture instead.
+func TestPrivateEventFixturesStateAKindOnEveryHost(t *testing.T) {
+	t.Parallel()
+
+	fileKind, err := tabPayloadType(filePayloadFor("/repo/a.txt"))
+	require.NoErrorf(t, err, "the FILE fixture must state a kind on %s", runtime.GOOS)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, fileKind)
+
+	imageKind, err := tabPayloadType(imagePayloadFor("agent-a", 42, 0, "mcp__playwright__screenshot"))
+	require.NoErrorf(t, err, "the IMAGE fixture must state a kind on %s", runtime.GOOS)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_IMAGE, imageKind)
+}
 
 // A tab rename's title is exactly what the agent:read / terminal:read scopes
 // govern, and the private-events bus multiplexes those renames beside the
@@ -96,16 +119,26 @@ func TestPrivateEventVisiblePassesRevocations(t *testing.T) {
 	assert.True(t, privateEventVisible(fileOnly, revoked))
 }
 
-func filePayloadFor(path string) *leapmuxv1.TabPayload {
+// filePayloadFor builds a FILE payload from a POSIX-style path literal.
+//
+// The literal goes through testutil.NativeAbsPath because privateEventVisible
+// reaches tabPayloadType, which asks filepath.IsAbs whether the file_path is
+// absolute. That question is platform-specific: "/repo/a.txt" is NOT absolute
+// on Windows, so a raw literal makes tabPayloadType fail closed and every
+// assertion below that expects a visible FILE event fails there for a reason
+// none of them is about. TestPrivateEventFixturesStateAKindOnEveryHost pins it.
+func filePayloadFor(posixPath string) *leapmuxv1.TabPayload {
 	return &leapmuxv1.TabPayload{
-		WorkingDir: "/repo",
-		Kind:       &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: path}},
+		WorkingDir: testutil.NativeAbsPath("/repo"),
+		Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{
+			FilePath: testutil.NativeAbsPath(posixPath),
+		}},
 	}
 }
 
 func imagePayloadFor(agentID string, seq int64, index int32, title string) *leapmuxv1.TabPayload {
 	return &leapmuxv1.TabPayload{
-		WorkingDir: "/repo",
+		WorkingDir: testutil.NativeAbsPath("/repo"),
 		Kind: &leapmuxv1.TabPayload_Image{Image: &leapmuxv1.ImageTabPayload{
 			AgentId: agentID, Seq: seq, ImageIndex: index, Title: title,
 		}},
