@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { resetSystemInfoMock } from '~/test-support/systemInfoMock'
 import { usePreferencesForIdentity } from './usePreferencesForIdentity'
 
 const getCurrentUser = vi.hoisted(() => vi.fn())
@@ -44,20 +45,10 @@ vi.mock('~/api/platformBridge', () => ({
   platformBridge: { resetTunnels: vi.fn().mockResolvedValue(undefined) },
 }))
 
-vi.mock('~/lib/systemInfo', () => ({
-  isSoloMode: () => false,
-  // A multi-user hub: every caller signs in, and none of the solo facts hold.
-  isAutoAuthenticated: () => false,
-  isPasswordSetupGate: () => false,
-  passwordSetupRequired: () => false,
-  soloPasswordSet: () => false,
-  loadSystemInfo: vi.fn().mockResolvedValue(undefined),
-  isSystemInfoLoaded: () => true,
-  isCaptchaEnabled: () => false,
-  getAltchaAlgorithm: () => '',
-  getCaptchaProvider: () => 1,
-  getCaptchaSiteKey: () => '',
-}))
+vi.mock('~/lib/systemInfo', async () => {
+  const mock = await import('~/test-support/systemInfoMock')
+  return mock.systemInfoMock
+})
 
 /** The hub's answer for a page that carries no session cookie. */
 function unauthenticated(): ConnectError {
@@ -143,6 +134,8 @@ async function renderBootstrapped() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The shared defaults describe the multi-user hub that these cases need.
+  resetSystemInfoMock()
   localStorageClearForTests()
   // These cases drive the identity through the real AuthProvider. The default
   // test identity would make the first resolved identity look unchanged.
