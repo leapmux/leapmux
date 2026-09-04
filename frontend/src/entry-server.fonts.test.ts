@@ -26,10 +26,15 @@ describe('entry-server boot splash polarity', () => {
     const path = resolve(dirname(fileURLToPath(import.meta.url)), 'entry-server.tsx')
     const src = readFileSync(path, 'utf8')
     expect(src).toContain('bootSplashDocumentCss')
+    expect(src).toContain('minifyInlineCss')
+    expect(src).toContain('BootDocumentHeadAssets')
     expect(src).toContain('bootThemeScript')
     expect(src).toContain('bootFailureWatchdogScript')
     expect(src).toContain('BOOT_SPLASH_LABEL')
     expect(src).toContain('BOOT_SPLASH_STATIC_ID')
     expect(src).toContain('BootSplashIcon')
+    // StartServer's pre-rendered assets prop must not land in the head —
+    // BootDocumentHeadAssets re-emits a filtered set so splash paints first.
+    expect(src).not.toContain('{assets}')
   })
 })

@@ -1,10 +1,12 @@
 import type { Component } from 'solid-js'
 import { For } from 'solid-js'
 import {
+  BOOT_SPLASH_CORE_PHASES,
   BOOT_SPLASH_ICON_HEIGHT,
   BOOT_SPLASH_ICON_WIDTH,
   BOOT_SPLASH_LABEL,
-  BOOT_SPLASH_PHASES,
+  BOOT_SPLASH_SHELL_PHASES,
+  BOOT_SPLASH_SHELL_ROW_CLASS,
   BOOT_SPLASH_TEST_ID,
 } from '~/lib/bootSplashTheme'
 
@@ -61,29 +63,41 @@ export const BootSplashCheck: Component = () => (
   </svg>
 )
 
+function progressRow(phase: { key: string, label: string }, shell: boolean) {
+  const shellClass = shell ? ` ${BOOT_SPLASH_SHELL_ROW_CLASS}` : ''
+  return (
+    <li class={`boot-splash-progress-row boot-splash-row-${phase.key}${shellClass}`}>
+      <span class="boot-splash-progress-label">{phase.label}</span>
+      <span class="boot-splash-progress-status">
+        <BootSplashCheck />
+        <span class="boot-splash-progress-dots">
+          <span class="boot-splash-progress-dot" />
+          <span class="boot-splash-progress-dot" />
+          <span class="boot-splash-progress-dot" />
+        </span>
+      </span>
+    </li>
+  )
+}
+
 /**
  * The boot checklist, shared by both splash trees. Every row is rendered from
  * first paint and changes state only via CSS driven by `data-boot-phase` on
  * `<html>` (see `BOOT_SPLASH_PHASES`), so this markup is static and identical
  * in the pre-JS document and the Solid splash — there is no runtime state to
  * hand over at the static→Solid switch.
+ *
+ * Shell-only rows are in the DOM on every path but stay `display:none` until
+ * `data-boot-shell` is set (authenticated AppShell). Login/signup never show
+ * them.
  */
 export const BootSplashProgress: Component = () => (
   <ul class="boot-splash-progress">
-    <For each={BOOT_SPLASH_PHASES}>
-      {phase => (
-        <li class={`boot-splash-progress-row boot-splash-row-${phase.key}`}>
-          <span class="boot-splash-progress-label">{phase.label}</span>
-          <span class="boot-splash-progress-status">
-            <BootSplashCheck />
-            <span class="boot-splash-progress-dots">
-              <span class="boot-splash-progress-dot" />
-              <span class="boot-splash-progress-dot" />
-              <span class="boot-splash-progress-dot" />
-            </span>
-          </span>
-        </li>
-      )}
+    <For each={BOOT_SPLASH_CORE_PHASES}>
+      {phase => progressRow(phase, false)}
+    </For>
+    <For each={BOOT_SPLASH_SHELL_PHASES}>
+      {phase => progressRow(phase, true)}
     </For>
   </ul>
 )

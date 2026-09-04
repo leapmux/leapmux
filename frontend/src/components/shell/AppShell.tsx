@@ -13,10 +13,11 @@ import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { setExpectedUserId } from '~/api/workerRpc'
+import { BootSplash } from '~/components/common/BootSplash'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { setTerminalScreenSink } from '~/components/terminal/TerminalView'
@@ -34,6 +35,7 @@ import { useShortcuts } from '~/hooks/useShortcuts'
 import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
+import { BOOT_PHASE_READY, BOOT_SPLASH_ENTER_MS, setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
 import { KEY_ACTIVE_WORKSPACE, KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
@@ -62,6 +64,7 @@ import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelectio
 import { createTabView } from '~/stores/tabView'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { createWorkspaceStore } from '~/stores/workspace.store'
+import * as styles from './AppShell.css'
 import { AppShellDialogs } from './AppShellDialogs'
 import { CustomTitlebar } from './CustomTitlebar'
 import * as titlebarStyles from './CustomTitlebar.css'
@@ -76,6 +79,7 @@ import { renameTab } from './renameTab'
 import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 import { createTabSelectionRestorer } from './restoreTabSelection'
 import { SectionDragProvider } from './SectionDragContext'
+import { isShellReady } from './shellReady'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
 import { TabDragProvider } from './TabDragContext'
 import { focusTile as focusTileShared } from './tileLifecycle'
@@ -819,6 +823,59 @@ export const AppShell: Component = () => {
   /** The shared "nothing to tile" input: no selection AND no saved id. */
   const centerNoWorkspace = createMemo(() => !activeWorkspace() && !workspace.activeWorkspaceId())
 
+  /**
+   * Hold BootSplash over the shell until lists and (when applicable) tabs are
+   * real. AuthGuard already dropped its splash; without this overlay the
+   * chrome paints empty and fills in — see `isShellReady`.
+   */
+  const shellReady = createMemo(() => isShellReady({
+    workspacesLoaded: workspaceStore.state.loaded,
+    sectionsLoaded: sectionStore.state.loaded,
+    workspaceCount: workspaceStore.state.workspaces.length,
+    workspaceError: workspaceStore.state.error,
+    activeWorkspaceId: workspace.activeWorkspaceId(),
+    centerReady: centerReady(),
+    bootstrapTimedOut: bootstrapTimedOut(),
+  }))
+
+  // Advance the shell-only checklist rows. Auth already revealed them and set
+  // `workspaces`; this moves to `tabs` once both lists finish, then `ready`
+  // when the overlay may lift. Login sign-in mounts AppShell with phase still
+  // on `ready` from the signed-out bootstrap, so onMount re-enters workspaces.
+  onMount(() => {
+    setBootShell(true)
+    setBootPhase('workspaces')
+  })
+  onCleanup(() => {
+    setBootShell(false)
+  })
+  createEffect(() => {
+    if (shellReady()) {
+      setBootPhase(BOOT_PHASE_READY)
+      return
+    }
+    if (workspaceStore.state.loaded && sectionStore.state.loaded)
+      setBootPhase('tabs')
+  })
+
+  // Keep BootSplash mounted through the exit fade so the ready shell can
+  // show underneath (crossfade). Reduced motion skips the wait and drops
+  // the overlay in the same tick as shellReady.
+  const [bootSplashMounted, setBootSplashMounted] = createSignal(true)
+  createEffect(() => {
+    if (!shellReady()) {
+      setBootSplashMounted(true)
+      return
+    }
+    if (typeof window !== 'undefined'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setBootSplashMounted(false)
+      return
+    }
+    const timer = window.setTimeout(setBootSplashMounted, BOOT_SPLASH_ENTER_MS, false)
+    onCleanup(() => clearTimeout(timer))
+  })
+
   const openNewWorkspaceDialog = () => {
     newWorkspaceDialog.open({
       targetSectionId: sectionStore.getInProgressSection()?.id ?? null,
@@ -1401,49 +1458,70 @@ export const AppShell: Component = () => {
         sidebar, or a saved id that `resolveActiveWorkspace` has already checked
         against the loaded list — so the dead-end 404 has no way to be reached,
         and the missing-workspace case became a fallback instead of a page.
+
+        BootSplash sits as an absolute overlay until `shellReady`, then fades
+        out over the revealed chrome (exit crossfade). The shell mounts
+        underneath (visibility:hidden) so list/CRDT work continues; it becomes
+        visible the moment the fade starts.
       */}
-      <WorkspaceShellLayer />
+      <div class={styles.bootShellHost}>
+        <div
+          class={styles.bootShellContent}
+          data-ready={shellReady() ? '' : undefined}
+          aria-hidden={!shellReady()}
+        >
+          <WorkspaceShellLayer />
 
-      <tileRenderer.CloseDialogs />
+          <tileRenderer.CloseDialogs />
 
-      <Show when={cliPathInfo()}>
-        {info => (
-          <CliPathDialog
-            status={info()}
-            onClose={() => setCliPathInfo(null)}
+          <Show when={cliPathInfo()}>
+            {info => (
+              <CliPathDialog
+                status={info()}
+                onClose={() => setCliPathInfo(null)}
+              />
+            )}
+          </Show>
+
+          <AppShellDialogs
+            dialogs={dialogs}
+            loadSections={loadSections}
+            onBranchChanged={(repo, newBranch) => handleBranchChanged(
+              { repoGitStore },
+              repo,
+              newBranch,
+            )}
+            activeWorkspace={activeWorkspace}
+            isWorkspaceMutatable={isWorkspaceMutatableById}
+            getCurrentTabContext={getCurrentTabContext}
+            agentOps={agentOps}
+            termOps={termOps}
+            tabOps={tabOps}
+            view={tabView}
+            metadata={tabMetadata}
+            selection={selection}
+            layoutStore={layoutStore}
+            sectionStore={sectionStore}
+            focusEditor={() => focusEditorRef()?.()}
+            loadWorkspaces={loadWorkspaces}
+            onSelectWorkspace={id => handleSelectWorkspace(id)}
+            availableProviders={agentOps.availableProviders()}
+            onRefreshProviders={agentOps.loadAvailableProviders}
+            repoGitStore={repoGitStore}
           />
-        )}
-      </Show>
 
-      <AppShellDialogs
-        dialogs={dialogs}
-        loadSections={loadSections}
-        onBranchChanged={(repo, newBranch) => handleBranchChanged(
-          { repoGitStore },
-          repo,
-          newBranch,
-        )}
-        activeWorkspace={activeWorkspace}
-        isWorkspaceMutatable={isWorkspaceMutatableById}
-        getCurrentTabContext={getCurrentTabContext}
-        agentOps={agentOps}
-        termOps={termOps}
-        tabOps={tabOps}
-        view={tabView}
-        metadata={tabMetadata}
-        selection={selection}
-        layoutStore={layoutStore}
-        sectionStore={sectionStore}
-        focusEditor={() => focusEditorRef()?.()}
-        loadWorkspaces={loadWorkspaces}
-        onSelectWorkspace={id => handleSelectWorkspace(id)}
-        availableProviders={agentOps.availableProviders()}
-        onRefreshProviders={agentOps.loadAvailableProviders}
-        repoGitStore={repoGitStore}
-      />
-
-      <workerSection.Dialogs />
-
+          <workerSection.Dialogs />
+        </div>
+        <Show when={bootSplashMounted()}>
+          <div
+            class={styles.bootSplashOverlay}
+            data-exiting={shellReady() ? '' : undefined}
+            aria-hidden={shellReady() || undefined}
+          >
+            <BootSplash />
+          </div>
+        </Show>
+      </div>
     </TunnelProvider>
   )
 }

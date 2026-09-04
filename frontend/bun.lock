@@ -41,6 +41,7 @@
         "diff": "^9.0.0",
         "fracturedjsonjs": "^5.0.1",
         "fzstd": "^0.1.1",
+        "lightningcss": "^1.33.0",
         "lucide-solid": "^1.34.0",
         "random-word-slugs": "^0.1.7",
         "rehype-stringify": "^10.0.1",

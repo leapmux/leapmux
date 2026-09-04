@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BOOT_PHASE_READY,
+  BOOT_SPLASH_ENTER_MS,
   BOOT_SPLASH_FAIL_TIMEOUT_DETAIL,
   BOOT_SPLASH_FAIL_TIMEOUT_MS,
   BOOT_SPLASH_FAIL_TITLE,
@@ -13,6 +14,9 @@ import {
   BOOT_SPLASH_PHASE_ATTRIBUTE,
   BOOT_SPLASH_PHASES,
   BOOT_SPLASH_RELOAD_LABEL,
+  BOOT_SPLASH_SHELL_ATTRIBUTE,
+  BOOT_SPLASH_SHELL_PHASES,
+  BOOT_SPLASH_SHELL_ROW_CLASS,
   BOOT_SPLASH_SPACE_4,
   BOOT_SPLASH_STATIC_ID,
   BOOT_SPLASH_TEST_ID,
@@ -24,6 +28,7 @@ import {
   bootThemeScript,
   removeStaticBootSplash,
   setBootPhase,
+  setBootShell,
 } from './bootSplashTheme'
 
 describe('boot splash palette', () => {
@@ -441,6 +446,7 @@ describe('boot splash lockstep sources', () => {
 describe('boot phase checklist', () => {
   afterEach(() => {
     document.documentElement.removeAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)
+    document.documentElement.removeAttribute(BOOT_SPLASH_SHELL_ATTRIBUTE)
   })
 
   // The stylesheet generates one selector per key; a duplicate key would
@@ -455,6 +461,9 @@ describe('boot phase checklist', () => {
     // checklist the user reads.
     expect(BOOT_SPLASH_PHASES[1]!.key).toBe('loading-bundles')
     expect(BOOT_SPLASH_PHASES[4]!.key).toBe('session')
+    expect(BOOT_SPLASH_SHELL_PHASES.map(p => p.key)).toEqual(['workspaces', 'tabs'])
+    expect(BOOT_SPLASH_PHASES[5]!.key).toBe('workspaces')
+    expect(BOOT_SPLASH_PHASES[6]!.key).toBe('tabs')
   })
 
   it('advances to loading-bundles the moment the document is parsed, and reads no storage', () => {
@@ -478,6 +487,13 @@ describe('boot phase checklist', () => {
     expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe(BOOT_PHASE_READY)
   })
 
+  it('setBootShell toggles the attribute that reveals shell rows', () => {
+    setBootShell(true)
+    expect(document.documentElement.hasAttribute(BOOT_SPLASH_SHELL_ATTRIBUTE)).toBe(true)
+    setBootShell(false)
+    expect(document.documentElement.hasAttribute(BOOT_SPLASH_SHELL_ATTRIBUTE)).toBe(false)
+  })
+
   it('styles a done row, an active row, and the default from the attribute', () => {
     const css = bootSplashDocumentCss()
 
@@ -491,10 +507,38 @@ describe('boot phase checklist', () => {
     expect(css).not.toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="loading-bundles"] .boot-splash-row-mounting .boot-splash-progress-check`)
     // Before any script runs, the first row is the active one.
     expect(css).toContain(`html:not([${BOOT_SPLASH_PHASE_ATTRIBUTE}]) .boot-splash-row-initializing .boot-splash-progress-dots{opacity:1}`)
-    // ready checks every row and fades the list in place — in place, because
-    // display:none would move the logo and label the user is reading.
+    // ready checks every row and leaves the list visible — AppShell keeps the
+    // splash up until tabs land, so the finished checklist must stay readable.
     expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-row-session .boot-splash-progress-check{opacity:1}`)
-    expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-progress{opacity:0}`)
+    expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-row-tabs .boot-splash-progress-check{opacity:1}`)
+    expect(css).not.toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-progress{opacity:0}`)
+  })
+
+  it('hides shell rows until data-boot-shell, at a specificity that beats the row grid', () => {
+    const css = bootSplashDocumentCss()
+
+    // Must beat `#boot-splash .boot-splash-progress-row{display:grid}`.
+    expect(css).toContain(
+      `#${BOOT_SPLASH_STATIC_ID} .${BOOT_SPLASH_SHELL_ROW_CLASS},[data-testid="${BOOT_SPLASH_TEST_ID}"] .${BOOT_SPLASH_SHELL_ROW_CLASS}{display:none}`,
+    )
+    expect(css).toContain(
+      `html[${BOOT_SPLASH_SHELL_ATTRIBUTE}] #${BOOT_SPLASH_STATIC_ID} .${BOOT_SPLASH_SHELL_ROW_CLASS},`
+      + `html[${BOOT_SPLASH_SHELL_ATTRIBUTE}] [data-testid="${BOOT_SPLASH_TEST_ID}"] .${BOOT_SPLASH_SHELL_ROW_CLASS}{display:grid}`,
+    )
+  })
+
+  it('fades the splash in on cold first paint, and skips re-entrance for Solid', () => {
+    const css = bootSplashDocumentCss()
+
+    expect(css).toContain(`animation:boot-splash-enter ${BOOT_SPLASH_ENTER_MS}ms ease-out both`)
+    expect(css).toContain('@keyframes boot-splash-enter{from{opacity:0}to{opacity:1}}')
+    // Once the phase has moved past initializing, a Solid splash must not
+    // fade in again — that blinks the logo during the static→Solid handoff
+    // and again when AppShell overlays after AuthGuard.
+    expect(css).toContain(
+      `html[${BOOT_SPLASH_PHASE_ATTRIBUTE}]:not([${BOOT_SPLASH_PHASE_ATTRIBUTE}="initializing"]) `
+      + `[data-testid="${BOOT_SPLASH_TEST_ID}"]:not(#${BOOT_SPLASH_STATIC_ID}){animation:none}`,
+    )
   })
 
   it('neutralizes oat list element rules so the checklist does not reflow when oat lands', () => {
@@ -573,17 +617,48 @@ describe('boot phase wiring', () => {
 
     expect(auth).toContain(`setBootPhase('system-info')`)
     expect(auth).toContain(`setBootPhase('session')`)
+    expect(auth).toContain(`setBootPhase('workspaces')`)
     expect(auth).toContain(`setBootPhase('${BOOT_PHASE_READY}')`)
+    expect(auth).toContain('setBootShell(true)')
+    expect(auth).toContain('setBootShell(false)')
   })
 
-  it('keeps the check geometry Lucide Check and the rows on the shared array', () => {
+  it('advances the shell checklist from AppShell', () => {
+    const shell = source('../components/shell/AppShell.tsx')
+
+    expect(shell).toContain(`setBootPhase('workspaces')`)
+    expect(shell).toContain(`setBootPhase('tabs')`)
+    expect(shell).toContain('setBootPhase(BOOT_PHASE_READY)')
+    expect(shell).toContain('setBootShell(true)')
+    // Exit crossfade: keep the splash mounted for BOOT_SPLASH_ENTER_MS after
+    // shellReady, matching the overlay CSS transition.
+    expect(shell).toContain('BOOT_SPLASH_ENTER_MS')
+    expect(shell).toContain('bootSplashMounted')
+    expect(shell).toContain('data-exiting')
+  })
+
+  it('fades the shell boot overlay out on the same duration as entrance', () => {
+    const css = source('../components/shell/AppShell.css.ts')
+
+    expect(css).toContain('BOOT_SPLASH_ENTER_MS')
+    expect(css).toContain('bootSplashOverlay')
+    expect(css).toContain('bootShellHost')
+    expect(css).toContain('bootShellContent')
+    expect(css).toContain('data-exiting')
+    expect(css).toContain('data-ready')
+    expect(css).toContain('prefers-reduced-motion')
+  })
+
+  it('keeps the check geometry Lucide Check and the rows on the shared arrays', () => {
     const splash = source('../components/common/BootSplash.tsx')
 
     expect(splash).toContain('points="20 6 9 17 4 12"')
     expect(splash).toContain('stroke-width="2"')
     expect(splash).toContain('stroke-linecap="round"')
     expect(splash).toContain('stroke-linejoin="round"')
-    expect(splash).toContain('<For each={BOOT_SPLASH_PHASES}>')
+    expect(splash).toContain('BOOT_SPLASH_CORE_PHASES')
+    expect(splash).toContain('BOOT_SPLASH_SHELL_PHASES')
+    expect(splash).toContain('BOOT_SPLASH_SHELL_ROW_CLASS')
     expect(splash).toContain('boot-splash-progress-check')
   })
 })

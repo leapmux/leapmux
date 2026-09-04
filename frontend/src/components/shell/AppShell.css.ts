@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { BOOT_SPLASH_ENTER_MS } from '~/lib/bootSplashTheme'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { motion } from '~/styles/tokens'
 import { tileContent } from './Tile.css'
@@ -279,4 +280,50 @@ export const dragPreviewTooltip = style({
   // No `text-overflow` here: this box is a flex container, and the property
   // acts on a block container's own inline content, never on a flex item. The
   // label inside carries `clippedText` and ellipsizes itself.
+})
+
+/**
+ * Host for the shell + BootSplash overlay stack. `position: relative` anchors
+ * the absolute splash; height fills the tunnel provider.
+ */
+export const bootShellHost = style({
+  position: 'relative',
+  height: '100%',
+})
+
+/**
+ * Shell chrome under the splash. Stays `visibility:hidden` while lists/CRDT
+ * load (layout still runs), then `data-ready` reveals it as the splash fades.
+ */
+export const bootShellContent = style({
+  height: '100%',
+  visibility: 'hidden',
+  selectors: {
+    '&[data-ready]': {
+      visibility: 'visible',
+    },
+  },
+})
+
+/**
+ * Absolute overlay that holds BootSplash until the shell is ready, then fades
+ * out over the revealed chrome. Duration matches {@link BOOT_SPLASH_ENTER_MS}
+ * so AppShell's unmount timer and this transition stay one number.
+ */
+export const bootSplashOverlay = style({
+  'position': 'absolute',
+  'inset': 0,
+  'opacity': 1,
+  'transition': `opacity ${BOOT_SPLASH_ENTER_MS}ms ease-out`,
+  'selectors': {
+    '&[data-exiting]': {
+      opacity: 0,
+      pointerEvents: 'none',
+    },
+  },
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
 })

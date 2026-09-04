@@ -11,13 +11,13 @@ import { platformBridge } from '~/api/platformBridge'
 import { loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/transport'
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/proto/leapmux/v1/auth_pb'
-import { setBootPhase } from '~/lib/bootSplashTheme'
+import { setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
 import { setStorageAccount } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
-import { isAutoAuthenticated, loadSystemInfo } from '~/lib/systemInfo'
+import { isAutoAuthenticated, loadSystemInfo, passwordSetupRequired } from '~/lib/systemInfo'
 import { passkeyErrorMessage, startAuthentication } from '~/lib/webauthn'
 
 const log = createLogger('auth')
@@ -281,6 +281,8 @@ export const AuthProvider: ParentComponent = (props) => {
     // The elevation belongs to the session that just ended. Leaving it would
     // make /elevate redirect a signed-out visitor away immediately.
     setElevationExpiresAt(undefined)
+    // Shell checklist rows must not linger on login after a sign-out.
+    setBootShell(false)
   }
 
   /**
@@ -433,11 +435,14 @@ export const AuthProvider: ParentComponent = (props) => {
    * `bootstrapError` for the guard's retry panel to render.
    *
    * Each stage also advances the boot splash's checklist (data-boot-phase on
-   * <html>): system info, then the session restore, then ready. A failure
+   * <html>): system info, then the session restore, then either `ready`
+   * (signed-out / password-setup) or `workspaces` with the shell rows revealed
+   * (authenticated AppShell). AppShell advances `tabs` → `ready`. A failure
    * leaves the checklist on the stage that failed, which is the truth.
    */
   const bootstrap = async () => {
     setBootstrapError(null)
+    setBootShell(false)
     setBootPhase('system-info')
     try {
       await loadSystemInfo()
@@ -450,6 +455,15 @@ export const AuthProvider: ParentComponent = (props) => {
     }
     setBootPhase('session')
     await restoreSession()
+    if (bootstrapError())
+      return
+    // Same gate AuthGuard uses: password-setup is authenticated but not the
+    // shell, so it must not reveal the workspaces/tabs rows.
+    if (user() && !(passwordSetupRequired() && isAutoAuthenticated())) {
+      setBootShell(true)
+      setBootPhase('workspaces')
+      return
+    }
     setBootPhase('ready')
   }
 

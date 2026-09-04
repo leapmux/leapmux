@@ -7,6 +7,14 @@ interface SectionStoreState {
   items: SectionItem[]
   loading: boolean
   error: string | null
+  /**
+   * Whether a load has ever COMPLETED (successfully or not).
+   *
+   * Same reason as the workspace store's `loaded` bit: `loading` starts false
+   * and only flips inside onMount, so the first render cannot tell "never
+   * asked" from "asked and empty". AppShell's boot overlay waits on this.
+   */
+  loaded: boolean
 }
 
 export function createSectionStore() {
@@ -15,6 +23,7 @@ export function createSectionStore() {
     items: [],
     loading: false,
     error: null,
+    loaded: false,
   })
 
   return {
@@ -30,6 +39,11 @@ export function createSectionStore() {
 
     setLoading(loading: boolean) {
       setState('loading', loading)
+    },
+
+    /** Marks that a load attempt has completed; never goes back to false. */
+    markLoaded() {
+      setState('loaded', true)
     },
 
     setError(error: string | null) {
