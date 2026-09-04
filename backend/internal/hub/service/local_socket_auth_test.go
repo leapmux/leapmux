@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -65,7 +66,12 @@ func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.I
 	ln, err := net.Listen("unix", shortSocketPath(t))
 	require.NoError(t, err)
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler: mux,
+		BaseContext: func(net.Listener) context.Context {
+			return peer.WithLocalIPC(context.Background())
+		},
+	}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
 		_ = srv.Shutdown(context.Background())

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -985,8 +984,7 @@ func TestBudgetKeyFor(t *testing.T) {
 	loginSpec := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
 	elevationSpec := procedureOperations[leapmuxv1connect.UserServiceElevateSessionProcedure]
 
-	remote := peer.WithRemoteAddr(context.Background(),
-		&net.TCPAddr{IP: net.ParseIP("192.168.1.24"), Port: 51234})
+	remote := peer.WithClientIP(context.Background(), "192.168.1.24")
 
 	t.Run("an address-keyed operation counts an unauthenticated caller", func(t *testing.T) {
 		key, ok := budgetKeyFor(remote, newTestManager(t), loginSpec)
@@ -1000,9 +998,8 @@ func TestBudgetKeyFor(t *testing.T) {
 		assert.Equal(t, "anonymous:192.168.1.24", key)
 	})
 
-	t.Run("two ports of one caller share a budget", func(t *testing.T) {
-		second := peer.WithRemoteAddr(context.Background(),
-			&net.TCPAddr{IP: net.ParseIP("192.168.1.24"), Port: 51235})
+	t.Run("one verified client IP uses one budget", func(t *testing.T) {
+		second := peer.WithClientIP(context.Background(), "192.168.1.24")
 		first, _ := budgetKeyFor(remote, newTestManager(t), loginSpec)
 		other, _ := budgetKeyFor(second, newTestManager(t), loginSpec)
 		assert.Equal(t, first, other, "a fresh connection per guess must not mint a fresh budget")

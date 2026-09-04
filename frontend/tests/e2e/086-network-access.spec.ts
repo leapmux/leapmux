@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import type { SoloServerHandle } from './helpers/devServer'
 import { connect } from 'node:net'
 import { expect, test } from './fixtures'
@@ -7,6 +8,16 @@ import { logoutViaUI, openSettingsAt } from './helpers/ui'
 
 /** A password the hub's own validator accepts. */
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
+const SOLO_ENV = { LEAPMUX_HUB_DEV_FRONTEND: undefined }
+
+async function completeSoloSetup(page: Page) {
+  const gate = page.getByTestId('password-setup-gate')
+  await expect(gate).toBeVisible()
+  await gate.getByLabel('New Password').fill(SOLO_PASSWORD)
+  await gate.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
+  await gate.getByRole('button', { name: 'Set Password' }).click()
+  await expect(gate).toBeHidden()
+}
 
 /**
  * Whether an address ACCEPTS a TCP connection.
@@ -35,15 +46,15 @@ async function accepts(port: number): Promise<boolean> {
 /**
  * The Network access panel, on a real `leapmux solo` hub.
  *
- * A solo instance of its own, not the shared `leapmux dev` fixture: the panel
- * and the rule it configures exist only in solo mode, and dev mode has real
- * password authentication from the start.
+ * A solo instance of its own, not the shared `leapmux dev` fixture. The
+ * additional listen-address row exists only in solo mode. The trusted-proxy
+ * row also appears in hub and dev modes.
  */
 test.describe('Network access', () => {
   let solo: SoloServerHandle | undefined
 
   test.beforeEach(async () => {
-    solo = await startSoloServer()
+    solo = await startSoloServer({ env: SOLO_ENV })
   })
 
   test.afterEach(async () => {
@@ -52,6 +63,7 @@ test.describe('Network access', () => {
 
   test('publishes an address, then asks every address for the password', async ({ page }) => {
     await page.goto(`${solo!.hubUrl}/`)
+    await completeSoloSetup(page)
 
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
@@ -69,11 +81,6 @@ test.describe('Network access', () => {
     await row.getByRole('button', { name: '+ Add address' }).click()
     await row.getByLabel('Port').fill(String(port))
 
-    // Apply is refused until the account has a password: publishing an address
-    // without one would put the whole app behind nothing.
-    await expect(row.getByRole('button', { name: 'Apply' })).toBeDisabled()
-    await row.getByLabel('New Password').fill(SOLO_PASSWORD)
-    await row.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
     await expect(row.getByRole('button', { name: 'Apply' })).toBeEnabled()
 
     await row.getByRole('button', { name: 'Apply' }).click()
@@ -113,9 +120,8 @@ test.describe('Network access', () => {
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
 
-    // And the session can be ENDED. A solo hub offered no Log out while it
-    // authenticated everybody with nothing; this one holds a real session, and
-    // whoever signed in must be able to sign out again.
+    // The session can be ended. This browser holds a real TCP session, and the
+    // user must be able to sign out again.
     //
     // The dialog is closed first because it is addressable -- its open state
     // lives in `?prefs=` -- so the reload above brought it back over the app
@@ -127,14 +133,13 @@ test.describe('Network access', () => {
 
   test('removes an address and stops answering there', async ({ page }) => {
     await page.goto(`${solo!.hubUrl}/`)
+    await completeSoloSetup(page)
     const dialog = await openSettingsAt(page, 'admin-network')
     const row = dialog.locator('[data-setting-id="extra_listen_addresses"]')
 
     const port = await findFreePort()
     await row.getByRole('button', { name: '+ Add address' }).click()
     await row.getByLabel('Port').fill(String(port))
-    await row.getByLabel('New Password').fill(SOLO_PASSWORD)
-    await row.getByLabel('Confirm Password').fill(SOLO_PASSWORD)
     await row.getByRole('button', { name: 'Apply' }).click()
     await expect(row.getByText('Network access updated.')).toBeVisible()
     expect(await accepts(port)).toBe(true)
@@ -159,5 +164,26 @@ test.describe('Network access', () => {
     // And the -listen address is never dropped, whatever the list says: Apply
     // merges it back in every time.
     expect(await accepts(Number(solo!.listen.split(':').pop()))).toBe(true)
+  })
+
+  test('stores trusted proxy providers symbolically', async ({ page }) => {
+    await page.goto(`${solo!.hubUrl}/`)
+    await completeSoloSetup(page)
+    const dialog = await openSettingsAt(page, 'admin-network')
+    const row = dialog.locator('[data-setting-id="trusted_proxy_ranges"]')
+
+    await expect(row).toBeVisible()
+    await expect(row.getByRole('alert')).toContainText('shared provider infrastructure')
+    await row.getByRole('button', { name: /^Add/ }).click()
+    await page.getByRole('menuitemcheckbox', { name: /AWS CloudFront/ }).click()
+    await expect(row.getByLabel('Trusted proxy selector')).toHaveValue('cloudfront')
+    await row.getByRole('button', { name: 'Apply' }).click()
+    await expect(row.getByText('Trusted reverse proxies updated.')).toBeVisible()
+
+    await dialog.getByRole('button', { name: 'Close' }).click()
+    await expect(dialog).toBeHidden()
+    const reopened = await openSettingsAt(page, 'admin-network')
+    await expect(reopened.locator('[data-setting-id="trusted_proxy_ranges"]')
+      .getByLabel('Trusted proxy selector')).toHaveValue('cloudfront')
   })
 })

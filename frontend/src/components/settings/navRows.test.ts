@@ -134,6 +134,17 @@ describe('occupiedNavGroups', () => {
     expect(groups.map(g => g.id)).toContain('admin-captcha')
   })
 
+  it('keeps Network access when the solo-only listen row is hidden', () => {
+    const groups = occupiedNavGroups(NAV_GROUPS, group({
+      isAdmin: true,
+      adminRows: [
+        hubRow({ id: 'extra_listen_addresses', category: 'network', hidden: () => true }),
+        hubRow({ id: 'trusted_proxy_ranges', category: 'network' }),
+      ],
+    }))
+    expect(groups.map(g => g.id)).toContain('admin-network')
+  })
+
   it('lists the occupied groups in navigation order', () => {
     const groups = occupiedNavGroups(NAV_GROUPS, group({
       isAdmin: true,

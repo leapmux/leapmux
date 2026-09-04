@@ -35,7 +35,7 @@ Any command name can be shortened as far as it stays unambiguous.
 
 | Command | What it does | Reference |
 |---------|--------------|-----------|
-| `solo` | Hub + Worker in one process, loopback by default, no login until you set a password | [Running LeapMux](/docs/admin/running-leapmux/) |
+| `solo` | Hub + Worker in one process; local IPC is credential-free and TCP starts with password setup | [Running LeapMux](/docs/admin/running-leapmux/) |
 | `hub` | Hub service only; Workers connect separately | [Running LeapMux](/docs/admin/running-leapmux/) |
 | `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/admin/managing-workers/) |
 | `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/admin/running-leapmux/) |
@@ -59,7 +59,7 @@ Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are 
 
 ## solo
 
-Run a Hub and a Worker in one process on loopback. There is no login until the `solo` account has a password; setting one makes every network address ask for it. See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) for details, and [Network access](/docs/admin/configuration/#network-access) for serving more than loopback.
+Run a Hub and a Worker in one process on loopback. Local IPC needs no credential. A TCP browser sets the first `solo` password, then every TCP address asks for it. See [Running LeapMux](/docs/admin/running-leapmux/#solo-mode) and [Network access](/docs/admin/configuration/#network-access).
 
 ```bash
 leapmux solo [flags]
@@ -82,7 +82,7 @@ leapmux solo [flags]
 | `-version` | — | Print version and exit |
 
 {{< callout type="info" >}}
-Binding solo to a non-loopback address logs a warning, because a fresh solo hub has no password on its one account. Set one (see [Network access](/docs/admin/configuration/#network-access)), or use `hub` or `dev` for a multi-user deployment.
+Binding solo to a non-loopback address logs a warning. Before the account has a password, the first TCP caller can claim it through the restricted setup flow. Set the password first, or use `hub` or `dev` for a multi-user deployment.
 {{< /callout >}}
 
 {{< callout type="info" >}}

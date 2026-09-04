@@ -50,31 +50,16 @@ func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) b
 
 // clientAddressKey is the budget key for an anonymous caller: its IP address.
 //
-// The REMOTE ADDRESS of the connection, never a forwarded header. A header is
-// caller-controlled, so keying on one would let an attacker mint a fresh budget
-// per request by varying it -- which is worse than no limit, because it also
-// lets them exhaust a victim's budget by claiming the victim's address.
-//
-// A hub behind a reverse proxy therefore sees the proxy's address and shares
-// one budget across every client behind it. That is the honest reading of what
-// the hub can actually verify, and the budget is sized for it: these endpoints
-// are polled, not held open, so the default admits a large multiple of what one
-// real client needs.
-//
-// The port is stripped, because a client picks a fresh one per connection and
-// keying on it would give every request its own budget.
+// The request-source middleware verifies this value against the unchanged
+// transport peer before it records it. An unknown client shares one budget.
 func clientAddressKey(r *http.Request) string {
-	addr := r.RemoteAddr
-	return AddressBudgetKey(peer.HostOf(addr))
+	return AddressBudgetKey(peer.ClientIP(r.Context()))
 }
 
 // AddressBudgetKey renders one anonymous caller's budget key from its host.
 //
-// It is exported because the two entry points reach the host differently: the
-// plain-HTTP door reads r.RemoteAddr, and the Connect interceptor reads the
-// peer the http.Server stamped on the context. Both must produce the SAME key,
-// or one caller would hold two budgets and neither would limit it. peer.HostOf
-// is the shared reduction that makes the two agree.
+// It is exported because the HTTP and Connect entry points must render the
+// same verified client IP as the same key.
 func AddressBudgetKey(host string) string {
 	if host == "" {
 		// An unaddressed caller (a test transport, a unix socket) shares one

@@ -45,9 +45,9 @@ export const LoginPage: Component = () => {
   let usernameRef!: HTMLInputElement
   let passwordRef!: HTMLInputElement
 
-  // Two guards ABOVE this page answer the two hubs with no login to offer. A solo
-  // hub authenticates every request, so `SignedOutOnly` sends that visitor to
-  // the app; a hub whose first-run setup is not complete has no account, so
+  // Two guards above this page answer hubs with no login to offer. A local IPC
+  // solo connection needs no credential, so `SignedOutOnly` sends it to the
+  // app. A hub whose first-run setup is not complete has no account, so
   // `SetupGate` sends them to `/setup`. Both guards cover every credential
   // address rather than this one alone.
   //

@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -105,6 +106,21 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 		require.NoError(t, err)
 		hubtestutil.AssertSessionLifetime(t, before, time.Hour, expiresAt)
 	})
+}
+
+func TestCreateSession_RecordsVerifiedClientIP(t *testing.T) {
+	t.Parallel()
+	ctx := peer.WithClientIP(context.Background(), "2001:0db8::7")
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	user, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
+	require.NoError(t, err)
+
+	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(user.ID), time.Hour)
+	require.NoError(t, err)
+	session, err := st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, "2001:db8::7", session.IPAddress)
 }
 
 // Workspace access is owner-only: no other user may read someone else's workspace.

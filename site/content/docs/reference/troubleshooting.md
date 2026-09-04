@@ -169,15 +169,31 @@ See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/ad
 The browser can't connect to the Hub at all (connection refused / timeout) from a different host than the one running LeapMux.
 
 **Cause**
-Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreachable from other machines on purpose, because until the `solo` account has a password every request is authenticated as the admin with no credentials.
+Solo mode binds **`127.0.0.1:4327`** by default, so another machine cannot reach it. A TCP browser on the same machine completes the restricted first-password setup.
 
 **Fix**
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.
 - To serve other machines, do **not** simply rebind solo to all interfaces. Either:
   - Run `leapmux hub` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
-  - To expose solo mode, set the `solo` account's password first and add the address in **Preferences → Administration → Network access**; every network address then asks for that password. Restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust. Solo mode emits a warning when it binds a non-loopback address, because until that password exists every request is authenticated as the admin without credentials. See [Security & Threat Model](/docs/admin/security/) for the full implications.
+  - To expose solo mode, set the `solo` password first and add the address in **Preferences → Administration → Network access**. Every TCP address then asks for that password. Restrict access with a firewall, VPN, or SSH tunnel. Solo mode warns on a non-loopback address because another machine can win first-password setup before the password exists. See [Security & Threat Model](/docs/admin/security/).
 
 See [Running LeapMux](/docs/admin/running-leapmux/) for binding and listen-address options.
+
+### Sessions or rate limits show the reverse proxy address
+
+**Symptom**
+Session records show the proxy IP, or all users behind the proxy share one address-keyed rate limit.
+
+**Cause**
+The direct proxy peer does not match `trusted_proxy_ranges`, or the preferred forwarding header is malformed. LeapMux ignores forwarding headers from untrusted peers. If `Forwarded` exists, LeapMux does not fall back to X-Forwarded headers.
+
+**Fix**
+- Add the direct proxy address or range under **Preferences → Administration → Network access → Trusted reverse proxies**.
+- Configure the proxy to remove client-supplied forwarding headers or append only verified values.
+- Correct or remove a malformed `Forwarded` header before you rely on `X-Forwarded-For`.
+- Use a manual range when a bundled `cloudflare` or `cloudfront` snapshot does not contain the current proxy address.
+
+See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies) for selector forms and security requirements.
 
 ### Blank page or the UI won't load in development
 

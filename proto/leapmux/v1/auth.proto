@@ -8,6 +8,10 @@ import "google/protobuf/timestamp.proto";
 service AuthService {
   // Authenticate with username and password.
   rpc Login(LoginRequest) returns (LoginResponse);
+  // Set the first password for the solo account and create an elevated
+  // session. This is the only protected setup action available to a TCP
+  // caller before the solo account has a usable password.
+  rpc SetInitialSoloPassword(SetInitialSoloPasswordRequest) returns (SetInitialSoloPasswordResponse);
   // Invalidate the current session.
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   // Get the currently authenticated user.
@@ -92,6 +96,14 @@ message EmailVerificationStatus {
 message LoginResponse {
   User user = 1;
   EmailVerificationStatus email_verification = 2;
+}
+
+message SetInitialSoloPasswordRequest {
+  string password = 1;
+}
+
+message SetInitialSoloPasswordResponse {
+  User user = 1;
 }
 
 message LogoutRequest {}
@@ -191,6 +203,21 @@ message LinkedOAuthProvider {
 
 message GetSystemInfoRequest {}
 
+// SoloAccess tells the client how this connection reaches a solo hub.
+enum SoloAccess {
+  // This is not a solo hub.
+  SOLO_ACCESS_UNSPECIFIED = 0;
+  // The request arrived through local IPC. The local socket needs no
+  // credential, even after the solo account gets a password.
+  SOLO_ACCESS_CREDENTIAL_FREE = 1;
+  // The request arrived through TCP, and the solo account has no usable
+  // password. The client can only set the first password.
+  SOLO_ACCESS_PASSWORD_SETUP = 2;
+  // The request arrived through TCP, and the solo account has a usable
+  // password. The client must sign in.
+  SOLO_ACCESS_SIGN_IN_REQUIRED = 3;
+}
+
 // CaptchaProvider identifies the bot-protection provider securing the
 // unauthenticated credential endpoints. The numbers are part of the wire
 // API and must stay stable.
@@ -260,27 +287,12 @@ message GetSystemInfoResponse {
   // reached at another (a LAN IP behind the reverse proxy, a tunnel host)
   // is configured for passkeys and still runs none for that page.
   bool passkey_enabled = 16;
-  // True when the hub authenticates THIS connection with no credentials.
-  //
-  // Two cases produce it, and both are solo mode: the local IPC socket (the
-  // desktop app reaching its own hub), and any transport while the single
-  // account holds no password. It is FALSE once that account has one, on
-  // every TCP address including 127.0.0.1.
-  //
-  // It is per CONNECTION, where solo_mode is per hub, and the two answer
-  // different questions. solo_mode says "this hub has one account and no
-  // sign-up", which decides which account settings exist at all;
-  // auto_authenticated says "this page needs no sign-in", which decides
-  // whether the app falls back to the login form.
-  bool auto_authenticated = 17;
-  // True when the hub answers on an address another machine can reach and
-  // its single account holds no password, so nobody can sign in from those
-  // addresses.
-  //
-  // Frontend restriction: the app replaces itself with a password-setup
-  // screen while this is true, because every other affordance is reachable
-  // by anyone who can reach the port.
-  bool password_setup_required = 18;
+  // The access state for this connection. This value separates local IPC,
+  // restricted TCP setup, and ordinary TCP sign-in without two booleans that
+  // can describe an invalid combination.
+  SoloAccess solo_access = 17;
+  reserved 18;
+  reserved "auto_authenticated", "password_setup_required";
   // True when the single account holds a password that can sign in. Solo
   // mode only; false on a multi-user hub, where each account answers for
   // itself.

@@ -15,7 +15,7 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 
 | Mode | What it runs | Default listen | Login required | Config / data location |
 |------|--------------|----------------|----------------|------------------------|
-| `solo` | Hub + Worker in one process | `127.0.0.1:4327` (loopback only), plus any address you add | Not until the `solo` account has a password | `~/.config/leapmux/solo/` |
+| `solo` | Hub + Worker in one process | `127.0.0.1:4327` (loopback only), plus any address you add | Local IPC: no. TCP: first-password setup, then yes. | `~/.config/leapmux/solo/` |
 | `hub` | Hub service only | `:4327` (all interfaces) | Yes — full authentication | `~/.config/leapmux/hub/` |
 | `worker` | Worker only (connects out to a Hub) | n/a (no inbound port) | Registers with the Hub via a registration key | `~/.config/leapmux/worker/` |
 | `dev` | Hub + Worker in one process | `:4327` (all interfaces) | Yes — admin bootstrapped via `/setup` | `~/.config/leapmux/dev/` |
@@ -23,11 +23,11 @@ The modes that accept inbound connections — `solo`, `hub`, and `dev` — all d
 Each mode reads a YAML config file named after the mode inside its config directory — for example `~/.config/leapmux/hub/hub.yaml` for the Hub. The file is optional; a missing config file is silently skipped. The default data directory for each mode is the same as its config directory.
 
 {{< callout type="info" >}}
-`solo` and `dev` are the same program internally — both run a Hub and a Worker together in one process. Solo binds loopback only and has one account, `solo`, which starts with no password; until it has one, solo skips the login and treats every request as that admin. Dev binds all interfaces and uses password authentication from the start. Dev bootstraps its first admin through the `/setup` flow.
+`solo` and `dev` are the same program internally. Both run a Hub and a Worker together. Solo creates one account named `solo`. Local IPC uses it without a credential. A TCP caller can only set the first password until setup succeeds. Dev binds all interfaces and uses password authentication from the start. Dev creates its first admin through the `/setup` flow.
 {{< /callout >}}
 
 {{< callout type="warning" >}}
-While the `solo` account has no password, anyone who can reach the port has full admin access with no credentials. That is safe on `127.0.0.1`. If you bind solo to a non-loopback address in that state, LeapMux logs a startup warning, and the app replaces itself with a password-setup screen until you set one (see [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model)).
+While the `solo` account has no password, the first TCP caller can claim it by setting that password. Other protected RPCs stay closed. If you bind solo to a non-loopback address in that state, LeapMux logs a startup warning. The app shows only the password-setup screen. See [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 
 ### Reaching a solo hub from another machine
 
@@ -40,7 +40,7 @@ A solo hub still has no sign-up, no passkeys, no account recovery and no email: 
 
 ## Solo mode
 
-Solo mode is the single-user setup that runs with no required configuration. Hub and Worker run in the same process on loopback, and the UI opens straight into the workspace with no sign-in.
+Solo mode is the single-user setup that runs with no required configuration. Hub and Worker run in the same process on loopback. A browser over TCP sets the first password before it opens the workspace. The desktop app opens through credential-free local IPC.
 
 ```bash
 leapmux solo
@@ -245,9 +245,18 @@ The Hub never terminates TLS on its own. To serve LeapMux over HTTPS, put a reve
 
 1. Set `public_url` to the external HTTPS URL: `leapmux control admin settings set public_url "https://hub.example.com"`.
 2. Enable secure cookies so they are `__Host-` prefixed and the derived base URL uses `https`: `leapmux control admin settings set secure_cookies true`. (This changes the cookie name, which signs every current session out — do it once, at setup.)
-3. Point each Worker's `-hub` URL at the same external `https://` address. Workers always initiate outbound connections, so they need no inbound ports of their own.
+3. Configure the direct proxy peer: `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1"]'`. Use the actual proxy address or range when it runs on another host.
+4. Point each Worker's `-hub` URL at the same external `https://` address. Workers always initiate outbound connections, so they need no inbound ports of their own.
 
-Both settings are hot: a running Hub applies them within ~30 seconds — no restart.
+All three settings are hot. A running Hub applies them within about 30 seconds, with no restart.
+
+`trusted_proxy_ranges` accepts IP addresses, CIDRs, inclusive ranges, short IPv4 ranges, and the symbolic provider tokens `cloudflare` and `cloudfront`. LeapMux prefers RFC 7239 `Forwarded`. It uses `X-Forwarded-For` and `X-Forwarded-Proto` only when `Forwarded` is absent. The Hub verifies the direct peer and walks the chain from the trusted side before it records a client IP.
+
+{{< callout type="warning" >}}
+The provider tokens identify all bundled provider ranges, not your account. Restrict the origin to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. LeapMux does not download updated provider ranges automatically.
+{{< /callout >}}
+
+The effective forwarded protocol changes request URL metadata only. It does not enable secure cookies. Keep `secure_cookies` explicit as step 2 specifies.
 
 {{< callout type="warning" >}}
 `public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.

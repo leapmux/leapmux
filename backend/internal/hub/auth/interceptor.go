@@ -43,11 +43,12 @@ import (
 // so a rename in the proto definition turns a typo here into a build
 // error instead of a silent auth bypass.
 var publicProcedures = map[string]bool{
-	leapmuxv1connect.AuthServiceLoginProcedure:               true,
-	leapmuxv1connect.AuthServiceSignUpProcedure:              true,
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:       true,
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure: true,
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:  true,
+	leapmuxv1connect.AuthServiceLoginProcedure:                  true,
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure: true,
+	leapmuxv1connect.AuthServiceSignUpProcedure:                 true,
+	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:          true,
+	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:    true,
+	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:     true,
 	// Same worker auth_token as Connect, on a plain unary RPC rather than the
 	// stream. The worker's orphan reconciler is the only caller, and it is what
 	// converges a worker after a close or a cross-workspace move that landed
@@ -1031,12 +1032,9 @@ func headerPresentsLeapMuxBearer(authHeader string) bool {
 func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string, p Policy) (context.Context, sessionRefresh, error) {
 	var noRefresh sessionRefresh
 
-	// Solo mode authenticates every procedure -- public or not -- as the
-	// synthetic user, and short-circuits the cookie path, for the callers
-	// SoloGate.CredentialFree admits: the local IPC socket, and any transport
-	// while the account holds no password. A TCP caller on a hub whose account
-	// HAS a password falls through to the ordinary cookie and bearer rungs
-	// below and signs in like any other account.
+	// Solo mode authenticates local IPC as the synthetic user and short-circuits
+	// the cookie path. Every TCP caller uses a public setup procedure or an
+	// ordinary cookie or bearer.
 	//
 	// It YIELDS to a presented lmx_ bearer, which is what makes the scope model
 	// work on a solo hub. The admitted caller carries an unscoped grant; a

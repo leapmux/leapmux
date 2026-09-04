@@ -628,7 +628,7 @@ A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.s
 
 Login rules:
 
-- **Solo needs no login over its local socket.** That socket is reachable only from the machine that runs the Hub, so ordinary commands need no credential there — which is the default `--hub` for solo. A TCP address asks for one once the `solo` account holds a password; see [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model). Solo still **authorizes apps**: a login there mints a scoped credential, and the Hub binds that credential's permissions rather than the solo account's. Both flows complete, because the consent pages accept the solo account. See [App Authorization](/docs/admin/app-authorization/#solo-mode).
+- **Solo needs no login over its local socket.** That socket is reachable only from the machine that runs the Hub, so ordinary commands need no credential there. TCP never receives this exemption. Before the `solo` password exists, a TCP caller can only set the first password. Afterward, TCP requires a normal login. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 - A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
 
 ```bash

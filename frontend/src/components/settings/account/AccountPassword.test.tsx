@@ -137,7 +137,7 @@ describe('accountPassword', () => {
     mockUser.mockReturnValue(withoutPassword)
     render(() => <AccountPassword />)
 
-    expect(await screen.findByText(/asks every network address for a sign-in as “solo”/))
+    expect(await screen.findByText(/makes every TCP address require a sign-in as “solo”/))
       .toBeInTheDocument()
   })
 

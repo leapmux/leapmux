@@ -4,6 +4,7 @@ import { startSoloServer, stopSoloServer } from './helpers/devServer'
 
 /** A password the hub's own validator accepts. */
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
+const SOLO_ENV = { LEAPMUX_HUB_DEV_FRONTEND: undefined }
 
 /**
  * The password-setup screen, on a solo hub that answers beyond loopback.
@@ -16,7 +17,7 @@ test.describe('Password setup gate', () => {
   let solo: SoloServerHandle | undefined
 
   test.beforeEach(async () => {
-    solo = await startSoloServer({ listenHost: '0.0.0.0' })
+    solo = await startSoloServer({ listenHost: '0.0.0.0', env: SOLO_ENV })
   })
 
   test.afterEach(async () => {
@@ -26,11 +27,11 @@ test.describe('Password setup gate', () => {
   test('blocks the app until the account has a password', async ({ page }) => {
     await page.goto(`${solo!.hubUrl}/`)
 
-    // The whole app, not a dismissible notice: everything it offers is offered
-    // to whoever reaches the port, and no sign-in stands between them.
+    // The whole app, not a dismissible notice. This is the only protected
+    // setup action that a passwordless TCP caller can use.
     const gate = page.getByTestId('password-setup-gate')
     await expect(gate).toBeVisible()
-    await expect(gate).toContainText('This hub answers on an address other machines can reach')
+    await expect(gate).toContainText('TCP callers can only complete this setup')
 
     // Fixed to the single account: a free field could only be filled in with a
     // name that cannot sign in.
@@ -64,13 +65,11 @@ test.describe('Password setup gate', () => {
     await expect(page.getByTestId('password-setup-gate')).toBeHidden()
   })
 
-  test('leaves a loopback-only hub alone', async ({ page }) => {
-    // A second hub, bound to loopback: it exposes nothing, so demanding a
-    // password would be friction with nothing behind it.
-    const loopbackOnly = await startSoloServer()
+  test('restricts loopback TCP to password setup too', async ({ page }) => {
+    const loopbackOnly = await startSoloServer({ env: SOLO_ENV })
     try {
       await page.goto(`${loopbackOnly.hubUrl}/`)
-      await expect(page.getByTestId('password-setup-gate')).toBeHidden()
+      await expect(page.getByTestId('password-setup-gate')).toBeVisible()
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
     }
     finally {

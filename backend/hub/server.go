@@ -31,6 +31,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/requestsource"
 	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -817,7 +818,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// and Referrer-Policy protect every response, and the hub renders HTML
 		// outside the frontend handler (the device-code and PKCE callback
 		// pages), which deserve the same treatment as the app document.
-		Handler: logging.HTTPMiddleware(metrics.HTTPMiddleware(httpsec.Middleware(csp, mux))),
+		Handler: requestsource.Middleware(setMgr,
+			logging.HTTPMiddleware(metrics.HTTPMiddleware(httpsec.Middleware(csp, mux)))),
 		// Limits reading request HEADERS on HTTP/1.1 connections (the
 		// slowloris guard). It must NOT govern h2c connections, whose streams
 		// outlive any header deadline. net/http disarms this deadline itself at
@@ -848,7 +850,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// unauthenticated endpoints. ConnContext derives from BaseContext, so
 		// a local IPC connection carries both marks.
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			return peer.WithRemoteAddr(ctx, c.RemoteAddr())
+			return peer.WithTransportAddr(ctx, c.RemoteAddr())
 		},
 		Protocols: protocols,
 		HTTP2: &http.HTTP2Config{

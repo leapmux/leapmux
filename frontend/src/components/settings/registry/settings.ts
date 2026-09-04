@@ -626,7 +626,7 @@ export const browserSettings: BrowserSettingDecl[] = [
   // refuses each without a recently proven factor.
   //
   // FOUR of the five are hidden in solo mode, because the hub refuses the RPCs
-  // behind them: solo authenticates every request as the local user, so it
+  // behind them: solo authenticates local IPC as the local user, so it
   // offers no sign-up, no passkey, no account recovery and no provider link.
   // Password is the exception, and the section exists in solo for it alone.
   {

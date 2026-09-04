@@ -3,7 +3,7 @@ import type { PasskeyBlocker } from '~/lib/systemInfo'
 import { createSignal } from 'solid-js'
 import { vi } from 'vitest'
 
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
 
 /**
  * The one shared mock of `~/lib/systemInfo`. Every getter reads through a
@@ -29,16 +29,8 @@ export interface SystemInfoMockState {
   /** Answers `isSystemInfoLoaded`; flip to false to test the fail-closed bootstrap window. */
   loaded: boolean
   soloMode: boolean
-  /**
-   * Answers `isAutoAuthenticated`: whether the hub authenticates THIS
-   * connection with no credentials. Driven directly rather than derived from
-   * `soloMode`, because the two genuinely differ -- a solo hub whose account
-   * holds a password asks its network callers to sign in -- and a test that
-   * states one must be able to state the other.
-   */
-  autoAuthenticated: boolean
-  /** Answers `passwordSetupRequired`: exposed, with no password to sign in with. */
-  passwordSetupRequired: boolean
+  /** Answers all connection access helpers from one exclusive wire state. */
+  soloAccess: SoloAccess
   /** Answers `soloPasswordSet`: the solo account holds a usable password. */
   soloPasswordSet: boolean
   signupEnabled: boolean
@@ -69,8 +61,7 @@ export interface SystemInfoMockState {
 const defaultState: SystemInfoMockState = {
   loaded: true,
   soloMode: false,
-  autoAuthenticated: false,
-  passwordSetupRequired: false,
+  soloAccess: SoloAccess.UNSPECIFIED,
   soloPasswordSet: false,
   signupEnabled: false,
   setupRequired: false,
@@ -93,9 +84,9 @@ export const mockLoadOAuthProviders = vi.fn((): Promise<unknown[]> => Promise.re
 
 export const systemInfoMock = {
   isSoloMode: () => state().soloMode,
-  isAutoAuthenticated: () => state().autoAuthenticated,
-  passwordSetupRequired: () => state().passwordSetupRequired,
-  isPasswordSetupGate: () => state().passwordSetupRequired && state().autoAuthenticated,
+  isAutoAuthenticated: () => state().soloAccess === SoloAccess.CREDENTIAL_FREE,
+  passwordSetupRequired: () => state().soloAccess === SoloAccess.PASSWORD_SETUP,
+  isPasswordSetupGate: () => state().soloAccess === SoloAccess.PASSWORD_SETUP,
   soloPasswordSet: () => state().soloPasswordSet,
   isSignupEnabled: () => state().signupEnabled,
   isSetupRequired: () => state().setupRequired,

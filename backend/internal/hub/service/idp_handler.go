@@ -790,7 +790,6 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 	}
 	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
-		IPAddress: r.RemoteAddr,
 	})
 	if sessionErr != nil {
 		slog.Error("oauth: create session", "error", sessionErr)

@@ -28,6 +28,7 @@ export const CUSTOM_EDITOR_IDS = [
   'hubWideAppRegistrations',
   'keyPins',
   'networkAccess',
+  'trustedProxies',
   'theme',
   'terminalTheme',
   'syntaxTheme',

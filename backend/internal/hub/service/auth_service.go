@@ -16,7 +16,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
-	"github.com/leapmux/leapmux/internal/hub/listenset"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -156,33 +155,19 @@ func (s *AuthService) baseURL(ctx context.Context) string {
 	return settings.BaseURL(s.snap(ctx), s.listenAddr())
 }
 
-// soloPasswordSetupRequired reports whether the app must block itself with a
-// password-setup screen.
-//
-// The condition is EXPOSURE without a credential: the hub answers on an
-// address another machine can reach, and its one account has no password. In
-// that state everything the app offers is offered to whoever reaches the port,
-// and no sign-in stands between them -- so the one useful thing the app can do
-// is ask for a password.
-//
-// A loopback-only hub does NOT trigger it. `leapmux solo` with no -listen, and
-// `leapmux solo -listen 127.0.0.1:5000`, expose nothing, so demanding a
-// password there would be friction with nothing behind it.
-//
-// It takes the gate's two answers rather than reading them again: its one
-// caller reports three solo facts from the same row, and asking a second time
-// costs a second store read on every hub that has no password yet.
-//
-// credentialFree is what carries the MODE, and it must stay in the condition.
-// A gate that is not solo answers false to it, so a multi-user hub with a
-// non-loopback listener reports false here -- where testing `!passwordSet`
-// alone would report TRUE and replace the whole app with the password-setup
-// screen for every visitor to `leapmux hub`.
-func (s *AuthService) soloPasswordSetupRequired(credentialFree, passwordSet bool) bool {
-	if !credentialFree || passwordSet {
-		return false
+// soloAccess reports how this connection reaches a solo hub. The enum makes
+// local IPC, restricted TCP setup, and TCP sign-in exclusive states.
+func (s *AuthService) soloAccess(ctx context.Context, passwordSet bool) leapmuxv1.SoloAccess {
+	if !s.cfg.SoloMode {
+		return leapmuxv1.SoloAccess_SOLO_ACCESS_UNSPECIFIED
 	}
-	return listenset.AnyNonLoopback(s.listen.Bound())
+	if s.soloGate.CredentialFree(ctx) {
+		return leapmuxv1.SoloAccess_SOLO_ACCESS_CREDENTIAL_FREE
+	}
+	if !passwordSet {
+		return leapmuxv1.SoloAccess_SOLO_ACCESS_PASSWORD_SETUP
+	}
+	return leapmuxv1.SoloAccess_SOLO_ACCESS_SIGN_IN_REQUIRED
 }
 
 // listenAddr is the TCP address a browser reaches this hub at, in the form
@@ -237,6 +222,92 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 	resp.Msg.User = userToProtoWithPasskeys(ctx, s.store, user)
 	resp.Msg.EmailVerification = emailVerificationToProto(s.loginVerificationOutcome(ctx, user))
 	s.setSessionCookie(ctx, resp.Header(), token, expiresAt)
+	return resp, nil
+}
+
+var errInitialSoloPasswordAlreadySet = errors.New("the solo account already has a password")
+
+// SetInitialSoloPassword claims a passwordless solo account and creates an
+// elevated session. The password, session, and elevation commit together.
+func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.Request[leapmuxv1.SetInitialSoloPasswordRequest]) (*connect.Response[leapmuxv1.SetInitialSoloPasswordResponse], error) {
+	if !s.cfg.SoloMode {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("initial solo password setup requires solo mode"))
+	}
+
+	user, err := s.store.Users().GetByUsername(ctx, usernames.Solo)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get the solo account: %w", err))
+	}
+	if user.HasUsablePassword() {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet)
+	}
+	if err := validate.ValidatePassword(req.Msg.GetPassword()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	hashed, err := password.Hash(req.Msg.GetPassword())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("hash the password: %w", err))
+	}
+	uid, ok := userid.New(user.ID)
+	if !ok {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("the solo account has no user id"))
+	}
+
+	snap := s.snap(ctx)
+	now := s.now().UTC()
+	var sessionID string
+	var expiresAt time.Time
+	var storedUser *store.User
+	err = s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
+		lockedUser, err := tx.Users().GetByID(ctx, uid.String())
+		if err != nil {
+			return fmt.Errorf("read the locked solo account: %w", err)
+		}
+		if lockedUser.HasUsablePassword() {
+			return errInitialSoloPasswordAlreadySet
+		}
+		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
+			ID: lockedUser.ID, PasswordHash: hashed,
+		}); err != nil {
+			return fmt.Errorf("store the initial solo password: %w", err)
+		}
+		sessionID, expiresAt, err = auth.CreateSession(ctx, tx, uid, settings.SessionDuration(snap), auth.SessionMeta{
+			UserAgent: req.Header().Get("User-Agent"),
+		})
+		if err != nil {
+			return err
+		}
+		affected, err := tx.Sessions().Elevate(ctx, store.ElevateSessionParams{
+			SessionID:          sessionID,
+			UserID:             uid,
+			ElevationProvenAt:  now,
+			ElevationExpiresAt: now.Add(auth.ElevationWindow),
+		}, now)
+		if err != nil {
+			return fmt.Errorf("elevate the initial solo session: %w", err)
+		}
+		if affected != 1 {
+			return fmt.Errorf("elevate the initial solo session: session is not active")
+		}
+		userCopy := *lockedUser
+		userCopy.PasswordHash = hashed
+		storedUser = &userCopy
+		return nil
+	})
+	if errors.Is(err, errInitialSoloPasswordAlreadySet) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	s.lifecycle.UserInfoInvalidated(uid.String())
+	resp := connect.NewResponse(&leapmuxv1.SetInitialSoloPasswordResponse{
+		User: userToProto(storedUser, 0),
+	})
+	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(
+		sessionID, expiresAt, settings.KeySecureCookies.Of(snap)).String())
 	return resp, nil
 }
 
@@ -603,41 +674,27 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		}
 	}
 
-	// ONE store read for the three solo facts, and NONE outside solo mode --
-	// the GATE answers both, so neither is a conjunct here.
-	//
-	// Each fact rests on the same row, and the latch that would make a second
-	// read free is set only once a password exists, so asking through
-	// CredentialFree and PasswordSet separately cost three round trips for one
-	// fact on every page load of a hub that has none. And a gate that is not
-	// solo refuses without reading anything, so a `leapmux hub` no longer looks
-	// up a `solo` row that can never exist.
-	credentialFree, soloPasswordSet := s.soloGate.CredentialFreeAndPasswordSet(ctx)
+	soloPasswordSet := s.soloGate.PasswordSet(ctx)
 
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled:  s.signupEnabled(ctx),
-		SoloMode:       s.cfg.SoloMode,
-		SetupRequired:  setupRequired,
-		Version:        version.Value,
-		CommitHash:     version.CommitHash,
-		CommitTime:     version.CommitTime,
-		BuildTime:      version.BuildTime,
-		Branch:         version.Branch,
-		OauthEnabled:   len(providers) > 0,
-		WorkerHubUrl:   workerHubURL,
-		EmailEnabled:   settings.KeySMTP.Of(snap).Enabled(),
-		PasskeyEnabled: s.passkeysRunnableForOrigin(ctx, originFromRequest(req)),
-		CaptchaEnabled: captchaEnabled,
-		// The three solo facts. Each is FALSE outside solo mode, where a
-		// multi-user hub authenticates every caller and each account answers
-		// for its own password -- and the gate says so itself, so no mode test
-		// appears here.
-		AutoAuthenticated:     credentialFree,
-		PasswordSetupRequired: s.soloPasswordSetupRequired(credentialFree, soloPasswordSet),
-		SoloPasswordSet:       soloPasswordSet,
-		AltchaAlgorithm:       altchaAlgorithm,
-		CaptchaProvider:       captchaProvider,
-		CaptchaSiteKey:        captchaSiteKey,
+		SignupEnabled:   s.signupEnabled(ctx),
+		SoloMode:        s.cfg.SoloMode,
+		SetupRequired:   setupRequired,
+		Version:         version.Value,
+		CommitHash:      version.CommitHash,
+		CommitTime:      version.CommitTime,
+		BuildTime:       version.BuildTime,
+		Branch:          version.Branch,
+		OauthEnabled:    len(providers) > 0,
+		WorkerHubUrl:    workerHubURL,
+		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
+		PasskeyEnabled:  s.passkeysRunnableForOrigin(ctx, originFromRequest(req)),
+		CaptchaEnabled:  captchaEnabled,
+		SoloAccess:      s.soloAccess(ctx, soloPasswordSet),
+		SoloPasswordSet: soloPasswordSet,
+		AltchaAlgorithm: altchaAlgorithm,
+		CaptchaProvider: captchaProvider,
+		CaptchaSiteKey:  captchaSiteKey,
 	}), nil
 }
 

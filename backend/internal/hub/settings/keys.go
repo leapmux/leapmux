@@ -511,9 +511,8 @@ var (
 
 	// Solo READS this too, and hiding it took the answer away from the one
 	// deployment that needs it most. Every session cookie a solo hub writes
-	// -- from Login, and from the ChangePassword that hands the first
-	// password's author a session -- takes its __Host- prefix and its Secure
-	// attribute from here. A solo hub published on a LAN behind a TLS proxy
+	// -- from Login and SetInitialSoloPassword -- takes its __Host- prefix and
+	// its Secure attribute from here. A solo hub published behind a TLS proxy
 	// must be able to ask for one, and no other key can.
 	KeySecureCookies = NewKey[bool]("secure_cookies").
 				WithUI(UIMeta{

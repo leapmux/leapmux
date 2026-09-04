@@ -13,6 +13,7 @@ import { NetworkAccessControl } from './NetworkAccessControl'
 import { SyntaxThemeControl } from './SyntaxThemeControl'
 import { TerminalThemeControl } from './TerminalThemeControl'
 import { ThemeControl } from './ThemeControl'
+import { TrustedProxiesControl } from './TrustedProxiesControl'
 
 /**
  * The administration twin of the account registrations panel: the same editor
@@ -86,6 +87,8 @@ export const CUSTOM_EDITORS: Record<CustomEditorId, CustomEditorComponent> = {
    * this entry is unreachable on a multi-user hub.
    */
   networkAccess: NetworkAccessControl,
+  /** Which transport peers can supply verified forwarding headers. */
+  trustedProxies: TrustedProxiesControl,
   /**
    * The palette drop-down and the light/dark tri-switch, as one control.
    * `theme` is one key holding `{name, mode}`, so one row carries one scope

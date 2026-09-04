@@ -16,6 +16,7 @@ import { AuthProvider, useAuth } from './AuthContext'
 
 const mockGetCurrentUser = vi.fn()
 const mockLogin = vi.fn()
+const mockPasswordSetupGate = vi.fn<() => boolean>(() => false)
 vi.mock('~/api/clients', () => ({
   authClient: {
     getCurrentUser: (...args: unknown[]) => mockGetCurrentUser(...args),
@@ -66,7 +67,7 @@ vi.mock('~/lib/systemInfo', () => ({
   // A multi-user hub: every caller signs in, and none of the solo facts hold.
   isAutoAuthenticated: () => false,
   passwordSetupRequired: () => false,
-  isPasswordSetupGate: () => false,
+  isPasswordSetupGate: () => mockPasswordSetupGate(),
   soloPasswordSet: () => false,
   loadSystemInfo: () => mockLoadSystemInfo(),
   isSystemInfoLoaded: () => true,
@@ -115,6 +116,7 @@ describe('authContext', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockPasswordSetupGate.mockReturnValue(false)
   })
 
   // Bootstrap writes the boot splash's phase onto <html>; later tests in this
@@ -167,6 +169,17 @@ describe('authContext', () => {
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
     })
+  })
+
+  it('lands on ready without revealing the shell during TCP password setup', async () => {
+    mockPasswordSetupGate.mockReturnValue(true)
+    mockGetCurrentUser.mockRejectedValue(new ConnectError('unauthenticated', Code.Unauthenticated))
+    renderWithAuth()
+
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
+    })
+    expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
   })
 
   // A failed system-info load aborts bootstrap; the checklist stays on the

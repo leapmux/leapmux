@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/requestsource"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/settingsregistry"
@@ -196,9 +197,8 @@ func TestAdminSettingsService_ListDescriptorsComplete(t *testing.T) {
 		assert.NotEmpty(t, d.GetTitle(), d.GetKey())
 		assert.NotEmpty(t, d.GetFields(), d.GetKey())
 	}
-	// The three declaration domains are all present: hub-core, captcha,
-	// rate-limit.
-	for _, want := range []string{"smtp", "signup_enabled", "captcha.altcha", "rate_limit.elevation", "max_message_size_bytes"} {
+	// Every declaration domain is present.
+	for _, want := range []string{"smtp", "signup_enabled", "captcha.altcha", "rate_limit.elevation", "max_message_size_bytes", "trusted_proxy_ranges"} {
 		assert.Contains(t, keys, want)
 	}
 
@@ -237,6 +237,10 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	assert.False(t, byKey["queue_budget"].GetCustomized())
 	assert.JSONEq(t, `{"relay_bytes":0,"worker_bytes":0,"userevents_bytes":0}`, byKey["queue_budget"].GetEffectiveJson())
 
+	require.Contains(t, byKey, "trusted_proxy_ranges")
+	assert.False(t, byKey["trusted_proxy_ranges"].GetCustomized())
+	assert.JSONEq(t, `[]`, byKey["trusted_proxy_ranges"].GetEffectiveJson())
+
 	// A partial update merges onto the current value.
 	upd, err := env.client.UpdateSetting(ctx, authedReq(&leapmuxv1.UpdateSettingRequest{
 		Key:         "session_duration_seconds",
@@ -270,6 +274,17 @@ func TestAdminSettingsService_ValuesDefaultAndCustomized(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, reset.Msg.GetValue().GetCustomized())
 	assert.JSONEq(t, "604800", reset.Msg.GetValue().GetEffectiveJson())
+}
+
+func TestAdminSettingsService_RejectsOverlappingTrustedProxySelectors(t *testing.T) {
+	env := setupAdminSettingsTest(t, &config.Config{})
+	_, err := env.client.UpdateSetting(context.Background(), authedReq(&leapmuxv1.UpdateSettingRequest{
+		Key:         requestsource.KeyTrustedProxyRanges.Name(),
+		PartialJson: `["192.0.2.0/24","192.0.2.7"]`,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "overlaps")
 }
 
 // TestAdminSettingsService_SecretsNeverLeave covers all THREE documents the
@@ -472,6 +487,8 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 		// reverse proxy are how a multi-user hub is published.
 		"extra_listen_addresses",
 	}, soloOnly)
+	assert.Contains(t, hub, "trusted_proxy_ranges")
+	assert.Contains(t, solo, "trusted_proxy_ranges")
 }
 
 // The section-level outcome the hiding exists to produce. Categories are

@@ -4,15 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockLoadSystemInfo } from '~/test-support/systemInfoMock'
 import { PasswordSetupGate } from './PasswordSetupGate'
 
-const mockChangePassword = vi.fn()
+const mockSetInitialSoloPassword = vi.fn()
 const mockRefreshUser = vi.fn()
+const mockSetAuth = vi.fn()
 
 vi.mock('~/api/clients', () => ({
-  userClient: { changePassword: (...args: unknown[]) => mockChangePassword(...args) },
+  authClient: { setInitialSoloPassword: (...args: unknown[]) => mockSetInitialSoloPassword(...args) },
 }))
 
 vi.mock('~/context/AuthContext', () => ({
-  useAuth: () => ({ refreshUser: () => mockRefreshUser() }),
+  useAuth: () => ({ refreshUser: () => mockRefreshUser(), setAuth: (...args: unknown[]) => mockSetAuth(...args) }),
 }))
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -29,7 +30,7 @@ function fillPassword(pw = 'correct-horse-battery-staple') {
 describe('passwordSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockChangePassword.mockResolvedValue({})
+    mockSetInitialSoloPassword.mockResolvedValue({ user: { id: 'solo-id', username: 'solo' } })
     // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
     // keeps the implementation, so one test's `mockRejectedValue` would
     // otherwise reject in every test after it.
@@ -66,7 +67,8 @@ describe('passwordSetupGate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Set Password' }))
 
     await vi.waitFor(() => {
-      expect(mockChangePassword).toHaveBeenCalledWith({ newPassword: 'correct-horse-battery-staple' })
+      expect(mockSetInitialSoloPassword).toHaveBeenCalledWith({ password: 'correct-horse-battery-staple' })
+      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'solo-id', username: 'solo' })
       // FORCED, because the gate reads exactly this snapshot: without it the
       // screen stays up over a hub that no longer needs it.
       expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
@@ -80,7 +82,7 @@ describe('passwordSetupGate', () => {
   })
 
   it('reports a refusal rather than leaving the form silent', async () => {
-    mockChangePassword.mockRejectedValue(new Error('password is too short'))
+    mockSetInitialSoloPassword.mockRejectedValue(new Error('password is too short'))
     render(() => <PasswordSetupGate />)
     fillPassword()
 
@@ -91,9 +93,6 @@ describe('passwordSetupGate', () => {
     expect(screen.getByRole('button', { name: 'Set Password' })).toBeInTheDocument()
   })
 
-  // The exposed address is deliberately NOT named: the hub can answer on
-  // several, and the one this page was opened at is often not the one that
-  // exposes it.
   // The password committed and only the re-read failed. Reporting that as
   // "Failed to set the password" told the operator to retry a write that
   // succeeded, from a screen that offers no other way out.
@@ -106,13 +105,13 @@ describe('passwordSetupGate', () => {
 
     expect(await screen.findByText(/The password is set/)).toBeInTheDocument()
     expect(screen.queryByText(/Failed to set the password/)).toBeNull()
-    expect(mockChangePassword).toHaveBeenCalledTimes(1)
+    expect(mockSetInitialSoloPassword).toHaveBeenCalledTimes(1)
   })
 
-  it('does not claim which address exposes the hub', () => {
+  it('explains the restricted TCP setup state', () => {
     render(() => <PasswordSetupGate />)
     expect(screen.getByTestId('password-setup-gate')).toHaveTextContent(
-      'This hub answers on an address other machines can reach',
+      'Until then, TCP callers can only complete this setup',
     )
   })
 })

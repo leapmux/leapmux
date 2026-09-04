@@ -55,10 +55,9 @@ func requireAdminClient(hubFlag string) (*control.Client, error) {
 		return nil, control.EmitError("invalid_request",
 			"no hub address; pass --hub <url> or set LEAPMUX_HUB. For a hub that needs a credential, run `leapmux control auth login --hub <url>` first.")
 	}
-	// Anonymous fallback: a solo hub authenticates every request as the
-	// local user, and solo cannot complete a login flow at all — the hub
-	// enforces the admin gate, so a credential-less call against a
-	// non-solo hub simply answers unauthenticated.
+	// Anonymous fallback supports a solo hub's local IPC socket. A TCP address
+	// needs a session. The hub enforces the admin gate, so a credential-less
+	// call against any other connection answers unauthenticated.
 	c, err := control.NewClientOrAnonymous(hubFlag)
 	if err != nil {
 		return nil, control.EmitErrorWith("not_logged_in", err)

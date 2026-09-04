@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -596,7 +597,7 @@ func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
 	cache := &AuthContextRegistry{state: state}
 
 	cache.RevokeUserAuthContextAtGeneration("solo", 2)
-	ctx, refresh, err := a.authenticate(context.Background(), "/private", "", "", a.currentPolicy())
+	ctx, refresh, err := a.authenticate(peer.WithLocalIPC(context.Background()), "/private", "", "", a.currentPolicy())
 	require.NoError(t, err)
 	assert.Equal(t, sessionRefresh{}, refresh, "solo mode holds no session cookie to refresh")
 	current := GetUser(ctx)
@@ -667,6 +668,7 @@ func TestAuthenticateHTTPRefreshesSyntheticUserGeneration(t *testing.T) {
 	contexts := &AuthContextRegistry{state: &authState{}}
 	contexts.RevokeUserAuthContextAtGeneration("solo", 2)
 	req := httptest.NewRequest("GET", "/ws/channel", nil)
+	req = req.WithContext(peer.WithLocalIPC(req.Context()))
 
 	user, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{
 		SoloUser: &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1},

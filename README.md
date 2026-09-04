@@ -58,7 +58,7 @@ The binary runs in several modes:
 
 | Command | Description |
 |---------|-------------|
-| `leapmux solo` | Hub + Worker on `127.0.0.1:4327`, no login, single-user |
+| `leapmux solo` | Hub + Worker, single-user; local IPC needs no credential and TCP starts with password setup |
 | `leapmux hub` | Central service only (auth, relay, database) |
 | `leapmux worker` | Connects to a remote Hub |
 | `leapmux dev` | Hub + Worker on all interfaces, login required |

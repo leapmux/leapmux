@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/requestsource"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
@@ -24,6 +25,7 @@ import (
 func NewManager(st store.Store, ks *keystore.Keystore, opts ...settings.Option) *settings.Manager {
 	descs := append(settings.CoreDescriptors(), captcha.SettingsDescriptors()...)
 	descs = append(descs, ratelimit.SettingsDescriptors()...)
+	descs = append(descs, requestsource.SettingsDescriptors()...)
 	opts = append([]settings.Option{
 		settings.WithCrossValidation(captcha.SelectedConfigured),
 	}, opts...)

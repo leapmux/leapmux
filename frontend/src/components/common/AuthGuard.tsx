@@ -74,9 +74,8 @@ export const AuthGuard: ParentComponent = (props) => {
       }
     }
 
-    // BEFORE the authenticated branch, because this caller IS authenticated --
-    // the hub let it in with no credentials, which is the problem. Ordering it
-    // after would render the app to exactly the visitor the gate exists for.
+    // Before the authenticated branch because password setup is the only RPC
+    // that this unauthenticated TCP caller can use.
     if (isPasswordSetupGate())
       return { kind: 'password-setup' }
 

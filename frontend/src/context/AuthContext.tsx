@@ -466,8 +466,8 @@ export const AuthProvider: ParentComponent = (props) => {
     await restoreSession()
     if (bootstrapError())
       return
-    // Same gate AuthGuard uses: password-setup is authenticated but not the
-    // shell, so it must not reveal the workspaces/tabs rows.
+    // The restricted TCP setup state is not a session and not the shell, so it
+    // must not reveal the workspace rows.
     if (user() && !isPasswordSetupGate()) {
       setBootShell(true)
       setBootPhase('workspaces')

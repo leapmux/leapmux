@@ -686,9 +686,9 @@ func (r listenReporter) PrimaryListenAddr() string {
 // The panel already asks for the password before it will apply such an
 // address, but a client-side rule is not enforcement: `leapmux control admin
 // settings set extra_listen_addresses '{"addresses":["0.0.0.0:4327"]}'` is a
-// write like any other, the key is HOT, and a credential-free solo caller is
-// admitted to write it -- so one command published an unauthenticated
-// administrator on the LAN, with no refusal and no warning. Before this
+// write like any other, the key is hot, and local IPC can write it without a
+// credential. One command could then publish the first-password setup flow on
+// the LAN, where another caller could claim the account. Before this
 // feature the same exposure needed `-listen 0.0.0.0:4327` on the command line,
 // which printed the startup warning.
 //
@@ -730,7 +730,7 @@ func refuseUnguardedExposure(soloMode bool, gate *auth.SoloGate) func(*settings.
 		}
 		return fmt.Errorf(
 			"extra_listen_addresses %v would answer other machines while the %q account has no password, "+
-				"so anyone who reached the port would hold the administrator; set the password first",
+				"so the first caller could claim the account; set the password first",
 			exposed, usernames.Solo)
 	}
 }

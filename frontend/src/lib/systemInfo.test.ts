@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
 import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, passwordSetupRequired, refreshSnapshot, soloPasswordSet } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
@@ -21,8 +21,7 @@ vi.mock('~/api/platformBridge', () => ({
 function systemInfoResponse(overrides: Record<string, unknown> = {}) {
   return {
     soloMode: false,
-    autoAuthenticated: false,
-    passwordSetupRequired: false,
+    soloAccess: SoloAccess.UNSPECIFIED,
     soloPasswordSet: false,
     signupEnabled: false,
     setupRequired: false,
@@ -402,13 +401,13 @@ describe('the solo connection facts', () => {
     expect(soloPasswordSet()).toBe(false)
   })
 
-  // auto_authenticated is per CONNECTION and solo_mode is per hub, so the two
+  // solo_access is per connection and solo_mode is per hub, so the two
   // must not be read as synonyms: a solo hub whose account holds a password
   // asks its network callers to sign in.
   it('separates the hub fact from the connection fact', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
       soloMode: true,
-      autoAuthenticated: false,
+      soloAccess: SoloAccess.SIGN_IN_REQUIRED,
       soloPasswordSet: true,
     }))
     await loadSystemInfo(true)
@@ -421,8 +420,7 @@ describe('the solo connection facts', () => {
   it('carries the password-setup demand through', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
       soloMode: true,
-      autoAuthenticated: true,
-      passwordSetupRequired: true,
+      soloAccess: SoloAccess.PASSWORD_SETUP,
     }))
     await loadSystemInfo(true)
 
@@ -430,24 +428,23 @@ describe('the solo connection facts', () => {
     expect(soloPasswordSet()).toBe(false)
   })
 
-  it('isPasswordSetupGate is true only when both halves hold', async () => {
+  it('derives each gate from one exclusive solo access state', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
-      autoAuthenticated: true,
-      passwordSetupRequired: true,
+      soloAccess: SoloAccess.PASSWORD_SETUP,
     }))
     await loadSystemInfo(true)
     expect(isPasswordSetupGate()).toBe(true)
+    expect(isAutoAuthenticated()).toBe(false)
 
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
-      autoAuthenticated: true,
-      passwordSetupRequired: false,
+      soloAccess: SoloAccess.CREDENTIAL_FREE,
     }))
     await loadSystemInfo(true)
     expect(isPasswordSetupGate()).toBe(false)
+    expect(isAutoAuthenticated()).toBe(true)
 
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
-      autoAuthenticated: false,
-      passwordSetupRequired: true,
+      soloAccess: SoloAccess.SIGN_IN_REQUIRED,
     }))
     await loadSystemInfo(true)
     expect(isPasswordSetupGate()).toBe(false)

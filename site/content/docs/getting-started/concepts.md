@@ -54,10 +54,10 @@ LeapMux runs in two shapes. They use the same components and the same end-to-end
    └───────────────┘
 ```
 
-Solo mode is ideal for one person on one machine. While its one account has no password it authenticates every request as the admin, and it binds loopback, so the security model **reduces to local trust**: any local process that can reach the port can drive the Worker. The end-to-end encryption between Frontend and Worker still operates inside the process, but it offers no protection against an attacker who is already on your machine. Give that account a password and every network address asks for it.
+Solo mode is for one person. Local IPC uses its one account without a credential. A passwordless TCP caller can only set the first password, and the first successful caller claims the account. After setup, every TCP address requires sign-in. The end-to-end encryption between Frontend and Worker still operates inside the process, but it does not protect against an attacker who already controls your user account.
 
 {{< callout type="warning" >}}
-If solo mode answers on a non-loopback address, it logs a warning. The warning states that the hub is reachable from other machines, and that until the `solo` account has a password every request is authenticated as the administrator without credentials. Set that password — the app asks for one before anything else while such an address is served — and restrict access with a firewall, Tailscale/WireGuard, or an SSH tunnel if the network is not one you trust. The desktop app avoids the question entirely by listening on a Unix socket / named pipe instead of TCP.
+If solo mode answers on a non-loopback address, it logs a warning. Another machine can win first-password setup until the `solo` account has a password. Set that password from a trusted connection. Restrict access with a firewall, VPN, or SSH tunnel. The desktop app listens on a Unix socket or named pipe instead of TCP.
 {{< /callout >}}
 
 ### Distributed mode

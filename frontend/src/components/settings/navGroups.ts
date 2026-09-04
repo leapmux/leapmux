@@ -39,11 +39,9 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   { id: 'advanced', title: 'Advanced', category: 'advanced', admin: false },
   { id: 'admin-general', title: 'General', category: 'general', admin: true },
   { id: 'admin-signup', title: 'Sign-up & Access', category: 'signup', admin: true },
-  // Straight after Sign-up & Access, because it answers the same question one
-  // step earlier: that section decides who may hold an account, this one
-  // decides which addresses they can reach the hub at. Solo only -- every key
-  // in the category is hidden_in_hub, so `occupiedNavGroups` drops the group
-  // on a multi-user hub.
+  // Straight after Sign-up & Access because this section controls the hub's
+  // network entry points. The solo listen-address row can be hidden while the
+  // trusted reverse-proxy row keeps this section visible in every hub mode.
   { id: 'admin-network', title: 'Network access', category: 'network', admin: true },
   { id: 'admin-email', title: 'Email (SMTP)', category: 'email', admin: true },
   // The same category on the ADMINISTRATION side, which is where the hub's

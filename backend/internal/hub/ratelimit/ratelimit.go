@@ -771,7 +771,7 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 // this feature creates.
 func budgetKeyFor(ctx context.Context, m *Manager, spec procedureSpec) (string, bool) {
 	if defaults[spec.op].keyByAddress {
-		return AddressBudgetKey(peer.RemoteHost(ctx)), true
+		return AddressBudgetKey(peer.ClientIP(ctx)), true
 	}
 	user := auth.GetUser(ctx)
 	if user == nil || user.SoloAuthenticated() {

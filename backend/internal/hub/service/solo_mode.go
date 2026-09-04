@@ -8,8 +8,8 @@ import (
 
 // rejectSolo refuses a surface that solo mode does not serve.
 //
-// Solo mode authenticates every request as one synthetic user, with no
-// session row and no credential store, so a whole family of procedures has
+// Solo mode authenticates local IPC as one synthetic user, with no session
+// row and no credential store. A whole family of procedures has
 // nothing to act on. Nine handlers wrote this refusal by hand, each with its
 // own subject, and two more wrapped it once apiece -- one of the nine
 // already lost its subject and read only "not available in solo mode". One

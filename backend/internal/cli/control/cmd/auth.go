@@ -154,11 +154,10 @@ func requireClient(hubFlag string) (*control.Client, error) {
 // --device-code) when the local listener can't be reached from a
 // browser.
 //
-// A solo hub needs no login to USE, because it authenticates every request as
-// its one account. It still authorizes apps: the solo rung yields to a
-// presented lmx_ bearer, so a credential minted here binds its scope there --
-// which is how an agent on a solo machine holds file:read and nothing more.
-// Both flows complete, because the consent stages accept the solo account.
+// A solo hub needs no login over local IPC. Its TCP addresses use ordinary
+// sessions after first-password setup. Solo still authorizes apps: the solo
+// rung yields to a presented lmx_ bearer, so a credential minted here binds
+// its scope there.
 func RunAuthLogin(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, deviceName, scopeFlag string

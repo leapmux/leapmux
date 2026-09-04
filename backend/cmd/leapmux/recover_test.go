@@ -675,10 +675,9 @@ func TestCLI_BootstrapCreateAdmin(t *testing.T) {
 // that every other creation path applies.
 //
 // This one is OFFLINE, so nothing stands behind it. A row named "solo" in
-// a non-solo database is auto-authenticated for every request the moment
-// the same data dir is opened with `leapmux solo`: the interceptor's solo
-// short-circuit returns that identity before the email gate and before the
-// admin gate, with no credential at all.
+// a non-solo database becomes the synthetic local IPC identity when the same
+// data directory opens with `leapmux solo`. The interceptor returns that
+// identity before the email and admin checks.
 func TestCLI_BootstrapCreateAdmin_RefusesAReservedUsername(t *testing.T) {
 	for _, name := range []string{"solo", "SOLO", " Solo "} {
 		dir := setupTestDataDir(t)

@@ -27,6 +27,7 @@ import {
   checkSessionInfo,
   checkTabNames,
   checkTheme,
+  checkTrustedProxies,
   checkValidate,
   checkWire,
   checkWorkerVocab,
@@ -41,6 +42,7 @@ import {
   emitGoListen,
   emitGoRetry,
   emitGoSessionInfo,
+  emitGoTrustedProxies,
   emitGoValidate,
   emitGoWire,
   emitRsDesktop,
@@ -50,6 +52,7 @@ import {
   emitTsProviders,
   emitTsRetry,
   emitTsSessionInfo,
+  emitTsTrustedProxies,
   emitTsValidate,
   emitTsWire,
   enumValues,
@@ -75,6 +78,7 @@ const readContract = name => JSON.parse(readFileSync(join(ROOT, 'contracts', `${
 const WIRE = readContract('wire')
 const HEADERS = readContract('headers')
 const RETRY = readContract('retry')
+const TRUSTED_PROXIES = readContract('trusted-proxies')
 
 function expectContractError(fn, fragment) {
   try {
@@ -550,6 +554,35 @@ describe('emitGoListen and emitTsListen', () => {
   })
 })
 
+describe('trusted proxy contract', () => {
+  it('accepts the shipped provider catalogue', () => {
+    expect(checkTrustedProxies(TRUSTED_PROXIES)).toEqual({})
+  })
+
+  it('rejects a provider token that differs from its key', () => {
+    expectContractError(
+      () => checkTrustedProxies({
+        ...TRUSTED_PROXIES,
+        providers: {
+          ...TRUSTED_PROXIES.providers,
+          cloudflare: { ...TRUSTED_PROXIES.providers.cloudflare, token: 'other' },
+        },
+      }),
+      'token must equal',
+    )
+  })
+
+  it('emits the cap and provider metadata for both languages', () => {
+    const go = emitGoTrustedProxies(TRUSTED_PROXIES)
+    expect(go).toContain('const MaxTrustedProxySelectors = 32')
+    expect(go).toContain('TrustedProxyProviderCloudflare = "cloudflare"')
+    expect(go).toContain('{Token: "cloudfront", Label: "AWS CloudFront"')
+    const ts = emitTsTrustedProxies(TRUSTED_PROXIES)
+    expect(ts).toContain('MAX_TRUSTED_PROXY_SELECTORS = 32')
+    expect(ts).toContain('{ token: "cloudflare", label: "Cloudflare"')
+  })
+})
+
 describe('usernameConstName', () => {
   // The schema admits a hyphen and no language admits one in an identifier.
   it('folds a hyphen the identifier cannot carry', () => {
@@ -578,6 +611,7 @@ describe('generate', () => {
       'backend/generated/contracts/tab-names.go',
       'backend/generated/contracts/tab-types.go',
       'backend/generated/contracts/theme.go',
+      'backend/generated/contracts/trusted-proxies.go',
       'backend/generated/contracts/validate.go',
       'backend/generated/contracts/wire.go',
       'backend/generated/contracts/worker-vocab.go',
@@ -599,6 +633,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/tab-names.ts',
       'frontend/src/generated/contracts/tab-types.ts',
       'frontend/src/generated/contracts/theme-default.ts',
+      'frontend/src/generated/contracts/trusted-proxies.ts',
       'frontend/src/generated/contracts/validate.ts',
       'frontend/src/generated/contracts/wire.ts',
       'frontend/src/generated/contracts/worker-vocab.ts',

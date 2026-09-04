@@ -9,7 +9,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/hub/peer"
 )
+
+func requestWithClientIP(method, path, clientIP string) *http.Request {
+	req := httptest.NewRequest(method, path, nil)
+	return req.WithContext(peer.WithClientIP(req.Context(), clientIP))
+}
 
 // TestAllowHTTPCountsEveryRequestAgainstOneAddress pins the difference from the
 // interceptor: this budget caps the RATE at which one address may drive an
@@ -19,7 +26,7 @@ func TestAllowHTTPCountsEveryRequestAgainstOneAddress(t *testing.T) {
 	m := newTestManager(t)
 	upsertLimit(t, m, OpOAuthAnonymous, true, 2, 600)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	req := requestWithClientIP(http.MethodPost, "/oauth/token", "203.0.113.7")
 	req.RemoteAddr = "203.0.113.7:51234"
 
 	assert.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, req))
@@ -29,25 +36,23 @@ func TestAllowHTTPCountsEveryRequestAgainstOneAddress(t *testing.T) {
 
 	// A DIFFERENT address has its own budget, so one noisy caller cannot lock
 	// everybody else out.
-	other := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	other := requestWithClientIP(http.MethodPost, "/oauth/token", "203.0.113.8")
 	other.RemoteAddr = "203.0.113.8:51234"
 	assert.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, other))
 }
 
-// TestAllowHTTPKeysOnTheConnectionAddressAndNotAHeader is the security
-// property: keying on a forwarded header would let an attacker mint a fresh
-// budget per request by varying it -- worse than no limit, because it also lets
-// them exhaust a victim's budget by claiming the victim's address.
-func TestAllowHTTPKeysOnTheConnectionAddressAndNotAHeader(t *testing.T) {
+// The limiter reads only the verified client IP from context. Raw forwarding
+// headers cannot change the budget after request-source verification.
+func TestAllowHTTPUsesVerifiedClientIPAndNotRawHeaders(t *testing.T) {
 	m := newTestManager(t)
 	upsertLimit(t, m, OpOAuthAnonymous, true, 1, 600)
 
-	first := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	first := requestWithClientIP(http.MethodPost, "/oauth/token", "203.0.113.7")
 	first.RemoteAddr = "203.0.113.7:1"
 	first.Header.Set("X-Forwarded-For", "10.0.0.1")
 	require.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, first))
 
-	second := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	second := requestWithClientIP(http.MethodPost, "/oauth/token", "203.0.113.7")
 	second.RemoteAddr = "203.0.113.7:2"
 	second.Header.Set("X-Forwarded-For", "10.0.0.2")
 	assert.False(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, second),
@@ -59,7 +64,7 @@ func TestAllowHTTPKeysOnTheConnectionAddressAndNotAHeader(t *testing.T) {
 // client authenticates at all, so a settings blip that locked every app out of
 // every hub would be a worse outage than the unthrottled window it prevents.
 func TestAllowHTTPAdmitsWhenUnconfigured(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	req := requestWithClientIP(http.MethodPost, "/oauth/token", "203.0.113.7")
 	req.RemoteAddr = "203.0.113.7:1"
 	assert.True(t, AllowHTTP(context.Background(), nil, OpOAuthAnonymous, req),
 		"a nil manager admits: a test wires none, and a hub always has one")
@@ -81,7 +86,7 @@ func TestAllowHTTPWindowActuallyResets(t *testing.T) {
 	m := newTestManager(t)
 	upsertLimit(t, m, OpOAuthAnonymous, true, 2, 600)
 
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
+	req := requestWithClientIP(http.MethodPost, "/oauth/token", "203.0.113.7")
 	req.RemoteAddr = "203.0.113.7:51234"
 
 	assert.True(t, AllowHTTP(context.Background(), m, OpOAuthAnonymous, req))
@@ -94,18 +99,14 @@ func TestAllowHTTPWindowActuallyResets(t *testing.T) {
 		"one window later the budget starts over")
 }
 
-// TestClientAddressKeyStripsThePortAndBracket pins the key shape. A client
-// picks a fresh port per connection, so keying on it would give every request
-// its own budget -- exactly the hole the header rule above closes.
-func TestClientAddressKeyStripsThePortAndBracket(t *testing.T) {
-	for addr, want := range map[string]string{
-		"203.0.113.7:51234":  "anonymous:203.0.113.7",
-		"[2001:db8::1]:4327": "anonymous:2001:db8::1",
-		"203.0.113.7":        "anonymous:203.0.113.7",
-		"":                   "anonymous:unknown",
+// The verified value is already a canonical IP without a port.
+func TestClientAddressKeyUsesVerifiedClientIP(t *testing.T) {
+	for clientIP, want := range map[string]string{
+		"203.0.113.7": "anonymous:203.0.113.7",
+		"2001:db8::1": "anonymous:2001:db8::1",
+		"":            "anonymous:unknown",
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil)
-		req.RemoteAddr = addr
-		assert.Equalf(t, want, clientAddressKey(req), "address %q", addr)
+		req := requestWithClientIP(http.MethodPost, "/oauth/token", clientIP)
+		assert.Equalf(t, want, clientAddressKey(req), "client IP %q", clientIP)
 	}
 }

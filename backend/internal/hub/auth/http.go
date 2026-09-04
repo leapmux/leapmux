@@ -118,9 +118,7 @@ func (o HTTPAuthOpts) soloGate() *SoloGate {
 // safe and stays, so a session issued under TLS still validates after the
 // operator turns the setting off.
 func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (*UserInfo, error) {
-	// The solo rung admits the callers SoloGate allows -- the local IPC
-	// socket, and any transport while the account holds no password -- and
-	// YIELDS to a presented bearer.
+	// The solo rung admits local IPC and yields to a presented bearer.
 	//
 	// A caller that presents an lmx_ bearer is ASKING to be its app: it
 	// accepted a narrower grant on a consent screen, and answering "you are

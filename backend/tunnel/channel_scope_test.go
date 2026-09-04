@@ -36,13 +36,13 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
 	// A credential granted file:read and NOTHING else, through the real
 	// device-code flow -- so what binds below is what a consent screen would
 	// actually produce, not a row a test wrote by hand.
-	bearer, granted := authorizeScopedCredential(t, hubURL, "file:read")
+	bearer, granted := authorizeScopedCredential(t, httpClient, hubURL, "file:read")
 	// The closure widens along its OWN implications and no further: file:read
 	// implies worker:read, because reading a file means reaching the machine
 	// that holds it. It must not reach terminal:write, which is what the
@@ -104,7 +104,7 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 	// credential that holds terminal:write reaches the handler and fails on the
 	// id instead. Without this the assertion above would pass for an
 	// unimplemented method.
-	wide, _ := authorizeScopedCredential(t, hubURL, "file:read terminal:write")
+	wide, _ := authorizeScopedCredential(t, httpClient, hubURL, "file:read terminal:write")
 	wideCh, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
 		LifetimeContext: ctx,
 		BearerToken:     wide,
@@ -124,9 +124,8 @@ func TestChannelScopeBindsInsideTheNoiseSession(t *testing.T) {
 // The DEVICE flow, not a hand-written row: it is the one leg whose consent a
 // test can complete without a browser, and driving the real endpoints is what
 // makes the grant below the same value a consent screen produces.
-func authorizeScopedCredential(t *testing.T, hubURL, scope string) (bearer string, granted []string) {
+func authorizeScopedCredential(t *testing.T, client *http.Client, hubURL, scope string) (bearer string, granted []string) {
 	t.Helper()
-	client := &http.Client{}
 
 	postForm := func(path string, form url.Values) map[string]any {
 		t.Helper()
@@ -153,8 +152,7 @@ func authorizeScopedCredential(t *testing.T, hubURL, scope string) (bearer strin
 	require.NotEmpty(t, userCode)
 	require.NotEmpty(t, deviceCode)
 
-	// The consent POST. Solo authenticates it automatically, which is exactly
-	// the rung this test relies on staying above the bearer rung.
+	// The consent POST uses the elevated session from first-password setup.
 	approve, err := client.PostForm(hubURL+"/oauth/device", url.Values{
 		"user_code": {userCode}, "decision": {"allow"},
 	})
@@ -204,12 +202,16 @@ func TestChannelOpenReadsTheAnnouncedGrant(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	// A SESSION is unscoped, and solo authenticates as one when no bearer is
-	// presented. It reaches every method, which is what SCOPE_ALL means.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	// The session from first-password setup is unscoped. It reaches every
+	// method, which is what SCOPE_ALL means.
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -192,9 +193,9 @@ type UserInfo struct {
 
 // SoloAuthenticated reports whether this is solo mode's synthetic user.
 //
-// Solo mode authenticates every request as one bootstrapped account with no
-// session row and no credential row, so the questions the credential-shaped
-// rules ask have no answer for it. The elevation rule is the one that matters:
+// Solo mode authenticates local IPC as one bootstrapped account with no
+// session row and no credential row, so credential-shaped rules have no row to
+// inspect. The elevation rule is the one that matters:
 // there is no sign-in, so there is no ceremony to prove a factor with, and a
 // gate that demanded one would refuse the whole hub-administration surface for
 // ever. The predicate lives here, on the identity itself, so a rule states its
@@ -472,7 +473,6 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 // SessionMeta holds optional metadata for session creation.
 type SessionMeta struct {
 	UserAgent string
-	IPAddress string
 }
 
 // CreateSession creates a new user session and returns the session ID and
@@ -495,10 +495,10 @@ func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, li
 		ID:        sessionID,
 		UserID:    userID,
 		ExpiresAt: expiresAt,
+		IPAddress: peer.ClientIP(ctx),
 	}
 	if len(meta) > 0 {
 		params.UserAgent = meta[0].UserAgent
-		params.IPAddress = meta[0].IPAddress
 	}
 	if err := st.Sessions().Create(ctx, params); err != nil {
 		return "", time.Time{}, fmt.Errorf("create session: %w", err)

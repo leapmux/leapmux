@@ -210,9 +210,9 @@ Both follow the same rule: first contact auto-pins, any later mismatch aborts th
 
 ## Solo mode: a reduced threat model
 
-Solo mode collapses the trust boundary on purpose. It runs the Hub and the Worker **in the same process**, by default on `127.0.0.1:4327`, and its single account — named `solo` — starts with **no password**. While that account has none, every request is authenticated as the administrator without credentials, so any local process that can reach the port can drive the Worker. (This applies to solo mode only. Dev mode uses real password authentication.)
+Solo mode collapses the local IPC trust boundary on purpose. It runs the Hub and the Worker in one process. Its account, `solo`, starts with no password. Local IPC always receives the synthetic administrator because only the local operating-system user can open that socket.
 
-So a fresh solo hub's threat model reduces to **local-host trust**. The E2EE channel, the composite keypair, and TOFU pinning all still operate end-to-end inside the single process, but that protocol-level separation offers **no protection against a local attacker** who can reach the loopback port.
+A TCP caller does not receive that administrator. Before a password exists, it can call only `SetInitialSoloPassword`. The first successful caller stores the password and an elevated session in one transaction. All concurrent losers and later calls fail. This setup flow prevents passwordless administration, but it does not identify the first caller.
 
 ### What a password changes
 
@@ -221,7 +221,7 @@ Give the `solo` account a password and the rule changes for every TCP address at
 | Transport | `solo` password | Result |
 |---|---|---|
 | Local socket (the desktop app) | either | No sign-in. Only a process running as you can open it. |
-| TCP, any address | not set | No sign-in. This is the bootstrap state, and it is why the first password can be set from a browser at all. |
+| TCP, any address | not set | Only first-password setup. The first successful caller claims the account. |
 | TCP, any address | set | Sign in as `solo`. This covers `127.0.0.1` and every address you added. |
 
 Loopback buys no exemption once a password exists, and that is deliberate: an address like `*:4327` serves the loopback interface and the LAN from **one socket**, so no rule could admit the first and refuse the second. Reading a loopback port also does not make a process the owner of the account.
@@ -231,10 +231,18 @@ Setting the password is what [Network access](/docs/admin/configuration/#network
 A solo hub runs no captcha, so a rate limit guards the sign-in form instead: ten failed passwords from one client address pause sign-in from that address for fifteen minutes. `rate_limit.login_anonymous` sets it — see [Bot protection](/docs/admin/configuration/#bot-protection-captcha--rate-limits).
 
 {{< callout type="warning" >}}
-Point solo mode at a non-loopback address with `-listen` and LeapMux warns you at startup: the hub is reachable from other machines, and until the `solo` account has a password every request is authenticated as the administrator without credentials.
+Point solo mode at a non-loopback address with `-listen` and LeapMux warns you at startup. Until the `solo` account has a password, another machine can win the first-password setup race.
 
-The app makes the same demand where you can act on it — while the hub answers on such an address and the account has no password, it replaces itself with a password-setup screen. Set one. Firewall or tunnel the address as well if the network is not one you trust.
+The app shows only the password-setup screen on every passwordless TCP connection, including loopback. Set the password from a trusted connection. Firewall or tunnel a non-loopback address.
 {{< /callout >}}
+
+### Trusted reverse proxies
+
+LeapMux trusts no forwarding header by default. The `trusted_proxy_ranges` setting identifies the transport peers that may supply one. The Hub first verifies the unchanged physical peer. It then walks `Forwarded`, or X-Forwarded headers when `Forwarded` is absent, from the trusted side. A malformed preferred header produces an unknown client and no fallback.
+
+Provider presets such as `cloudflare` and `cloudfront` are broad trust decisions. They identify shared provider infrastructure, not your account. Another customer can target your origin unless you restrict it to your distribution or require authenticated origin requests. Each proxy must remove client-supplied forwarding headers or append only verified values. LeapMux bundles provider snapshots and does not refresh them automatically.
+
+The verified client IP controls address-keyed rate limits and new session records. Forwarded protocol data changes request URL metadata, but it never changes `secure_cookies`. Configure that setting explicitly. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
 
 The bundled Worker that solo and dev modes auto-register is created in-process and flagged as auto-registered; it deliberately bypasses the registration-key flow, since presenting a bearer token to a local in-process RPC would give no real security.
 
@@ -385,7 +393,7 @@ If you run a Hub for a team, the security of the deployment rests largely on the
 2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub legs are not E2EE; they rely on transport TLS. Put the Hub behind a reverse proxy with valid certificates. See [Running LeapMux](/docs/admin/running-leapmux/).
 3. **Guard the `encryption.key` file like a top-grade secret.** It is base64 key material in a plain text file at mode `0600` — there is no master password, KMS, or HSM wrapping, so filesystem permissions are the only thing protecting it. It holds both the encryption key ring and the token pepper, so whoever reads it can decrypt the OAuth columns *and* forge the hash of any API or delegation token. Back it up with the database, store both encrypted, and restrict access.
 4. **Rotate encryption keys deliberately.** Use `rotate` → restart → `reencrypt`, and never `remove` an old version before the re-encryption migrated every row. The exact runbook is in [Encryption & Data](/docs/admin/encryption-and-data/).
-5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, a non-loopback address is unauthenticated admin access. Run `leapmux hub` for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
+5. **Give the `solo` account a password before you expose solo mode beyond loopback.** Without one, the first TCP caller can claim the account. Run `leapmux hub` for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/admin/configuration/#network-access) for listen addresses.
 6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/admin/managing-workers/).
 7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt is the user-facing line of defense against a Hub swapping a Worker. Users should reject unexpected changes and verify the 4-word fingerprint out-of-band before ever accepting.
 8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux control admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/admin/admin-cli/).

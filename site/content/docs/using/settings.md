@@ -236,13 +236,19 @@ Every row here stays in solo mode. A solo Hub whose account holds a password sig
 
 ### Network access
 
-Solo mode only. Which addresses this Hub answers on, beside the one `-listen` gives it, and the password that guards them.
+This section appears in solo, hub, and dev modes. It contains two separate rows.
+
+**Network access** appears only in solo mode. It controls which addresses the Hub answers on beside the one `-listen` gives it.
 
 **Serving now** lists what the Hub answers on right now, with the reason for each entry — from `-listen`, an address you added, or one socket serving both. **Additional addresses** is the editable list: pick an interface (or **All interfaces**) and a port for each, then **Apply**. The Hub binds them at once and again on every later start.
 
-Applying an address asks every network address for a sign-in as `solo`, `127.0.0.1` included, so the panel asks you to set that password first and shows the same fields the sign-up page uses. Once the account has one, the panel points at **Account → Password** instead. The desktop app's local socket never asks.
+Applying an address makes every TCP address require a sign-in as `solo`, including `127.0.0.1`. The panel stores the first password before it publishes a non-loopback address. The desktop app's local socket stays credential-free.
 
 Overlapping addresses merge: ask for every interface on the port `-listen` already uses and one socket serves both, which the "Serving now" list says. An address the Hub cannot bind stays configured and is reported with the operating system's own reason. See [Network access](/docs/admin/configuration/#network-access) and [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
+
+**Trusted reverse proxies** appears in every Hub mode. Add an IP address, CIDR, inclusive range, short IPv4 range, or the `cloudflare` or `cloudfront` provider preset. Rows stay staged until **Apply**. **Cancel** restores the stored list, and backend validation errors leave the staged rows in place.
+
+The provider warning cannot be dismissed. Provider ranges identify shared infrastructure, not your account. Restrict the origin to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies) for header precedence and the full selector rules.
 
 ### Sign-up & Access
 
