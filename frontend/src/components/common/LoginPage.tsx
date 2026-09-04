@@ -5,13 +5,13 @@ import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
+import { AuthMethodPillGroup } from '~/components/common/AuthMethodPillGroup'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
-import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
 import { USERNAME_SOLO } from '~/generated/contracts/validate'
-import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
+import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
@@ -181,11 +181,9 @@ export const LoginPage: Component = () => {
               autocomplete="username"
             />
           </label>
-          <PillGroup
+          <AuthMethodPillGroup
             label="Sign-in method"
-            options={authMethodOptions()}
-            selected={v => effectiveMethod() === v}
-            onSelect={methodSelection.select}
+            selection={methodSelection}
           />
           <Show when={effectiveMethod() === 'password'}>
             <label>

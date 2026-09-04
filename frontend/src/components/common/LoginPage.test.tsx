@@ -553,7 +553,8 @@ describe('loginPage', () => {
 
     // The lookup itself is half the assertion: the pill keeps its own name.
     const passkey = screen.getByRole('radio', { name: 'Passkey' })
-    expect(passkey).toBeDisabled()
+    expect(passkey).toHaveAttribute('aria-disabled', 'true')
+    expect(passkey).not.toBeDisabled()
     expect(passkey).not.toHaveAttribute('title')
     expect(reasonOf(passkey)).toMatch(expected)
     expect(screen.getByLabelText('Password')).toBeInTheDocument()

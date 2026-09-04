@@ -1,45 +1,186 @@
 import { style } from '@vanilla-extract/css'
 
+/** One content-sized control with one outer border. */
 export const pillGroup = style({
-  display: 'flex',
-  flexDirection: 'row',
-  gap: 'var(--space-2)',
-})
-
-/** Shape and metrics shared by both pill states; only the colors differ. */
-const pillBase = style({
-  'padding': 'var(--space-2) var(--space-4)',
-  'borderRadius': 'var(--radius-medium)',
-  'fontWeight': 'var(--font-normal)',
-  'cursor': 'pointer',
-  // A governed group keeps its colors and dims as a whole, so the selection it
-  // shows stays readable while the pointer says it is not the thing to click.
-  ':disabled': {
-    cursor: 'default',
-    opacity: 0.55,
-  },
-})
-
-export const pillOption = style([pillBase, {
+  position: 'relative',
+  isolation: 'isolate',
+  display: 'inline-flex',
+  width: 'max-content',
+  maxWidth: '100%',
+  gap: 0,
+  overflow: 'hidden',
   backgroundColor: 'var(--card)',
-  color: 'var(--muted-foreground)',
   border: '1px solid var(--border)',
+  borderRadius: 'var(--radius-medium)',
+})
+
+/** Dim a group that refuses all changes. */
+export const pillGroupDisabled = style({
+  opacity: 0.55,
+})
+
+/** Metrics that the real buttons and their visual copies share. */
+const pillOptionLayout = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: 0,
+  flexShrink: 1,
+  padding: 'var(--space-2) var(--space-4)',
+  border: 0,
+  borderRadius: 0,
+  fontSize: 'var(--text-7)',
+  lineHeight: 'var(--leading-normal)',
+  fontWeight: 'var(--font-normal)',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+})
+
+/** Shape and behavior for each real radio. */
+export const pillOption = style([pillOptionLayout, {
+  position: 'relative',
+  zIndex: 1,
+  backgroundColor: 'transparent',
+  color: 'var(--muted-foreground)',
+  opacity: 1,
+  cursor: 'pointer',
+  transitionProperty: 'none',
   selectors: {
-    // Hover changes the border only. The background stays `--card`, which is
-    // what the unhovered pill already uses. Excluded while disabled: a pill
-    // that lights up under the pointer promises a click it refuses.
-    '&:hover:not(:disabled)': {
-      borderColor: 'var(--muted-foreground)',
+    '&:hover:not(:disabled):not([aria-disabled="true"]):not([aria-checked="true"])': {
+      backgroundColor: 'var(--accent)',
+      color: 'var(--foreground)',
+    },
+    '&:active:not(:disabled):not([aria-disabled="true"]):not([aria-checked="true"])': {
+      transform: 'none',
+    },
+    '&:focus-visible': {
+      outline: '2px solid var(--ring)',
+      outlineOffset: '-2px',
+    },
+    '&:disabled': {
+      cursor: 'default',
     },
   },
 }])
 
-export const pillOptionActive = style([pillBase, {
-  backgroundColor: 'var(--primary)',
-  // The label reads from the palette, never from a literal. Every variant
-  // publishes `--primary-foreground` against its own `--primary`, and 21 of
-  // the 30 set it to black -- a literal white is unreadable on those, down to
-  // 1.49:1 on Ayu Mirage. `themes.test.ts` floors this exact pair at 3:1.
-  color: 'var(--primary-foreground)',
-  border: '1px solid var(--primary)',
+/** Keep each boundary visible between adjacent segments. */
+export const pillOptionSeparated = style({
+  borderInlineStart: '1px solid var(--border)',
+})
+
+/** Dim an unavailable option that is not selected. */
+export const pillOptionDimmed = style({
+  opacity: 0.55,
+})
+
+/** Mark an option that can receive focus but refuses selection. */
+export const pillOptionUnavailable = style({
+  cursor: 'not-allowed',
+})
+
+/** Paint the complete selected state when the sliding layers are unavailable. */
+export const pillOptionActive = style({
+  'backgroundColor': 'var(--primary)',
+  'color': 'var(--primary-foreground)',
+  'selectors': {
+    '&:hover:not(:disabled):not([aria-disabled="true"])': {
+      backgroundColor: 'var(--primary)',
+      color: 'var(--primary-foreground)',
+    },
+    '&:focus-visible': {
+      outlineColor: 'var(--primary-foreground)',
+    },
+  },
+  '@media': {
+    '(forced-colors: active)': {
+      forcedColorAdjust: 'none',
+      backgroundColor: 'Highlight',
+      color: 'HighlightText',
+      selectors: {
+        '&:hover:not(:disabled):not([aria-disabled="true"])': {
+          backgroundColor: 'Highlight',
+          color: 'HighlightText',
+        },
+        '&:focus-visible': {
+          outlineColor: 'HighlightText',
+        },
+      },
+    },
+  },
+})
+
+/** Mark the selected target after the fill reaches it. */
+export const pillOptionSelectedTarget = style({
+  'boxShadow': 'inset 0 0 0 2px var(--primary)',
+  'selectors': {
+    '&:focus-visible': {
+      boxShadow: 'inset 0 0 0 4px var(--primary)',
+      outlineColor: 'var(--primary-foreground)',
+    },
+  },
+  '@media': {
+    '(forced-colors: active)': {
+      boxShadow: 'inset 0 0 0 2px Highlight',
+      selectors: {
+        '&:focus-visible': {
+          boxShadow: 'inset 0 0 0 4px Highlight',
+          outlineColor: 'HighlightText',
+        },
+      },
+    },
+  },
+})
+
+const selectionWindow = style({
+  position: 'absolute',
+  inset: 0,
+  clipPath: 'inset(0 var(--pill-selection-right) 0 var(--pill-selection-left))',
+  pointerEvents: 'none',
+  transitionProperty: 'none',
+})
+
+/** The moving primary background. The real selected button remains outlined. */
+export const selectionFill = style([selectionWindow, {
+  'zIndex': 0,
+  'backgroundColor': 'var(--primary)',
+  '@media': {
+    '(forced-colors: active)': {
+      forcedColorAdjust: 'none',
+      backgroundColor: 'Highlight',
+    },
+  },
 }])
+
+/** Active-color label copies that move with the primary background. */
+export const selectionLabels = style([selectionWindow, {
+  'zIndex': 2,
+  'display': 'flex',
+  'color': 'var(--primary-foreground)',
+  '@media': {
+    '(forced-colors: active)': {
+      forcedColorAdjust: 'none',
+      color: 'HighlightText',
+    },
+  },
+}])
+
+/** One label copy. It has the exact metrics of its real radio. */
+export const selectionLabel = style([pillOptionLayout, {
+  backgroundColor: 'transparent',
+  color: 'inherit',
+  selectors: {
+    '&::before': {
+      content: 'attr(data-label)',
+    },
+  },
+}])
+
+/** Slide both clipped layers after the first valid measurement. */
+export const selectionWindowMoves = style({
+  'transition': 'clip-path var(--transition)',
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transitionProperty: 'none',
+    },
+  },
+})

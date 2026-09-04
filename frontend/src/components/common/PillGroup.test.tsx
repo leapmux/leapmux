@@ -1,57 +1,56 @@
+import type { PillOptions } from './PillGroup'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { createSignal } from 'solid-js'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
 import { PillGroup } from './PillGroup'
+import * as styles from './PillGroup.css'
 
 /**
- * The preference pills are one-of-N groups, so they carry radiogroup/radio
- * semantics rather than aria-pressed.
+ * These controls contain one required choice. Radio semantics give the group
+ * its accessible name, selected state, and position information.
  *
- * They shipped as four identical stateless buttons; aria-pressed fixed the
- * "stateless" half and still described the wrong widget — a toggle button
- * announces "pressed", promises it can be un-pressed, and carries no group name
- * and no set position. These pin what a screen reader can actually reach.
+ * The old controls used identical stateless buttons. `aria-pressed` would
+ * describe toggle buttons, which promise that the reader can clear a choice.
  */
-describe('pillGroup', () => {
+describe('pill group (PillGroup)', () => {
   const options = [
-    { value: null, label: 'Use account default' },
-    { value: 'dark', label: 'Dark' },
-    { value: 'light', label: 'Light' },
-  ]
+    { key: null, label: 'Use account default' },
+    { key: 'dark', label: 'Dark' },
+    { key: 'light', label: 'Light' },
+  ] as const
 
   function renderGroup(current: string | null, onSelect = vi.fn()) {
     render(() => (
       <PillGroup
         label="Theme"
         options={options}
-        selected={v => v === current}
+        selectedKey={current}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('exposes a named group, not a row of anonymous buttons', () => {
+  it('exposes a group with an accessible name', () => {
     renderGroup('dark')
-    // The visible <h3> is not associated with the group in the a11y tree, so
-    // the aria-label is the only name AT ever announces on entry.
+    // A visible heading does not associate itself with this group. The label
+    // prop supplies the name that assistive technology announces.
     expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeTruthy()
     expect(screen.getAllByRole('radio')).toHaveLength(3)
   })
 
-  it('selects without submitting the form it sits in', () => {
-    // A bare <button> inside a <form> defaults to type="submit". The pills
-    // shipped without an explicit type, so choosing "Passkey" on the login
-    // page SUBMITTED the login form with the username and nothing else: the
-    // submit button went to "Signing in..." and stayed there, and the E2E
-    // helper waited two minutes for a button that never re-enabled.
+  it('selects without submitting its form', () => {
+    // A button in a form submits by default. The old Passkey option started an
+    // incomplete login request and left the submit button unavailable.
     const onSelect = vi.fn()
-    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+    const onSubmit = vi.fn((event: Event) => event.preventDefault())
     render(() => (
       <form onSubmit={onSubmit}>
         <PillGroup
           label="Theme"
           options={options}
-          selected={v => v === null}
+          selectedKey={null}
           onSelect={onSelect}
         />
         <button type="submit">Go</button>
@@ -64,22 +63,37 @@ describe('pillGroup', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('marks exactly one option checked', () => {
+  it('does not select the current option again', () => {
+    const onSelect = renderGroup('dark')
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }))
+
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('does not select the current option again with Home', () => {
+    const onSelect = renderGroup(null)
+
+    fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Theme' }), { key: 'Home' })
+
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('marks exactly one option as checked', () => {
     renderGroup('dark')
-    expect(screen.getByRole('radio', { name: 'Dark' }).getAttribute('aria-checked')).toBe('true')
-    expect(screen.getByRole('radio', { name: 'Light' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('radio', { name: 'Use account default' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('radio', { name: 'Use account default' })).toHaveAttribute('aria-checked', 'false')
   })
 
   it('puts only the checked option in the tab order', () => {
-    // Roving tabindex is what the role requires: Tab reaches the GROUP, the
-    // arrows move within it. Without it every pill is its own tab stop.
+    // Tab enters the group once. Arrow keys then move within the group.
     renderGroup('dark')
-    expect(screen.getByRole('radio', { name: 'Dark' }).getAttribute('tabindex')).toBe('0')
-    expect(screen.getByRole('radio', { name: 'Light' }).getAttribute('tabindex')).toBe('-1')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('tabindex', '-1')
   })
 
-  it('moves the selection with the arrow keys, wrapping at the ends', () => {
+  it('moves right and then returns from the focused option', () => {
     const onSelect = renderGroup('dark')
     const group = screen.getByRole('radiogroup', { name: 'Theme' })
 
@@ -87,10 +101,40 @@ describe('pillGroup', () => {
     expect(onSelect).toHaveBeenLastCalledWith('light')
 
     fireEvent.keyDown(group, { key: 'ArrowLeft' })
-    expect(onSelect).toHaveBeenLastCalledWith(null)
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Dark' }))
+    expect(onSelect).toHaveBeenCalledTimes(1)
   })
 
-  it('jumps to the ends with Home and End', () => {
+  it('continues from the focused option while selection remains pending', () => {
+    const onSelect = renderGroup('dark')
+    const group = screen.getByRole('radiogroup', { name: 'Theme' })
+
+    screen.getByRole('radio', { name: 'Dark' }).focus()
+    fireEvent.keyDown(group, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Light' }))
+
+    fireEvent.keyDown(group, { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Dark' }))
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves modified navigation keys to the browser', () => {
+    const onSelect = renderGroup('dark')
+    const group = screen.getByRole('radiogroup', { name: 'Theme' })
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+
+    group.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('moves to each end with Home and End', () => {
     const onSelect = renderGroup('dark')
     const group = screen.getByRole('radiogroup', { name: 'Theme' })
 
@@ -101,13 +145,13 @@ describe('pillGroup', () => {
     expect(onSelect).toHaveBeenLastCalledWith('light')
   })
 
-  it('ignores keys it does not own', () => {
+  it('ignores keys that the group does not own', () => {
     const onSelect = renderGroup('dark')
     fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Theme' }), { key: 'a' })
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('wraps from the last option forward', () => {
+  it('wraps forward from the last option', () => {
     const onSelect = renderGroup('light')
     fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Theme' }), { key: 'ArrowRight' })
     expect(onSelect).toHaveBeenLastCalledWith(null)
@@ -115,50 +159,47 @@ describe('pillGroup', () => {
 })
 
 /**
- * A stored browser preference can hold a value that matches no option: the
- * value is read back through an unchecked cast, so a renamed or retired
- * enum value survives in storage. Anchoring the tab stop on the selection
- * left EVERY pill at -1 there, Tab skipped the whole radiogroup, and the
- * arrow keys the group handles reached nothing.
+ * A stale stored value can match no current option.
+ *
+ * Browser storage uses an unchecked cast. A removed enum value can therefore
+ * survive a schema change. The group must remain reachable in this state.
  */
-describe('pillGroup with nothing selected', () => {
+describe('pill group with no selected option', () => {
   const options = [
-    { value: 'send', label: 'Send' },
-    { value: 'newline', label: 'Newline' },
-    { value: 'smart', label: 'Smart' },
-  ]
+    { key: 'send', label: 'Send' },
+    { key: 'newline', label: 'Newline' },
+    { key: 'smart', label: 'Smart' },
+  ] as const
 
   function renderUnmatched(onSelect = vi.fn()) {
     render(() => (
       <PillGroup
         label="Enter key"
         options={options}
-        selected={v => v === 'gone-from-the-schema'}
+        selectedKey="gone-from-the-schema"
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('keeps one pill in the tab order', () => {
+  it('keeps one option in the tab order', () => {
     renderUnmatched()
-    const tabIndexes = screen.getAllByRole('radio').map(el => el.getAttribute('tabindex'))
+    const tabIndexes = screen.getAllByRole('radio').map(element => element.getAttribute('tabindex'))
     expect(tabIndexes).toEqual(['0', '-1', '-1'])
   })
 
-  it('checks none of them', () => {
-    // APG allows an UNCHECKED radio to hold the tab stop; it does not allow
-    // the group to claim a selection the caller does not have.
+  it('does not check an option', () => {
+    // The radio pattern permits an unchecked radio to own the tab stop. The
+    // group must not claim a selection that the caller does not have.
     renderUnmatched()
-    expect(screen.getAllByRole('radio').map(el => el.getAttribute('aria-checked')))
+    expect(screen.getAllByRole('radio').map(element => element.getAttribute('aria-checked')))
       .toEqual(['false', 'false', 'false'])
   })
 
-  it('moves to the SECOND option on ArrowRight, and reaches the first with Home', () => {
-    // Focus sits on the pill that carries the tab stop, which is the first
-    // one, so the arrow moves relative to it. Deriving the origin from the
-    // (absent) selection made ArrowRight land on the first option instead,
-    // which is where focus already was.
+  it('moves from the roving option when an arrow key selects', () => {
+    // Focus starts on the first option. ArrowRight must therefore select the
+    // second option instead of restarting at the first option.
     const onSelect = renderUnmatched()
     const group = screen.getByRole('radiogroup', { name: 'Enter key' })
 
@@ -170,19 +211,144 @@ describe('pillGroup with nothing selected', () => {
   })
 })
 
+describe('pill group option identity', () => {
+  it.each([
+    ['no', []],
+    ['five', [
+      { key: 'one', label: 'One' },
+      { key: 'two', label: 'Two' },
+      { key: 'three', label: 'Three' },
+      { key: 'four', label: 'Four' },
+      { key: 'five', label: 'Five' },
+    ]],
+  ])('rejects %s options', (_description, options) => {
+    expect(() => render(() => (
+      <PillGroup
+        label="Invalid count"
+        options={options as unknown as PillOptions<string>}
+        selectedKey="one"
+        onSelect={vi.fn()}
+      />
+    ))).toThrow(/one through four options/i)
+  })
+
+  it('keeps the focused radio when fresh records carry the same values', () => {
+    const [options, setOptions] = createSignal<PillOptions<string>>([
+      { key: 'password', label: 'Password' },
+      { key: 'passkey', label: 'Passkey' },
+    ])
+    render(() => (
+      <PillGroup
+        label="Sign-in method"
+        options={options()}
+        selectedKey="password"
+        onSelect={vi.fn()}
+      />
+    ))
+    const password = screen.getByRole('radio', { name: 'Password' })
+    password.focus()
+
+    setOptions([
+      { key: 'password', label: 'Password' },
+      { key: 'passkey', label: 'Passkey' },
+    ])
+
+    expect(screen.getByRole('radio', { name: 'Password' })).toBe(password)
+    expect(document.activeElement).toBe(password)
+  })
+
+  it('moves focus when the focused option leaves the group', async () => {
+    const password = { key: 'password', label: 'Password' }
+    const passkey = { key: 'passkey', label: 'Passkey' }
+    const [options, setOptions] = createSignal<PillOptions<string>>([password, passkey])
+    render(() => (
+      <PillGroup
+        label="Sign-in method"
+        options={options()}
+        selectedKey="passkey"
+        onSelect={vi.fn()}
+      />
+    ))
+    screen.getByRole('radio', { name: 'Passkey' }).focus()
+
+    setOptions([password])
+
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Password' }))
+    })
+  })
+
+  it('rejects duplicate option keys', () => {
+    expect(() => render(() => (
+      <PillGroup
+        label="Duplicate values"
+        options={[
+          { key: 'same', label: 'First' },
+          { key: 'same', label: 'Second' },
+        ]}
+        selectedKey="same"
+        onSelect={vi.fn()}
+      />
+    ))).toThrow(/unique option keys/i)
+  })
+
+  it('rejects an empty disabled reason', () => {
+    expect(() => render(() => (
+      <PillGroup
+        label="Empty reason"
+        options={[{ key: 'blocked', label: 'Blocked', disabledReason: '' }]}
+        selectedKey="blocked"
+        onSelect={vi.fn()}
+      />
+    ))).toThrow(/non-empty disabled reason/i)
+  })
+
+  it('selects undefined and NaN values with arrow keys', () => {
+    const onUndefined = vi.fn()
+    const { unmount } = render(() => (
+      <PillGroup
+        label="Undefined value"
+        options={[
+          { key: 'defined', label: 'Defined' },
+          { key: undefined, label: 'Undefined' },
+        ]}
+        selectedKey="defined"
+        onSelect={onUndefined}
+      />
+    ))
+    fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Undefined value' }), { key: 'ArrowRight' })
+    expect(onUndefined).toHaveBeenCalledWith(undefined)
+    unmount()
+
+    const onNaN = vi.fn()
+    render(() => (
+      <PillGroup
+        label="NaN value"
+        options={[
+          { key: 0, label: 'Zero' },
+          { key: Number.NaN, label: 'Not a number' },
+        ]}
+        selectedKey={0}
+        onSelect={onNaN}
+      />
+    ))
+    fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'NaN value' }), { key: 'ArrowRight' })
+    expect(onNaN).toHaveBeenCalledWith(Number.NaN)
+  })
+})
+
 /**
- * A group another control governs: the theme chooser's mode pills while the
- * palette is "Match UI".
+ * Another control governs this group and prevents all changes.
  *
- * It must keep SHOWING its selection -- that is what tells the user which mode
- * the governing control produced -- while refusing every way of changing it.
+ * The terminal theme uses this state while it matches the user interface. Its
+ * visible selection shows the mode that the governing control produced.
  */
-describe('pillGroup disabled', () => {
+describe('pill group disabled', () => {
   const options = [
-    { value: 'system', label: 'System' },
-    { value: 'light', label: 'Light' },
-    { value: 'dark', label: 'Dark' },
-  ]
+    { key: 'system', label: 'System' },
+    { key: 'light', label: 'Light' },
+    { key: 'dark', label: 'Dark' },
+  ] as const
 
   function renderDisabled(current: string, onSelect = vi.fn()) {
     render(() => (
@@ -190,25 +356,25 @@ describe('pillGroup disabled', () => {
         label="Terminal theme mode"
         options={options}
         disabled
-        selected={v => v === current}
+        selectedKey={current}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('still reports which option is selected', () => {
+  it('reports its selected option', () => {
     renderDisabled('dark')
     expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'false')
   })
 
-  it('takes the whole group out of the tab order', () => {
-    // The roving index normally parks a tab stop on the selected pill. Leaving
-    // it there would put Tab on a control that refuses every key.
+  it('removes the group from the tab order', () => {
+    // A disabled group cannot leave a tab stop on a control that refuses every
+    // keyboard input.
     renderDisabled('dark')
     const radios = screen.getAllByRole('radio')
-    expect(radios.every(r => r.getAttribute('tabindex') === '-1')).toBe(true)
+    expect(radios.every(radio => radio.getAttribute('tabindex') === '-1')).toBe(true)
     for (const radio of radios)
       expect(radio).toBeDisabled()
   })
@@ -219,26 +385,32 @@ describe('pillGroup disabled', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('refuses the arrow keys, which the GROUP handles rather than the pills', () => {
-    // The native `disabled` attribute stops the click, but the keydown listener
-    // sits on the radiogroup wrapper and would still fire.
+  it('refuses the keys that the group handles', () => {
+    // The native disabled attribute stops a button click. The group still
+    // receives its own keyboard events, so it must refuse them separately.
     const onSelect = renderDisabled('dark')
     const group = screen.getByRole('radiogroup', { name: 'Terminal theme mode' })
     for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End'])
       fireEvent.keyDown(group, { key })
     expect(onSelect).not.toHaveBeenCalled()
   })
+
+  it('dims the full group without dimming each option twice', () => {
+    renderDisabled('dark')
+    const group = screen.getByRole('radiogroup', { name: 'Terminal theme mode' })
+    expect(group).toHaveClass(styles.pillGroupDisabled)
+    for (const radio of screen.getAllByRole('radio'))
+      expect(radio).not.toHaveClass(styles.pillOptionDimmed)
+  })
 })
 
 /**
- * ONE refused option, rather than the whole group.
+ * One option can refuse input without disabling the full group.
  *
- * Shown-and-refused is for an option the reader can get back -- the Passkey
- * pill on a page that is not secure. Hiding it leaves somebody whose only
- * credential is a passkey at a dead end with nothing to read, so the pill
- * stays and carries the reason.
+ * A passkey option on an insecure page is restorable. Keep it visible so the
+ * reader can learn why it is unavailable.
  */
-describe('pillGroup with one refused option', () => {
+describe('pill group with one refused option', () => {
   const reason = 'A browser runs a passkey only on a secure page.'
 
   function renderGroup(current: string, onSelect = vi.fn()) {
@@ -246,28 +418,29 @@ describe('pillGroup with one refused option', () => {
       <PillGroup
         label="Sign-in method"
         options={[
-          { value: 'password', label: 'Password' },
-          { value: 'passkey', label: 'Passkey', disabledReason: reason },
+          { key: 'password', label: 'Password' },
+          { key: 'passkey', label: 'Passkey', disabledReason: reason },
         ]}
-        selected={v => v === current}
+        selectedKey={current}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('keeps the pill, its name, and the reason', () => {
+  it('keeps the option, its accessible name, and its reason', () => {
     renderGroup('password')
-    // The lookup itself is half of it: the reason must not become the name.
+    // The reason describes the button. It must not replace the button name.
     const passkey = screen.getByRole('radio', { name: 'Passkey' })
-    expect(passkey).toBeDisabled()
+    expect(passkey).toHaveAttribute('aria-disabled', 'true')
+    expect(passkey).not.toBeDisabled()
     expect(passkey).not.toHaveAttribute('title')
     const describedBy = passkey.getAttribute('aria-describedby')
     expect(describedBy).toBeTruthy()
     expect(document.getElementById(describedBy!)?.textContent).toBe(reason)
   })
 
-  it('leaves the other pills live', () => {
+  it('keeps the other options available', () => {
     const onSelect = renderGroup('passkey')
     const password = screen.getByRole('radio', { name: 'Password' })
     expect(password).toBeEnabled()
@@ -275,23 +448,127 @@ describe('pillGroup with one refused option', () => {
     expect(onSelect).toHaveBeenCalledWith('password')
   })
 
-  // An arrow key that lands on a refused pill strands the group: the pill
-  // takes no tab stop, so focus goes nowhere and the next arrow moves relative
-  // to a value the user cannot reach.
-  it('skips the refused pill with the arrow keys', () => {
+  it('focuses the refused option without selecting it', () => {
+    // Keyboard focus lets a sighted user open the explanation. Activation
+    // still leaves the selection unchanged.
     const onSelect = renderGroup('password')
-    fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Sign-in method' }), { key: 'ArrowRight' })
-    expect(onSelect).not.toHaveBeenCalledWith('passkey')
+    const password = screen.getByRole('radio', { name: 'Password' })
+    const passkey = screen.getByRole('radio', { name: 'Passkey' })
+    password.focus()
+
+    fireEvent.keyDown(password, { key: 'ArrowRight' })
+
+    expect(document.activeElement).toBe(passkey)
+    expect(onSelect).not.toHaveBeenCalled()
+    fireEvent.click(passkey)
+    expect(onSelect).not.toHaveBeenCalled()
   })
 
-  // The tab stop follows the SELECTION, and a selection that is itself refused
-  // has to hand it on -- a group with no tab stop is a group Tab cannot enter.
-  it('moves the tab stop off a refused selection', () => {
+  it('moves the tab stop from a refused selection', () => {
     renderGroup('passkey')
-    expect(screen.getByRole('radio', { name: 'Password' })).toHaveAttribute('tabindex', '0')
-    expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('tabindex', '-1')
-    // Still CHECKED, because that is what the stored value says. The APG
-    // radiogroup rule allows an unchecked radio to hold the tab stop.
+    expect(screen.getByRole('radio', { name: 'Password' })).toHaveAttribute('tabindex', '-1')
+    expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('tabindex', '0')
     expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Passkey' })).not.toHaveClass(styles.pillOptionDimmed)
+  })
+
+  it('keeps an all-refused group keyboard-reachable', () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <PillGroup
+        label="Unavailable methods"
+        options={[
+          { key: 'first', label: 'First', disabledReason: 'First is unavailable.' },
+          { key: 'second', label: 'Second', disabledReason: 'Second is unavailable.' },
+        ]}
+        selectedKey="first"
+        onSelect={onSelect}
+      />
+    ))
+    const first = screen.getByRole('radio', { name: 'First' })
+    const second = screen.getByRole('radio', { name: 'Second' })
+    expect(first).toHaveAttribute('tabindex', '0')
+
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowRight' })
+
+    expect(document.activeElement).toBe(second)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+})
+
+function stubSelectionGeometry(
+  group: HTMLElement,
+  radio: HTMLElement,
+  geometry: { groupWidth: number, left: number, width: number },
+): void {
+  Object.defineProperties(group, {
+    clientWidth: { configurable: true, get: () => geometry.groupWidth },
+  })
+  Object.defineProperties(radio, {
+    offsetLeft: { configurable: true, get: () => geometry.left },
+    offsetWidth: { configurable: true, get: () => geometry.width },
+  })
+}
+
+describe('pill group sliding selection', () => {
+  const first = { key: 'first', label: 'First' }
+  const second = { key: 'second', label: 'A wider second option' }
+
+  beforeEach(() => installControllableResizeObserver())
+
+  it('keeps the selected button as a fallback until geometry is valid', () => {
+    render(() => (
+      <PillGroup
+        label="Measured options"
+        options={[first, second]}
+        selectedKey="first"
+        onSelect={vi.fn()}
+      />
+    ))
+    const group = screen.getByRole('radiogroup', { name: 'Measured options' })
+    const firstRadio = screen.getByRole('radio', { name: first.label })
+    expect(firstRadio).toHaveClass(styles.pillOptionActive)
+    expect(group.querySelector('[data-pill-selection-fill]')).toBeNull()
+
+    stubSelectionGeometry(group, firstRadio, { groupWidth: 220, left: 0, width: 70 })
+    triggerResizeObserversSync()
+
+    const fill = group.querySelector<HTMLElement>('[data-pill-selection-fill]')
+    expect(fill).not.toBeNull()
+    expect(fill!.style.getPropertyValue('--pill-selection-left')).toBe('0px')
+    expect(fill!.style.getPropertyValue('--pill-selection-right')).toBe('150px')
+    expect(firstRadio).toHaveClass(styles.pillOptionSelectedTarget)
+    expect(firstRadio).not.toHaveClass(styles.pillOptionActive)
+  })
+
+  it('moves the paired fill and label layers when selection changes', () => {
+    const [selected, setSelected] = createSignal(first.key)
+    render(() => (
+      <PillGroup
+        label="Sliding options"
+        options={[first, second]}
+        selectedKey={selected()}
+        onSelect={setSelected}
+      />
+    ))
+    const group = screen.getByRole('radiogroup', { name: 'Sliding options' })
+    const firstRadio = screen.getByRole('radio', { name: first.label })
+    const secondRadio = screen.getByRole('radio', { name: second.label })
+    stubSelectionGeometry(group, firstRadio, { groupWidth: 220, left: 0, width: 70 })
+    stubSelectionGeometry(group, secondRadio, { groupWidth: 220, left: 70, width: 150 })
+    triggerResizeObserversSync()
+
+    fireEvent.click(secondRadio)
+
+    const fill = group.querySelector<HTMLElement>('[data-pill-selection-fill]')
+    const labels = group.querySelector<HTMLElement>('[data-pill-selection-labels]')
+    expect(fill).toHaveClass(styles.selectionWindowMoves)
+    expect(labels).toHaveClass(styles.selectionWindowMoves)
+    expect(fill!.style.getPropertyValue('--pill-selection-left')).toBe('70px')
+    expect(fill!.style.getPropertyValue('--pill-selection-right')).toBe('0px')
+    expect([...labels!.querySelectorAll('[data-label]')].map(label => label.getAttribute('data-label')))
+      .toEqual(['First', 'A wider second option'])
+    expect(secondRadio).toHaveClass(styles.pillOptionSelectedTarget)
   })
 })

@@ -1,10 +1,8 @@
 import type { Accessor } from 'solid-js'
-import type { PillOptionSpec } from '~/components/common/PillGroup'
 import type { CaptchaAction } from '~/generated/contracts/captcha'
 
 import { createSignal } from 'solid-js'
 import { passkeyBlocker } from '~/lib/systemInfo'
-import { passkeyBlockerMessage } from '~/lib/webauthn'
 
 /** The two credential kinds the login and sign-up forms offer. */
 export type AuthMethod = 'password' | 'passkey'
@@ -65,39 +63,4 @@ export function createAuthMethodSelection(kind: AuthMethodKind): AuthMethodSelec
   const captchaAction = (): AuthCaptchaAction => CAPTCHA_ACTIONS[kind][effectiveMethod()]
 
   return { effectiveMethod, select: setMethod, captchaAction }
-}
-
-/**
- * The method pills a sign-in or sign-up form offers.
- *
- * ONE statement of the rule, because both forms ask the same question and an
- * answer that differed between them would be a bug nobody could see from
- * either file.
- *
- * Two shapes of refusal, and they are not the same to a reader:
- *
- *   - The BROWSER refuses (the page is not secure, or it has no WebAuthn at
- *     all). The pill STAYS, disabled, carrying the reason. It is a property of
- *     where the reader stands, and they can move: hiding it leaves somebody
- *     whose only credential is a passkey with no way to sign in and nothing
- *     to read.
- *   - The HUB does not run ceremonies at this origin. The pill GOES. It is a
- *     property of the deployment, identical for every visitor, and a
- *     permanently dead pill on the sign-in page of a hub without passkeys is
- *     noise rather than help.
- *
- * The account panel still explains the hub's refusal in full, to the one
- * audience that can do something about it -- somebody already signed in.
- */
-export function authMethodOptions(): PillOptionSpec<AuthMethod>[] {
-  const options: PillOptionSpec<AuthMethod>[] = [{ value: 'password', label: 'Password' }]
-  const blocker = passkeyBlocker()
-  if (blocker === 'origin-not-allowed')
-    return options
-  options.push({
-    value: 'passkey',
-    label: 'Passkey',
-    disabledReason: blocker ? passkeyBlockerMessage(blocker) : undefined,
-  })
-  return options
 }

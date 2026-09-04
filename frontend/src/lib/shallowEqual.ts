@@ -39,9 +39,19 @@ function arraysEqualBy(
   return true
 }
 
+/** Equality that matches Set, Map, and Array.includes. */
+export function sameValueZero(a: unknown, b: unknown): boolean {
+  return Object.is(a, b) || (a === 0 && b === 0)
+}
+
 /** Element-wise `Object.is` equality for two arrays. Same-reference early-exit. */
 export function shallowEqualArrays(a: readonly unknown[], b: readonly unknown[]): boolean {
   return arraysEqualBy(a, b, Object.is)
+}
+
+/** Element-wise SameValueZero equality for arrays that contain map keys. */
+export function shallowEqualMapKeyArrays(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return arraysEqualBy(a, b, sameValueZero)
 }
 
 /** Unordered `Object.is` equality for two sets. Same-reference early-exit. */

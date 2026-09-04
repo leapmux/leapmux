@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { resetSystemInfoMock } from '~/test-support/systemInfoMock'
 import { usePreferencesForIdentity } from './usePreferencesForIdentity'
 
 const getCurrentUser = vi.hoisted(() => vi.fn())
@@ -44,19 +45,10 @@ vi.mock('~/api/platformBridge', () => ({
   platformBridge: { resetTunnels: vi.fn().mockResolvedValue(undefined) },
 }))
 
-vi.mock('~/lib/systemInfo', () => ({
-  isSoloMode: () => false,
-  // A multi-user hub: every caller signs in, and none of the solo facts hold.
-  isAutoAuthenticated: () => false,
-  passwordSetupRequired: () => false,
-  soloPasswordSet: () => false,
-  loadSystemInfo: vi.fn().mockResolvedValue(undefined),
-  isSystemInfoLoaded: () => true,
-  isCaptchaEnabled: () => false,
-  getAltchaAlgorithm: () => '',
-  getCaptchaProvider: () => 1,
-  getCaptchaSiteKey: () => '',
-}))
+vi.mock('~/lib/systemInfo', async () => {
+  const mock = await import('~/test-support/systemInfoMock')
+  return mock.systemInfoMock
+})
 
 /** The hub's answer for a page that carries no session cookie. */
 function unauthenticated(): ConnectError {
@@ -79,11 +71,11 @@ function themeReply(mode: string) {
 
 /** A promise plus its resolvers, for pinning completion order. */
 function deferred<T>() {
-  let resolve!: (v: T) => void
-  let reject!: (e: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
   })
   // An unhandled rejection is reported before the code under test can
   // attach its own handler, so the promise is kept handled from the start.
@@ -97,9 +89,10 @@ function flushMicrotasks(): Promise<void> {
 }
 
 /**
- * The production nesting: the auth provider, the preferences provider
- * inside it, and one component inside BOTH that installs the trigger —
- * which is exactly where `PreferencesApplier` sits in `app.tsx`.
+ * Reproduce the production provider order.
+ *
+ * The preferences provider sits inside the auth provider. Its child installs
+ * the identity trigger, as `PreferencesApplier` does in `app.tsx`.
  */
 function renderApp() {
   let auth: AuthState | undefined
@@ -121,11 +114,10 @@ function renderApp() {
 }
 
 /**
- * Write `prefs` into `userId`'s namespace, then leave the page with no account.
+ * Write `prefs` into the namespace for `userId`. Then remove the active account.
  *
- * The seed has to be in place BEFORE the identity arrives: the provider reads
- * the device tier from the account-change notification, so a document written
- * afterwards is not what that notification carries.
+ * The provider reads the device tier from the account-change notification.
+ * Therefore, the seed must exist before the identity arrives.
  */
 function seedDeviceTierFor(userId: string, prefs: BrowserPreferences) {
   setStorageAccount(userId)
@@ -142,10 +134,11 @@ async function renderBootstrapped() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The shared defaults describe the multi-user hub that these cases need.
+  resetSystemInfoMock()
   localStorageClearForTests()
-  // These cases drive the identity themselves, through the real AuthProvider.
-  // The suite's default sign-in would make the first resolved identity look
-  // like a no-op change.
+  // These cases drive the identity through the real AuthProvider. The default
+  // test identity would make the first resolved identity look unchanged.
   resetStorageAccountForTests()
   getCurrentUser.mockRejectedValue(unauthenticated())
   login.mockResolvedValue({ user: user('u1') })
@@ -161,10 +154,9 @@ afterEach(() => {
 })
 
 describe('usePreferencesForIdentity', () => {
-  // THE live bug. The provider loads once at its own mount, above the
-  // router, so the one attempt a visitor gets is spent before any
-  // credential exists. Without this trigger the stored theme, fonts and
-  // keybindings never applied after a sign-in through the form.
+  // The provider loads once when it mounts above the router. That request can
+  // run before a visitor supplies credentials. This trigger applies stored
+  // preferences after the visitor signs in through the form.
   it('reloads once after a sign-in that follows a failed anonymous load', async () => {
     listUserSettings.mockRejectedValueOnce(unauthenticated())
     listUserSettings.mockResolvedValue(themeReply('dark'))
@@ -197,9 +189,9 @@ describe('usePreferencesForIdentity', () => {
     expect(listUserSettings).toHaveBeenCalledTimes(3)
   })
 
-  // Signing back in as the SAME account is still an identity change: the
-  // sign-out recorded that nothing is loaded, so the account tier has to be
-  // read again rather than kept from before the sign-out.
+  // Signing in again as the same account is still an identity change. The
+  // sign-out records that no account tier is loaded, so the provider reads it
+  // again.
   it('reloads after a sign-out and a sign-in as the same user', async () => {
     listUserSettings.mockRejectedValueOnce(unauthenticated())
     listUserSettings.mockResolvedValue(themeReply('dark'))
@@ -210,17 +202,17 @@ describe('usePreferencesForIdentity', () => {
 
     await app.auth().logout()
     await flushMicrotasks()
-    // A signed-out page has no account tier to read, so the sign-out itself
-    // must not issue a load that can only answer Unauthenticated.
+    // A signed-out page has no account tier. The sign-out must not issue a
+    // request that can only return Unauthenticated.
     expect(listUserSettings).toHaveBeenCalledTimes(2)
 
     await app.auth().login('u1', 'pw')
     await waitFor(() => expect(listUserSettings).toHaveBeenCalledTimes(3))
   })
 
-  // The provider's own mount load carries the SAME session cookie the
-  // bootstrap authenticates with, so it already read this identity's
-  // settings. A second load here would double every ordinary page view.
+  // The mount request carries the session cookie that bootstrap uses. It reads
+  // this identity's settings, so another request would duplicate each normal
+  // page load.
   it('does not reload for the identity the mount load already covered', async () => {
     getCurrentUser.mockResolvedValue({ user: user('u1') })
     listUserSettings.mockResolvedValue(themeReply('dark'))
@@ -232,8 +224,8 @@ describe('usePreferencesForIdentity', () => {
     expect(listUserSettings).toHaveBeenCalledTimes(1)
   })
 
-  // The identity is what changes, not the User object: `refreshUser`
-  // replaces it with an equal one, and a re-render replaces nothing at all.
+  // The identity controls reloads, not the User object. `refreshUser` replaces
+  // the object with an equal value. A render changes neither value.
   it('does not reload while the identity stays the same', async () => {
     getCurrentUser.mockResolvedValue({ user: user('u1') })
     listUserSettings.mockResolvedValue(themeReply('dark'))
@@ -248,7 +240,7 @@ describe('usePreferencesForIdentity', () => {
     expect(listUserSettings).toHaveBeenCalledTimes(1)
   })
 
-  // A failed login leaves the visitor exactly where they were.
+  // A failed login does not change the visitor's identity.
   it('does not reload when the login is refused', async () => {
     listUserSettings.mockRejectedValueOnce(unauthenticated())
     const app = await renderBootstrapped()
@@ -261,9 +253,8 @@ describe('usePreferencesForIdentity', () => {
     expect(listUserSettings).toHaveBeenCalledTimes(1)
   })
 
-  // The mount load is still IN FLIGHT when the sign-in issues its own, so
-  // the two can finish in either order. `loadSeq` is what keeps the newer
-  // answer on screen.
+  // The mount request remains active when the sign-in issues another request.
+  // Either request can finish first. `loadSeq` keeps the newer reply on screen.
   it('drops a stale reply from the load the sign-in superseded', async () => {
     const stale = deferred<{ descriptors: never[], values: unknown[] }>()
     listUserSettings.mockReturnValueOnce(stale.promise)
@@ -278,10 +269,9 @@ describe('usePreferencesForIdentity', () => {
     expect(app.prefs().theme().mode).toBe('dark')
   })
 
-  // The same rule for the FAILURE half: the anonymous load rejects with
-  // Unauthenticated after the sign-in load succeeded, and recording it would
-  // state a load error for the rest of the session over settings that are
-  // on screen.
+  // The same rule applies to a stale failure. An anonymous request can reject
+  // after the sign-in request succeeds. That rejection must not replace the
+  // settings with an error.
   it('drops a stale failure from the load the sign-in superseded', async () => {
     const stale = deferred<{ descriptors: never[], values: unknown[] }>()
     listUserSettings.mockReturnValueOnce(stale.promise)
@@ -297,9 +287,8 @@ describe('usePreferencesForIdentity', () => {
     expect(app.prefs().theme().mode).toBe('dark')
   })
 
-  // The per-key WRITE sequence is the other guard this path relies on: the
-  // reload stamps every key when it is issued, so a key the user writes
-  // while it is in flight keeps the value the write returned.
+  // The sequence for each key protects writes during a reload. The reload
+  // records each key when it starts. A later write keeps its returned value.
   it('leaves a key written during the reload at the value the write returned', async () => {
     const pending = deferred<{ descriptors: never[], values: unknown[] }>()
     listUserSettings.mockRejectedValueOnce(unauthenticated())
@@ -316,22 +305,21 @@ describe('usePreferencesForIdentity', () => {
     await app.prefs().dual.theme.setAccount({ name: 'default', mode: 'light' })
     expect(app.prefs().theme().mode).toBe('light')
 
-    // The reload answers with the value the account held BEFORE that write.
+    // The reload returns the value from before that write.
     pending.resolve(themeReply('dark'))
     await flushMicrotasks()
     expect(app.prefs().theme().mode).toBe('light')
     expect(app.prefs().accountCustomized().theme).toBe(true)
   })
 
-  // The DEVICE half does not live in this hook: the provider subscribes to
-  // `onStorageAccountChange`, which fires from inside `setStorageAccount` --
-  // synchronously with the identity write, which an effect cannot be. These two
-  // cases hold that wiring from the outside, through `login`, so the seed is
-  // proved by the transition rather than by a call.
+  // This hook does not control the device tier. The provider subscribes to
+  // `onStorageAccountChange`, which runs inside `setStorageAccount`. Thus, the
+  // device tier changes with the identity write. These cases verify that
+  // behavior through `login`.
   it('seeds the device tier as the first identity is written, with no reload', async () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
-    // u1's document, written before anyone signs in. That is the ordinary
-    // shape: the page loads with no identity and the account arrives after.
+    // Write the document for u1 before sign-in. A normal page starts without an
+    // identity and receives the account later.
     seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
 
     const app = await renderBootstrapped()
@@ -339,17 +327,14 @@ describe('usePreferencesForIdentity', () => {
 
     await app.auth().login('u1', 'pw')
 
-    // No `waitFor`: the seed runs inside `setStorageAccount`, which
-    // `AuthContext` calls as it writes the identity, so the value is already in
-    // place by the time anything can observe the new identity. An effect-driven
-    // seed would need a flush here, and every consumer that reads once at mount
-    // would have taken the default.
+    // Do not use `waitFor` here. `AuthContext` calls `setStorageAccount` as it
+    // writes the identity. The seed therefore exists before a consumer can
+    // observe the new identity.
     expect(app.prefs().theme()).toEqual({ name: 'nord', mode: 'dark' })
   })
 
-  // A user switch with no page reload. The device tier used to be read once and
-  // never again, so every signal kept the PREVIOUS user's values and the dialog
-  // reported them as "This device" over the new user's own account settings.
+  // A user can change without a page reload. The provider must read the new
+  // device tier. Otherwise, each signal keeps the previous user's values.
   it('re-seeds the device tier when one user replaces another', async () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
     seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
@@ -361,17 +346,13 @@ describe('usePreferencesForIdentity', () => {
     login.mockResolvedValue({ user: user('u2') })
     await app.auth().login('u2', 'pw')
 
-    // u2 has written nothing on this device, so they get the defaults rather
-    // than u1's palette.
+    // u2 wrote nothing on this device, so the provider uses the defaults.
     await waitFor(() => expect(app.prefs().theme()).toEqual({ name: 'default', mode: 'system' }))
   })
 
-  // A sign-out is client-side: this provider and everything under it stay
-  // mounted, and the namespace deliberately keeps pointing at the account that
-  // LEFT so its teardown writes still land. Both tiers therefore still hold that
-  // account's values, and `PreferencesApplier` keeps painting them -- so the
-  // sign-in page would render in the palette and fonts of whoever used the
-  // browser last.
+  // A client-side sign-out keeps this provider mounted. The namespace still
+  // points to the old account for its teardown writes. Both tiers must return
+  // to defaults, or the sign-in page uses the old account's appearance.
   it('returns both tiers to their defaults on a sign-out', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
@@ -395,8 +376,8 @@ describe('usePreferencesForIdentity', () => {
     expect(app.prefs().accountCustomized()).toEqual({})
   })
 
-  // Nothing to READ for a signed-out page: the account request would answer
-  // Unauthenticated and record an error over a screen that shows no account row.
+  // A signed-out page has no account tier to read. A request would return
+  // Unauthenticated and show an irrelevant error.
   it('loads nothing on a sign-out', async () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
     const app = await renderBootstrapped()

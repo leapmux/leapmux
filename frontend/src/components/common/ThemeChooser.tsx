@@ -1,3 +1,4 @@
+import type { PillOptions } from '~/components/common/PillGroup'
 import type { ResolvedThemeMode, TerminalThemeValue, ThemeMode, ThemeSurface, ThemeValue, ThemeVariant } from '~/styles/themes'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, createSignal, For, on, Show } from 'solid-js'
@@ -11,7 +12,7 @@ import { DEFAULT_THEME_ID, isThemeId, MATCH_UI, resolveVariant, themeById, theme
 import * as styles from './ThemeChooser.css'
 
 // Typed with the DOMAIN type, not `string`. `PillGroup` is generic in its
-// option value, so a `string`-typed list here was the only reason the pill
+// option key, so a `string`-typed list here was the only reason the pill
 // handler had to cast on the way back into a `ThemeValue` -- a cast that would
 // have gone on compiling if a mode were renamed or dropped.
 //
@@ -19,11 +20,11 @@ import * as styles from './ThemeChooser.css'
 // `isThemeMode` below is how this file asks. Deriving MODES from this list
 // instead would point the dependency the wrong way: the theme library would
 // then need a component's option list to say what a mode is.
-const MODE_OPTIONS: { value: ThemeMode, label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-]
+const MODE_OPTIONS = [
+  { key: 'system', label: 'System' },
+  { key: 'light', label: 'Light' },
+  { key: 'dark', label: 'Dark' },
+] as const satisfies PillOptions<ThemeMode>
 
 export interface ThemeChooserProps<T extends ThemeValue | TerminalThemeValue> {
   value: T
@@ -122,7 +123,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
 
   const selectedMode = (): ThemeMode => {
     const mode = effective().mode
-    return isThemeMode(mode) ? mode : MODE_OPTIONS[0]!.value
+    return isThemeMode(mode) ? mode : MODE_OPTIONS[0].key
   }
 
   /** The polarity on screen, which is the one the variant menu edits. */
@@ -335,7 +336,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
         label={modeLabel()}
         options={MODE_OPTIONS}
         disabled={matching()}
-        selected={value => value === selectedMode()}
+        selectedKey={selectedMode()}
         onSelect={mode => commit({ mode })}
       />
 

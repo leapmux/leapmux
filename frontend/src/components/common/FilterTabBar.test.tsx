@@ -2,62 +2,14 @@
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { FilterTabBar, nextFilterTab } from './FilterTabBar'
+import { FilterTabBar } from './FilterTabBar'
 
 /**
  * A filter bar is a TAB SET: picking a tab swaps the region below it. role=tab
  * brings a keyboard contract with it -- Tab reaches the set, the arrows move
  * within it -- which is what this pins.
  */
-describe('nextFilterTab', () => {
-  const keys = ['all', 'changed', 'staged', 'unstaged'] as const
-
-  it('moves forward and backward', () => {
-    expect(nextFilterTab(keys, 'changed', 'ArrowRight')).toBe('staged')
-    expect(nextFilterTab(keys, 'changed', 'ArrowLeft')).toBe('all')
-    expect(nextFilterTab(keys, 'changed', 'ArrowDown')).toBe('staged')
-    expect(nextFilterTab(keys, 'changed', 'ArrowUp')).toBe('all')
-  })
-
-  it('wraps at both ends', () => {
-    expect(nextFilterTab(keys, 'unstaged', 'ArrowRight')).toBe('all')
-    expect(nextFilterTab(keys, 'all', 'ArrowLeft')).toBe('unstaged')
-  })
-
-  it('jumps to the ends with Home and End', () => {
-    expect(nextFilterTab(keys, 'staged', 'Home')).toBe('all')
-    expect(nextFilterTab(keys, 'staged', 'End')).toBe('unstaged')
-  })
-
-  it('ignores keys the tab bar does not own', () => {
-    expect(nextFilterTab(keys, 'staged', 'a')).toBeUndefined()
-    expect(nextFilterTab(keys, 'staged', 'Enter')).toBeUndefined()
-  })
-
-  // The modulo arithmetic divides by the key count, so an empty set would
-  // return NaN-indexed undefined for a key the bar DOES own -- a caller cannot
-  // tell that apart from "not my key" and would preventDefault on it.
-  it('owns no key when the set is empty', () => {
-    expect(nextFilterTab([] as const, 'all', 'ArrowRight')).toBeUndefined()
-    expect(nextFilterTab([] as const, 'all', 'Home')).toBeUndefined()
-  })
-
-  // A current value outside the set (a filter restored from storage after the
-  // tabs changed) starts from the first tab rather than walking from -1.
-  it('starts from the first tab when the current key is absent', () => {
-    expect(nextFilterTab(keys, 'gone' as 'all', 'ArrowRight')).toBe('changed')
-  })
-
-  // A one-tab set wraps onto itself in both directions rather than off the end.
-  it('stays on the only tab of a single-tab set', () => {
-    const one = ['all'] as const
-    expect(nextFilterTab(one, 'all', 'ArrowRight')).toBe('all')
-    expect(nextFilterTab(one, 'all', 'ArrowLeft')).toBe('all')
-    expect(nextFilterTab(one, 'all', 'End')).toBe('all')
-  })
-})
-
-describe('filterTabBar', () => {
+describe('filter tab bar (FilterTabBar)', () => {
   const tabs = [
     { key: 'all', label: 'All' },
     { key: 'subagent', label: 'Subagents' },

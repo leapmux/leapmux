@@ -1,9 +1,10 @@
 import type { Component, JSX } from 'solid-js'
 import type { NavGroup } from './navGroups'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
-import { createMemo, For, onCleanup, Show } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
-import { nextFilterTab } from '~/components/common/FilterTabBar'
+import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
+import { nextRovingValue } from '~/lib/rovingFocus'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './PreferencesDialog.css'
 
@@ -38,7 +39,7 @@ function optionLabel(group: NavGroup, restart: boolean): string {
  * The dialog's category navigation.
  *
  * Desktop: a real tab list (role=tablist, roving tabindex, arrow keys via
- * `nextFilterTab`), with labelled PREFERENCES and ADMINISTRATION dividers.
+ * `nextRovingValue`), with labelled PREFERENCES and ADMINISTRATION dividers.
  *
  * Compact (phone): an oat-styled DropdownMenu with matching section headers —
  * one tap opens an in-app menu instead of the OS native picker.
@@ -96,17 +97,17 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
     </DropdownMenu>
   )
 
-  const tabEls = new Map<string, HTMLButtonElement>()
+  const tabEls = createKeyedElementRefs<string, HTMLButtonElement>()
   const select = (id: string) => {
     props.onSelect(id)
     tabEls.get(id)?.focus()
   }
   const onKeyDown = (e: KeyboardEvent) => {
-    const next = nextFilterTab(ids(), props.active.id, e.key)
+    const next = nextRovingValue(ids(), props.active.id, e)
     if (next === undefined)
       return
     e.preventDefault()
-    select(next)
+    select(next.value)
   }
 
   return (
@@ -139,13 +140,7 @@ export const PreferencesNav: Component<PreferencesNavProps> = (props) => {
                 aria-controls="preferences-panel"
                 tabIndex={props.active.id === group.id ? 0 : -1}
                 data-testid={`preferences-nav-${group.id}`}
-                ref={(el) => {
-                  tabEls.set(group.id, el)
-                  onCleanup(() => {
-                    if (tabEls.get(group.id) === el)
-                      tabEls.delete(group.id)
-                  })
-                }}
+                ref={el => tabEls.register(group.id, el)}
                 onClick={() => select(group.id)}
               >
                 {group.title}

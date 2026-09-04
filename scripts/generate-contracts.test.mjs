@@ -1,15 +1,13 @@
-// Tests for generate-contracts.mjs, run by `bun test` via `task test-scripts`.
+// `task test-scripts` runs these tests for generate-contracts.mjs.
 //
-// The checks and emitters are pure functions, so every failure mode is
-// testable without staging or buf. What carries the risk:
-//   - the derivation arithmetic (a wrong sum here is a wrong wire limit
-//     everywhere, silently),
-//   - the name tables (a mangled or duplicated entry means one side compiles
-//     against a constant the other side never got),
-//   - determinism (non-deterministic output defeats the mtime-preserving
-//     publish and makes every `task generate` a Vite hard-refresh).
-// The generate() orchestration is tested against the REAL contracts/ dir,
-// the same way validate-json.test.mjs pins its rule table to the real tree.
+// Pure checks and emitters make each failure testable without staging or buf.
+// Three areas carry risk:
+//   - Incorrect arithmetic silently changes each derived wire limit.
+//   - An incorrect name table can make one side omit a shared constant.
+//   - Non-deterministic output defeats publication that preserves modification
+//     times. Vite then refreshes after each `task generate` command.
+// `generate()` uses the real contracts directory in its integration test.
+// validate-json.test.mjs tests its rule table against the real tree too.
 
 import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -99,9 +97,8 @@ describe('deriveWire', () => {
   })
 
   it('matches the values both sides shipped before contracts existed', () => {
-    // The frozen pre-contract values: Go wire.go / rekey.go and TS
-    // reassembler.ts / channelSession.ts. If a migration changed a number,
-    // this is the line that goes red and forces the retune to be deliberate.
+    // Freeze the values from the Go and TypeScript sources before the contract.
+    // A migration that changes one value must also update this assertion.
     const d = deriveWire(WIRE)
     expect(d.maxPlaintextPerChunkBytes).toBe(65519)
     expect(d.maxReassembledMessageSizeBytes).toBe(16842752)
@@ -150,9 +147,8 @@ describe('checkWire', () => {
   })
 
   it('rejects a name-table key flattenWire does not provide', () => {
-    // A key listed in a table but missing from the flattened object renders
-    // as the literal "undefined" in generated code. The coverage check turns
-    // that into a ContractError naming the key.
+    // A table key that is absent from the flat object emits `undefined`.
+    // The coverage check returns a ContractError that identifies the key.
     expectContractError(
       () => checkWire({ ...WIRE, protocolVersion: undefined }),
       'name table',
@@ -160,8 +156,8 @@ describe('checkWire', () => {
   })
 
   it('rejects a hard nonce limit at or below the soft limit', () => {
-    // The soft trigger must fire before the wrap bound, or the session
-    // rekeys only once it has already passed the point of refusal.
+    // The soft trigger must run before the wrap limit. Otherwise, the session
+    // rekeys after it passes the refusal point.
     expectContractError(
       () => checkWire({ ...WIRE, noise: { softNonceLimit: WIRE.noise.softNonceLimit, hardNonceLimit: WIRE.noise.softNonceLimit } }),
       '< noise.hardNonceLimit',
@@ -187,8 +183,8 @@ describe('checkHeaders / checkRetry', () => {
   })
 
   it('rejects a header with no name-table entry instead of emitting nothing', () => {
-    // The emitters iterate the name tables, so a JSON key without an entry
-    // would pass every check and never be emitted on either side.
+    // The emitters iterate the name tables. A JSON key without an entry would
+    // pass the checks but reach neither output.
     expectContractError(
       () => checkHeaders({ ...HEADERS, elevationFoo: 'Leapmux-Elevation-Foo' }),
       'has no HEADERS_GO_NAMES entry',
@@ -210,9 +206,8 @@ describe('checkHeaders / checkRetry', () => {
   })
 
   it('rejects a policy with no name-table entry instead of emitting "undefined"', () => {
-    // A policy the name tables do not know would emit Go consts named
-    // undefinedInitial and a TS export literally named "undefined" -- both
-    // compile. The bijection makes it a loud generation failure.
+    // An unknown policy would emit `undefinedInitial` in Go and `undefined` in
+    // TypeScript. Both outputs compile. The bijection makes generation fail.
     expectContractError(
       () => checkRetry({ policies: { connect: { initialMs: 1, maxMs: 2, multiplier: 2, jitterFactor: 0, maxAttempts: 1 } } }),
       'has no RETRY_GO_NAMES entry',
@@ -246,9 +241,8 @@ describe('name tables', () => {
 describe('emitters', () => {
   it('produces gofmt-stable const blocks (aligned pads)', () => {
     const go = emitGoWire(WIRE, deriveWire(WIRE))
-    // gofmt aligns consecutive const values by padding to the longest name;
-    // a misaligned block means `gofmt -l` flags the generated file and the
-    // publish turns into a permanent diff.
+    // gofmt aligns consecutive constants with padding. A misaligned block
+    // makes `gofmt -l` report the generated file after each publication.
     expect(go).toContain('NoiseAEADAuthTagSize             = 16')
     expect(go).toContain('DefaultMaxReassembledMessageSize = 16842752')
   })
@@ -263,10 +257,9 @@ describe('emitters', () => {
   })
 
   it('emits both Noise nonce limits, driven by the name tables', () => {
-    // The hard limit was the last hand-restated two-language mirror of the
-    // Noise limit family; both sides now read one wire.json value, and the
-    // emitters route the names through WIRE_GO_NAMES/WIRE_TS_NAMES like
-    // every other wire constant.
+    // The hard limit was the last manual mirror in the Noise limit family.
+    // Both languages now read one wire.json value. The emitters use the shared
+    // Go and TypeScript name tables.
     const go = emitGoWire(WIRE, deriveWire(WIRE))
     expect(go).toContain('const HardNonceLimit = uint64(4294967295)')
     const ts = emitTsWire(WIRE, deriveWire(WIRE))
@@ -275,10 +268,9 @@ describe('emitters', () => {
   })
 
   it('emits every Tauri event the shell and webview spell, including the log and menu events', () => {
-    // sidecar:log and the two menu events stayed hand-spelled on both sides
-    // after the first four were contracted; a one-side rename of any of the
-    // seven killed a listener with nothing red. The name tables carry all of
-    // them now.
+    // Both sides once stated `sidecar:log` and the two menu events manually.
+    // A change on one side could disable a listener without a failure. The name
+    // tables now contain all seven events.
     const d = readContract('desktop')
     const rs = emitRsDesktop(d)
     expect(rs).toContain('pub const EVENT_SIDECAR_LOG: &str = "sidecar:log"')
@@ -289,12 +281,9 @@ describe('emitters', () => {
   })
 
   it('shields the macOS-only menu consts from dead_code off macOS', () => {
-    // The menu events are emitted solely from #[cfg(target_os = "macos")]
-    // code (the native app menu; Linux and Windows render the menu in the
-    // webview), so `cargo clippy --all-targets -- -D warnings` on the
-    // Linux/Windows CI runners saw the consts as dead and failed the build.
-    // allow, not expect: on macOS the consts are used and expect(dead_code)
-    // would itself warn there.
+    // Only macOS code emits the menu events. Linux and Windows render the menu
+    // in the webview. Their CI jobs therefore see these constants as unused.
+    // Use `allow`, because `expect(dead_code)` would warn on macOS.
     const d = readContract('desktop')
     const rs = emitRsDesktop(d)
     expect(rs).toContain('#[cfg_attr(not(target_os = "macos"), allow(dead_code))]\npub const EVENT_MENU_SHOW_ABOUT: &str = "menu:show-about"')
@@ -305,15 +294,15 @@ describe('emitters', () => {
   it('emits durations as const expressions, not runtime values', () => {
     const go = emitGoWire(WIRE, deriveWire(WIRE))
     expect(go).toContain('SessionKeyMaxAge      = time.Duration(3600000) * time.Millisecond')
-    // A true const is load-bearing: desktop/go/frame.go derives
-    // maxFrameSize from channelwire limits in a const expression.
+    // This output must remain a constant. desktop/go/frame.go uses the channel
+    // limits in the constant expression for maxFrameSize.
     expect(go).not.toContain('var ')
   })
 
   it('quotes strings as Go and TS both accept', () => {
     expect(emitGoHeaders(HEADERS)).toContain('"Leapmux-Elevation-Required"')
-    // The TS emitter uses JSON.stringify too: double quotes, matching the
-    // repo's eslint style for generated string literals.
+    // The TypeScript emitter uses JSON.stringify. It produces the double quotes
+    // that the ESLint rules require for generated string literals.
     expect(emitTsHeaders(HEADERS)).toContain('"Leapmux-Elevation-Required"')
   })
 
@@ -327,8 +316,8 @@ describe('emitters', () => {
   })
 
   it('emits the multiplier on the Go side too, so both sides can consume it', () => {
-    // The Go backoff previously hard-coded the doubling; the contract value
-    // must reach Go or editing it moves only the browser's schedule.
+    // Go once contained a fixed backoff multiplier. The contract must now send
+    // the multiplier to Go and the browser.
     const go = emitGoRetry(RETRY)
     expect(go).toContain('EventsRejectionRetryMultiplier  = 2')
   })
@@ -347,10 +336,11 @@ describe('emitters', () => {
     const agentEnum = enumValues(DESCRIPTOR, 'leapmux/v1/agent.proto', 'AgentProvider')
     const ts = emitTsProviders(p, agentEnum)
     expect(ts).toContain('export const ALL_PROVIDERS: readonly AgentProvider[] = [')
-    // Proto order, matching the Go twin's AllProviders.
+    // Keep Protocol Buffer order to match AllProviders in Go.
     expect(ts.indexOf('AgentProvider.CLAUDE_CODE')).toBeLessThan(ts.indexOf('AgentProvider.CODEX'))
-    // The browser never parses provider strings (the CLI and admin RPCs do,
-    // via the Go twin), so the TS emitter must not ship a dead parse table.
+    // The browser does not parse provider strings. The command-line interface
+    // and admin remote procedure calls use the Go table. Do not emit an unused
+    // TypeScript parse table.
     expect(ts).not.toContain('PROVIDER_PARSE_ALIASES')
   })
 
@@ -367,11 +357,9 @@ describe('emitters', () => {
   })
 })
 
-// The provider-protocol domains (ZCode, Goose, Copilot, Pi) carry the wire vocabulary the two
-// languages dispatch on, and
-// both languages dispatch on the literals -- so the checks below are what stop a table
-// from reaching one side and not the other, or from carrying two branches the wire
-// cannot tell apart.
+// The provider-protocol domains define the wire vocabulary for two languages.
+// Both languages dispatch on these literals. These checks prevent a table from
+// reaching only one language. They also reject indistinguishable wire cases.
 describe('checkProviderProtocol', () => {
   const spec = {
     name: 'test-protocol',
@@ -390,8 +378,8 @@ describe('checkProviderProtocol', () => {
     expectContractError(() => checkProviderProtocol(spec, { ...ok(), events: {} }), 'events is missing or empty')
   })
 
-  // A table added to the JSON but not to PROVIDER_PROTOCOLS emits nothing, so one side
-  // would read a vocabulary the other never got.
+  // A JSON table outside PROVIDER_PROTOCOLS emits nothing. One language could
+  // then read vocabulary that the other language lacks.
   it('rejects a table the spec does not declare', () => {
     expectContractError(
       () => checkProviderProtocol(spec, { ...ok(), decisions: { Allow: 'allow' } }),
@@ -399,7 +387,7 @@ describe('checkProviderProtocol', () => {
     )
   })
 
-  // Two keys with one literal make two dispatch branches indistinguishable on the wire.
+  // Two keys with one literal make two dispatch cases identical on the wire.
   it('rejects a repeated literal inside one table', () => {
     expectContractError(
       () => checkProviderProtocol(spec, { ...ok(), events: { A: 'a', B: 'a' } }),
@@ -450,8 +438,8 @@ describe('checkCodexBypass', () => {
   })
 })
 
-// The pool the worker and the browser dialogs both name tabs from. The schema
-// holds the per-name shape; these are the two relations it cannot express.
+// The worker and browser dialogs both use this pool for tab titles. The schema
+// holds each title shape but cannot express these two relations.
 describe('checkTabNames', () => {
   const ok = () => ({
     titlePrefixes: { agent: 'Agent', terminal: 'Terminal' },
@@ -466,9 +454,9 @@ describe('checkTabNames', () => {
     expect(checkTabNames(ok())).toEqual({})
   })
 
-  // Two equal prefixes collapse "Agent Gabe" and "Terminal Gabe" into one
-  // title, and plan-mode auto-rename keys on the agent prefix alone -- it
-  // would start overwriting terminal titles.
+  // Equal prefixes collapse "Agent Gabe" and "Terminal Gabe" into one title.
+  // Plan mode uses the agent prefix for automatic renames. It could then
+  // overwrite terminal titles.
   it('rejects equal title prefixes', () => {
     expectContractError(
       () => checkTabNames({ ...ok(), titlePrefixes: { agent: 'Tab', terminal: 'Tab' } }),
@@ -476,9 +464,8 @@ describe('checkTabNames', () => {
     )
   })
 
-  // uniqueItems in the schema catches an exact repeat; sorting is what makes
-  // a near-repeat visible to the reviewer who has to apply the rules the
-  // schema cannot express.
+  // The schema uses uniqueItems to find an exact repeat. Sorting also makes a
+  // near-repeat visible during review.
   it('rejects an unsorted list', () => {
     expectContractError(
       () => checkTabNames({ ...ok(), names: ['Ada', 'Gabe', 'Bella', 'Tim'] }),
@@ -506,8 +493,8 @@ describe('checkListen', () => {
     expect(checkListen(ok())).toEqual({})
   })
 
-  // listenset.Parse compares the wildcard token BEFORE it tries netip or falls
-  // through to a host name, so a sentinel spelled like a host would shadow it.
+  // listenset.Parse checks the wildcard token before an address or host name.
+  // A sentinel that resembles a host would hide that host.
   it('rejects an anyHost spelled like a host', () => {
     expectContractError(() => checkListen({ ...ok(), anyHost: '0.0.0.0' }), 'is spelled like a host')
     expectContractError(() => checkListen({ ...ok(), anyHost: '::' }), 'is spelled like a host')
@@ -520,8 +507,8 @@ describe('checkListen', () => {
     expectContractError(() => checkListen({ ...ok(), maxExtraAddresses: 2.5 }), 'integer >= 1')
   })
 
-  // A token with no name-table entry emits NOTHING, silently, so one side
-  // would compile against a constant the other never received.
+  // A token without a name-table entry emits nothing. One side could compile
+  // against a constant that the other side lacks.
   it('rejects a source token no name table renders', () => {
     expectContractError(
       () => checkListen({ ...ok(), addressSources: { ...ok().addressSources, proxied: 'd' } }),
@@ -619,34 +606,33 @@ describe('generate', () => {
     ])
   })
 
-  // The two domains this change added ride the shared PROVIDER_PROTOCOLS path rather than
-  // bespoke emitters, so these pin what that path gives them and the bespoke one did not.
+  // These two domains use the shared PROVIDER_PROTOCOLS path. These assertions
+  // verify the output that their old custom emitters did not supply.
   it('emits the shared provider-protocol shape for the newest domains', () => {
     const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
 
-    // A TS union type per table -- the bespoke Copilot emitter produced none.
+    // Emit one TypeScript union for each table. The old Copilot emitter omitted it.
     const copilotTs = files['frontend/src/generated/contracts/copilot-permissions.ts']
     expect(copilotTs).toContain('export type CopilotPermissionGroup =')
     expect(copilotTs).toContain('export type CopilotPermissionValue =')
-    // The identifiers both languages already import must not move.
+    // Preserve the identifiers that both languages import.
     expect(copilotTs).toContain('export const COPILOT_PERMISSION_GROUP = {')
     expect(files['backend/generated/contracts/copilot-permissions.go'])
       .toContain('CopilotPermissionGroupAssistedApproval = "copilot_assisted_approval"')
-    // LeapMux owns one of the two Copilot ids, so the domain overrides the shared
-    // header rather than claiming the vendor owns every value in the file.
+    // LeapMux owns one of the two Copilot identifiers. The domain therefore
+    // overrides the shared header instead of assigning every value to the vendor.
     expect(files['backend/generated/contracts/copilot-permissions.go'])
       .not
       .toContain('vendor owns\n// the values')
 
-    // Goose's fallback mode now comes from the contract instead of being spelled in Go
-    // and in TypeScript by hand.
+    // The contract now supplies the Goose fallback mode to Go and TypeScript.
     expect(files['backend/generated/contracts/goose-protocol.go'])
       .toContain('GooseDefaultMode = GooseModeSmartApprove')
     expect(files['frontend/src/generated/contracts/goose-protocol.ts'])
       .toContain('export const GOOSE_DEFAULT_MODE = GOOSE_MODE.SmartApprove')
 
-    // Claude's modes are the last permission vocabulary that was spelled by hand in both
-    // languages; the plugin and the worker now read this one table.
+    // Claude modes were the last manual permission vocabulary in both languages.
+    // The plugin and worker now read this table.
     expect(files['backend/generated/contracts/claude-protocol.go'])
       .toContain('ClaudeModeBypassPermissions = "bypassPermissions"')
     expect(files['frontend/src/generated/contracts/claude-protocol.ts'])
@@ -654,10 +640,10 @@ describe('generate', () => {
   })
 
   it('fails loudly when a registered domain is missing its contract file', () => {
-    // A typo'd or renamed contracts/<name>.json used to skip its emitter
-    // silently; sync-generated then pruned the domain's outputs as orphans
-    // and the failure surfaced as compile errors pointing at generated code.
-    // Every registered domain must ship its file, and the error must name it.
+    // An incorrect contracts/<name>.json path once skipped its emitter.
+    // sync-generated then removed the outputs as orphans. The compiler reported
+    // the generated code instead of the missing contract. Report the contract
+    // path during generation.
     const partial = mkdtempSync(join(tmpdir(), 'contracts-partial-'))
     cpSync(join(ROOT, 'contracts'), partial, { recursive: true })
     rmSync(join(partial, 'desktop.json'))
@@ -685,9 +671,9 @@ describe('checkProviders', () => {
   })
 
   it('rejects a provider whose prefix-stripped suffix is not a valid TS member', () => {
-    // Same constraint as scopes: emitTsProviders interpolates the stripped
-    // suffix into AgentProvider.<suffix>, and a digit-leading value (legal
-    // protobuf) emits invalid TypeScript while the Go twin compiles.
+    // emitTsProviders inserts the suffix into AgentProvider.<suffix>. Protobuf
+    // permits an initial digit, but TypeScript does not. Reject it before Go and
+    // TypeScript produce different results.
     const p = { providers: { AGENT_PROVIDER_2FA_CODEX: { displayName: 'X', cliAlias: 'x', parseAliases: [] } } }
     expectContractError(() => checkProviders(p, ['AGENT_PROVIDER_UNSPECIFIED', 'AGENT_PROVIDER_2FA_CODEX']), 'not a valid TS member name')
   })
@@ -737,9 +723,8 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a proto enum value in neither scopes nor nonGrantable', () => {
-    // The partition check is the headline cross-check: without it, a scope
-    // added to the proto passes generation and every surface silently omits
-    // it (no token, no sentence, no checkbox).
+    // The partition check covers every Protocol Buffer scope. Without it, a new
+    // scope can pass generation but disappear from every user interface.
     const scopes = {
       SCOPE_ACCOUNT_READ: { token: 'account:read', description: 'd', consentSentence: 'c' },
     }
@@ -788,10 +773,9 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects an astral code point both emitters would mis-encode', () => {
-    // tsClassSource emits 4-hex-digit \uXXXX escapes: an astral point becomes
-    // a valid BMP escape plus a literal digit, and goRangeTable writes uint16
-    // fields. Only a refusedAscii astral point compiles in Go at all -- while
-    // the browser class still matches the wrong characters.
+    // tsClassSource emits four-digit Unicode escapes. An astral point becomes a
+    // Basic Multilingual Plane escape plus a digit. goRangeTable also writes
+    // uint16 fields. Reject astral points before the languages disagree.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[128545, 128545]], whitespaceFold: [[1, 2]] },
       session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
@@ -810,10 +794,9 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a refusedAscii range whose hi end alone is astral', () => {
-    // The guard used to destructure only `lo`: [34, 128545] passed every
-    // check, and tsClassSource emitted \u0022-\u1f621, which a JS regex
-    // silently reads as U+0022-U+1F62 plus the literal "1" -- a different
-    // character set than Go's rune list, with no error anywhere.
+    // The old guard checked only `lo`. Thus, [34, 128545] passed and emitted an
+    // incorrect JavaScript range. Check both ends before the languages receive
+    // different character sets.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
       session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[34, 128545]] },
@@ -823,9 +806,8 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects an inverted refusedAscii range', () => {
-    // An inverted entry built a character class the browser cannot compile
-    // ("range out of order") at module load, while Go silently omitted the
-    // rune from its list.
+    // An inverted entry makes the browser reject its character class. Go would
+    // instead omit the rune. Reject the entry during generation.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
       session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
@@ -835,10 +817,8 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a session file-path cap that is not larger than the token cap', () => {
-    // The two caps hold a RELATION, not two independent numbers: a session file
-    // path carries a directory prefix a token never does, and applying the token
-    // cap to a path refused every real one. An edit that lowers the file-path cap
-    // to the token cap must fail generation rather than reintroduce that refusal.
+    // These caps form one relation. A session file path contains a directory
+    // prefix that a token lacks. The file-path cap must stay above the token cap.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
       session: { byteLimit: 1, filePathByteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
@@ -849,9 +829,8 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a reserved username the Go const mangle cannot spell', () => {
-    // goReservedUsernames builds `Username<Name>` by case-mangling alone; a
-    // hyphen in the name emits invalid Go that fails at go build, not at
-    // generation. The check must fail generation with the username named.
+    // goReservedUsernames builds `Username<Name>` with case changes only. A
+    // hyphen produces invalid Go. Generation must identify that username.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
       session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
@@ -862,8 +841,8 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a session.invisibleFormat that diverges from the frozen name rule', () => {
-    // The repetition is the point: a name-rule change must not silently move
-    // what a token may hold. The generator enforces it next to the data.
+    // This repetition is intentional. A change to the identifier rules must not
+    // change the token rules. The generator checks both beside the data.
     expectContractError(() => checkValidate({
       name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
       session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 3]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
@@ -874,9 +853,8 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a rename for a page token the contract never lists', () => {
-    // A rename whose key is absent from oauthPage.tokens is dead data: the
-    // emitter iterates only the listed tokens, so the page never defines the
-    // CSS variable and every rule reading it renders unset.
+    // A rename outside oauthPage.tokens is unused data. The emitter iterates the
+    // token list, so the page would omit the corresponding CSS variable.
     const theme = {
       light: { '--background': 'a', '--lm-danger-subtle': 'x' },
       dark: { '--background': 'c', '--lm-danger-subtle': 'y' },
@@ -886,9 +864,9 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   })
 
   it('rejects a scope whose prefix-stripped suffix is not a valid TS member', () => {
-    // emitTsScopes interpolates the stripped suffix into Scope.<suffix>; a
-    // digit-leading value (legal protobuf) emits invalid TypeScript while
-    // the Go twin compiles, so the two sides fail asymmetrically.
+    // emitTsScopes inserts the suffix into Scope.<suffix>. Protocol Buffers
+    // permit an initial digit, but TypeScript does not. Reject the value before
+    // only one language fails.
     expectContractError(() => checkScopes({
       nonGrantable: ['SCOPE_UNSPECIFIED'],
       scopes: { SCOPE_2FA: { token: 'account:2fa', description: 'd', consentSentence: 'c' } },
@@ -902,10 +880,9 @@ describe('subtractRanges / nameStripClass', () => {
   it('removes the whitespace folds from Cc, keeping the format set whole', () => {
     const v = readContract('validate')
     const cls = nameStripClass(v)
-    // The class the browser shipped before contracts existed, frozen: C0
-    // minus the fold block, C1 minus NEL, then the format characters. The
-    // derived control half carries no name (it has none); the format half
-    // keeps the annotation straight from the contract.
+    // Freeze the browser class from before contracts existed. It contains C0
+    // without the fold block, C1 without the Next Line control, and the format
+    // characters. Only the format half receives annotations from the contract.
     expect(cls).toEqual([
       [0, 8],
       [14, 31],
@@ -928,12 +905,12 @@ describe('subtractRanges / nameStripClass', () => {
     const go = emitGoValidate(v)
     expect(go).toContain('{Lo: 0x00AD, Hi: 0x00AD, Stride: 1}, // SOFT HYPHEN')
     expect(go).toContain('{Lo: 0x0009, Hi: 0x000D, Stride: 1}, // TAB, LF, VERTICAL TAB, FORM FEED, CARRIAGE RETURN')
-    // The refused-ASCII runes carry their names from the contract too, so the
-    // Go prose cannot go stale against the JSON.
+    // The contract also supplies the labels for refused ASCII runes. The Go
+    // comments therefore stay consistent with the JSON.
     expect(go).toContain('var SessionRefusedASCII = []rune{0x0022, 0x0024, 0x0025, 0x005C} // QUOTATION MARK, DOLLAR SIGN, PERCENT SIGN, REVERSE SOLIDUS')
     const ts = emitTsValidate(v)
-    // The TS side carries the same names as a companion comment block above
-    // each class const; the class BODY itself stays pure regex syntax.
+    // TypeScript emits the same labels in a comment above each class constant.
+    // The class body contains only regular-expression syntax.
     expect(ts).toContain('*   \\u00ad  SOFT HYPHEN')
     expect(ts).toContain('*   \\u0022  QUOTATION MARK')
     const classLine = ts.split('\n').find(l => l.includes('SESSION_FORBIDDEN_CLASS ='))
@@ -985,9 +962,8 @@ describe('checkSessionInfo', () => {
   })
 
   it('accepts the same token in two DIFFERENT tables', () => {
-    // running_tool.tool_name and a hypothetical future tier field of the same
-    // name are fields of different objects; only a repeat WITHIN one object is
-    // ambiguous. The check must not over-reach into a cross-table ban.
+    // Fields in different objects can use the same key. Only a repeated key in
+    // one object is ambiguous. Do not reject a key across separate tables.
     expect(() => checkSessionInfo(sessionInfo({
       runningToolFields: { ToolName: 'tool_name' },
       rateLimitFields: { ToolName: 'tool_name' },
@@ -995,20 +971,17 @@ describe('checkSessionInfo', () => {
   })
 
   it('rejects an empty table rather than emitting an empty const block', () => {
-    // goConstBlock takes Math.max of an empty list, which is -Infinity: the
-    // emitter would produce unparseable Go instead of failing here.
+    // goConstBlock applies Math.max to the list. An empty list produces
+    // negative infinity and invalid Go. Reject it before emission.
     expectContractError(
       () => checkSessionInfo(sessionInfo({ contextUsageFields: {} })),
       'contextUsageFields must hold at least one entry',
     )
   })
 
-  // The one token LeapMux does not own. Claude Code writes `total_cost_usd` on
-  // its own `result` line, the worker persists that line unchanged, and the
-  // browser reads the persisted row through this constant -- while the Go
-  // decoder reads it through a struct tag, which takes a literal and cannot
-  // follow a rename. Without this pin a rename generates cleanly, passes every
-  // test, and blanks the per-turn cost on every Claude result divider.
+  // LeapMux does not own this token. Claude Code writes `total_cost_usd` in its
+  // result. The worker stores it unchanged. The browser uses this constant, but
+  // Go uses a literal struct tag. This assertion prevents a one-sided rename.
   it('rejects a rename of the cost token Claude Code itself writes', () => {
     expectContractError(
       () => checkSessionInfo(sessionInfo({
@@ -1018,10 +991,9 @@ describe('checkSessionInfo', () => {
     )
   })
 
-  // A table added to the JSON and to its schema, but forgotten in
-  // SESSION_INFO_TABLES, emits no Go and no TS and says nothing -- the first
-  // report would be an undefined-constant build failure that never names the
-  // contract.
+  // A table outside SESSION_INFO_TABLES emits no Go or TypeScript. The compiler
+  // would report an undefined constant without identifying the contract. Make
+  // generation report the missing registration.
   it('rejects a contract table that no SESSION_INFO_TABLES entry renders', () => {
     expectContractError(
       () => checkSessionInfo(sessionInfo({ compactionFields: { PreTokens: 'pre_tokens' } })),
@@ -1045,10 +1017,9 @@ describe('checkSessionInfo', () => {
   })
 
   it('emits the running_tool vocabulary the Claude tool_progress path needs', () => {
-    // The badge reads these names off the wire. A rename that reached only one
-    // side used to be invisible until the badge stopped updating. Matched with
-    // a regex because goConstBlock pads the `=` to the widest name in the
-    // block, so the exact spacing shifts whenever a sibling entry is added.
+    // The badge reads these fields from the wire. A one-sided rename can stop
+    // its updates. Use a regular expression because goConstBlock aligns each
+    // equals sign with the longest identifier.
     const go = emitGoSessionInfo(readContract('session-info'))
     for (const [name, token] of [
       ['SessionInfoKeyRunningTool', 'running_tool'],
@@ -1063,19 +1034,17 @@ describe('checkSessionInfo', () => {
 })
 
 describe('checkWorkerVocab / checkDesktop', () => {
-  // A valid windowBehavior block, spread into every negative desktop fixture
-  // below so each one fails for the reason it states. Without it a fixture
-  // reaches `Object.keys(undefined)` the moment a check is reordered, and the
-  // test would then pass on a TypeError rather than on the ContractError it
-  // asserts.
+  // Supply a valid windowBehavior block to each negative desktop fixture. Each
+  // fixture must fail with its expected ContractError, not an unrelated
+  // TypeError after check order changes.
   const behavior = () => ({
     trayOnClose: { tray: 'tray', quit: 'quit' },
     trayOnMinimize: { tray: 'tray', taskbar: 'taskbar' },
     startMinimized: { window: 'window', minimized: 'minimized' },
   })
 
-  // Valid launchVisibility and windowMode blocks, for the same reason as
-  // `behavior()`: the checks below them must be reachable without a TypeError.
+  // Supply valid launchVisibility and windowMode blocks too. The later checks
+  // must remain reachable without a TypeError.
   const launch = () => ({
     normal: 'normal',
     minimized: 'minimized',
@@ -1087,10 +1056,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
     fullscreen: 'fullscreen',
   })
 
-  // A COMPLETE event set, for a fixture whose asserted failure lies past the
-  // tauriEvents coverage check. The abbreviated four-event literals below
-  // predate that check and survive only because their own failure fires
-  // first.
+  // Supply every event when a fixture must pass the tauriEvents coverage check.
+  // Older four-event fixtures fail before they reach that check.
   const events = () => ({
     channelMessage: 'c:m',
     channelClose: 'c:c',
@@ -1140,9 +1107,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('rejects a thread-wrapper token that collides with a notification type', () => {
-    // The browser's thread probe routes on obj.type === NOTIFICATION_THREAD_TYPE;
-    // a notification type with the same token would be misrouted into the
-    // wrapper branch.
+    // The browser routes thread probes through NOTIFICATION_THREAD_TYPE. An
+    // equal notification token would enter the wrong processing case.
     expectContractError(() => checkWorkerVocab({
       notificationTypes: { AgentError: 'notification_thread' },
       workerAuthoredNotificationTypes: ['AgentError'],
@@ -1212,13 +1178,13 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('rejects a macOS-only event key that no name table carries', () => {
-    // A typo in DESKTOP_RS_MACOS_ONLY_EVENTS would silently stop annotating
-    // the const it meant, and the off-macOS clippy failure would come back.
+    // An incorrect DESKTOP_RS_MACOS_ONLY_EVENTS key would omit its annotation.
+    // Clippy would then report the constant outside macOS.
     DESKTOP_RS_MACOS_ONLY_EVENTS.add('noSuchEvent')
     try {
       expectContractError(() => checkDesktop({
         envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
-      devFrontendUrl: 'http://localhost:4328',
+        devFrontendUrl: 'http://localhost:4328',
         tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
         windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
@@ -1229,8 +1195,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('rejects one setting whose two tokens are the same string', () => {
-    // A setting with one token offers no choice: the pill group would render
-    // two options that store the same value.
+    // Equal tokens give the pill group two options that store one value.
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
       devFrontendUrl: 'http://localhost:4328',
@@ -1241,9 +1206,9 @@ describe('checkWorkerVocab / checkDesktop', () => {
     }), 'windowBehavior.trayOnClose declares one token twice')
   })
 
-  // The grouping is DATA now, so a setting the name tables have never heard of
-  // is still checked -- which is the order a real change arrives in. The old
-  // checker-only table made the uniqueness rule skip such a setting entirely.
+  // The data now supplies the groups. Therefore, the checker can process a new
+  // setting before its name-table entry exists. The old checker table skipped
+  // that setting.
   it('checks token uniqueness for a setting no name table knows yet', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
@@ -1256,18 +1221,17 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('accepts one token shared by two DIFFERENT settings', () => {
-    // `tray` is the token of both close-to-tray and minimize-to-tray in the shipped
-    // contract. A uniqueness check across the whole block -- the obvious
-    // reading of the rule above -- would refuse it.
+    // The shipped contract uses `tray` for close-to-tray and minimize-to-tray.
+    // Check uniqueness inside each setting, not across the full block.
     const d = readContract('desktop')
     expect(Object.keys(d.windowBehavior)).toEqual(['trayOnClose', 'trayOnMinimize', 'startMinimized'])
     expect(d.windowBehavior.trayOnClose.tray).toBe(d.windowBehavior.trayOnMinimize.tray)
     expect(() => checkDesktop(d)).not.toThrow()
   })
 
-  // launchVisibility is ONE choice, unlike windowBehavior, so its rule is the
-  // opposite: every token must differ. Two launch states that read alike on
-  // the wire would make `parseLaunchVisibility` answer the wrong one.
+  // launchVisibility is one choice, unlike windowBehavior. Each token must
+  // differ. Equal wire values would make `parseLaunchVisibility` return the
+  // wrong state.
   it('rejects two launch-visibility states sharing one token', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
@@ -1290,10 +1254,9 @@ describe('checkWorkerVocab / checkDesktop', () => {
     }), 'has no DESKTOP_RS_LAUNCH_NAMES entry')
   })
 
-  // windowMode is ONE choice like launchVisibility, but all THREE languages
-  // spell it: the Go config persists the token, the Rust shell matches it at
-  // launch, and the webview reads and writes it. It was three hand-written
-  // mirrors before, and no proto enum restates it now.
+  // windowMode is one choice in three languages. Go stores the token, Rust
+  // reads it at launch, and the webview reads and writes it. The contract
+  // replaces three manual copies.
   it('rejects two window modes sharing one token', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
@@ -1312,10 +1275,9 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expect(emitTsDesktop(d)).toContain('export const WINDOW_MODE_NORMAL = "normal" as const')
   })
 
-  // The pair the contract exists to hold together: `LaunchVisibility::as_str`
-  // in Rust writes these, `parseLaunchVisibility` in the webview reads them,
-  // and that parse falls back to `normal` for anything it does not know -- so
-  // a one-sided rename hides a window with nothing failing.
+  // Rust writes these values through `LaunchVisibility::as_str`. The webview
+  // reads them through `parseLaunchVisibility`. An unknown value falls back to
+  // `normal`, so a one-sided change can hide a window without an error.
   it('emits the launch-visibility tokens for both Rust and TS', () => {
     const d = readContract('desktop')
     expect(emitRsDesktop(d)).toContain('pub const LAUNCH_VISIBILITY_HIDDEN: &str = "hidden"')
@@ -1332,8 +1294,9 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('emits the hub DevFrontend env var to Go and Rust', () => {
-    // Debug sidecar spawn writes this; solo reads it into -dev-frontend. A
-    // one-sided rename leaves TCP extras on the embedded SPA again.
+    // The debug sidecar writes this value. Solo mode reads it into
+    // `-dev-frontend`. A one-sided change leaves TCP extras on the embedded
+    // single-page application.
     const d = readContract('desktop')
     expect(d.envVars.devFrontend).toBe('LEAPMUX_HUB_DEV_FRONTEND')
     expect(emitGoDesktop(d)).toContain('EnvDevFrontend = "LEAPMUX_HUB_DEV_FRONTEND"')
@@ -1341,17 +1304,16 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('emits the frame cap to Go and Rust from one contract value', () => {
-    // The frame budget was three hand-restated copies (derived Go const,
-    // hardcoded Rust const, restated-literal test); it is one contract value
-    // now, so the twin emissions must both carry it.
+    // The frame budget once had three manual copies. One contract value now
+    // supplies the Go and Rust outputs.
     const d = readContract('desktop')
     expect(emitGoDesktop(d)).toContain(`const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}`)
     expect(emitRsDesktop(d)).toContain(`pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};`)
   })
 
   it('emits the DEV frontend URL to Go and Rust from one contract value', () => {
-    // Debug webview and sidecar DevProxy must share this origin; a one-sided
-    // rename leaves Network Access extras on the wrong Vite port.
+    // The debug webview and sidecar DevProxy must share this origin. A one-sided
+    // change sends Network Access extras to the wrong Vite port.
     const d = readContract('desktop')
     expect(d.devFrontendUrl).toBe('http://localhost:4328')
     expect(emitGoDesktop(d)).toContain('DevFrontendURL = "http://localhost:4328"')
@@ -1359,15 +1321,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('emits the window-behaviour tokens to all three languages from one contract value', () => {
-    // These are the one setting family a THIRD language spells, so the three
-    // emissions are what keeps the hub's validator, the webview's parse and
-    // the shell's match on the same strings.
+    // Three languages use this setting family. These outputs keep the hub
+    // validator, webview parser, and shell matcher on the same strings.
     const d = readContract('desktop')
     const go = emitGoDesktop(d)
     const ts = emitTsDesktop(d)
     const rs = emitRsDesktop(d)
-    // The FLAT `<setting><Value>` keys the name tables use; the contract nests
-    // one object per setting, and only the emitted names stay flat.
+    // The name tables use flat `<setting><Value>` keys. The contract keeps one
+    // nested object for each setting. Only emitted identifiers remain flat.
     const flat = {
       trayOnCloseTray: d.windowBehavior.trayOnClose.tray,
       trayOnCloseQuit: d.windowBehavior.trayOnClose.quit,
@@ -1377,8 +1338,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
       startMinimizedMinimized: d.windowBehavior.startMinimized.minimized,
     }
     for (const [key, token] of Object.entries(flat)) {
-      // goConstBlock pads the names into a column, so match the separator
-      // loosely rather than pinning the alignment.
+      // goConstBlock aligns the identifiers in a column. Match the separator
+      // without depending on that spacing.
       expect(go).toMatch(new RegExp(`${DESKTOP_GO_BEHAVIOR_NAMES[key]} += "${token}"`))
       expect(ts).toContain(`export const ${DESKTOP_TS_BEHAVIOR_NAMES[key]} = "${token}" as const`)
       expect(rs).toContain(`pub const ${DESKTOP_RS_BEHAVIOR_NAMES[key]}: &str = "${token}";`)
@@ -1386,9 +1347,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
   })
 
   it('gives every window-behaviour key a distinct name in each language', () => {
-    // A duplicated table entry would emit one constant twice and leave the
-    // other token with no name at all -- the failure the coverage check
-    // cannot see, because both keys are present.
+    // A repeated table entry emits one constant twice and omits another token.
+    // The coverage check cannot find this because both keys exist.
     for (const table of [DESKTOP_GO_BEHAVIOR_NAMES, DESKTOP_RS_BEHAVIOR_NAMES, DESKTOP_TS_BEHAVIOR_NAMES]) {
       const names = Object.values(table)
       expect(new Set(names).size).toBe(names.length)
@@ -1398,8 +1358,8 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
 describe('enumValues', () => {
   it('reads enum names from a buf descriptor, reserved values absent', () => {
-    // The real descriptor: reserved slot 3 must not appear, or the providers
-    // cross-check would demand metadata for a provider that cannot exist.
+    // Use the real descriptor. Reserved slot 3 must stay absent. Otherwise, the
+    // provider check requests metadata for a provider that cannot exist.
     const set = DESCRIPTOR
     const names = enumValues(set, 'leapmux/v1/agent.proto', 'AgentProvider')
     expect(names).toContain('AGENT_PROVIDER_CLAUDE_CODE')

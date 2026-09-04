@@ -248,10 +248,10 @@ const RegisterAppForm: Component<{
                 <PillGroup
                   label="App type"
                   options={[
-                    { value: AppClientType.PUBLIC, label: 'Public (a binary a user holds)' },
-                    { value: AppClientType.CONFIDENTIAL, label: 'Confidential (a server you run)' },
+                    { key: AppClientType.PUBLIC, label: 'Public (a binary a user holds)' },
+                    { key: AppClientType.CONFIDENTIAL, label: 'Confidential (a server you run)' },
                   ]}
-                  selected={value => clientType() === value}
+                  selectedKey={clientType()}
                   onSelect={setClientType}
                 />
               )}

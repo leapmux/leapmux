@@ -363,11 +363,11 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
                 <PillGroup
                   label="Open as"
                   options={[
-                    { value: TabType.AGENT, label: 'Agent' },
-                    { value: TabType.TERMINAL, label: 'Terminal' },
+                    { key: TabType.AGENT, label: 'Agent' },
+                    { key: TabType.TERMINAL, label: 'Terminal' },
                   ]}
-                  selected={v => v === worktreeTabType()}
-                  onSelect={v => setWorktreeTabType(v as WorktreeTabType)}
+                  selectedKey={worktreeTabType()}
+                  onSelect={setWorktreeTabType}
                 />
               </div>
               <Switch>

@@ -5,9 +5,9 @@ import type { EmailVerificationStatus, User } from '~/generated/proto/leapmux/v1
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
+import { AuthMethodPillGroup } from '~/components/common/AuthMethodPillGroup'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
-import { PillGroup } from '~/components/common/PillGroup'
-import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
+import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { isEmailEnabled } from '~/lib/systemInfo'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
@@ -194,15 +194,12 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
         {/*
           Offered on every sign-up surface, `/setup` included: the hub accepts
           a passkey for the first administrator too, and creates that account
-          as an admin exactly as password sign-up does. `authMethodOptions`
-          decides what the pills show, and it drops the passkey option on a
-          hub that runs no ceremonies at this origin.
+          as an admin exactly as password sign-up does. The shared method
+          control drops passkey when this hub runs no ceremonies here.
         */}
-        <PillGroup
+        <AuthMethodPillGroup
           label="Sign-up method"
-          options={authMethodOptions()}
-          selected={v => effectiveMethod() === v}
-          onSelect={methodSelection.select}
+          selection={methodSelection}
         />
         <Show when={effectiveMethod() === 'password'}>
           <PasswordFields
