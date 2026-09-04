@@ -12,7 +12,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { WorktreeSelect } from '~/components/shell/WorktreeSelect'
 import { BranchSelect } from '~/components/workspace/BranchSelect'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
-import { GitMode } from '~/hooks/useGitModeState'
+import { GIT_MODE_LABELS, GitMode } from '~/hooks/useGitModeState'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, join, parentDirectory, tildify } from '~/lib/paths'
 import { stripRemotePrefix, validateBranchName } from '~/lib/validate'
@@ -55,7 +55,7 @@ interface GitOptionsProps {
    * Pre-seed the parent's intent via `useGitModeState(initial)` to
    * select a non-default starting mode.
    */
-  modes?: GitMode[]
+  modes?: readonly GitMode[]
   /**
    * Pre-fetched branches list. When set, GitOptions reads its branches
    * from this accessor instead of issuing its own ListGitBranches RPC.
@@ -81,7 +81,7 @@ interface GitOptionsProps {
   onRefreshBranches?: () => void
 }
 
-const DEFAULT_GIT_MODES: GitMode[] = [
+const DEFAULT_GIT_MODES: readonly GitMode[] = [
   GitMode.Current,
   GitMode.SwitchBranch,
   GitMode.CreateBranch,
@@ -140,22 +140,26 @@ export function indexBranches(branches: readonly GitBranchEntry[]): BranchIndex 
 }
 
 /**
- * Per-mode dirty-worktree warning copy. Exported so tests can pin the
- * exact strings shown for each mode without rendering the full GitOptions
- * component (which depends on auth context, RPC mocks, etc.). Returns null
- * for modes that don't surface a dirty-tree warning.
+ * A `Record`, not a `switch` with a `default`: a sixth mode added to `GitMode`
+ * is then a compile error here rather than a mode that silently falls through
+ * to "no warning". `null` states that a mode deliberately shows none.
+ */
+const DIRTY_WARNINGS: Record<GitMode, string | null> = {
+  [GitMode.Current]: null,
+  [GitMode.SwitchBranch]: 'The working copy has uncommitted changes. Switching branches may fail or discard changes.',
+  [GitMode.CreateBranch]: 'The working copy has uncommitted changes. Creating a new branch will include them.',
+  [GitMode.CreateWorktree]: 'The selected working copy has uncommitted changes that will not be transferred to the new worktree.',
+  [GitMode.UseWorktree]: null,
+}
+
+/**
+ * Per-mode dirty-worktree warning copy. Exported so tests can pin the exact
+ * strings shown for each mode without rendering the full GitOptions component
+ * (which depends on auth context, RPC mocks, etc.). Returns null for a mode
+ * that surfaces no dirty-tree warning.
  */
 export function dirtyWarningCopy(mode: GitMode): string | null {
-  switch (mode) {
-    case GitMode.SwitchBranch:
-      return 'The working copy has uncommitted changes. Switching branches may fail or discard changes.'
-    case GitMode.CreateBranch:
-      return 'The working copy has uncommitted changes. Creating a new branch will include them.'
-    case GitMode.CreateWorktree:
-      return 'The selected working copy has uncommitted changes that will not be transferred to the new worktree.'
-    default:
-      return null
-  }
+  return DIRTY_WARNINGS[mode]
 }
 
 /** The branch-name error node's id, so its input can point at it. */
@@ -188,7 +192,18 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // (e.g. `useGitModeState.gitMode`) reflects the emitted intent's
   // `.mode` for its own conditional renders, but that value never
   // re-enters GitOptions.
-  const [activeMode, setActiveMode] = createSignal<GitMode>(untrack(() => props.gitMode()))
+  //
+  // The active mode is DERIVED, not stored. A mode outside the enabled set
+  // leaves every radio unchecked -- each row is `enabledModes().has` -- while
+  // the emit effect still reports that mode's intent, so the dialog submits a
+  // mode it never showed. The remembered per-repository mode makes that
+  // reachable: a mode stored by one dialog can be absent from the next one's
+  // set. Deriving makes the state unrepresentable rather than repairing it at
+  // the two moments it can arise (the seed, and a set that narrows later).
+  const clampMode = (mode: GitMode): GitMode =>
+    enabledModes().has(mode) ? mode : defaultMode()
+  const [rawMode, setRawMode] = createSignal<GitMode>(untrack(() => props.gitMode()))
+  const activeMode = createMemo(() => clampMode(rawMode()))
 
   // Branch-name UX. CreateBranch and CreateWorktree are mutually
   // exclusive radios that both render the same "Branch name" input +
@@ -387,6 +402,11 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // activeMode signal is reset to the dialog's default mode here; the
   // currentIntent memo + emit effect below picks up the change and
   // notifies the parent in the same flush.
+  //
+  // `props.modes` is deliberately NOT a dependency: `activeMode` is derived
+  // through `clampMode`, so a set that narrows re-derives on its own and needs
+  // no reset -- which also stops a narrowing from discarding the branch list,
+  // the worktrees and all three selections along with a still-valid pick.
   createEffect(on(() => [props.workerId, props.selectedPath] as const, () => {
     batch(() => {
       setInternalBranches([])
@@ -394,7 +414,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       setSelectedCheckoutBranch('')
       setSelectedBaseBranch('')
       setSelectedWorktreePath('')
-      setActiveMode(defaultMode())
+      setRawMode(defaultMode())
     })
   }, { defer: true }))
 
@@ -495,21 +515,25 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     </>
   )
 
-  // Per-mode row: enabledModes() gates the whole block, the active mode
-  // gates the sub-content. Callers own the `<div class={radioSubContent}>`
+  // Per-mode row: enabledModes() controls the whole block, the active mode
+  // controls the sub-content. Callers own the `<div class={radioSubContent}>`
   // wrapper inside `children` so the Current mode can omit it when there's
   // no branch to display (an empty wrapper would still take a `gap` slot
   // in `radioGroup`).
-  const ModeRadio: Component<{ mode: GitMode, label: string, children?: JSX.Element }> = rp => (
+  //
+  // The label comes from the shared table, NOT from a prop: pairing a mode with
+  // another mode's label is then impossible, and the menu item that opens this
+  // dialog on that radio reads the same table.
+  const ModeRadio: Component<{ mode: GitMode, children?: JSX.Element }> = rp => (
     <Show when={enabledModes().has(rp.mode)}>
       <label class={radioRow}>
         <input
           type="radio"
           name="git-mode"
           checked={activeMode() === rp.mode}
-          onChange={() => setActiveMode(rp.mode)}
+          onChange={() => setRawMode(rp.mode)}
         />
-        {rp.label}
+        {GIT_MODE_LABELS[rp.mode]}
       </label>
       <Show when={activeMode() === rp.mode}>
         {rp.children}
@@ -521,7 +545,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     <div class="vstack gap-2">
       <div class={labelRow}>Git options</div>
       <div class={radioGroup}>
-        <ModeRadio mode={GitMode.Current} label="Use current state">
+        <ModeRadio mode={GitMode.Current}>
           <Show when={props.gitInfo.info().currentBranch}>
             <div class={radioSubContent}>
               <div class={pathPreview}>
@@ -532,7 +556,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
           </Show>
         </ModeRadio>
 
-        <ModeRadio mode={GitMode.SwitchBranch} label="Switch to branch">
+        <ModeRadio mode={GitMode.SwitchBranch}>
           <div class={radioSubContent}>
             {renderDirtyWarning(GitMode.SwitchBranch)}
             {renderBranchSelect({
@@ -552,14 +576,14 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
           </div>
         </ModeRadio>
 
-        <ModeRadio mode={GitMode.CreateBranch} label="Create new branch">
+        <ModeRadio mode={GitMode.CreateBranch}>
           <div class={radioSubContent}>
             {renderDirtyWarning(GitMode.CreateBranch)}
             {renderBranchNameAndBase()}
           </div>
         </ModeRadio>
 
-        <ModeRadio mode={GitMode.CreateWorktree} label="Create new worktree">
+        <ModeRadio mode={GitMode.CreateWorktree}>
           <div class={radioSubContent}>
             {renderDirtyWarning(GitMode.CreateWorktree)}
             {renderBranchNameAndBase()}
@@ -573,7 +597,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
           </div>
         </ModeRadio>
 
-        <ModeRadio mode={GitMode.UseWorktree} label="Use existing worktree">
+        <ModeRadio mode={GitMode.UseWorktree}>
           <div class={radioSubContent}>
             <WorktreeSelect
               value={selectedWorktreePath()}

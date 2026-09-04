@@ -10,7 +10,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
 import { useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
-import { GitMode } from '~/hooks/useGitModeState'
+import { GitMode, gitModeMenuLabel } from '~/hooks/useGitModeState'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface BranchContextMenuProps extends ContextMenuTargetProps {
@@ -24,7 +24,7 @@ interface BranchContextMenuProps extends ContextMenuTargetProps {
    */
   'workerId': string
   /**
-   * True iff the row's checkout is a linked worktree. It names the DELETE item
+   * True iff the row's checkout is a linked worktree. It labels the DELETE item
    * only: deleting a worktree removes a whole directory, and calling that
    * "Delete branch..." is how a user destroys a directory they meant to keep.
    *
@@ -79,8 +79,8 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
   const { providers } = useAvailableProviders(listSource)
   const { shells, defaultShell } = useAvailableShells(listSource)
 
-  /** One change item. The three differ only in their label and their mode. */
-  const changeItem = (label: string, mode: ChangeBranchMode) => (
+  /** One change item. The three differ only in their mode. */
+  const changeItem = (mode: ChangeBranchMode) => (
     // The reason goes through <Tooltip>, which works on a disabled control and
     // leaves the item its own name. A `title` this long BECOMES the accessible
     // name, so a screen reader announced the reason in place of the label.
@@ -90,7 +90,7 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
         disabled={Boolean(props.disabledReason)}
         onClick={() => props.actions.onChangeBranch(mode)}
       >
-        {label}
+        {gitModeMenuLabel(mode)}
       </button>
     </Tooltip>
   )
@@ -102,14 +102,24 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
       onToggle={setMenuOpen}
       data-testid={props['data-testid']}
     >
-      {/* The three modes the Change branch dialog offers, each opening it with
+      {/* These children mount eagerly, which is safe even while this menu
+          serves as a SUBMENU (the composer's `[+]` branch item):
+          `DropdownMenu`'s roving focus skips an item inside a nested popover
+          that is closed, so they are not ArrowDown stops or type-ahead
+          matches until this menu opens.
+
+          The three modes the Change branch dialog offers, each opening it with
           its own radio already selected. One item per mode, because a single
           "Change branch..." made the user open the dialog to discover that
-          "Create new worktree" lived inside it. The labels are the dialog's own
-          radio labels, so the item the user picks states what they then see. */}
-      {changeItem('Switch to branch...', GitMode.SwitchBranch)}
-      {changeItem('Create new branch...', GitMode.CreateBranch)}
-      {changeItem('Create new worktree...', GitMode.CreateWorktree)}
+          "Create new worktree" lived inside it.
+
+          The label comes from `gitModeMenuLabel`, which is the dialog's own
+          radio label plus the three dots an item that opens a dialog carries.
+          One table, so the item the user picks states what they then see -- and
+          renaming a radio cannot leave this menu stating the old name. */}
+      {changeItem(GitMode.SwitchBranch)}
+      {changeItem(GitMode.CreateBranch)}
+      {changeItem(GitMode.CreateWorktree)}
       <hr />
       <Tooltip text={props.disabledReason}>
         <button

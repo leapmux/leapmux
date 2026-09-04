@@ -102,10 +102,25 @@ export function resolvePreferredEditor(
   pinned: string | undefined,
   persist: (id: string) => void,
 ): DetectedEditor | undefined {
-  if (editors.length === 0)
-    return undefined
-  const target = editors.find(e => e.id === pinned) ?? editors[0]
-  if (target.id !== pinned)
+  const target = preferredEditor(editors, pinned)
+  if (target && target.id !== pinned)
     persist(target.id)
   return target
+}
+
+/**
+ * The same pick, WITHOUT the write.
+ *
+ * For a caller that only has to NAME the editor -- a menu item that reads
+ * "Open in Zed" -- and must not persist anything while it merely renders.
+ * Split out rather than re-derived at that call site, so the label and the
+ * launch cannot disagree about which editor "the default" is.
+ */
+export function preferredEditor(
+  editors: DetectedEditor[],
+  pinned: string | undefined,
+): DetectedEditor | undefined {
+  if (editors.length === 0)
+    return undefined
+  return editors.find(e => e.id === pinned) ?? editors[0]
 }

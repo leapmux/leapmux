@@ -5,8 +5,12 @@ import { shallowEqual } from '~/lib/shallowEqual'
  * Identifiers for the GitOptions modes. Numeric enum (not string union)
  * so the comparison sites compile down to integer equality and TS
  * narrows discriminator-style switches exhaustively across the variants
- * of {@link GitModeIntent}. Values are frontend-only (never serialized
- * over the wire), so reordering is safe within this file.
+ * of {@link GitModeIntent}.
+ *
+ * The NUMBERS are frontend-only and never leave memory, so reordering the
+ * members stays safe. Anything that outlives the page -- the remembered
+ * per-repository mode in browser storage -- stores a {@link GitModeToken}
+ * instead, which is what keeps that promise true.
  */
 export enum GitMode {
   Current,
@@ -14,6 +18,120 @@ export enum GitMode {
   CreateBranch,
   CreateWorktree,
   UseWorktree,
+}
+
+/**
+ * The name each mode goes by, EVERYWHERE it is named.
+ *
+ * One table so the dialog's radio and the menu item that opens the dialog on
+ * that radio cannot drift: the item the user picks names what they then see.
+ * `GitOptions` and `BranchContextMenu` held nine literals between them before
+ * this, and pairing a mode with another mode's label was a plain typo away.
+ *
+ * `Record<GitMode, string>` makes a sixth mode a compile error rather than an
+ * item that renders `undefined`.
+ *
+ * It lives HERE rather than in `GitOptions.tsx` because `BranchContextMenu`
+ * renders once per branch row of every workspace, and `GitOptions.tsx` pulls in
+ * `random-word-slugs`, `workerRpc`, `BranchSelect`, `WorktreeSelect` and
+ * `validate`. This module imports `solid-js` and `~/lib/shallowEqual`, and both
+ * surfaces already import it -- so the table costs no new import edge.
+ */
+export const GIT_MODE_LABELS: Record<GitMode, string> = {
+  [GitMode.Current]: 'Use current state',
+  [GitMode.SwitchBranch]: 'Switch to branch',
+  [GitMode.CreateBranch]: 'Create new branch',
+  [GitMode.CreateWorktree]: 'Create new worktree',
+  [GitMode.UseWorktree]: 'Use existing worktree',
+}
+
+/**
+ * The serialized spelling of a mode, for anything that outlives the page.
+ *
+ * A token rather than the enum's number, because {@link GitMode}'s own doc
+ * licenses reordering its members -- and it can only keep doing so while no
+ * stored value depends on the numbering. A stale number would silently select
+ * a different mode after a reorder; a stale token resolves to nothing and the
+ * caller falls back.
+ */
+export type GitModeToken
+  = | 'current'
+    | 'switch-branch'
+    | 'create-branch'
+    | 'create-worktree'
+    | 'use-worktree'
+
+/**
+ * A `Record`, so a sixth mode is a compile error rather than a mode that
+ * silently cannot be remembered.
+ */
+const GIT_MODE_TOKENS: Record<GitMode, GitModeToken> = {
+  [GitMode.Current]: 'current',
+  [GitMode.SwitchBranch]: 'switch-branch',
+  [GitMode.CreateBranch]: 'create-branch',
+  [GitMode.CreateWorktree]: 'create-worktree',
+  [GitMode.UseWorktree]: 'use-worktree',
+}
+
+/** The token to store for `mode`. */
+export function gitModeToken(mode: GitMode): GitModeToken {
+  return GIT_MODE_TOKENS[mode]
+}
+
+/**
+ * The mode a stored token names, or undefined for anything else.
+ *
+ * `unknown` rather than `GitModeToken`, because the argument comes back off the
+ * wire of browser storage: a previous build, a hand edit, or a truncated write
+ * can put any JSON there.
+ */
+export function gitModeFromToken(stored: unknown): GitMode | undefined {
+  if (typeof stored !== 'string')
+    return undefined
+  for (const [mode, token] of Object.entries(GIT_MODE_TOKENS)) {
+    if (token === stored)
+      return Number(mode) as GitMode
+  }
+  return undefined
+}
+
+/**
+ * The seed intent for a dialog opened directly on `mode`.
+ *
+ * Every field is empty, because the values belong to GitOptions: it owns the
+ * branch picker, the name input and the base-branch picker, and it emits a
+ * complete intent for its active mode on its first flush. What this seed
+ * carries is the MODE alone, which GitOptions reads once (untracked) to paint
+ * the correct radio on the first render.
+ *
+ * A dialog that seeds nothing paints its default mode first and swaps a moment
+ * later, so every menu item that opens the dialog on its own mode would flash
+ * the same one before landing.
+ */
+export function initialIntentForMode(mode: GitMode): GitModeIntent {
+  switch (mode) {
+    case GitMode.Current:
+      return { mode }
+    case GitMode.SwitchBranch:
+      return { mode, checkoutBranch: '', checkoutBranchError: null }
+    case GitMode.CreateBranch:
+      return { mode, createBranch: '', createBranchError: null, createBranchBase: '' }
+    case GitMode.CreateWorktree:
+      return { mode, worktreeBranch: '', worktreeBranchError: null, worktreeBaseBranch: '' }
+    case GitMode.UseWorktree:
+      return { mode, useWorktreePath: '' }
+  }
+}
+
+/**
+ * The same name as a MENU item that opens a dialog on that mode.
+ *
+ * The three ASCII dots are the whole difference from {@link GIT_MODE_LABELS},
+ * and they belong to the menu: an item that opens a dialog says so, and a radio
+ * inside that dialog does not.
+ */
+export function gitModeMenuLabel(mode: GitMode): string {
+  return `${GIT_MODE_LABELS[mode]}...`
 }
 
 /**
@@ -56,25 +174,12 @@ export function isChangeBranchMode(mode: GitMode): mode is ChangeBranchMode {
 /**
  * The seed intent for a ChangeBranchDialog opened directly on `mode`.
  *
- * Every field is empty, because the values belong to GitOptions: it owns the
- * branch picker, the name input and the base-branch picker, and it emits a
- * complete intent for its active mode on its first flush. What this seed
- * carries is the MODE alone, which GitOptions reads once (untracked) to paint
- * the correct radio on the first render.
- *
- * A dialog that seeds nothing paints `SwitchBranch` first and swaps a moment
- * later, so the three menu items that open this dialog would all flash the
- * same mode before landing on their own.
+ * A narrowing delegate to {@link initialIntentForMode}, which covers all five
+ * modes. The narrow signature is what the dialog wants -- it offers three -- and
+ * a second copy of the per-mode field lists is what this avoids.
  */
 export function changeBranchInitialIntent(mode: ChangeBranchMode): GitModeIntent {
-  switch (mode) {
-    case GitMode.SwitchBranch:
-      return { mode, checkoutBranch: '', checkoutBranchError: null }
-    case GitMode.CreateBranch:
-      return { mode, createBranch: '', createBranchError: null, createBranchBase: '' }
-    case GitMode.CreateWorktree:
-      return { mode, worktreeBranch: '', worktreeBranchError: null, worktreeBaseBranch: '' }
-  }
+  return initialIntentForMode(mode)
 }
 
 export interface GitFields {

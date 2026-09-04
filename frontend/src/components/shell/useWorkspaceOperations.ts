@@ -1,14 +1,17 @@
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { createSectionStore } from '~/stores/section.store'
+import type { Tab } from '~/stores/tab.types'
 
 import { createSignal } from 'solid-js'
 import { sectionClient, workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { canReorderWithinSection, sectionFilterQuery, workspaceSortOrder } from '~/components/workspace/workspaceListState'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { appendPosition, mid } from '~/lib/lexorank'
 import { cleanName } from '~/lib/validate'
+import { filterWorkspaces, sortWorkspaces } from '~/lib/workspaceSort'
 import { isWorkspaceSection } from './sectionUtils'
 
 export interface SectionGroup {
@@ -22,11 +25,24 @@ export interface UseWorkspaceOperationsProps {
   sectionStore: ReturnType<typeof createSectionStore>
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
-  onNewWorkspace: (sectionId: string | null) => void
   onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
   onConfirmDelete?: (workspaceId: string) => Promise<boolean>
   onConfirmArchive?: (workspaceId: string) => Promise<boolean>
+  /**
+   * Confirm emptying the archive, naming the number of workspaces. ONE prompt
+   * for the whole operation -- the per-workspace confirm is suppressed, and it
+   * would be unusable anyway: `confirmDeleteWsDialog` is a single-slot dialog
+   * state, so N concurrent opens drop N-1 resolvers and those awaits never
+   * settle.
+   */
+  onConfirmEmptyArchive?: (count: number) => Promise<boolean>
+  /**
+   * A workspace's tabs, for the `recent` sort. Optional: a caller with no tab
+   * projection (the section-grouping unit tests) leaves every workspace
+   * unranked, which sorts them by title instead.
+   */
+  getTabsForWorkspace?: (workspaceId: string) => Tab[]
   onPostArchiveWorkspace?: (workspaceId: string) => void
 }
 
@@ -151,7 +167,30 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
   // Workspace operations
   // ---------------------------------------------------------------------------
 
+  const getSectionId = (workspaceId: string): string | undefined => {
+    return store.getSectionForWorkspace(workspaceId)
+  }
+
+  const isWorkspaceArchived = (workspaceId: string): boolean => {
+    const archivedSection = store.getArchivedSection()
+    if (!archivedSection)
+      return false
+    return getSectionId(workspaceId) === archivedSection.id
+  }
+
+  /**
+   * Open the inline rename input for one workspace row.
+   *
+   * It refuses an ARCHIVED workspace, because the hub does: `RenameWorkspace`
+   * answers FailedPrecondition there. Hiding the menu item is not enough -- the
+   * row's own double-click reaches this directly, so a user could open the
+   * input, type a name, and collect a "Failed to rename workspace" toast for a
+   * control the app offered. `WorkspaceTabTree.startEditing` guards the sibling
+   * tab operation the same way, for the same reason.
+   */
   const startRename = (workspace: Workspace) => {
+    if (isWorkspaceArchived(workspace.id))
+      return
     setRenamingWorkspaceId(workspace.id)
     setRenameValue(workspace.title || 'Untitled')
   }
@@ -178,6 +217,14 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     // `renameTab` uses for exactly this reason.
     const title = cleanName(renameValue())
     if (!id || !title) {
+      cancelRename()
+      return
+    }
+    // Archived between opening the input and committing it. `startRename`
+    // refuses an archived workspace, but the row's grip stays draggable while
+    // the input is open, so a user can drag the row onto Archived and the blur
+    // then commits into a rename the hub answers with FailedPrecondition.
+    if (isWorkspaceArchived(id)) {
       cancelRename()
       return
     }
@@ -248,12 +295,23 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     return null
   }
 
-  const deleteWorkspace = async (workspaceId: string) => {
-    if (props.onConfirmDelete) {
-      const confirmed = await props.onConfirmDelete(workspaceId)
-      if (!confirmed)
-        return
+  /** Re-read the lists a delete invalidated, then hand the caller the next id. */
+  const finishDelete = async (workspaceId: string) => {
+    await Promise.all([props.onRefreshWorkspaces(), props.loadSections()])
+    if (props.onDeleteWorkspace) {
+      const nextId = findFirstNonArchivedWorkspaceId()
+      props.onDeleteWorkspace(workspaceId, nextId)
     }
+  }
+
+  /**
+   * Delete one workspace, WITHOUT asking.
+   *
+   * Split out of `deleteWorkspace` so `emptyArchive` can ask once for the whole
+   * set instead of N times. It is not exported: every caller outside this hook
+   * goes through `deleteWorkspace` and gets the confirm.
+   */
+  const performDelete = async (workspaceId: string, refresh = true) => {
     const done = startWorkspaceLoading(workspaceId)
     try {
       // 1. Hub soft-deletes the workspace and answers with each hosting worker
@@ -276,12 +334,13 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
         ),
       )
 
-      await Promise.all([props.onRefreshWorkspaces(), props.loadSections()])
-
-      if (props.onDeleteWorkspace) {
-        const nextId = findFirstNonArchivedWorkspaceId()
-        props.onDeleteWorkspace(workspaceId, nextId)
-      }
+      // A bulk caller passes `refresh: false` and runs this ONCE for the whole
+      // set. Both calls are full-collection RPCs, so a per-item refresh costs
+      // 2N round trips to fetch N-1 states nobody sees. The two steps move
+      // together because `findFirstNonArchivedWorkspaceId` reads the store the
+      // refresh just wrote.
+      if (refresh)
+        await finishDelete(workspaceId)
     }
     catch (err) {
       showWarnToast('Failed to delete workspace', err)
@@ -291,15 +350,92 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
   }
 
-  const getSectionId = (workspaceId: string): string | undefined => {
-    return store.getSectionForWorkspace(workspaceId)
-  }
-
-  const isWorkspaceArchived = (workspaceId: string): boolean => {
+  /**
+   * The workspaces currently in the Archived section, unfiltered and in sidebar
+   * order.
+   *
+   * Read fresh at the start of each bulk operation rather than passed in: the
+   * loops below await between iterations, and the caller's snapshot would be
+   * one lifecycle event out of date.
+   *
+   * The section menu shows its two bulk items from this, and both operations
+   * act on it -- so the menu can no longer offer an irreversible "Empty
+   * archive" for a set the user cannot see, nor hide it while the archive is
+   * full.
+   */
+  const archivedWorkspaceIds = (): string[] => {
     const archivedSection = store.getArchivedSection()
     if (!archivedSection)
-      return false
-    return getSectionId(workspaceId) === archivedSection.id
+      return []
+    return store.getItemsForSection(archivedSection.id).map(i => i.workspaceId)
+  }
+
+  /**
+   * Move every archived workspace back to In progress.
+   *
+   * SEQUENTIAL, and that is the whole implementation note. `moveWorkspace`
+   * computes `appendPosition(getItemsForSection(...))`, which reads
+   * `items.at(-1)` BEFORE its await while the store write lands after it -- so a
+   * parallel fan-out hands every call the identical lexorank and the sidebar
+   * shuffles the whole set on the next refresh.
+   *
+   * There is no transaction: each move is its own RPC, so a failure part way
+   * through leaves the archive partly emptied. Each failed move raises its own
+   * warning toast, which is the whole safety story.
+   */
+  const unarchiveAll = async () => {
+    const inProgressSection = store.getInProgressSection()
+    if (!inProgressSection)
+      return
+    for (const workspaceId of archivedWorkspaceIds())
+      await moveWorkspace(workspaceId, inProgressSection.id)
+  }
+
+  /**
+   * Delete every archived workspace, after ONE confirm naming the count.
+   *
+   * Sequential for the same reason as `unarchiveAll`, and for a second one:
+   * suppressing the per-workspace confirm is what makes the operation usable at
+   * all, and the dialog state behind it holds one payload, so N concurrent
+   * opens would drop N-1 resolvers and hang.
+   *
+   * Not a transaction either. A failure part way through leaves the archive
+   * partly emptied, with one warning toast per failed workspace.
+   */
+  const emptyArchive = async () => {
+    const workspaceIds = archivedWorkspaceIds()
+    // Nothing to confirm and nothing to do. `archiveWorkspace` and
+    // `unarchiveWorkspace` guard a missing SECTION; nothing guarded an empty
+    // item list, and asking "delete 0 workspaces?" is a prompt with no answer
+    // worth giving.
+    if (workspaceIds.length === 0)
+      return
+    if (props.onConfirmEmptyArchive) {
+      const confirmed = await props.onConfirmEmptyArchive(workspaceIds.length)
+      if (!confirmed)
+        return
+    }
+    // The INTERSECTION of what the user confirmed with what is still archived.
+    // The confirm is an unbounded await, and any workspace lifecycle event
+    // reloads the sections under it -- so a workspace unarchived meanwhile is
+    // in the snapshot but must not be deleted. Deleting the fresh list instead
+    // would have the mirror fault: a workspace archived during the dialog was
+    // never part of the count the user agreed to.
+    const stillArchived = new Set(archivedWorkspaceIds())
+    const doomed = workspaceIds.filter(id => stillArchived.has(id))
+    for (const workspaceId of doomed)
+      await performDelete(workspaceId, false)
+    if (doomed.length > 0)
+      await finishDelete(doomed[doomed.length - 1])
+  }
+
+  const deleteWorkspace = async (workspaceId: string) => {
+    if (props.onConfirmDelete) {
+      const confirmed = await props.onConfirmDelete(workspaceId)
+      if (!confirmed)
+        return
+    }
+    await performDelete(workspaceId)
   }
 
   const canAddToSection = (section: Section): boolean => {
@@ -354,6 +490,12 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       targetSectionId = droppable.data?.sectionId as string
 
       if (fromSectionId === targetSectionId) {
+        // A same-section reorder has no meaning while the view order differs
+        // from the model order, which is what a non-manual sort or a live
+        // filter produces. The rows stay sortable so a CROSS-section drop can
+        // still resolve a row target; only this case is suppressed.
+        if (!canReorderWithinSection(targetSectionId))
+          return
         const items = store.getItemsForSection(targetSectionId)
         const dragIdx = items.findIndex(i => i.workspaceId === wsId)
         const dropIdx = items.findIndex(i => i.workspaceId === targetWsId)
@@ -396,9 +538,44 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
   // Reactive helpers for content factories
   // ---------------------------------------------------------------------------
 
-  const getWorkspacesForGroup = (sectionId: string, groups: SectionGroup[]): Workspace[] => {
+  /**
+   * How recently a workspace was used: the highest `mru` across its tabs.
+   *
+   * Undefined when the caller supplied no tab accessor, or when no tab of the
+   * workspace was activated this session -- `mru` is a per-session counter, so
+   * "none" is a real answer and `sortWorkspaces` pins it last.
+   */
+  const workspaceRecency = (workspaceId: string): number | undefined => {
+    const tabs = props.getTabsForWorkspace?.(workspaceId)
+    if (!tabs || tabs.length === 0)
+      return undefined
+    let best: number | undefined
+    for (const tab of tabs) {
+      if (tab.mru !== undefined && (best === undefined || tab.mru > best))
+        best = tab.mru
+    }
+    return best
+  }
+
+  /**
+   * One section's workspaces, in the order the rows are drawn.
+   *
+   * The ONE place the view order is produced, so every consumer -- the rows,
+   * the header menu's Collapse all, the repository list -- sees the same list.
+   * `buildSectionGroups` above answers the MODEL order (lexorank); the filter
+   * and the sort are applied here, on top of it.
+   *
+   * It is a plain function, and `useSidebarCore` calls it once per section
+   * inside one memo. Calling it per read instead cost a fresh filter pass, a
+   * fresh sort and two array copies six to eight times per section on every
+   * tick of a global signal.
+   */
+  const getWorkspacesForGroup = (sectionId: string, groups: SectionGroup[]): readonly Workspace[] => {
     const group = groups.find(g => g.section.id === sectionId)
-    return group?.workspaces ?? []
+    if (!group)
+      return []
+    const filtered = filterWorkspaces(group.workspaces, sectionFilterQuery(sectionId) ?? '')
+    return sortWorkspaces(filtered, workspaceSortOrder(), workspaceRecency)
   }
 
   return {
@@ -408,7 +585,6 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
     // Grouping
     buildSectionGroups,
-    getWorkspacesForGroup,
 
     // Operations
     startRename,
@@ -417,6 +593,10 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     moveWorkspace,
     archiveWorkspace,
     unarchiveWorkspace,
+    getWorkspacesForGroup,
+    unarchiveAll,
+    emptyArchive,
+    archivedWorkspaceIds,
     deleteWorkspace,
     canAddToSection,
     isWorkspaceArchived,

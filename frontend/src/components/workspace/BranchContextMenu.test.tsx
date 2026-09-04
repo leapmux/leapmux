@@ -22,7 +22,7 @@ const listShells = workerRpc.listAvailableShells as unknown as ReturnType<typeof
 // The Popover API stubs come from `vitest.setup.ts`, and this suite needs THOSE
 // rather than bare `vi.fn()` replacements: they dispatch the `toggle` event and
 // answer `:popover-open`, which is how the menu learns that it opened -- and the
-// two worker-list fetches below are gated on exactly that.
+// two worker-list fetches below depend on exactly that.
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -57,6 +57,18 @@ function menuItem(label: string): HTMLElement {
 }
 
 /** Open the menu and let the two on-open list fetches settle. */
+/**
+ * Click one item, reopening the menu first when a previous click dismissed it.
+ *
+ * The items mount only while the menu is open, so a test that picks several in
+ * a row has to reopen between them -- which is what a user does too.
+ */
+async function clickItem(trigger: HTMLElement, label: string) {
+  if (!screen.queryByText(label))
+    await fireEvent.click(trigger)
+  await fireEvent.click(screen.getByText(label))
+}
+
 async function openMenu(trigger: HTMLElement) {
   await fireEvent.click(trigger)
   // Both list hooks resolve on a microtask; flush it so the provider row and
@@ -102,13 +114,13 @@ describe('branchContextMenu', () => {
     expect(actions.onChangeBranch).not.toHaveBeenCalled()
   })
 
-  // The DELETE item names what it destroys. On a worktree row it removes a
+  // The DELETE item states what it destroys. On a worktree row it removes a
   // whole directory, and "Delete branch..." there is how a user destroys a
   // directory they meant to keep. The CHANGE items keep their names on both,
   // because a worktree has a branch checked out and the dialog still changes
   // that branch.
   describe('on a worktree row', () => {
-    it('names the delete item after the worktree', async () => {
+    it('labels the delete item after the worktree', async () => {
       const { trigger } = renderMenu(undefined, true)
       await fireEvent.click(trigger)
 
@@ -195,8 +207,8 @@ describe('branchContextMenu', () => {
     it('routes the two dialog items to their own actions', async () => {
       const { actions, trigger } = renderMenu()
       await openMenu(trigger)
-      await fireEvent.click(screen.getByText('New agent...'))
-      await fireEvent.click(screen.getByText('New terminal...'))
+      await clickItem(trigger, 'New agent...')
+      await clickItem(trigger, 'New terminal...')
 
       expect(actions.onNewAgentAdvanced).toHaveBeenCalledTimes(1)
       expect(actions.onNewTerminalAdvanced).toHaveBeenCalledTimes(1)
@@ -249,9 +261,11 @@ describe('branchContextMenu', () => {
     it('fires no action while disabled', async () => {
       const { actions, trigger } = renderMenu(reason)
       await openMenu(trigger)
-      await fireEvent.click(screen.getByText('Switch to branch...'))
-      await fireEvent.click(screen.getByText('Delete branch...'))
-      await fireEvent.click(screen.getByText('New agent...'))
+      await clickItem(trigger, 'Switch to branch...')
+      await clickItem(trigger, 'Delete branch...')
+      await clickItem(trigger, 'New agent...')
+      if (!screen.queryByTestId(`menu-new-agent-${AgentProvider.CODEX}`))
+        await fireEvent.click(trigger)
       await fireEvent.click(screen.getByTestId(`menu-new-agent-${AgentProvider.CODEX}`))
       expect(actions.onChangeBranch).not.toHaveBeenCalled()
       expect(actions.onDeleteBranch).not.toHaveBeenCalled()

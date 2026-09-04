@@ -34,7 +34,7 @@ export interface SplitActionDef {
  * mapping. Both the dropdown menu (this file) and the inline IconButton row
  * (`Tile.tsx`) iterate over this so the labels can't drift independently.
  *
- * direction names the divider line: 'vertical' makes a `|` divider with two
+ * direction describes the divider line: 'vertical' makes a `|` divider with two
  * side-by-side panes (icon: Columns2); 'horizontal' makes a `-` divider with
  * two stacked panes (icon: Rows2).
  */
@@ -102,7 +102,7 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
           >
             <DropdownMenuItemContent
               label={pop().label}
-              shortcut={getShortcutHintsText('app.toggleFloatingTab')}
+              detail={getShortcutHintsText('app.toggleFloatingTab')}
             />
           </button>
         )}
@@ -117,7 +117,7 @@ export const TileActionsMenu: Component<TileActionsMenuProps> = (props) => {
               <Show when={props.withIcons}><Icon icon={action.icon} size="sm" /></Show>
               <DropdownMenuItemContent
                 label={action.label}
-                shortcut={getShortcutHintsText(action.shortcutId)}
+                detail={getShortcutHintsText(action.shortcutId)}
               />
             </button>
           )}

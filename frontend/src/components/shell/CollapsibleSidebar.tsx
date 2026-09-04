@@ -37,8 +37,20 @@ export interface SidebarSectionDef {
   visible?: boolean
   /** Default open state when no persisted state exists. Default: true. */
   defaultOpen?: boolean
-  /** Actions rendered in the section header's right side. */
-  headerActions?: JSX.Element
+  /**
+   * Section header actions factory.  Called once when the section first
+   * mounts, exactly like {@link content}, and for the same reason: the
+   * returned node must survive every reactive update of the section list.
+   *
+   * A plain `JSX.Element` in this slot re-evaluated on every `sectionById()`
+   * change, and `buildSectionDefs()` is a plain function rather than a memo --
+   * so each workspace create, rename or move minted a fresh trigger element and
+   * killed any popover anchored to the old one.
+   *
+   * Solid's `JSX.Element` union excludes functions, so a producer that forgets
+   * the `() =>` is a compile error rather than a menu that closes itself.
+   */
+  headerActions?: () => JSX.Element
   /**
    * Rail-only section: no expandable content panel; only shows in the rail.
    * In the expanded sidebar it renders `content` at the bottom without a collapsible header.
@@ -228,6 +240,10 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
             // Content is rendered once per section mount. Reactive props inside
             // the returned JSX update fine-grainedly via SolidJS prop getters.
             const renderedContent = section().content()
+            // Rendered once per section mount, for the same reason as the
+            // content above: a header action holds a popover trigger, and a
+            // node rebuilt under an open popover takes the popover with it.
+            const renderedHeaderActions = section().headerActions?.()
 
             const sectionOpen = () => isOpen(id)
 
@@ -367,7 +383,18 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       </div>
                     </Show>
                     <span class={styles.sidebarTitle}>{section().title}</span>
-                    <Show when={sectionOpen() && section().headerActions}>
+                    {/* `sectionOpen()` does NOT control this. The Archived
+                        section ships `defaultOpen: false`, and its header menu
+                        is the only route to Unarchive all, Empty archive and
+                        the section CRUD -- so a check on `sectionOpen()` made
+                        those items unreachable until the user expanded the
+                        section, and "Collapse all" removed the menu that offers
+                        "Expand all".
+
+                        A header action that reveals something INSIDE its own
+                        section must expand the section first, which
+                        `buildSectionDef` does through its `revealing` helper. */}
+                    <Show when={renderedHeaderActions}>
                       <div
                         class={styles.sidebarHeaderActions}
                         onClick={(e) => {
@@ -375,7 +402,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                           e.preventDefault()
                         }}
                       >
-                        {section().headerActions}
+                        {renderedHeaderActions}
                       </div>
                     </Show>
                   </div>

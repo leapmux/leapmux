@@ -1,194 +1,424 @@
+import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkspaceContextMenu } from '~/components/workspace/WorkspaceContextMenu'
 import { SectionSchema, SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { repoKey } from '~/stores/repoGit'
+import { createRepoGitStore } from '~/stores/repoGit.store'
+import { stubWorkspaceStartActions } from '~/test-support/branchMenu'
+import { withPreferences } from '~/test-support/preferencesProvider'
 
 /**
- * Records what the mocked DropdownMenu last received for `contextMenuFor`. A
- * holder object rather than a bare `let`: TS cannot see the assignment inside the
- * `vi.mock` factory, so it would narrow a `let` to `undefined` at every read.
+ * The REAL `DropdownMenu`, not a mock.
+ *
+ * `vitest.setup.ts` stubs `showPopover` / `hidePopover` / `:popover-open`, and
+ * `DropdownMenu.test.tsx` drives 40+ open/close tests against those stubs -- so
+ * the "jsdom lacks the popover API" mock this file used to carry was obsolete.
+ * It also actively hid three things: it dropped `onToggle` on the floor, so a
+ * missing `onToggle={setMenuOpen}` (the likeliest bug in a menu whose whole
+ * content depends on it) passed green; it FLATTENED every submenu into the
+ * parent's item list, so an order assertion could not fail on a nesting
+ * mistake; and it nulled out the item-content components this menu needs.
  */
-const captured: { contextMenuFor?: () => HTMLElement | undefined } = {}
 
-// Mock DropdownMenu to render children directly (jsdom lacks popover API).
-vi.mock('~/components/common/DropdownMenu', () => ({
-  DropdownMenu(props: any) {
-    // eslint-disable-next-line solid/reactivity -- capturing the accessor itself for the assertion, not reading it
-    captured.contextMenuFor = props.contextMenuFor
-    // Render trigger (if function, call with dummy props) and children
-    const trigger = () => typeof props.trigger === 'function'
-      ? props.trigger({
-          'aria-expanded': true,
-          'ref': () => {},
-          'onPointerDown': () => {},
-          'onClick': () => {},
-        })
-      : props.trigger
-    return (
-      <>
-        {trigger()}
-        {props.children}
-      </>
-    )
-  },
-}))
+function makeSection(id: string, name: string, sectionType: SectionType) {
+  return create(SectionSchema, { id, name, position: '', sectionType, sidebar: Sidebar.LEFT })
+}
 
-function makeSection(
-  id: string,
-  name: string,
-  sectionType: SectionType,
-) {
-  return create(SectionSchema, {
-    id,
-    name,
-    position: '',
-    sectionType,
-    sidebar: Sidebar.LEFT,
+const IN_PROGRESS = makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)
+const CUSTOM = makeSection('sec-custom', 'My Section', SectionType.WORKSPACES_CUSTOM)
+const ARCHIVED = makeSection('sec-archived', 'Archived', SectionType.WORKSPACES_ARCHIVED)
+
+interface RepoSeed {
+  workerId?: string
+  toplevel: string
+  originUrl?: string
+}
+
+function tabsAndStore(seeds: readonly RepoSeed[]) {
+  const store = createRepoGitStore()
+  const tabs: Tab[] = []
+  seeds.forEach((seed, i) => {
+    const workerId = seed.workerId ?? 'w1'
+    store.upsert(repoKey(workerId, seed.toplevel), {
+      workerId,
+      toplevel: seed.toplevel,
+      branch: 'main',
+      originUrl: seed.originUrl ?? '',
+    })
+    tabs.push({
+      id: `t${i}`,
+      workspaceId: 'ws-1',
+      type: TabType.AGENT,
+      workerId,
+      gitToplevel: seed.toplevel,
+    } as Tab)
   })
+  return { store, tabs }
 }
 
 function noop() {}
 
-const defaultProps = {
-  isArchived: false,
-  sections: [] as ReturnType<typeof makeSection>[],
-  currentSectionId: 'sec-ip',
-  onRename: noop,
-  onMoveTo: noop as (sectionId: string) => void,
-  onArchive: noop,
-  onUnarchive: noop,
-  onDelete: noop,
+function renderMenu(overrides: Partial<Parameters<typeof WorkspaceContextMenu>[0]> = {}) {
+  const { store, tabs } = tabsAndStore([])
+  const props = {
+    workspaceId: 'ws-1',
+    workspaceTitle: 'gentle-amber-fox',
+    sectionName: 'In Progress',
+    isArchived: false,
+    sections: [IN_PROGRESS, CUSTOM],
+    currentSectionId: 'sec-ip',
+    getTabs: () => tabs,
+    repoGitStore: store,
+    onRename: noop,
+    onMoveTo: noop as (sectionId: string) => void,
+    onArchive: noop,
+    onUnarchive: noop,
+    onDelete: noop,
+    ...overrides,
+  }
+  render(withPreferences(() => <WorkspaceContextMenu {...props} />))
+  return props
+}
+
+/** Open the menu, as a user does. Every item below depends on it. */
+function openMenu() {
+  fireEvent.click(screen.getByTestId('workspace-row-menu-trigger'))
+}
+
+/**
+ * The item labels of ONE popover, in order. Submenus are not flattened in.
+ *
+ * `hidden: true` because a closed popover is outside the accessibility tree,
+ * and the stubs in `vitest.setup.ts` toggle a data attribute rather than the
+ * real popover state -- so jsdom keeps applying the UA `display: none`. The
+ * info block is dropped: it is a `menuitem` (deliberately -- see
+ * `MenuInfoButton`), but it is a block of rows and not a command.
+ */
+function itemsOf(testId: string): string[] {
+  return within(screen.getByTestId(testId))
+    .queryAllByRole('menuitem', { hidden: true })
+    .filter(el => el.dataset.testid !== 'workspace-info-button')
+    .map(el => el.textContent?.trim() ?? '')
 }
 
 describe('workspaceContextMenu', () => {
-  it('hides Move-to when isArchived is true', () => {
-    const sections = [
-      makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS),
-      makeSection('sec-custom', 'My Section', SectionType.WORKSPACES_CUSTOM),
-    ]
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        isArchived={true}
-        sections={sections}
-      />
-    ))
-    expect(screen.queryByText('Move to')).not.toBeInTheDocument()
-    // Unarchive should be visible instead of Archive
-    expect(screen.getByText('Unarchive')).toBeInTheDocument()
-    expect(screen.queryByText('Archive')).not.toBeInTheDocument()
+  it('reads no tab of any workspace until it is OPENED', () => {
+    // `DropdownMenu` renders children eagerly, so the items are in the DOM
+    // either way -- what `onToggle` controls is the WORK. One of these mounts per
+    // workspace row, and it serves the right-click menu too, so an ungated
+    // build walks every tab of every workspace on every reactive tick.
+    //
+    // The repository-derived label is the observable half of that gate, and a
+    // dropped `onToggle` leaves it stuck on the no-repository shape forever.
+    const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+    renderMenu({ getTabs: () => tabs, repoGitStore: store })
+
+    expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent...')
+    expect(screen.queryByTestId('workspace-info-button')).not.toBeInTheDocument()
+
+    openMenu()
+
+    expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent in leapmux...')
+    expect(screen.getByTestId('workspace-info-button')).toBeInTheDocument()
   })
 
-  it('hides Move-to when no other target sections exist', () => {
-    // Only one workspace section — the current one
-    const sections = [
-      makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS),
-      makeSection('sec-archived', 'Archived', SectionType.WORKSPACES_ARCHIVED),
-      makeSection('sec-files', 'Files', SectionType.FILES),
-    ]
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        sections={sections}
-        currentSectionId="sec-ip"
-      />
-    ))
-    // Move to should not be visible because the only target sections
-    // are the current section, archived (excluded), and files (excluded)
-    expect(screen.queryByText('Move to')).not.toBeInTheDocument()
+  it('offers rename, move, archive and delete on a live workspace, in that order', () => {
+    renderMenu()
+    openMenu()
+
+    expect(itemsOf('workspace-context-menu')).toEqual([
+      'New agent...',
+      'New terminal...',
+      'Rename',
+      'Move to',
+      'Archive',
+      'Delete',
+    ])
   })
 
-  it('shows Move-to when other target sections exist', () => {
-    const sections = [
-      makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS),
-      makeSection('sec-custom', 'My Section', SectionType.WORKSPACES_CUSTOM),
-    ]
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        sections={sections}
-        currentSectionId="sec-ip"
-      />
-    ))
-    expect(screen.getByText('Move to')).toBeInTheDocument()
-    // The submenu should list the custom section but not the current section
-    expect(screen.getByText('My Section')).toBeInTheDocument()
-    expect(screen.queryByText('In Progress')).not.toBeInTheDocument()
+  it('hides rename on an archived workspace', () => {
+    // `isWorkspaceMutatable` says archival is the one thing that blocks
+    // mutation, and the tab bar already routes the sibling operation through
+    // `canRenameTab(archived, tab)`. This row was the one surface ignoring it.
+    renderMenu({ isArchived: true, sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-archived' })
+    openMenu()
+
+    const items = itemsOf('workspace-context-menu')
+    expect(items).not.toContain('Rename')
+    expect(items).toContain('Delete')
   })
 
-  it('excludes current section from Move-to list', () => {
-    const sections = [
-      makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS),
-      makeSection('sec-custom1', 'Alpha', SectionType.WORKSPACES_CUSTOM),
-      makeSection('sec-custom2', 'Beta', SectionType.WORKSPACES_CUSTOM),
-    ]
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        sections={sections}
-        currentSectionId="sec-custom1"
-      />
-    ))
-    // Alpha (current section) should not appear; others should
-    expect(screen.queryByText('Alpha')).not.toBeInTheDocument()
-    expect(screen.getByText('In Progress')).toBeInTheDocument()
-    expect(screen.getByText('Beta')).toBeInTheDocument()
+  it('hides the tab-creation items on an archived workspace', () => {
+    renderMenu({ isArchived: true, sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-archived' })
+    openMenu()
+
+    const items = itemsOf('workspace-context-menu')
+    expect(items.some(i => i.startsWith('New agent'))).toBe(false)
+    expect(items.some(i => i.startsWith('New terminal'))).toBe(false)
   })
 
-  it('shows Archive for non-archived workspaces', () => {
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        isArchived={false}
-        sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
-      />
-    ))
-    expect(screen.getByText('Archive')).toBeInTheDocument()
-    expect(screen.queryByText('Unarchive')).not.toBeInTheDocument()
+  it('keeps Move to on an archived workspace', () => {
+    // Moving writes `workspace_section_items.section_id`, which is not a
+    // mutation OF the workspace -- and it is the only way to unarchive into a
+    // SPECIFIC custom section, because Unarchive always targets In progress.
+    renderMenu({ isArchived: true, sections: [IN_PROGRESS, CUSTOM, ARCHIVED], currentSectionId: 'sec-archived' })
+    openMenu()
+
+    expect(itemsOf('workspace-context-menu')).toContain('Move to')
   })
 
-  it('shows Unarchive for archived workspaces', () => {
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        isArchived={true}
-        sections={[makeSection('sec-archived', 'Archived', SectionType.WORKSPACES_ARCHIVED)]}
-        currentSectionId="sec-archived"
-      />
-    ))
-    expect(screen.getByText('Unarchive')).toBeInTheDocument()
-    expect(screen.queryByText('Archive')).not.toBeInTheDocument()
+  it('swaps Archive for Unarchive once archived', () => {
+    renderMenu({ isArchived: true, sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-archived' })
+    openMenu()
+
+    const items = itemsOf('workspace-context-menu')
+    expect(items).toContain('Unarchive')
+    expect(items).not.toContain('Archive')
   })
 
-  it('always offers rename and delete (owner-only access: every visible workspace is our own)', () => {
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
-      />
-    ))
-    expect(screen.getByText('Rename')).toBeInTheDocument()
-    expect(screen.getByText('Delete')).toBeInTheDocument()
-    expect(screen.getByText('Archive')).toBeInTheDocument()
+  describe('move to', () => {
+    it('lists every other workspace section, and no other kind', () => {
+      renderMenu({
+        sections: [
+          IN_PROGRESS,
+          makeSection('sec-a', 'Alpha', SectionType.WORKSPACES_CUSTOM),
+          ARCHIVED,
+          makeSection('sec-files', 'Files', SectionType.FILES),
+        ],
+        currentSectionId: 'sec-ip',
+      })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-move-to'))
+
+      expect(itemsOf('workspace-move-to-popover')).toEqual(['Alpha'])
+    })
+
+    it('is absent when nothing else can hold the workspace', () => {
+      renderMenu({ sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-ip' })
+      openMenu()
+
+      expect(itemsOf('workspace-context-menu')).not.toContain('Move to')
+      expect(screen.queryByTestId('workspace-move-to')).not.toBeInTheDocument()
+    })
+
+    it('reports the chosen section', () => {
+      const onMoveTo = vi.fn()
+      renderMenu({ onMoveTo })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-move-to'))
+      fireEvent.click(within(screen.getByTestId('workspace-move-to-popover')).getByText('My Section'))
+
+      expect(onMoveTo).toHaveBeenCalledWith('sec-custom')
+    })
   })
 
-  // One representative for the six row menus. The other five wrappers forward the
-  // same prop through the same two lines, and `DropdownMenu` owns everything that
-  // happens after -- covered in ~/components/common/DropdownMenu.test.tsx.
-  it('forwards contextMenuFor so the row itself opens the menu', () => {
-    // No reset first: the assertion is identity against a FRESH element, so a
-    // stale capture from an earlier render fails rather than passing by accident.
+  describe('tab creation, by repository count', () => {
+    it('offers a bare item, with no target, for a workspace with no repository', () => {
+      // The row that most needs a way in: a freshly created workspace has no
+      // tabs at all.
+      const startActions = stubWorkspaceStartActions()
+      renderMenu({ startActions })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-new-agent'))
+
+      expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent...')
+      expect(startActions.onNewAgentAt).toHaveBeenCalledWith({ workspaceId: 'ws-1', workerId: '', workingDir: '' })
+    })
+
+    it('renders FLAT for one repository, with no submenu to click through', () => {
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      const startActions = stubWorkspaceStartActions()
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, startActions })
+      openMenu()
+
+      expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent in leapmux...')
+      expect(screen.queryByTestId('workspace-new-agent-popover')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId('workspace-new-agent'))
+      expect(startActions.onNewAgentAt).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        workerId: 'w1',
+        workingDir: '/home/me/leapmux',
+      })
+    })
+
+    it('renders a submenu for two repositories', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/alpha' },
+        { toplevel: '/home/me/beta' },
+      ])
+      const startActions = stubWorkspaceStartActions()
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, startActions })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-new-terminal'))
+
+      expect(itemsOf('workspace-new-terminal-popover').toSorted()).toEqual(['alpha', 'beta'])
+
+      fireEvent.click(within(screen.getByTestId('workspace-new-terminal-popover')).getByText('beta'))
+      expect(startActions.onNewTerminalAt).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        workerId: 'w1',
+        workingDir: '/home/me/beta',
+      })
+    })
+
+    // "No checkout" and "no REACHABLE checkout" are different states, and the
+    // no-target item is only right for the first. It means "follow the current
+    // tab context", so offering it for the second started an agent somewhere
+    // else entirely -- a machine the user never picked.
+    it('refuses to start, and says why, when every checkout is on an offline worker', () => {
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      const startActions = stubWorkspaceStartActions()
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isWorkerOnline: () => false,
+        startActions,
+      })
+      openMenu()
+
+      const item = screen.getByTestId('workspace-new-agent') as HTMLButtonElement
+      expect(item.textContent).toBe('New agent...')
+      expect(item).toBeDisabled()
+      fireEvent.click(item)
+      expect(startActions.onNewAgentAt).not.toHaveBeenCalled()
+    })
+
+    // The other half: a workspace with NO checkout at all keeps the no-target
+    // item, because a freshly created workspace has no tabs and that row most
+    // needs a way in.
+    it('keeps the no-target item for a workspace with no checkout', () => {
+      const startActions = stubWorkspaceStartActions()
+      renderMenu({ isWorkerOnline: () => false, startActions })
+      openMenu()
+
+      const item = screen.getByTestId('workspace-new-agent') as HTMLButtonElement
+      expect(item.textContent).toBe('New agent...')
+      expect(item).not.toBeDisabled()
+      fireEvent.click(item)
+      expect(startActions.onNewAgentAt).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        workerId: '',
+        workingDir: '',
+      })
+    })
+  })
+
+  describe('the Repository submenu', () => {
+    it('offers Copy repository URL for a repository that has an origin', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
+      ])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-repository'))
+
+      expect(itemsOf('workspace-repository-popover')).toEqual(['Copy repository URL'])
+    })
+
+    it('is absent for a remote worker with no origin, which offers nothing', () => {
+      // Both desktop items open the LOCAL Finder or editor, so a remote
+      // worker's absolute path either does not exist here or -- worse -- exists
+      // and is a different directory.
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      openMenu()
+
+      expect(screen.queryByTestId('workspace-repository')).not.toBeInTheDocument()
+    })
+
+    it('offers Reveal in file manager only for a LOCAL worker', () => {
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => true })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-repository'))
+
+      expect(itemsOf('workspace-repository-popover')).toContain('Reveal in file manager')
+    })
+
+    it('groups the actions per repository once there is more than one', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/alpha', originUrl: 'https://example.com/o/a.git' },
+        { toplevel: '/home/me/beta', originUrl: 'https://example.com/o/b.git' },
+      ])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      openMenu()
+      fireEvent.click(screen.getByTestId('workspace-repository'))
+
+      const popover = screen.getByTestId('workspace-repository-popover')
+      expect(within(popover).getAllByRole('group', { hidden: true }).map(g => g.getAttribute('aria-label')).toSorted())
+        .toEqual(['example.com/o/a', 'example.com/o/b'])
+      expect(itemsOf('workspace-repository-popover'))
+        .toEqual(['Copy repository URL', 'Copy repository URL'])
+    })
+
+    it('stays available on an ARCHIVED workspace, because it mutates nothing', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
+      ])
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isArchived: true,
+        sections: [IN_PROGRESS, ARCHIVED],
+        currentSectionId: 'sec-archived',
+      })
+      openMenu()
+
+      expect(screen.getByTestId('workspace-repository')).toBeInTheDocument()
+    })
+  })
+
+  describe('the info block', () => {
+    it('reports the workspace, its section and its tab count', () => {
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      openMenu()
+
+      const info = screen.getByTestId('workspace-info-button')
+      expect(info.textContent).toContain('gentle-amber-fox')
+      expect(info.textContent).toContain('In Progress')
+      expect(info.textContent).toContain('leapmux')
+    })
+
+    it('omits the repository row when the workspace spans more than one', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/alpha' },
+        { toplevel: '/home/me/beta' },
+      ])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      openMenu()
+
+      expect(screen.getByTestId('workspace-info-button').textContent).not.toContain('Repository')
+    })
+  })
+
+  // One representative for the six row menus. The other five wrappers forward
+  // the same prop through the same two lines, and `DropdownMenu` owns
+  // everything after -- covered in ~/components/common/DropdownMenu.test.tsx.
+  it('opens from a right-click on the row it is given', () => {
     const row = document.createElement('div')
+    document.body.append(row)
+    renderMenu({ contextMenuFor: () => row })
 
-    render(() => (
-      <WorkspaceContextMenu
-        {...defaultProps}
-        contextMenuFor={() => row}
-        sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
-      />
-    ))
-
-    expect(captured.contextMenuFor?.()).toBe(row)
+    // Fake timers because the gesture defers the open by a tick -- see
+    // `attachContextMenuGesture`, which opens after the platform's own
+    // `contextmenu` so light-dismiss cannot eat the menu it just opened.
+    vi.useFakeTimers()
+    try {
+      // The info block is the content that depends on the open state, so its presence is what says
+      // the menu really opened rather than merely being mounted.
+      expect(screen.queryByTestId('workspace-info-button')).not.toBeInTheDocument()
+      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 10, clientY: 10, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+      expect(screen.getByTestId('workspace-info-button')).toBeInTheDocument()
+    }
+    finally {
+      vi.useRealTimers()
+      row.remove()
+    }
   })
 })

@@ -245,7 +245,21 @@ export interface DropdownMenuProps {
 
 export interface DropdownMenuItemContentProps {
   label: JSX.Element
-  shortcut?: string
+  /**
+   * A short note at the RIGHT end of the row, which the row keeps whole while
+   * the label beside it clips.
+   *
+   * Named for the SLOT, not for one of its contents -- the same reason the
+   * `menuItemDetail` class it renders into carries that name. It holds a
+   * keyboard shortcut on the titlebar items and the remembered git mode on the
+   * section menu's repository rows, and a prop called `shortcut` on the second
+   * of those would be a lie.
+   *
+   * A plain string, unlike `DropdownMenuCheckableItem.detail`, which is an
+   * accessor because its callers build a LIVE element (a ticking clock) and a
+   * presence test plus a draw would build two. Nothing here needs that.
+   */
+  detail?: string
 }
 
 export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
@@ -257,8 +271,8 @@ export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
           component -- that changes a shared prop contract, so it is the
           author's decision, not a mechanical swap. */}
       <span class={clippedText}>{props.label}</span>
-      <Show when={props.shortcut}>
-        {shortcut => <span class={menuItemDetail}>{shortcut()}</span>}
+      <Show when={props.detail}>
+        {detail => <span class={menuItemDetail}>{detail()}</span>}
       </Show>
     </span>
   )
@@ -545,8 +559,31 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // is no `[popovertarget]` (this component deliberately renders none), and it
   // queries `[role="menuitem"]` while these items carry `menuitemradio`.
 
+  /**
+   * Whether `el` sits inside a nested popover that is CLOSED.
+   *
+   * A nested menu renders inline, so its items are descendants of this popover
+   * whether or not it is open -- and a `popover` that is not showing is
+   * `display: none`. Arrowing onto such an item calls `.focus()` on a hidden
+   * element, which is a silent no-op: the roving focus stalls at that index,
+   * and type-ahead matches text nobody can see.
+   *
+   * The walk stops at THIS popover, so an item of this menu is never excluded
+   * by this menu's own open state.
+   */
+  const insideClosedSubPopover = (el: HTMLElement): boolean => {
+    for (let node = el.parentElement; node && node !== popoverEl; node = node.parentElement) {
+      if (node.hasAttribute('popover') && !node.matches(':popover-open'))
+        return true
+    }
+    return false
+  }
+
   const menuItems = (): HTMLElement[] =>
-    popoverEl ? [...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)] : []
+    popoverEl
+      ? [...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)]
+          .filter(el => !insideClosedSubPopover(el))
+      : []
 
   /**
    * Move focus to `index`, wrapping at both ends.

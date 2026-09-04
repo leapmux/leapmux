@@ -136,7 +136,7 @@ function mountConnection() {
  * promoted to FULL.
  *
  * Meanwhile `Tab.gitToplevel` survives the outage untouched, and
- * `WorkspaceTabTree.repoKeyAndLabel` groups a tab by that field alone. So the
+ * `branchKeys.repoKeyAndLabel` groups a tab by that field alone. So the
  * sidebar kept the repo group and moved every tab under it to the no-branch
  * bucket, until the user clicked the tab or the Files refresh button.
  *

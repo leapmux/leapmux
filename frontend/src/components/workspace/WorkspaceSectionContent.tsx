@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { BranchRefActions } from './branchActions'
+import type { WorkspaceStartActions } from './workspaceStartActions'
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { TabType, Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -8,21 +9,27 @@ import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
-import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, For, Show } from 'solid-js'
 import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
-import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedSortableRow } from '~/lib/dragRow'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
-import { readExpandedWorkspaceIds } from './expandedWorkspaces'
+import { isWorkspaceExpanded, setWorkspacesExpanded, toggleWorkspaceExpanded } from './expandedWorkspaces'
 import { WorkspaceContextMenu } from './WorkspaceContextMenu'
 import * as styles from './workspaceList.css'
+import {
+  canReorderWithinSection,
+  isSectionFilterShown,
+  sectionFilterQuery,
+  setSectionFilterQuery,
+  toggleSectionFilter,
+} from './workspaceListState'
 import { sumDiffStatsFromTabs, WorkspaceTabTree } from './WorkspaceTabTree'
 
 /** solid-dnd directives are callable but typed as objects; this wraps the unsafe cast. */
@@ -31,8 +38,10 @@ function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
 }
 
 export interface WorkspaceSectionContentProps {
-  workspaces: Workspace[]
+  workspaces: readonly Workspace[]
   sectionId: string
+  /** The section's display name, for each row menu's info block. */
+  sectionName: string
   activeWorkspaceId: string | null
   sections: Section[]
   onSelect: (id: string) => void
@@ -72,6 +81,14 @@ export interface WorkspaceSectionContentProps {
    */
   workerInfoFn?: (id: string) => WorkerInfo | null
   isWorkerKnownOnline?: (workerId: string) => boolean
+  /**
+   * Whether a worker runs on THIS machine, so the row menu may offer the two
+   * actions that open the LOCAL Finder and the LOCAL editor. See
+   * `~/lib/workerLocality`.
+   */
+  isLocalWorkerFn?: (workerId: string) => boolean
+  /** Open a new agent / terminal at one of a workspace's checkouts. */
+  startActions?: WorkspaceStartActions
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
   branchActions?: BranchRefActions
   repoGitStore: ReturnType<typeof createRepoGitStore>
@@ -94,43 +111,18 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // transformer" warnings.
   // ---------------------------------------------------------------------------
 
-  // Track which workspaces have their tab tree expanded (independent of selection).
-  // Restore from sessionStorage so expanded state survives page refresh.
-  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(readExpandedWorkspaceIds())
-
-  function isExpanded(id: string): boolean {
-    return expandedIds().has(id)
-  }
-
-  function toggleExpanded(id: string) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id))
-        next.delete(id)
-      else
-        next.add(id)
-      return next
-    })
-  }
-
-  // Persist expanded state to sessionStorage.
-  createEffect(() => {
-    const ids = expandedIds()
-    sessionStorageSet(KEY_EXPANDED_WORKSPACES, [...ids])
-  })
+  // Which rows are expanded is APP state, not this instance's: one sidebar
+  // mounts this component once per workspace section, and a custom workspace
+  // section can sit on the other sidebar.
+  // `~/components/workspace/expandedWorkspaces` owns the signal and the
+  // sessionStorage write for all of them -- a per-instance signal wrote the
+  // whole set back with no merge and erased every other instance's rows.
 
   // Auto-expand the active workspace when it changes (if it has tabs).
   createEffect(() => {
     const activeId = props.activeWorkspaceId
-    if (activeId && props.getTabsForWorkspace(activeId).length > 0) {
-      setExpandedIds((prev) => {
-        if (prev.has(activeId))
-          return prev
-        const next = new Set(prev)
-        next.add(activeId)
-        return next
-      })
-    }
+    if (activeId && props.getTabsForWorkspace(activeId).length > 0)
+      setWorkspacesExpanded([activeId], true)
   })
 
   // The active workspace used to be forked onto separate `tabs` /
@@ -160,8 +152,28 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     return map
   })
 
+  /**
+   * Whether this section's rows may be dragged to a new position within it.
+   *
+   * False while a non-manual sort or a live filter makes the view order differ
+   * from the model order -- the state in which "insert here" has no meaning.
+   * See `canReorderWithin`.
+   */
+  const canReorder = () => canReorderWithinSection(props.sectionId)
+
   return (
-    <SortableProvider ids={props.workspaces.map(w => `ws-${w.id}`)}>
+    // An EMPTY id list is what suppresses the reorder, and it is enough: with
+    // no id registered, `initialIndex()` and `currentIndex()` are both -1, so
+    // every sortable reports the identity transform and no row shifts to open a
+    // gap. The rows stay SORTABLE either way.
+    //
+    // Swapping each row to a plain draggable instead looked equivalent and was
+    // not. `createSortable` registers a droppable under the same id, and that
+    // droppable is the only thing `handleWorkspaceDragEnd` can resolve a ROW
+    // target from -- so dropping a workspace onto a row of another section fell
+    // through to the nearest section BODY centre, which for sections of unequal
+    // height is not always the section the user aimed at.
+    <SortableProvider ids={canReorder() ? props.workspaces.map(w => `ws-${w.id}`) : []}>
       <div
         ref={droppable}
         class={styles.sectionItems}
@@ -169,13 +181,47 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
           [styles.sectionHeaderDropTarget]: droppable.isActiveDroppable,
         }}
       >
+        {/* In the section BODY, not in the header menu's popover: that keeps
+            the menu a plain `menu` (a `div` popover would force a per-item
+            close) and leaves the box usable while the menu is shut. */}
+        <Show when={isSectionFilterShown(props.sectionId)}>
+          <div class={styles.filterRow}>
+            <input
+              type="text"
+              class={styles.filterInput}
+              aria-label={`Filter ${props.sectionName}`}
+              data-testid={`workspace-filter-${props.sectionId}`}
+              placeholder="Filter workspaces"
+              value={sectionFilterQuery(props.sectionId) ?? ''}
+              onInput={e => setSectionFilterQuery(props.sectionId, e.currentTarget.value)}
+              onKeyDown={(e) => {
+                // Escape closes the box rather than reaching the sidebar, which
+                // would leave a narrowed list with no visible reason for it.
+                if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  toggleSectionFilter(props.sectionId)
+                }
+              }}
+              ref={(el) => {
+                requestAnimationFrame(() => el.focus())
+              }}
+            />
+          </div>
+        </Show>
         <Show
           when={props.workspaces.length > 0}
-          fallback={<div class={styles.emptySection}>No workspaces</div>}
+          fallback={(
+            <div class={styles.emptySection}>
+              {isSectionFilterShown(props.sectionId) && (sectionFilterQuery(props.sectionId) ?? '') !== ''
+                ? 'No matching workspaces'
+                : 'No workspaces'}
+            </div>
+          )}
         >
           <For each={workspaceIds()}>
             {(id) => {
               const workspace = () => workspaceById().get(id)!
+
               const dragRow = createGuardedSortableRow(`ws-${id}`, {
                 sectionId: props.sectionId,
                 workspaceId: id,
@@ -238,16 +284,16 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     // Collapsing only sets `visibility: hidden` on the children
                     // wrapper, so the leaves stay in the DOM and counting them
                     // cannot tell expanded from collapsed. Expose the bit.
-                    data-expanded={isExpanded(id) ? 'true' : 'false'}
+                    data-expanded={isWorkspaceExpanded(id) ? 'true' : 'false'}
                   >
                     <DragHandle activators={dragRow.gripActivators} testId="workspace-drag-handle" />
                     <ChevronRight
                       size={14}
-                      class={`${shared.chevron} ${isExpanded(id) ? shared.chevronExpanded : ''}`}
+                      class={`${shared.chevron} ${isWorkspaceExpanded(id) ? shared.chevronExpanded : ''}`}
                       data-testid={`workspace-chevron-${id}`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        toggleExpanded(id)
+                        toggleWorkspaceExpanded(id)
                       }}
                     />
                     <Show
@@ -292,9 +338,18 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         <Show when={!isRenaming()}>
                           <WorkspaceContextMenu
                             contextMenuFor={rowEl}
+                            workspaceId={id}
+                            workspaceTitle={title()}
+                            sectionName={props.sectionName}
                             isArchived={props.isArchived(id)}
                             sections={props.sections}
                             currentSectionId={props.sectionId}
+                            getTabs={() => tabsFor(id)}
+                            repoGitStore={props.repoGitStore}
+                            workerInfoFn={props.workerInfoFn}
+                            isWorkerOnline={props.isWorkerKnownOnline}
+                            isLocalWorkerFn={props.isLocalWorkerFn}
+                            startActions={props.startActions}
                             onRename={() => props.onRename(workspace())}
                             onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
                             onArchive={() => props.onArchive(id)}
@@ -306,7 +361,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     </div>
                   </div>
                   <div
-                    class={`${shared.childrenWrapper} ${isExpanded(id) ? shared.childrenWrapperExpanded : ''}`}
+                    class={`${shared.childrenWrapper} ${isWorkspaceExpanded(id) ? shared.childrenWrapperExpanded : ''}`}
                     data-testid={`workspace-children-${id}`}
                   >
                     <div class={shared.childrenInner}>

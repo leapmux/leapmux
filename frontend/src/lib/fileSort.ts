@@ -129,6 +129,37 @@ export interface FileSortFields<T> {
 }
 
 /**
+ * Compare two optional values, or `undefined` when the caller must break the
+ * tie itself.
+ *
+ * The rule both this module and `~/lib/workspaceSort` need, stated once: an
+ * ABSENT value sorts LAST under both directions, because the pin happens before
+ * the direction flip -- so "unknown" never migrates to the top. Two present and
+ * equal values, and two absent ones, are a tie.
+ *
+ * It answers `undefined` for a tie rather than `0`, so a caller can write
+ * `compareOptionalValue(...) ?? byName(a, b)` without `??` swallowing a real
+ * comparison result of `0`.
+ *
+ * A caller whose "absent" is an empty string rather than `undefined` passes
+ * `value || undefined`, which keeps that choice at the call site.
+ */
+export function compareOptionalValue<V extends string | number>(
+  av: V | undefined,
+  bv: V | undefined,
+  flip: number,
+): number | undefined {
+  if (av === undefined || bv === undefined) {
+    if (av === bv)
+      return undefined
+    return av === undefined ? 1 : -1
+  }
+  if (av === bv)
+    return undefined
+  return (av < bv ? -1 : 1) * flip
+}
+
+/**
  * Builds the comparator for one sort order.
  *
  * The rules, in order:
@@ -160,32 +191,23 @@ export function makeFileComparator<T>(order: FileSortOrder, fields: FileSortFiel
     switch (order.key) {
       case 'name':
         return byName(a, b) * flip
-      case 'size': {
-        const aSize = fields.size(a)
-        const bSize = fields.size(b)
-        if (aSize === undefined || bSize === undefined) {
-          if (aSize !== bSize)
-            return aSize === undefined ? 1 : -1
-          return byName(a, b)
-        }
-        return (aSize === bSize ? byName(a, b) : (aSize < bSize ? -1 : 1) * flip)
-      }
-      case 'modified': {
-        const aTime = fields.modTime(a)
-        const bTime = fields.modTime(b)
-        if (!aTime || !bTime) {
-          if (Boolean(aTime) !== Boolean(bTime))
-            return aTime ? -1 : 1
-          return byName(a, b)
-        }
+      case 'size':
+        // A size of 0 is a real size, so only `undefined` counts as absent.
+        return compareOptionalValue(fields.size(a), fields.size(b), flip) ?? byName(a, b)
+      case 'modified':
         // The worker writes every modification time in one fixed-width UTC
         // layout (`modTimeLayout` in the worker's file.go: RFC3339 with all
         // nine nanosecond digits), so a lexicographic compare is a
         // chronological one and needs no parsing. Anything that varies the
         // width -- a stock RFC3339Nano, which trims trailing zeros -- silently
         // breaks that.
-        return aTime === bTime ? byName(a, b) : (aTime < bTime ? -1 : 1) * flip
-      }
+        //
+        // An EMPTY string means "not reported", so it maps to `undefined`.
+        return compareOptionalValue(
+          fields.modTime(a) || undefined,
+          fields.modTime(b) || undefined,
+          flip,
+        ) ?? byName(a, b)
       case 'type': {
         const aExt = fileExtension(fields.name(a))
         const bExt = fileExtension(fields.name(b))

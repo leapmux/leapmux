@@ -97,6 +97,58 @@ describe('createWorkerDialogContext worker auto-selection', () => {
     })
   })
 
+  // The worker and the directory are ONE choice. A caller that gives both means
+  // "this directory ON THAT MACHINE", so substituting the machine must not keep
+  // the path: an absolute path is a different place elsewhere, and the worse
+  // case is that it exists there and is the wrong tree.
+  it('drops the working directory when it substitutes a worker for an offline preselect', async () => {
+    mockWorkers([
+      { id: 'w-1', online: true },
+      { id: 'w-2', online: false },
+    ])
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext({
+        preselectedWorkerId: 'w-2',
+        defaultWorkingDir: '/home/me/on-the-other-machine',
+      })
+      await flush()
+      expect(state.workerId()).toBe('w-1')
+      expect(state.workingDir()).toBe('')
+      dispose()
+    })
+  })
+
+  // ...and keeps it when the preselected worker IS the one it settles on,
+  // which is the ordinary pre-filled case.
+  it('keeps the working directory when the preselected worker is online', async () => {
+    mockWorkers([
+      { id: 'w-1', online: true },
+      { id: 'w-2', online: true },
+    ])
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext({
+        preselectedWorkerId: 'w-2',
+        defaultWorkingDir: '/home/me/repo',
+      })
+      await flush()
+      expect(state.workerId()).toBe('w-2')
+      expect(state.workingDir()).toBe('/home/me/repo')
+      dispose()
+    })
+  })
+
+  // No preselect means the caller named no machine, so a default directory is
+  // not a claim about one and survives.
+  it('keeps a default directory when no worker was preselected', async () => {
+    mockWorkers([{ id: 'w-1', online: true }])
+    await createRoot(async (dispose) => {
+      const state = createWorkerDialogContext({ defaultWorkingDir: '/home/me/repo' })
+      await flush()
+      expect(state.workingDir()).toBe('/home/me/repo')
+      dispose()
+    })
+  })
+
   it('falls back to the first online worker when no preselected id is provided', async () => {
     mockWorkers([
       { id: 'w-1', online: true },
@@ -123,7 +175,7 @@ describe('createWorkerDialogContext worker auto-selection', () => {
   })
 
   it('does not overwrite an existing workerId on a subsequent fetchWorkers (handleRefresh path)', async () => {
-    // Regression guard: fetchWorkers is gated on `!workerId()`. The
+    // Regression guard: fetchWorkers depends on `!workerId()`. The
     // refresh button calls fetchWorkers again, but a worker the user
     // explicitly picked must survive — fetchWorkers must not re-run
     // the preselect logic once a worker is already set.
@@ -620,7 +672,7 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     // (falsy) to decide whether to run fetchWorkers. With singleWorkerId='',
     // that path leaked through — fetchWorkers ran AND then attempted
     // setWorkerId(online[0].id), which the throwing wrapped setter
-    // (gated on `!== undefined`) rejected with "rejected — dialog is
+    // (which tests `!== undefined`) rejected with "rejected — dialog is
     // locked to ''". The fix is `locked = options.singleWorkerId !== undefined`,
     // matching the setter wrap's gate so the two stay in lockstep.
     vi.mocked(workerClient.listWorkers).mockResolvedValue({

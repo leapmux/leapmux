@@ -1,6 +1,7 @@
 import type { SidebarSectionDef } from './CollapsibleSidebar'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import Folder from 'lucide-solid/icons/folder'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { CollapsibleSidebar } from './CollapsibleSidebar'
 
@@ -222,6 +223,68 @@ describe('collapsibleSidebar', () => {
 
     // Should now have 1 handle (between A and C)
     expect(screen.getAllByTestId('pane-resize-handle')).toHaveLength(1)
+  })
+
+  describe('headerActions', () => {
+    it('renders the actions of a COLLAPSED section', () => {
+      renderSidebar({
+        sections: [
+          makeSection({ id: 'a', title: 'Section A', headerActions: () => <button type="button" data-testid="hdr-a" /> }),
+          makeSection({ id: 'b', title: 'Section B' }),
+        ],
+        initialOpenSections: { a: false, b: true },
+      })
+
+      // The Archived section ships closed, and its menu is the only route to
+      // Unarchive all / Empty archive / the section CRUD.
+      expect(screen.getByTestId('hdr-a')).toBeInTheDocument()
+    })
+
+    it('keeps the SAME node across a rebuild of the section list', () => {
+      const build = vi.fn(() => <button type="button" data-testid="hdr-a" />)
+      const [sections, setSections] = createSignal<SidebarSectionDef[]>([
+        makeSection({ id: 'a', title: 'Section A', headerActions: build }),
+      ])
+      // A LIVE list, not the plain array `renderSidebar` takes:
+      // `buildSectionDefs()` is a plain function, not a memo, so every
+      // workspace create, rename or move mints a whole new def array. That is
+      // the churn this test is about.
+      render(() => (
+        <CollapsibleSidebar
+          sections={sections()}
+          side="left"
+          isCollapsed={false}
+          onExpand={() => {}}
+        />
+      ))
+
+      const first = screen.getByTestId('hdr-a')
+      expect(build).toHaveBeenCalledTimes(1)
+
+      // A fresh def array for the same section id -- one workspace rename.
+      setSections([makeSection({ id: 'a', title: 'Section A', headerActions: build })])
+
+      // The call count alone is vacuous: the old inline form also evaluated
+      // once on first render. The node identity is what says the trigger --
+      // and any popover anchored to it -- survived.
+      expect(build).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('hdr-a')).toBe(first)
+    })
+
+    it('renders no actions box for a section that supplies none', () => {
+      renderSidebar({
+        sections: [
+          makeSection({ id: 'a', title: 'Section A', headerActions: () => <button type="button" data-testid="hdr-a" /> }),
+          makeSection({ id: 'b', title: 'Section B' }),
+        ],
+      })
+
+      // The box is a real flex item, so an empty one still takes a slot in the
+      // header row. Counted against the section that HAS actions, so the
+      // assertion cannot pass by both headers rendering the same thing.
+      expect(screen.getByText('Section A').parentElement?.childElementCount).toBe(2)
+      expect(screen.getByText('Section B').parentElement?.childElementCount).toBe(1)
+    })
   })
 
   it('renders collapsed rail when isCollapsed is true', () => {

@@ -1,7 +1,10 @@
 import type { SectionDefContext } from './buildSectionDef'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
+import type { SectionActions } from './sectionUtils'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
+import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -38,12 +41,17 @@ export interface SidebarCommonProps {
   activeWorkspaceId: string | null
   loadSections: () => Promise<void>
   onSelectWorkspace: (id: string) => void
-  onNewWorkspace: (sectionId: string | null) => void
+  /** Open the New workspace dialog, into `sectionId` and from `startPoint`. */
+  onNewWorkspace: (sectionId: string | null, startPoint: WorkspaceStartPoint) => void
   onRefreshWorkspaces: () => void | Promise<void>
   onDeleteWorkspace: (deletedId: string, nextWorkspaceId: string | null) => void
   onConfirmDelete?: (workspaceId: string) => Promise<boolean>
   onConfirmArchive?: (workspaceId: string) => Promise<boolean>
+  onConfirmEmptyArchive?: (count: number) => Promise<boolean>
   onPostArchiveWorkspace?: (workspaceId: string) => void
+
+  // Sections
+  sectionActions: SectionActions
 
   // Display
   isCollapsed: boolean
@@ -91,9 +99,16 @@ export interface SidebarCommonProps {
   getTileOrderForWorkspace?: (workspaceId: string) => readonly string[]
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */
   branchActions?: BranchRefActions
+  /** Open a new agent / terminal at one of a workspace's checkouts. */
+  workspaceStartActions?: WorkspaceStartActions
 
   // Workers
   workers: Worker[]
+  /**
+   * Whether the desktop shell runs its own bundled sidecar. Half of the
+   * "is this worker local" test. See `~/lib/workerLocality`.
+   */
+  localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
@@ -149,11 +164,13 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     sectionStore: store,
     loadSections: props.loadSections,
     onSelectWorkspace: props.onSelectWorkspace,
-    onNewWorkspace: props.onNewWorkspace,
     onRefreshWorkspaces: props.onRefreshWorkspaces,
     onDeleteWorkspace: props.onDeleteWorkspace,
     onConfirmDelete: props.onConfirmDelete,
     onConfirmArchive: props.onConfirmArchive,
+    onConfirmEmptyArchive: props.onConfirmEmptyArchive,
+    // The `recent` sort ranks a workspace by its most recently activated tab.
+    getTabsForWorkspace: (wsId: string) => props.view?.forWorkspace(wsId) ?? [],
     onPostArchiveWorkspace: (workspaceId) => {
       const archivedSection = store.getArchivedSection()
       if (archivedSection && expandSection)
@@ -171,23 +188,50 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
   )
 
   /**
+   * Each section's rows in the order they are drawn: the model order from
+   * `buildSectionGroups`, narrowed by that section's filter and put in the
+   * global sort order.
+   *
+   * ONE memo for the whole sidebar, keyed by section id. Every consumer reads
+   * the same array per tick -- the rows, the header menu's Collapse all, its
+   * repository list and its enabled state. Producing it per read instead cost a
+   * fresh filter pass, a fresh sort and two array copies six to eight times per
+   * section on every tick of a GLOBAL signal.
+   *
+   * A map rather than a memo per section: a `createMemo` minted inside an
+   * arbitrary render read belongs to that computation and dies with it, and an
+   * id-keyed cache of them would leak one per deleted section.
+   */
+  const workspacesBySection = createMemo(() => {
+    const groups = sectionGroups()
+    const bySection = new Map<string, readonly Workspace[]>()
+    for (const group of groups)
+      bySection.set(group.section.id, wsOps.getWorkspacesForGroup(group.section.id, groups))
+    return bySection
+  })
+
+  /**
    * Creates a `SectionDefContext` from the SolidJS component props, using
    * property getters to preserve reactivity through the SolidJS proxy chain.
    */
   const createCtx = (): SectionDefContext => ({
     sectionStore: store,
     wsOps,
-    getWorkspacesForGroup: sectionId =>
-      wsOps.getWorkspacesForGroup(sectionId, sectionGroups()),
+    getWorkspacesForGroup: sectionId => workspacesBySection().get(sectionId) ?? [],
     get activeWorkspaceId() { return props.activeWorkspaceId },
     onNewWorkspace: props.onNewWorkspace,
     onSelectWorkspace: props.onSelectWorkspace,
+    // Captured from CollapsibleSidebar's ref callback, so a section menu can
+    // open its own section before revealing a row inside it.
+    expandSection: (sectionId: string) => expandSection?.(sectionId),
+    get sectionActions() { return props.sectionActions },
     get view() { return props.view },
     get selection() { return props.selection },
     get onTabClick() { return props.onTabClick },
     get tabItemOps() { return props.tabItemOps },
     get getTileOrderForWorkspace() { return props.getTileOrderForWorkspace },
     get branchActions() { return props.branchActions },
+    get workspaceStartActions() { return props.workspaceStartActions },
     get workerId() { return props.workerId },
     get workingDir() { return props.workingDir },
     get gitToplevel() { return props.gitToplevel },
@@ -211,6 +255,7 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get activeBackgroundTasksFailed() { return props.activeBackgroundTasksFailed },
     get onOpenBackgroundTask() { return props.onOpenBackgroundTask },
     get workers() { return props.workers },
+    get localSolo() { return props.localSolo },
     workerInfoFn: props.workerInfoFn,
     channelStatusFn: props.channelStatusFn,
     onAddTunnel: props.onAddTunnel,

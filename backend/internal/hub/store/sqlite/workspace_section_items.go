@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -106,6 +108,10 @@ func (s *workspaceSectionItemStore) IsInArchivedSection(ctx context.Context, p s
 	ok, err := s.conn.q.IsWorkspaceInArchivedSection(ctx, gendb.IsWorkspaceInArchivedSectionParams{
 		UserID:      owner,
 		WorkspaceID: p.WorkspaceID,
+		// Bound from the enum rather than spelled as a literal in the SQL, so a
+		// SectionType renumber propagates instead of silently changing which
+		// sections count as archived.
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
 	})
 	return ok, mapErr(err)
 }

@@ -23,8 +23,8 @@ import { createStableContext } from '~/lib/createStableContext'
 import { attachDragActivators } from '~/lib/dragActivators'
 import { createGuardedDraggableRow } from '~/lib/dragRow'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
-import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays, shallowEqualExcept } from '~/lib/shallowEqual'
+import { tildifyForWorker, workerPathFlavor } from '~/lib/workerPaths'
 import { diffStatsFromRepo, repoGitView } from '~/stores/repoGit'
 import { canCloseTab, canRenameTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
@@ -40,7 +40,7 @@ import {
   branchNameSegment,
   collapseKeyForBranch,
   isLocalRepoKey,
-  repoKeyForLocal,
+  repoKeyAndLabel,
   repoKeyTooltip,
   tabBranchKey,
   tabGitToplevelForKey,
@@ -163,7 +163,7 @@ export function workerProjectionsEqual(
  * its own `Tab` objects can predate the last hydration or rename. Both dialogs
  * freeze what they get at open time -- `DeleteBranchDialog` counts tabs by type
  * and reads a `workingDir` off one of them -- so the snapshot they freeze had
- * better be the current one. A key that no longer resolves names a tab closed
+ * better be the current one. A key that no longer resolves identifies a tab closed
  * since the last rebuild; dropping it is the point, not a loss.
  */
 function buildBranchRef(workspaceId: string, b: BranchGroup, liveTab: (key: string) => Tab | undefined): BranchRef {
@@ -206,7 +206,7 @@ function parentAgentIdOf(tab: Tab): string | undefined {
 export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
   // Keyed by the composite tabKey, not by a bare id. `tabKey` is namespaced by
   // TYPE precisely because an AGENT and a TERMINAL tab can share an id, and a
-  // parent link only ever names an AGENT -- so a bare-id lookup let a non-agent
+  // parent link only ever identifies an AGENT -- so a bare-id lookup let a non-agent
   // tab resolve to the agent's node, push it into the forest twice, and drop the
   // non-agent row entirely.
   const agentNodeKey = (id: string) => tabKey({ type: TabType.AGENT, id } as Tab)
@@ -428,7 +428,7 @@ interface RowSelectionContextValue {
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
   /**
-   * The tab a key names RIGHT NOW, straight off `props.tabs` -- never off the
+   * The tab a key identifies RIGHT NOW, straight off `props.tabs` -- never off the
    * cached tree. Reactive: reading it inside a row subscribes that row to its
    * own tab, so a metadata-only change (a rename, a hydrated title/provider, a
    * terminal status flip) updates the row in place without rebuilding the tree.
@@ -1124,52 +1124,6 @@ interface TabTree {
   ungrouped: Tab[]
 }
 
-const SSH_ORIGIN_RE = /^git@([^:]+):(.+)$/
-const PROTOCOL_PREFIX_RE = /^https?:\/\//
-const TRAILING_DOT_GIT_RE = /\.git$/
-const TRAILING_SLASH_RE = /\/$/
-
-export function formatGitOriginUrl(url: string): string {
-  if (!url)
-    return ''
-  let result = url
-  // Convert SSH format: git@github.com:org/repo -> github.com/org/repo
-  const sshMatch = result.match(SSH_ORIGIN_RE)
-  if (sshMatch)
-    result = `${sshMatch[1]}/${sshMatch[2]}`
-  // Strip protocols
-  result = result.replace(PROTOCOL_PREFIX_RE, '')
-  // Strip trailing .git
-  result = result.replace(TRAILING_DOT_GIT_RE, '')
-  // Strip trailing slash
-  result = result.replace(TRAILING_SLASH_RE, '')
-  return result
-}
-
-/**
- * Computes the grouping key and display label for a tab's repository. Order
- * of precedence:
- *   1. gitOriginUrl — a remote we can format nicely.
- *   2. gitToplevel — an origin-less local repo; the toplevel path makes
- *      distinct repos distinct.
- * Tabs that lack both fall through to the ungrouped bucket.
- */
-function repoKeyAndLabel(tab: Tab, store: RepoGitStore): { key: string, label: string } | null {
-  const git = repoGitView(tab, store)
-  if (git.originUrl)
-    return { key: git.originUrl, label: formatGitOriginUrl(git.originUrl) }
-  // Through the shared helper, so the group key and the branch bucket resolve
-  // the toplevel the same way. A second copy of the chain here is what let a
-  // stale row value override the worker's "not a git repository" answer. The
-  // view resolved once at the top carries through.
-  const toplevel = tabGitToplevelForKey(tab, store, git)
-  if (toplevel) {
-    const label = basename(toplevel) || toplevel
-    return { key: repoKeyForLocal(toplevel), label }
-  }
-  return null
-}
-
 /**
  * Sum diff stats across the branch-groups a tab list would form, without
  * the full buildTree machinery. `buildTree` derives per-branch diff stats
@@ -1248,7 +1202,7 @@ export function buildTree(
     const workerId = tab.workerId ?? ''
     const gitToplevel = tabGitToplevelForKey(tab, store, git)
     // Through the shared function, not a second copy of its body. This IS the
-    // "the sidebar groups its tree by it" caller tabBranchKey's own doc names,
+    // "the sidebar groups its tree by it" caller tabBranchKey's own doc describes,
     // and the composer's delete-branch dialog collects its tab list by the same
     // function -- a second membership test here would let the dialog report a
     // different set of affected tabs than the tree shows. The resolved view
@@ -1396,34 +1350,6 @@ export function buildTree(
   })
 
   return { groups, ungrouped: sort(ungrouped) }
-}
-
-/**
- * The path flavor to shorten a worker's paths with, or undefined when the
- * worker has not reported its OS.
- *
- * Undefined rather than a default, because `flavorFromOs(undefined)` answers
- * `'posix'` — which would force posix onto a Windows worker with no system info
- * yet, and stop `C:\Users\u\repo` from compressing at all. Undefined lets
- * `tildify` sniff the flavor from the path instead.
- */
-function workerPathFlavor(info: WorkerInfo | null | undefined): PathFlavor | undefined {
-  return info?.os ? flavorFromOs(info.os) : undefined
-}
-
-/**
- * Tilde-compress a worker-side absolute path for the collision suffix.
- *
- * One spelling of the rule for the whole tree: this suffix and the row's own
- * tooltip must shorten the same path the same way, or a row reads
- * `~/repos/foo` while its tooltip reads `/Users/x/repos/foo`. The tooltip gets
- * there by handing `WorkingTreeRows` the same `homeDir` and `flavor` this
- * function derives, so both end in one `tildify` call with equal arguments.
- * Returns the path unchanged while the worker's system info is absent — a
- * correct long path beats a wrong short one.
- */
-function tildifyForWorker(path: string, info: WorkerInfo | null | undefined): string {
-  return tildify(path, info?.homeDir, workerPathFlavor(info))
 }
 
 /**

@@ -194,7 +194,7 @@ func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 }
 
 // TestWorkspaceService_LocateTile_TransientManagerErrorIsRetryable pins the
-// registry.Get failure arm: when the caller's manager cannot be bootstrapped,
+// registry.Get failure case: when the caller's manager cannot be bootstrapped,
 // the caller must get a retryable Internal, not NotFound. NotFound is a
 // permanent answer -- the CLI tile resolver stops looking -- so a DB blip
 // during manager bootstrap would report a tile that exists as gone. Every
@@ -251,4 +251,210 @@ func setupLocateTileEnv(t *testing.T, userID string) *locateTileEnv {
 	_, err := registry.Get(context.Background(), userID)
 	require.NoError(t, err)
 	return &locateTileEnv{mgr: mgr, registry: registry}
+}
+
+// --- RenameWorkspace ---
+//
+// An archived workspace is read-only everywhere in the app: the tab bar's `+`
+// disappears, the branch menu is hidden, and `isWorkspaceMutatable` states the
+// rule. Hiding the menu item is not enforcement, though -- RenameWorkspace is
+// reachable from the CLI and from any client -- so the hub refuses it too.
+//
+// The user goes through service.CreateUser rather than storetest.SeedUser:
+// SeedUser writes the user row alone, and a user with no sections can never
+// have an archived workspace, so every assertion below would pass vacuously.
+// CreateUser is the production path and seeds the defaults in the same
+// transaction.
+func seedUserWithSections(t *testing.T, st store.Store, username string) *store.User {
+	t.Helper()
+	// A literal, not `password.Hash`: nothing here verifies a password, and
+	// deriving one costs an Argon2id pass over 19 MiB per call. `storetest`
+	// seeds the same way.
+	user, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
+		Username:              username,
+		PasswordHash:          "hash-" + username,
+		DisplayName:           username,
+		FirstCredentialExempt: true,
+	})
+	require.NoError(t, err)
+	return user
+}
+
+// The id of the seeded section of one built-in type, for `userID`.
+func sectionIDOfType(t *testing.T, st store.Store, userID string, sectionType leapmuxv1.SectionType) string {
+	t.Helper()
+	sections, err := st.WorkspaceSections().ListByUserID(context.Background(), userid.MustNew(userID))
+	require.NoError(t, err)
+	for _, sec := range sections {
+		if sec.SectionType == sectionType {
+			return sec.ID
+		}
+	}
+	require.FailNowf(t, "no seeded section", "type %v", sectionType)
+	return ""
+}
+
+func placeWorkspaceInSection(t *testing.T, st store.Store, userID, workspaceID, sectionID string) {
+	t.Helper()
+	require.NoError(t, st.WorkspaceSectionItems().Set(context.Background(), store.SetWorkspaceSectionItemParams{
+		UserID:      userid.MustNew(userID),
+		WorkspaceID: workspaceID,
+		SectionID:   sectionID,
+		Position:    "n",
+	}))
+}
+
+func TestWorkspaceService_RenameWorkspace_RenamesALiveWorkspace(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	user := seedUserWithSections(t, st, "rename-live")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "before")
+	placeWorkspaceInSection(t, st, user.ID, workspaceID,
+		sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS))
+
+	svc := service.NewWorkspaceService(st, nil)
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
+	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+		WorkspaceId: workspaceID,
+		Title:       "after",
+	}))
+	require.NoError(t, err)
+
+	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
+	require.NoError(t, err)
+	assert.Equal(t, "after", ws.Title)
+}
+
+// An UNPLACED workspace is not archived. A workspace created by the CLI has no
+// section item until the client files it, and the sidebar shows it under In
+// progress; refusing the rename there would break the ordinary case.
+func TestWorkspaceService_RenameWorkspace_RenamesAnUnplacedWorkspace(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	user := seedUserWithSections(t, st, "rename-unplaced")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "before")
+
+	svc := service.NewWorkspaceService(st, nil)
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
+	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+		WorkspaceId: workspaceID,
+		Title:       "after",
+	}))
+	require.NoError(t, err)
+
+	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
+	require.NoError(t, err)
+	assert.Equal(t, "after", ws.Title)
+}
+
+func TestWorkspaceService_RenameWorkspace_RefusesArchived(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	user := seedUserWithSections(t, st, "rename-archived")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "before")
+	placeWorkspaceInSection(t, st, user.ID, workspaceID,
+		sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED))
+
+	svc := service.NewWorkspaceService(st, nil)
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
+	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+		WorkspaceId: workspaceID,
+		Title:       "after",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+		"the workspace is well-formed and owned; only its state forbids the write")
+	// The VERB, not just "archived": the guard takes it as a parameter so the
+	// next mutation that adopts it cannot report a rename that never ran.
+	assert.Contains(t, err.Error(), "cannot rename an archived workspace")
+
+	// The guard aborts the transaction, so the title is untouched.
+	ws, getErr := st.Workspaces().GetByID(ctx, workspaceID)
+	require.NoError(t, getErr)
+	assert.Equal(t, "before", ws.Title)
+}
+
+// Unarchiving is a MoveWorkspace, which stays unguarded by design -- archive
+// and unarchive are the same call, distinguished only by the section id. A
+// workspace moved back out becomes renamable again.
+func TestWorkspaceService_RenameWorkspace_AllowedAgainAfterUnarchive(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	user := seedUserWithSections(t, st, "rename-unarchived")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "before")
+	placeWorkspaceInSection(t, st, user.ID, workspaceID,
+		sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED))
+	placeWorkspaceInSection(t, st, user.ID, workspaceID,
+		sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS))
+
+	svc := service.NewWorkspaceService(st, nil)
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
+	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+		WorkspaceId: workspaceID,
+		Title:       "after",
+	}))
+	require.NoError(t, err)
+
+	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
+	require.NoError(t, err)
+	assert.Equal(t, "after", ws.Title)
+}
+
+// Another user's archived workspace does not make the caller's own workspace
+// unrenamable: the query filters on the CALLER's section items.
+func TestWorkspaceService_RenameWorkspace_ArchivedForAnotherUserDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	owner := seedUserWithSections(t, st, "rename-owner")
+	other := seedUserWithSections(t, st, "rename-other")
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "before")
+	placeWorkspaceInSection(t, st, owner.ID, workspaceID,
+		sectionIDOfType(t, st, owner.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS))
+	// The OTHER user files the same workspace id into THEIR archive.
+	placeWorkspaceInSection(t, st, other.ID, workspaceID,
+		sectionIDOfType(t, st, other.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED))
+
+	svc := service.NewWorkspaceService(st, nil)
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(owner.ID)})
+	_, err := svc.RenameWorkspace(authCtx, connect.NewRequest(&leapmuxv1.RenameWorkspaceRequest{
+		WorkspaceId: workspaceID,
+		Title:       "after",
+	}))
+	require.NoError(t, err)
+
+	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
+	require.NoError(t, err)
+	assert.Equal(t, "after", ws.Title)
+}
+
+// Archive then delete is a normal flow, and Delete stays unguarded.
+func TestWorkspaceService_DeleteWorkspace_StillWorksOnAnArchivedWorkspace(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	user := seedUserWithSections(t, st, "delete-archived")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "doomed")
+	placeWorkspaceInSection(t, st, user.ID, workspaceID,
+		sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED))
+
+	svc := service.NewWorkspaceService(st, nil)
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(user.ID)})
+	_, err := svc.DeleteWorkspace(authCtx, connect.NewRequest(&leapmuxv1.DeleteWorkspaceRequest{
+		WorkspaceId: workspaceID,
+	}))
+	require.NoError(t, err)
+
+	_, getErr := st.Workspaces().GetByID(ctx, workspaceID)
+	require.ErrorIs(t, getErr, store.ErrNotFound)
 }

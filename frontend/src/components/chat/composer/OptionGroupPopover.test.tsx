@@ -39,11 +39,18 @@ function renderPopover(opts: {
       )}
     />
   ))
-  return { onChange, trigger: screen.getByTestId('trigger') }
+  const trigger = screen.getByTestId('trigger')
+  // OPENED, because the items mount only while the popover is open: the
+  // enclosing menu's roving focus queries `[role=menuitem]` over its whole
+  // subtree, so a closed submenu's items would be phantom ArrowDown stops.
+  // `vitest.setup.ts` stubs `showPopover` and dispatches `toggle`, which is
+  // what drives that gate.
+  fireEvent.click(trigger)
+  return { onChange, trigger }
 }
 
-// The options live inside a `popover` <menu>, which is inaccessible until the
-// popover opens — and jsdom stubs the Popover API, so it never does. Role
+// The options live inside a `popover` <menu>, which stays inaccessible to a
+// plain role query even while open, because jsdom stubs the Popover API. Role
 // queries therefore pass `hidden: true`; the roles themselves are the point of
 // the assertions.
 /**
@@ -164,6 +171,7 @@ describe('optionGroupPopover', () => {
       />
     ))
 
+    fireEvent.click(screen.getByTestId('trigger'))
     const before = screen.getByTestId('model-sonnet')
     // Fresh objects, identical values -- exactly what a status push delivers.
     setGroups([group({ options: options.map(o => ({ ...o })), currentValue: 'opus' })])
@@ -256,6 +264,10 @@ describe('optionGroupPopover', () => {
     await fireEvent.click(screen.getByTestId('model-legacy'))
     expect(onChange, 'a withdrawn option relaunches nothing').not.toHaveBeenCalled()
 
+    // Picking dismisses the popover, and the rows mount only while it is open,
+    // so the second pick reopens first -- which is the sequence the user
+    // performs too.
+    await fireEvent.click(screen.getByTestId('trigger'))
     // ...while a row the catalog still offers applies as usual.
     await fireEvent.click(screen.getByTestId('model-sonnet'))
     expect(onChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })

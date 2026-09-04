@@ -7,7 +7,7 @@ import { tildify } from '~/lib/paths'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { repoKeyForLocal } from './branchKeys'
-import { buildTree, formatGitOriginUrl, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey, workerProjectionsEqual } from './WorkspaceTabTree'
+import { buildTree, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey, workerProjectionsEqual } from './WorkspaceTabTree'
 
 interface RepoGitSeed {
   workerId?: string
@@ -176,47 +176,6 @@ function tabsWithSeeds(
   }
   return { tabs, repoSeeds: [...seedByKey.values()] }
 }
-
-describe('formatGitOriginUrl', () => {
-  it('strips https protocol', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips http protocol', () => {
-    expect(formatGitOriginUrl('http://github.com/org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('converts SSH format', () => {
-    expect(formatGitOriginUrl('git@github.com:org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips trailing .git', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('handles URL without .git suffix', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips trailing slash', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo/'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('returns empty string for empty input', () => {
-    expect(formatGitOriginUrl('')).toBe('')
-  })
-
-  it('handles SSH with nested path', () => {
-    expect(formatGitOriginUrl('git@gitlab.com:group/subgroup/repo.git'))
-      .toBe('gitlab.com/group/subgroup/repo')
-  })
-})
 
 describe('buildTree', () => {
   it('returns empty tree for empty input', () => {
@@ -724,11 +683,11 @@ describe('buildTree branch tilde inputs', () => {
 // Two workers holding the same branch at the same path under each home
 // directory render two rows whose name, kind and shortened directory are all
 // identical — and Delete on one of them removes the other machine's directory.
-// The row's tooltip names the worker exactly when that can happen.
+// The row's tooltip identifies the worker exactly when that can happen.
 describe('buildTree branch workerLabel', () => {
   const twoWorkers = (id: string) => (id === 'w1' ? posixLookup() : { ...posixLookup(), name: 'worker-b' })
 
-  it('names the worker when the branch appears on more than one', () => {
+  it('identifies the worker when the branch appears on more than one', () => {
     const { tabs, repoSeeds } = tabsWithSeeds([
       { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
       { id: '2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },

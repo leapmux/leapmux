@@ -130,18 +130,41 @@ export async function waitForAppPageReady(page: Page) {
 }
 
 /**
- * Open the "New Workspace" dialog by clicking whichever button is available.
- * The left sidebar may be collapsed (rail mode), hiding `sidebar-new-workspace`.
- * Fall back to the empty-state `create-workspace-button` in the main area.
+ * Open the "New Workspace" dialog by whichever route is available.
+ *
+ * The In-progress section header carries a MENU now, and "New workspace..." is
+ * an item inside it -- so the availability probe has to read the TRIGGER, not
+ * the item. A closed `popover="auto"` is `display: none`, so probing the item
+ * would answer "not visible" every single time, send every caller down the
+ * empty-state fallback, and time out wherever that button does not exist.
+ *
+ * The left sidebar may still be collapsed (rail mode), which hides the section
+ * header entirely; the empty-state `create-workspace-button` is the fallback
+ * for that.
+ *
+ * Open-and-click is retried as one unit, following `clickRowMenuItem`: the
+ * sidebar re-renders on workspace, worker and todo changes, so the menu can
+ * vanish between opening it and clicking inside it.
  */
 export async function openNewWorkspaceDialog(page: Page) {
-  const sidebarBtn = page.locator('[data-testid="sidebar-new-workspace"]')
+  const sectionMenu = page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]')
   const createBtn = page.locator('[data-testid="create-workspace-button"]')
-  await expectAnyVisible(sidebarBtn, createBtn)
-  if (await isMaybeVisible(sidebarBtn))
-    await sidebarBtn.click()
-  else
+  await expectAnyVisible(sectionMenu, createBtn)
+  if (await isMaybeVisible(sectionMenu)) {
+    const item = page.locator('[data-testid="sidebar-new-workspace"]:visible')
+    await expect(async () => {
+      // Idempotent open, the way `ensureExpanded` does it: a second click on an
+      // already-open trigger CLOSES the menu, which is exactly what a naive
+      // retry would do.
+      if (!await item.isVisible())
+        await sectionMenu.click()
+      await expect(item).toBeVisible()
+      await item.click()
+    }).toPass()
+  }
+  else {
     await createBtn.click()
+  }
   await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
 }
 

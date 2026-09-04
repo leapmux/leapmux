@@ -8,7 +8,12 @@ import {
   fieldsForCreateBranch,
   fieldsForCreateWorktree,
   fieldsForUseWorktree,
+  GIT_MODE_LABELS,
   GitMode,
+  gitModeFromToken,
+  gitModeMenuLabel,
+  gitModeToken,
+  initialIntentForMode,
   isChangeBranchMode,
   useGitModeState,
 } from '~/hooks/useGitModeState'
@@ -337,7 +342,7 @@ describe('isChangeBranchMode', () => {
     // Defensive: `current` (excluded from CHANGE_BRANCH_MODES) and
     // `use-worktree` (a different dialog's mode) must both fail. A
     // dialog opened against an unseeded useGitModeState would briefly
-    // observe Current — the predicate rejects it so submit stays gated.
+    // observe Current — the predicate rejects it so submit stays refused.
     expect(isChangeBranchMode(GitMode.Current)).toBe(false)
     expect(isChangeBranchMode(GitMode.UseWorktree)).toBe(false)
   })
@@ -378,10 +383,10 @@ describe('fieldsForCheckoutBranch', () => {
     })
   })
 
-  it('forwards an empty target verbatim — the dialog gates submit, not this projection', () => {
-    // Defensive: the helper does not own validation. Submit-gating lives
+  it('forwards an empty target verbatim — the dialog controls submit, not this projection', () => {
+    // Defensive: the helper does not own validation. The submit rule lives
     // in dialogValidation. An empty checkoutBranch must round-trip
-    // verbatim so the gating layer can refuse it without a magic
+    // verbatim so the validating layer can refuse it without a magic
     // sentinel.
     expect(fieldsForCheckoutBranch({
       mode: GitMode.SwitchBranch,
@@ -605,5 +610,100 @@ describe('changeBranchInitialIntent', () => {
   it('mints a fresh object per call, so a mutation cannot leak', () => {
     const first = changeBranchInitialIntent(GitMode.CreateBranch)
     expect(changeBranchInitialIntent(GitMode.CreateBranch)).not.toBe(first)
+  })
+})
+
+// ----- Labels and the serialized token -----
+//
+// Two tables keyed by GitMode, and both are exhaustive by construction
+// (`Record<GitMode, …>`). The pinned tuple below is what makes THAT claim
+// checkable from a test: a sixth mode fails the compile at the table and this
+// tuple, so neither can be updated alone.
+//
+// Do NOT iterate `Object.values(GitMode)` instead. An unannotated numeric enum
+// emits reverse mappings, so it yields TEN entries -- five names and five
+// numbers -- and type-checks clean as `GitMode[]`.
+const ALL_GIT_MODES = [
+  GitMode.Current,
+  GitMode.SwitchBranch,
+  GitMode.CreateBranch,
+  GitMode.CreateWorktree,
+  GitMode.UseWorktree,
+] as const
+
+describe('the mode label table (GIT_MODE_LABELS)', () => {
+  it('covers every mode of the pinned tuple', () => {
+    expect(Object.keys(GIT_MODE_LABELS).length).toBe(ALL_GIT_MODES.length)
+    for (const mode of ALL_GIT_MODES)
+      expect(GIT_MODE_LABELS[mode]).toBeTruthy()
+  })
+
+  it('gives every mode a distinct name', () => {
+    const labels = ALL_GIT_MODES.map(m => GIT_MODE_LABELS[m])
+    expect(new Set(labels).size).toBe(labels.length)
+  })
+})
+
+describe('gitModeMenuLabel', () => {
+  it('is the radio label plus the three dots a dialog-opening item carries', () => {
+    for (const mode of ALL_GIT_MODES)
+      expect(gitModeMenuLabel(mode)).toBe(`${GIT_MODE_LABELS[mode]}...`)
+  })
+
+  it('uses ASCII dots, not an ellipsis character', () => {
+    expect(gitModeMenuLabel(GitMode.SwitchBranch).endsWith('...')).toBe(true)
+    expect(gitModeMenuLabel(GitMode.SwitchBranch)).not.toContain('\u2026')
+  })
+})
+
+describe('gitModeToken / gitModeFromToken', () => {
+  it('round-trips every mode', () => {
+    for (const mode of ALL_GIT_MODES)
+      expect(gitModeFromToken(gitModeToken(mode))).toBe(mode)
+  })
+
+  it('mints a distinct token per mode', () => {
+    const tokens = ALL_GIT_MODES.map(m => gitModeToken(m))
+    expect(new Set(tokens).size).toBe(tokens.length)
+  })
+
+  it('never stores the enum NUMBER, which reordering would invalidate', () => {
+    for (const mode of ALL_GIT_MODES)
+      expect(Number.isNaN(Number(gitModeToken(mode)))).toBe(true)
+  })
+
+  it('refuses anything a previous build or a hand edit could have left behind', () => {
+    expect(gitModeFromToken(undefined)).toBeUndefined()
+    expect(gitModeFromToken(null)).toBeUndefined()
+    expect(gitModeFromToken('')).toBeUndefined()
+    expect(gitModeFromToken('no-such-mode')).toBeUndefined()
+    // A stored NUMBER is the exact shape this type exists to reject: it would
+    // resolve to a different mode after the enum is reordered.
+    expect(gitModeFromToken(0)).toBeUndefined()
+    expect(gitModeFromToken('0')).toBeUndefined()
+    expect(gitModeFromToken({ mode: 'current' })).toBeUndefined()
+  })
+})
+
+describe('initialIntentForMode', () => {
+  it('returns an intent carrying the requested mode, for all five', () => {
+    for (const mode of ALL_GIT_MODES)
+      expect(initialIntentForMode(mode).mode).toBe(mode)
+  })
+
+  it('leaves every value field empty, because GitOptions owns them', () => {
+    for (const mode of ALL_GIT_MODES) {
+      const intent = initialIntentForMode(mode) as Record<string, unknown>
+      for (const [key, value] of Object.entries(intent)) {
+        if (key === 'mode')
+          continue
+        expect(value === '' || value === null).toBe(true)
+      }
+    }
+  })
+
+  it('agrees with changeBranchInitialIntent on the three modes they share', () => {
+    for (const mode of CHANGE_BRANCH_MODES)
+      expect(changeBranchInitialIntent(mode)).toEqual(initialIntentForMode(mode))
   })
 })

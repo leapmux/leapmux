@@ -15,6 +15,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/service"
@@ -96,7 +97,7 @@ func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 
 	// Local row that the hub no longer knows about.
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, nil)
 
@@ -271,7 +272,7 @@ func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) 
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "live", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-1", TabID: "live", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -300,7 +301,7 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 	defer cancel()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, nil)
 
@@ -313,7 +314,7 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 
 	// Add another orphan and confirm Trigger fires a fresh pass.
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "ghost2", Payload: filePayload(absTestPath("/r/b.go")),
+		UserID: "user-1", TabID: "ghost2", Payload: filePayload(testutil.NativeAbsPath("/r/b.go")),
 	}))
 	rec.Trigger()
 	require.Eventually(t, func() bool {
@@ -347,7 +348,7 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 	defer cancel()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	// The startup pass and any retry before the switch below both fail.
 	setFake("user-1", nil, errors.New("channel not ready"))
@@ -413,10 +414,10 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 
 	const sharedTabID = "file-1700000000000-1"
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-a", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-a", TabID: sharedTabID, Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/b.go")),
+		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(testutil.NativeAbsPath("/r/b.go")),
 	}))
 
 	// The hub knows both rows, each naming its own owner. Neither is absent,
@@ -432,9 +433,9 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	byUser := tabPayloadsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a")
 	require.Contains(t, byUser, "user-b")
-	assert.Equal(t, absTestPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
+	assert.Equal(t, testutil.NativeAbsPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
 		"user-a must be reconciled against user-a's hub row, not user-b's")
-	assert.Equal(t, absTestPath("/r/b.go"), filePathOf(t, byUser["user-b"]),
+	assert.Equal(t, testutil.NativeAbsPath("/r/b.go"), filePathOf(t, byUser["user-b"]),
 		"user-b's row must survive on its own hub row")
 }
 
@@ -457,10 +458,10 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 
 	const sharedTabID = "file-1700000000000-1"
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-a", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-a", TabID: sharedTabID, Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(absTestPath("/r/b.go")),
+		UserID: "user-b", TabID: sharedTabID, Payload: filePayload(testutil.NativeAbsPath("/r/b.go")),
 	}))
 
 	// Only user-a's tab survives at the hub.
@@ -472,7 +473,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 
 	byUser := tabPayloadsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a", "the hub-known owner's row must survive")
-	assert.Equal(t, absTestPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
+	assert.Equal(t, testutil.NativeAbsPath("/r/a.go"), filePathOf(t, byUser["user-a"]),
 		"and must not be confused with a stranger's row")
 	assert.NotContains(t, byUser, "user-b",
 		"the owner the hub no longer knows about must be reaped, not shielded by the collision")
@@ -495,15 +496,15 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-a", TabID: "file-a", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-a", TabID: "file-a", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-b", TabID: "file-b", Payload: filePayload(absTestPath("/r/b.go")),
+		UserID: "user-b", TabID: "file-b", Payload: filePayload(testutil.NativeAbsPath("/r/b.go")),
 	}))
 	// Link user-b's tab to a worktree: the reap drops that link FIRST, so an
 	// unscoped reap is observable here even before the file-tab row goes.
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-b", WorktreePath: absTestPath("/r/b"), RepoRoot: absTestPath("/r"), BranchName: "b",
+		ID: "wt-b", WorktreePath: testutil.NativeAbsPath("/r/b"), RepoRoot: testutil.NativeAbsPath("/r"), BranchName: "b",
 	})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
@@ -543,7 +544,7 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-a", TabID: "file-a", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-a", TabID: "file-a", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-a", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -652,7 +653,7 @@ func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 	defer cancel()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, errors.New("channel not ready"))
 
@@ -702,7 +703,7 @@ func TestOrphanReconciler_NoOnConvergedHookIsFine(t *testing.T) {
 	defer cancel()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
-		UserID: "user-1", TabID: "ghost", Payload: filePayload(absTestPath("/r/a.go")),
+		UserID: "user-1", TabID: "ghost", Payload: filePayload(testutil.NativeAbsPath("/r/a.go")),
 	}))
 	setFake("user-1", nil, nil)
 

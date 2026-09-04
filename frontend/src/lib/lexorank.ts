@@ -78,7 +78,18 @@ function before(s: string): string {
   return s.slice(0, -1) + MIN_CHAR + MID_CHAR
 }
 
+/**
+ * A rank between `a` and `b`, where `a < b`.
+ *
+ * A descending pair is normalized rather than trusted. The midpoint test below
+ * subtracts one character code from another; for two adjacent characters a
+ * descending pair answers a rank EQUAL to `b`, which collides with the row `b`
+ * names. The Go original computes the same subtraction on a `byte`, where a
+ * descending pair wraps instead — so the two implementations disagreed as well.
+ */
 function between(a: string, b: string): string {
+  if (a >= b)
+    [a, b] = [b, a]
   const maxLen = Math.max(a.length, b.length)
   const pa = padRight(a, maxLen)
   const pb = padRight(b, maxLen)

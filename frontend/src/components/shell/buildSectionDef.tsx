@@ -1,8 +1,11 @@
 import type { Accessor } from 'solid-js'
 import type { SidebarSectionDef } from './CollapsibleSidebar'
+import type { SectionActions } from './sectionUtils'
 import type { WorkspaceOperations } from './useWorkspaceOperations'
 import type { FilesSectionHandle } from '~/components/tree/FilesSection'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
+import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -22,17 +25,21 @@ import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
 import { WorkerSectionContent } from '~/components/workers/WorkerSectionContent'
+import { setWorkspacesExpanded } from '~/components/workspace/expandedWorkspaces'
+import { revealWorkspaceRow } from '~/components/workspace/revealWorkspaceRow'
 import { emptySection as emptySectionStyle } from '~/components/workspace/workspaceList.css'
+import { isSectionFilterShown, toggleSectionFilter } from '~/components/workspace/workspaceListState'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { flavorFromOs } from '~/lib/paths'
-import { shortcutHint } from '~/lib/shortcuts/display'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
+import { isLocalWorker } from '~/lib/workerLocality'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { todoProgress } from '~/stores/chatTodos'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
+import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
 
 /**
  * All dependencies needed to build a `SidebarSectionDef` for any section type.
@@ -44,10 +51,16 @@ export interface SectionDefContext {
 
   // Workspace operations
   wsOps: WorkspaceOperations
-  getWorkspacesForGroup: (sectionId: string) => Workspace[]
+  getWorkspacesForGroup: (sectionId: string) => readonly Workspace[]
   activeWorkspaceId: string | null
-  onNewWorkspace: (sectionId: string | null) => void
+  /** Open the New workspace dialog, into `sectionId` and from `startPoint`. */
+  onNewWorkspace: (sectionId: string | null, startPoint: WorkspaceStartPoint) => void
   onSelectWorkspace: (id: string) => void
+  /** Expand a collapsed section, so a revealed row has a box to scroll into. */
+  expandSection?: (sectionId: string) => void
+  sectionActions: SectionActions
+  /** Open a new agent / terminal at one of a workspace's checkouts. */
+  workspaceStartActions?: WorkspaceStartActions
   view?: TabView
   selection?: TabSelectionStore
   onTabClick?: (type: number, id: string) => void
@@ -93,6 +106,12 @@ export interface SectionDefContext {
 
   // Workers section
   workers: Worker[]
+  /**
+   * Whether the desktop shell runs its own bundled sidecar. Half of the
+   * "is this worker local" test; the other half is the worker's own
+   * `autoRegistered` flag. See `~/lib/workerLocality`.
+   */
+  localSolo: boolean
   workerInfoFn: (id: string) => WorkerInfo | null
   channelStatusFn: (id: string) => ChannelStatus
   onAddTunnel: (worker: Worker) => void
@@ -114,7 +133,40 @@ export function buildSectionDef(
   const sectionType = section.sectionType
   const sectionId = section.id
 
+  /**
+   * The section as the STORE holds it now, not as this call captured it.
+   *
+   * `headerActions()` and `content()` run once per section MOUNT, so whatever
+   * they close over outlives every later `buildSectionDefs()`. The captured
+   * object is a store proxy, so a local patch still reaches it -- but
+   * `loadSections` writes through `sectionIdentity.stabilize`, which mints a
+   * fresh object for any row whose fields changed, and a locally created
+   * section never entered that cache at all. The captured proxy then detaches
+   * and keeps the values it had, while the header title beside it updates.
+   *
+   * Only the fields a mounted node reads go through this. `title`, `railTitle`,
+   * `defaultOpen` and `testId` stay on `section`, because `buildSectionDefs()`
+   * re-runs and `CollapsibleSidebar` re-reads them from the fresh def.
+   */
+  const liveSection = () => ctx.sectionStore.state.sections.find(s => s.id === sectionId) ?? section
+
+  /**
+   * Run `action` with this section open.
+   *
+   * Header actions render while a section is COLLAPSED, and a collapsed body is
+   * `visibility: hidden` inside a zero-height row -- so anything that reveals a
+   * node inside it scrolls a box with no height and the user sees nothing. Any
+   * header action that points INTO its own section goes through this.
+   */
+  const revealing = (action: () => void) => () => {
+    ctx.expandSection?.(sectionId)
+    action()
+  }
+
   if (isWorkspaceSection(sectionType)) {
+    // The workspaces this section holds, for every item that acts on the whole
+    // section: the repository list, Collapse/Expand all, and Reveal.
+    const workspaceIds = () => ctx.getWorkspacesForGroup(sectionId).map(w => w.id)
     return {
       id: sectionId,
       title: section.name,
@@ -123,27 +175,51 @@ export function buildSectionDef(
       defaultOpen: sectionType !== SectionType.WORKSPACES_ARCHIVED,
       collapsible: true,
       draggable: true,
-      headerActions: ctx.wsOps.canAddToSection(section)
-        ? (
-            <IconButton
-              icon={Plus}
-              iconSize="sm"
-              size="md"
-              title={shortcutHint(`New workspace in ${section.name}`, 'app.newWorkspaceDialog')}
-              data-testid={sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
-              onClick={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-                ctx.onNewWorkspace(sectionId)
-              }}
-            />
-          )
-        : undefined,
+      // A MENU, not the `+` it replaces. Archived gains a header action it
+      // never had: `canAddToSection` refuses it (a workspace created there
+      // would be born read-only), so the old `+` was absent and the bulk
+      // archive operations and the section CRUD had nowhere to live.
+      headerActions: () => (
+        <WorkspaceSectionMenu
+          section={liveSection()}
+          canCreate={ctx.wsOps.canAddToSection(section)}
+          getTabs={() => workspaceIds().flatMap(id => ctx.view?.forWorkspace(id) ?? [])}
+          getWorkspaceIds={workspaceIds}
+          repoGitStore={ctx.gitStatusStore}
+          workerInfoFn={ctx.workerInfoFn}
+          isWorkerOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
+          hasActiveWorkspace={() => {
+            const active = ctx.activeWorkspaceId
+            return active !== null && workspaceIds().includes(active)
+          }}
+          onRevealActiveWorkspace={revealing(() => {
+            const active = ctx.activeWorkspaceId
+            if (active)
+              revealWorkspaceRow(active)
+          })}
+          // Only SHOWING the box expands the section; hiding it must not.
+          onToggleFilter={() => {
+            if (!isSectionFilterShown(sectionId))
+              ctx.expandSection?.(sectionId)
+            toggleSectionFilter(sectionId)
+          }}
+          onCollapseAll={() => setWorkspacesExpanded(workspaceIds(), false)}
+          onExpandAll={() => setWorkspacesExpanded(workspaceIds(), true)}
+          onNewWorkspace={startPoint => ctx.onNewWorkspace(sectionId, startPoint)}
+          hasArchivedWorkspaces={() => ctx.wsOps.archivedWorkspaceIds().length > 0}
+          onUnarchiveAll={() => void ctx.wsOps.unarchiveAll()}
+          onEmptyArchive={() => void ctx.wsOps.emptyArchive()}
+          onNewSection={() => ctx.sectionActions.onNew(liveSection().sidebar)}
+          onRenameSection={() => ctx.sectionActions.onRename(liveSection())}
+          onDeleteSection={() => ctx.sectionActions.onDelete(liveSection())}
+        />
+      ),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       content: () => (
         <WorkspaceSectionContent
           workspaces={ctx.getWorkspacesForGroup(sectionId)}
           sectionId={sectionId}
+          sectionName={liveSection().name}
           activeWorkspaceId={ctx.activeWorkspaceId}
           sections={ctx.sectionStore.state.sections}
           onSelect={ctx.onSelectWorkspace}
@@ -166,6 +242,11 @@ export function buildSectionDef(
           tabItemOps={ctx.tabItemOps}
           workerInfoFn={ctx.workerInfoFn}
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
+          // Derived here, beside the liveness predicate and exactly the same
+          // way: one line off `ctx.workers` and one flag, rather than a prop
+          // threaded down the whole sidebar chain.
+          isLocalWorkerFn={workerId => isLocalWorker(ctx.workers, workerId, ctx.localSolo)}
+          startActions={ctx.workspaceStartActions}
           branchActions={ctx.branchActions}
           repoGitStore={ctx.gitStatusStore}
         />
@@ -183,13 +264,13 @@ export function buildSectionDef(
       collapsible: true,
       draggable: true,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      headerActions: (
+      headerActions: () => (
         <FilesSectionHeaderActions
           handle={ctx.filesSectionHandle}
-          onLocateFile={() => {
+          onLocateFile={revealing(() => {
             if (ctx.activeFilePath)
               ctx.onFileSelect(ctx.activeFilePath)
-          }}
+          })}
           // Not on the handle: a refresh also re-reads git status, which the
           // section does not own.
           onRefresh={() => {
@@ -295,7 +376,7 @@ export function buildSectionDef(
       draggable: true,
       defaultSize: 0.15,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      headerActions: (
+      headerActions: () => (
         <IconButton
           icon={Plus}
           iconSize="sm"

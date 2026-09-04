@@ -1,9 +1,11 @@
 import type { Component } from 'solid-js'
 import type { LastTabConfirmState } from './LastTabCloseDialog'
+import type { SectionNamePayload } from './SectionNameDialog'
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTabOperations } from './useTabOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState, UpdatableDialogState } from '~/hooks/createDialogState'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
@@ -30,6 +32,8 @@ import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { placeWorkspaceInSection } from './placeWorkspaceInSection'
+import { SectionNameDialog } from './SectionNameDialog'
+import { useSectionOperations } from './useSectionOperations'
 
 export interface KeyPinConfirmState {
   workerId: string
@@ -102,15 +106,37 @@ export interface WorkspaceConfirmPayload {
 }
 
 /**
+ * Open-time payload for the "Empty archive" confirm.
+ *
+ * The COUNT, not a workspace id: this is one prompt for the whole set. The
+ * per-workspace confirm is suppressed deliberately -- `confirmDeleteWs` is a
+ * single-slot dialog state, so N concurrent opens would drop N-1 resolvers and
+ * leave those awaits pending forever.
+ */
+export interface EmptyArchiveConfirmPayload {
+  count: number
+  resolve: (confirmed: boolean) => void
+}
+
+/** Open-time payload for the "Delete section" confirm. */
+export interface SectionConfirmPayload {
+  sectionId: string
+  sectionName: string
+}
+
+/**
  * Open-time payload for the NewWorkspaceDialog. Both fields are optional:
- *   - `preselectedWorkerId` seeds the worker dropdown (`?newWorkspace=true&workerId=`
- *     from the URL, or the workspace-sidebar "+ workspace" button on a specific worker).
- *   - `targetSectionId` is the section the freshly-created workspace will be moved into
- *     post-CreateWorkspace (a left-sidebar "+" inside a section header).
- * The shortcut path opens with `{}` (no preselection, default section).
+ *   - `startPoint` says what the dialog already knows: a repository the section
+ *     works on (from a section header menu row), or a worker alone
+ *     (`?newWorkspace=true&workerId=` from the URL). Omit it for "no target",
+ *     which is the same thing as `{ kind: 'directory' }` -- the default is
+ *     applied at ONE place, where this payload reaches the dialog.
+ *   - `targetSectionId` is the section the freshly-created workspace will be
+ *     moved into post-CreateWorkspace (a section header menu's own section).
+ * The shortcut path opens with `{}` (no target, default section).
  */
 export interface NewWorkspacePayload {
-  preselectedWorkerId?: string
+  startPoint?: WorkspaceStartPoint
   targetSectionId?: string | null
 }
 
@@ -128,6 +154,9 @@ export interface AppShellDialogStates {
   newWorkspace: DialogState<NewWorkspacePayload>
   confirmDeleteWs: DialogState<WorkspaceConfirmPayload>
   confirmArchiveWs: DialogState<WorkspaceConfirmPayload>
+  confirmEmptyArchive: DialogState<EmptyArchiveConfirmPayload>
+  sectionName: DialogState<SectionNamePayload>
+  confirmDeleteSection: DialogState<SectionConfirmPayload>
   // The only updatable one: LastTabCloseDialog patches its own payload after
   // a status refresh. That capability is what keeps its <Show> non-keyed.
   lastTabConfirm: UpdatableDialogState<LastTabConfirmState>
@@ -146,7 +175,6 @@ interface AppShellDialogsProps {
    */
   onBranchChanged?: (repo: RepoRef, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
-  /** False while the active workspace is archived — read-only, so no new tabs. */
   /**
    * Whether a NAMED workspace takes mutation. Per id, not per active workspace:
    * a dialog can act on a workspace the user is not looking at, and the guard
@@ -164,6 +192,7 @@ interface AppShellDialogsProps {
   sectionStore: ReturnType<typeof createSectionStore>
   focusEditor: () => void
   loadWorkspaces: () => Promise<void>
+  loadSections: () => Promise<void>
   /** Makes a workspace the active one. There is no per-workspace URL to go to. */
   onSelectWorkspace: (id: string) => void
   availableProviders?: AgentProvider[]
@@ -172,6 +201,12 @@ interface AppShellDialogsProps {
 }
 
 export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
+  const sectionOps = useSectionOperations({
+    // eslint-disable-next-line solid/reactivity -- the store is a stable object, and loadSections a stable callback
+    sectionStore: props.sectionStore,
+    loadSections: () => props.loadSections(),
+  })
+
   // Full per-agent metadata lives on the Tab record now. `openedAgentTabFields`
   // also primes settingsLabelCache, and it carries `hydrated: true`: this
   // `AgentInfo` came from the worker, so the hydrator has nothing to add and
@@ -278,7 +313,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
     if (!props.isWorkspaceMutatable(target))
       return 'This workspace is archived. Unarchive it to create tabs.'
     // `firstLeafIdFor` answers for ANY workspace and is null exactly when
-    // `placementTileId()` would be empty, which is the state this reason names.
+    // `placementTileId()` would be empty, which is the state this reason describes.
     if (!props.layoutStore.firstLeafIdFor(target))
       return 'The workspace view is not ready yet. Try again in a moment.'
     return undefined
@@ -350,7 +385,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           <NewWorkspaceDialog
             metadata={props.metadata}
             repoGitStore={props.repoGitStore}
-            preselectedWorkerId={payload.preselectedWorkerId}
+            startPoint={payload.startPoint ?? { kind: 'directory' }}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
             onCreated={(workspaceId) => {
@@ -384,6 +419,68 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           >
             <p>Are you sure you want to delete this workspace? This cannot be undone.</p>
           </ConfirmDialog>
+        )}
+      </Show>
+
+      <Show when={props.dialogs.confirmEmptyArchive.value()} keyed>
+        {state => (
+          <ConfirmDialog
+            title="Empty archive"
+            confirmLabel="Delete all"
+            danger
+            onConfirm={() => {
+              state.resolve(true)
+              props.dialogs.confirmEmptyArchive.close()
+            }}
+            onCancel={() => {
+              state.resolve(false)
+              props.dialogs.confirmEmptyArchive.close()
+            }}
+          >
+            {/* The count, because this is the one prompt for the whole set --
+                and the "not all at once" sentence, because there is no
+                transaction: each workspace is its own RPC, so a failure part
+                way through leaves the archive partly emptied. */}
+            <p>
+              {`Delete ${state.count} archived workspace${state.count === 1 ? '' : 's'}? This cannot be undone, and a failure part way through leaves the rest in the archive.`}
+            </p>
+          </ConfirmDialog>
+        )}
+      </Show>
+
+      <Show when={props.dialogs.confirmDeleteSection.value()} keyed>
+        {state => (
+          <ConfirmDialog
+            title="Delete section"
+            confirmLabel="Delete"
+            danger
+            onConfirm={() => {
+              props.dialogs.confirmDeleteSection.close()
+              // The toast lives HERE, not in the operation. The confirm is
+              // already dismissed by the time the RPC settles, so this call
+              // site owns the only surface left to report a failure on -- and
+              // `useSectionOperations` keeps one policy for all three.
+              sectionOps.deleteSection(state.sectionId)
+                .catch(err => showWarnToast('Failed to delete section', err))
+            }}
+            onCancel={() => props.dialogs.confirmDeleteSection.close()}
+          >
+            {/* What the hub actually does inside the delete transaction, so the
+                sentence cannot drift from the behaviour. */}
+            <p>{`Delete "${state.sectionName}"? Its workspaces move to In progress.`}</p>
+          </ConfirmDialog>
+        )}
+      </Show>
+
+      <Show when={props.dialogs.sectionName.value()} keyed>
+        {payload => (
+          <SectionNameDialog
+            payload={payload}
+            onSubmit={name => payload.mode === 'create'
+              ? sectionOps.createSection(name, payload.sidebar)
+              : sectionOps.renameSection(payload.sectionId, name)}
+            onClose={() => props.dialogs.sectionName.close()}
+          />
         )}
       </Show>
 

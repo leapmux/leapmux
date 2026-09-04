@@ -47,10 +47,10 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 })
 
 vi.mock('~/components/common/DropdownMenu', () => ({
-  DropdownMenuItemContent: (props: { label: string, shortcut?: string }) => (
+  DropdownMenuItemContent: (props: { label: string, detail?: string }) => (
     <span>
       <span>{props.label}</span>
-      {props.shortcut ? <span>{props.shortcut}</span> : null}
+      {props.detail ? <span>{props.detail}</span> : null}
     </span>
   ),
 }))

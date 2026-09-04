@@ -102,7 +102,7 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
         >
           <DropdownMenuItemContent
             label="New agent..."
-            shortcut={props.shortcuts ? getShortcutHintsText('app.newAgentDialog') : undefined}
+            detail={props.shortcuts ? getShortcutHintsText('app.newAgentDialog') : undefined}
           />
         </button>
       </Tooltip>
@@ -116,7 +116,7 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
         >
           <DropdownMenuItemContent
             label="New terminal..."
-            shortcut={props.shortcuts ? getShortcutHintsText('app.newTerminalDialog') : undefined}
+            detail={props.shortcuts ? getShortcutHintsText('app.newTerminalDialog') : undefined}
           />
         </button>
       </Tooltip>

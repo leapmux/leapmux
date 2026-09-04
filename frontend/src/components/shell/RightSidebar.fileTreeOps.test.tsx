@@ -24,7 +24,11 @@ vi.mock('./CollapsibleSidebar', () => ({
 
 vi.mock('./useWorkspaceOperations', () => ({
   useWorkspaceOperations: () => ({
-    buildSectionGroups: (sections: any[]) => sections.map(section => ({ section })),
+    buildSectionGroups: (sections: any[]) => sections.map(section => ({ section, workspaces: [] })),
+    // `useSidebarCore` projects every group through this to build its one
+    // per-section memo, so a double that omits it fails at render rather than
+    // at the assertion.
+    getWorkspacesForGroup: () => [],
   }),
 }))
 

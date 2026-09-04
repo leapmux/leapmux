@@ -2,6 +2,7 @@ import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
 import { loginViaToken, openWorkspace, workspaceRow } from './helpers/ui'
+import { openNewWorkspaceDialog } from './helpers/worktree'
 
 test.describe('Workspace UX Enhancements', () => {
   test('should auto-activate first workspace on app home', async ({ page, leapmuxServer }) => {
@@ -26,19 +27,17 @@ test.describe('Workspace UX Enhancements', () => {
     }
   })
 
-  test('should open new workspace dialog from sidebar + button', async ({ page, leapmuxServer }) => {
+  test('should open new workspace dialog from the section header menu', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     // Navigate to app home first
     await page.goto('/')
     await expect(page.locator('[data-testid="section-header-workspaces_in_progress"]')).toBeVisible()
 
-    // Click the sidebar + button
-    await page.locator('[data-testid="sidebar-new-workspace"]').click()
+    // The header carries a menu now, and "New workspace..." is an item in it.
+    await openNewWorkspaceDialog(page)
 
-    // New workspace dialog should appear
-    await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
-
-    // Close dialog without creating
+    // Close dialog without creating. The menu popover closed behind the item's
+    // own click, so this Escape reaches the dialog rather than the popover.
     await page.keyboard.press('Escape')
     await expect(page.getByRole('heading', { name: 'New Workspace' })).not.toBeVisible()
   })
@@ -165,7 +164,9 @@ test.describe('Workspace UX Enhancements', () => {
       const deleteTarget = workspaceRow(page, workspaceId1)
       await deleteTarget.hover()
       await deleteTarget.locator('button').first().click()
-      await page.getByRole('menuitem', { name: 'Delete' }).click()
+      // `exact`: the row menu's info block joins every row into its own
+      // accessible name, and Playwright matches a name by substring.
+      await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
 
       // Confirm the delete via ConfirmDialog (danger mode: arm then confirm)
       const dialog = page.locator('dialog')

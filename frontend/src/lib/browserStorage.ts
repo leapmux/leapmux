@@ -163,6 +163,7 @@ export const KEY_KEY_PINS = 'key-pins'
 export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'directory-selector-show-hidden'
 export const KEY_PREFERRED_EDITOR = 'preferred-editor'
 export const KEY_ACTIVE_WORKSPACE = 'active-workspace'
+export const KEY_WORKSPACE_SORT = 'workspace-sort'
 export const KEY_USER_EVENTS_RELAY_SEQ = 'user-events-relay-seq'
 export const KEY_CHANNEL_RELAY_SEQ = 'channel-relay-seq'
 
@@ -175,6 +176,7 @@ export const PREFIX_WORKER_INFO = 'worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'local-messages:'
 export const PREFIX_FILES_SHOW_HIDDEN = 'files-show-hidden:'
 export const PREFIX_FILES_SORT_ORDER = 'files-sort-order:'
+export const PREFIX_WORKSPACE_GIT_MODE = 'workspace-git-mode:'
 export const PREFIX_CHAT_ROW_HEIGHTS = 'chat-row-heights:'
 
 /** sessionStorage dynamic key prefixes. */
@@ -286,6 +288,10 @@ export const LOCAL_KEY_SPECS = {
   // only record of where the app should reopen, since the URL no longer carries
   // the workspace id.
   [KEY_ACTIVE_WORKSPACE]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
+  // How the sidebar orders every workspace section. A preference the user set
+  // once, like the browser preferences above -- so a year, not the seven days a
+  // per-directory cache takes.
+  [KEY_WORKSPACE_SORT]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
   // High-water mark for the desktop userevents relay ids (see useUserEvents).
   // Device-scoped: see the note above the table.
   [KEY_USER_EVENTS_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS },
@@ -301,6 +307,12 @@ export const LOCAL_KEY_SPECS = {
   [PREFIX_LOCAL_MESSAGES]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_FILES_SHOW_HIDDEN]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_FILES_SORT_ORDER]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
+  // The git mode a repository was last started with, keyed by
+  // `<workerId>:<gitToplevel>` (see `gitModeStickyKey`). The TTL is the only
+  // thing limiting growth -- there is one entry per repository the user ever
+  // starts a workspace in -- and `readDynamic` refreshes it on read, so a
+  // repository in weekly use never expires while an abandoned one does.
+  [PREFIX_WORKSPACE_GIT_MODE]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   // Measured chat-row heights (see chatRowHeightPersistence). A warm-start
   // cache: stale entries are harmless (each row's key digest must match its
   // live heightKey to hydrate), so the TTL only limits storage growth.

@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-solid'
-import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
+import type { Section, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import Archive from 'lucide-solid/icons/archive'
 import Folder from 'lucide-solid/icons/folder'
 import FolderTree from 'lucide-solid/icons/folder-tree'
@@ -37,16 +37,15 @@ export function isMoveTargetSection(sectionType: SectionType): boolean {
 }
 
 /**
- * Whether a workspace can be mutated (create agents/terminals, rename, etc.).
- * Ownership is not a parameter: access is owner-only, so every workspace the
- * client can see is the current user's own — only archival gates mutation.
+ * Whether a workspace can be mutated: create agents and terminals, rename it.
+ *
+ * Archival is the ONE thing that blocks mutation, and this signature says so.
+ * The `workspace` parameter it used to take was never read for its
+ * `createdBy` -- a vestige of the removed sharing model, used only as a
+ * presence check -- and it forced every caller that holds an archived FLAG but
+ * no workspace object to invent one.
  */
-export function isWorkspaceMutatable(
-  workspace: { createdBy: string } | undefined,
-  isArchived: boolean,
-): boolean {
-  if (!workspace)
-    return false
+export function isWorkspaceMutatable(isArchived: boolean): boolean {
   return !isArchived
 }
 
@@ -68,4 +67,25 @@ export function getSectionIcon(section: Section): LucideIcon {
     default:
       return Folder
   }
+}
+
+/**
+ * The three section-CRUD callbacks the sidebar hands to every section header
+ * menu.
+ *
+ * ONE bundle rather than three parallel fields declared in three interfaces
+ * that only forward them. A fourth section action then touches one type and one
+ * forwarding site instead of three, and the three layers cannot drift on a
+ * signature or a doc comment. It follows `WorkspaceStartActions`, which already
+ * groups the row's two tab-creation callbacks the same way.
+ *
+ * Only plain callbacks belong in a bundle like this. A reactive value
+ * (`localSolo`) must stay a flat field, because a nested object read once
+ * freezes it.
+ */
+export interface SectionActions {
+  /** Open the New section dialog for `sidebar`. */
+  onNew: (sidebar: Sidebar) => void
+  onRename: (section: Section) => void
+  onDelete: (section: Section) => void
 }

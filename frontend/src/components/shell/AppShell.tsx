@@ -1,16 +1,20 @@
 import type { Component } from 'solid-js'
-import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPinConfirmState, NewTabTarget, NewWorkspacePayload, WorkspaceConfirmPayload } from './AppShellDialogs'
+import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, EmptyArchiveConfirmPayload, KeyPinConfirmState, NewTabTarget, NewWorkspacePayload, SectionConfirmPayload, WorkspaceConfirmPayload } from './AppShellDialogs'
+import type { SectionNamePayload } from './SectionNameDialog'
+import type { SectionActions } from './sectionUtils'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
+import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/workspace/workspaceStartActions'
+import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
-import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
-import { isTauriApp, platformBridge } from '~/api/platformBridge'
+import { createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from 'solid-js'
+import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { setExpectedUserId } from '~/api/workerRpc'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
@@ -170,6 +174,9 @@ export const AppShell: Component = () => {
   const newWorkspaceDialog = createDialogState<NewWorkspacePayload>()
   const confirmDeleteWsDialog = createDialogState<WorkspaceConfirmPayload>()
   const confirmArchiveWsDialog = createDialogState<WorkspaceConfirmPayload>()
+  const confirmEmptyArchiveDialog = createDialogState<EmptyArchiveConfirmPayload>()
+  const sectionNameDialog = createDialogState<SectionNamePayload>()
+  const confirmDeleteSectionDialog = createDialogState<SectionConfirmPayload>()
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
   const changeBranchDialog = createDialogState<ChangeBranchState>()
   const deleteBranchDialog = createDialogState<DeleteBranchState>()
@@ -239,7 +246,7 @@ export const AppShell: Component = () => {
   // to drop or re-add on a remote change, and no active-workspace filter — every
   // workspace's tabs are derived from the same state at the same time.
   //
-  // A tab whose tile_id names a node this client does not have yet is handled
+  // A tab whose tile_id identifies a node this client does not have yet is handled
   // inside `tabView`, by holding it at its last resolved placement. The hub
   // orders a split's EntityMaterialized frames before the batch that anchors a
   // tab to them, so the routine make-grid race is gone; see `tabView.ts` for
@@ -328,7 +335,8 @@ export const AppShell: Component = () => {
   createEffect(() => {
     if (searchParams.newWorkspace === 'true') {
       newWorkspaceDialog.open({
-        preselectedWorkerId: searchParams.workerId as string | undefined,
+        // A worker and no directory: the URL identifies a machine, not a repository.
+        startPoint: { kind: 'directory', workerId: searchParams.workerId as string | undefined },
       })
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
     }
@@ -337,7 +345,7 @@ export const AppShell: Component = () => {
   // Constant-true today: `(app).tsx` has exactly one leaf (`/`) and
   // hasWorkspaceDesktopChrome matches it, so every guard below always passes.
   // It is kept, not inlined away, because it is the predicate the documented
-  // extension path in `(app).tsx` names: adding a non-workspace leaf under
+  // extension path in `(app).tsx` describes: adding a non-workspace leaf under
   // `(app)/` is a type error at the layout (AppShell takes no children), but
   // nothing would stop these three EFFECTS from running on it -- and one of
   // them activates a workspace, mounting the whole per-workspace machinery
@@ -496,21 +504,63 @@ export const AppShell: Component = () => {
     return section?.sectionType === SectionType.WORKSPACES_ARCHIVED
   })
 
-  // Whether ONE NAMED workspace can be mutated. Per id, because a dialog can act
-  // on a workspace the user is not looking at. Answers false for an absent one
-  // -- deleted remotely while a dialog holds its id -- which is the same
-  // refusal archival earns and the same one the caller needs.
+  // Whether ONE NAMED workspace can be mutated. Per id, because a dialog can
+  // act on a workspace that the user does not look at.
   const isWorkspaceMutatableById = (workspaceId: string): boolean => {
+    // An ABSENT workspace -- deleted remotely while a dialog holds its id --
+    // is not mutatable. That is the same refusal archival earns, and the same
+    // one the caller needs.
+    //
+    // The presence test lives here, not in `isWorkspaceMutatable`, which takes
+    // an archived flag and answers about archival alone. This function holds
+    // the id, so only it can test for presence.
+    if (!workspaceStore.state.workspaces.some(w => w.id === workspaceId))
+      return false
     const sectionId = sectionStore.getSectionForWorkspace(workspaceId)
     const archived = sectionId
       ? sectionStore.state.sections.find(s => s.id === sectionId)?.sectionType === SectionType.WORKSPACES_ARCHIVED
       : false
-    return isWorkspaceMutatable(workspaceStore.state.workspaces.find(w => w.id === workspaceId), archived)
+    return isWorkspaceMutatable(archived)
   }
 
-  // Whether the active workspace can be mutated
+  /**
+   * Whether the desktop shell runs its own bundled sidecar.
+   *
+   * One resource for the whole SIDEBAR, which mounts a workspace row menu per
+   * row and would otherwise ask per menu. Each menu pairs it with the worker's
+   * own `autoRegistered` flag through `isLocalWorker`.
+   *
+   * `OpenInEditorButton` keeps its own resource: it sits outside this tree, it
+   * holds no worker, and `localSolo` alone is the whole gate it needs -- see
+   * the note there.
+   *
+   * Asked of the Rust shell rather than derived from the URL: under
+   * `task dev-desktop` the webview points at http://localhost:4328, so a URL
+   * check misclassifies a solo run as non-solo.
+   */
+  // The rejection is CAUGHT rather than left to the resource. Solid re-throws a
+  // rejected resource from the accessor, `platformBridge` caches the rejected
+  // promise for the life of the page, and `localSolo` is read from every
+  // workspace row menu -- so one failed IPC call would replace the whole shell
+  // with the route's error boundary. Not knowing whether this is a solo desktop
+  // means treating it as not one, which hides two menu items.
+  const [runtimeState] = createResource(async () =>
+    getRuntimeState().catch((err: unknown) => {
+      log.warn('get_runtime_state failed; treating this as a non-solo shell', err)
+      return undefined
+    }),
+  )
+  const localSolo = () => runtimeState()?.capabilities.localSolo ?? false
+
+  // Whether the active workspace can be mutated.
+  //
+  // The presence test is HERE and not inside `isWorkspaceMutatable`, which now
+  // answers about archival alone. An absent workspace -- deleted remotely while
+  // this client still marks it active -- takes no mutation either, and without
+  // this test the memo answered `true` for it: no section means not archived.
+  // `isWorkspaceMutatableById` makes the same test for the same reason.
   const isActiveWorkspaceMutatable = createMemo(() =>
-    isWorkspaceMutatable(activeWorkspace() ?? undefined, isActiveWorkspaceArchived()),
+    !!activeWorkspace() && isWorkspaceMutatable(isActiveWorkspaceArchived()),
   )
 
   // Active tab derived state
@@ -677,6 +727,9 @@ export const AppShell: Component = () => {
     newWorkspace: newWorkspaceDialog,
     confirmDeleteWs: confirmDeleteWsDialog,
     confirmArchiveWs: confirmArchiveWsDialog,
+    confirmEmptyArchive: confirmEmptyArchiveDialog,
+    sectionName: sectionNameDialog,
+    confirmDeleteSection: confirmDeleteSectionDialog,
     lastTabConfirm: tabOps.lastTabConfirmDialog,
     keyPinConfirm: keyPinConfirmDialog,
     changeBranch: changeBranchDialog,
@@ -920,10 +973,27 @@ export const AppShell: Component = () => {
    * derives from it, so the placement inside `run` already resolves against the
    * new workspace -- there is nothing to await.
    */
-  const atBranch = (ref: BranchRef, run: (target: NewTabTarget) => void) => {
-    if (ref.workspaceId && ref.workspaceId !== workspace.activeWorkspaceId())
-      handleSelectWorkspace(ref.workspaceId)
-    run({ workerId: ref.workerId, workingDir: ref.gitToplevel })
+  const atStartPoint = (at: WorkspaceStartAt, run: (target: NewTabTarget) => void) => {
+    if (at.workspaceId && at.workspaceId !== workspace.activeWorkspaceId())
+      handleSelectWorkspace(at.workspaceId)
+    run({ workerId: at.workerId, workingDir: at.workingDir })
+  }
+
+  /** The branch flavour: a `BranchRef` is one checkout of one workspace. */
+  const atBranch = (ref: BranchRef, run: (target: NewTabTarget) => void) =>
+    atStartPoint({ workspaceId: ref.workspaceId, workerId: ref.workerId, workingDir: ref.gitToplevel }, run)
+
+  /**
+   * The two tab-creation actions a workspace ROW offers, over the same seam as
+   * the branch ones above.
+   *
+   * Both open the DIALOG rather than starting a tab outright: a workspace spans
+   * N repositories on up to N workers, so an inline provider or shell list
+   * would have to fan out per repository on every menu open.
+   */
+  const workspaceStartActions: WorkspaceStartActions = {
+    onNewAgentAt: at => atStartPoint(at, target => newAgentDialog.open(target)),
+    onNewTerminalAt: at => atStartPoint(at, target => newTerminalDialog.open(target)),
   }
 
   /**
@@ -968,6 +1038,30 @@ export const AppShell: Component = () => {
   const handleConfirmArchiveWorkspace = (workspaceId: string): Promise<boolean> =>
     new Promise((resolve) => {
       confirmArchiveWsDialog.open({ workspaceId, resolve })
+    })
+
+  /**
+   * The three section-CRUD callbacks, bundled once. See `SectionActions`.
+   *
+   * A stable object built at setup: the three are plain callbacks over dialog
+   * handles, so nothing here needs to stay reactive.
+   */
+  const sectionActions: SectionActions = {
+    onNew: sidebar => sectionNameDialog.open({ mode: 'create', sidebar }),
+    onRename: section => sectionNameDialog.open({
+      mode: 'rename',
+      sectionId: section.id,
+      initialName: section.name,
+    }),
+    onDelete: section => confirmDeleteSectionDialog.open({
+      sectionId: section.id,
+      sectionName: section.name,
+    }),
+  }
+
+  const handleConfirmEmptyArchive = (count: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      confirmEmptyArchiveDialog.open({ count, resolve })
     })
 
   // Post-archive cleanup
@@ -1091,14 +1185,17 @@ export const AppShell: Component = () => {
     selection,
     loadSections,
     onSelectWorkspace: handleSelectWorkspace,
-    onNewWorkspace: (sectionId: string | null) => {
-      newWorkspaceDialog.open({ targetSectionId: sectionId })
+    onNewWorkspace: (sectionId: string | null, startPoint: WorkspaceStartPoint) => {
+      newWorkspaceDialog.open({ targetSectionId: sectionId, startPoint })
     },
     onRefreshWorkspaces: () => loadWorkspaces(),
     onDeleteWorkspace: handleDeleteWorkspace,
     onConfirmDelete: handleConfirmDeleteWorkspace,
     onConfirmArchive: handleConfirmArchiveWorkspace,
+    onConfirmEmptyArchive: handleConfirmEmptyArchive,
     onPostArchiveWorkspace: handlePostArchiveWorkspace,
+    sectionActions,
+    workspaceStartActions,
     getCurrentTabContext,
     getMruAgentContext,
     get fileTreePath() { return fileTreePath() },
@@ -1124,6 +1221,7 @@ export const AppShell: Component = () => {
       return active?.type === TabType.FILE
     },
     get workers() { return workerSection.workers() },
+    get localSolo() { return localSolo() },
     workerInfoFn: workerSection.workerInfoFn,
     channelStatusFn: workerSection.channelStatusFn,
     onAddTunnel: workerSection.openAddTunnel,
@@ -1169,7 +1267,7 @@ export const AppShell: Component = () => {
   // through props.
   //
   // The only decision left is desktop vs mobile. The "workspace not found"
-  // arm went away with the per-workspace URL, and there is deliberately no arm
+  // case went away with the per-workspace URL, and there is deliberately no case
   // for a non-workspace route and no route outlet — see the note on the `(app)`
   // layout, which is where such a case would have to be reintroduced.
 
@@ -1297,8 +1395,8 @@ export const AppShell: Component = () => {
   return (
     <TunnelProvider store={workerSection.tunnelStore}>
       {/*
-        Rendered unconditionally. There used to be a "workspace not found" arm
-        here, for a URL naming a workspace the user does not own. No URL names
+        Rendered unconditionally. There used to be a "workspace not found" case
+        here, for a URL naming a workspace the user does not own. No URL identifies
         one any more: the active id is either this user's own click on their own
         sidebar, or a saved id that `resolveActiveWorkspace` has already checked
         against the loaded list — so the dead-end 404 has no way to be reached,
@@ -1319,6 +1417,7 @@ export const AppShell: Component = () => {
 
       <AppShellDialogs
         dialogs={dialogs}
+        loadSections={loadSections}
         onBranchChanged={(repo, newBranch) => handleBranchChanged(
           { repoGitStore },
           repo,

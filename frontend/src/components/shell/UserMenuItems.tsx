@@ -54,7 +54,7 @@ export const UserMenuItems: Component = () => {
     <>
       <AppAboutMenuItem />
       <button role="menuitem" onClick={() => openPreferences()}>
-        <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />
+        <DropdownMenuItemContent label="Preferences..." detail={getShortcutHintsText('app.openPreferences')} />
       </button>
 
       {/*

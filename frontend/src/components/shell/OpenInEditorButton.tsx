@@ -52,7 +52,20 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
   // the webview points at http://localhost:4328, so a URL-based check would
   // wrongly classify a solo run as non-solo. The runtime state's `localSolo`
   // capability flag reflects the actual sidecar shell mode.
-  const [runtimeState] = createResource(() => getRuntimeState())
+  //
+  // `localSolo` ALONE, deliberately -- not `~/lib/workerLocality`'s
+  // `isLocalWorker`, which additionally requires the worker to be the bundled
+  // auto-registered one. This component takes a `workingDir` and no
+  // `workerId`, so it has no worker to ask about; the directory it opens is
+  // whatever the active tab reports. A surface that DOES hold a worker id (the
+  // workspace row menu's Repository submenu) must use `isLocalWorker`, because
+  // a solo desktop can also hold registrations for remote machines.
+  // Caught for the same reason AppShell catches it: Solid re-throws a rejected
+  // resource from the accessor, and `platformBridge` caches the rejected
+  // promise, so one failed IPC call would take out every render that reads it.
+  const [runtimeState] = createResource(async () =>
+    getRuntimeState().catch(() => undefined),
+  )
   const eligible = () => runtimeState()?.capabilities.localSolo ?? false
 
   const [editors, { refetch: refetchEditors }] = createResource<DetectedEditor[], boolean>(

@@ -83,28 +83,43 @@ async function applySimulatedSafeArea(
 /**
  * Open New Workspace.
  *
+ * A LOCAL copy, not `helpers/worktree`'s. It differs on three things this spec
+ * is about, and folding it in would leak all of them into 070-073:
+ *   - a THIRD branch for the desktop drawer, which the shared helper has no
+ *     concept of;
+ *   - raw `isVisible().catch()` rather than the helper's `expectAnyVisible`,
+ *     because on this band a control can report visible while still translated
+ *     off-screen;
+ *   - a looser heading match plus the Close-button assertion, which is the
+ *     geometry this file measures.
+ *
  * On the phone band the control lives behind the workspaces drawer — always
- * open the drawer first (same as 180-dialog-mobile-scroll). `isVisible()` is
- * not enough: the button can report visible while still translated off-screen.
- * On the desktop band (≥ sm), prefer the sidebar control and fall back to the
- * empty-state create button when the sidebar is collapsed to a rail.
+ * open the drawer first (same as 180-dialog-mobile-scroll).
+ *
+ * "New workspace..." is an ITEM of the section header menu now, so every
+ * branch opens the menu first. A closed `popover="auto"` is `display: none`,
+ * which is why the availability probes read the TRIGGER.
  */
 async function openNewWorkspaceDialog(page: import('@playwright/test').Page) {
-  const sidebarBtn = page.locator('[data-testid="sidebar-new-workspace"]')
+  const sectionMenu = page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]')
+  const newWorkspaceItem = page.locator('[data-testid="sidebar-new-workspace"]:visible')
   const createBtn = page.locator('[data-testid="create-workspace-button"]')
   const toggle = page.getByRole('button', { name: 'Toggle workspaces' })
   const phoneBand = (page.viewportSize()?.width ?? 0) < 640
 
   if (phoneBand) {
     await toggle.click()
-    await sidebarBtn.click()
+    await sectionMenu.click()
+    await newWorkspaceItem.click()
   }
-  else if (await sidebarBtn.isVisible().catch(() => false)) {
-    await sidebarBtn.click()
+  else if (await sectionMenu.isVisible().catch(() => false)) {
+    await sectionMenu.click()
+    await newWorkspaceItem.click()
   }
   else if (await toggle.isVisible().catch(() => false)) {
     await toggle.click()
-    await sidebarBtn.click()
+    await sectionMenu.click()
+    await newWorkspaceItem.click()
   }
   else {
     await createBtn.click()

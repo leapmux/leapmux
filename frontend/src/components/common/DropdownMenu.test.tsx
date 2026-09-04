@@ -18,7 +18,7 @@ describe('dropdownMenu', () => {
   it('renders trailing shortcut text in menu item content', () => {
     render(() => (
       <button role="menuitem">
-        <DropdownMenuItemContent label="New agent..." shortcut="Ctrl+Shift+N" />
+        <DropdownMenuItemContent label="New agent..." detail="Ctrl+Shift+N" />
       </button>
     ))
 
@@ -942,5 +942,64 @@ describe('dropdownMenu size caps', () => {
     renderMenu()
     openMenu()
     expect(screen.getByTestId(MENU).style.getPropertyValue(DIALOG_HEIGHT_VAR)).toBe('')
+  })
+})
+
+// A nested menu renders INLINE, so its items are descendants of the enclosing
+// popover whether or not that nested menu is open -- and a popover that is not
+// showing is `display: none`. Arrowing onto such an item calls `.focus()` on a
+// hidden element, which is a silent no-op: the roving focus stalls at that
+// index and type-ahead matches text nobody can see.
+describe('dropdownMenu roving focus across a nested submenu', () => {
+  function renderNested() {
+    render(() => (
+      <DropdownMenu
+        id="outer"
+        data-testid="outer-popover"
+        trigger={triggerProps => <button data-testid="outer-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem" data-testid="first">Alpha</button>
+        <DropdownMenu
+          id="inner"
+          data-testid="inner-popover"
+          trigger={triggerProps => <button role="menuitem" data-testid="sub-trigger" {...triggerProps}>More</button>}
+        >
+          <button role="menuitem" data-testid="hidden-item">Zulu hidden</button>
+        </DropdownMenu>
+        <button role="menuitem" data-testid="last">Omega</button>
+      </DropdownMenu>
+    ))
+    fireEvent.click(screen.getByTestId('outer-trigger'))
+    return screen.getByTestId('outer-popover')
+  }
+
+  it('skips a closed submenu item, so ArrowDown reaches the item after it', () => {
+    const popover = renderNested()
+
+    // Alpha, the submenu TRIGGER (its own item), then Omega. The submenu's
+    // own item is not among them while it is closed.
+    fireEvent.keyDown(popover, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByTestId('first'))
+    fireEvent.keyDown(popover, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByTestId('sub-trigger'))
+    fireEvent.keyDown(popover, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(screen.getByTestId('last'))
+  })
+
+  it('does not type-ahead onto a closed submenu item', () => {
+    const popover = renderNested()
+
+    // `Zulu` is the only text starting with Z, and it is inside the closed
+    // submenu. Focus must not move to it.
+    fireEvent.keyDown(popover, { key: 'z' })
+    expect(document.activeElement).not.toBe(screen.getByTestId('hidden-item'))
+  })
+
+  it('reaches the submenu item once the submenu is open', () => {
+    const popover = renderNested()
+    fireEvent.click(screen.getByTestId('sub-trigger'))
+
+    fireEvent.keyDown(popover, { key: 'z' })
+    expect(document.activeElement).toBe(screen.getByTestId('hidden-item'))
   })
 })

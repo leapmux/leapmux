@@ -241,7 +241,7 @@ describe('useGitPathInfo', () => {
         expect(remap).toHaveBeenCalledTimes(1)
         expect(remap).toHaveBeenCalledWith('/main/repo')
         // Second probe lands on the canonical repo root — remap must
-        // NOT fire again (it's one-shot, gated on the firstProbeSeen flag).
+        // NOT fire again (it's one-shot, and the firstProbeSeen flag controls it).
         expect(getGitInfo).toHaveBeenCalledTimes(2)
         expect(remap).toHaveBeenCalledTimes(1)
         dispose()
@@ -341,7 +341,7 @@ describe('useGitPathInfo', () => {
   })
 
   it('remapWorktreeRoot option: stays one-shot even when a later probe also returns isWorktreeRoot=true', async () => {
-    // The remap is gated on the firstProbeSeen flag. Once the first
+    // The firstProbeSeen flag controls the remap. Once the first
     // probe lands (worktree or not), subsequent worktree-root probes
     // must NOT fire it again — otherwise a worker/path switch could
     // spuriously rewrite the user's chosen working dir.
@@ -754,6 +754,107 @@ describe('useGitPathInfo', () => {
           // The empty-wid branch must not refire it.
           expect(observed).toEqual([false])
           expect(getGitInfo).not.toHaveBeenCalled()
+          dispose()
+          done()
+        })
+      })
+    })
+
+    it('keeps the seed while the worker id has not arrived yet', async () => {
+      // A pre-filled dialog mounts with `workerId() === ''`:
+      // `createWorkerDialogContext` resolves the id from `listWorkers`, and it
+      // must stay empty until then so submit cannot arm against a worker that
+      // is not online. This branch runs in that window, and discarding the
+      // seed there left showGitOptions() false -- so `skipLoadingFlash` did
+      // not fire and the dialog painted the spinner it was seeded to avoid.
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const [workerId] = createSignal('')
+          const [path] = createSignal('/repo')
+          const info = useGitPathInfo(workerId, path, {
+            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
+          })
+          await flush()
+          expect(getGitInfo).not.toHaveBeenCalled()
+          expect(info.showGitOptions()).toBe(true)
+          expect(info.info().currentBranch).toBe('main')
+          dispose()
+          done()
+        })
+      })
+    })
+
+    it('shows no spinner when the worker id lands on a seeded snapshot', async () => {
+      // `skipLoadingFlash` reads showGitOptions(), so keeping the seed is what
+      // makes the probe silent. This is the user-visible half of the test
+      // above.
+      const probe = deferred<GetGitInfoResponse>()
+      getGitInfo.mockReturnValueOnce(probe.promise)
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const [workerId, setWorkerId] = createSignal('')
+          const [path] = createSignal('/repo')
+          const info = useGitPathInfo(workerId, path, {
+            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
+          })
+          await flush()
+          setWorkerId('A')
+          await flush()
+          expect(getGitInfo).toHaveBeenCalledTimes(1)
+          expect(info.loading()).toBe(false)
+          expect(info.showGitOptions()).toBe(true)
+          probe.resolve(gitResp({ currentBranch: 'feature-x' }))
+          await flush()
+          expect(info.info().currentBranch).toBe('feature-x')
+          dispose()
+          done()
+        })
+      })
+    })
+
+    it('drops the seed once a probe answered and the worker id is cleared', async () => {
+      // The other half of the rule: after a real answer the seed is
+      // superseded, so clearing the worker must clear the snapshot rather than
+      // resurrecting the repository the dialog no longer targets.
+      getGitInfo.mockResolvedValueOnce(gitResp({ currentBranch: 'feature-x' }))
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const [workerId, setWorkerId] = createSignal('')
+          const [path] = createSignal('/repo')
+          const info = useGitPathInfo(workerId, path, {
+            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
+          })
+          setWorkerId('A')
+          await flush()
+          expect(info.info().currentBranch).toBe('feature-x')
+
+          setWorkerId('')
+          await flush()
+          expect(info.info().isGitRepo).toBe(false)
+          expect(info.info().currentBranch).toBe('')
+          expect(info.showGitOptions()).toBe(false)
+          dispose()
+          done()
+        })
+      })
+    })
+
+    it('drops the seed once a probe FAILED and the worker id is cleared', async () => {
+      getGitInfo.mockRejectedValueOnce(new Error('boom'))
+      await new Promise<void>((done) => {
+        createRoot(async (dispose) => {
+          const [workerId, setWorkerId] = createSignal('')
+          const [path] = createSignal('/repo')
+          const info = useGitPathInfo(workerId, path, {
+            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
+          })
+          setWorkerId('A')
+          await flush()
+          expect(info.showGitOptions()).toBe(false)
+
+          setWorkerId('')
+          await flush()
+          expect(info.info().isGitRepo).toBe(false)
           dispose()
           done()
         })

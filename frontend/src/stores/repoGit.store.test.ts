@@ -970,7 +970,7 @@ describe('createRepoGitStore', () => {
    * The store exposes no per-worker clear, and must not grow one back.
    *
    * Dropping a worker's entries is never right while its tab rows survive. A
-   * row keeps `gitToplevel`, `WorkspaceTabTree.repoKeyAndLabel` groups the tab
+   * row keeps `gitToplevel`, `branchKeys.repoKeyAndLabel` groups the tab
    * by that field, and the branch label comes from this store -- so a cleared
    * entry puts every tab of that worker under its repo with no branch name.
    * Neither event that used to call it removes the rows: a dropped link leaves

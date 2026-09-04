@@ -19,6 +19,7 @@ import { WorkingTreeIcon, WorkingTreeTooltip } from '~/components/common/Working
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { formatShortcut } from '~/lib/shortcuts/display'
+import { menuSubTrigger, menuSubTriggerLabel } from '~/styles/shared.css'
 import * as styles from './composer.css'
 import { OptionGroupPopover } from './OptionGroupPopover'
 
@@ -69,7 +70,7 @@ export interface ComposerPlusMenuProps {
   /** Toggle Enter-key mode. */
   onToggleEnterMode: () => void
   /**
-   * The checkout the branch submenu names, resolved from {@link repoGitView}.
+   * The checkout the branch submenu identifies, resolved from {@link repoGitView}.
    * The submenu renders only when its `name` is set, matching the status-bar
    * chip.
    *
@@ -124,7 +125,7 @@ interface MenuStructure {
   permissionActions: PermissionAction[]
   branchName?: string
   /**
-   * Frozen WITH the branch name, because it names the destructive item rather
+   * Frozen WITH the branch name, because it identifies the destructive item rather
    * than merely labelling it. A live kind under a held name lets "Delete
    * branch..." become "Delete worktree..." beneath a pointer already aimed at
    * it, which is the same hazard as a row sliding into that place — the user
@@ -379,11 +380,11 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               >
                 <button
                   role="menuitem"
-                  class={styles.subTrigger}
+                  class={menuSubTrigger}
                   data-testid="composer-plus-branch"
                   {...triggerProps}
                 >
-                  <span class={styles.subTriggerLabel}>
+                  <span class={menuSubTriggerLabel}>
                     <WorkingTreeIcon isWorktree={branch().isWorktree} size="xs" />
                     {branch().name}
                   </span>
@@ -401,7 +402,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             trigger={triggerProps => (
               <button
                 role="menuitem"
-                class={styles.subTrigger}
+                class={menuSubTrigger}
                 data-testid="composer-agent-info"
                 {...triggerProps}
               >
@@ -486,7 +487,7 @@ function PlusGroupSubmenu(props: {
       trigger={(triggerProps, view) => (
         <button
           role="menuitem"
-          class={styles.subTrigger}
+          class={menuSubTrigger}
           data-testid={`composer-group-${props.groupId}`}
           {...triggerProps}
         >

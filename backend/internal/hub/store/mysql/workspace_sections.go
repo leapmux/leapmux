@@ -3,6 +3,8 @@ package mysql
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -70,6 +72,11 @@ func (s *workspaceSectionStore) Rename(ctx context.Context, p store.RenameWorksp
 		Name:   p.Name,
 		ID:     p.ID,
 		UserID: owner,
+		// A built-in section has a fixed name, so the query matches custom
+		// sections only. The type is BOUND from the enum rather than spelled as
+		// a literal in the SQL: a renumber then propagates instead of silently
+		// changing which sections this matches.
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 	}))
 }
 
@@ -118,6 +125,10 @@ func (s *workspaceSectionStore) Delete(ctx context.Context, p store.DeleteWorksp
 	return rowsAffected(s.conn.q.DeleteWorkspaceSection(ctx, gendb.DeleteWorkspaceSectionParams{
 		ID:     p.ID,
 		UserID: owner,
+		// Custom sections only, bound from the enum. This is the dangerous one:
+		// were the literal to drift onto a built-in type, delete would start
+		// matching the very sections it exists to protect.
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 	}))
 }
 
@@ -128,6 +139,11 @@ func (s *workspaceSectionStore) HasDefaultForUser(ctx context.Context, userID us
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return false, nil
 	}
-	exists, err := s.conn.q.HasDefaultSectionsForUser(ctx, owner)
+	exists, err := s.conn.q.HasDefaultSectionsForUser(ctx, gendb.HasDefaultSectionsForUserParams{
+		UserID: owner,
+		// "Has any NON-custom section", i.e. has the defaults been seeded.
+		// Bound from the enum for the same reason as the two above.
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+	})
 	return exists, mapErr(err)
 }

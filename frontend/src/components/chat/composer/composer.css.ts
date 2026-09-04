@@ -145,24 +145,12 @@ export const plusPopover = style([composerMenuPopover, {
 }])
 
 // --- Submenu (nested DropdownMenu for each option group under `[+]` ▸ settings) ---
-
-export const subTrigger = style({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  width: '100%',
-})
-
-/**
- * The leading half of a submenu trigger, for an item whose label carries an icon
- * (the branch item). `subTrigger` pushes its two children apart, so the icon and
- * the text need one box between them or the chevron separates them instead.
- */
-export const subTriggerLabel = style([clippedText, {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-}])
+//
+// The trigger row and its label live in `~/styles/shared.css.ts` as
+// `menuSubTrigger` / `menuSubTriggerLabel`: every submenu trigger in the app is
+// that shape, and this is not the composer's own vocabulary. Only the popover
+// below is composer-specific, because it stacks against the composer's own
+// z-index band.
 
 export const subPopover = style([composerMenuPopover, {
   padding: 'var(--space-1)',

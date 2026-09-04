@@ -2,6 +2,7 @@ import type { FileSortFields, FileSortOrder } from './fileSort'
 import { describe, expect, it } from 'vitest'
 import {
   compareNames,
+  compareOptionalValue,
   DEFAULT_FILE_SORT_ORDER,
   fileExtension,
   makeFileComparator,
@@ -303,5 +304,41 @@ describe('makeFileComparator', () => {
         expect(sorted(entries, o), `${key}/${direction}`).toEqual(sorted(entries.toReversed(), o))
       }
     }
+  })
+})
+
+// The rule both sorts share, stated once. `undefined` for a tie is what lets a
+// caller write `compareOptionalValue(...) ?? byName(a, b)` without `??`
+// swallowing a real comparison result of 0.
+describe('compareOptionalValue', () => {
+  it('orders two present values, and flips with the direction', () => {
+    expect(compareOptionalValue(1, 2, 1)).toBe(-1)
+    expect(compareOptionalValue(1, 2, -1)).toBe(1)
+  })
+
+  it('answers undefined for a tie, so the caller breaks it', () => {
+    expect(compareOptionalValue(5, 5, 1)).toBeUndefined()
+    expect(compareOptionalValue(undefined, undefined, 1)).toBeUndefined()
+  })
+
+  // The pin happens BEFORE the direction flip, so "unknown" never migrates to
+  // the top under `desc`.
+  it('sorts an absent value LAST under both directions', () => {
+    expect(compareOptionalValue(undefined, 5, 1)).toBe(1)
+    expect(compareOptionalValue(undefined, 5, -1)).toBe(1)
+    expect(compareOptionalValue(5, undefined, 1)).toBe(-1)
+    expect(compareOptionalValue(5, undefined, -1)).toBe(-1)
+  })
+
+  // A real 0 is a value, not an absence -- which is why the caller maps its
+  // own "absent" spelling to `undefined` rather than relying on falsiness.
+  it('treats 0 as a present value', () => {
+    expect(compareOptionalValue(0, 5, 1)).toBe(-1)
+    expect(compareOptionalValue(0, undefined, 1)).toBe(-1)
+  })
+
+  it('orders strings the same way', () => {
+    expect(compareOptionalValue('a', 'b', 1)).toBe(-1)
+    expect(compareOptionalValue('b', 'a', 1)).toBe(1)
   })
 })

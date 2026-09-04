@@ -56,7 +56,10 @@ const STATIC_PASSTHROUGHS = new Set([
   'onDeleteWorkspace',
   'onConfirmDelete',
   'onConfirmArchive',
+  'onConfirmEmptyArchive',
   'onPostArchiveWorkspace',
+  // One bundle now, not three parallel fields. See `SectionActions`.
+  'sectionActions',
   'getCurrentTabContext',
   'getMruAgentContext',
   'onFileSelect',
@@ -102,7 +105,9 @@ function trackedOpts() {
     onDeleteWorkspace: noop,
     onConfirmDelete: noop,
     onConfirmArchive: noop,
+    onConfirmEmptyArchive: noop,
     onPostArchiveWorkspace: noop,
+    sectionActions: { onNew: noop, onRename: noop, onDelete: noop },
     getCurrentTabContext: tabContext,
     getMruAgentContext: () => ({ workingDir: '/repo', homeDir: '/home/u' }),
     get fileTreePath() {
@@ -145,6 +150,13 @@ function trackedOpts() {
       reads.push('workers')
       return []
     },
+    // Counted, because it is REACTIVE: it comes from a `createResource` over
+    // the desktop shell's runtime state, so an eager read here would put the
+    // whole sidebar back on the remount-per-change path.
+    get localSolo() {
+      reads.push('localSolo')
+      return false
+    },
     workerInfoFn: () => undefined,
     channelStatusFn: () => undefined,
     onAddTunnel: noop,
@@ -155,6 +167,7 @@ function trackedOpts() {
     // A real bundle, not omitted: the pass-through assertion below compares
     // identities, and two `undefined`s compare equal without proving anything.
     branchActions: stubBranchRefActions(),
+    workspaceStartActions: { onNewAgentAt: noop, onNewTerminalAt: noop },
   } as unknown as SidebarElementsOpts
   return { opts, reads }
 }
@@ -174,7 +187,7 @@ describe('buildCommonSidebarProps', () => {
     expect(reads).toEqual([])
   })
 
-  it('forwards a pass-through prop it never names', () => {
+  it('forwards a pass-through prop it never lists', () => {
     // The forward list is gone -- mergeProps carries every pass-through -- so
     // this is what pins that the mechanism is actually wired. It also covers
     // what the Proxy guard below no longer can: mergeProps reads descriptors

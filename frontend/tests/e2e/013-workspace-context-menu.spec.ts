@@ -5,6 +5,14 @@ import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
 import { workspaceRow } from './helpers/ui'
 
 /**
+ * The workspace row menu carries an INFO BLOCK and repository-named items now,
+ * and Playwright matches an accessible name by SUBSTRING unless told otherwise
+ * -- so `{ name: 'Delete' }` also matched the info block (whose name is every
+ * row of it joined) and `{ name: 'Archive' }` also matched
+ * "New agent in archived-branch...". Every lookup below is `exact`.
+ */
+
+/**
  * The context menu's item visibility (Rename / Share / Archive vs. Unarchive /
  * Delete / Move-to) and the owner-only filter are unit-tested in
  * `src/components/workspace/WorkspaceContextMenu.test.tsx`. This e2e exercises
@@ -20,7 +28,7 @@ test.describe('Workspace Context Menu', () => {
     // ── Rename ──────────────────────────────────────────────────────────────
     await workspaceItem.hover()
     await workspaceItem.locator('button').first().click()
-    await page.getByRole('menuitem', { name: 'Rename' }).click()
+    await page.getByRole('menuitem', { name: 'Rename', exact: true }).click()
 
     const renameInput = workspaceItem.locator('input')
     await expect(renameInput).toBeVisible()
@@ -38,7 +46,7 @@ test.describe('Workspace Context Menu', () => {
 
     await workspaceItem.hover()
     await workspaceItem.locator('button').first().click()
-    await page.getByRole('menuitem', { name: 'Delete' }).click()
+    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
 
     const dialog = page.locator('dialog')
     await expect(dialog).toBeVisible()
@@ -67,7 +75,9 @@ test.describe('Workspace Context Menu', () => {
     await page.mouse.down({ button: 'right' })
     await page.mouse.up({ button: 'right' })
 
-    const renameItem = page.getByRole('menuitem', { name: 'Rename' })
+    // Scoped to THIS row: the popover belongs to the row that owns it, and
+    // every row on screen carries one.
+    const renameItem = workspaceItem.getByRole('menuitem', { name: 'Rename', exact: true })
     await expect(renameItem).toBeVisible()
 
     // Still visible a moment later: the menu opens after the release, so the
@@ -97,11 +107,17 @@ test.describe('Workspace Context Menu', () => {
       const x = box.x + box.width / 2
       const y = box.y + box.height / 2
 
+      // Scoped to THIS row, not to the page. The menu's popover is a DOM child
+      // of the row that owns it, and every other row on screen has one too --
+      // so a page-global lookup answers for whichever row happens to have a
+      // menu open, which is not what either assertion below means.
+      const renameItem = workspaceItem.getByRole('menuitem', { name: 'Rename', exact: true })
+
       // ── A press that travels is a scroll, not a menu ────────────────────────
       const scrolling = await touchDown(page, x, y)
       await scrolling.moveTo(x, y + 60)
       await scrolling.end()
-      await expect(page.getByRole('menuitem', { name: 'Rename' })).toBeHidden()
+      await expect(renameItem).toBeHidden()
       await expect(workspaceItem).not.toHaveAttribute('data-press-hold')
 
       // ── A press that stays put opens the menu, while it is still down ───────
@@ -114,7 +130,6 @@ test.describe('Workspace Context Menu', () => {
       // with the finger still on the glass. (This used to wait for the accent
       // tint to reach full instead, which is no longer a state that lasts --
       // the tint yields the moment the menu it was promising arrives.)
-      const renameItem = page.getByRole('menuitem', { name: 'Rename' })
       await expect(renameItem).toBeVisible()
       await expect(workspaceItem).not.toHaveAttribute('data-press-hold')
 

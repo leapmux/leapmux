@@ -75,7 +75,7 @@ describe('sectionTypeTestId', () => {
   })
 
   it('falls back to String(sectionType) for an unmapped value', () => {
-    // The default arm keeps an unknown enum value renderable rather than
+    // The default case keeps an unknown enum value renderable rather than
     // throwing -- a forward-compatible new section type still produces a slug.
     expect(sectionTypeTestId(999 as unknown as SectionType)).toBe('999')
   })
@@ -96,15 +96,13 @@ describe('getSectionIcon', () => {
 })
 
 describe('isWorkspaceMutatable', () => {
-  it('returns true for a non-archived workspace', () => {
-    expect(isWorkspaceMutatable({ createdBy: 'user-1' }, false)).toBe(true)
+  it('returns true for a live workspace', () => {
+    expect(isWorkspaceMutatable(false)).toBe(true)
   })
 
-  it('returns false for archived workspace', () => {
-    expect(isWorkspaceMutatable({ createdBy: 'user-1' }, true)).toBe(false)
-  })
-
-  it('returns false when workspace is undefined', () => {
-    expect(isWorkspaceMutatable(undefined, false)).toBe(false)
+  it('returns false for an archived workspace', () => {
+    // Archival is the ONE thing that blocks mutation. Access is owner-only, so
+    // there is no second axis for this predicate to weigh.
+    expect(isWorkspaceMutatable(true)).toBe(false)
   })
 })

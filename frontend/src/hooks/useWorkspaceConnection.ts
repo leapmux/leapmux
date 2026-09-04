@@ -45,7 +45,7 @@ function warnChatHistoryLoadFailed(err: unknown): void {
 /**
  * Which tabs a worker going offline affects.
  *
- * Both arms filter on `workerId`, and that is the whole point: this walks
+ * Both cases filter on `workerId`, and that is the whole point: this walks
  * `view.all()` — every tab in the ACCOUNT, not one workspace — so a tab hosted
  * by any other worker is still perfectly connected.
  */
@@ -506,7 +506,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // its own side.
   //
   // A sweep here removed the branch with no way back. `Tab.gitToplevel`
-  // outlives the outage, and `WorkspaceTabTree.repoKeyAndLabel` groups a tab by
+  // outlives the outage, and `branchKeys.repoKeyAndLabel` groups a tab by
   // that field alone. The branch label comes from this store. A dropped entry
   // therefore put every tab of that worker under its repo with no branch name.
   //
