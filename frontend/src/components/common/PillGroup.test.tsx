@@ -1,15 +1,16 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { createSignal } from 'solid-js'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
 import { PillGroup } from './PillGroup'
+import * as styles from './PillGroup.css'
 
 /**
- * The preference pills are one-of-N groups, so they carry radiogroup/radio
- * semantics rather than aria-pressed.
+ * These controls contain one required choice. Radio semantics give the group
+ * its accessible name, selected state, and position information.
  *
- * They shipped as four identical stateless buttons; aria-pressed fixed the
- * "stateless" half and still described the wrong widget — a toggle button
- * announces "pressed", promises it can be un-pressed, and carries no group name
- * and no set position. These pin what a screen reader can actually reach.
+ * The old controls used identical stateless buttons. `aria-pressed` would
+ * describe toggle buttons, which promise that the reader can clear a choice.
  */
 describe('pillGroup', () => {
   const options = [
@@ -23,35 +24,32 @@ describe('pillGroup', () => {
       <PillGroup
         label="Theme"
         options={options}
-        selected={v => v === current}
+        selected={value => value === current}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('exposes a named group, not a row of anonymous buttons', () => {
+  it('exposes a group with an accessible name', () => {
     renderGroup('dark')
-    // The visible <h3> is not associated with the group in the a11y tree, so
-    // the aria-label is the only name AT ever announces on entry.
+    // A visible heading does not associate itself with this group. The label
+    // prop supplies the name that assistive technology announces.
     expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeTruthy()
     expect(screen.getAllByRole('radio')).toHaveLength(3)
   })
 
-  it('selects without submitting the form it sits in', () => {
-    // A bare <button> inside a <form> defaults to type="submit". The pills
-    // shipped without an explicit type, so choosing "Passkey" on the login
-    // page SUBMITTED the login form with the username and nothing else: the
-    // submit button went to "Signing in..." and stayed there, and the E2E
-    // helper waited two minutes for a button that never re-enabled.
+  it('selects without submitting its form', () => {
+    // A button in a form submits by default. The old Passkey option started an
+    // incomplete login request and left the submit button unavailable.
     const onSelect = vi.fn()
-    const onSubmit = vi.fn((e: Event) => e.preventDefault())
+    const onSubmit = vi.fn((event: Event) => event.preventDefault())
     render(() => (
       <form onSubmit={onSubmit}>
         <PillGroup
           label="Theme"
           options={options}
-          selected={v => v === null}
+          selected={value => value === null}
           onSelect={onSelect}
         />
         <button type="submit">Go</button>
@@ -64,22 +62,21 @@ describe('pillGroup', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('marks exactly one option checked', () => {
+  it('marks exactly one option as checked', () => {
     renderGroup('dark')
-    expect(screen.getByRole('radio', { name: 'Dark' }).getAttribute('aria-checked')).toBe('true')
-    expect(screen.getByRole('radio', { name: 'Light' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('radio', { name: 'Use account default' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('radio', { name: 'Use account default' })).toHaveAttribute('aria-checked', 'false')
   })
 
   it('puts only the checked option in the tab order', () => {
-    // Roving tabindex is what the role requires: Tab reaches the GROUP, the
-    // arrows move within it. Without it every pill is its own tab stop.
+    // Tab enters the group once. Arrow keys then move within the group.
     renderGroup('dark')
-    expect(screen.getByRole('radio', { name: 'Dark' }).getAttribute('tabindex')).toBe('0')
-    expect(screen.getByRole('radio', { name: 'Light' }).getAttribute('tabindex')).toBe('-1')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('tabindex', '-1')
   })
 
-  it('moves the selection with the arrow keys, wrapping at the ends', () => {
+  it('moves the selection with arrow keys and wraps at each end', () => {
     const onSelect = renderGroup('dark')
     const group = screen.getByRole('radiogroup', { name: 'Theme' })
 
@@ -90,7 +87,7 @@ describe('pillGroup', () => {
     expect(onSelect).toHaveBeenLastCalledWith(null)
   })
 
-  it('jumps to the ends with Home and End', () => {
+  it('moves to each end with Home and End', () => {
     const onSelect = renderGroup('dark')
     const group = screen.getByRole('radiogroup', { name: 'Theme' })
 
@@ -101,27 +98,39 @@ describe('pillGroup', () => {
     expect(onSelect).toHaveBeenLastCalledWith('light')
   })
 
-  it('ignores keys it does not own', () => {
+  it('ignores keys that the group does not own', () => {
     const onSelect = renderGroup('dark')
     fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Theme' }), { key: 'a' })
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('wraps from the last option forward', () => {
+  it('wraps forward from the last option', () => {
     const onSelect = renderGroup('light')
     fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Theme' }), { key: 'ArrowRight' })
     expect(onSelect).toHaveBeenLastCalledWith(null)
   })
+
+  it('does not draw an empty group', () => {
+    const result = render(() => (
+      <PillGroup
+        label="Empty choice"
+        options={[]}
+        selected={() => false}
+        onSelect={vi.fn()}
+      />
+    ))
+    expect(screen.queryByRole('radiogroup', { name: 'Empty choice' })).toBeNull()
+    expect(result.container.childElementCount).toBe(0)
+  })
 })
 
 /**
- * A stored browser preference can hold a value that matches no option: the
- * value is read back through an unchecked cast, so a renamed or retired
- * enum value survives in storage. Anchoring the tab stop on the selection
- * left EVERY pill at -1 there, Tab skipped the whole radiogroup, and the
- * arrow keys the group handles reached nothing.
+ * A stale stored value can match no current option.
+ *
+ * Browser storage uses an unchecked cast. A removed enum value can therefore
+ * survive a schema change. The group must remain reachable in this state.
  */
-describe('pillGroup with nothing selected', () => {
+describe('pillGroup with no selected option', () => {
   const options = [
     { value: 'send', label: 'Send' },
     { value: 'newline', label: 'Newline' },
@@ -133,32 +142,30 @@ describe('pillGroup with nothing selected', () => {
       <PillGroup
         label="Enter key"
         options={options}
-        selected={v => v === 'gone-from-the-schema'}
+        selected={value => value === 'gone-from-the-schema'}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('keeps one pill in the tab order', () => {
+  it('keeps one option in the tab order', () => {
     renderUnmatched()
-    const tabIndexes = screen.getAllByRole('radio').map(el => el.getAttribute('tabindex'))
+    const tabIndexes = screen.getAllByRole('radio').map(element => element.getAttribute('tabindex'))
     expect(tabIndexes).toEqual(['0', '-1', '-1'])
   })
 
-  it('checks none of them', () => {
-    // APG allows an UNCHECKED radio to hold the tab stop; it does not allow
-    // the group to claim a selection the caller does not have.
+  it('does not check an option', () => {
+    // The radio pattern permits an unchecked radio to own the tab stop. The
+    // group must not claim a selection that the caller does not have.
     renderUnmatched()
-    expect(screen.getAllByRole('radio').map(el => el.getAttribute('aria-checked')))
+    expect(screen.getAllByRole('radio').map(element => element.getAttribute('aria-checked')))
       .toEqual(['false', 'false', 'false'])
   })
 
-  it('moves to the SECOND option on ArrowRight, and reaches the first with Home', () => {
-    // Focus sits on the pill that carries the tab stop, which is the first
-    // one, so the arrow moves relative to it. Deriving the origin from the
-    // (absent) selection made ArrowRight land on the first option instead,
-    // which is where focus already was.
+  it('moves from the roving option when an arrow key selects', () => {
+    // Focus starts on the first option. ArrowRight must therefore select the
+    // second option instead of restarting at the first option.
     const onSelect = renderUnmatched()
     const group = screen.getByRole('radiogroup', { name: 'Enter key' })
 
@@ -171,11 +178,10 @@ describe('pillGroup with nothing selected', () => {
 })
 
 /**
- * A group another control governs: the theme chooser's mode pills while the
- * palette is "Match UI".
+ * Another control governs this group and prevents all changes.
  *
- * It must keep SHOWING its selection -- that is what tells the user which mode
- * the governing control produced -- while refusing every way of changing it.
+ * The terminal theme uses this state while it matches the user interface. Its
+ * visible selection shows the mode that the governing control produced.
  */
 describe('pillGroup disabled', () => {
   const options = [
@@ -190,25 +196,25 @@ describe('pillGroup disabled', () => {
         label="Terminal theme mode"
         options={options}
         disabled
-        selected={v => v === current}
+        selected={value => value === current}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('still reports which option is selected', () => {
+  it('reports its selected option', () => {
     renderDisabled('dark')
     expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'false')
   })
 
-  it('takes the whole group out of the tab order', () => {
-    // The roving index normally parks a tab stop on the selected pill. Leaving
-    // it there would put Tab on a control that refuses every key.
+  it('removes the group from the tab order', () => {
+    // A disabled group cannot leave a tab stop on a control that refuses every
+    // keyboard input.
     renderDisabled('dark')
     const radios = screen.getAllByRole('radio')
-    expect(radios.every(r => r.getAttribute('tabindex') === '-1')).toBe(true)
+    expect(radios.every(radio => radio.getAttribute('tabindex') === '-1')).toBe(true)
     for (const radio of radios)
       expect(radio).toBeDisabled()
   })
@@ -219,24 +225,30 @@ describe('pillGroup disabled', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('refuses the arrow keys, which the GROUP handles rather than the pills', () => {
-    // The native `disabled` attribute stops the click, but the keydown listener
-    // sits on the radiogroup wrapper and would still fire.
+  it('refuses the keys that the group handles', () => {
+    // The native disabled attribute stops a button click. The group still
+    // receives its own keyboard events, so it must refuse them separately.
     const onSelect = renderDisabled('dark')
     const group = screen.getByRole('radiogroup', { name: 'Terminal theme mode' })
     for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End'])
       fireEvent.keyDown(group, { key })
     expect(onSelect).not.toHaveBeenCalled()
   })
+
+  it('dims the full group without dimming each option twice', () => {
+    renderDisabled('dark')
+    const group = screen.getByRole('radiogroup', { name: 'Terminal theme mode' })
+    expect(group).toHaveClass(styles.pillGroupDisabled)
+    for (const radio of screen.getAllByRole('radio'))
+      expect(radio).not.toHaveClass(styles.pillOptionDimmed)
+  })
 })
 
 /**
- * ONE refused option, rather than the whole group.
+ * One option can refuse input without disabling the full group.
  *
- * Shown-and-refused is for an option the reader can get back -- the Passkey
- * pill on a page that is not secure. Hiding it leaves somebody whose only
- * credential is a passkey at a dead end with nothing to read, so the pill
- * stays and carries the reason.
+ * A passkey option on an insecure page is restorable. Keep it visible so the
+ * reader can learn why it is unavailable.
  */
 describe('pillGroup with one refused option', () => {
   const reason = 'A browser runs a passkey only on a secure page.'
@@ -249,16 +261,16 @@ describe('pillGroup with one refused option', () => {
           { value: 'password', label: 'Password' },
           { value: 'passkey', label: 'Passkey', disabledReason: reason },
         ]}
-        selected={v => v === current}
+        selected={value => value === current}
         onSelect={onSelect}
       />
     ))
     return onSelect
   }
 
-  it('keeps the pill, its name, and the reason', () => {
+  it('keeps the option, its accessible name, and its reason', () => {
     renderGroup('password')
-    // The lookup itself is half of it: the reason must not become the name.
+    // The reason describes the button. It must not replace the button name.
     const passkey = screen.getByRole('radio', { name: 'Passkey' })
     expect(passkey).toBeDisabled()
     expect(passkey).not.toHaveAttribute('title')
@@ -267,7 +279,7 @@ describe('pillGroup with one refused option', () => {
     expect(document.getElementById(describedBy!)?.textContent).toBe(reason)
   })
 
-  it('leaves the other pills live', () => {
+  it('keeps the other options available', () => {
     const onSelect = renderGroup('passkey')
     const password = screen.getByRole('radio', { name: 'Password' })
     expect(password).toBeEnabled()
@@ -275,23 +287,174 @@ describe('pillGroup with one refused option', () => {
     expect(onSelect).toHaveBeenCalledWith('password')
   })
 
-  // An arrow key that lands on a refused pill strands the group: the pill
-  // takes no tab stop, so focus goes nowhere and the next arrow moves relative
-  // to a value the user cannot reach.
-  it('skips the refused pill with the arrow keys', () => {
+  it('skips the refused option with arrow keys', () => {
+    // A refused option has no tab stop. Moving focus to it would leave the
+    // group without a valid keyboard origin.
     const onSelect = renderGroup('password')
     fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Sign-in method' }), { key: 'ArrowRight' })
     expect(onSelect).not.toHaveBeenCalledWith('passkey')
   })
 
-  // The tab stop follows the SELECTION, and a selection that is itself refused
-  // has to hand it on -- a group with no tab stop is a group Tab cannot enter.
-  it('moves the tab stop off a refused selection', () => {
+  it('moves the tab stop from a refused selection', () => {
     renderGroup('passkey')
     expect(screen.getByRole('radio', { name: 'Password' })).toHaveAttribute('tabindex', '0')
     expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('tabindex', '-1')
-    // Still CHECKED, because that is what the stored value says. The APG
-    // radiogroup rule allows an unchecked radio to hold the tab stop.
+    // The stored value still selects Passkey. The radio pattern permits another
+    // unchecked radio to own the tab stop.
     expect(screen.getByRole('radio', { name: 'Passkey' })).toHaveAttribute('aria-checked', 'true')
+    expect(getIndicator(screen.getByRole('radiogroup', { name: 'Sign-in method' })))
+      .toHaveClass(styles.selectionIndicatorDimmed)
+  })
+})
+
+interface StubGeometry {
+  left: number
+  width: number
+}
+
+function stubGeometry(element: HTMLElement, geometry: StubGeometry): void {
+  Object.defineProperties(element, {
+    offsetLeft: { configurable: true, get: () => geometry.left },
+    offsetWidth: { configurable: true, get: () => geometry.width },
+  })
+}
+
+function getIndicator(group: HTMLElement): HTMLElement | null {
+  return group.querySelector(':scope > [aria-hidden="true"]')
+}
+
+/** The moving fill follows reactive selection and layout changes. */
+describe('pillGroup selection indicator', () => {
+  const first = { value: 'first', label: 'First' }
+  const second = { value: 'second', label: 'A wider second option' }
+
+  beforeEach(() => installControllableResizeObserver())
+
+  it('mounts and removes the control when its option list changes', () => {
+    const [options, setOptions] = createSignal<(typeof first)[]>([])
+    render(() => (
+      <PillGroup
+        label="Loaded options"
+        options={options()}
+        selected={value => value === first.value}
+        onSelect={vi.fn()}
+      />
+    ))
+    expect(screen.queryByRole('radiogroup', { name: 'Loaded options' })).toBeNull()
+
+    setOptions([first])
+    const group = screen.getByRole('radiogroup', { name: 'Loaded options' })
+    stubGeometry(screen.getByRole('radio', { name: first.label }), { left: 0, width: 70 })
+    triggerResizeObserversSync()
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(0px)', width: '70px' })
+
+    setOptions([])
+    expect(screen.queryByRole('radiogroup', { name: 'Loaded options' })).toBeNull()
+  })
+
+  it('starts at the selected segment and moves to a segment with another width', () => {
+    const [current, setCurrent] = createSignal(first.value)
+    render(() => (
+      <PillGroup
+        label="Measured options"
+        options={[first, second]}
+        selected={value => value === current()}
+        onSelect={setCurrent}
+      />
+    ))
+
+    const group = screen.getByRole('radiogroup', { name: 'Measured options' })
+    const firstRadio = screen.getByRole('radio', { name: first.label })
+    const secondRadio = screen.getByRole('radio', { name: second.label })
+    stubGeometry(firstRadio, { left: 0, width: 70 })
+    stubGeometry(secondRadio, { left: 70, width: 150 })
+    triggerResizeObserversSync()
+
+    const indicator = getIndicator(group)
+    expect(indicator).toHaveAttribute('aria-hidden', 'true')
+    expect(indicator).toHaveStyle({ transform: 'translateX(0px)', width: '70px' })
+    expect(indicator).not.toHaveClass(styles.selectionIndicatorMoves)
+
+    fireEvent.click(secondRadio)
+
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(70px)', width: '150px' })
+    expect(getIndicator(group)).toHaveClass(styles.selectionIndicatorMoves)
+  })
+
+  it('adds and removes the indicator without entrance motion', () => {
+    const [current, setCurrent] = createSignal('missing')
+    render(() => (
+      <PillGroup
+        label="Optional selection"
+        options={[first, second]}
+        selected={value => value === current()}
+        onSelect={setCurrent}
+      />
+    ))
+
+    const group = screen.getByRole('radiogroup', { name: 'Optional selection' })
+    const firstRadio = screen.getByRole('radio', { name: first.label })
+    stubGeometry(firstRadio, { left: 0, width: 70 })
+    expect(getIndicator(group)).toBeNull()
+
+    setCurrent(first.value)
+
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(0px)', width: '70px' })
+    expect(getIndicator(group)).not.toHaveClass(styles.selectionIndicatorMoves)
+
+    setCurrent('missing')
+    expect(getIndicator(group)).toBeNull()
+  })
+
+  it('corrects resized geometry without selection motion', () => {
+    const geometry = { left: 70, width: 150 }
+    render(() => (
+      <PillGroup
+        label="Resized options"
+        options={[first, second]}
+        selected={value => value === second.value}
+        onSelect={vi.fn()}
+      />
+    ))
+
+    const group = screen.getByRole('radiogroup', { name: 'Resized options' })
+    stubGeometry(screen.getByRole('radio', { name: first.label }), { left: 0, width: 70 })
+    stubGeometry(screen.getByRole('radio', { name: second.label }), geometry)
+    triggerResizeObserversSync()
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(70px)', width: '150px' })
+
+    geometry.left = 90
+    geometry.width = 180
+    triggerResizeObserversSync()
+
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(90px)', width: '180px' })
+    expect(getIndicator(group)).not.toHaveClass(styles.selectionIndicatorMoves)
+  })
+
+  it('corrects a reorder without treating it as a selection change', () => {
+    const [options, setOptions] = createSignal([first, second])
+    const firstGeometry = { left: 0, width: 70 }
+    const secondGeometry = { left: 70, width: 150 }
+    render(() => (
+      <PillGroup
+        label="Reordered options"
+        options={options()}
+        selected={value => value === second.value}
+        onSelect={vi.fn()}
+      />
+    ))
+
+    const group = screen.getByRole('radiogroup', { name: 'Reordered options' })
+    stubGeometry(screen.getByRole('radio', { name: first.label }), firstGeometry)
+    stubGeometry(screen.getByRole('radio', { name: second.label }), secondGeometry)
+    triggerResizeObserversSync()
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(70px)', width: '150px' })
+
+    firstGeometry.left = 150
+    secondGeometry.left = 0
+    setOptions([second, first])
+
+    expect(getIndicator(group)).toHaveStyle({ transform: 'translateX(0px)', width: '150px' })
+    expect(getIndicator(group)).not.toHaveClass(styles.selectionIndicatorMoves)
   })
 })
