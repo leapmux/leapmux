@@ -66,6 +66,7 @@ vi.mock('~/lib/systemInfo', () => ({
   // A multi-user hub: every caller signs in, and none of the solo facts hold.
   isAutoAuthenticated: () => false,
   passwordSetupRequired: () => false,
+  isPasswordSetupGate: () => false,
   soloPasswordSet: () => false,
   loadSystemInfo: () => mockLoadSystemInfo(),
   isSystemInfoLoaded: () => true,
@@ -137,7 +138,7 @@ describe('authContext', () => {
 
   // The boot splash's checklist advances on these phases; both RPCs are held
   // open with deferreds so each phase is observed, not raced past.
-  it('advances the boot splash phase through bootstrap and lands on ready', async () => {
+  it('advances the boot splash phase through bootstrap and lands on workspaces when authenticated', async () => {
     const systemInfo = deferred<void>()
     const session = deferred<{ user: { id: string, username: string, isAdmin: boolean } }>()
     mockLoadSystemInfo.mockReturnValue(systemInfo.promise)
@@ -155,6 +156,14 @@ describe('authContext', () => {
     })
 
     session.resolve({ user: { id: 'u1', username: 'testuser', isAdmin: false } })
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
+    })
+  })
+
+  it('lands on ready when bootstrap finishes signed out', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: undefined })
+    renderWithAuth()
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
     })
@@ -342,6 +351,21 @@ describe('authContext', () => {
     expect(mockCloseAll).toHaveBeenCalledOnce()
     expect(mockResetTunnels).toHaveBeenCalledOnce()
     expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
+    // Finished shell checklist must not linger into the next bootstrap splash.
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('initializing')
+  })
+
+  it('enters the shell checklist on login before AppShell mounts', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: undefined })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
+    })
+
+    mockLogin.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    await auth().login('alice', 'pw')
+
+    expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
   })
 
   it('drops pooled channels when any setUser path swaps to a different identity', async () => {

@@ -8,21 +8,24 @@ import {
   resolveClientEntryHref,
 } from '~/lib/bootDocumentAssets'
 
-function linkAttrs(asset: BootDocumentAsset, deferStylesheet: boolean): Record<string, unknown> {
-  const raw = { ...(asset.attrs ?? {}) }
-  delete raw.key
-  return deferStylesheet ? deferredStylesheetAttrs(raw) : raw
-}
-
-function styleAttrs(asset: BootDocumentAsset): Record<string, unknown> {
+function attrsWithoutKey(asset: BootDocumentAsset): Record<string, unknown> {
   const raw = { ...(asset.attrs ?? {}) }
   delete raw.key
   return raw
 }
 
+function linkAttrs(asset: BootDocumentAsset, deferStylesheet: boolean): Record<string, unknown> {
+  const raw = attrsWithoutKey(asset)
+  return deferStylesheet ? deferredStylesheetAttrs(raw) : raw
+}
+
 /**
  * Filtered cold-start head assets. Ignores StartServer's pre-rendered
  * `assets` prop; reads the raw list from the page event instead.
+ *
+ * Emits `link`, `style`, and `script` (DEV Vite client and plugin tags).
+ * Other tags stay dropped — Vinxi's SPA path only puts those three in
+ * `context.assets` today.
  */
 export function BootDocumentHeadAssets() {
   const event = getRequestEvent() as { assets?: BootDocumentAsset[] } | undefined
@@ -37,7 +40,10 @@ export function BootDocumentHeadAssets() {
     .map(a => linkAttrs(a, false))
   const immediateStyles = immediate
     .filter(a => a.tag === 'style')
-    .map(a => ({ attrs: styleAttrs(a), children: a.children }))
+    .map(a => ({ attrs: attrsWithoutKey(a), children: a.children }))
+  const immediateScripts = immediate
+    .filter(a => a.tag === 'script')
+    .map(a => ({ attrs: attrsWithoutKey(a), children: a.children }))
   const deferredLinks = deferredStylesheets.map(a => linkAttrs(a, true))
 
   return (
@@ -47,6 +53,9 @@ export function BootDocumentHeadAssets() {
       </For>
       <For each={immediateStyles}>
         {s => <style {...s.attrs}>{s.children as string | undefined}</style>}
+      </For>
+      <For each={immediateScripts}>
+        {s => <script {...s.attrs}>{s.children as string | undefined}</script>}
       </For>
       <For each={deferredLinks}>
         {attrs => <link {...attrs} />}

@@ -507,24 +507,31 @@ describe('boot phase checklist', () => {
     expect(css).not.toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="loading-bundles"] .boot-splash-row-mounting .boot-splash-progress-check`)
     // Before any script runs, the first row is the active one.
     expect(css).toContain(`html:not([${BOOT_SPLASH_PHASE_ATTRIBUTE}]) .boot-splash-row-initializing .boot-splash-progress-dots{opacity:1}`)
-    // ready checks every row and leaves the list visible — AppShell keeps the
-    // splash up until tabs land, so the finished checklist must stay readable.
+    // ready checks every row. Without data-boot-shell the list fades (login);
+    // with data-boot-shell AppShell keeps it readable until tabs land.
     expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-row-session .boot-splash-progress-check{opacity:1}`)
     expect(css).toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-row-tabs .boot-splash-progress-check{opacity:1}`)
-    expect(css).not.toContain(`html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"] .boot-splash-progress{opacity:0}`)
+    expect(css).toContain(
+      `html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"]:not([${BOOT_SPLASH_SHELL_ATTRIBUTE}]) `
+      + `#${BOOT_SPLASH_STATIC_ID} .boot-splash-progress,`
+      + `html[${BOOT_SPLASH_PHASE_ATTRIBUTE}="${BOOT_PHASE_READY}"]:not([${BOOT_SPLASH_SHELL_ATTRIBUTE}]) `
+      + `[data-testid="${BOOT_SPLASH_TEST_ID}"] .boot-splash-progress{opacity:0}`,
+    )
   })
 
-  it('hides shell rows until data-boot-shell, at a specificity that beats the row grid', () => {
+  it('keeps shell rows invisible until data-boot-shell, while reserving their layout height', () => {
     const css = bootSplashDocumentCss()
 
-    // Must beat `#boot-splash .boot-splash-progress-row{display:grid}`.
+    // visibility — not display:none — so the row height is reserved from first
+    // paint and revealing shell rows cannot move the logo or core checklist.
     expect(css).toContain(
-      `#${BOOT_SPLASH_STATIC_ID} .${BOOT_SPLASH_SHELL_ROW_CLASS},[data-testid="${BOOT_SPLASH_TEST_ID}"] .${BOOT_SPLASH_SHELL_ROW_CLASS}{display:none}`,
+      `#${BOOT_SPLASH_STATIC_ID} .${BOOT_SPLASH_SHELL_ROW_CLASS},[data-testid="${BOOT_SPLASH_TEST_ID}"] .${BOOT_SPLASH_SHELL_ROW_CLASS}{visibility:hidden}`,
     )
     expect(css).toContain(
       `html[${BOOT_SPLASH_SHELL_ATTRIBUTE}] #${BOOT_SPLASH_STATIC_ID} .${BOOT_SPLASH_SHELL_ROW_CLASS},`
-      + `html[${BOOT_SPLASH_SHELL_ATTRIBUTE}] [data-testid="${BOOT_SPLASH_TEST_ID}"] .${BOOT_SPLASH_SHELL_ROW_CLASS}{display:grid}`,
+      + `html[${BOOT_SPLASH_SHELL_ATTRIBUTE}] [data-testid="${BOOT_SPLASH_TEST_ID}"] .${BOOT_SPLASH_SHELL_ROW_CLASS}{visibility:visible}`,
     )
+    expect(css).not.toContain(`.${BOOT_SPLASH_SHELL_ROW_CLASS}{display:none}`)
   })
 
   it('fades the splash in on cold first paint, and skips re-entrance for Solid', () => {

@@ -83,9 +83,10 @@ export const BOOT_SPLASH_LABEL = 'Loading LeapMux…'
  * `ready` (signed-out / non-shell) or `workspaces` (authenticated shell).
  * AppShell then marks `tabs` → `ready` around its list and CRDT wait.
  *
- * {@link BOOT_SPLASH_SHELL_PHASES} sit after the core rows and stay
- * `display:none` until {@link setBootShell} opts the document into the shell
- * path — login, signup, and password-setup never show them.
+ * {@link BOOT_SPLASH_SHELL_PHASES} sit after the core rows. They stay in the
+ * layout from first paint and only become visible when {@link setBootShell}
+ * opts the document into the shell path — login, signup, and password-setup
+ * never show them, and revealing them never moves the logo or core rows.
  */
 export const BOOT_SPLASH_CORE_PHASES = [
   { key: 'initializing', label: 'Initializing' },
@@ -109,7 +110,7 @@ export const BOOT_SPLASH_PHASES = [
 
 export type BootPhaseKey = (typeof BOOT_SPLASH_PHASES)[number]['key']
 
-/** Terminal phase: every visible row checked. Not a row. */
+/** Finished phase: every visible row checked. Not a row. */
 export const BOOT_PHASE_READY = 'ready'
 
 /**
@@ -216,13 +217,15 @@ export const BOOT_SPLASH_FAIL_TIMEOUT_DETAIL
  * (check visible, label half-muted), the phase's own row is active (full
  * label, pulsing dots), rows below stay pending. With no attribute at all the
  * first row is active — the document has rendered but `bootPhaseScript` has
- * not run yet. `ready` checks every row and leaves the list visible: AppShell
- * keeps this splash up until workspaces and tabs land, so the finished
- * checklist must still be readable.
+ * not run yet. `ready` checks every row. Without `data-boot-shell` the list
+ * fades out (login/signup). With `data-boot-shell`, AppShell keeps this splash
+ * up until workspaces and tabs land, so the finished checklist stays readable.
  *
- * Shell-only rows (`BOOT_SPLASH_SHELL_PHASES`) stay `display:none` until
- * `data-boot-shell` is set, so login/signup never show them. Phase selectors
- * still cover those keys: when the rows are hidden the rules match nothing.
+ * Shell-only rows (`BOOT_SPLASH_SHELL_PHASES`) stay in the layout from first
+ * paint and use `visibility:hidden` until `data-boot-shell` is set, so
+ * login/signup never show them and revealing them cannot move the logo or
+ * core rows. Phase selectors still cover those keys; when the rows are
+ * invisible the painted state is simply unseen.
  *
  * Selectors are deliberately unscoped: the `boot-splash-progress-*` classes
  * exist only inside the two splash trees, and the phase attribute persists on
@@ -251,16 +254,23 @@ function bootProgressPhaseCss(): string {
   const shellRow = BOOT_SPLASH_SHELL_ROW_CLASS
   const id = BOOT_SPLASH_STATIC_ID
   const testId = BOOT_SPLASH_TEST_ID
-  // Specificity must beat `#id .boot-splash-progress-row{display:grid}` or the
-  // shell rows would stay visible on login.
+  // Keep `display:grid` from the shared row rule. Hiding with visibility (not
+  // display:none) reserves the row height from first paint, so toggling
+  // data-boot-shell — or adding another BOOT_SPLASH_SHELL_PHASES entry —
+  // cannot shift the logo or label.
   return [
-    `#${id} .${shellRow},[data-testid="${testId}"] .${shellRow}{display:none}`,
-    `html[${shellAttr}] #${id} .${shellRow},html[${shellAttr}] [data-testid="${testId}"] .${shellRow}{display:grid}`,
+    `#${id} .${shellRow},[data-testid="${testId}"] .${shellRow}{visibility:hidden}`,
+    `html[${shellAttr}] #${id} .${shellRow},html[${shellAttr}] [data-testid="${testId}"] .${shellRow}{visibility:visible}`,
     phases,
     rows(unstarted, [BOOT_SPLASH_PHASES[0].key], ' .boot-splash-progress-label', 'opacity:1'),
     rows(unstarted, [BOOT_SPLASH_PHASES[0].key], ' .boot-splash-progress-dots', 'opacity:1'),
     rows(ready, all, ' .boot-splash-progress-label', 'opacity:.6'),
     rows(ready, all, ' .boot-splash-progress-check', 'opacity:1'),
+    // Non-shell paths (login/signup): fade the finished checklist before
+    // AuthGuard unmounts the splash. Shell path keeps the list visible under
+    // AppShell's overlay until tabs land (`data-boot-shell`).
+    `html[${attr}="${BOOT_PHASE_READY}"]:not([${shellAttr}]) #${id} .boot-splash-progress,`
+    + `html[${attr}="${BOOT_PHASE_READY}"]:not([${shellAttr}]) [data-testid="${testId}"] .boot-splash-progress{opacity:0}`,
   ].join('')
 }
 

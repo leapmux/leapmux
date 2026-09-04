@@ -240,9 +240,9 @@ test.describe('boot splash progress checklist', () => {
       }
     })
 
-    // No attribute yet: `initializing` is the active row. Shell rows stay
-    // display:none without data-boot-shell, so phase advances do not grow the
-    // column — the same contract login/signup see.
+    // No attribute yet: `initializing` is the active row. Shell rows stay in
+    // the layout (visibility:hidden) without data-boot-shell, so phase
+    // advances never grow the column — the same contract login/signup see.
     const baseline = await read()
     expect(baseline.gap).toBe(16)
     for (const key of [...BOOT_SPLASH_PHASES.map(p => p.key), 'ready']) {
@@ -251,6 +251,13 @@ test.describe('boot splash progress checklist', () => {
       }, key)
       expect(await read(), `phase ${key}`).toEqual(baseline)
     }
+
+    // Revealing shell rows must not move the logo or label either — including
+    // after more BOOT_SPLASH_SHELL_PHASES entries land in the markup.
+    await page.evaluate((attr) => {
+      document.documentElement.setAttribute(attr, '')
+    }, BOOT_SPLASH_SHELL_ATTRIBUTE)
+    expect(await read(), 'after data-boot-shell').toEqual(baseline)
   })
 
   test('maps the attribute to done checks, one active row, and a visible ready list', async ({ page }) => {
@@ -284,31 +291,40 @@ test.describe('boot splash progress checklist', () => {
     await page.evaluate(() => {
       document.documentElement.setAttribute('data-boot-phase', 'ready')
     })
-    // ready: every row checked, list stays visible (AppShell keeps this splash
-    // up until tabs land).
+    // ready without data-boot-shell (login/signup): checklist fades out.
     await expect.poll(() => opacity('.boot-splash-row-session .boot-splash-progress-check')).toBe('1')
     await expect.poll(() => opacity('.boot-splash-row-initializing .boot-splash-progress-check')).toBe('1')
-    expect(await opacity('.boot-splash-progress')).toBe('1')
+    await expect.poll(() => opacity('.boot-splash-progress')).toBe('0')
+
+    await page.evaluate((attr) => {
+      document.documentElement.setAttribute(attr, '')
+    }, BOOT_SPLASH_SHELL_ATTRIBUTE)
+    // Shell path keeps the finished checklist readable under AppShell.
+    await expect.poll(() => opacity('.boot-splash-progress')).toBe('1')
   })
 
-  test('keeps shell rows hidden off the shell path, and shows them with data-boot-shell', async ({ page }) => {
+  test('keeps shell rows invisible off the shell path, and shows them with data-boot-shell', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.setContent(`<style>${bootSplashDocumentCss()}</style><div id="app">${markup}</div>`)
 
-    const displayOf = (selector: string) =>
-      page.locator(selector).evaluate(el => getComputedStyle(el).display)
+    const styleOf = (selector: string) =>
+      page.locator(selector).evaluate((el) => {
+        const s = getComputedStyle(el)
+        return { display: s.display, visibility: s.visibility }
+      })
 
-    expect(await displayOf('.boot-splash-row-workspaces')).toBe('none')
-    expect(await displayOf('.boot-splash-row-tabs')).toBe('none')
-    expect(await displayOf('.boot-splash-row-session')).toBe('grid')
+    // Still display:grid (layout reserved); only visibility hides them.
+    expect(await styleOf('.boot-splash-row-workspaces')).toEqual({ display: 'grid', visibility: 'hidden' })
+    expect(await styleOf('.boot-splash-row-tabs')).toEqual({ display: 'grid', visibility: 'hidden' })
+    expect(await styleOf('.boot-splash-row-session')).toEqual({ display: 'grid', visibility: 'visible' })
 
     await page.evaluate((attr) => {
       document.documentElement.setAttribute(attr, '')
       document.documentElement.setAttribute('data-boot-phase', 'workspaces')
     }, BOOT_SPLASH_SHELL_ATTRIBUTE)
 
-    expect(await displayOf('.boot-splash-row-workspaces')).toBe('grid')
-    expect(await displayOf('.boot-splash-row-tabs')).toBe('grid')
+    expect(await styleOf('.boot-splash-row-workspaces')).toEqual({ display: 'grid', visibility: 'visible' })
+    expect(await styleOf('.boot-splash-row-tabs')).toEqual({ display: 'grid', visibility: 'visible' })
     await expect.poll(() =>
       page.locator('.boot-splash-row-session .boot-splash-progress-check')
         .evaluate(el => getComputedStyle(el).opacity),

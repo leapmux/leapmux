@@ -32,6 +32,7 @@ vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
   isAutoAuthenticated: () => mockIsAutoAuthenticated(),
   passwordSetupRequired: () => mockPasswordSetupRequired(),
+  isPasswordSetupGate: () => mockPasswordSetupRequired() && mockIsAutoAuthenticated(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
 }))

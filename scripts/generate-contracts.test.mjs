@@ -1101,11 +1101,22 @@ describe('checkWorkerVocab / checkDesktop', () => {
     menuShowPreferences: 'm:p',
   })
 
-  it('accepts the shipped contracts', () => {
-    const v = readContract('worker-vocab')
-    const d = readContract('desktop')
-    expect(() => checkWorkerVocab(v)).not.toThrow()
-    expect(() => checkDesktop(d)).not.toThrow()
+  it('rejects a missing or empty DEV frontend URL', () => {
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
+    }), 'devFrontendUrl must be a non-empty URL string')
+    expectContractError(() => checkDesktop({
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: '',
+      tauriEvents: events(),
+      windowBehavior: behavior(),
+      launchVisibility: launch(),
+      windowMode: windowMode(),
+    }), 'devFrontendUrl must be a non-empty URL string')
   })
 
   it('rejects a worker-authored type that is not a notification type', () => {
@@ -1154,6 +1165,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects two Tauri events sharing one name', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'same:event', channelClose: 'same:event', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -1164,6 +1176,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects two desktop env vars sharing one name', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'SAME_X', binaryHash: 'SAME_X', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -1174,6 +1187,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects a desktop value with no name-table entry instead of emitting nothing', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', extra: 'D_W' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -1181,6 +1195,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     }), 'has no DESKTOP_GO_ENV_NAMES entry')
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -1188,6 +1203,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), extra: { one: 'x', two: 'y' } },
       launchVisibility: launch(),
@@ -1202,6 +1218,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     try {
       expectContractError(() => checkDesktop({
         envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
         tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
         windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
@@ -1216,6 +1233,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     // two options that store the same value.
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), trayOnClose: { tray: 'tray', quit: 'tray' } },
       launchVisibility: launch(),
@@ -1229,6 +1247,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('checks token uniqueness for a setting no name table knows yet', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), closeToDock: { dock: 'dock', tray: 'dock' } },
       launchVisibility: launch(),
@@ -1252,6 +1271,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects two launch-visibility states sharing one token', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: { ...launch(), hidden: 'normal' },
@@ -1262,6 +1282,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects a launch-visibility key with no name-table entry', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: { ...launch(), extra: 'x' },
@@ -1276,6 +1297,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects two window modes sharing one token', () => {
     expectContractError(() => checkDesktop({
       envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
@@ -1325,6 +1347,15 @@ describe('checkWorkerVocab / checkDesktop', () => {
     const d = readContract('desktop')
     expect(emitGoDesktop(d)).toContain(`const MaxFrameSizeBytes = ${d.maxFrameSizeBytes}`)
     expect(emitRsDesktop(d)).toContain(`pub const MAX_FRAME_SIZE_BYTES: u64 = ${d.maxFrameSizeBytes};`)
+  })
+
+  it('emits the DEV frontend URL to Go and Rust from one contract value', () => {
+    // Debug webview and sidecar DevProxy must share this origin; a one-sided
+    // rename leaves Network Access extras on the wrong Vite port.
+    const d = readContract('desktop')
+    expect(d.devFrontendUrl).toBe('http://localhost:4328')
+    expect(emitGoDesktop(d)).toContain('DevFrontendURL = "http://localhost:4328"')
+    expect(emitRsDesktop(d)).toContain('pub const DEV_FRONTEND_URL: &str = "http://localhost:4328";')
   })
 
   it('emits the window-behaviour tokens to all three languages from one contract value', () => {

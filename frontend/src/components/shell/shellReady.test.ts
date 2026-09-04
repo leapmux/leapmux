@@ -34,6 +34,15 @@ describe('isShellReady', () => {
     })).toBe(true)
   })
 
+  it('stays false when the list is empty but a stale active id remains', () => {
+    expect(isShellReady({
+      ...base,
+      workspaceCount: 0,
+      activeWorkspaceId: 'ws-stale',
+      centerReady: false,
+    })).toBe(false)
+  })
+
   it('becomes true when the list failed and nothing is selected', () => {
     expect(isShellReady({
       ...base,

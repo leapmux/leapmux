@@ -37,12 +37,19 @@ function isModulepreload(asset: BootDocumentAsset): boolean {
   return asset.tag === 'link' && asset.attrs?.rel === 'modulepreload'
 }
 
+/** Last path segment of a href, ignoring a leading `./` and a query string. */
+function hrefBasename(href: string): string {
+  const path = href.replace(/^\.\//, '/').split('?', 1)[0] ?? href
+  const slash = path.lastIndexOf('/')
+  return slash >= 0 ? path.slice(slash + 1) : path
+}
+
 /**
  * True when this modulepreload is the SPA client entry (not a deep chunk).
  *
  * Prefer an exact match against the handler output path from the client
- * manifest. Fall back to the vinxi `client-<hash>.js` basename when the
- * manifest is absent (unit tests).
+ * manifest. Fall back to equal basenames, then to the vinxi
+ * `client-<hash>.js` basename when the manifest is absent (unit tests).
  */
 export function isClientEntryModulepreload(
   href: string,
@@ -51,14 +58,11 @@ export function isClientEntryModulepreload(
   if (!href)
     return false
   if (clientEntryHref) {
-    if (href === clientEntryHref)
-      return true
-    // Manifest path is sometimes root-relative without a leading slash, or
-    // the reverse; compare on the trailing path segment.
     const a = href.replace(/^\.\//, '/')
     const b = clientEntryHref.replace(/^\.\//, '/')
-    if (a === b || a.endsWith(b) || b.endsWith(a))
+    if (a === b || hrefBasename(a) === hrefBasename(b))
       return true
+    return false
   }
   return /\/client-[^/]+\.js(?:\?.*)?$/.test(href)
 }
@@ -125,8 +129,11 @@ export function deferredStylesheetAttrs(
  * Promote deferred stylesheets after the first paint opportunity.
  * Double rAF: the first callback is before the next paint; the second runs
  * after it, so the splash frame can commit with only the inline splash CSS.
+ * Also promotes on `visibilitychange` so a background-tab load that deferred
+ * rAF still gets app CSS when the tab becomes visible.
  */
 export function bootDeferStylesScript(): string {
   const attr = BOOT_DEFER_CSS_ATTR
-  return `(function(){try{requestAnimationFrame(function(){requestAnimationFrame(function(){var n=document.querySelectorAll("link[${attr}]");for(var i=0;i<n.length;i++){n[i].media="all";n[i].removeAttribute(${JSON.stringify(attr)});}});});}catch(e){}})();`
+  const attrLit = JSON.stringify(attr)
+  return `(function(){function p(){var n=document.querySelectorAll("link[${attr}]");for(var i=0;i<n.length;i++){n[i].media="all";n[i].removeAttribute(${attrLit});}}function s(){if(typeof requestAnimationFrame==="function"){requestAnimationFrame(function(){requestAnimationFrame(p);});}else{p();}}s();document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")p();});})();`
 }

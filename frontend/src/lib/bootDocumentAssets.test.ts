@@ -34,11 +34,18 @@ describe('isClientEntryModulepreload', () => {
     expect(isClientEntryModulepreload('/_build/assets/other-abc.js', entry)).toBe(false)
   })
 
-  it('matches when one side is a trailing path of the other', () => {
+  it('matches when both hrefs share the same basename', () => {
     expect(isClientEntryModulepreload(
       './assets/client-abc.js',
       '/_build/assets/client-abc.js',
     )).toBe(true)
+  })
+
+  it('rejects a preload whose basename only shares a suffix with the entry', () => {
+    expect(isClientEntryModulepreload(
+      '/_build/assets/fooclient-abc.js',
+      'client-abc.js',
+    )).toBe(false)
   })
 })
 
@@ -113,6 +120,19 @@ describe('partitionBootDocumentAssets', () => {
     const { immediate } = partitionBootDocumentAssets([broken])
     expect(immediate).toEqual([])
   })
+
+  it('keeps script tags in the immediate set (DEV Vite client)', () => {
+    const withScript: BootDocumentAsset[] = [
+      { tag: 'script', attrs: { src: '/@vite/client', key: 'vite-client' } },
+      link('stylesheet', '/_build/assets/app.css'),
+      link('modulepreload', '/_build/assets/AuthContext.js'),
+    ]
+    const { immediate, deferredStylesheets } = partitionBootDocumentAssets(withScript)
+
+    expect(deferredStylesheets).toHaveLength(1)
+    expect(immediate.some(a => a.tag === 'script' && a.attrs?.src === '/@vite/client')).toBe(true)
+    expect(immediate.some(a => a.attrs?.rel === 'modulepreload')).toBe(false)
+  })
 })
 
 describe('deferredStylesheetAttrs', () => {
@@ -145,6 +165,7 @@ describe('bootDeferStylesScript', () => {
     expect(src).toContain(`link[${BOOT_DEFER_CSS_ATTR}]`)
     expect(src).toContain('media="all"')
     expect(src).toContain('removeAttribute')
+    expect(src).toContain('visibilitychange')
   })
 
   it('promotes deferred stylesheet links in the document', () => {
@@ -178,5 +199,29 @@ describe('bootDeferStylesScript', () => {
     expect(tagged.hasAttribute(BOOT_DEFER_CSS_ATTR)).toBe(false)
     expect(unmarked.media).toBe('all')
     expect(unmarked.hasAttribute(BOOT_DEFER_CSS_ATTR)).toBe(false)
+  })
+
+  it('promotes deferred links when the tab becomes visible', () => {
+    // Background-tab loads pause rAF; visibilitychange is the fallback path.
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+
+    const tagged = document.createElement('link')
+    tagged.rel = 'stylesheet'
+    tagged.href = '/deferred.css'
+    tagged.media = 'print'
+    tagged.setAttribute(BOOT_DEFER_CSS_ATTR, '')
+    document.head.append(tagged)
+
+    // eslint-disable-next-line no-new-func -- evaluate the same string the document ships
+    new Function(bootDeferStylesScript())()
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    expect(tagged.media).toBe('all')
+    expect(tagged.hasAttribute(BOOT_DEFER_CSS_ATTR)).toBe(false)
   })
 })

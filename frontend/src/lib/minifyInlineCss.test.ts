@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { bootSplashDocumentCss } from '~/lib/bootSplashTheme'
 import { minifyInlineCss } from '~/lib/minifyInlineCss'
 
@@ -33,5 +33,18 @@ describe('minifyInlineCss', () => {
     const once = minifyInlineCss(compact)
     expect(minifyInlineCss(once)).toBe(once)
     expect(once).toContain('#boot-splash')
+  })
+
+  it('returns the source when lightningcss rejects the input', async () => {
+    vi.resetModules()
+    vi.doMock('lightningcss', () => ({
+      transform: () => {
+        throw new Error('parse failed')
+      },
+    }))
+    const { minifyInlineCss: minify } = await import('~/lib/minifyInlineCss')
+    expect(minify('not { valid')).toBe('not { valid')
+    vi.doUnmock('lightningcss')
+    vi.resetModules()
   })
 })

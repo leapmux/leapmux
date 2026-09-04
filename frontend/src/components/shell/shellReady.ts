@@ -51,8 +51,15 @@ export function isShellReady(args: ShellReadyArgs): boolean {
   if (args.workspaceError !== null && args.activeWorkspaceId === null)
     return true
 
-  if (args.workspaceCount === 0 && args.workspaceError === null)
+  // Genuine empty list only — a stale active id with count 0 is still the
+  // pre-clear gap, not the create-workspace empty state.
+  if (
+    args.workspaceCount === 0
+    && args.workspaceError === null
+    && args.activeWorkspaceId === null
+  ) {
     return true
+  }
 
   // Workspaces exist (or an active id is held) but the centre is not ready
   // and the watchdog has not fired: keep the overlay up.

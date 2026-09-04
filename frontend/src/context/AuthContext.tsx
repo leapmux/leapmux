@@ -17,7 +17,7 @@ import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
-import { isAutoAuthenticated, loadSystemInfo, passwordSetupRequired } from '~/lib/systemInfo'
+import { isAutoAuthenticated, isPasswordSetupGate, loadSystemInfo } from '~/lib/systemInfo'
 import { passkeyErrorMessage, startAuthentication } from '~/lib/webauthn'
 
 const log = createLogger('auth')
@@ -283,6 +283,9 @@ export const AuthProvider: ParentComponent = (props) => {
     setElevationExpiresAt(undefined)
     // Shell checklist rows must not linger on login after a sign-out.
     setBootShell(false)
+    // Reset the phase so any BootSplash during the next bootstrap does not
+    // show a finished checklist left over from the previous shell session.
+    setBootPhase('initializing')
   }
 
   /**
@@ -335,6 +338,12 @@ export const AuthProvider: ParentComponent = (props) => {
   const adoptSignedInUser = (u: User | null) => {
     setUser(u)
     setElevationExpiresAt(undefined)
+    // Enter the shell checklist before AppShell mounts so login does not flash
+    // the finished signed-out `ready` phase, then jump to `workspaces`.
+    if (u) {
+      setBootShell(true)
+      setBootPhase('workspaces')
+    }
   }
 
   /**
@@ -459,7 +468,7 @@ export const AuthProvider: ParentComponent = (props) => {
       return
     // Same gate AuthGuard uses: password-setup is authenticated but not the
     // shell, so it must not reveal the workspaces/tabs rows.
-    if (user() && !(passwordSetupRequired() && isAutoAuthenticated())) {
+    if (user() && !isPasswordSetupGate()) {
       setBootShell(true)
       setBootPhase('workspaces')
       return

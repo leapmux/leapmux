@@ -17,6 +17,9 @@ import {
 import { frontendBuildInfo } from '~/lib/buildEnv'
 import { minifyInlineCss } from '~/lib/minifyInlineCss'
 
+/** Splash CSS minified once at module load — the source string is fixed. */
+const BOOT_SPLASH_DOCUMENT_CSS = minifyInlineCss(bootSplashDocumentCss())
+
 export default createHandler(() => (
   <StartServer
     document={({ children, scripts }) => (
@@ -71,7 +74,7 @@ export default createHandler(() => (
             — Solid's `BootSplash` matches via `[data-testid]`. Minify at emit
             so the source stays readable and the inline block stays small.
           */}
-          <style>{minifyInlineCss(bootSplashDocumentCss())}</style>
+          <style>{BOOT_SPLASH_DOCUMENT_CSS}</style>
           {/*
             Do NOT preload Hack NF faces here. Each face is ~1.1 MB; the LTE
             cold-start tracer ranked even a single Regular preload as ~50% of

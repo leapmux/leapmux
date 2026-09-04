@@ -44,6 +44,7 @@ import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
 import { parentDirectory } from '~/lib/paths'
+import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
@@ -849,26 +850,40 @@ export const AppShell: Component = () => {
   onCleanup(() => {
     setBootShell(false)
   })
+
+  // Latch the first time the shell may show. Mid-session `centerReady` dips
+  // (workspace switch, CRDT gap) must not remount BootSplash or rewind the
+  // checklist — DesktopLayout already gates the blank centre.
+  const [shellRevealed, setShellRevealed] = createSignal(false)
+  createEffect(() => {
+    if (shellReady())
+      setShellRevealed(true)
+  })
+  const shellChromeVisible = createMemo(() => shellRevealed() || shellReady())
+
   createEffect(() => {
     if (shellReady()) {
       setBootPhase(BOOT_PHASE_READY)
       return
     }
+    if (shellRevealed())
+      return
     if (workspaceStore.state.loaded && sectionStore.state.loaded)
       setBootPhase('tabs')
   })
 
   // Keep BootSplash mounted through the exit fade so the ready shell can
   // show underneath (crossfade). Reduced motion skips the wait and drops
-  // the overlay in the same tick as shellReady.
+  // the overlay in the same tick as shellReady. After the first reveal,
+  // never remount the overlay for a later `shellReady` false.
   const [bootSplashMounted, setBootSplashMounted] = createSignal(true)
   createEffect(() => {
     if (!shellReady()) {
-      setBootSplashMounted(true)
+      if (!shellRevealed())
+        setBootSplashMounted(true)
       return
     }
-    if (typeof window !== 'undefined'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (prefersReducedMotion()) {
       setBootSplashMounted(false)
       return
     }
@@ -1467,51 +1482,57 @@ export const AppShell: Component = () => {
       <div class={styles.bootShellHost}>
         <div
           class={styles.bootShellContent}
-          data-ready={shellReady() ? '' : undefined}
-          aria-hidden={!shellReady()}
+          data-ready={shellChromeVisible() ? '' : undefined}
+          aria-hidden={shellChromeVisible() ? undefined : true}
         >
           <WorkspaceShellLayer />
-
-          <tileRenderer.CloseDialogs />
-
-          <Show when={cliPathInfo()}>
-            {info => (
-              <CliPathDialog
-                status={info()}
-                onClose={() => setCliPathInfo(null)}
-              />
-            )}
-          </Show>
-
-          <AppShellDialogs
-            dialogs={dialogs}
-            loadSections={loadSections}
-            onBranchChanged={(repo, newBranch) => handleBranchChanged(
-              { repoGitStore },
-              repo,
-              newBranch,
-            )}
-            activeWorkspace={activeWorkspace}
-            isWorkspaceMutatable={isWorkspaceMutatableById}
-            getCurrentTabContext={getCurrentTabContext}
-            agentOps={agentOps}
-            termOps={termOps}
-            tabOps={tabOps}
-            view={tabView}
-            metadata={tabMetadata}
-            selection={selection}
-            layoutStore={layoutStore}
-            sectionStore={sectionStore}
-            focusEditor={() => focusEditorRef()?.()}
-            loadWorkspaces={loadWorkspaces}
-            onSelectWorkspace={id => handleSelectWorkspace(id)}
-            availableProviders={agentOps.availableProviders()}
-            onRefreshProviders={agentOps.loadAvailableProviders}
-            repoGitStore={repoGitStore}
-          />
-
-          <workerSection.Dialogs />
         </div>
+
+        {/*
+          Dialogs sit outside the visibility-hidden shell chrome so a CLI path
+          prompt (or any other dialog) that opens during the boot hold stays
+          visible and usable on top of the splash.
+        */}
+        <tileRenderer.CloseDialogs />
+
+        <Show when={cliPathInfo()}>
+          {info => (
+            <CliPathDialog
+              status={info()}
+              onClose={() => setCliPathInfo(null)}
+            />
+          )}
+        </Show>
+
+        <AppShellDialogs
+          dialogs={dialogs}
+          loadSections={loadSections}
+          onBranchChanged={(repo, newBranch) => handleBranchChanged(
+            { repoGitStore },
+            repo,
+            newBranch,
+          )}
+          activeWorkspace={activeWorkspace}
+          isWorkspaceMutatable={isWorkspaceMutatableById}
+          getCurrentTabContext={getCurrentTabContext}
+          agentOps={agentOps}
+          termOps={termOps}
+          tabOps={tabOps}
+          view={tabView}
+          metadata={tabMetadata}
+          selection={selection}
+          layoutStore={layoutStore}
+          sectionStore={sectionStore}
+          focusEditor={() => focusEditorRef()?.()}
+          loadWorkspaces={loadWorkspaces}
+          onSelectWorkspace={id => handleSelectWorkspace(id)}
+          availableProviders={agentOps.availableProviders()}
+          onRefreshProviders={agentOps.loadAvailableProviders}
+          repoGitStore={repoGitStore}
+        />
+
+        <workerSection.Dialogs />
+
         <Show when={bootSplashMounted()}>
           <div
             class={styles.bootSplashOverlay}

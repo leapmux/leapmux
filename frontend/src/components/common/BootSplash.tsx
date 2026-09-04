@@ -87,9 +87,10 @@ function progressRow(phase: { key: string, label: string }, shell: boolean) {
  * in the pre-JS document and the Solid splash — there is no runtime state to
  * hand over at the static→Solid switch.
  *
- * Shell-only rows are in the DOM on every path but stay `display:none` until
- * `data-boot-shell` is set (authenticated AppShell). Login/signup never show
- * them.
+ * Shell-only rows are in the DOM on every path and keep their layout height
+ * from first paint. They stay `visibility:hidden` until `data-boot-shell` is
+ * set (authenticated AppShell), so login/signup never show them and the logo
+ * cannot jump when they appear — including after more shell phases are added.
  */
 export const BootSplashProgress: Component = () => (
   <ul class="boot-splash-progress">

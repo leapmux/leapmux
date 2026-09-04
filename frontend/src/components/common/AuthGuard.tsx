@@ -5,7 +5,7 @@ import { BootSplash } from '~/components/common/BootSplash'
 import { PasswordSetupGate } from '~/components/common/PasswordSetupGate'
 import { useAuth } from '~/context/AuthContext'
 import { assertNever } from '~/lib/assertNever'
-import { isAutoAuthenticated, passwordSetupRequired } from '~/lib/systemInfo'
+import { isAutoAuthenticated, isPasswordSetupGate } from '~/lib/systemInfo'
 import { centeredFull } from '~/styles/shared.css'
 
 /**
@@ -77,7 +77,7 @@ export const AuthGuard: ParentComponent = (props) => {
     // BEFORE the authenticated branch, because this caller IS authenticated --
     // the hub let it in with no credentials, which is the problem. Ordering it
     // after would render the app to exactly the visitor the gate exists for.
-    if (passwordSetupRequired() && isAutoAuthenticated())
+    if (isPasswordSetupGate())
       return { kind: 'password-setup' }
 
     if (auth.isAuthenticated())

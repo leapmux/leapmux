@@ -49,10 +49,12 @@ func TestDesktopSoloConfig_UsesContractEnvName(t *testing.T) {
 }
 
 // The Rust debug spawn is the only writer of the env. If it stops setting
-// ENV_DEV_FRONTEND to the Vite URL, Go never sees Args and extras fall back
-// to the embedded SPA — the original bug.
+// ENV_DEV_FRONTEND to the contract DEV URL, Go never sees Args and extras
+// fall back to the embedded SPA — the original bug.
 func TestRustDebugSpawn_SetsDevFrontendEnv(t *testing.T) {
 	t.Parallel()
+
+	require.Equal(t, "http://localhost:4328", contracts.DevFrontendURL)
 
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
@@ -62,6 +64,19 @@ func TestRustDebugSpawn_SetsDevFrontendEnv(t *testing.T) {
 
 	body := string(src)
 	assert.Contains(t, body, "ENV_DEV_FRONTEND")
-	assert.Contains(t, body, `http://localhost:4328`)
-	assert.Contains(t, body, ".env(ENV_DEV_FRONTEND, DEV_FRONTEND_URL)")
+	assert.Contains(t, body, ".env(ENV_DEV_FRONTEND, crate::DEV_FRONTEND_URL)")
+}
+
+// Release spawn must strip a leaked LEAPMUX_HUB_DEV_FRONTEND so packaged
+// apps never enable DevProxy from the parent environment.
+func TestRustReleaseSpawn_ClearsDevFrontendEnv(t *testing.T) {
+	t.Parallel()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	sidecarPath := filepath.Join(filepath.Dir(thisFile), "..", "rust", "src", "sidecar.rs")
+	src, err := os.ReadFile(sidecarPath)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(src), "command.env_remove(ENV_DEV_FRONTEND)")
 }
