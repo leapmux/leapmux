@@ -20,6 +20,8 @@ async function configureCodexPlanMode(page: Page) {
 codexTest.describe('Codex Plan Mode Prompt', () => {
   codexTest('feedback revises the plan and approval can clear context', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace
+    const pageErrors: string[] = []
+    page.on('pageerror', error => pageErrors.push(error.message))
 
     await configureCodexPlanMode(page)
 
@@ -62,8 +64,10 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(clearContextSwitch).not.toBeChecked()
     await clearContextSwitch.check()
     await page.getByTestId('control-allow-btn').click()
+    await expect(revisedBanner).not.toBeVisible()
     await expectSettingsChip(page, 'Default')
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
+    expect(pageErrors.join('\n')).not.toMatch(/props\.request\.payload|Cannot read properties of null.*payload/)
   })
 })

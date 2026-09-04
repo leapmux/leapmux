@@ -3,6 +3,7 @@ import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
@@ -50,7 +51,7 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
   } as unknown as AgentInfo
 }
 
-function renderPanel(workerId = 'w1') {
+function renderPanel(workerId = 'w1', controlStore?: ReturnType<typeof createControlStore>) {
   const repoGitStore = createRepoGitStore()
   const gitTab = { workerId, gitToplevel: WORKTREE_DIR }
   repoGitStore.upsert(repoKey(workerId, WORKTREE_DIR), {
@@ -67,12 +68,60 @@ function renderPanel(workerId = 'w1') {
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={() => {}}
+        controlRequests={controlStore?.getRequests('a1')}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
     </PreferencesProvider>
   ))
 }
+
+function addControlRequest(
+  controlStore: ReturnType<typeof createControlStore>,
+  requestId: string,
+  toolName: string,
+) {
+  controlStore.addRequest('a1', {
+    requestId,
+    agentId: 'a1',
+    payload: {
+      request: { tool_name: toolName, input: {} },
+    },
+  })
+}
+
+describe('agentEditorPanel control request lifecycle', () => {
+  it('removes the active control request without reading a null request', () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, 'plan-1', 'ExitPlanMode')
+    renderPanel('w1', controlStore)
+
+    expect(screen.getByTestId('control-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
+    expect(screen.getByTestId('composer-footer-slot')).toHaveAttribute('data-full-width')
+
+    expect(() => controlStore.removeRequest('a1', 'plan-1')).not.toThrow()
+
+    expect(screen.queryByTestId('control-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer-footer-slot')).not.toHaveAttribute('data-full-width')
+  })
+
+  it('renders the next queued control request after removing the active request', () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, 'plan-1', 'ExitPlanMode')
+    addControlRequest(controlStore, 'bash-1', 'Bash')
+    renderPanel('w1', controlStore)
+
+    expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
+
+    controlStore.removeRequest('a1', 'plan-1')
+
+    expect(screen.getByTestId('control-banner')).toHaveTextContent(/Permission Required:\s*Bash/)
+    expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
+  })
+})
 
 describe('agentEditorPanel working-tree chip', () => {
   // The defect this pins: the chip printed an absolute path while the sidebar

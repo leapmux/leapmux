@@ -486,18 +486,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
-          banner={
-            ctrl.activeControlRequest()
-              ? (
-                  <ControlRequestContent
-                    request={ctrl.activeControlRequest()!}
-                    askState={askState}
-                    optionsDisabled={hasContent()}
-                    agentProvider={props.agent?.agentProvider}
-                  />
-                )
-              : undefined
-          }
+          banner={(
+            <Show when={ctrl.activeControlRequest()} keyed>
+              {request => (
+                <ControlRequestContent
+                  request={request}
+                  askState={askState}
+                  optionsDisabled={hasContent()}
+                  agentProvider={props.agent?.agentProvider}
+                />
+              )}
+            </Show>
+          )}
           plus={(
             // The `[+]` menu stays available during control requests (settings/mode
             // remain adjustable); only "Attach file" is disabled inside it.
@@ -533,27 +533,28 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               ? {
                   layout: 'fullWidth',
                   node: () => (
-                    <ControlRequestActions
-                      request={ctrl.activeControlRequest()!}
-                      askState={askState}
-                      agentProvider={props.agent?.agentProvider}
-                      onRespond={(agentId, content) => {
-                      // Capture the per-instance claim token from the request being answered NOW,
-                      // before removeRequest can drop it, so the worker's idempotency claim keys on
-                      // the answered instance even in a double-submit / answer-after-cancel race.
-                        const active = ctrl.activeControlRequest()
-                        if (active?.requestId)
-                          ctrl.cleanupControlRequestDrafts(active.requestId)
-                        editorHeight.resetEditorHeight()
-                        return props.onControlResponse?.(agentId, active?.requestId ?? '', content, active?.claimToken) ?? Promise.resolve()
-                      }}
-                      hasEditorContent={hasContent()}
-                      onTriggerSend={() => triggerSend?.()}
-                      editorContentRef={() => editorContentRef}
-                      bypass={bypass()}
-                      contextUsage={props.agentSessionInfo?.contextUsage}
-                      modelContextWindow={modelContextWindow()}
-                    />
+                    <Show when={ctrl.activeControlRequest()} keyed>
+                      {request => (
+                        <ControlRequestActions
+                          request={request}
+                          askState={askState}
+                          agentProvider={props.agent?.agentProvider}
+                          onRespond={(agentId, content) => {
+                            // The keyed owner keeps this request instance stable after the store
+                            // removes it, so the response retains its request ID and claim token.
+                            ctrl.cleanupControlRequestDrafts(request.requestId)
+                            editorHeight.resetEditorHeight()
+                            return props.onControlResponse?.(agentId, request.requestId, content, request.claimToken) ?? Promise.resolve()
+                          }}
+                          hasEditorContent={hasContent()}
+                          onTriggerSend={() => triggerSend?.()}
+                          editorContentRef={() => editorContentRef}
+                          bypass={bypass()}
+                          contextUsage={props.agentSessionInfo?.contextUsage}
+                          modelContextWindow={modelContextWindow()}
+                        />
+                      )}
+                    </Show>
                   ),
                 }
               : {

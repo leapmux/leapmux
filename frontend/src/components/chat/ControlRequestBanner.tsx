@@ -11,16 +11,24 @@ import * as styles from './ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUserQuestionControl'
 import { pluginFor } from './providers/registry'
 
+function createControlQuestion(props: Pick<ContentProps, 'request' | 'agentProvider'>) {
+  return createMemo(() => {
+    // Solid can update a reactive prop before the enclosing Show disposes this owner.
+    const request = props.request
+    if (!request)
+      return undefined
+    const capability = pluginFor(props.agentProvider)?.askUserQuestion
+    return capability?.isRequest(request.payload)
+      ? { capability, questions: capability.extractQuestions(request.payload) }
+      : undefined
+  })
+}
+
 /** Renders control request content only (title + details), for the banner slot. */
 export const ControlRequestContent: Component<ContentProps> = (props) => {
   const plugin = () => pluginFor(props.agentProvider)
   const pluginContent = () => plugin()?.ControlContent
-  const question = createMemo(() => {
-    const capability = plugin()?.askUserQuestion
-    return capability?.isRequest(props.request.payload)
-      ? { capability, questions: capability.extractQuestions(props.request.payload) }
-      : undefined
-  })
+  const question = createControlQuestion(props)
   const { copied, copy } = useCopyButton(() => prettifyJson(props.request?.payload))
 
   return (
@@ -55,12 +63,7 @@ export const ControlRequestContent: Component<ContentProps> = (props) => {
 export const ControlRequestActions: Component<ActionsProps> = (props) => {
   const plugin = () => pluginFor(props.agentProvider)
   const pluginActions = () => plugin()?.ControlActions
-  const question = createMemo(() => {
-    const capability = plugin()?.askUserQuestion
-    return capability?.isRequest(props.request.payload)
-      ? { capability, questions: capability.extractQuestions(props.request.payload) }
-      : undefined
-  })
+  const question = createControlQuestion(props)
   return (
     <Show when={props.request}>
       <Show when={question()} fallback={<Dynamic component={pluginActions()} {...props} />}>
