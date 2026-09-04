@@ -1,353 +1,407 @@
-import type { JSXElement } from 'solid-js'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
+import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
-import { nextFilterTab } from './FilterTabBar'
+import { nextRovingValue } from '~/lib/rovingFocus'
+import { sameValueZero, shallowEqualMapKeyArrays } from '~/lib/shallowEqual'
 import * as styles from './PillGroup.css'
 import { Tooltip } from './Tooltip'
 
 /** One choice in a {@link PillGroup}. */
-export interface PillOptionSpec<T> {
-  value: T
-  label: JSXElement
-  /**
-   * Refuse this option and explain the reason.
-   *
-   * Keep an option visible when the reader can restore it. The option shows
-   * what exists and what action restores it. Remove options that the
-   * deployment does not support.
-   *
-   * The tooltip works on a disabled button. Its reason does not replace the
-   * accessible name of the button.
-   */
+export interface PillOptionSpec<K> {
+  /** The unique selection key. */
+  key: K
+  label: string
+  /** A non-empty reason that makes this option unavailable. */
   disabledReason?: string
 }
 
-interface IndicatorMetrics {
+/** One through four fixed choices. Use a menu for any other list. */
+export type PillOptions<K>
+  = | readonly [PillOptionSpec<K>]
+    | readonly [PillOptionSpec<K>, PillOptionSpec<K>]
+    | readonly [PillOptionSpec<K>, PillOptionSpec<K>, PillOptionSpec<K>]
+    | readonly [PillOptionSpec<K>, PillOptionSpec<K>, PillOptionSpec<K>, PillOptionSpec<K>]
+
+export const PILL_OPTION_LIMIT = 4
+
+type PillOptionState
+  = | { kind: 'enabled' }
+    | { kind: 'option-refused', reason: string }
+    | { kind: 'group-refused' }
+
+const ENABLED: PillOptionState = { kind: 'enabled' }
+const GROUP_REFUSED: PillOptionState = { kind: 'group-refused' }
+
+interface SelectionMetrics {
   left: number
-  width: number
+  right: number
 }
 
-/**
- * One radio in the group.
- *
- * Selection once used only a CSS class at twelve call sites. A screen reader
- * then described each option as the same stateless button.
- *
- * A radio gives the correct one-of-N semantics. A toggle button would promise
- * that the reader can clear the selected option. This control does not permit
- * that action. A toggle button also lacks the group and set position.
- *
- * A radiogroup can announce "Theme, Dark, radio button, checked, 2 of 3."
- *
- * Keep this component private. A radio outside a radiogroup does not give the
- * reader the required group context. Use `aria-pressed` for a real two-state
- * button that the reader can clear.
- */
+/** One radio in the group. */
 function PillOption(props: {
   selected: boolean
-  /** Whether this radio holds the single tab stop for the group. */
-  roving: boolean
-  /** Whether this radio refuses an input. */
-  disabled: boolean
-  /** Whether this option dims independently from the group. */
-  dimmed: boolean
-  /** Whether a divider precedes this option. */
+  selectionOverlayReady: boolean
+  selectionSettled: boolean
+  tabStop: boolean
+  state: PillOptionState
   separated: boolean
-  /** Why this option refuses an input. */
-  disabledReason?: string
   onClick: () => void
-  ref?: (el: HTMLButtonElement) => void
-  children: JSXElement
+  onFocus: () => void
+  ref: (element: HTMLButtonElement) => void
+  children: string
 }) {
+  const optionRefused = () => props.state.kind === 'option-refused'
+  const groupRefused = () => props.state.kind === 'group-refused'
   const pill = () => (
     <button
-      // A button in a form submits by default. This button only selects an
-      // option, so it must never submit the form.
-      //
-      // The old default made the Passkey option submit the login form. The
-      // incomplete request left the submit button in its "Signing in" state.
       type="button"
       class={styles.pillOption}
       classList={{
-        [styles.pillOptionActive]: props.selected,
-        [styles.pillOptionDimmed]: props.dimmed,
+        [styles.pillOptionActive]: props.selected && !props.selectionOverlayReady,
+        [styles.pillOptionSelectedTarget]: props.selected
+          && props.selectionOverlayReady
+          && props.selectionSettled,
+        [styles.pillOptionDimmed]: optionRefused() && !props.selected,
         [styles.pillOptionSeparated]: props.separated,
+        [styles.pillOptionUnavailable]: optionRefused(),
       }}
       role="radio"
       aria-checked={props.selected}
-      // The native attribute supplies `aria-disabled` through the browser. It
-      // also removes the radio from the tab order.
-      disabled={props.disabled}
-      // The roving option owns the tab stop. Do not derive this value directly
-      // from `selected`. A stale stored value can match no current option.
-      //
-      // The radio pattern permits an unchecked radio to own the tab stop. This
-      // keeps the group reachable when no option is checked.
-      tabIndex={props.roving && !props.disabled ? 0 : -1}
-      ref={el => props.ref?.(el)}
-      onClick={() => props.onClick()}
+      aria-disabled={optionRefused() ? 'true' : undefined}
+      disabled={groupRefused()}
+      tabIndex={props.tabStop && !groupRefused() ? 0 : -1}
+      ref={props.ref}
+      onClick={props.onClick}
+      onFocus={props.onFocus}
     >
       {props.children}
     </button>
   )
 
-  // A tooltip adds listeners and an observer. Mount it only when it has a
-  // reason to show.
   return (
-    <Show when={props.disabledReason} fallback={pill()}>
+    <Show
+      when={props.state.kind === 'option-refused' ? props.state.reason : undefined}
+      fallback={pill()}
+    >
       {reason => <Tooltip text={reason()}>{pill()}</Tooltip>}
     </Show>
   )
 }
 
-/**
- * A one-of-N segmented control with radiogroup semantics.
- *
- * The label gives the group its accessible name. A visible heading above the
- * group does not create this association in the accessibility tree.
- *
- * Arrow, Home, and End keys use the shared roving-tabindex calculation from
- * FilterTabBar. This keeps one keyboard implementation for both controls.
- */
-export function PillGroup<T>(props: {
+function optionMap<K>(label: string, options: readonly PillOptionSpec<K>[]): Map<K, PillOptionSpec<K>> {
+  if (options.length < 1 || options.length > PILL_OPTION_LIMIT)
+    throw new RangeError(`PillGroup "${label}" requires one through four options.`)
+  const byKey = new Map<K, PillOptionSpec<K>>()
+  for (const option of options) {
+    if (byKey.has(option.key))
+      throw new TypeError(`PillGroup "${label}" requires unique option keys.`)
+    if (option.disabledReason !== undefined && option.disabledReason.trim() === '')
+      throw new TypeError(`PillGroup "${label}" requires a non-empty disabled reason.`)
+    byKey.set(option.key, option)
+  }
+  return byKey
+}
+
+/** A segmented one-of-N control with radio semantics. */
+export function PillGroup<K>(props: {
   label: string
-  options: PillOptionSpec<T>[]
-  selected: (value: T) => boolean
-  onSelect: (value: T) => void
-  /**
-   * Show the current selection and refuse changes.
-   *
-   * The theme chooser uses this state while "Match UI theme" controls its mode.
-   * The visible selection shows the value that the governing control produced.
-   * It also shows what disabling that control will restore.
-   */
+  options: PillOptions<K>
+  selectedKey: K
+  onSelect: (key: K) => void
+  /** Show the current selection and refuse all changes. */
   disabled?: boolean
 }) {
-  // `<For>` keeps a row when its position changes. It does not call the ref
-  // again after that move. Store elements by value so focus and indicator
-  // measurements continue to use the correct button.
-  const els = new Map<T, HTMLButtonElement>()
-  const noSelection = Symbol('no selection')
-  const [indicatorMetrics, setIndicatorMetrics] = createSignal<IndicatorMetrics>()
-  const [indicatorMoves, setIndicatorMoves] = createSignal(false)
+  const optionsByKey = createMemo(() => optionMap(props.label, props.options))
+  const optionKeys = createMemo(
+    () => [...optionsByKey().keys()],
+    [],
+    { equals: shallowEqualMapKeyArrays },
+  )
+  const optionEls = createKeyedElementRefs<K, HTMLButtonElement>()
+  const [focusedKey, setFocusedKey] = createSignal<{ value: K }>()
+  const [selectionMetrics, setSelectionMetrics] = createSignal<SelectionMetrics>()
+  const [selectionMoves, setSelectionMoves] = createSignal(false)
+  const [selectionSettled, setSelectionSettled] = createSignal(true)
   let groupEl: HTMLDivElement | undefined
+  let selectionFillEl: HTMLSpanElement | undefined
   let resizeObserver: ReturnType<typeof createRafResizeObserver>
-  let measureScheduled = false
-  let measureFrame: number | undefined
-  let pendingMotion = false
-  let hasIndicatorMetrics = false
+  let geometryObserver: MutationObserver | undefined
+  let hasSelectionMetrics = false
+  let selectionMotionGeneration = 0
 
-  /** Whether the group or the option refuses an input. */
-  const refused = (opt: PillOptionSpec<T>) =>
-    props.disabled === true || opt.disabledReason !== undefined
+  const settleSelectionAfterMotion = () => {
+    const generation = ++selectionMotionGeneration
+    requestAnimationFrame(() => {
+      if (generation !== selectionMotionGeneration)
+        return
+      const animations = selectionFillEl?.getAnimations?.() ?? []
+      if (animations.length === 0) {
+        setSelectionSettled(true)
+        return
+      }
+      void Promise.allSettled(animations.map(animation => animation.finished)).then(() => {
+        if (generation === selectionMotionGeneration)
+          setSelectionSettled(true)
+      })
+    })
+  }
 
-  /** The option that supplies the active fill. */
-  const selectedOption = () => props.options.find(opt => props.selected(opt.value))
+  const stateFor = (option: PillOptionSpec<K>): PillOptionState => {
+    if (props.disabled === true)
+      return GROUP_REFUSED
+    if (option.disabledReason !== undefined)
+      return { kind: 'option-refused', reason: option.disabledReason }
+    return ENABLED
+  }
 
-  /** The values that a keyboard input can reach. */
-  const reachable = createMemo(() => props.options.filter(opt => !refused(opt)).map(opt => opt.value))
+  const focusableOptions = () => [...optionsByKey().values()]
+    .filter(option => stateFor(option).kind !== 'group-refused')
 
-  /**
-   * The option that owns the single tab stop.
-   *
-   * Use the selected option when it accepts input. Otherwise, use the first
-   * reachable option. A stored browser preference can match no current option
-   * after a schema change.
-   *
-   * A refused selection passes the tab stop to a reachable option. The radio
-   * pattern permits an unchecked radio to own that tab stop.
-   *
-   * A group with no reachable option keeps the calculated owner, but the
-   * disabled button receives `tabIndex=-1`. The group still reports a selected
-   * value when one exists.
-   */
-  const rovingIndex = createMemo(() => {
-    const selected = props.options.findIndex(opt => props.selected(opt.value))
-    if (selected >= 0 && !refused(props.options[selected]!))
-      return selected
-    const firstReachable = props.options.findIndex(opt => !refused(opt))
-    if (firstReachable >= 0)
-      return firstReachable
-    return selected < 0 ? 0 : selected
-  })
-
-  const measureIndicator = (move: boolean) => {
-    const option = selectedOption()
-    const selectedEl = option === undefined ? undefined : els.get(option.value)
-    if (!groupEl || !selectedEl?.isConnected) {
-      hasIndicatorMetrics = false
-      setIndicatorMoves(false)
-      setIndicatorMetrics(undefined)
+  const measureSelection = (move: boolean) => {
+    const selected = optionsByKey().get(props.selectedKey)
+    const selectedEl = selected === undefined ? undefined : optionEls.get(selected.key)
+    if (!groupEl || !selectedEl?.isConnected || groupEl.clientWidth <= 0) {
+      selectionMotionGeneration++
+      hasSelectionMetrics = false
+      setSelectionMoves(false)
+      setSelectionSettled(true)
+      setSelectionMetrics(undefined)
       return
     }
 
-    // DOM offsets round to whole CSS pixels, but text can give a segment a
-    // fractional width. Normalize viewport rectangles against an ancestor
-    // scale so the fill keeps the exact layout size during dialog motion.
     const groupRect = groupEl.getBoundingClientRect()
     const selectedRect = selectedEl.getBoundingClientRect()
     const layoutWidth = Number.parseFloat(getComputedStyle(groupEl).width)
-    const hasViewportGeometry = groupRect.width > 0
+    const validViewportGeometry = groupRect.width > 0
       && selectedRect.width > 0
       && Number.isFinite(layoutWidth)
       && layoutWidth > 0
-    const scaleX = hasViewportGeometry ? groupRect.width / layoutWidth : 1
-    const left = hasViewportGeometry
+    const scaleX = validViewportGeometry ? groupRect.width / layoutWidth : 1
+    const rawLeft = validViewportGeometry
       ? (selectedRect.left - groupRect.left) / scaleX - groupEl.clientLeft + groupEl.scrollLeft
       : selectedEl.offsetLeft
-    const width = hasViewportGeometry ? selectedRect.width / scaleX : selectedEl.offsetWidth
+    const rawWidth = validViewportGeometry ? selectedRect.width / scaleX : selectedEl.offsetWidth
+    const left = Math.max(0, rawLeft)
+    const availableWidth = Math.max(0, groupEl.clientWidth - left)
+    const width = Math.min(Math.max(0, rawWidth), availableWidth)
+    const right = Math.max(0, groupEl.clientWidth - left - width)
 
-    // An existing indicator can move between selections. The first valid
-    // measurement must appear at its destination without entrance motion.
-    setIndicatorMoves(move && hasIndicatorMetrics)
-    hasIndicatorMetrics = true
-    setIndicatorMetrics({ left, width })
+    const selectionChanged = move && hasSelectionMetrics
+    const startsMotion = selectionChanged
+      && (typeof matchMedia !== 'function' || !matchMedia('(prefers-reduced-motion: reduce)').matches)
+    if (selectionChanged)
+      setSelectionMoves(true)
+    if (startsMotion) {
+      setSelectionSettled(false)
+    }
+    else if (selectionChanged) {
+      setSelectionSettled(true)
+    }
+    else if (!hasSelectionMetrics) {
+      setSelectionMoves(false)
+      setSelectionSettled(true)
+    }
+    hasSelectionMetrics = true
+    setSelectionMetrics({ left, right })
+    if (startsMotion || !selectionSettled())
+      settleSelectionAfterMotion()
   }
 
-  /** Measure after Solid commits option changes to the DOM. */
-  const scheduleIndicatorMeasure = (move: boolean) => {
-    pendingMotion ||= move
-    if (measureScheduled)
-      return
+  const tabOwner = createMemo<{ value: K } | undefined>(() => {
+    const focused = focusedKey()
+    if (focused !== undefined) {
+      const option = optionsByKey().get(focused.value)
+      if (option !== undefined && stateFor(option).kind !== 'group-refused')
+        return focused
+    }
 
-    measureScheduled = true
-    let firedSynchronously = false
-    const frame = requestAnimationFrame(() => {
-      firedSynchronously = true
-      measureScheduled = false
-      measureFrame = undefined
-      const shouldMove = pendingMotion
-      pendingMotion = false
-      measureIndicator(shouldMove)
-    })
+    const selected = optionsByKey().get(props.selectedKey)
+    if (selected !== undefined && stateFor(selected).kind !== 'group-refused')
+      return { value: selected.key }
 
-    // The test environment runs requestAnimationFrame synchronously. Do not
-    // retain a completed frame in that environment.
-    if (measureScheduled && !firedSynchronously)
-      measureFrame = frame
+    const first = focusableOptions()[0]
+    return first === undefined ? undefined : { value: first.key }
+  })
+
+  const focus = (key: K) => {
+    optionEls.get(key)?.focus()
   }
 
-  let previousSelection: T | typeof noSelection = noSelection
-  createEffect(() => {
-    const option = selectedOption()
-    const selection = option === undefined ? noSelection : option.value
-    const changedSelection = previousSelection !== noSelection
-      && selection !== noSelection
-      && !Object.is(previousSelection, selection)
-    previousSelection = selection
-    scheduleIndicatorMeasure(changedSelection)
-  })
+  const ownsTabStop = (key: K) => {
+    const owner = tabOwner()
+    return owner !== undefined && sameValueZero(key, owner.value)
+  }
 
-  onMount(() => {
-    // Observe every segment because a label or loaded font can change one
-    // segment without changing the selected value.
-    resizeObserver = createRafResizeObserver(() => measureIndicator(false))
-    if (groupEl)
-      resizeObserver?.observe(groupEl)
-    for (const el of els.values())
-      resizeObserver?.observe(el)
-    scheduleIndicatorMeasure(false)
-  })
-
-  onCleanup(() => {
-    resizeObserver?.disconnect()
-    if (measureFrame !== undefined)
-      cancelAnimationFrame(measureFrame)
-    measureScheduled = false
-    pendingMotion = false
-  })
-
-  const selectAt = (value: T | undefined) => {
-    const opt = props.options.find(option => option.value === value)
-    if (!opt || refused(opt))
+  const select = (key: K) => {
+    const option = optionsByKey().get(key)
+    if (option === undefined)
       return
-    props.onSelect(opt.value)
-    els.get(opt.value)?.focus()
+    focus(key)
+    if (stateFor(option).kind !== 'enabled' || sameValueZero(key, props.selectedKey))
+      return
+    props.onSelect(key)
   }
 
   const onKeyDown = (event: KeyboardEvent) => {
-    const values = reachable()
-    if (values.length === 0)
+    const focusable = focusableOptions()
+    const owner = tabOwner()
+    if (owner === undefined)
       return
-
-    // Focus sits on the option that owns the tab stop. Start the keyboard
-    // calculation there when no selected value exists. A missing origin would
-    // make each arrow start from the first option.
-    const origin = props.options[rovingIndex()]?.value
-    const next = nextFilterTab(values, values.includes(origin!) ? origin : values[0], event.key)
+    const next = nextRovingValue(focusable.map(option => option.key), owner.value, event)
     if (next === undefined)
       return
     event.preventDefault()
-    selectAt(next)
+    select(next.value)
   }
 
-  // An empty radiogroup exposes no choice and draws a two-pixel border box.
-  // Render nothing until at least one option exists.
+  const onFocusOut = (event: FocusEvent) => {
+    const destination = event.relatedTarget
+    if (!(destination instanceof Node) || !groupEl?.contains(destination))
+      setFocusedKey(undefined)
+  }
+
+  const restoreFocusAfterRemoval = (element: HTMLButtonElement) => {
+    onCleanup(() => {
+      if (document.activeElement !== element)
+        return
+      setFocusedKey(undefined)
+      queueMicrotask(() => {
+        if (!groupEl?.isConnected)
+          return
+        const active = document.activeElement
+        if (active !== document.body && active !== document.documentElement)
+          return
+        const owner = tabOwner()
+        if (owner !== undefined)
+          focus(owner.value)
+      })
+    })
+  }
+
+  let previousSelection: { value: K } | undefined
+  createEffect(() => {
+    const selected = optionsByKey().get(props.selectedKey)
+    const current = selected === undefined ? undefined : { value: selected.key }
+    const move = previousSelection !== undefined
+      && current !== undefined
+      && !sameValueZero(previousSelection.value, current.value)
+    previousSelection = current
+    measureSelection(move)
+  })
+
+  onMount(() => {
+    resizeObserver = createRafResizeObserver(() => measureSelection(false))
+    if (groupEl)
+      resizeObserver?.observe(groupEl)
+    for (const key of optionKeys()) {
+      const element = optionEls.get(key)
+      if (element)
+        resizeObserver?.observe(element)
+    }
+
+    if (groupEl && typeof MutationObserver !== 'undefined') {
+      geometryObserver = new MutationObserver(() => measureSelection(false))
+      for (let element: HTMLElement | null = groupEl; element; element = element.parentElement) {
+        geometryObserver.observe(element, { attributes: true })
+      }
+    }
+    measureSelection(false)
+  })
+
+  onCleanup(() => {
+    selectionMotionGeneration++
+    resizeObserver?.disconnect()
+    geometryObserver?.disconnect()
+  })
+
+  const selectionStyle = (metrics: SelectionMetrics) => ({
+    '--pill-selection-left': `${metrics.left}px`,
+    '--pill-selection-right': `${metrics.right}px`,
+  })
+
   return (
-    <Show when={props.options.length > 0}>
-      <div
-        ref={(el) => {
-          groupEl = el
-          resizeObserver?.observe(el)
-          onCleanup(() => {
-            resizeObserver?.unobserve(el)
-            if (groupEl === el)
-              groupEl = undefined
-          })
-        }}
-        class={styles.pillGroup}
-        classList={{ [styles.pillGroupDisabled]: props.disabled === true }}
-        role="radiogroup"
-        aria-label={props.label}
-        onKeyDown={onKeyDown}
-      >
-        <Show when={indicatorMetrics()}>
-          {metrics => (
+    <div
+      ref={(element) => {
+        groupEl = element
+        onCleanup(() => {
+          if (groupEl === element)
+            groupEl = undefined
+        })
+      }}
+      class={styles.pillGroup}
+      classList={{ [styles.pillGroupDisabled]: props.disabled === true }}
+      role="radiogroup"
+      aria-label={props.label}
+      onKeyDown={onKeyDown}
+      onFocusOut={onFocusOut}
+    >
+      <Show when={selectionMetrics()}>
+        {metrics => (
+          <>
             <span
-              class={styles.selectionIndicator}
-              classList={{
-                [styles.selectionIndicatorDimmed]: props.disabled !== true
-                  && selectedOption()?.disabledReason !== undefined,
-                [styles.selectionIndicatorMoves]: indicatorMoves(),
-              }}
-              aria-hidden="true"
-              style={{
-                transform: `translateX(${metrics().left}px)`,
-                width: `${metrics().width}px`,
-              }}
-            />
-          )}
-        </Show>
-        <For each={props.options}>
-          {(opt, index) => (
-            <PillOption
-              selected={props.selected(opt.value)}
-              roving={index() === rovingIndex()}
-              disabled={refused(opt)}
-              dimmed={props.disabled !== true && opt.disabledReason !== undefined}
-              separated={index() > 0}
-              disabledReason={opt.disabledReason}
-              onClick={() => selectAt(opt.value)}
-              ref={(el) => {
-                els.set(opt.value, el)
-                resizeObserver?.observe(el)
-                // Solid does not call a ref with null during disposal. A shorter
-                // option list could otherwise retain a detached button.
-                //
-                // Remove only the matching entry. A remove-and-add operation can
-                // give the same value to a new element before cleanup runs.
+              data-pill-selection-fill
+              ref={(element) => {
+                selectionFillEl = element
                 onCleanup(() => {
-                  resizeObserver?.unobserve(el)
-                  if (els.get(opt.value) === el)
-                    els.delete(opt.value)
+                  if (selectionFillEl === element)
+                    selectionFillEl = undefined
                 })
               }}
+              class={styles.selectionFill}
+              classList={{ [styles.selectionWindowMoves]: selectionMoves() }}
+              aria-hidden="true"
+              style={selectionStyle(metrics())}
+            />
+            <div
+              data-pill-selection-labels
+              class={styles.selectionLabels}
+              classList={{ [styles.selectionWindowMoves]: selectionMoves() }}
+              aria-hidden="true"
+              style={selectionStyle(metrics())}
             >
-              {opt.label}
-            </PillOption>
-          )}
-        </For>
-      </div>
-    </Show>
+              <For each={optionKeys()}>
+                {(key, index) => (
+                  <Show when={optionsByKey().get(key)}>
+                    {option => (
+                      <span
+                        class={styles.selectionLabel}
+                        classList={{ [styles.pillOptionSeparated]: index() > 0 }}
+                        data-label={option().label}
+                      />
+                    )}
+                  </Show>
+                )}
+              </For>
+            </div>
+          </>
+        )}
+      </Show>
+      <For each={optionKeys()}>
+        {(key, index) => (
+          <Show when={optionsByKey().get(key)}>
+            {option => (
+              <PillOption
+                selected={sameValueZero(key, props.selectedKey)}
+                selectionOverlayReady={selectionMetrics() !== undefined}
+                selectionSettled={selectionSettled()}
+                tabStop={ownsTabStop(key)}
+                state={stateFor(option())}
+                separated={index() > 0}
+                onClick={() => select(key)}
+                onFocus={() => setFocusedKey({ value: key })}
+                ref={(element) => {
+                  optionEls.register(key, element)
+                  resizeObserver?.observe(element)
+                  onCleanup(() => resizeObserver?.unobserve(element))
+                  restoreFocusAfterRemoval(element)
+                }}
+              >
+                {option().label}
+              </PillOption>
+            )}
+          </Show>
+        )}
+      </For>
+    </div>
   )
 }

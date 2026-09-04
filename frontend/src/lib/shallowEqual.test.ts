@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { shallowEqual, shallowEqualArrays, shallowEqualArraysDeep, shallowEqualExcept, shallowEqualSets } from './shallowEqual'
+import { sameValueZero, shallowEqual, shallowEqualArrays, shallowEqualArraysDeep, shallowEqualExcept, shallowEqualMapKeyArrays, shallowEqualSets } from './shallowEqual'
 
-describe('shallowequal', () => {
+describe('shallow object equality', () => {
   it('returns true for same reference', () => {
     const obj = { a: 1 }
     expect(shallowEqual(obj, obj)).toBe(true)
@@ -32,7 +32,7 @@ describe('shallowequal', () => {
   })
 })
 
-describe('shallowequalarrays', () => {
+describe('shallow array equality', () => {
   it('returns true for same reference', () => {
     const arr = [1, 2, 3]
     expect(shallowEqualArrays(arr, arr)).toBe(true)
@@ -69,7 +69,21 @@ describe('shallowequalarrays', () => {
   })
 })
 
-describe('shallowequalarraysdeep', () => {
+describe('map key equality (sameValueZero)', () => {
+  it('matches map key identity for NaN and signed zero', () => {
+    expect(sameValueZero(Number.NaN, Number.NaN)).toBe(true)
+    expect(sameValueZero(-0, 0)).toBe(true)
+    expect(shallowEqualMapKeyArrays([Number.NaN, -0], [Number.NaN, 0])).toBe(true)
+  })
+
+  it('still compares objects by identity', () => {
+    const key = {}
+    expect(shallowEqualMapKeyArrays([key], [key])).toBe(true)
+    expect(shallowEqualMapKeyArrays([{}], [{}])).toBe(false)
+  })
+})
+
+describe('deep shallow-array equality', () => {
   it('compares object elements by shallowEqual (recurses one level)', () => {
     expect(shallowEqualArraysDeep([{ a: 1 }], [{ a: 1 }])).toBe(true)
     expect(shallowEqualArraysDeep([{ a: 1, b: 2 }], [{ a: 1, b: 2 }])).toBe(true)
@@ -81,7 +95,7 @@ describe('shallowequalarraysdeep', () => {
   })
 })
 
-describe('shallowequalsets', () => {
+describe('shallow set equality', () => {
   it('returns true for same reference', () => {
     const set = new Set(['a'])
     expect(shallowEqualSets(set, set)).toBe(true)
@@ -97,7 +111,7 @@ describe('shallowequalsets', () => {
   })
 })
 
-describe('shallowequalexcept', () => {
+describe('shallow object equality with excluded keys', () => {
   it('ignores skip keys when comparing', () => {
     expect(shallowEqualExcept(
       { a: 1, ts: 100 },

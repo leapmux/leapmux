@@ -22,7 +22,7 @@ vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   isEmailEnabled: () => false,
   // The hub serves no passkey ceremony at this origin, so the form offers no
-  // Passkey pill at all. `authMethodOptions` reads the blocker directly.
+  // Passkey pill at all. The shared method control reads the blocker directly.
   passkeyBlocker: () => 'origin-not-allowed',
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),

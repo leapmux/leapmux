@@ -1,5 +1,7 @@
 import type { JSX } from 'solid-js'
-import { For, onCleanup } from 'solid-js'
+import { For } from 'solid-js'
+import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
+import { nextRovingValue } from '~/lib/rovingFocus'
 import * as styles from './FilterTabBar.css'
 
 /** One tab: the value it selects, and the text it shows. */
@@ -26,36 +28,6 @@ export interface FilterTabBarProps<K extends string> {
 }
 
 /**
- * Which tab an arrow/Home/End keypress moves to, or undefined for a key the tab
- * bar does not own.
- *
- * Pure and exported so the contract role=tab requires (Tab reaches the SET, the
- * arrows move within it, and both ends wrap) is testable on its own. Unbounded
- * in K: the pill groups (`PillGroup`) adopt it for one-of-N choices whose
- * values are booleans or nulls, not just the tab bar's string keys.
- */
-export function nextFilterTab<K>(keys: readonly K[], current: K, key: string): K | undefined {
-  if (keys.length === 0)
-    return undefined
-  const i = keys.indexOf(current)
-  const cur = i < 0 ? 0 : i
-  switch (key) {
-    case 'ArrowRight':
-    case 'ArrowDown':
-      return keys[(cur + 1) % keys.length]
-    case 'ArrowLeft':
-    case 'ArrowUp':
-      return keys[(cur - 1 + keys.length) % keys.length]
-    case 'Home':
-      return keys[0]
-    case 'End':
-      return keys[keys.length - 1]
-    default:
-      return undefined
-  }
-}
-
-/**
  * A row of filter tabs over one region.
  *
  * A real TAB SET, not a row of toggle buttons: picking a tab swaps the content
@@ -71,7 +43,7 @@ export function nextFilterTab<K>(keys: readonly K[], current: K, key: string): K
 export function FilterTabBar<K extends string>(props: FilterTabBarProps<K>): JSX.Element {
   // Focus has to follow selection for the roving tabindex to work, hence the
   // element refs: the tab that leaves the tab order must hand focus over.
-  const tabEls = new Map<K, HTMLButtonElement>()
+  const tabEls = createKeyedElementRefs<K, HTMLButtonElement>()
 
   const selectTab = (key: K) => {
     props.onSelect(key)
@@ -79,11 +51,11 @@ export function FilterTabBar<K extends string>(props: FilterTabBarProps<K>): JSX
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
-    const next = nextFilterTab(props.tabs.map(t => t.key), props.active, e.key)
+    const next = nextRovingValue(props.tabs.map(t => t.key), props.active, e)
     if (next === undefined)
       return
     e.preventDefault()
-    selectTab(next)
+    selectTab(next.value)
   }
 
   return (
@@ -104,19 +76,7 @@ export function FilterTabBar<K extends string>(props: FilterTabBarProps<K>): JSX
             aria-selected={props.active === tab.key}
             aria-controls={props.panelId}
             tabIndex={props.active === tab.key ? 0 : -1}
-            ref={(el) => {
-              tabEls.set(tab.key, el)
-              // Solid does not re-invoke a ref with null on disposal, so a
-              // caller whose `tabs` shrink would otherwise leave a detached
-              // button in the map -- and `selectTab` would move focus to it,
-              // which lands on `<body>` and takes the arrow keys with it. The
-              // identity check keeps a remove-then-re-add of the same key from
-              // deleting the NEW element's entry.
-              onCleanup(() => {
-                if (tabEls.get(tab.key) === el)
-                  tabEls.delete(tab.key)
-              })
-            }}
+            ref={el => tabEls.register(tab.key, el)}
             // `selectTab`, not `props.onSelect` alone: the roving tabindex moves
             // to this tab, so focus has to move with it. WebKit does not focus a
             // button on click, which would otherwise leave `tabIndex={0}` here

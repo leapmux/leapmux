@@ -3,10 +3,10 @@ import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
+import { AuthMethodPillGroup } from '~/components/common/AuthMethodPillGroup'
 import { CaptchaSection } from '~/components/common/CaptchaSection'
-import { PillGroup } from '~/components/common/PillGroup'
 import { Spinner } from '~/components/common/Spinner'
-import { authMethodOptions, createAuthMethodSelection } from '~/lib/authMethodSelection'
+import { createAuthMethodSelection } from '~/lib/authMethodSelection'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { stringParam } from '~/lib/searchParam'
 import { passkeyErrorMessage, startRegistration } from '~/lib/webauthn'
@@ -96,11 +96,9 @@ export const RecoverCompletePage: Component = () => {
           )}
         >
           <form class="vstack gap-4" onSubmit={handleSubmit}>
-            <PillGroup
+            <AuthMethodPillGroup
               label="Recovery method"
-              options={authMethodOptions()}
-              selected={v => effectiveMethod() === v}
-              onSelect={methodSelection.select}
+              selection={methodSelection}
             />
             <Show when={effectiveMethod() === 'password'}>
               <PasswordFields

@@ -163,7 +163,8 @@ describe('signup form passkey path', () => {
     renderForm()
 
     const passkey = screen.getByRole('radio', { name: 'Passkey' })
-    expect(passkey).toBeDisabled()
+    expect(passkey).toHaveAttribute('aria-disabled', 'true')
+    expect(passkey).not.toBeDisabled()
     expect(passkey).not.toHaveAttribute('title')
     expect(reasonOf(passkey)).toMatch(expected)
     expect(screen.getByLabelText('New Password')).toBeInTheDocument()
