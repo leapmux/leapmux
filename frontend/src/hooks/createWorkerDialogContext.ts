@@ -124,6 +124,14 @@ export function createWorkerDialogContext(options: WorkerDialogContextOptions = 
           ? online.find(b => b.id === options.preselectedWorkerId)
           : undefined
         setWorkerId((preferred ?? online[0]).id)
+        // The worker and the directory are ONE choice. A caller that gives both
+        // means "this directory ON THAT MACHINE"; when the machine turns out to
+        // be offline and another is substituted, the directory does not carry
+        // over -- an absolute path is a different place on a different machine,
+        // and the worse case is that it EXISTS there and is the wrong tree.
+        // Clearing it makes the dialog ask, which is the honest question.
+        if (options.preselectedWorkerId && !preferred && options.defaultWorkingDir)
+          setWorkingDir('')
       }
       return online.length > 0
     }

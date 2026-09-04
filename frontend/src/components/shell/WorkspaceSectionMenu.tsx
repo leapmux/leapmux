@@ -12,10 +12,9 @@ import { listRepoStartPoints } from '~/components/workspace/repoStartPoints'
 import {
   isSectionFilterShown,
   setWorkspaceSortOrder,
-  toggleSectionFilter,
   workspaceSortOrder,
 } from '~/components/workspace/workspaceListState'
-import { readStickyGitMode, startPointDialogSetup } from '~/components/workspace/workspaceStartPoint'
+import { gitModeStickyKey, readStickyGitMode } from '~/components/workspace/workspaceStartPoint'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { GIT_MODE_LABELS } from '~/hooks/useGitModeState'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
@@ -53,7 +52,18 @@ export interface WorkspaceSectionMenuProps {
   onRevealActiveWorkspace: () => void
   onCollapseAll: () => void
   onExpandAll: () => void
+  /** Show or hide this section's filter box, expanding the section to show it. */
+  onToggleFilter: () => void
   onNewWorkspace: (startPoint: WorkspaceStartPoint) => void
+  /**
+   * Whether the ARCHIVE holds anything, unfiltered.
+   *
+   * Deliberately not `getWorkspaceIds().length`: that is the filtered view, and
+   * the two operations below act on the whole archive. Gating them on the view
+   * hid them while a filter matched nothing, and offered "Empty archive..." --
+   * which cannot be undone -- while the user could see one row of fifty.
+   */
+  hasArchivedWorkspaces: () => boolean
   /** Archived only: move every archived workspace back to In progress. */
   onUnarchiveAll: () => void
   /** Archived only: delete every archived workspace, after one confirm. */
@@ -76,7 +86,7 @@ export interface WorkspaceSectionMenuProps {
  * The trigger is `moreHorizontalTrigger`, NOT `rowContextMenuTrigger`: the
  * latter adds the `menuTrigger` class, whose `opacity: 0` reveal depends on
  * sitting inside a hovered row's `sidebarActions` box. A section header is not
- * a row, which is the case that helper's own comment names.
+ * a row, which is the case that helper's own comment describes.
  */
 export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props) => {
   const [menuOpen, setMenuOpen] = createSignal(false)
@@ -90,7 +100,7 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
   /**
    * The repositories this section works on.
    *
-   * Gated on `menuOpen()`, and it must be the MEMO rather than a `<Show>`
+   * `menuOpen()` restricts it, and it must be the MEMO rather than a `<Show>`
    * around the rows: a `<Show>` hides the DOM and keeps the subscriptions, so
    * every section's menu would re-scan every tab on every reactive tick while
    * closed. `FileActionsMenu` documents the same trap for its info rows.
@@ -98,23 +108,57 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
   const repos = createMemo(() => {
     if (!menuOpen() || !props.canCreate)
       return []
-    return listRepoStartPoints(props.getTabs(), props.repoGitStore, {
+    const rows = listRepoStartPoints(props.getTabs(), props.repoGitStore, {
       workerInfoFn: props.workerInfoFn,
       isWorkerOnline: props.isWorkerOnline,
       limit: MAX_REPO_ROWS,
     })
+    // The remembered mode is resolved HERE, inside the gate, so each row is a
+    // pure projection of one snapshot: the label and the note come from the
+    // same read, and no storage access happens while a row renders.
+    //
+    // `detail` is the stored mode's own label, verbatim from the table the
+    // dialog's radios read -- a second vocabulary here would be exactly the
+    // duplication that table exists to remove. Undefined when nothing is
+    // remembered, rather than a placeholder: a row that reads "Use current
+    // state" for a repository nobody has started a workspace in states a
+    // default as though it were a memory. It must also never read "Manual",
+    // which the Sort by submenu binds to a sort key two items below.
+    return rows.map((row) => {
+      const sp = row.startPoint
+      const mode = readStickyGitMode(gitModeStickyKey(sp.workerId, sp.gitToplevel))
+      return { ...row, detail: mode === undefined ? undefined : GIT_MODE_LABELS[mode] }
+    })
   })
 
-  const hasWorkspaces = () => props.getWorkspaceIds().length > 0
+  /**
+   * Whether this section shows any row.
+   *
+   * A memo, because three items read it and `DropdownMenu` renders its children
+   * eagerly -- so this would otherwise run the row projection three times per
+   * tick in every section's menu, open or closed. `menuOpen()` deliberately
+   * does NOT restrict it: `disabled` describes the action, not the menu, and a
+   * check on the menu state would disable the second item the moment a click on
+   * the first closed the popover. The projection itself is memoized per section
+   * upstream, so one read costs a map lookup.
+   *
+   * It answers about the VISIBLE rows, which is what Collapse all and Expand
+   * all act on. The archive operations below ask a different question, because
+   * they act on the whole archive.
+   */
+  const hasWorkspaces = createMemo(() => props.getWorkspaceIds().length > 0)
 
   return (
     <DropdownMenu
       onToggle={setMenuOpen}
       data-testid={`sidebar-section-menu-${sectionTypeTestId(props.section.sectionType)}-popover`}
       aria-label={`${props.section.name} actions`}
+      // `title` is a GETTER. The section name is live now, and reading it
+      // eagerly would rebuild the options object -- and with it the trigger
+      // element -- on every rename, taking any open popover with it.
       trigger={moreHorizontalTrigger({
         'data-testid': `sidebar-section-menu-${sectionTypeTestId(props.section.sectionType)}`,
-        'title': `${props.section.name} actions`,
+        get 'title'() { return `${props.section.name} actions` },
       })}
     >
       <Show when={props.canCreate}>
@@ -152,15 +196,7 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
                   data-testid="sidebar-new-workspace-repo"
                   onClick={() => props.onNewWorkspace(repo.startPoint)}
                 >
-                  <DropdownMenuItemContent
-                    label={repo.label}
-                    // The stored mode's own label, verbatim from the table the
-                    // dialog's radios read. A second vocabulary here would be
-                    // exactly the duplication that table exists to remove --
-                    // and it must not read "Manual", which the Sort by submenu
-                    // binds to a sort key two items below.
-                    detail={detailForRepo(repo.startPoint)}
-                  />
+                  <DropdownMenuItemContent label={repo.label} detail={repo.detail} />
                 </button>
               )}
             </For>
@@ -173,12 +209,17 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
         <hr />
       </Show>
 
+      {/* Through a prop, not `toggleSectionFilter` directly: the box lives in
+          the section BODY, and this menu opens while the section is collapsed
+          -- where a hidden input cannot take focus and the checkbox would
+          report itself checked for a control nobody can see. The section def
+          expands first, the same rule "Reveal active workspace" follows. */}
       <DropdownMenuCheckableItem
         kind="checkbox"
         label="Filter workspaces"
         checked={isSectionFilterShown(props.section.id)}
         data-testid="sidebar-filter-workspaces"
-        onSelect={() => toggleSectionFilter(props.section.id)}
+        onSelect={() => props.onToggleFilter()}
       />
 
       {/* The submenu is `as="div"`: it holds TWO independent radio groups, and
@@ -241,7 +282,7 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
       {/* Hidden when the archive is empty: "Unarchive all" and "Empty
           archive..." on nothing are two items that do nothing, and the second
           one asks for a confirmation first. */}
-      <Show when={isArchived() && hasWorkspaces()}>
+      <Show when={isArchived() && props.hasArchivedWorkspaces()}>
         <hr />
         <button type="button" role="menuitem" onClick={() => props.onUnarchiveAll()}>
           Unarchive all
@@ -265,17 +306,4 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
       </Show>
     </DropdownMenu>
   )
-}
-
-/**
- * The row's right-hand note: the git mode this repository was last started
- * with, or nothing at all when none is remembered.
- *
- * Undefined rather than a placeholder. A row that says "Use current state" for
- * a repository nobody has started a workspace in states a default as though it
- * were a memory.
- */
-function detailForRepo(startPoint: WorkspaceStartPoint): string | undefined {
-  const mode = readStickyGitMode(startPointDialogSetup(startPoint).stickyKey)
-  return mode === undefined ? undefined : GIT_MODE_LABELS[mode]
 }

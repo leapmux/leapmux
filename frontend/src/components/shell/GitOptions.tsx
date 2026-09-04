@@ -140,12 +140,6 @@ export function indexBranches(branches: readonly GitBranchEntry[]): BranchIndex 
 }
 
 /**
- * Per-mode dirty-worktree warning copy. Exported so tests can pin the
- * exact strings shown for each mode without rendering the full GitOptions
- * component (which depends on auth context, RPC mocks, etc.). Returns null
- * for modes that don't surface a dirty-tree warning.
- */
-/**
  * A `Record`, not a `switch` with a `default`: a sixth mode added to `GitMode`
  * is then a compile error here rather than a mode that silently falls through
  * to "no warning". `null` states that a mode deliberately shows none.
@@ -158,6 +152,12 @@ const DIRTY_WARNINGS: Record<GitMode, string | null> = {
   [GitMode.UseWorktree]: null,
 }
 
+/**
+ * Per-mode dirty-worktree warning copy. Exported so tests can pin the exact
+ * strings shown for each mode without rendering the full GitOptions component
+ * (which depends on auth context, RPC mocks, etc.). Returns null for a mode
+ * that surfaces no dirty-tree warning.
+ */
 export function dirtyWarningCopy(mode: GitMode): string | null {
   return DIRTY_WARNINGS[mode]
 }
@@ -193,14 +193,17 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // `.mode` for its own conditional renders, but that value never
   // re-enters GitOptions.
   //
-  // CLAMPED to the enabled set. A seed outside `props.modes` leaves every radio
-  // unchecked -- each row is gated on `enabledModes().has` -- while the emit
-  // effect still reports that mode's intent, so the dialog submits a mode it
-  // never showed. The remembered per-repository mode makes that reachable: a
-  // mode stored from one dialog can be absent from the next one's set.
+  // The active mode is DERIVED, not stored. A mode outside the enabled set
+  // leaves every radio unchecked -- each row is `enabledModes().has` -- while
+  // the emit effect still reports that mode's intent, so the dialog submits a
+  // mode it never showed. The remembered per-repository mode makes that
+  // reachable: a mode stored by one dialog can be absent from the next one's
+  // set. Deriving makes the state unrepresentable rather than repairing it at
+  // the two moments it can arise (the seed, and a set that narrows later).
   const clampMode = (mode: GitMode): GitMode =>
     enabledModes().has(mode) ? mode : defaultMode()
-  const [activeMode, setActiveMode] = createSignal<GitMode>(untrack(() => clampMode(props.gitMode())))
+  const [rawMode, setRawMode] = createSignal<GitMode>(untrack(() => props.gitMode()))
+  const activeMode = createMemo(() => clampMode(rawMode()))
 
   // Branch-name UX. CreateBranch and CreateWorktree are mutually
   // exclusive radios that both render the same "Branch name" input +
@@ -400,18 +403,18 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // currentIntent memo + emit effect below picks up the change and
   // notifies the parent in the same flush.
   //
-  // `props.modes` is a dependency too. A parent that NARROWS the set after
-  // mount would otherwise leave the active mode outside it -- every radio
-  // unchecked, and the hidden mode still emitting -- which is the same defect
-  // the seed clamp above fixes, arriving one render later.
-  createEffect(on(() => [props.workerId, props.selectedPath, props.modes] as const, () => {
+  // `props.modes` is deliberately NOT a dependency: `activeMode` is derived
+  // through `clampMode`, so a set that narrows re-derives on its own and needs
+  // no reset -- which also stops a narrowing from discarding the branch list,
+  // the worktrees and all three selections along with a still-valid pick.
+  createEffect(on(() => [props.workerId, props.selectedPath] as const, () => {
     batch(() => {
       setInternalBranches([])
       setWorktrees([])
       setSelectedCheckoutBranch('')
       setSelectedBaseBranch('')
       setSelectedWorktreePath('')
-      setActiveMode(defaultMode())
+      setRawMode(defaultMode())
     })
   }, { defer: true }))
 
@@ -512,8 +515,8 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     </>
   )
 
-  // Per-mode row: enabledModes() gates the whole block, the active mode
-  // gates the sub-content. Callers own the `<div class={radioSubContent}>`
+  // Per-mode row: enabledModes() controls the whole block, the active mode
+  // controls the sub-content. Callers own the `<div class={radioSubContent}>`
   // wrapper inside `children` so the Current mode can omit it when there's
   // no branch to display (an empty wrapper would still take a `gap` slot
   // in `radioGroup`).
@@ -528,7 +531,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
           type="radio"
           name="git-mode"
           checked={activeMode() === rp.mode}
-          onChange={() => setActiveMode(rp.mode)}
+          onChange={() => setRawMode(rp.mode)}
         />
         {GIT_MODE_LABELS[rp.mode]}
       </label>

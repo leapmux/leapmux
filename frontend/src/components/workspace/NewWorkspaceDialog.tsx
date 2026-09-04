@@ -115,7 +115,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
 
       const wid = worker.workerId()
       const provider = agentProvider()
-      // submitDisabled gates on noProviders(); reaching here with
+      // submitDisabled reads noProviders(); reaching here with
       // provider===undefined would mean the submit slipped past the
       // guard, so fail loudly before the proto serializer turns it into
       // enum 0.

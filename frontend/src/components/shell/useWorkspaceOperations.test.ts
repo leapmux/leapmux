@@ -386,6 +386,7 @@ describe('useWorkspaceOperations commitRename', () => {
 function bulkHarness(archivedIds: readonly string[], opts: {
   onConfirmEmptyArchive?: (count: number) => Promise<boolean>
   onConfirmDelete?: (workspaceId: string) => Promise<boolean>
+  onRefreshWorkspaces?: () => void
 } = {}) {
   const inProgress = section('s-progress', SectionType.WORKSPACES_IN_PROGRESS)
   const archived = section('s-archived', SectionType.WORKSPACES_ARCHIVED)
@@ -399,7 +400,7 @@ function bulkHarness(archivedIds: readonly string[], opts: {
       sectionStore,
       loadSections: async () => {},
       onSelectWorkspace: () => {},
-      onRefreshWorkspaces: () => {},
+      onRefreshWorkspaces: opts.onRefreshWorkspaces ?? (() => {}),
       onDeleteWorkspace: () => {},
       onConfirmDelete: opts.onConfirmDelete,
       onConfirmEmptyArchive: opts.onConfirmEmptyArchive,
@@ -496,6 +497,71 @@ describe('useWorkspaceOperations emptyArchive', () => {
     await h.ops.emptyArchive()
     expect(onConfirmEmptyArchive).not.toHaveBeenCalled()
     expect(mockDeleteWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  // The confirm is an unbounded await, and any workspace lifecycle event
+  // reloads the sections under it. Deleting the pre-confirm snapshot would
+  // destroy a workspace somebody had just taken OUT of the archive.
+  it('deletes only what is still archived when the archive changed under the confirm', async () => {
+    let store: ReturnType<typeof createSectionStore> | undefined
+    const h = bulkHarness(['w1', 'w2', 'w3'], {
+      onConfirmEmptyArchive: async () => {
+        // w2 was unarchived on another device while the prompt was up.
+        store!.setItems([item('w1', 's-archived', 'p0'), item('w3', 's-archived', 'p2')])
+        return true
+      },
+    })
+    store = h.sectionStore
+
+    await h.ops.emptyArchive()
+
+    expect(mockDeleteWorkspace.mock.calls.map(c => c[0].workspaceId)).toEqual(['w1', 'w3'])
+    h.dispose()
+  })
+
+  // ...and the mirror: a workspace archived DURING the prompt was never part of
+  // the count the user agreed to, so it survives.
+  it('deletes no more than the count the confirm named', async () => {
+    let store: ReturnType<typeof createSectionStore> | undefined
+    const h = bulkHarness(['w1'], {
+      onConfirmEmptyArchive: async () => {
+        store!.setItems([item('w1', 's-archived', 'p0'), item('late', 's-archived', 'p1')])
+        return true
+      },
+    })
+    store = h.sectionStore
+
+    await h.ops.emptyArchive()
+
+    expect(mockDeleteWorkspace.mock.calls.map(c => c[0].workspaceId)).toEqual(['w1'])
+    h.dispose()
+  })
+
+  // Both refresh calls are full-collection RPCs, so a per-item refresh fetches
+  // N-1 states nobody ever sees.
+  it('refreshes the lists ONCE for the whole batch, not once per workspace', async () => {
+    const onRefreshWorkspaces = vi.fn()
+    const h = bulkHarness(['w1', 'w2', 'w3'], {
+      onConfirmEmptyArchive: async () => true,
+      onRefreshWorkspaces,
+    })
+
+    await h.ops.emptyArchive()
+
+    expect(mockDeleteWorkspace).toHaveBeenCalledTimes(3)
+    expect(onRefreshWorkspaces).toHaveBeenCalledTimes(1)
+    h.dispose()
+  })
+
+  // A single delete keeps its own refresh: only the bulk caller opts out.
+  it('still refreshes once for a single delete', async () => {
+    const onRefreshWorkspaces = vi.fn()
+    const h = bulkHarness(['w1'], { onConfirmDelete: async () => true, onRefreshWorkspaces })
+
+    await h.ops.deleteWorkspace('w1')
+
+    expect(onRefreshWorkspaces).toHaveBeenCalledTimes(1)
     h.dispose()
   })
 
@@ -606,5 +672,143 @@ describe('useWorkspaceOperations getWorkspacesForGroup', () => {
     const v = viewOrder(['a'])
     expect(v.ids()).toEqual(['w0'])
     v.dispose()
+  })
+})
+
+// ----- Archived workspaces refuse a rename -----
+//
+// The hub answers `RenameWorkspace` on an archived workspace with
+// FailedPrecondition. The row menu hides its Rename item, but the row also
+// renames on DOUBLE-CLICK, which reaches `startRename` directly -- so the guard
+// belongs to the operation, not to the item.
+
+describe('useWorkspaceOperations startRename', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('opens the input for a workspace that is not archived', () => {
+    const h = bulkHarness([])
+    h.sectionStore.setItems([item('ws-live', 's-progress', 'p0')])
+    h.ops.startRename(ws('ws-live'))
+    expect(h.ops.renamingWorkspaceId()).toBe('ws-live')
+    h.dispose()
+  })
+
+  it('refuses an archived workspace, so no input opens', () => {
+    const h = bulkHarness(['ws-archived'])
+    h.ops.startRename(ws('ws-archived'))
+    expect(h.ops.renamingWorkspaceId()).toBeNull()
+    h.dispose()
+  })
+
+  // The row's grip stays draggable while the input is open, so the workspace
+  // can be archived between opening the input and committing it.
+  it('sends no rename when the workspace was archived while the input was open', async () => {
+    const h = bulkHarness([])
+    h.sectionStore.setItems([item('ws-1', 's-progress', 'p0')])
+    h.ops.startRename(ws('ws-1'))
+    h.ops.onRenameInput('a new name')
+
+    h.sectionStore.setItems([item('ws-1', 's-archived', 'p0')])
+    await h.ops.commitRename()
+
+    expect(mockRenameWorkspace).not.toHaveBeenCalled()
+    expect(h.ops.renamingWorkspaceId()).toBeNull()
+    h.dispose()
+  })
+})
+
+// ----- Same-section reordering follows the view order -----
+//
+// A row drop resolves through the row's own `ws-<id>` droppable, which every
+// row registers whatever the sort is. Suppressing the reorder is the HANDLER's
+// job: dropping the sortable primitive instead also removed the droppable a
+// CROSS-section drop needs to find a row.
+
+describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorageClearForTests()
+    setStorageAccount('u-1')
+    resetWorkspaceListStateForTests()
+  })
+
+  function dragHarness() {
+    const inProgress = section('s-progress', SectionType.WORKSPACES_IN_PROGRESS)
+    const other = section('s-other', SectionType.WORKSPACES_CUSTOM)
+    return createRoot((dispose) => {
+      const sectionStore = createSectionStore()
+      sectionStore.setSections([inProgress, other])
+      sectionStore.setItems([
+        item('ws-a', 's-progress', 'a'),
+        item('ws-b', 's-progress', 'b'),
+        item('ws-c', 's-other', 'a'),
+      ])
+      const ops = useWorkspaceOperations({
+        workspaces: () => ['ws-a', 'ws-b', 'ws-c'].map(ws),
+        activeWorkspaceId: () => null,
+        sectionStore,
+        loadSections: async () => {},
+        onSelectWorkspace: () => {},
+        onRefreshWorkspaces: () => {},
+        onDeleteWorkspace: () => {},
+      })
+      return { dispose, ops, sectionStore }
+    })
+  }
+
+  /** One row dropped onto another, as solid-dnd reports it. */
+  function drop(h: ReturnType<typeof dragHarness>, from: string, fromSection: string, onto: string, ontoSection: string) {
+    h.ops.handleWorkspaceDragEnd({
+      draggable: { id: `ws-${from}`, data: { sectionId: fromSection } },
+      droppable: { id: `ws-${onto}`, data: { sectionId: ontoSection } },
+    } as never)
+  }
+
+  it('reorders within a section under the default manual sort', () => {
+    const h = dragHarness()
+    drop(h, 'a', 's-progress', 'b', 's-progress')
+    expect(mockMoveWorkspace).toHaveBeenCalledOnce()
+    h.dispose()
+  })
+
+  it('does not reorder within a section while a non-manual sort is active', () => {
+    const h = dragHarness()
+    setWorkspaceSortOrder({ key: 'name', direction: 'asc' })
+    drop(h, 'a', 's-progress', 'b', 's-progress')
+    expect(mockMoveWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('does not reorder within a section while that section is filtered', () => {
+    const h = dragHarness()
+    toggleSectionFilter('s-progress')
+    setSectionFilterQuery('s-progress', 'a')
+    drop(h, 'a', 's-progress', 'b', 's-progress')
+    expect(mockMoveWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  // The half the primitive swap silently removed: a CROSS-section drop still
+  // resolves the target ROW, so the workspace lands before it rather than at
+  // the end of whichever section body happened to be nearest.
+  it('still moves across sections onto a row while a non-manual sort is active', () => {
+    const h = dragHarness()
+    setWorkspaceSortOrder({ key: 'name', direction: 'asc' })
+    drop(h, 'a', 's-progress', 'c', 's-other')
+    expect(mockMoveWorkspace).toHaveBeenCalledOnce()
+    expect(mockMoveWorkspace.mock.calls[0][0].sectionId).toBe('s-other')
+    h.dispose()
+  })
+
+  it('still moves across sections onto a row while the source section is filtered', () => {
+    const h = dragHarness()
+    toggleSectionFilter('s-progress')
+    setSectionFilterQuery('s-progress', 'a')
+    drop(h, 'a', 's-progress', 'c', 's-other')
+    expect(mockMoveWorkspace).toHaveBeenCalledOnce()
+    expect(mockMoveWorkspace.mock.calls[0][0].sectionId).toBe('s-other')
+    h.dispose()
   })
 })

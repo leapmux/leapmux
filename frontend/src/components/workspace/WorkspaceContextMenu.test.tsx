@@ -18,7 +18,7 @@ import { withPreferences } from '~/test-support/preferencesProvider'
  * the "jsdom lacks the popover API" mock this file used to carry was obsolete.
  * It also actively hid three things: it dropped `onToggle` on the floor, so a
  * missing `onToggle={setMenuOpen}` (the likeliest bug in a menu whose whole
- * content is gated on it) passed green; it FLATTENED every submenu into the
+ * content depends on it) passed green; it FLATTENED every submenu into the
  * parent's item list, so an order assertion could not fail on a nesting
  * mistake; and it nulled out the item-content components this menu needs.
  */
@@ -83,7 +83,7 @@ function renderMenu(overrides: Partial<Parameters<typeof WorkspaceContextMenu>[0
   return props
 }
 
-/** Open the menu, as a user does. Every item below is gated on it. */
+/** Open the menu, as a user does. Every item below depends on it. */
 function openMenu() {
   fireEvent.click(screen.getByTestId('workspace-row-menu-trigger'))
 }
@@ -107,7 +107,7 @@ function itemsOf(testId: string): string[] {
 describe('workspaceContextMenu', () => {
   it('reads no tab of any workspace until it is OPENED', () => {
     // `DropdownMenu` renders children eagerly, so the items are in the DOM
-    // either way -- what `onToggle` gates is the WORK. One of these mounts per
+    // either way -- what `onToggle` controls is the WORK. One of these mounts per
     // workspace row, and it serves the right-click menu too, so an ungated
     // build walks every tab of every workspace on every reactive tick.
     //
@@ -265,19 +265,45 @@ describe('workspaceContextMenu', () => {
       })
     })
 
-    it('offers no target for a repository whose worker is offline', () => {
-      // Opening an agent needs the machine the repository is on, so an offline
-      // repository is not a place to start.
+    // "No checkout" and "no REACHABLE checkout" are different states, and the
+    // no-target item is only right for the first. It means "follow the current
+    // tab context", so offering it for the second started an agent somewhere
+    // else entirely -- a machine the user never picked.
+    it('refuses to start, and says why, when every checkout is on an offline worker', () => {
       const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      const startActions = stubWorkspaceStartActions()
       renderMenu({
         getTabs: () => tabs,
         repoGitStore: store,
         isWorkerOnline: () => false,
-        startActions: stubWorkspaceStartActions(),
+        startActions,
       })
       openMenu()
 
-      expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent...')
+      const item = screen.getByTestId('workspace-new-agent') as HTMLButtonElement
+      expect(item.textContent).toBe('New agent...')
+      expect(item).toBeDisabled()
+      fireEvent.click(item)
+      expect(startActions.onNewAgentAt).not.toHaveBeenCalled()
+    })
+
+    // The other half: a workspace with NO checkout at all keeps the no-target
+    // item, because a freshly created workspace has no tabs and that row most
+    // needs a way in.
+    it('keeps the no-target item for a workspace with no checkout', () => {
+      const startActions = stubWorkspaceStartActions()
+      renderMenu({ isWorkerOnline: () => false, startActions })
+      openMenu()
+
+      const item = screen.getByTestId('workspace-new-agent') as HTMLButtonElement
+      expect(item.textContent).toBe('New agent...')
+      expect(item).not.toBeDisabled()
+      fireEvent.click(item)
+      expect(startActions.onNewAgentAt).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        workerId: '',
+        workingDir: '',
+      })
     })
   })
 
@@ -347,7 +373,7 @@ describe('workspaceContextMenu', () => {
   })
 
   describe('the info block', () => {
-    it('names the workspace, its section and its tab count', () => {
+    it('reports the workspace, its section and its tab count', () => {
       const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
       renderMenu({ getTabs: () => tabs, repoGitStore: store })
       openMenu()
@@ -383,7 +409,7 @@ describe('workspaceContextMenu', () => {
     // `contextmenu` so light-dismiss cannot eat the menu it just opened.
     vi.useFakeTimers()
     try {
-      // The info block is the open-gated content, so its presence is what says
+      // The info block is the content that depends on the open state, so its presence is what says
       // the menu really opened rather than merely being mounted.
       expect(screen.queryByTestId('workspace-info-button')).not.toBeInTheDocument()
       row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 10, clientY: 10, bubbles: true, cancelable: true }))

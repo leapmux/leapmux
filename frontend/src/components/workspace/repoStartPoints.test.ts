@@ -233,13 +233,13 @@ describe('listRepoStartPoints', () => {
   })
 
   describe('labels', () => {
-    it('names an origin-backed repository the way the tree does', () => {
+    it('labels an origin-backed repository the way the tree does', () => {
       const store = storeWith([{ gitToplevel: '/x', originUrl: 'git@github.com:org/leapmux.git' }])
       const out = listRepoStartPoints([tab({ gitToplevel: '/x' })], store)
       expect(out[0].label).toBe('github.com/org/leapmux')
     })
 
-    it('names an origin-less repository by its directory', () => {
+    it('labels an origin-less repository by its directory', () => {
       const store = storeWith([{ gitToplevel: '/home/me/alpha' }])
       const out = listRepoStartPoints([tab({ gitToplevel: '/home/me/alpha' })], store)
       expect(out[0].label).toBe('alpha')
@@ -256,7 +256,7 @@ describe('listRepoStartPoints', () => {
       expect(out.map(e => e.label).toSorted()).toEqual(['a', 'b'])
     })
 
-    it('names the worker once the list spans more than one', () => {
+    it('labels the worker once the list spans more than one', () => {
       const store = storeWith([
         { workerId: 'w1', gitToplevel: '/leapmux' },
         { workerId: 'w2', gitToplevel: '/api' },
@@ -305,7 +305,11 @@ describe('listRepoStartPoints', () => {
       expect(out.map(e => e.label).toSorted()).toEqual(['alpha', 'beta'])
     })
 
-    it('gives every entry a distinct key', () => {
+    // One repository at the same path on two machines is two places to start,
+    // so the (worker, toplevel) pair -- the thing the dialog is opened with --
+    // must differ. The entries used to carry a separate `key` field for this,
+    // which nothing outside its own test ever read.
+    it('keeps one path on two workers as two distinct start points', () => {
       const store = storeWith([
         { workerId: 'w1', gitToplevel: '/repo' },
         { workerId: 'w2', gitToplevel: '/repo' },
@@ -314,7 +318,11 @@ describe('listRepoStartPoints', () => {
         tab({ workerId: 'w1', gitToplevel: '/repo' }),
         tab({ workerId: 'w2', gitToplevel: '/repo' }),
       ], store, { workerInfoFn })
-      expect(new Set(out.map(e => e.key)).size).toBe(2)
+
+      const pairs = out.map(e => `${e.startPoint.workerId}@${e.startPoint.gitToplevel}`)
+      expect(new Set(pairs).size).toBe(2)
+      // And the labels disambiguate them, or the two rows read the same.
+      expect(new Set(out.map(e => e.label)).size).toBe(2)
     })
   })
 })

@@ -98,7 +98,8 @@ test.describe('Branch context menu', () => {
     // earlier test expanded still has one. Archiving moves this workspace to
     // another section, so the unscoped locator drifted onto a live workspace's
     // row and read its menu as this row's.
-    // `:visible` as well, because the shell mounts the sidebar twice.
+    // `:visible` as well, because a collapsed sidebar keeps its rows mounted
+    // under `display: none`.
     const row = page
       .locator(`[data-testid="workspace-children-${workspaceId}"] [data-testid="tab-tree-branch-group"]:visible`)
       .first()
@@ -287,7 +288,8 @@ test.describe('Branch context menu', () => {
 
     // Scoped to the AWAY subtree: `branchGroupRow` takes the first visible row
     // in the whole sidebar, which is the active workspace's. `:visible` as well,
-    // because the shell mounts the sidebar twice.
+    // because a collapsed sidebar keeps its rows mounted under
+    // `display: none`.
     const awayBranchRow = page
       .locator(`[data-testid="workspace-children-${awayWs}"] [data-testid="tab-tree-branch-group"]:visible`)
       .first()

@@ -559,8 +559,31 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // is no `[popovertarget]` (this component deliberately renders none), and it
   // queries `[role="menuitem"]` while these items carry `menuitemradio`.
 
+  /**
+   * Whether `el` sits inside a nested popover that is CLOSED.
+   *
+   * A nested menu renders inline, so its items are descendants of this popover
+   * whether or not it is open -- and a `popover` that is not showing is
+   * `display: none`. Arrowing onto such an item calls `.focus()` on a hidden
+   * element, which is a silent no-op: the roving focus stalls at that index,
+   * and type-ahead matches text nobody can see.
+   *
+   * The walk stops at THIS popover, so an item of this menu is never excluded
+   * by this menu's own open state.
+   */
+  const insideClosedSubPopover = (el: HTMLElement): boolean => {
+    for (let node = el.parentElement; node && node !== popoverEl; node = node.parentElement) {
+      if (node.hasAttribute('popover') && !node.matches(':popover-open'))
+        return true
+    }
+    return false
+  }
+
   const menuItems = (): HTMLElement[] =>
-    popoverEl ? [...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)] : []
+    popoverEl
+      ? [...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)]
+          .filter(el => !insideClosedSubPopover(el))
+      : []
 
   /**
    * Move focus to `index`, wrapping at both ends.

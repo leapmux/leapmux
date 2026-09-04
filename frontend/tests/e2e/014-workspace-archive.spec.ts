@@ -111,7 +111,9 @@ test.describe('Workspace Archive', () => {
     // and this fixture has one workspace section, so Move-to is not offered at
     // all. `isMoveTargetSection`'s filter is covered where it can actually be
     // driven: `WorkspaceContextMenu.test.tsx` ("lists every other workspace
-    // section, and no other kind") and 195's custom-section flow.
+    // section, and no other kind"), and in a real browser by 195's
+    // "a custom section can be created, renamed and deleted from the menu",
+    // which creates the second section the submenu needs and then opens it.
     const allLabels = await page.getByRole('menuitem').allTextContents()
     expect(allLabels).not.toContain('Files')
     expect(allLabels).not.toContain('To-dos')

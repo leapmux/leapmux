@@ -1,6 +1,6 @@
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { assertNever } from '~/lib/assertNever'
-import { compareNames } from '~/lib/fileSort'
+import { compareNames, compareOptionalValue } from '~/lib/fileSort'
 
 /**
  * The value the workspace list is ordered by.
@@ -93,48 +93,44 @@ export type WorkspaceRecencyFn = (workspaceId: string) => number | undefined
  * sorts LAST under both directions: the pin happens before the direction flip,
  * so "never used this session" never migrates to the top.
  *
- * Returns a NEW array; the input is not mutated.
+ * Never mutates the input. Returns the input ITSELF when the order needs no
+ * work, so a downstream memo can still compare by reference; treat the result
+ * as read-only either way.
  */
 export function sortWorkspaces(
   workspaces: readonly Workspace[],
   order: WorkspaceSortOrder,
   recencyOf: WorkspaceRecencyFn,
-): Workspace[] {
+): readonly Workspace[] {
   if (order.key === 'manual')
-    return [...workspaces]
+    return workspaces
 
   const flip = order.direction === 'desc' ? -1 : 1
   const byTitle = (a: Workspace, b: Workspace) => compareNames(a.title || '', b.title || '')
+
+  // Resolved ONCE per workspace, not once per comparison. `recencyOf` scans
+  // every tab of a workspace to find its highest activation counter, and a
+  // comparator runs O(n log n) times.
+  const recency = order.key === 'recent'
+    ? new Map(workspaces.map(w => [w.id, recencyOf(w.id)]))
+    : undefined
 
   return [...workspaces].sort((a, b) => {
     switch (order.key) {
       case 'name':
         return byTitle(a, b) * flip
-      case 'recent': {
-        const ar = recencyOf(a.id)
-        const br = recencyOf(b.id)
-        if (ar === undefined || br === undefined) {
-          if (ar !== br)
-            return ar === undefined ? 1 : -1
-          return byTitle(a, b)
-        }
-        return ar === br ? byTitle(a, b) : (ar < br ? -1 : 1) * flip
-      }
-      case 'created': {
+      case 'recent':
+        // A counter of 0 is a real value, so only `undefined` is absent.
+        return compareOptionalValue(recency!.get(a.id), recency!.get(b.id), flip) ?? byTitle(a, b)
+      case 'created':
         // The hub writes every timestamp in one fixed-width layout, so a
         // lexicographic compare is a chronological one and needs no parsing.
-        const ac = a.createdAt
-        const bc = b.createdAt
-        if (!ac || !bc) {
-          if (Boolean(ac) !== Boolean(bc))
-            return ac ? -1 : 1
-          return byTitle(a, b)
-        }
-        return ac === bc ? byTitle(a, b) : (ac < bc ? -1 : 1) * flip
-      }
-      // `manual` returned above, so this arm is unreachable -- but naming every
-      // key rather than writing a `default` is what makes a NEW key a compile
-      // error here.
+        // An EMPTY string means "not reported", so it maps to `undefined`.
+        return compareOptionalValue(a.createdAt || undefined, b.createdAt || undefined, flip)
+          ?? byTitle(a, b)
+      // `manual` returned above, so this case is unreachable -- but listing
+      // every key rather than writing a `default` is what makes a NEW key a
+      // compile error here.
       case 'manual':
         return 0
       default:
@@ -143,11 +139,16 @@ export function sortWorkspaces(
   })
 }
 
-/** Keep the workspaces whose title matches `query`, case-insensitively. */
-export function filterWorkspaces(workspaces: readonly Workspace[], query: string): Workspace[] {
+/**
+ * Keep the workspaces whose title matches `query`, case-insensitively.
+ *
+ * Returns the input ITSELF for an empty query, for the same reason
+ * {@link sortWorkspaces} does. Never mutates it.
+ */
+export function filterWorkspaces(workspaces: readonly Workspace[], query: string): readonly Workspace[] {
   const needle = query.trim().toLowerCase()
   if (!needle)
-    return [...workspaces]
+    return workspaces
   return workspaces.filter(w => (w.title || '').toLowerCase().includes(needle))
 }
 

@@ -313,7 +313,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
     if (!props.isWorkspaceMutatable(target))
       return 'This workspace is archived. Unarchive it to create tabs.'
     // `firstLeafIdFor` answers for ANY workspace and is null exactly when
-    // `placementTileId()` would be empty, which is the state this reason names.
+    // `placementTileId()` would be empty, which is the state this reason describes.
     if (!props.layoutStore.firstLeafIdFor(target))
       return 'The workspace view is not ready yet. Try again in a moment.'
     return undefined
@@ -456,7 +456,12 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             danger
             onConfirm={() => {
               props.dialogs.confirmDeleteSection.close()
-              void sectionOps.deleteSection(state.sectionId)
+              // The toast lives HERE, not in the operation. The confirm is
+              // already dismissed by the time the RPC settles, so this call
+              // site owns the only surface left to report a failure on -- and
+              // `useSectionOperations` keeps one policy for all three.
+              sectionOps.deleteSection(state.sectionId)
+                .catch(err => showWarnToast('Failed to delete section', err))
             }}
             onCancel={() => props.dialogs.confirmDeleteSection.close()}
           >
@@ -473,7 +478,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             payload={payload}
             onSubmit={name => payload.mode === 'create'
               ? sectionOps.createSection(name, payload.sidebar)
-              : sectionOps.renameSection(payload.sectionId!, name)}
+              : sectionOps.renameSection(payload.sectionId, name)}
             onClose={() => props.dialogs.sectionName.close()}
           />
         )}

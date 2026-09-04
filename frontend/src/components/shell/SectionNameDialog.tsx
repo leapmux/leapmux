@@ -9,16 +9,28 @@ import { errorText } from '~/styles/shared.css'
 import { TitleInput } from './TitleInput'
 import { DialogFormFooter } from './WorkerDialogShell'
 
-/** Open-time payload for {@link SectionNameDialog}. */
-export interface SectionNamePayload {
-  mode: 'create' | 'rename'
-  /** Which sidebar a CREATED section lands on. Ignored for a rename. */
-  sidebar: Sidebar
-  /** The section being renamed. Absent for a create. */
-  sectionId?: string
-  /** The name the field starts with. Empty for a create. */
-  initialName?: string
-}
+/**
+ * Open-time payload for {@link SectionNameDialog}.
+ *
+ * A UNION, so each mode carries exactly what it needs and nothing it does not.
+ * One interface with `sidebar` documented "ignored for a rename" and an
+ * optional `sectionId` forced the rename call site to assert the id was
+ * present -- and a payload built without one would have reached the RPC as
+ * `undefined` instead of failing to compile.
+ */
+export type SectionNamePayload
+  = | {
+    mode: 'create'
+    /** Which sidebar the created section lands on. */
+    sidebar: Sidebar
+  }
+  | {
+    mode: 'rename'
+    /** The section being renamed. */
+    sectionId: string
+    /** The name the field starts with. */
+    initialName: string
+  }
 
 interface SectionNameDialogProps {
   payload: SectionNamePayload
@@ -43,8 +55,9 @@ export const SectionNameDialog: Component<SectionNameDialogProps> = (props) => {
   // payload remounts this component rather than mutating a half-typed field
   // under the user.
   /* eslint-disable solid/reactivity -- one-time initial values; see above */
-  const creating = props.payload.mode === 'create'
-  const name = createTitleState(() => props.payload.initialName ?? '')
+  const payload = props.payload
+  const creating = payload.mode === 'create'
+  const name = createTitleState(() => (payload.mode === 'rename' ? payload.initialName : ''))
   /* eslint-enable solid/reactivity */
   const { submitting, error, formHandler } = useDialogSubmit({
     fallback: creating ? 'Failed to create section' : 'Failed to rename section',

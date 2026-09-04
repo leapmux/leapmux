@@ -67,7 +67,7 @@ vi.mock('~/lib/crdt', async importOriginal => ({
 
 // The real tree issues its own `listDirectory` round-trips and renders nothing
 // this dialog's submit path depends on. Stub it down to the one thing the
-// dialog reads back from it -- the selected working directory, which gates
+// dialog reads back from it -- the selected working directory, which controls
 // submit.
 vi.mock('~/components/tree/DirectoryTree', () => ({
   DirectoryTree: (props: { onSelect: (path: string) => void }) => (
@@ -124,7 +124,7 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
 }
 
 /**
- * Drive the dialog to a submittable state and click Create. Submit is gated on
+ * Drive the dialog to a submittable state and click Create. Submit depends on
  * a selected worker (arrives with the `listWorkers` mock) AND a non-empty
  * working directory, which only the directory tree can supply.
  */

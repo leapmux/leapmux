@@ -45,20 +45,6 @@ export function branchKey(branchName: string | null, workerId: string, gitToplev
 }
 
 /**
- * The branch group a tab belongs to.
- *
- * Every surface that answers "which tabs are on this branch" must use this one
- * function: the sidebar groups its tree by it, and the composer's branch chip
- * collects the tab list it hands to the delete-branch dialog by it. A second
- * membership test would let the dialog report a different set of affected tabs
- * than the tree shows.
- *
- * The parameter is a `Pick` of the real tab, not a structural shape with three
- * optional fields. Every field being optional made a `BranchGroup` -- which
- * carries `branchName`, not `gitBranch` -- a valid argument that silently
- * returned the "(no branch)" key, which is exactly the drift above.
- */
-/**
  * Repo toplevel for structural keys (branch buckets, delete-branch tab sets)
  * and for the sidebar's repository grouping. The ONE place that answers "which
  * repository is this tab in", so a caller cannot re-add the row fallback below.
@@ -93,6 +79,20 @@ export function tabGitToplevelForKey(
   return git.toplevel ?? ''
 }
 
+/**
+ * The branch group a tab belongs to.
+ *
+ * Every surface that answers "which tabs are on this branch" must use this one
+ * function: the sidebar groups its tree by it, and the composer's branch chip
+ * collects the tab list it hands to the delete-branch dialog by it. A second
+ * membership test would let the dialog report a different set of affected tabs
+ * than the tree shows.
+ *
+ * The parameter is a `Pick` of the real tab, not a structural shape with three
+ * optional fields. Every field being optional made a `BranchGroup` -- which
+ * carries `branchName`, not `gitBranch` -- a valid argument that silently
+ * returned the "(no branch)" key, which is exactly the drift above.
+ */
 export function tabBranchKey(
   tab: Pick<Tab, 'workerId' | 'gitToplevel' | 'workingDir'>,
   store: RepoGitStore,
@@ -185,7 +185,17 @@ export function repoKeyAndLabel(
   return null
 }
 
+/**
+ * Join `parts` into one key with the separator this module owns.
+ *
+ * Exported so a caller that needs a composite of its own does not concatenate a
+ * control byte inline, which is the rule this module's own doc states.
+ */
+export function compositeKey(...parts: string[]): string {
+  return parts.join(KEY_SEP)
+}
+
 /** Composite key for the per-row collapse state (repo + branch). */
 export function collapseKeyForBranch(repoKey: string, branchKey: string): string {
-  return `${repoKey}${KEY_SEP}${branchKey}`
+  return compositeKey(repoKey, branchKey)
 }

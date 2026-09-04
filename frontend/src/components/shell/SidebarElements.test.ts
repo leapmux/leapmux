@@ -58,9 +58,8 @@ const STATIC_PASSTHROUGHS = new Set([
   'onConfirmArchive',
   'onConfirmEmptyArchive',
   'onPostArchiveWorkspace',
-  'onNewSection',
-  'onRenameSection',
-  'onDeleteSection',
+  // One bundle now, not three parallel fields. See `SectionActions`.
+  'sectionActions',
   'getCurrentTabContext',
   'getMruAgentContext',
   'onFileSelect',
@@ -108,9 +107,7 @@ function trackedOpts() {
     onConfirmArchive: noop,
     onConfirmEmptyArchive: noop,
     onPostArchiveWorkspace: noop,
-    onNewSection: noop,
-    onRenameSection: noop,
-    onDeleteSection: noop,
+    sectionActions: { onNew: noop, onRename: noop, onDelete: noop },
     getCurrentTabContext: tabContext,
     getMruAgentContext: () => ({ workingDir: '/repo', homeDir: '/home/u' }),
     get fileTreePath() {
@@ -190,7 +187,7 @@ describe('buildCommonSidebarProps', () => {
     expect(reads).toEqual([])
   })
 
-  it('forwards a pass-through prop it never names', () => {
+  it('forwards a pass-through prop it never lists', () => {
     // The forward list is gone -- mergeProps carries every pass-through -- so
     // this is what pins that the mechanism is actually wired. It also covers
     // what the Proxy guard below no longer can: mergeProps reads descriptors

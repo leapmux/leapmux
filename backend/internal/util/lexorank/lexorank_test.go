@@ -94,3 +94,35 @@ func TestBefore(t *testing.T) {
 		b = prev
 	}
 }
+
+// Mid takes a DESCENDING pair without answering a rank that collides with one
+// of its arguments, or one that sits outside them.
+//
+// between's midpoint test subtracts one byte from another. A descending pair
+// wrapped the unsigned result, so the function reported a gap where there was
+// none: it answered a rank on the wrong side of b, and for two adjacent
+// characters a rank EQUAL to b -- which collides with the row b identifies, and two
+// rows that share a rank are ordered by whatever the SQL planner picks.
+//
+// SectionService.CreateSection reached this whenever a user dragged a section
+// past another, because MoveSection writes any position a client asks for.
+func TestMidNormalizesADescendingPair(t *testing.T) {
+	pairs := [][2]string{
+		{"nng", "nn"}, // a custom section dragged below Archived
+		{"o", "n"},    // adjacent characters: the collision case
+		{"n", "a"},
+		{"zz", "aa"},
+		{"nn", "n"},
+	}
+
+	for _, p := range pairs {
+		hi, lo := p[0], p[1]
+		m := Mid(hi, lo)
+
+		assert.Greater(t, m, lo, "Mid(%q, %q) must sort after the lower bound", hi, lo)
+		assert.Less(t, m, hi, "Mid(%q, %q) must sort before the upper bound", hi, lo)
+		// Mid is symmetric now, so neither caller order can produce a
+		// different answer.
+		assert.Equal(t, Mid(lo, hi), m, "Mid(%q, %q) must not depend on the argument order", hi, lo)
+	}
+}

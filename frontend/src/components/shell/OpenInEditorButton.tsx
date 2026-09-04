@@ -60,7 +60,12 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
   // whatever the active tab reports. A surface that DOES hold a worker id (the
   // workspace row menu's Repository submenu) must use `isLocalWorker`, because
   // a solo desktop can also hold registrations for remote machines.
-  const [runtimeState] = createResource(() => getRuntimeState())
+  // Caught for the same reason AppShell catches it: Solid re-throws a rejected
+  // resource from the accessor, and `platformBridge` caches the rejected
+  // promise, so one failed IPC call would take out every render that reads it.
+  const [runtimeState] = createResource(async () =>
+    getRuntimeState().catch(() => undefined),
+  )
   const eligible = () => runtimeState()?.capabilities.localSolo ?? false
 
   const [editors, { refetch: refetchEditors }] = createResource<DetectedEditor[], boolean>(

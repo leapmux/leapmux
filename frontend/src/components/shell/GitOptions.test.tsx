@@ -67,7 +67,7 @@ describe('indexBranches.existingNames', () => {
 
   it('local branches contribute only their exact name', () => {
     // Locals with slashes ("feature/foo") must NOT yield "foo" — the
-    // suffix strip is gated on isRemote and we preserve that
+    // suffix strip depends on isRemote and we preserve that
     // asymmetry.
     const set = existingNames([entry('main'), entry('feature/foo')])
     expect([...set].toSorted()).toEqual(['feature/foo', 'main'])
@@ -389,8 +389,8 @@ describe('gitOptions activeMode ownership', () => {
 
   it('clamps a seed mode that is not in the enabled set', async () => {
     // A seed outside `props.modes` leaves EVERY radio unchecked -- each row is
-    // gated on `enabledModes().has` -- while the emit effect still reports that
-    // mode, so the dialog submits an intent it never showed. The remembered
+    // `enabledModes().has` -- while the emit effect still reports that mode, so
+    // the dialog submits an intent it never showed. The remembered
     // per-repository mode makes that reachable: a mode stored from a dialog
     // that offers all five can arrive at one that offers three.
     const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
@@ -451,6 +451,66 @@ describe('gitOptions activeMode ownership', () => {
     ))
 
     await waitFor(() => expect(screen.getByLabelText('Create new worktree')).toBeChecked())
+  })
+
+  // The active mode is DERIVED from the enabled set, not repaired when the set
+  // changes. A narrowing that still CONTAINS the user's pick must therefore
+  // keep it -- the old reset effect wiped it, along with the cached branch
+  // list, the worktrees and all three selections.
+  it('keeps a still-valid pick when the enabled set narrows', async () => {
+    const [mode] = createSignal<GitMode>(GitMode.Current)
+    const [modes, setModes] = createSignal<GitMode[]>([
+      GitMode.Current,
+      GitMode.SwitchBranch,
+      GitMode.CreateBranch,
+    ])
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={vi.fn()}
+        modes={modes()}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
+    // CreateBranch, not SwitchBranch: the narrowed set's DEFAULT is
+    // SwitchBranch, so picking that would pass either way.
+    fireEvent.click(screen.getByLabelText('Create new branch'))
+    await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
+
+    setModes([GitMode.SwitchBranch, GitMode.CreateBranch])
+
+    await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
+    expect(screen.getByLabelText('Switch to branch')).not.toBeChecked()
+  })
+
+  // The other half: a narrowing that EXCLUDES the pick re-derives to the
+  // default rather than leaving every radio unchecked while the hidden mode
+  // keeps emitting.
+  it('re-derives to the default when the enabled set drops the pick', async () => {
+    const [mode] = createSignal<GitMode>(GitMode.Current)
+    const [modes, setModes] = createSignal<GitMode[]>([GitMode.Current, GitMode.SwitchBranch])
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={vi.fn()}
+        modes={modes()}
+      />
+    ))
+
+    await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
+
+    setModes([GitMode.SwitchBranch, GitMode.CreateBranch])
+
+    await waitFor(() => expect(screen.getByLabelText('Switch to branch')).toBeChecked())
   })
 
   it('honours a seed inside DEFAULT_GIT_MODES when modes is the empty array', async () => {

@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-solid'
-import type { Section } from '~/generated/proto/leapmux/v1/section_pb'
+import type { Section, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import Archive from 'lucide-solid/icons/archive'
 import Folder from 'lucide-solid/icons/folder'
 import FolderTree from 'lucide-solid/icons/folder-tree'
@@ -67,4 +67,25 @@ export function getSectionIcon(section: Section): LucideIcon {
     default:
       return Folder
   }
+}
+
+/**
+ * The three section-CRUD callbacks the sidebar hands to every section header
+ * menu.
+ *
+ * ONE bundle rather than three parallel fields declared in three interfaces
+ * that only forward them. A fourth section action then touches one type and one
+ * forwarding site instead of three, and the three layers cannot drift on a
+ * signature or a doc comment. It follows `WorkspaceStartActions`, which already
+ * groups the row's two tab-creation callbacks the same way.
+ *
+ * Only plain callbacks belong in a bundle like this. A reactive value
+ * (`localSolo`) must stay a flat field, because a nested object read once
+ * freezes it.
+ */
+export interface SectionActions {
+  /** Open the New section dialog for `sidebar`. */
+  onNew: (sidebar: Sidebar) => void
+  onRename: (section: Section) => void
+  onDelete: (section: Section) => void
 }

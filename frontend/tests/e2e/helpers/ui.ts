@@ -795,7 +795,7 @@ export async function openAgentViaUI(page: Page) {
  * a proxy we invented for the tests.
  *
  * Emphatically NOT the tree root node, which this used to wait for. That node is
- * gated only on `workerId` (available from the CRDT TabRecord immediately) and
+ * dependent only on `workerId` (available from the CRDT TabRecord immediately) and
  * renders against a `props.workingDir || '~'` fallback, so it attaches while the
  * dir is still empty -- i.e. it was already on screen at exactly the moment the
  * race it was supposed to close was open, and the specs kept their original
@@ -1372,10 +1372,13 @@ export async function renameTabViaUI(page: Page, tab: Locator, newTitle: string)
  * Shared by the file-tree three-dot menu and the branch-group one, which differ
  * only in how their trigger is addressed.
  */
-async function openRowMenu(row: Locator, trigger: Locator, item: Locator) {
+export async function openRowMenu(row: Locator | null, trigger: Locator, item: Locator) {
   await expect(async () => {
     if (!await item.isVisible()) {
-      await row.hover()
+      // A row menu's trigger is `opacity: 0` until its row is hovered. A
+      // SECTION HEADER's trigger is always painted, so that caller passes
+      // `null` rather than a row to hover.
+      await row?.hover()
       await trigger.click()
     }
     await expect(item).toBeVisible()
@@ -1389,7 +1392,7 @@ async function openRowMenu(row: Locator, trigger: Locator, item: Locator) {
  * and clicking, so the caller's invariant -- "this item got clicked" -- is what
  * gets retried.
  */
-async function clickRowMenuItem(row: Locator, trigger: Locator, item: Locator) {
+export async function clickRowMenuItem(row: Locator | null, trigger: Locator, item: Locator) {
   await expect(async () => {
     await openRowMenu(row, trigger, item)
     await item.click()

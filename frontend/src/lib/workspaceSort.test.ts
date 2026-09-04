@@ -197,3 +197,30 @@ describe('canReorderWithin', () => {
     expect(canReorderWithin(order('manual'), '   ')).toBe(true)
   })
 })
+
+// The default state -- manual order, no filter -- must not allocate. Both
+// functions are called for every section on every tick, and a fresh array
+// breaks reference equality for every memo downstream of them.
+describe('the identity paths return the input itself', () => {
+  const list = [ws('a', 'Alpha'), ws('b', 'Beta')]
+
+  it('sortWorkspaces returns the same array under the manual order', () => {
+    expect(sortWorkspaces(list, { key: 'manual', direction: 'asc' }, () => undefined)).toBe(list)
+  })
+
+  it('filterWorkspaces returns the same array for an empty query', () => {
+    expect(filterWorkspaces(list, '')).toBe(list)
+    expect(filterWorkspaces(list, '   ')).toBe(list)
+  })
+
+  it('still returns a NEW array whenever it does work', () => {
+    expect(sortWorkspaces(list, { key: 'name', direction: 'asc' }, () => undefined)).not.toBe(list)
+    expect(filterWorkspaces(list, 'alpha')).not.toBe(list)
+  })
+
+  it('never mutates the input', () => {
+    const before = list.map(w => w.id)
+    sortWorkspaces(list, { key: 'name', direction: 'desc' }, () => undefined)
+    expect(list.map(w => w.id)).toEqual(before)
+  })
+})

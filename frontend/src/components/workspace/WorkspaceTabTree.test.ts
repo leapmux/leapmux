@@ -683,11 +683,11 @@ describe('buildTree branch tilde inputs', () => {
 // Two workers holding the same branch at the same path under each home
 // directory render two rows whose name, kind and shortened directory are all
 // identical — and Delete on one of them removes the other machine's directory.
-// The row's tooltip names the worker exactly when that can happen.
+// The row's tooltip identifies the worker exactly when that can happen.
 describe('buildTree branch workerLabel', () => {
   const twoWorkers = (id: string) => (id === 'w1' ? posixLookup() : { ...posixLookup(), name: 'worker-b' })
 
-  it('names the worker when the branch appears on more than one', () => {
+  it('identifies the worker when the branch appears on more than one', () => {
     const { tabs, repoSeeds } = tabsWithSeeds([
       { id: '1', workerId: 'w1', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },
       { id: '2', workerId: 'w2', gitOriginUrl: 'https://github.com/o/r.git', gitBranch: 'main', gitToplevel: '/home/u/Workspaces/r' },

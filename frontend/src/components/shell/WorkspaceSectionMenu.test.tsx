@@ -2,7 +2,7 @@ import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { isSectionFilterShown, resetWorkspaceListStateForTests, workspaceSortOrder } from '~/components/workspace/workspaceListState'
+import { isSectionFilterShown, resetWorkspaceListStateForTests, toggleSectionFilter, workspaceSortOrder } from '~/components/workspace/workspaceListState'
 import { gitModeStickyKey, rememberStickyGitMode } from '~/components/workspace/workspaceStartPoint'
 import { SectionSchema, SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -14,7 +14,7 @@ import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
 
 /**
  * The REAL `DropdownMenu`. See `WorkspaceContextMenu.test.tsx` for why a mock
- * is worse than useless here: it drops `onToggle`, which is what gates this
+ * is worse than useless here: it drops `onToggle`, which is what controls this
  * menu's entire repository list.
  */
 
@@ -50,6 +50,11 @@ function renderMenu(overrides: Partial<Parameters<typeof WorkspaceSectionMenu>[0
     onCollapseAll: noop,
     onExpandAll: noop,
     onNewWorkspace: noop as Parameters<typeof WorkspaceSectionMenu>[0]['onNewWorkspace'],
+    // The UNFILTERED archive, which is what the two bulk items act on. The
+    // default follows `getWorkspaceIds` so a test that overrides one row list
+    // still describes a consistent section; the archive tests override it.
+    hasArchivedWorkspaces: () => true,
+    onToggleFilter: noop,
     onUnarchiveAll: noop,
     onEmptyArchive: noop,
     onNewSection: noop,
@@ -90,7 +95,7 @@ describe('workspaceSectionMenu', () => {
     resetWorkspaceListStateForTests()
   })
 
-  it('names the trigger after its section, so it is not an unnamed button', () => {
+  it('labels the trigger after its section, so it is not an unnamed button', () => {
     renderMenu()
     expect(screen.getByTestId(triggerId(IN_PROGRESS))).toHaveAccessibleName('In progress actions')
   })
@@ -110,14 +115,24 @@ describe('workspaceSectionMenu', () => {
     ])
   })
 
-  it('offers the filter toggle as a checkbox, reflecting whether the box is open', () => {
-    renderMenu()
+  // The menu REPORTS the toggle rather than performing it. The filter box lives
+  // in the section body, and this menu opens while the section is collapsed --
+  // where a hidden input takes no focus. The section def expands first, so it
+  // owns the write; the checkbox only mirrors the state.
+  it('reports the filter toggle and mirrors whether the box is open', () => {
+    const onToggleFilter = vi.fn()
+    renderMenu({ onToggleFilter })
     openMenu()
 
     const toggle = screen.getByTestId('sidebar-filter-workspaces')
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     fireEvent.click(toggle)
-    expect(isSectionFilterShown(IN_PROGRESS.id)).toBe(true)
+    expect(onToggleFilter).toHaveBeenCalledOnce()
+    // It did NOT write the state itself.
+    expect(isSectionFilterShown(IN_PROGRESS.id)).toBe(false)
+
+    toggleSectionFilter(IN_PROGRESS.id)
+    expect(screen.getByTestId('sidebar-filter-workspaces')).toHaveAttribute('aria-checked', 'true')
   })
 
   describe('the Sort by submenu', () => {
@@ -293,12 +308,35 @@ describe('workspaceSectionMenu', () => {
     })
 
     it('hides the bulk operations while the archive is empty', () => {
-      renderMenu({ section: ARCHIVED, canCreate: false, getWorkspaceIds: () => [] })
+      renderMenu({
+        section: ARCHIVED,
+        canCreate: false,
+        getWorkspaceIds: () => [],
+        hasArchivedWorkspaces: () => false,
+      })
       openMenu(ARCHIVED)
 
       const items = itemsOf('sidebar-section-menu-workspaces_archived-popover')
       expect(items).not.toContain('Unarchive all')
       expect(items).not.toContain('Empty archive...')
+    })
+
+    // The gate reads the UNFILTERED archive, not the rows on screen. Reading
+    // the filtered list hid an archive full of workspaces behind a filter that
+    // matched none of them -- and, the other way round, offered an
+    // irreversible "Empty archive..." for fifty while the user could see one.
+    it('keeps the bulk operations while a filter hides every row', () => {
+      renderMenu({
+        section: ARCHIVED,
+        canCreate: false,
+        getWorkspaceIds: () => [],
+        hasArchivedWorkspaces: () => true,
+      })
+      openMenu(ARCHIVED)
+
+      const items = itemsOf('sidebar-section-menu-workspaces_archived-popover')
+      expect(items).toContain('Unarchive all')
+      expect(items).toContain('Empty archive...')
     })
 
     it('offers no rename or delete of the section itself', () => {

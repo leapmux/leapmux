@@ -56,7 +56,18 @@ func before(s string) string {
 }
 
 // between returns a rank between a and b where a < b.
+//
+// It normalizes a descending pair rather than trusting the caller. The midpoint
+// test below subtracts one byte from another, so a descending pair wrapped the
+// unsigned result and the function answered a rank on the wrong side of b -- or,
+// for two adjacent characters, a rank EQUAL to b, which collides with the row
+// that b identifies. The TypeScript port computes the same subtraction on a signed
+// number and did not wrap, so the two implementations also disagreed.
 func between(a, b string) string {
+	if a >= b {
+		a, b = b, a
+	}
+
 	// Pad a and b to the same length for comparison.
 	maxLen := len(a)
 	if len(b) > maxLen {

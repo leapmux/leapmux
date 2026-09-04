@@ -10,7 +10,7 @@ import {
 
 /**
  * `assertNever` gives exhaustiveness for ADDING a variant; it gives no coverage
- * that an existing arm is right. These tests are that coverage: one case per
+ * that an existing case is right. These tests are that coverage: one case per
  * variant, asserting the whole returned setup.
  */
 describe('startPointDialogSetup', () => {
@@ -19,7 +19,7 @@ describe('startPointDialogSetup', () => {
   })
 
   it('preselects a worker without pre-filling a directory', () => {
-    // The `?newWorkspace=true&workerId=` route names a machine and nothing
+    // The `?newWorkspace=true&workerId=` route identifies a machine and nothing
     // else, so the user still picks the directory.
     expect(startPointDialogSetup({ kind: 'directory', workerId: 'w1' }))
       .toEqual({ workerId: 'w1' })
@@ -124,7 +124,7 @@ describe('sticky git mode', () => {
     expect(readStickyGitMode(undefined)).toBeUndefined()
   })
 
-  it('answers undefined for a stored value that no longer names a mode', () => {
+  it('answers undefined for a stored value that no longer identifies a mode', () => {
     // The whole reason a TOKEN is stored: a value from a previous build must
     // fall back rather than select whichever mode now holds that slot.
     localStorageSet(`${PREFIX_WORKSPACE_GIT_MODE}w1:/repo`, 'rebase-onto')

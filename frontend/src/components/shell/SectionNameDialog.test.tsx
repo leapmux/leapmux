@@ -18,9 +18,10 @@ function renderDialog(
 }
 
 const CREATE: SectionNamePayload = { mode: 'create', sidebar: Sidebar.LEFT }
+// No `sidebar`: the payload is a union now, and a rename has no sidebar to
+// carry. Adding one back is a compile error rather than a field nobody reads.
 const RENAME: SectionNamePayload = {
   mode: 'rename',
-  sidebar: Sidebar.LEFT,
   sectionId: 'sec-1',
   initialName: 'Old Name',
 }
@@ -95,6 +96,29 @@ describe('sectionNameDialog', () => {
 
     expect(await screen.findByText('section limit reached')).toBeInTheDocument()
     expect(props.onClose).not.toHaveBeenCalled()
+    // And the dialog is USABLE again. `useDialogSubmit` releases both
+    // `submitting` and its re-entrancy latch in a `finally`; if either leaked,
+    // the user would face an error message over a permanently disabled Create
+    // button, with Cancel as the only way out -- and the assertions above
+    // would still pass.
+    await waitFor(() => expect(submitButton().disabled).toBe(false))
+  })
+
+  it('submits again after a failure, so one rejection does not wedge it', async () => {
+    const onSubmit = vi.fn()
+      .mockRejectedValueOnce(new Error('section limit reached'))
+      .mockResolvedValueOnce(undefined)
+    const props = renderDialog(CREATE, { onSubmit })
+
+    fireEvent.input(nameInput(), { target: { value: 'Reviews' } })
+    fireEvent.click(submitButton())
+    expect(await screen.findByText('section limit reached')).toBeInTheDocument()
+
+    await waitFor(() => expect(submitButton().disabled).toBe(false))
+    fireEvent.click(submitButton())
+
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledOnce())
+    expect(onSubmit).toHaveBeenCalledTimes(2)
   })
 
   it('cancels without submitting', () => {

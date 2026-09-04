@@ -163,7 +163,7 @@ export function workerProjectionsEqual(
  * its own `Tab` objects can predate the last hydration or rename. Both dialogs
  * freeze what they get at open time -- `DeleteBranchDialog` counts tabs by type
  * and reads a `workingDir` off one of them -- so the snapshot they freeze had
- * better be the current one. A key that no longer resolves names a tab closed
+ * better be the current one. A key that no longer resolves identifies a tab closed
  * since the last rebuild; dropping it is the point, not a loss.
  */
 function buildBranchRef(workspaceId: string, b: BranchGroup, liveTab: (key: string) => Tab | undefined): BranchRef {
@@ -206,7 +206,7 @@ function parentAgentIdOf(tab: Tab): string | undefined {
 export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
   // Keyed by the composite tabKey, not by a bare id. `tabKey` is namespaced by
   // TYPE precisely because an AGENT and a TERMINAL tab can share an id, and a
-  // parent link only ever names an AGENT -- so a bare-id lookup let a non-agent
+  // parent link only ever identifies an AGENT -- so a bare-id lookup let a non-agent
   // tab resolve to the agent's node, push it into the forest twice, and drop the
   // non-agent row entirely.
   const agentNodeKey = (id: string) => tabKey({ type: TabType.AGENT, id } as Tab)
@@ -428,7 +428,7 @@ interface RowSelectionContextValue {
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
   /**
-   * The tab a key names RIGHT NOW, straight off `props.tabs` -- never off the
+   * The tab a key identifies RIGHT NOW, straight off `props.tabs` -- never off the
    * cached tree. Reactive: reading it inside a row subscribes that row to its
    * own tab, so a metadata-only change (a rename, a hydrated title/provider, a
    * terminal status flip) updates the row in place without rebuilding the tree.
@@ -1202,7 +1202,7 @@ export function buildTree(
     const workerId = tab.workerId ?? ''
     const gitToplevel = tabGitToplevelForKey(tab, store, git)
     // Through the shared function, not a second copy of its body. This IS the
-    // "the sidebar groups its tree by it" caller tabBranchKey's own doc names,
+    // "the sidebar groups its tree by it" caller tabBranchKey's own doc describes,
     // and the composer's delete-branch dialog collects its tab list by the same
     // function -- a second membership test here would let the dialog report a
     // different set of affected tabs than the tree shows. The resolved view

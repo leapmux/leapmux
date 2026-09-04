@@ -24,7 +24,7 @@ interface BranchContextMenuProps extends ContextMenuTargetProps {
    */
   'workerId': string
   /**
-   * True iff the row's checkout is a linked worktree. It names the DELETE item
+   * True iff the row's checkout is a linked worktree. It labels the DELETE item
    * only: deleting a worktree removes a whole directory, and calling that
    * "Delete branch..." is how a user destroys a directory they meant to keep.
    *
@@ -102,7 +102,13 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
       onToggle={setMenuOpen}
       data-testid={props['data-testid']}
     >
-      {/* The three modes the Change branch dialog offers, each opening it with
+      {/* These children mount eagerly, which is safe even while this menu
+          serves as a SUBMENU (the composer's `[+]` branch item):
+          `DropdownMenu`'s roving focus skips an item inside a nested popover
+          that is closed, so they are not ArrowDown stops or type-ahead
+          matches until this menu opens.
+
+          The three modes the Change branch dialog offers, each opening it with
           its own radio already selected. One item per mode, because a single
           "Change branch..." made the user open the dialog to discover that
           "Create new worktree" lived inside it.

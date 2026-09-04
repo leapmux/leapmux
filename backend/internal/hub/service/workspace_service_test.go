@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
-	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -195,7 +194,7 @@ func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 }
 
 // TestWorkspaceService_LocateTile_TransientManagerErrorIsRetryable pins the
-// registry.Get failure arm: when the caller's manager cannot be bootstrapped,
+// registry.Get failure case: when the caller's manager cannot be bootstrapped,
 // the caller must get a retryable Internal, not NotFound. NotFound is a
 // permanent answer -- the CLI tile resolver stops looking -- so a DB blip
 // during manager bootstrap would report a tile that exists as gone. Every
@@ -257,7 +256,7 @@ func setupLocateTileEnv(t *testing.T, userID string) *locateTileEnv {
 // --- RenameWorkspace ---
 //
 // An archived workspace is read-only everywhere in the app: the tab bar's `+`
-// disappears, the branch menu is hidden, and `isWorkspaceMutatable` names the
+// disappears, the branch menu is hidden, and `isWorkspaceMutatable` states the
 // rule. Hiding the menu item is not enforcement, though -- RenameWorkspace is
 // reachable from the CLI and from any client -- so the hub refuses it too.
 //
@@ -268,11 +267,12 @@ func setupLocateTileEnv(t *testing.T, userID string) *locateTileEnv {
 // transaction.
 func seedUserWithSections(t *testing.T, st store.Store, username string) *store.User {
 	t.Helper()
-	hash, err := password.Hash("testpass")
-	require.NoError(t, err)
+	// A literal, not `password.Hash`: nothing here verifies a password, and
+	// deriving one costs an Argon2id pass over 19 MiB per call. `storetest`
+	// seeds the same way.
 	user, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
 		Username:              username,
-		PasswordHash:          hash,
+		PasswordHash:          "hash-" + username,
 		DisplayName:           username,
 		FirstCredentialExempt: true,
 	})
@@ -370,7 +370,9 @@ func TestWorkspaceService_RenameWorkspace_RefusesArchived(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
 		"the workspace is well-formed and owned; only its state forbids the write")
-	assert.Contains(t, err.Error(), "archived")
+	// The VERB, not just "archived": the guard takes it as a parameter so the
+	// next mutation that adopts it cannot report a rename that never ran.
+	assert.Contains(t, err.Error(), "cannot rename an archived workspace")
 
 	// The guard aborts the transaction, so the title is untouched.
 	ws, getErr := st.Workspaces().GetByID(ctx, workspaceID)

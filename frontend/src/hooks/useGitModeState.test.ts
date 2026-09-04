@@ -342,7 +342,7 @@ describe('isChangeBranchMode', () => {
     // Defensive: `current` (excluded from CHANGE_BRANCH_MODES) and
     // `use-worktree` (a different dialog's mode) must both fail. A
     // dialog opened against an unseeded useGitModeState would briefly
-    // observe Current — the predicate rejects it so submit stays gated.
+    // observe Current — the predicate rejects it so submit stays refused.
     expect(isChangeBranchMode(GitMode.Current)).toBe(false)
     expect(isChangeBranchMode(GitMode.UseWorktree)).toBe(false)
   })
@@ -383,10 +383,10 @@ describe('fieldsForCheckoutBranch', () => {
     })
   })
 
-  it('forwards an empty target verbatim — the dialog gates submit, not this projection', () => {
-    // Defensive: the helper does not own validation. Submit-gating lives
+  it('forwards an empty target verbatim — the dialog controls submit, not this projection', () => {
+    // Defensive: the helper does not own validation. The submit rule lives
     // in dialogValidation. An empty checkoutBranch must round-trip
-    // verbatim so the gating layer can refuse it without a magic
+    // verbatim so the validating layer can refuse it without a magic
     // sentinel.
     expect(fieldsForCheckoutBranch({
       mode: GitMode.SwitchBranch,

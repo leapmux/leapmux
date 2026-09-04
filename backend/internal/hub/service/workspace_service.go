@@ -105,7 +105,7 @@ func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID st
 // Hiding the menu item is not enforcement. RenameWorkspace is reachable from
 // the CLI (`leapmux workspace rename`) and from any client, and an archived
 // workspace is read-only everywhere else in the app: the tab bar's `+`
-// disappears, the branch menu is hidden, and `isWorkspaceMutatable` names the
+// disappears, the branch menu is hidden, and `isWorkspaceMutatable` states the
 // rule outright.
 //
 // FailedPrecondition, not NotFound: the workspace is well-formed and the caller
@@ -114,11 +114,15 @@ func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID st
 // `section_type = custom` -- would collapse the outcome into the existing
 // `rows == 0` -> NotFound, which already means "not found or not owner".
 //
+// `verb` gives the message the refused operation, so this guard serves the next
+// archived-workspace rule without reporting a rename that never ran. The
+// sibling `requireCustomSection` takes the same parameter for the same reason.
+//
 // It FAILS OPEN for an unminted caller: the adapters answer `(false, nil)` when
 // `userid.OwnerFilter` refuses, because binding "" would match every
 // blank-owner row rather than none. That is safe only because `MustGetUser` and
 // `loadOwnedWorkspaceOr403` already ran and rejected such a caller.
-func refuseArchivedWorkspace(ctx context.Context, tx store.Store, workspaceID string, userID userid.UserID) error {
+func refuseArchivedWorkspace(ctx context.Context, tx store.Store, workspaceID string, userID userid.UserID, verb string) error {
 	archived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
 		UserID:      userID,
 		WorkspaceID: workspaceID,
@@ -127,7 +131,7 @@ func refuseArchivedWorkspace(ctx context.Context, tx store.Store, workspaceID st
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("check archived section: %w", err))
 	}
 	if archived {
-		return connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot rename an archived workspace"))
+		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot %s an archived workspace", verb))
 	}
 	return nil
 }
@@ -284,7 +288,7 @@ func (s *WorkspaceService) RenameWorkspace(
 			// rename commit or abort together -- an archive landing between a
 			// check outside and the update would otherwise slip through. It is
 			// a read, so it is safe under storetest.NewDoubleRunStore.
-			if err := refuseArchivedWorkspace(ctx, tx, req.Msg.GetWorkspaceId(), user.ID); err != nil {
+			if err := refuseArchivedWorkspace(ctx, tx, req.Msg.GetWorkspaceId(), user.ID, "rename"); err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
 			}
 			rows, err := tx.Workspaces().Rename(ctx, store.RenameWorkspaceParams{

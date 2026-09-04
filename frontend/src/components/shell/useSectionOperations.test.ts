@@ -37,6 +37,8 @@ function harness(sections: Section[] = []) {
 
 describe('useSectionOperations', () => {
   beforeEach(() => {
+    // `clearAllMocks` clears the CALL history but keeps any implementation a
+    // case installed, so every rejection below is `...Once`.
     vi.clearAllMocks()
   })
 
@@ -66,15 +68,17 @@ describe('useSectionOperations', () => {
       h.dispose()
     })
 
-    it('sends nothing for a name that cleans to nothing', async () => {
+    // REJECTS rather than resolving. A resolve is the dialog's success signal,
+    // so a quiet return closed the dialog as though a section had been made.
+    it('rejects a name that cleans to nothing, and sends nothing', async () => {
       const h = harness()
-      await h.ops.createSection('   ', Sidebar.LEFT)
+      await expect(h.ops.createSection('   ', Sidebar.LEFT)).rejects.toThrow(/needs a name/)
       expect(mockCreateSection).not.toHaveBeenCalled()
       h.dispose()
     })
 
     it('rejects rather than toasting, so the dialog shows the failure once', async () => {
-      mockCreateSection.mockRejectedValue(new Error('nope'))
+      mockCreateSection.mockRejectedValueOnce(new Error('nope'))
       const h = harness()
 
       await expect(h.ops.createSection('Reviews', Sidebar.LEFT)).rejects.toThrow('nope')
@@ -105,7 +109,7 @@ describe('useSectionOperations', () => {
     })
 
     it('leaves the row alone when the RPC fails', async () => {
-      mockRenameSection.mockRejectedValue(new Error('nope'))
+      mockRenameSection.mockRejectedValueOnce(new Error('nope'))
       const h = harness([section('sec-1', 'Old')])
 
       await expect(h.ops.renameSection('sec-1', 'New')).rejects.toThrow('nope')
@@ -113,9 +117,9 @@ describe('useSectionOperations', () => {
       h.dispose()
     })
 
-    it('sends nothing for a name that cleans to nothing', async () => {
+    it('rejects a name that cleans to nothing, and sends nothing', async () => {
       const h = harness([section('sec-1', 'Old')])
-      await h.ops.renameSection('sec-1', '​')
+      await expect(h.ops.renameSection('sec-1', '​')).rejects.toThrow(/needs a name/)
       expect(mockRenameSection).not.toHaveBeenCalled()
       h.dispose()
     })
@@ -136,14 +140,35 @@ describe('useSectionOperations', () => {
       h.dispose()
     })
 
-    it('toasts rather than rejecting: its confirm dialog is already gone', async () => {
-      mockDeleteSection.mockRejectedValue(new Error('nope'))
+    // One policy for the module: all three reject, and the confirm's call site
+    // owns the toast. A caller that swallowed the rejection here would leave a
+    // new call site free to pick up the wrong surface by accident.
+    it('rejects when the RPC fails, and keeps the row', async () => {
+      mockDeleteSection.mockRejectedValueOnce(new Error('nope'))
       const h = harness([section('sec-1', 'Reviews')])
+
+      await expect(h.ops.deleteSection('sec-1')).rejects.toThrow('nope')
+
+      expect(mockShowWarnToast).not.toHaveBeenCalled()
+      expect(h.sectionStore.state.sections).toHaveLength(1)
+      h.dispose()
+    })
+
+    // The reload runs AFTER the section is already gone, so a failure there is
+    // not a failed delete. Reporting it as one told the user a completed
+    // destructive operation had failed.
+    it('reports a failed refresh separately, and keeps the row deleted', async () => {
+      const h = harness([section('sec-1', 'Reviews')])
+      h.loadSections.mockRejectedValueOnce(new Error('offline'))
 
       await h.ops.deleteSection('sec-1')
 
-      expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to delete section', expect.any(Error))
-      expect(h.sectionStore.state.sections).toHaveLength(1)
+      expect(mockDeleteSection).toHaveBeenCalled()
+      expect(h.sectionStore.state.sections).toHaveLength(0)
+      expect(mockShowWarnToast).toHaveBeenCalledWith(
+        'Deleted the section, but could not refresh the sidebar',
+        expect.any(Error),
+      )
       h.dispose()
     })
   })

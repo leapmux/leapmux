@@ -27,7 +27,7 @@ export type WorkspaceStartPoint
     /**
      * A worker to preselect while still leaving the directory to the user.
      *
-     * The `?newWorkspace=true&workerId=` route names a machine and nothing
+     * The `?newWorkspace=true&workerId=` route identifies a machine and nothing
      * else, which is this rather than a `repo` start point.
      */
     workerId?: string
@@ -143,7 +143,7 @@ export function startPointDialogSetup(sp: WorkspaceStartPoint): WorkspaceStartPo
 
 /**
  * The git mode this repository was last started with, or undefined when
- * nothing is remembered (or what is remembered no longer names a mode).
+ * nothing is remembered (or what is remembered no longer identifies a mode).
  *
  * The menu shows it as the row's detail, and the dialog opens on it. Both read
  * THIS function, so the row cannot promise a mode the dialog then does not

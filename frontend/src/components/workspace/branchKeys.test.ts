@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import {
@@ -93,7 +93,14 @@ describe('collapseKeyForBranch', () => {
 })
 
 describe('tabBranchKey', () => {
-  const store = createRepoGitStore()
+  // A FRESH store per case. One store shared across the block made the cases
+  // order-dependent: `agrees with branchKey for the same triple` seeds
+  // `w1 /repo -> main` and the next case overwrites that same key with `''`,
+  // so a reordered or `.only`-run case read a different fixture.
+  let store = createRepoGitStore()
+  beforeEach(() => {
+    store = createRepoGitStore()
+  })
   const tab = (gitToplevel?: string, workerId?: string) => ({ gitToplevel, workerId })
 
   function seedBranch(workerId: string, gitToplevel: string, branch: string) {
@@ -183,7 +190,11 @@ describe('branchKeys accept a precomputed view', () => {
 })
 
 describe('repoKeyAndLabel', () => {
-  const store = createRepoGitStore()
+  // A FRESH store per case, for the same reason as `tabBranchKey` above.
+  let store = createRepoGitStore()
+  beforeEach(() => {
+    store = createRepoGitStore()
+  })
 
   function seedRepo(workerId: string, toplevel: string, patch: Record<string, unknown>) {
     store.upsert(repoKey(workerId, toplevel), { workerId, toplevel, ...patch })
@@ -229,7 +240,9 @@ describe('repoKeyAndLabel', () => {
 })
 
 describe('formatGitOriginUrl', () => {
-  it('strips https protocol', () => {
+  // One case covers the protocol strip AND the `.git` strip; a second case
+  // asserting the identical input and expectation covered nothing more.
+  it('strips the https protocol and the trailing .git', () => {
     expect(formatGitOriginUrl('https://github.com/org/repo.git'))
       .toBe('github.com/org/repo')
   })
@@ -241,11 +254,6 @@ describe('formatGitOriginUrl', () => {
 
   it('converts SSH format', () => {
     expect(formatGitOriginUrl('git@github.com:org/repo.git'))
-      .toBe('github.com/org/repo')
-  })
-
-  it('strips trailing .git', () => {
-    expect(formatGitOriginUrl('https://github.com/org/repo.git'))
       .toBe('github.com/org/repo')
   })
 

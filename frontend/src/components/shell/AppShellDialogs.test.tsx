@@ -195,12 +195,12 @@ function renderDialogs(
   })
   // `placementTileId` answers where a new tab would land — `''` means no
   // projected tree. `hasPlaceableTab` asks exactly this, so one knob drives
-  // every guard-reason arm.
+  // every guard-reason case.
   const placementTileId = vi.fn(() => opts.placementTileId ?? '')
   // The guard now asks PER WORKSPACE, because a branch dialog places into the
   // branch's own workspace and not into the active one. `readyWorkspaceIds`
-  // names the workspaces whose tree has arrived; with it unset every workspace
-  // answers the way `placementTileId` does, which is what the arms that only
+  // lists the workspaces whose tree has arrived; with it unset every workspace
+  // answers the way `placementTileId` does, which is what the cases that only
   // exercise the active workspace mean.
   const firstLeafIdFor = vi.fn((workspaceId: string) =>
     (opts.readyWorkspaceIds ? (opts.readyWorkspaceIds.includes(workspaceId) ? 'tile-1' : null) : (opts.placementTileId || null)))
@@ -340,7 +340,7 @@ describe('appShellDialogs branch dialogs', () => {
 
   it('delete branch: a replacing open() re-points the dialog at the new repo', async () => {
     // `createDialogState.open()` replaces a payload without a null step, and
-    // its own suite names this consumer. A keyed <Show> re-runs the children
+    // its own suite covers this consumer. A keyed <Show> re-runs the children
     // function on that identity change, so the second repo's dialog reports
     // the second repo. A non-keyed <Show> would keep the first payload,
     // because its condition memo collapses every truthy value to one.
@@ -427,7 +427,7 @@ describe('appShellDialogs branch dialogs', () => {
   // the payload itself rather than an accessor the close disposes. These pin
   // the two slots where a stale read would strand a promise forever: the
   // workspace confirms resolve a `new Promise` that AppShell awaits with no
-  // timeout, and keyPinConfirm's resolve gates every later key-pin prompt
+  // timeout, and keyPinConfirm's resolve controls every later key-pin prompt
   // through KeyPinStore's confirm chain. Both call resolve NEXT TO their
   // close, so before keyed they were correct only by statement order.
   it.each([
@@ -574,7 +574,7 @@ describe('appShellDialogs branch dialogs', () => {
   // creation dialogs must not create the worker-side agent/pty when there is
   // nowhere to place it — the placement refusal arrives only after the RPC,
   // and the resource it strands has no tab to reach it by. The parent hands
-  // the dialogs the reason; these pin its outcomes, one per arm.
+  // the dialogs the reason; these pin its outcomes, one per case.
   describe('new-tab guard reason', () => {
     it('tells the dialogs to block creation when there is no workspace at all', async () => {
       const { dialogs } = renderDialogs(() => null)
@@ -592,7 +592,7 @@ describe('appShellDialogs branch dialogs', () => {
     })
 
     it('blocks when the active workspace is archived', async () => {
-      // An archived workspace keeps its tree, so only the mutatability arm
+      // An archived workspace keeps its tree, so only the mutatability case
       // fires — the same refusal every quick-action path applies.
       const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1', mutatable: false })
       dialogs.newAgent.open({})
@@ -611,7 +611,7 @@ describe('appShellDialogs branch dialogs', () => {
       expect(await screen.findByTestId('new-terminal-target')).toHaveTextContent('w1|/repo')
     })
 
-    it('prefills the branch\'s own checkout when the target names one', async () => {
+    it('prefills the branch\'s own checkout when the target identifies one', async () => {
       const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1' })
       dialogs.newAgent.open({ workerId: 'w2', workingDir: '/other/worktree' })
       dialogs.newTerminal.open({ workerId: 'w2', workingDir: '/other/worktree' })
@@ -793,7 +793,7 @@ describe('appShellDialogs section and bulk confirms', () => {
     return dialogs
   }
 
-  it('names the count in the empty-archive confirm, and says it is not atomic', async () => {
+  it('states the count in the empty-archive confirm, and says it is not atomic', async () => {
     const dialogs = renderConfirms()
     const resolve = vi.fn()
     dialogs.confirmEmptyArchive.open({ count: 3, resolve })

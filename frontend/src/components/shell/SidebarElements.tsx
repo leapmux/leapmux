@@ -1,11 +1,11 @@
 import type { Accessor, JSX } from 'solid-js'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
+import type { SectionActions } from './sectionUtils'
 import type { TabContext } from './tabContext'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
-import type { Section, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
@@ -45,10 +45,7 @@ export interface SidebarElementsOpts {
   onConfirmArchive: (workspaceId: string) => Promise<boolean>
   onConfirmEmptyArchive: (count: number) => Promise<boolean>
   onPostArchiveWorkspace: (workspaceId: string) => void
-  /** Open the New section dialog for `sidebar`. */
-  onNewSection: (sidebar: Sidebar) => void
-  onRenameSection: (section: Section) => void
-  onDeleteSection: (section: Section) => void
+  sectionActions: SectionActions
   getCurrentTabContext: () => TabContext
   getMruAgentContext: () => Pick<TabContext, 'workingDir' | 'homeDir'>
   fileTreePath: string
@@ -140,7 +137,7 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
   //
   // Only the DERIVED entries are written out: the display block (defaulted or
   // renamed), the three fields read off the current tab context, and the two
-  // handlers gated on the archived state. Later sources win, so these shadow
+  // handlers that depend on the archived state. Later sources win, so these shadow
   // `opts` where the names would collide -- none do today.
   //
   // The trade: five shell-internal fields (mruEditorDeps, getCurrentTabContext,

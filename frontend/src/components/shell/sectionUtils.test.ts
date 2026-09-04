@@ -75,7 +75,7 @@ describe('sectionTypeTestId', () => {
   })
 
   it('falls back to String(sectionType) for an unmapped value', () => {
-    // The default arm keeps an unknown enum value renderable rather than
+    // The default case keeps an unknown enum value renderable rather than
     // throwing -- a forward-compatible new section type still produces a slug.
     expect(sectionTypeTestId(999 as unknown as SectionType)).toBe('999')
   })

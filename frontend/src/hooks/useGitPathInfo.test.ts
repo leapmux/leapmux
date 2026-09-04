@@ -241,7 +241,7 @@ describe('useGitPathInfo', () => {
         expect(remap).toHaveBeenCalledTimes(1)
         expect(remap).toHaveBeenCalledWith('/main/repo')
         // Second probe lands on the canonical repo root — remap must
-        // NOT fire again (it's one-shot, gated on the firstProbeSeen flag).
+        // NOT fire again (it's one-shot, and the firstProbeSeen flag controls it).
         expect(getGitInfo).toHaveBeenCalledTimes(2)
         expect(remap).toHaveBeenCalledTimes(1)
         dispose()
@@ -341,7 +341,7 @@ describe('useGitPathInfo', () => {
   })
 
   it('remapWorktreeRoot option: stays one-shot even when a later probe also returns isWorktreeRoot=true', async () => {
-    // The remap is gated on the firstProbeSeen flag. Once the first
+    // The firstProbeSeen flag controls the remap. Once the first
     // probe lands (worktree or not), subsequent worktree-root probes
     // must NOT fire it again — otherwise a worker/path switch could
     // spuriously rewrite the user's chosen working dir.

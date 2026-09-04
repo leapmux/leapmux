@@ -128,4 +128,43 @@ describe('expandedWorkspaces', () => {
       expect(storedIds()).toEqual(['sentinel'])
     })
   })
+
+  // The account switch is the whole reason this module carries a seed latch,
+  // and nothing exercised it. A subscribed reader must SEE the change: the
+  // reset writes the module's `EMPTY` constant, which is referentially equal to
+  // the un-seeded value, so Solid's `===` equality drops that write -- a reader
+  // that only re-read on notification stayed on the previous account's set.
+  it('re-reads under the new account when the namespace moves', () => {
+    // Both accounts' documents are written first, so the switch has something
+    // to find. The key is account-scoped, so each write lands under whichever
+    // account is current.
+    setStorageAccount('u-2')
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['ws-owned-by-2'])
+    setStorageAccount('u-1')
+    sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['ws-owned-by-1'])
+    resetExpandedWorkspacesForTests()
+
+    const r = reader()
+    expect(r.sees('ws-owned-by-1')).toBe(true)
+
+    setStorageAccount('u-2')
+
+    expect(r.sees('ws-owned-by-1')).toBe(false)
+    expect(r.sees('ws-owned-by-2')).toBe(true)
+    r.dispose()
+  })
+
+  // The mirror must not carry one account's rows into another's sidebar, even
+  // when the second account has nothing stored.
+  it('does not leak one account\'s expanded rows into an account with none', () => {
+    setStorageAccount('u-1')
+    const r = reader()
+    r.toggle('ws-1')
+    expect(r.sees('ws-1')).toBe(true)
+
+    setStorageAccount('u-2')
+
+    expect(r.sees('ws-1')).toBe(false)
+    r.dispose()
+  })
 })

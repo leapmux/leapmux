@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, EmptyArchiveConfirmPayload, KeyPinConfirmState, NewTabTarget, NewWorkspacePayload, SectionConfirmPayload, WorkspaceConfirmPayload } from './AppShellDialogs'
 import type { SectionNamePayload } from './SectionNameDialog'
+import type { SectionActions } from './sectionUtils'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
@@ -9,7 +10,6 @@ import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/works
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { Section, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
@@ -246,7 +246,7 @@ export const AppShell: Component = () => {
   // to drop or re-add on a remote change, and no active-workspace filter — every
   // workspace's tabs are derived from the same state at the same time.
   //
-  // A tab whose tile_id names a node this client does not have yet is handled
+  // A tab whose tile_id identifies a node this client does not have yet is handled
   // inside `tabView`, by holding it at its last resolved placement. The hub
   // orders a split's EntityMaterialized frames before the batch that anchors a
   // tab to them, so the routine make-grid race is gone; see `tabView.ts` for
@@ -335,7 +335,7 @@ export const AppShell: Component = () => {
   createEffect(() => {
     if (searchParams.newWorkspace === 'true') {
       newWorkspaceDialog.open({
-        // A worker and no directory: the URL names a machine, not a repository.
+        // A worker and no directory: the URL identifies a machine, not a repository.
         startPoint: { kind: 'directory', workerId: searchParams.workerId as string | undefined },
       })
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
@@ -345,7 +345,7 @@ export const AppShell: Component = () => {
   // Constant-true today: `(app).tsx` has exactly one leaf (`/`) and
   // hasWorkspaceDesktopChrome matches it, so every guard below always passes.
   // It is kept, not inlined away, because it is the predicate the documented
-  // extension path in `(app).tsx` names: adding a non-workspace leaf under
+  // extension path in `(app).tsx` describes: adding a non-workspace leaf under
   // `(app)/` is a type error at the layout (AppShell takes no children), but
   // nothing would stop these three EFFECTS from running on it -- and one of
   // them activates a workspace, mounting the whole per-workspace machinery
@@ -538,12 +538,29 @@ export const AppShell: Component = () => {
    * `task dev-desktop` the webview points at http://localhost:4328, so a URL
    * check misclassifies a solo run as non-solo.
    */
-  const [runtimeState] = createResource(() => getRuntimeState())
+  // The rejection is CAUGHT rather than left to the resource. Solid re-throws a
+  // rejected resource from the accessor, `platformBridge` caches the rejected
+  // promise for the life of the page, and `localSolo` is read from every
+  // workspace row menu -- so one failed IPC call would replace the whole shell
+  // with the route's error boundary. Not knowing whether this is a solo desktop
+  // means treating it as not one, which hides two menu items.
+  const [runtimeState] = createResource(async () =>
+    getRuntimeState().catch((err: unknown) => {
+      log.warn('get_runtime_state failed; treating this as a non-solo shell', err)
+      return undefined
+    }),
+  )
   const localSolo = () => runtimeState()?.capabilities.localSolo ?? false
 
-  // Whether the active workspace can be mutated
+  // Whether the active workspace can be mutated.
+  //
+  // The presence test is HERE and not inside `isWorkspaceMutatable`, which now
+  // answers about archival alone. An absent workspace -- deleted remotely while
+  // this client still marks it active -- takes no mutation either, and without
+  // this test the memo answered `true` for it: no section means not archived.
+  // `isWorkspaceMutatableById` makes the same test for the same reason.
   const isActiveWorkspaceMutatable = createMemo(() =>
-    isWorkspaceMutatable(isActiveWorkspaceArchived()),
+    !!activeWorkspace() && isWorkspaceMutatable(isActiveWorkspaceArchived()),
   )
 
   // Active tab derived state
@@ -1023,6 +1040,25 @@ export const AppShell: Component = () => {
       confirmArchiveWsDialog.open({ workspaceId, resolve })
     })
 
+  /**
+   * The three section-CRUD callbacks, bundled once. See `SectionActions`.
+   *
+   * A stable object built at setup: the three are plain callbacks over dialog
+   * handles, so nothing here needs to stay reactive.
+   */
+  const sectionActions: SectionActions = {
+    onNew: sidebar => sectionNameDialog.open({ mode: 'create', sidebar }),
+    onRename: section => sectionNameDialog.open({
+      mode: 'rename',
+      sectionId: section.id,
+      initialName: section.name,
+    }),
+    onDelete: section => confirmDeleteSectionDialog.open({
+      sectionId: section.id,
+      sectionName: section.name,
+    }),
+  }
+
   const handleConfirmEmptyArchive = (count: number): Promise<boolean> =>
     new Promise((resolve) => {
       confirmEmptyArchiveDialog.open({ count, resolve })
@@ -1158,17 +1194,7 @@ export const AppShell: Component = () => {
     onConfirmArchive: handleConfirmArchiveWorkspace,
     onConfirmEmptyArchive: handleConfirmEmptyArchive,
     onPostArchiveWorkspace: handlePostArchiveWorkspace,
-    onNewSection: (sidebar: Sidebar) => sectionNameDialog.open({ mode: 'create', sidebar }),
-    onRenameSection: (section: Section) => sectionNameDialog.open({
-      mode: 'rename',
-      sidebar: section.sidebar,
-      sectionId: section.id,
-      initialName: section.name,
-    }),
-    onDeleteSection: (section: Section) => confirmDeleteSectionDialog.open({
-      sectionId: section.id,
-      sectionName: section.name,
-    }),
+    sectionActions,
     workspaceStartActions,
     getCurrentTabContext,
     getMruAgentContext,
@@ -1241,7 +1267,7 @@ export const AppShell: Component = () => {
   // through props.
   //
   // The only decision left is desktop vs mobile. The "workspace not found"
-  // arm went away with the per-workspace URL, and there is deliberately no arm
+  // case went away with the per-workspace URL, and there is deliberately no case
   // for a non-workspace route and no route outlet — see the note on the `(app)`
   // layout, which is where such a case would have to be reintroduced.
 
@@ -1369,8 +1395,8 @@ export const AppShell: Component = () => {
   return (
     <TunnelProvider store={workerSection.tunnelStore}>
       {/*
-        Rendered unconditionally. There used to be a "workspace not found" arm
-        here, for a URL naming a workspace the user does not own. No URL names
+        Rendered unconditionally. There used to be a "workspace not found" case
+        here, for a URL naming a workspace the user does not own. No URL identifies
         one any more: the active id is either this user's own click on their own
         sidebar, or a saved id that `resolveActiveWorkspace` has already checked
         against the loaded list — so the dead-end 404 has no way to be reached,

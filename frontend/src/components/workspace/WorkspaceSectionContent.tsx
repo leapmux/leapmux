@@ -16,7 +16,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { attachDragActivators } from '~/lib/dragActivators'
-import { createGuardedDraggableRow, createGuardedSortableRow } from '~/lib/dragRow'
+import { createGuardedSortableRow } from '~/lib/dragRow'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
@@ -38,7 +38,7 @@ function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
 }
 
 export interface WorkspaceSectionContentProps {
-  workspaces: Workspace[]
+  workspaces: readonly Workspace[]
   sectionId: string
   /** The section's display name, for each row menu's info block. */
   sectionName: string
@@ -112,10 +112,11 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
   // ---------------------------------------------------------------------------
 
   // Which rows are expanded is APP state, not this instance's: one sidebar
-  // mounts this component once per workspace section, and the app mounts the
-  // sidebar twice. `~/components/workspace/expandedWorkspaces` owns the signal
-  // and the sessionStorage write for all of them -- a per-instance signal wrote
-  // the whole set back with no merge and erased every other instance's rows.
+  // mounts this component once per workspace section, and a custom workspace
+  // section can sit on the other sidebar.
+  // `~/components/workspace/expandedWorkspaces` owns the signal and the
+  // sessionStorage write for all of them -- a per-instance signal wrote the
+  // whole set back with no merge and erased every other instance's rows.
 
   // Auto-expand the active workspace when it changes (if it has tabs).
   createEffect(() => {
@@ -160,20 +161,18 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
    */
   const canReorder = () => canReorderWithinSection(props.sectionId)
 
-  /**
-   * The `<For>` key carries the reorder MODE, not the workspace id alone.
-   *
-   * A solid-dnd primitive cannot be created conditionally on a later re-render,
-   * and the two modes need DIFFERENT primitives: a sortable registers a
-   * between-row drop target, and a plain draggable registers none. Putting the
-   * mode in the key remounts the row when it flips, which happens only when the
-   * user picks a sort or types a filter -- exactly when the list is being
-   * rebuilt anyway.
-   */
-  const rowKeys = () => workspaceIds().map(id => `${canReorder() ? 's' : 'd'}\u0000${id}`)
-  const idOfRowKey = (rowKey: string) => rowKey.slice(rowKey.indexOf('\u0000') + 1)
-
   return (
+    // An EMPTY id list is what suppresses the reorder, and it is enough: with
+    // no id registered, `initialIndex()` and `currentIndex()` are both -1, so
+    // every sortable reports the identity transform and no row shifts to open a
+    // gap. The rows stay SORTABLE either way.
+    //
+    // Swapping each row to a plain draggable instead looked equivalent and was
+    // not. `createSortable` registers a droppable under the same id, and that
+    // droppable is the only thing `handleWorkspaceDragEnd` can resolve a ROW
+    // target from -- so dropping a workspace onto a row of another section fell
+    // through to the nearest section BODY centre, which for sections of unequal
+    // height is not always the section the user aimed at.
     <SortableProvider ids={canReorder() ? props.workspaces.map(w => `ws-${w.id}`) : []}>
       <div
         ref={droppable}
@@ -219,24 +218,14 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
             </div>
           )}
         >
-          <For each={rowKeys()}>
-            {(rowKey) => {
-              const id = idOfRowKey(rowKey)
+          <For each={workspaceIds()}>
+            {(id) => {
               const workspace = () => workspaceById().get(id)!
 
-              // Read ONCE per row, deliberately: a solid-dnd primitive cannot
-              // be created conditionally on a later re-render. The `<For>` key
-              // above carries the mode, so a flip remounts the row and this
-              // decision is made again with it.
-              const dragRow = canReorderWithinSection(props.sectionId)
-                ? createGuardedSortableRow(`ws-${id}`, {
-                    sectionId: props.sectionId,
-                    workspaceId: id,
-                  })
-                : createGuardedDraggableRow(`ws-${id}`, {
-                    sectionId: props.sectionId,
-                    workspaceId: id,
-                  })
+              const dragRow = createGuardedSortableRow(`ws-${id}`, {
+                sectionId: props.sectionId,
+                workspaceId: id,
+              })
               const wsDroppable = createDroppable(`${WORKSPACE_DROP_PREFIX}${id}`)
               const isActive = () => id === props.activeWorkspaceId
               const isRenaming = () => props.renamingWorkspaceId === id

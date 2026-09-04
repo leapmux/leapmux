@@ -362,7 +362,7 @@ func TestSectionService_RenameSection_RefusesBuiltIn(t *testing.T) {
 		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
 		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
 	} {
-		sectionID := seededSectionID(t, env, sectionType)
+		sectionID := sectionIDOfType(t, env.store, env.userID, sectionType)
 
 		_, err := env.client.RenameSection(ctx, authedReq(
 			&leapmuxv1.RenameSectionRequest{SectionId: sectionID, Name: "Renamed"}, env.token))
@@ -388,7 +388,7 @@ func TestSectionService_DeleteSection_RefusesBuiltIn(t *testing.T) {
 		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
 		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
 	} {
-		sectionID := seededSectionID(t, env, sectionType)
+		sectionID := sectionIDOfType(t, env.store, env.userID, sectionType)
 
 		_, err := env.client.DeleteSection(ctx, authedReq(
 			&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
@@ -401,7 +401,7 @@ func TestSectionService_DeleteSection_RefusesBuiltIn(t *testing.T) {
 	}
 }
 
-// The other half of the split: an id that names nothing is still NotFound, so
+// The other half of the split: an id that matches nothing is still NotFound, so
 // the two outcomes a single code could not distinguish are now distinguishable.
 func TestSectionService_RenameSection_NotFoundOnBogusID(t *testing.T) {
 	t.Parallel()
@@ -465,18 +465,6 @@ func TestSectionService_CreateSection_RejectsUnspecifiedSidebar(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
 		"MoveSection applies the same rule, so a section cannot be created into a sidebar it could not be moved to")
-}
-
-// The id of the seeded section of one built-in type.
-func seededSectionID(t *testing.T, env *sectionTestEnv, sectionType leapmuxv1.SectionType) string {
-	t.Helper()
-	for _, sec := range mustListSections(t, env, userid.MustNew(env.userID)) {
-		if sec.SectionType == sectionType {
-			return sec.ID
-		}
-	}
-	require.FailNowf(t, "no seeded section", "type %v", sectionType)
-	return ""
 }
 
 func TestSectionService_RenameSection_EmptyName(t *testing.T) {

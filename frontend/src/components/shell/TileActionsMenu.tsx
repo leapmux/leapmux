@@ -34,7 +34,7 @@ export interface SplitActionDef {
  * mapping. Both the dropdown menu (this file) and the inline IconButton row
  * (`Tile.tsx`) iterate over this so the labels can't drift independently.
  *
- * direction names the divider line: 'vertical' makes a `|` divider with two
+ * direction describes the divider line: 'vertical' makes a `|` divider with two
  * side-by-side panes (icon: Columns2); 'horizontal' makes a `-` divider with
  * two stacked panes (icon: Rows2).
  */

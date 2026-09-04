@@ -383,13 +383,17 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       </div>
                     </Show>
                     <span class={styles.sidebarTitle}>{section().title}</span>
-                    {/* NOT gated on `sectionOpen()`. The Archived section
-                        ships `defaultOpen: false`, and its header menu is the
-                        only route to Unarchive all, Empty archive and the
-                        section CRUD -- so gating on open made those items
-                        unreachable until the user expanded the section, and
-                        "Collapse all" removed the menu that offers "Expand
-                        all". */}
+                    {/* `sectionOpen()` does NOT control this. The Archived
+                        section ships `defaultOpen: false`, and its header menu
+                        is the only route to Unarchive all, Empty archive and
+                        the section CRUD -- so a check on `sectionOpen()` made
+                        those items unreachable until the user expanded the
+                        section, and "Collapse all" removed the menu that offers
+                        "Expand all".
+
+                        A header action that reveals something INSIDE its own
+                        section must expand the section first, which
+                        `buildSectionDef` does through its `revealing` helper. */}
                     <Show when={renderedHeaderActions}>
                       <div
                         class={styles.sidebarHeaderActions}

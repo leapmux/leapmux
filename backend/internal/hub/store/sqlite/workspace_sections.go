@@ -139,11 +139,11 @@ func (s *workspaceSectionStore) HasDefaultForUser(ctx context.Context, userID us
 		// blank-owner row rather than none. See userid.OwnerFilter.
 		return false, nil
 	}
-	n, err := s.conn.q.HasDefaultSectionsForUser(ctx, gendb.HasDefaultSectionsForUserParams{
+	exists, err := s.conn.q.HasDefaultSectionsForUser(ctx, gendb.HasDefaultSectionsForUserParams{
 		UserID: owner,
 		// "Has any NON-custom section", i.e. has the defaults been seeded.
 		// Bound from the enum for the same reason as the two above.
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 	})
-	return n, mapErr(err)
+	return exists, mapErr(err)
 }

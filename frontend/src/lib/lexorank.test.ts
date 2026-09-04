@@ -147,3 +147,35 @@ describe('appendPosition', () => {
     expect([...ranks].sort()).toEqual(ranks)
   })
 })
+
+describe('mid with a descending pair', () => {
+  // `between` subtracts one character code from another to find a gap. Given a
+  // descending pair it reported a gap where there was none: for two adjacent
+  // characters it answered a rank EQUAL to the lower bound, which collides with
+  // the row that bound names, and two rows that share a rank are ordered by
+  // whatever the SQL planner picks.
+  //
+  // The Go original computes the same subtraction on a `byte`, so a descending
+  // pair wrapped there instead of going negative -- the two ports disagreed on
+  // the same input. Both now normalize the pair.
+  const descending: readonly (readonly [string, string])[] = [
+    ['nng', 'nn'], // a custom section dragged below Archived
+    ['o', 'n'], // adjacent characters: the collision case
+    ['n', 'a'],
+    ['zz', 'aa'],
+    ['nn', 'n'],
+  ]
+
+  it('answers a rank strictly between the two, whichever order they arrive in', () => {
+    for (const [hi, lo] of descending) {
+      const m = mid(hi, lo)
+      expect(m > lo, `mid(${hi}, ${lo}) = ${m} must sort after ${lo}`).toBe(true)
+      expect(m < hi, `mid(${hi}, ${lo}) = ${m} must sort before ${hi}`).toBe(true)
+    }
+  })
+
+  it('does not depend on the argument order', () => {
+    for (const [hi, lo] of descending)
+      expect(mid(hi, lo)).toBe(mid(lo, hi))
+  })
+})

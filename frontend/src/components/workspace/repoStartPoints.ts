@@ -1,10 +1,10 @@
 import type { WorkspaceRepoStartPoint } from './workspaceStartPoint'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
-import type { RepoGitStore } from '~/stores/repoGit'
+import type { RepoGitStore, RepoKey } from '~/stores/repoGit'
 import type { Tab } from '~/stores/tab.types'
 import { tildifyForWorker } from '~/lib/workerPaths'
-import { repoGitView } from '~/stores/repoGit'
-import { repoKeyAndLabel, tabGitToplevelForKey } from './branchKeys'
+import { repoGitView, repoKey } from '~/stores/repoGit'
+import { compositeKey, repoKeyAndLabel, tabGitToplevelForKey } from './branchKeys'
 
 /**
  * A repository a section already works on, ready to start a workspace in.
@@ -16,8 +16,6 @@ import { repoKeyAndLabel, tabGitToplevelForKey } from './branchKeys'
  * repositories the user touched most recently.
  */
 export interface RepoStartPoint {
-  /** Stable identity for a keyed `<For>`: the (worker, toplevel) pair. */
-  key: string
   /**
    * What the row reads.
    *
@@ -61,8 +59,6 @@ interface Checkout {
   createdAt: string
 }
 
-const KEY_SEP = '\x00'
-
 /**
  * The repositories `tabs` are checked out in, most recently used first.
  *
@@ -84,7 +80,7 @@ export function listRepoStartPoints(
   store: RepoGitStore,
   opts: ListRepoStartPointsOptions = {},
 ): RepoStartPoint[] {
-  const checkouts = new Map<string, Checkout>()
+  const checkouts = new Map<RepoKey, Checkout>()
 
   for (const tab of tabs) {
     const workerId = tab.workerId
@@ -100,7 +96,9 @@ export function listRepoStartPoints(
     if (!gitToplevel)
       continue
 
-    const key = `${workerId}${KEY_SEP}${gitToplevel}`
+    // The git store's own key space for a checkout, so this bucket and the
+    // store cannot disagree about what one checkout is.
+    const key = repoKey(workerId, gitToplevel)
     const existing = checkouts.get(key)
     if (!existing) {
       checkouts.set(key, {
@@ -150,12 +148,15 @@ export function listRepoStartPoints(
  * main checkout says nothing about the other machine's worktrees.
  */
 function dropRedundantWorktrees(entries: Checkout[]): Checkout[] {
+  // NOT the store's `repoKey`: `c.repoKey` is a repository IDENTITY -- an
+  // origin URL, or a local marker -- and not a toplevel, so that key space
+  // would be a lie here.
   const hasMainCheckout = new Set<string>()
   for (const c of entries) {
     if (!c.isWorktree)
-      hasMainCheckout.add(`${c.workerId}${KEY_SEP}${c.repoKey}`)
+      hasMainCheckout.add(compositeKey(c.workerId, c.repoKey))
   }
-  return entries.filter(c => !c.isWorktree || !hasMainCheckout.has(`${c.workerId}${KEY_SEP}${c.repoKey}`))
+  return entries.filter(c => !c.isWorktree || !hasMainCheckout.has(compositeKey(c.workerId, c.repoKey)))
 }
 
 /**
@@ -208,7 +209,6 @@ function labelCheckouts(
       ? `${base} (${tildifyForWorker(c.gitToplevel, workerInfoFn?.(c.workerId))})`
       : base
     return {
-      key: `${c.workerId}${KEY_SEP}${c.gitToplevel}`,
       label,
       startPoint: {
         kind: 'repo',

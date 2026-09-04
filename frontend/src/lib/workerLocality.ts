@@ -4,7 +4,7 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
  * Whether a worker runs on THIS machine, so a path it reports names a
  * directory the local Finder and the local editor can open.
  *
- * The one place that answers it, because the answer gates two bridge calls
+ * The one place that answers it, because the answer controls two bridge calls
  * that are silently wrong otherwise: `revealInFileManager` and `openInEditor`
  * always act locally, and a workspace's repository commonly lives on a remote
  * worker where the same absolute path either does not exist or -- worse --

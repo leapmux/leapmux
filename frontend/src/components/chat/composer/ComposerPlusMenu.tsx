@@ -70,7 +70,7 @@ export interface ComposerPlusMenuProps {
   /** Toggle Enter-key mode. */
   onToggleEnterMode: () => void
   /**
-   * The checkout the branch submenu names, resolved from {@link repoGitView}.
+   * The checkout the branch submenu identifies, resolved from {@link repoGitView}.
    * The submenu renders only when its `name` is set, matching the status-bar
    * chip.
    *
@@ -125,7 +125,7 @@ interface MenuStructure {
   permissionActions: PermissionAction[]
   branchName?: string
   /**
-   * Frozen WITH the branch name, because it names the destructive item rather
+   * Frozen WITH the branch name, because it identifies the destructive item rather
    * than merely labelling it. A live kind under a held name lets "Delete
    * branch..." become "Delete worktree..." beneath a pointer already aimed at
    * it, which is the same hazard as a row sliding into that place — the user
