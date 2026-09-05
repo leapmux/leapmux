@@ -52,6 +52,8 @@ func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
 	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
 	require.Equal(t, 1, len(sessionInfos), "turn/started should broadcast the codex_turn_id session info")
 	assert.Equal(t, "turn-42", sessionInfos[0]["codex_turn_id"])
+	assert.Equal(t, 1, sink.InputStartedCount(),
+		"turn/started must reactivate a queue after uncertain delivery")
 }
 
 func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {

@@ -399,6 +399,15 @@ func TestChildSteerReturnsOwnerDeliveryError(t *testing.T) {
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
 
+func TestClassifyQueueSteerErrorPreservesUncertainDelivery(t *testing.T) {
+	t.Parallel()
+
+	err := classifyQueueSteerError(fmt.Errorf("steer timed out: %w", agent.ErrDeliveryUncertain))
+	var deliveryErr *inputqueue.DeliveryError
+	require.ErrorAs(t, err, &deliveryErr)
+	assert.True(t, deliveryErr.Uncertain)
+}
+
 func TestAutoContinueProducerUsesGeneratedQueueKind(t *testing.T) {
 	t.Parallel()
 

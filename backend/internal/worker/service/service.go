@@ -554,7 +554,7 @@ type Config struct {
 // There is no second Init step. There used to be, because Channels and
 // Send arrived after construction -- Config carries them now, so a
 // separate call could only be forgotten. What genuinely cannot happen in
-// a constructor is the DB read that re-arms persisted schedules; that is
+// a constructor is the DB work that restores persisted runtime state; that is
 // RestoreState, which says so in its name.
 func New(cfg Config) *Service {
 	if cfg.Channels == nil {
@@ -712,9 +712,9 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 	return svc.Queries.GetAgentByID(ctx, agentID)
 }
 
-// RestoreState re-arms what a previous worker process left persisted --
-// today, the auto-continue schedules whose timers inject synthetic user
-// messages when they fire.
+// RestoreState reconciles what a previous worker process left persisted. It
+// updates interrupted queue and background-task state, then re-arms the
+// auto-continue timers. Recovered queue dispatch waits for Hub reconciliation.
 //
 // Separate from New because it reads the database and starts timers.
 // Construction should not do either: it is what lets every unit test
@@ -725,7 +725,7 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
-	if err := svc.InputQueue.Recover(bgCtx()); err != nil {
+	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
 		slog.Warn("recover agent input queues failed", "error", err)
 	}
 	// Before anything else, mark every still-active background-task row
@@ -797,6 +797,9 @@ func (svc *Service) Shutdown() {
 	// sweep labels them 'interrupted' (a truthful "worker restart" label)
 	// rather than MarkAgentBackgroundTasksExited stamping them 'stopped'.
 	svc.Output.SetShuttingDown()
+	// Close queue admission before any blocking shutdown work. The background
+	// resumer can otherwise schedule a recovered input while its Stop waits.
+	waitForInputQueue := svc.InputQueue.Stop()
 
 	// The user-visible goodbye goes FIRST, before anything that can block.
 	//
@@ -816,7 +819,7 @@ func (svc *Service) Shutdown() {
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
 
-	// Stop the background loops FIRST, and before the drains below. There are two
+	// Stop the background loops before the drains below. There are two
 	// of them: the orphan reconciler and the boot-time agent resume sweep.
 	//
 	// Both run work that svc.Cleanup does not cover, because only the
@@ -837,6 +840,10 @@ func (svc *Service) Shutdown() {
 	if stop := svc.stopBackgroundLoops; stop != nil {
 		stop()
 	}
+
+	// Queue dispatch runs outside the RPC handler that created it. Join those
+	// goroutines before the startup drains and provider teardown below.
+	waitForInputQueue()
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller

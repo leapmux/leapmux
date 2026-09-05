@@ -436,7 +436,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   })
 })
 
-describe('agentEditorPanel working-tree chip', () => {
+describe('agent editor panel', () => {
   it('always shows the queue pause control', () => {
     renderPanel()
     expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')
@@ -561,6 +561,41 @@ describe('agentEditorPanel working-tree chip', () => {
 
     expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-1' }), false)
     expect(screen.getByRole('button', { name: 'Resume Edit' })).toBeInTheDocument()
+  })
+
+  it('loads the current agent edit while another agent edit request waits', async () => {
+    const [agentId, setAgentId] = createSignal('a1')
+    const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: id,
+      items: [{
+        id: `owned-${id}`,
+        agentId: id,
+        text: id,
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+      }],
+    })
+    const onBeginQueueEdit = vi.fn(() => new Promise<never>(() => {}))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={queue(agentId())}
+          queueClientId="client-a"
+          onBeginQueueEdit={onBeginQueueEdit}
+        />
+      </PreferencesProvider>
+    ))
+    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a1' }), false)
+
+    setAgentId('a2')
+    await Promise.resolve()
+
+    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a2' }), false)
   })
 
   // The defect this pins: the chip printed an absolute path while the sidebar

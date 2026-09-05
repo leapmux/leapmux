@@ -165,6 +165,9 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
 		a.thinkingTokens.reset()
+		// The queue normally marks a turn active before delivery. This callback
+		// repairs that state when a delayed acceptance follows an uncertain result.
+		notifyInputStarted(a.sink)
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{

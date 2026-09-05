@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // startRecorder captures which agents the resume sweep tried to start, and lets
@@ -811,6 +812,35 @@ func TestAgentResume_WaitsForAWorkerOwner(t *testing.T) {
 	r.WaitForSweepForTest()
 	assert.Equal(t, []string{"agent-1"}, rec.ids(),
 		"the refusal must not latch -- a later converged pass is the retry")
+}
+
+func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-queue", false)
+	_, err := inputqueue.NewStore(svc.DB).Enqueue(t.Context(), inputqueue.NewItem{
+		ID: "queued", AgentID: "agent-queue", Text: "queued",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
+
+	svc.registeredBy.Store(&userid.UserID{})
+	r := svc.NewAgentResumer()
+	r.Start(t.Context())
+	r.WaitForSweepForTest()
+	require.Empty(t, rec.ids(), "a recovered queue must not start without a control-socket owner")
+
+	owner, ok := userid.New("user-1")
+	require.True(t, ok)
+	svc.SetRegisteredBy(owner)
+	r.Start(t.Context())
+	r.WaitForSweepForTest()
+	require.Eventually(t, func() bool { return len(rec.ids()) == 1 }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"agent-queue"}, rec.ids())
 }
 
 // TestAgentResume_RefusesWhileShuttingDown pins that a sweep triggered as the

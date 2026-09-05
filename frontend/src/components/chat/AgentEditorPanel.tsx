@@ -169,8 +169,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let pendingQueueEditText: string | undefined
   let pendingQueueEditAttachments: FileAttachment[] | undefined
   let normalAttachmentRestore: { key: string, attachments: FileAttachment[] } | undefined
-  let queueEditRequestId = ''
-  const attachmentDraftKey = () => editingInput() ? `${props.agentId}-queue-${editingInput()!.id}` : props.agentId
+  const queueEditRequests = new Set<string>()
+  const activeEditingInput = () => {
+    const editing = editingInput()
+    return editing?.agentId === props.agentId ? editing : undefined
+  }
+  const attachmentDraftKey = () => activeEditingInput() ? `${props.agentId}-queue-${activeEditingInput()!.id}` : props.agentId
 
   const att = useChatAttachments({
     agentId: attachmentDraftKey,
@@ -186,16 +190,21 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const handleFileInputChange = () => att.handleFileInputChange(fileInputRef)
 
   const loadQueueEdit = (item: QueuedAgentInput, takeover: boolean, restoreDraft: boolean) => {
-    if (queueEditRequestId === item.id)
+    const editAgentId = untrack(() => props.agentId)
+    const inputId = item.id
+    const requestKey = `${editAgentId}\0${inputId}`
+    if (queueEditRequests.has(requestKey))
       return
     const beginEdit = props.onBeginQueueEdit
     if (!beginEdit)
       return
-    queueEditRequestId = item.id
+    queueEditRequests.add(requestKey)
     const request = beginEdit(item, takeover)
     void request.then((response) => {
-      const edited = response.snapshot?.items.find(candidate => candidate.id === item.id) ?? item
-      const queueDraftKey = `${props.agentId}-queue-${item.id}`
+      if (untrack(() => props.agentId) !== editAgentId)
+        return
+      const edited = response.snapshot?.items.find(candidate => candidate.id === inputId) ?? item
+      const queueDraftKey = `${editAgentId}-queue-${inputId}`
       pendingQueueEditText = restoreDraft && loadDraft(queueDraftKey).content
         ? undefined
         : (response.text ?? edited.text)
@@ -207,16 +216,15 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         data: attachment.data,
         size: attachment.data.byteLength,
       }))
-      normalAttachmentRestore = { key: untrack(() => props.agentId), attachments: [...untrack(attachments)] }
+      normalAttachmentRestore = { key: editAgentId, attachments: [...untrack(attachments)] }
       setEditingInput(edited)
     }).catch(() => {}).finally(() => {
-      if (queueEditRequestId === item.id)
-        queueEditRequestId = ''
+      queueEditRequests.delete(requestKey)
     })
   }
 
   createEffect(() => {
-    if (editingInput() || queueEditRequestId || !props.queueClientId)
+    if (activeEditingInput() || !props.queueClientId)
       return
     const owned = props.inputQueue?.items.find(item => item.editOwnerClientId === props.queueClientId)
     if (owned)
@@ -224,7 +232,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   createEffect(() => {
-    const editing = editingInput()
+    const editing = activeEditingInput()
     const activeAttachmentKey = att.activeDraftKey()
     if (editing && activeAttachmentKey === `${props.agentId}-queue-${editing.id}` && pendingQueueEditAttachments !== undefined) {
       replaceAttachments(pendingQueueEditAttachments)
@@ -238,7 +246,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   })
 
   createEffect(() => {
-    const initialEditing = editingInput()
+    const initialEditing = activeEditingInput()
     const snapshot = props.inputQueue
     if (!initialEditing || !snapshot)
       return
@@ -369,7 +377,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     async (content, fileAttachments) => {
       startSending()
       try {
-        const editing = editingInput()
+        const editing = activeEditingInput()
         if (editing && props.onUpdateQueueItem) {
           setQueueUpdateInFlight(true)
           try {
@@ -459,7 +467,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       return undefined
     const request = ctrl.activeControlRequest()
     if (!request)
-      return editingInput() ? `${props.agentId}-queue-${editingInput()!.id}` : props.agentId
+      return activeEditingInput() ? `${props.agentId}-queue-${activeEditingInput()!.id}` : props.agentId
     // Keyed on the request INSTANCE, so a re-ask that reuses the id opens an
     // empty editor rather than the text the user typed for the instance that
     // went away. `cleanupControlRequestDrafts` composes the same key.
@@ -536,7 +544,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         <AgentInputQueue
           snapshot={props.inputQueue}
           clientId={props.queueClientId ?? ''}
-          activeEditInputId={editingInput()?.id}
+          activeEditInputId={activeEditingInput()?.id}
           supportsSteering={props.agent?.supportsSteering ?? false}
           onEdit={(item, takeover) => {
             loadQueueEdit(item, takeover, false)
@@ -546,7 +554,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             // eslint-disable-next-line solid/reactivity
             void props.onDeleteQueueItem?.(item).then(() => {
               clearDraft(`${props.agentId}-queue-${item.id}`)
-              if (untrack(editingInput)?.id === item.id) {
+              if (untrack(activeEditingInput)?.id === item.id) {
                 clearAllAttachments()
                 setEditingInput()
               }
@@ -557,7 +565,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             // eslint-disable-next-line solid/reactivity
             void props.onCancelQueueEdit?.(item).then(() => {
               clearDraft(`${props.agentId}-queue-${item.id}`)
-              if (untrack(editingInput)?.id === item.id) {
+              if (untrack(activeEditingInput)?.id === item.id) {
                 clearAllAttachments()
                 setEditingInput()
               }
@@ -599,7 +607,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             }
           }}
           onDraftKeyChanged={(key) => {
-            const editing = editingInput()
+            const editing = activeEditingInput()
             if (!editing || key !== `${props.agentId}-queue-${editing.id}`)
               return
             if (pendingQueueEditText !== undefined) {

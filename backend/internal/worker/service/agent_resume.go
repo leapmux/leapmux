@@ -2,16 +2,19 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
 
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
-// AgentResumer schedules background agent resumes. It runs one initial sweep
-// after reconciliation and accepts later unarchive transitions.
+// AgentResumer schedules background runtime recovery. It starts recovered
+// input queues and process resumes after reconciliation, and it accepts later
+// unarchive transitions.
 //
 // It exists because several agent CLIs can list the agent sessions that run on
 // the same machine and send messages to them. A worker restart kills every
@@ -153,8 +156,8 @@ func (r *AgentResumer) Schedule(ctx context.Context, agentIDs []string) {
 	}
 }
 
-// Start runs the sweep once, in the background. Later calls do nothing, and so
-// does a call that arrives after Stop.
+// Start restores agent work once, in the background. Later calls do nothing,
+// and so does a call that arrives after Stop.
 //
 // It REFUSES, without latching, when the worker has no owner yet or when the
 // shutdown started. Not latching is the point: the caller fires this from every
@@ -186,6 +189,11 @@ func (r *AgentResumer) Start(ctx context.Context) {
 	r.done = done
 	go func() {
 		defer close(done)
+		// Recovered queue dispatch shares the resume sweep's owner and shutdown
+		// preconditions. It must not start a process before either is true.
+		if err := r.svc.InputQueue.DrainRecovered(ctx); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+			slog.Warn("drain recovered agent input queues failed", "error", err)
+		}
 		r.sweep(ctx)
 	}()
 }

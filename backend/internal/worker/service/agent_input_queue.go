@@ -142,6 +142,19 @@ func classifyQueueDeliveryError(err error) error {
 	return &inputqueue.DeliveryError{Err: err, Uncertain: errors.Is(err, agent.ErrDeliveryUncertain)}
 }
 
+func classifyQueueSteerError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, agent.ErrNoActiveTurn):
+		return inputqueue.ErrTurnEnded
+	case errors.Is(err, agent.ErrSteeringUnsupported), errors.Is(err, agent.ErrChildSteeringUnsupported):
+		return inputqueue.ErrSteeringUnsupported
+	default:
+		return classifyQueueDeliveryError(err)
+	}
+}
+
 func (a *agentInputQueueAdapter) Steer(item inputqueue.Item) (inputqueue.DispatchResult, error) {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), item.AgentID)
 	if err != nil {
@@ -160,13 +173,10 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.Item) (inputqueue.Dispatc
 	} else {
 		err = a.svc.Agents.SteerInput(item.AgentID, item.Text, attachments)
 	}
-	if errors.Is(err, agent.ErrNoActiveTurn) {
-		return inputqueue.DispatchResult{}, inputqueue.ErrTurnEnded
-	}
 	return inputqueue.DispatchResult{
 		StartsTurn: true,
 		SpanLines:  a.svc.Output.snapshotPassthroughSpanLines(item.AgentID),
-	}, err
+	}, classifyQueueSteerError(err)
 }
 
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
@@ -339,7 +349,8 @@ func sendQueueError(sender channel.ResponseWriter, err error) bool {
 		errors.Is(err, inputqueue.ErrEditOwnerMismatch), errors.Is(err, inputqueue.ErrVersionConflict),
 		errors.Is(err, inputqueue.ErrNotHead), errors.Is(err, inputqueue.ErrRetryState),
 		errors.Is(err, inputqueue.ErrUncertainConfirmation), errors.Is(err, inputqueue.ErrTurnEnded),
-		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported):
+		errors.Is(err, inputqueue.ErrSteeringState), errors.Is(err, inputqueue.ErrSteeringUnsupported),
+		errors.Is(err, inputqueue.ErrManagerStopped):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, inputqueue.ErrInvalidInput), errors.Is(err, inputqueue.ErrQueueFull),
 		errors.Is(err, inputqueue.ErrItemTooLarge), errors.Is(err, inputqueue.ErrQueueAttachmentsLarge):

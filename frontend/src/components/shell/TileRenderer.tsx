@@ -43,7 +43,6 @@ import { bindBranchActions, focusedBranchAction } from '~/components/workspace/b
 import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
@@ -56,6 +55,7 @@ import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/ta
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
+import { createAgentInputEnqueueRetry } from './agentInputEnqueueRetry'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
@@ -243,6 +243,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const onAttachTab = opts.floatingWindow?.onAttachTab
 
   const chatHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void }>()
+  // Keep ambiguous enqueue attempts across editor unmounts. A user can switch
+  // to a file and back while the unchanged draft still needs its original ID.
+  const enqueueRetry = createAgentInputEnqueueRetry()
   // One walk per tick for the whole renderer, not two per file pane.
   // `getMruAgentContext` sorts the workspace's tabs on every call, and the file
   // pane reads it through Solid prop GETTERS -- `rootPath` and `homeDir` are two
@@ -1267,18 +1270,21 @@ export function createTileRenderer(opts: TileRendererOpts) {
       if (!id)
         return
       const sendAgent = view.getAgentTab(id)
+      const attachments = fileAttachments ?? []
+      const inputId = enqueueRetry.inputIdFor({ agentId: id, kind, text: content, attachments })
       try {
         const response = await workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
           agentId: id,
-          inputId: randomUUID(),
+          inputId,
           kind,
           text: content,
-          attachments: fileAttachments?.map(attachment => ({
+          attachments: attachments.map(attachment => ({
             filename: attachment.filename,
             mimeType: attachment.mimeType,
             data: attachment.data,
-          })) ?? [],
+          })),
         })
+        enqueueRetry.markAccepted(inputId)
         agentInputQueueStore.apply(response.snapshot)
       }
       catch (error) {

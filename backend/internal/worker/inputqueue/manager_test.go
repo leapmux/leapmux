@@ -14,21 +14,30 @@ import (
 )
 
 type recordingDispatcher struct {
-	mu           sync.Mutex
-	dispatched   []string
-	steered      []string
-	fail         error
-	steering     bool
-	steerStarted chan struct{}
-	steerRelease <-chan struct{}
-	steerFail    error
+	mu              sync.Mutex
+	dispatched      []string
+	dispatchRelease <-chan struct{}
+	dispatchStarted chan struct{}
+	steered         []string
+	fail            error
+	steering        bool
+	steerStarted    chan struct{}
+	steerRelease    <-chan struct{}
+	steerFail       error
 }
 
 func (d *recordingDispatcher) Dispatch(item Item) (DispatchResult, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.dispatched = append(d.dispatched, item.ID)
-	return DispatchResult{StartsTurn: true}, d.fail
+	started, release, dispatchErr := d.dispatchStarted, d.dispatchRelease, d.fail
+	d.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		<-release
+	}
+	return DispatchResult{StartsTurn: true}, dispatchErr
 }
 
 func (d *recordingDispatcher) Steer(item Item) (DispatchResult, error) {
@@ -187,6 +196,62 @@ func TestManagerSteerRequeuesTurnEndWhenProviderReturnsSuccess(t *testing.T) {
 	testManagerSteerTurnEndRace(t, nil)
 }
 
+func TestManagerSteerRequeuesWhenCapabilityDisappears(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true, steerFail: ErrSteeringUnsupported}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{
+		ID: "active", AgentID: "agent-1", Text: "active",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	_, err = manager.Enqueue(ctx, NewItem{
+		ID: "steer", AgentID: "agent-1", Text: "guide",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	snapshot, err := manager.Steer(ctx, "agent-1", "steer")
+	assert.ErrorIs(t, err, ErrSteeringUnsupported)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	assert.False(t, snapshot.Paused)
+}
+
+func TestManagerSteerMarksUncertainDelivery(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{
+		steering:  true,
+		steerFail: &DeliveryError{Err: assert.AnError, Uncertain: true},
+	}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{
+		ID: "active", AgentID: "agent-1", Text: "active",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	_, err = manager.Enqueue(ctx, NewItem{
+		ID: "steer", AgentID: "agent-1", Text: "guide",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	snapshot, err := manager.Steer(ctx, "agent-1", "steer")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, snapshot.Items[0].State)
+	assert.True(t, snapshot.Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, snapshot.PauseReason)
+}
+
 func TestManagerDrainsNormallyAfterSuccessfulSteerTurnEnds(t *testing.T) {
 	t.Parallel()
 
@@ -284,6 +349,39 @@ func TestManagerRecoverDrainsUnpausedQueuedInput(t *testing.T) {
 	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
 }
 
+func TestManagerRecoverStateWaitsForRecoveredDrain(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "queued", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "queued"})
+	require.NoError(t, err)
+	dispatcher := &recordingDispatcher{}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+
+	require.NoError(t, manager.RecoverState(ctx))
+	assert.Never(t, func() bool { return len(dispatcher.dispatches()) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
+	require.NoError(t, manager.DrainRecovered(ctx))
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+}
+
+func TestManagerRecoveredDrainSkipsAnAgentRemovedDuringReconciliation(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "queued", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "queued"})
+	require.NoError(t, err)
+	dispatcher := &recordingDispatcher{}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	require.NoError(t, manager.RecoverState(ctx))
+	_, err = database.ExecContext(ctx, `DELETE FROM agents WHERE id = 'agent-1'`)
+	require.NoError(t, err)
+
+	require.NoError(t, manager.DrainRecovered(ctx))
+	assert.Never(t, func() bool { return len(dispatcher.dispatches()) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
+}
+
 func TestManagerPausesAsUncertainWhenAcceptedTranscriptCannotPersist(t *testing.T) {
 	t.Parallel()
 
@@ -327,4 +425,44 @@ func TestManagerSerializesConcurrentClientMutations(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, snapshot.Items, 20)
 	assert.Equal(t, uint64(21), snapshot.Revision)
+}
+
+func TestManagerStopRefusesNewWorkAndWaitJoinsDispatch(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	dispatchStarted := make(chan struct{})
+	dispatchRelease := make(chan struct{})
+	dispatcher := &recordingDispatcher{dispatchStarted: dispatchStarted, dispatchRelease: dispatchRelease}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{
+		ID: "active", AgentID: "agent-1", Text: "active",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	<-dispatchStarted
+
+	waitForStop := manager.Stop()
+	_, err = manager.Enqueue(ctx, NewItem{
+		ID: "late", AgentID: "agent-1", Text: "late",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	assert.ErrorIs(t, err, ErrManagerStopped)
+
+	stopped := make(chan struct{})
+	go func() {
+		waitForStop()
+		close(stopped)
+	}()
+	assert.Never(t, func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+			return false
+		}
+	}, 50*time.Millisecond, 5*time.Millisecond, "Wait returned while dispatch was active")
+	close(dispatchRelease)
+	<-stopped
 }

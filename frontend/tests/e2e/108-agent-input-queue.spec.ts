@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { expect, test } from './fixtures'
 import { loginViaToken, openWorkspace, sendMessage } from './helpers/ui'
 
-test.describe('Agent input queue', () => {
+test.describe('agent input queue', () => {
   test('persists paused input across clients and a reload, then supports queue changes', async ({ page, browser, authenticatedWorkspace, leapmuxServer }) => {
     const secondContext = await browser.newContext({ baseURL: leapmuxServer.hubUrl })
     const secondPage = await secondContext.newPage()

@@ -39,6 +39,7 @@ var (
 	ErrTurnEnded             = errors.New("active turn ended before steering")
 	ErrSteeringState         = errors.New("queue state does not permit steering")
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
+	ErrManagerStopped        = errors.New("agent input queue is stopped")
 )
 
 type Attachment struct {

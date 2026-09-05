@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"google.golang.org/grpc/codes"
@@ -598,4 +599,14 @@ func TestShutdown_WithoutABackgroundLoopHookIsANoop(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 	assert.NotPanics(t, svc.Shutdown, "an unwired stop hook must be skipped")
+}
+
+func TestShutdown_StopsTheInputQueue(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	svc.Shutdown()
+
+	_, err := svc.InputQueue.Snapshot(context.Background(), "agent-1")
+	assert.ErrorIs(t, err, inputqueue.ErrManagerStopped)
 }
