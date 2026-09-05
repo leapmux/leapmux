@@ -150,9 +150,22 @@ type GoalUpdate struct {
 // is the only way the panel ever populates -- so a single bad byte from one
 // provider would leave an empty panel forever with nothing in the log to
 // explain it. This is the same hazard bgtask.wireString exists to prevent.
+// It also refuses one contradictory report: an objective with no status.
+// GoalStatusNone means "no goal", so a report that states both says a goal
+// exists and does not. Every provider already resolves an unrecognized status
+// word to Blocked for the same reason -- a state this build cannot read is one
+// it must not offer Pause for -- and doing it here means a NEW provider that
+// forgets the mapping inherits the rule instead of storing the contradiction.
+//
+// It is not cosmetic. A stored objective with a blank status is the exact mark
+// the applier reads as "this goal outlived a worker restart", so a provider
+// able to write that state by hand would silence a real transition.
 func (u GoalUpdate) Clean() GoalUpdate {
 	u.Objective = validate.StripUnreadable(u.Objective, GoalObjectiveByteLimit)
 	u.StatusDetail = validate.StripUnreadable(u.StatusDetail, GoalStatusDetailByteLimit)
+	if u.Objective != "" && u.Status == GoalStatusNone {
+		u.Status = GoalStatusBlocked
+	}
 	return u
 }
 

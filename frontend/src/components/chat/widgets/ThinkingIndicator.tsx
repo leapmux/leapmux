@@ -481,10 +481,6 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   )
 
   /**
-   * One entry per trailing counter, in render order. Constant for the life of
-   * the component -- see the <For> below for why that matters.
-   */
-  /**
    * The popover body, shared by the goal chip and the background-task chip.
    *
    * Both open the SAME panel, so a user who opened either can reach the other
@@ -516,6 +512,10 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     />
   )
 
+  /**
+   * One entry per trailing counter, in render order. Constant for the life of
+   * the component -- see the <For> below for why that matters.
+   */
   const counters: Array<{ show: () => boolean, render: () => JSX.Element }> = [
     {
       // The session goal: shown whenever one exists. Its own chip rather than a

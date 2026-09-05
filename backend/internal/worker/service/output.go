@@ -2438,6 +2438,24 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 			// chat readable when an agent iterates on a plan title.
 			planUpdated = indexedRaw{idx: i, raw: raw}
 
+		// goal_updated and goal_cleared have NO arm here, and the omission is
+		// deliberate: they fall to `default:`, where no Classify recognizes
+		// them, and every entry is kept.
+		//
+		// Folding them to the latest -- the obvious move, because plan_updated
+		// right above does exactly that -- destroys the rows this feature
+		// exists to write. The applier already writes one row per TRANSITION
+		// and nothing per progress report, so each surviving entry is a real
+		// change, and two of them land adjacent precisely when the user drove
+		// both: a goal set and then paused, or the same objective restarted
+		// with a fresh created_at. Keeping only the last one reports "Goal
+		// paused: X" for a goal the reader never saw arrive, and reports one
+		// "Goal set: X" for a restart the transition test went out of its way
+		// to detect.
+		//
+		// A plan title iterating toward its final wording is the opposite case,
+		// which is why the two are treated differently.
+
 		case agent.NotificationTypeInterrupted:
 			interrupted = indexedRaw{idx: i, raw: raw}
 

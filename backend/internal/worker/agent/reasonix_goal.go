@@ -114,11 +114,16 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 		Objective:    goal.Objective,
 		Status:       reasonixGoalStatus(goal.Status),
 		StatusDetail: goal.Status,
-		// The status stream is a full restatement sent on a cadence of its own,
-		// not a change event, so it is never treated as an announcement. The
-		// applier still writes a transcript row when the objective or the status
-		// actually differs -- see the transition test there -- so a real change
-		// is not lost by this.
+		// NOT a snapshot, although the status stream is a full restatement sent
+		// on a cadence of its own. Marking it one would silence every Reasonix
+		// goal transition, because Reasonix reports a change only by restating
+		// the whole status -- there is no separate change event to carry the
+		// announcement. The applier's transition test is what keeps the cadence
+		// out of the transcript: it compares the objective, the status and the
+		// identity, and a restatement of an unchanged goal matches all three.
+		//
+		// The status DETAIL is deliberately outside that test, which matters
+		// most here: lastReason below moves every turn.
 		Snapshot: false,
 	}
 	if rt := goal.Runtime; rt != nil {

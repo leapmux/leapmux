@@ -370,7 +370,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         // notification-class for the same reason: an off-screen root tab must
         // still update its goal card and its section visibility.
         const gc = inner.value
-        chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions)
+        chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
         break
       }
       case 'backgroundTasksChanged': {

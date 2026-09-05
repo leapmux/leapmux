@@ -482,6 +482,11 @@ message ListAgentMessagesResponse {
   // AgentGoalChanged.supported_actions carries them: the panel must know
   // whether a goal can be SET on an agent that has none.
   repeated AgentGoalAction goal_supported_actions = 10;
+  // The ordering stamp for `goal`, read from the same row in the same query.
+  // See AgentGoalChanged.goal_updated_at: this response is the STALE side of
+  // that race, because the worker reads the row here and the browser applies
+  // the answer a network round trip later.
+  string goal_updated_at = 11;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the
@@ -637,7 +642,10 @@ message AgentGoal {
   // wire, so a goal restarted with the same objective text is distinguishable
   // only by a fresh created_at.
   string created_at = 4;
-  string updated_at = 5;
+  // No updated_at here. The stamp that ORDERS two answers about the goal must
+  // exist when the goal does NOT -- a clear is an answer too -- so it rides the
+  // carrier beside the goal: AgentGoalChanged.goal_updated_at and
+  // ListAgentMessagesResponse.goal_updated_at. One value, one home.
 }
 
 // AgentGoalStatus is the neutral status vocabulary. Four values, because the UI
@@ -692,6 +700,20 @@ message AgentGoalChanged {
   // on the running agent, so the capability cannot drift from the code that
   // implements it.
   repeated AgentGoalAction supported_actions = 3;
+  // When the worker last WROTE the goal columns, in the same layout
+  // AgentGoal.created_at uses. Empty when the agent never had a goal.
+  //
+  // It orders two answers about the same agent, which last-write-wins cannot do
+  // on its own. Three writers race: this broadcast, the WatchEvents replay, and
+  // the ListAgentMessages cold load -- and the cold load reads the row long
+  // before its response is applied, so a clear that happens in between is
+  // undone by the stale answer landing second. The recipient keeps the stamp it
+  // applied and drops a STRICTLY older one.
+  //
+  // On the carrier rather than inside AgentGoal because the case it exists for
+  // is the one where `goal` is absent: a cleared goal has no message to hang a
+  // field on, and that is exactly the write a stale answer resurrects.
+  string goal_updated_at = 4;
 }
 
 // --- Control Request/Response ---

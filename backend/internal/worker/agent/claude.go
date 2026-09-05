@@ -88,11 +88,7 @@ const (
 
 // ClaudeCodeAgent manages a single Claude Code process.
 type ClaudeCodeAgent struct {
-	// hasGoalCommand records whether the running CLI advertises /goal in its
-	// init frame'''s slash_commands. The command shipped in 2.1.139, so this is
-	// read from the process rather than assumed -- see observeSlashCommands.
-	hasGoalCommand bool
-	processBase    // shared process lifecycle (Stop, Wait, Stderr, etc.)
+	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
 
 	model      string
 	effort     string
@@ -104,6 +100,11 @@ type ClaudeCodeAgent struct {
 	contextUsage           *contextUsageSnapshot
 	lastAgentStatus        string
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
+	// hasGoalCommand records whether the running CLI advertises /goal in its
+	// init frame's slash_commands. The command shipped in 2.1.139, so this is
+	// read from the process rather than assumed -- see observeSlashCommands.
+	// Guarded by a.mu.
+	hasGoalCommand bool
 
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- claudeCodeControlResult

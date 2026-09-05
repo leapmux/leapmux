@@ -675,14 +675,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// a child owns no goal, and goal_loaded stays TRUE so the client
 			// overwrites with the correct empty answer instead of keeping
 			// whatever its previous root put there.
-			var goal *leapmuxv1.AgentGoal
+			var goalSnapshot GoalSnapshot
 			goalLoaded := false
 			if isLatestPage {
 				loaded, goalErr := svc.Output.LoadGoal(ctx, agentID)
 				if goalErr != nil {
 					slog.Warn("failed to load agent goal", "agent_id", agentID, "error", goalErr)
 				} else {
-					goal = loaded
+					goalSnapshot = loaded
 					goalLoaded = true
 				}
 			}
@@ -733,9 +733,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				LatestSeq:             latestSeq,
 				BackgroundTasks:       bgtask.ItemsToProto(bgItems),
 				BackgroundTasksLoaded: bgTasksLoaded,
-				Goal:                  goal,
+				Goal:                  goalSnapshot.Goal,
 				GoalLoaded:            goalLoaded,
 				GoalSupportedActions:  svc.Output.SupportedGoalActions(agentID),
+				GoalUpdatedAt:         goalSnapshot.UpdatedAt,
 			})
 		})
 
@@ -1717,16 +1718,7 @@ func (svc *Service) replayAgentCatchUp(
 	if goal, goalErr := svc.Output.LoadGoal(bgCtx(), rootID); goalErr != nil {
 		slog.Warn("failed to load agent goal for replay", "agent_id", agentID, "error", goalErr)
 	} else {
-		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
-			AgentId: rootID,
-			Event: &leapmuxv1.AgentEvent_GoalChanged{
-				GoalChanged: &leapmuxv1.AgentGoalChanged{
-					AgentId:          rootID,
-					Goal:             goal,
-					SupportedActions: svc.Output.SupportedGoalActions(rootID),
-				},
-			},
-		})
+		broadcastReplayAgentEvent(sink, svc.Output.GoalChangedEvent(rootID, goal.Goal, goal.UpdatedAt))
 	}
 
 	if !sink.alive() {

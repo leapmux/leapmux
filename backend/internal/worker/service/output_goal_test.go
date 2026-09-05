@@ -203,6 +203,98 @@ func TestGoal_BootSweepBlanksStatusAndKeepsObjective(t *testing.T) {
 		"the panel can still say what was being attempted")
 }
 
+// The status DETAIL moves far more often than the goal does: Claude Code puts
+// the goal evaluator's reason for the last "not yet" there, and Reasonix streams
+// a lastReason on a cadence of its own. Announcing those would rebuild the exact
+// transcript flood the applier exists to stop.
+func TestGoal_StatusDetailChangeStoresButNeverAnnounces(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	sink.UpsertGoal(activeGoal("Keep the suite green", 10, created))
+	for i, reason := range []string{
+		"the suite still has one failure",
+		"two specs now fail",
+		"the lint target has not run",
+	} {
+		report := activeGoal("Keep the suite green", int64(100*(i+1)), created)
+		report.StatusDetail = reason
+		sink.UpsertGoal(report)
+	}
+
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
+		"three new reasons for the same goal are ONE transition")
+	assert.Equal(t, "the lint target has not run", readRow().GoalStatusDetail,
+		"the card still reads the latest reason")
+}
+
+// The boot sweep blanks goal_status, so the provider's first report after a
+// worker restart RE-ARMS it. That is a transition by the test's own terms, and
+// announcing it would print "Goal set: X" at restart time for a goal set before
+// the restart -- the same lie Codex's snapshot flag prevents for Codex, reached
+// by a route Claude Code and Reasonix cannot mark for themselves.
+func TestGoal_ReArmingAfterABootSweepAnnouncesNothing(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	sink.UpsertGoal(activeGoal("Survived a restart", 10, created))
+	require.NoError(t, svc.Output.ClearGoalStatusesAtBoot(context.Background()))
+	require.Equal(t, 1, goalNotificationCount(t, svc, agentID))
+
+	// The provider reports the same goal again, with no snapshot marking of its
+	// own -- Reasonix never sets one.
+	rearm := activeGoal("Survived a restart", 20, created)
+	rearm.Snapshot = false
+	sink.UpsertGoal(rearm)
+
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
+		"re-arming a goal that outlived the worker is not a new transition")
+	assert.Equal(t, "active", readRow().GoalStatus, "but the card is armed again")
+}
+
+// The re-arm rule must not swallow a real change. A DIFFERENT objective after a
+// restart is a new goal and has to reach the transcript.
+func TestGoal_ANewObjectiveAfterABootSweepStillAnnounces(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	sink.UpsertGoal(activeGoal("The old objective", 10, created))
+	require.NoError(t, svc.Output.ClearGoalStatusesAtBoot(context.Background()))
+
+	sink.UpsertGoal(activeGoal("A brand new objective", 0, time.Unix(1_700_050_000, 0).UTC()))
+
+	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID),
+		"a different objective after a restart is a new goal")
+	assert.Equal(t, "A brand new objective", readRow().GoalObjective)
+}
+
+// The stamp that orders two answers about the goal must survive a CLEAR, which
+// is the answer a stale cold-load reply resurrects. It rides the carrier, not
+// the goal, for exactly that reason.
+func TestGoal_ClearedAgentStillCarriesAnOrderingStamp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, sink, agentID, _ := setupGoalTest(t)
+
+	sink.UpsertGoal(activeGoal("Something to clear", 10, time.Unix(1_700_000_000, 0).UTC()))
+	set, err := svc.Output.LoadGoal(ctx, agentID)
+	require.NoError(t, err)
+	require.NotNil(t, set.Goal)
+	require.NotEmpty(t, set.UpdatedAt)
+
+	sink.ClearGoal()
+
+	cleared, err := svc.Output.LoadGoal(ctx, agentID)
+	require.NoError(t, err)
+	assert.Nil(t, cleared.Goal)
+	assert.NotEmpty(t, cleared.UpdatedAt, "a clear is an answer and needs a stamp too")
+	assert.GreaterOrEqual(t, cleared.UpdatedAt, set.UpdatedAt,
+		"the layout is fixed-width UTC, so a string compare orders the two")
+}
+
 // LoadGoal is the cold-start read. A CHILD agent never owns a goal and must not
 // inherit its root's.
 func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
@@ -223,12 +315,14 @@ func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
 
 	rootGoal, err := svc.Output.LoadGoal(ctx, rootID)
 	require.NoError(t, err)
-	require.NotNil(t, rootGoal)
-	assert.Equal(t, "Root objective", rootGoal.GetObjective())
+	require.NotNil(t, rootGoal.Goal)
+	assert.Equal(t, "Root objective", rootGoal.Goal.GetObjective())
+	assert.NotEmpty(t, rootGoal.UpdatedAt, "the cold-load answer carries its ordering stamp")
 
 	childGoal, err := svc.Output.LoadGoal(ctx, "child-1")
 	require.NoError(t, err)
-	assert.Nil(t, childGoal, "a subagent has no session goal of its own")
+	assert.Nil(t, childGoal.Goal, "a subagent has no session goal of its own")
+	assert.Empty(t, childGoal.UpdatedAt, "and no stamp to order one with")
 }
 
 // A child sink must not write a goal at all: Codex collab children ARE threads
@@ -250,6 +344,48 @@ func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 	assert.Equal(t, "Root objective", readRow().GoalObjective,
 		"a child's goal must not overwrite the session's")
 	_ = rootID
+}
+
+// The event the browser actually reads. Three paths send it -- the applier's
+// broadcast, the capability re-publish, and the WatchEvents replay -- so it is
+// built in ONE place and asserted here rather than at each of them.
+func TestGoal_ChangedEventCarriesTheGoalAndItsStamp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, sink, agentID, _ := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+
+	stored, err := svc.Output.LoadGoal(ctx, agentID)
+	require.NoError(t, err)
+
+	event := svc.Output.GoalChangedEvent(agentID, stored.Goal, stored.UpdatedAt)
+	changed := event.GetGoalChanged()
+	require.NotNil(t, changed)
+	assert.Equal(t, agentID, changed.GetAgentId())
+	assert.Equal(t, "Ship it", changed.GetGoal().GetObjective())
+	assert.Equal(t, stored.UpdatedAt, changed.GetGoalUpdatedAt())
+	assert.NotEmpty(t, changed.GetGoalUpdatedAt())
+}
+
+// The stamp must ride the CARRIER, not the goal, because the answer it has to
+// order is the one where the goal is absent. An agent with no goal still
+// carries a stamp once it has had one cleared.
+func TestGoal_ChangedEventStampsAnAbsentGoalToo(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, sink, agentID, _ := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+	sink.ClearGoal()
+
+	stored, err := svc.Output.LoadGoal(ctx, agentID)
+	require.NoError(t, err)
+	require.Nil(t, stored.Goal)
+
+	changed := svc.Output.GoalChangedEvent(agentID, stored.Goal, stored.UpdatedAt).GetGoalChanged()
+	require.NotNil(t, changed)
+	assert.Nil(t, changed.GetGoal())
+	assert.NotEmpty(t, changed.GetGoalUpdatedAt(),
+		"a cleared goal is the answer a stale reply resurrects, so it needs a stamp")
 }
 
 // Absent and zero are different answers. No two providers report the same
