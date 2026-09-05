@@ -65,9 +65,6 @@ WHERE agent_id = ? AND span_id = ? AND source = ?
 ORDER BY seq ASC
 LIMIT 1;
 
--- name: SetMessageDeliveryError :exec
-UPDATE messages SET delivery_error = ? WHERE id = ? AND agent_id = ?;
-
 -- name: UpdateNotificationThread :one
 -- Reseq moves a consolidated notification row to the tail. Like CreateMessage it
 -- allocates from the monotonic high-water (message_seq_hwm + 1), so the row's new

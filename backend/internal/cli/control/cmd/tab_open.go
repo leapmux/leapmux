@@ -111,7 +111,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 		}
 		// `tab open --type=agent` issues up to four inner-RPCs against the SAME
 		// worker: ListAvailableProviders (only when --provider is omitted),
-		// OpenAgent, the optional initial SendAgentMessage, and a rollback
+		// OpenAgent, the optional initial EnqueueAgentInput, and a rollback
 		// CloseAgent on CRDT failure. Hoisting one Noise_NK channel over the
 		// whole sequence pays the handshake once instead of per call.
 		var result *openAgentResult

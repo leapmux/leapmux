@@ -151,6 +151,24 @@ describe('handleSend', () => {
     expect(resetEditorHeight).toHaveBeenCalled()
   })
 
+  it('does not submit a second message while an asynchronous send is pending', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const onSendMessage = vi.fn().mockReturnValue(pending)
+    const { result } = setup({ onSendMessage })
+
+    const first = result.handleSend('first')
+    expect(result.handleSend('second')).toBe(false)
+    expect(onSendMessage).toHaveBeenCalledOnce()
+
+    finish()
+    await first
+    result.handleSend('third')
+    expect(onSendMessage).toHaveBeenCalledTimes(2)
+  })
+
   it('passes attachments when present', () => {
     const attachments = [makeAttachment()]
     const { result, onSendMessage } = setupWithAttachments(attachments)
@@ -308,6 +326,7 @@ describe('handleControlSend', () => {
           finishResponse = resolve
         }))
         const onSendMessage = vi.fn()
+        const onSendControlFeedback = vi.fn()
         const props: ControlResponseHandlingProps = {
           agentId: 'test-agent',
           agent: { agentProvider: AgentProvider.CODEX },
@@ -317,6 +336,7 @@ describe('handleControlSend', () => {
           })],
           onControlResponse,
           onSendMessage,
+          onSendControlFeedback,
         }
         const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
 
@@ -326,7 +346,8 @@ describe('handleControlSend', () => {
         expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({ result: { decision: 'cancel' } })
         expect(onSendMessage).not.toHaveBeenCalled()
         finishResponse()
-        await vi.waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('Use a safer command'))
+        await vi.waitFor(() => expect(onSendControlFeedback).toHaveBeenCalledWith('Use a safer command'))
+        expect(onSendMessage).not.toHaveBeenCalled()
       }
       finally {
         dispose()

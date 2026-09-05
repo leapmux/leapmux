@@ -93,14 +93,13 @@ func TestEnsureAgentRunning_RefusesArchivedAgent(t *testing.T) {
 	assert.Zero(t, starts)
 }
 
-// TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning verifies
-// that when SendAgentMessage triggers ensureAgentRunning on an INACTIVE agent
+// TestEnqueueAgentInput_AutoStartBroadcastsStartingDuringEnsureRunning verifies
+// that a queued input triggers ensureAgentRunning on an INACTIVE agent
 // (e.g. after a worker/desktop restart that killed the subprocess), the
 // auto-start path broadcasts a STARTING AgentStatusChange. Without this, the
 // chat startup banner stays hidden during the restart window even though a
-// just-typed message is queued behind the still-cold subprocess — the bubble
-// pulses but no progress affordance is shown beneath it.
-func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *testing.T) {
+// queued input waits behind the cold subprocess.
+func TestEnqueueAgentInput_AutoStartBroadcastsStartingDuringEnsureRunning(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -121,27 +120,29 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-1",
-		Content: "hello",
+		Text:    "hello",
 	}, w)
 
 	require.Empty(t, w.errors)
 
 	sawStarting := false
 	var startingMessage string
-	for _, stream := range w.streams {
-		ev := decodeWatchAgentEvent(t, stream)
-		sc := ev.GetStatusChange()
-		if sc == nil {
-			continue
+	require.Eventually(t, func() bool {
+		for _, stream := range w.streamsSnapshot() {
+			ev := decodeWatchAgentEvent(t, stream)
+			sc := ev.GetStatusChange()
+			if sc != nil && sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
+				sawStarting = true
+				startingMessage = sc.GetStartupMessage()
+				return true
+			}
 		}
-		if sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
-			sawStarting = true
-			startingMessage = sc.GetStartupMessage()
-			break
-		}
-	}
+		return false
+	}, time.Second, 10*time.Millisecond)
 
 	assert.True(t, sawStarting,
 		"expected STARTING status change while ensureAgentRunning auto-starts the cold subprocess, so the chat startup banner can render beneath the queued user message")
@@ -149,13 +150,12 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 		"the STARTING broadcast must carry a phase label so the banner renders something readable (e.g. \"Starting Claude Code…\")")
 }
 
-// TestSendAgentMessage_AutoStartFailureRevertsToInactive verifies that when
+// TestEnqueueAgentInput_AutoStartFailureRevertsToInactive verifies that when
 // ensureAgentRunning's startAgent call fails, the broadcast sequence ends in
 // INACTIVE — not STARTING (which would leave the banner spinning forever) and
 // not STARTUP_FAILED (which would mark the agent permanently unusable; the
-// existing design intentionally keeps it retryable on the next send by
-// surfacing the failure as a per-message delivery_error instead).
-func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
+// queue keeps the failed input available for retry).
+func TestEnqueueAgentInput_AutoStartFailureRevertsToInactive(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -174,9 +174,11 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "agent-1",
-		Content: "hello",
+		Text:    "hello",
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -184,35 +186,37 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 	startingIdx := -1
 	inactiveIdx := -1
 	startupFailedIdx := -1
-	for i, stream := range w.streams {
-		ev := decodeWatchAgentEvent(t, stream)
-		sc := ev.GetStatusChange()
-		if sc == nil {
-			continue
+	require.Eventually(t, func() bool {
+		for i, stream := range w.streamsSnapshot() {
+			ev := decodeWatchAgentEvent(t, stream)
+			sc := ev.GetStatusChange()
+			if sc == nil {
+				continue
+			}
+			switch sc.GetStatus() {
+			case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
+				if startingIdx == -1 {
+					startingIdx = i
+				}
+			case leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE:
+				if inactiveIdx == -1 {
+					inactiveIdx = i
+				}
+			case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
+				if startupFailedIdx == -1 {
+					startupFailedIdx = i
+				}
+			default:
+			}
 		}
-		switch sc.GetStatus() {
-		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTING:
-			if startingIdx == -1 {
-				startingIdx = i
-			}
-		case leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE:
-			if inactiveIdx == -1 {
-				inactiveIdx = i
-			}
-		case leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED:
-			if startupFailedIdx == -1 {
-				startupFailedIdx = i
-			}
-		default:
-			// This test only orders STARTING / INACTIVE / STARTUP_FAILED.
-		}
-	}
+		return startingIdx >= 0 && inactiveIdx >= 0
+	}, time.Second, 10*time.Millisecond)
 
 	require.NotEqual(t, -1, startingIdx, "expected a STARTING broadcast at the start of ensureAgentRunning")
 	require.NotEqual(t, -1, inactiveIdx, "expected an INACTIVE broadcast after auto-start failure so the startup banner clears")
 	assert.Less(t, startingIdx, inactiveIdx, "INACTIVE must follow STARTING so the spinner clears after the failed attempt")
 	assert.Equal(t, -1, startupFailedIdx,
-		"auto-start failure on the SendAgentMessage path must NOT mark the agent STARTUP_FAILED — the message gets a delivery_error and the agent stays retryable on the next send")
+		"an auto-start delivery failure must not mark the agent permanently failed")
 }
 
 // TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone pins that the
@@ -353,7 +357,7 @@ func TestEnsureAgentRunning_ShutdownDrainsAMessageDrivenColdStart(t *testing.T) 
 	<-done
 }
 
-// TestSendAgentMessage_DuringAnOpenStartupIsDelivered is the handler-level form
+// TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered is the handler-level form
 // of the defect a user reported as a first message that vanished.
 //
 // The open path holds no manager entry until its final handoff, so HasAgent is
@@ -362,7 +366,7 @@ func TestEnsureAgentRunning_ShutdownDrainsAMessageDrivenColdStart(t *testing.T) 
 // the open's own startup and record "agent is not running" on the row: the CLI
 // came up a second later and nothing ever handed it what the user typed. The
 // send must join that startup instead, and deliver.
-func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
+func TestEnqueueAgentInput_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -396,9 +400,11 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	sent := make(chan struct{})
 	go func() {
 		defer close(sent)
-		dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+		dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			InputId: newTestAgentInputID(),
+			Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 			AgentId: "agent-1",
-			Content: "hello",
+			Text:    "hello",
 		}, w)
 	}()
 
@@ -407,28 +413,17 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	call.MustRelease(testCtx)
 	select {
 	case <-sent:
-		require.FailNow(t, "the send answered while the tab's own startup was still running")
-	default:
+	case <-time.After(time.Second):
+		require.FailNow(t, "enqueue did not return while the tab startup was still running")
 	}
-
 	// The open path finishes and hands over its process.
 	svc.AgentStartup.succeed("agent-1", openHandle)
 	svc.AgentStartup.finishEntry(openHandle)
 	stopTimer.MustWait(testCtx).MustRelease(testCtx)
 
-	select {
-	case <-sent:
-	case <-testCtx.Done():
-		require.FailNow(t, "the send never resumed after the startup it waited for finished")
-	}
 	require.Empty(t, w.errors)
-
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
-		AgentID: "agent-1",
-		Limit:   10,
-	})
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Empty(t, rows[0].DeliveryError,
-		"the message was refused although the tab had a process coming; nothing ever retries it")
+	require.Eventually(t, func() bool {
+		rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Limit: 10})
+		return err == nil && len(rows) == 1
+	}, time.Second, 10*time.Millisecond)
 }

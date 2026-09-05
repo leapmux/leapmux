@@ -197,3 +197,16 @@ func TestThinkingResetSink_ResetsOnFrontendClearBoundariesOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestThinkingResetSink_ForwardsQueueLifecycle(t *testing.T) {
+	t.Parallel()
+
+	inner := &testSink{}
+	sink := newThinkingResetSink(inner, &thinkingTokenEstimator{})
+
+	notifyInputStarted(sink)
+	notifyInputReady(sink)
+
+	assert.Equal(t, 1, inner.InputStartedCount())
+	assert.Equal(t, 1, inner.InputReadyCount())
+}

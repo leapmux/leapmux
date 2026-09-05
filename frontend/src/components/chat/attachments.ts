@@ -345,6 +345,18 @@ export function clearAttachments(agentId: string): void {
   pastedImageCounters.delete(agentId)
 }
 
+export function forgetAgentAttachments(agentId: string): void {
+  const queuePrefix = `${agentId}-queue-`
+  for (const key of attachmentCache.keys()) {
+    if (key === agentId || key.startsWith(queuePrefix))
+      attachmentCache.delete(key)
+  }
+  for (const key of pastedImageCounters.keys()) {
+    if (key === agentId || key.startsWith(queuePrefix))
+      pastedImageCounters.delete(key)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pasted image counter (per agent, for naming)
 // ---------------------------------------------------------------------------

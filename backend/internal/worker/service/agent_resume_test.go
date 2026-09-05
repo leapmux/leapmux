@@ -560,7 +560,7 @@ func TestAgentResume_ResumesNothingForAnAgentWithNoSession(t *testing.T) {
 // fail() on the error path, which the comment there calls out and nothing else
 // checked.
 //
-// fail() reports STARTUP_FAILED, and SendAgentMessage refuses an agent in that
+// fail() reports STARTUP_FAILED, and queue dispatch refuses an agent in that
 // state for the whole failed-entry TTL. One CLI that is slow to hand-shake at
 // boot would then answer the user's next message with "agent failed to start;
 // open a new agent", and every later sweep would pass the agent over as a
@@ -745,7 +745,7 @@ func TestAgentResume_SkipsChildTranscripts(t *testing.T) {
 }
 
 // TestAgentResume_SkipsAgentsThatFailedToStart pins the same permanent-failure
-// gate SendAgentMessage applies. Respawning one burns a startup slot on a CLI
+// gate that queue dispatch applies. Respawning one uses a startup slot on a CLI
 // that is going to fail again, and the row already tells the user to open a new
 // agent.
 func TestAgentResume_SkipsAgentsThatFailedToStart(t *testing.T) {

@@ -9,13 +9,14 @@ import { createPerAgentStore } from './chatPerAgentStore'
 // value; `caughtUp` compares the two, and the history paginator forward-fills the gap.
 //
 // Extracted from the windowed store so the "true tail + caught-up" invariant -- bump
-// up on a new server message, clamp down to the window when a fetch settles short,
-// reconcile on delete -- lives in one tested unit instead of being re-derived with
+// up on a new persisted message, clamp down when a fetch settles short, and
+// reconcile from authoritative snapshots. One tested unit owns these rules instead of
+// deriving them again with
 // `?? 0n` across the store and the paginator. Independent of the windowing invariants,
-// so it owns its own reactive slice (mirroring createMessageAnnotationStore et al.).
+// so it owns its own reactive slice.
 //
 // The storage IS the per-agent spine: a single bigint per agent with a 0n empty
-// (get / set / remove). Only the bump/settle/onDelete/setAuthoritative reconcilers
+// (get / set / remove). Only the bump, settle, and authoritative reconcilers
 // below are bespoke high-water logic.
 // ---------------------------------------------------------------------------
 
@@ -32,13 +33,12 @@ export function createLiveTailTracker() {
     /** The recorded live tail for an agent (0n when none observed). */
     get,
     /**
-     * Raise the recorded live tail to `seq` when it is a SERVER seq (non-zero, so an
-     * optimistic local at seq 0n never moves it) beyond the current high-water. Called
-     * for every message the store ingests, BEFORE any beyond-window drop, so a message
+     * Raise the recorded live tail when `seq` is a higher positive sequence. Called
+     * for every message the store ingests before any beyond-window drop, so a message
      * dropped while scrolled away is still recorded as observed.
      */
     bump(agentId: string, seq: bigint) {
-      if (seq !== 0n && seq > get(agentId))
+      if (seq > 0n && seq > get(agentId))
         setByAgent(agentId, seq)
     },
     /**
@@ -59,7 +59,7 @@ export function createLiveTailTracker() {
      */
     settleToWindow(agentId: string, liveSeqAtEntry: bigint, windowTail: bigint) {
       // Never clamp the recorded tail to 0n: an empty window tail means the server
-      // range emptied DURING the fetch (a concurrent trim / messageDeleted), NOT that
+      // range emptied during the fetch, not that
       // we caught up. Erasing it would make caughtUp trivially true and hide the
       // streaming tail while newer history still exists. An AUTHORITATIVE empty (an
       // empty LATEST response) is handled by resetToEmptyIfStale instead.
@@ -79,72 +79,6 @@ export function createLiveTailTracker() {
       if (get(agentId) <= liveSeqAtEntry)
         setByAgent(agentId, 0n)
     },
-    /**
-     * Reconcile the recorded live tail when a message is deleted. When the deleted row
-     * WAS the recorded tail, drop the high-water to the authoritative post-delete tail
-     * (`newLatestSeq`), clamped at the window's new last seq (`windowTail`) so a
-     * lagging/under-estimated value can never claim a tail BELOW a row still loaded
-     * (which would make caughtUp falsely true). A delete elsewhere leaves it alone.
-     *
-     * `removedSeq` is the deleted row's seq IF it was loaded in the window (undefined
-     * otherwise); `deletedSeq` is the seq the broadcast carries for an UNLOADED delete.
-     */
-    onDelete(agentId: string, opts: {
-      removedSeq?: bigint
-      deletedSeq?: bigint
-      newLatestSeq?: bigint
-      windowTail: bigint
-    }) {
-      const { removedSeq, deletedSeq, windowTail } = opts
-      // Floor a reconciled tail at the window's last loaded seq: a lowered/lagging value
-      // must NEVER claim a tail BELOW a row still loaded in the window (that would make
-      // caughtUp falsely true). The one home for the floor both delete branches apply.
-      const clampAtWindowFloor = (seq: bigint): bigint => (seq > windowTail ? seq : windowTail)
-      // new_latest_seq is UNSET (undefined here) when the worker couldn't read the tail (a
-      // DB error) or for a local optimistic delete that carries none; a present value is
-      // always a real post-delete MAX(seq). Treat undefined as "no authoritative tail
-      // carried" so we never lower the recorded tail toward a bogus value (see
-      // AgentMessageDeleted.new_latest_seq).
-      const newLatestSeq = opts.newLatestSeq
-      const recordedTail = get(agentId)
-      if (removedSeq !== undefined && removedSeq !== 0n && removedSeq === recordedTail) {
-        // Loaded tail deleted. Prefer the authoritative new tail; a local optimistic
-        // delete (or an indeterminate broadcast) carries none, so fall back to the
-        // window's new last seq -- which we can see, since the deleted row was loaded.
-        const resolved = newLatestSeq ?? windowTail
-        setByAgent(agentId, clampAtWindowFloor(resolved))
-      }
-      else if (removedSeq === undefined && deletedSeq !== undefined && deletedSeq !== 0n && deletedSeq === recordedTail) {
-        // The deleted row was an UNLOADED beyond-window tail. With an authoritative new
-        // tail, set it exactly; otherwise -- an INDETERMINATE (unset) broadcast (a failed
-        // worker MAX(seq) readback) or no new_latest_seq field at all -- fall back to
-        // deletedSeq - 1n. That is the PROVABLE ceiling of
-        // the new tail, NOT a guess: we are in this branch only because deletedSeq ===
-        // recordedTail, the highest seq the client has observed, and ordered broadcasts
-        // rule out a higher UNobserved one (a later create/reseq would have bumped
-        // recordedTail past deletedSeq before this delete). So deletedSeq - 1n can never
-        // UNDER-report -- which would wrongly clear the "new messages below" affordance --
-        // and a residual OVER-report (a seq gap below deletedSeq) self-heals via a later
-        // forward-fill's settleToWindow clamp. Leaving the recorded tail at the
-        // now-deleted seq instead would keep the affordance falsely lit forever: it can
-        // never passively reach a seq we KNOW is gone. Clamped at the window's last seq so
-        // a lagging value can't claim a tail below a loaded row.
-        const lowered = newLatestSeq ?? (deletedSeq - 1n)
-        setByAgent(agentId, clampAtWindowFloor(lowered))
-      }
-    },
-    /**
-     * Reconcile the recorded live tail to the AUTHORITATIVE server max seq the worker
-     * reports at catch-up. Raises a lagging tail; also clamps DOWN a tail over-recorded
-     * from a deletion the client missed while disconnected, so a stale high-water can't
-     * wedge `caughtUp` false forever. But a recorded tail ABOVE `reapCeilingSeq` came
-     * from a live broadcast that raced in DURING catch-up -- its seq exceeds the catch-up
-     * START tail, so it post-dates replay and is genuinely reachable -- and is NEVER
-     * lowered. (The watcher is registered BEFORE the worker reads the tail, so such a
-     * frame CAN precede catch-up complete; the old "ordered before any live frame" note
-     * missed that race.) No ceiling (CatchUpStart, before any live arrival) lowers any
-     * stale tail above `seq`. Clamped non-negative.
-     */
     setAuthoritative(agentId: string, seq: bigint, reapCeilingSeq?: bigint) {
       const recorded = get(agentId)
       // Behind the authoritative tail: raise to it (the server has observed up to `seq`).
@@ -159,7 +93,7 @@ export function createLiveTailTracker() {
     },
     /**
      * Drop an agent's recorded live tail entirely when the agent is closed. The
-     * bump/settle/delete reconcilers only ever raise or lower the bigint, never
+     * The reconcilers only raise or lower the bigint. They never
      * remove the key, so without this a long session leaks one entry per agent
      * ever observed. Called from the chat store's forgetAgent cleanup.
      */

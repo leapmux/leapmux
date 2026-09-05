@@ -177,7 +177,7 @@ describe('createPerAgentStore', () => {
   })
 
   it('set replaces (does not index-merge) a shorter array, and clear empties it', () => {
-    // The pendingOutbound/todos slices depend on this: setting a shorter array
+    // The to-do slice depends on this: setting a shorter array
     // must drop the trailing entries, not keep them via SolidJS index-merge.
     createRoot((dispose) => {
       const store = createPerAgentStore<number[]>([])

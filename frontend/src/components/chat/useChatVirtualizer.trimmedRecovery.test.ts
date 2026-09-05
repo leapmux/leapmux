@@ -6,11 +6,10 @@ import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.test
 
 describe('usechatvirtualizer geometry', () => {
   describe('scrolltopnearanchor (trimmed-row recovery)', () => {
-    // 5 plain rows (100px, 20px gaps) -> offsets 0,120,240,360,480 -- plus a trailing
-    // optimistic local (seq 0n) the nearest-survivor scan must SKIP.
+    // Five plain rows use offsets 0, 120, 240, 360, and 480.
     function seqItems(): VirtualItem[] {
       const rows = [10, 20, 30, 40, 50].map(n => ({ id: `m${n}`, hasSpanLines: false, seq: BigInt(n) }))
-      return [...rows, { id: 'local-x', hasSpanLines: false, seq: 0n }]
+      return rows
     }
 
     it('returns the exact position when the anchored row still resolves', () => {
@@ -34,27 +33,10 @@ describe('usechatvirtualizer geometry', () => {
       })
     })
 
-    it('skips trailing optimistic locals (seq 0n) when picking the nearest survivor', () => {
-      createRoot((dispose) => {
-        const { virt } = setup(seqItems())
-        // seq 2 is closest to the local's seq 0n, but locals are skipped -> seq 10 (offset 0).
-        expect(virt.scrollTopNearAnchor({ id: 'gone', offsetWithinRow: 0, seq: 2n })).toBe(0)
-        dispose()
-      })
-    })
-
     it('returns null for a trimmed anchor that carries no seq (no recovery possible)', () => {
       createRoot((dispose) => {
         const { virt } = setup(seqItems())
         expect(virt.scrollTopNearAnchor({ id: 'gone', offsetWithinRow: 0 })).toBeNull()
-        dispose()
-      })
-    })
-
-    it('returns null when the window holds no server row to land on', () => {
-      createRoot((dispose) => {
-        const { virt } = setup([{ id: 'local-only', hasSpanLines: false, seq: 0n }])
-        expect(virt.scrollTopNearAnchor({ id: 'gone', offsetWithinRow: 0, seq: 5n })).toBeNull()
         dispose()
       })
     })

@@ -126,8 +126,7 @@ func tabPayloadType(payload *leapmuxv1.TabPayload) (leapmuxv1.TabType, error) {
 		if kind.Image.GetAgentId() == "" {
 			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, errors.New("image agent_id must not be empty")
 		}
-		// Seqs are 1-based; 0 is the sentinel for an unpersisted optimistic row,
-		// which no worker message ever has.
+		// Message sequences are 1-based. No persisted worker message uses zero.
 		if kind.Image.GetSeq() <= 0 {
 			return leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, fmt.Errorf("image seq must be positive, got %d", kind.Image.GetSeq())
 		}

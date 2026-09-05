@@ -22,6 +22,16 @@ type ReasonixAgent struct {
 	acpBase
 }
 
+func (a *ReasonixAgent) SupportsSteering() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.steerMethod != ""
+}
+
+func (a *ReasonixAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.steerAdvertised(content, attachments)
+}
+
 // StartReasonix starts a Reasonix ACP agent process and performs the handshake.
 //
 // Unlike the other ACP providers, Reasonix has no afterHandshake apply step:

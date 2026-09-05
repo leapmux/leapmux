@@ -8,7 +8,7 @@ import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, handleTurnEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, handleTurnEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
@@ -1069,12 +1069,13 @@ describe('buildAgentStatusTabUpdate', () => {
   })
 
   it('carries status, clears startupError/startupMessage on ACTIVE, and merges settings', () => {
-    const sc = { status: AgentStatus.ACTIVE, agentSessionId: 's1', startupError: 'stale', startupMessage: 'stale' } as unknown as AgentStatusChange
+    const sc = { status: AgentStatus.ACTIVE, agentSessionId: 's1', startupError: 'stale', startupMessage: 'stale', supportsSteering: true } as unknown as AgentStatusChange
     const update = buildAgentStatusTabUpdate(sc, true, settings)
     expect(update.agentStatus).toBe(AgentStatus.ACTIVE)
     expect(update.agentSessionId).toBe('s1')
     expect(update.startupError).toBe('')
     expect(update.startupMessage).toBe('')
+    expect(update.supportsSteering).toBe(true)
     expect(update.optionValues).toEqual({ model: 'opus' })
   })
 
@@ -1163,43 +1164,6 @@ describe('buildAgentStatusTabUpdate', () => {
   })
 })
 
-describe('drainPendingOutboundOnStart', () => {
-  const queued = (localId: string) => ({ localId, content: 'hi', attachments: [] })
-
-  it('is a no-op when the prior status was not STARTING (queue left intact)', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      chatStore.pendingOutbound.enqueue('agent-1', queued('local-1'))
-      drainPendingOutboundOnStart(
-        { agentId: 'agent-1', status: AgentStatus.ACTIVE } as unknown as AgentStatusChange,
-        { agentStatus: AgentStatus.ACTIVE } as AgentTab, // prior status not STARTING
-        chatStore,
-      )
-      expect(chatStore.pendingOutbound.take('agent-1')).toHaveLength(1) // not drained
-      dispose()
-    })
-  })
-
-  it('surfaces a failure error and clears the pending label on every queued message on STARTUP_FAILED', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      chatStore.pendingOutbound.enqueue('agent-1', queued('local-1'))
-      chatStore.pendingOutbound.enqueue('agent-1', queued('local-2'))
-      chatStore.setMessagePendingLabel('local-1', 'Queued…')
-      drainPendingOutboundOnStart(
-        { agentId: 'agent-1', status: AgentStatus.STARTUP_FAILED } as unknown as AgentStatusChange,
-        { agentStatus: AgentStatus.STARTING } as AgentTab,
-        chatStore,
-      )
-      expect(chatStore.messageErrors()['local-1']).toBe('Agent failed to start')
-      expect(chatStore.messageErrors()['local-2']).toBe('Agent failed to start')
-      expect(chatStore.messagePendingLabels()['local-1']).toBeUndefined() // label cleared
-      expect(chatStore.pendingOutbound.take('agent-1')).toHaveLength(0) // queue drained
-      dispose()
-    })
-  })
-})
-
 /**
  * The statusChange arm for an agent the user is NOT looking at.
  *
@@ -1220,28 +1184,6 @@ describe('handleAgentStatusChange for background agents', () => {
     stores.metadata.patch('bg-1', { agentStatus: AgentStatus.STARTING })
     return { ...stores, chatStore, repoGitStore: createRepoGitStore() }
   }
-
-  it('drains a message queued against a starting agent', () => {
-    createRoot((dispose) => {
-      const { view, metadata, chatStore, selection, repoGitStore } = backgroundStores()
-      const agentSessionStore = createAgentSessionStore()
-      chatStore.pendingOutbound.enqueue('bg-1', { localId: 'l1', content: 'hi', attachments: [] })
-
-      handleAgentStatusChange(
-        'bg-1',
-        { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
-        'live',
-        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore, repoGitStore },
-        createLoadingSignal(),
-        () => {},
-        undefined,
-      )
-
-      expect(chatStore.pendingOutbound.take('bg-1'), 'the queue must not outlive the transition').toHaveLength(0)
-      expect(chatStore.messageErrors().l1, 'and the user has to be told why').toBe('Agent failed to start')
-      dispose()
-    })
-  })
 
   it('writes the startup fields the foreground path writes', () => {
     createRoot((dispose) => {
@@ -1574,50 +1516,6 @@ describe('agent_session_info snake_case wire normalization', () => {
       const store = createAgentSessionStore()
       applyAgentSessionInfo(store, 'cc-3', {})
       expect(Object.keys(store.getInfo('cc-3'))).toHaveLength(0)
-      dispose()
-    })
-  })
-})
-
-// handleAgentEvent gates the turn-end orphan sweep on catchUpPhase === 'live', so a
-// turn-end divider replayed DURING catch-up skips it; the catchUpComplete handler
-// then sweeps once on the transition. Simulated inline with the real chatStore (as
-// the other handler tests here do) to verify the cross-cutting invariant: an orphan
-// recorded mid-catch-up is reclaimed on catch-up completion rather than leaking.
-describe('orphaned command-stream sweep across catch-up', () => {
-  function makeSpanMessage(id: string, seq: bigint, spanId: string) {
-    return {
-      id,
-      source: MessageSource.AGENT,
-      content: new TextEncoder().encode('{"type":"assistant"}'),
-      seq,
-      spanId,
-    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-  }
-
-  it('reclaims a stream orphaned during catch-up on the catch-up -> live transition', () => {
-    createRoot((dispose) => {
-      const chatStore = createChatStore()
-      chatStore.addMessage('agent-1', makeSpanMessage('m1', 1n, 'span1'))
-      chatStore.appendCommandStream('agent-1', 'span1', 'output', 'output') // marks span1 renderable
-
-      // A mid-stream delete spares the still-buffered stream and records it as an
-      // orphan (clearing now would lose the in-flight segments).
-      chatStore.removeMessage('agent-1', 'm1')
-      expect(chatStore.getCommandStream('agent-1', 'span1')).toHaveLength(1)
-
-      // The result_divider turn-end sweep is GATED on catchUpPhase === 'live'
-      // (see handleAgentEvent), so a turn-end replayed during catch-up skips it.
-      const catchUpPhase = simulatePhase('catchingUp')
-      if (catchUpPhase === 'live')
-        chatStore.sweepOrphanedBufferedSpans('agent-1')
-      expect(chatStore.getCommandStream('agent-1', 'span1')).toHaveLength(1) // still spared
-
-      // The catchUpComplete handler flips the phase to 'live' AND sweeps once, so
-      // the orphan recorded during catch-up is reclaimed instead of leaking until
-      // (or past) the next live turn-end.
-      chatStore.sweepOrphanedBufferedSpans('agent-1')
-      expect(chatStore.getCommandStream('agent-1', 'span1')).toHaveLength(0)
       dispose()
     })
   })

@@ -479,11 +479,6 @@ func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 			Kind: NotificationKindProviderScoped,
 			Key:  "codex:mcpServer/startupStatus/updated:" + name,
 		}
-	case "thread/compacted":
-		return NotificationClassification{
-			Kind: NotificationKindCompactionBoundary,
-			Key:  "codex:thread/compacted",
-		}
 	case "item/started":
 		// Codex emits item/started for many item kinds; only the
 		// contextCompaction subtype is consolidatable as a compacting
@@ -554,10 +549,7 @@ func (codexProvider) SyntheticInterruptNotice() string { return "[Request interr
 // PermissionModeFromRawInput: Codex has no set_permission_mode raw control frame.
 func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
-// SupportsChildSteering: Codex collab child threads accept host-initiated turns
-// inside the same process (turn/steer / turn/start / turn/interrupt on a child
-// threadId), so a child tab keeps an enabled composer and SendAgentMessage to a
-// child routes through the owner process's ChildSteerer.
+// SupportsChildSteering reports whether Codex accepts input for a child thread.
 func (codexProvider) SupportsChildSteering() bool { return true }
 
 // ReportsDefaultModelSentinel is false: Codex stores the sentinel until the

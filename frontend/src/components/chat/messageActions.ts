@@ -6,9 +6,7 @@ import Columns2 from 'lucide-solid/icons/columns-2'
 import Copy from 'lucide-solid/icons/copy'
 import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import Quote from 'lucide-solid/icons/quote'
-import RotateCcw from 'lucide-solid/icons/rotate-ccw'
 import Rows2 from 'lucide-solid/icons/rows-2'
-import Trash2 from 'lucide-solid/icons/trash-2'
 import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
 
 /**
@@ -50,16 +48,6 @@ export interface ToolHeaderActionsLayoutProps {
   mirrored?: boolean
 }
 
-/**
- * The recovery actions an undelivered message offers. Passed only by the row's
- * CONTEXT MENU, never by the toolbar: the failed row already renders Retry and
- * Delete as visible buttons of its own, and the toolbar sits right beside them.
- */
-export interface MessageErrorActions {
-  onRetry?: () => void
-  onDelete?: () => void
-}
-
 export type MessageActionId
   = | 'copy-json'
     | 'copy-markdown'
@@ -67,8 +55,6 @@ export type MessageActionId
     | 'quote'
     | 'diff-view'
     | 'expand'
-    | 'retry'
-    | 'delete'
 
 export interface MessageAction {
   id: MessageActionId
@@ -112,7 +98,6 @@ export interface MessageAction {
 export function buildMessageActions(
   caller: ToolHeaderActionsCallerProps | undefined,
   layout: ToolHeaderActionsLayoutProps | undefined,
-  error?: MessageErrorActions,
 ): MessageAction[] {
   const actions: MessageAction[] = []
 
@@ -172,27 +157,6 @@ export function buildMessageActions(
       icon: layout.expanded ? FoldVertical : UnfoldVertical,
       stopPropagation: true,
       run: layout.onToggleExpand,
-    })
-  }
-
-  // Last, and outside both `leadingActions` and `trailingActions` -- so even if a
-  // caller did pass `error` to the toolbar, the toolbar would not render them.
-  if (error?.onRetry) {
-    actions.push({
-      id: 'retry',
-      label: 'Retry',
-      icon: RotateCcw,
-      run: error.onRetry,
-    })
-  }
-
-  if (error?.onDelete) {
-    actions.push({
-      id: 'delete',
-      label: 'Delete',
-      icon: Trash2,
-      danger: true,
-      run: error.onDelete,
     })
   }
 

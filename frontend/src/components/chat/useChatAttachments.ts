@@ -29,11 +29,13 @@ export interface UseChatAttachmentsOptions {
 
 export interface UseChatAttachmentsResult {
   attachments: Accessor<FileAttachment[]>
+  activeDraftKey: Accessor<string>
   capabilities: Accessor<AttachmentCapabilities | undefined>
   acceptAttribute: Accessor<string | undefined>
   addFiles: (files: FileList | File[] | PendingAttachmentFile[], isPastedImage?: boolean) => Promise<number>
   removeAttachment: (id: string) => void
   clearAllAttachments: () => void
+  replaceAttachments: (attachments: FileAttachment[]) => void
   /** Read files from a file input and add them. Pass the input element to also reset its value afterwards. */
   handleFileInputChange: (input: HTMLInputElement | undefined) => void
   /** Walk a DataTransfer (drop event) and add valid files; surfaces oversize toast. */
@@ -47,6 +49,7 @@ export interface UseChatAttachmentsResult {
  */
 export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAttachmentsResult {
   const [attachments, setAttachments] = createSignal<FileAttachment[]>([])
+  const [activeDraftKey, setActiveDraftKey] = createSignal('')
 
   // Swap attachments on agentId change (mirrors the editor height cache pattern).
   createEffect(on(opts.agentId, (agentId, prevAgentId) => {
@@ -54,6 +57,7 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
       setAttachmentsCache(prevAgentId, attachments())
     }
     setAttachments(agentId ? getAttachments(agentId) : [])
+    setActiveDraftKey(agentId)
   }))
 
   const capabilities = createMemo(() => providerFor(opts.agentProvider())?.attachments)
@@ -119,6 +123,13 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
       clearAttachments(id)
   }
 
+  const replaceAttachments = (next: FileAttachment[]) => {
+    setAttachments(next)
+    const id = opts.agentId()
+    if (id)
+      setAttachmentsCache(id, next)
+  }
+
   const handleFileInputChange = (input: HTMLInputElement | undefined) => {
     if (input?.files?.length) {
       addFiles(input.files)
@@ -135,11 +146,13 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
 
   return {
     attachments,
+    activeDraftKey,
     capabilities,
     acceptAttribute,
     addFiles,
     removeAttachment,
     clearAllAttachments,
+    replaceAttachments,
     handleFileInputChange,
     addDroppedDataTransfer,
   }

@@ -31,6 +31,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/config"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/util/validate"
@@ -66,9 +67,10 @@ type Service struct {
 	// while removing the swapped-argument one.
 	Config
 
-	Queries  *db.Queries
-	Watchers *WatcherManager // Fan-out manager for event broadcasting
-	Output   *OutputHandler  // Agent output NDJSON processor
+	Queries    *db.Queries
+	Watchers   *WatcherManager // Fan-out manager for event broadcasting
+	Output     *OutputHandler  // Agent output NDJSON processor
+	InputQueue *inputqueue.Manager
 
 	// RemoteIPC supplies per-agent local-IPC servers for the
 	// `leapmux control` CLI. Nil disables remote control (env vars are
@@ -588,6 +590,18 @@ func New(cfg Config) *Service {
 		svc.SetRegisteredBy(seed)
 	}
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents)
+	queueAdapter := &agentInputQueueAdapter{svc: svc}
+	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
+	svc.Output.SetInputReadyFunc(func(agentID string) {
+		if _, err := svc.InputQueue.TurnEnded(bgCtx(), agentID); err != nil {
+			slog.Warn("advance agent input queue after turn end failed", "agent_id", agentID, "error", err)
+		}
+	})
+	svc.Output.SetInputStartedFunc(func(agentID string) {
+		if _, err := svc.InputQueue.TurnStarted(bgCtx(), agentID); err != nil {
+			slog.Warn("mark agent input queue turn active failed", "agent_id", agentID, "error", err)
+		}
+	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
@@ -599,7 +613,7 @@ func New(cfg Config) *Service {
 	// An auto-continue injection is not a human-typed input, so it stays
 	// UNSPECIFIED (no scroll-rail jump dot).
 	svc.Output.SetSendMessageFunc(func(agentID, content string) {
-		svc.sendSyntheticUserMessage(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+		svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
 	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
@@ -661,8 +675,8 @@ func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgent
 	// refuses to persist a message row for an UNSPECIFIED provider. Enforce the
 	// invariant where rows are born so a misconfigured caller fails at creation
 	// with a clear error, rather than later with a confusing "failed to persist
-	// message" on the agent's first output. The SendAgentMessage path already
-	// defaults an UNSPECIFIED request to a real provider before reaching here, so
+	// message" on the agent's first output. Agent creation already
+	// selects a real provider before reaching here, so
 	// this is a backstop that should never fire in practice.
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return fmt.Errorf("refusing to create agent %q with UNSPECIFIED agent provider", params.ID)
@@ -711,6 +725,9 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
+	if err := svc.InputQueue.Recover(bgCtx()); err != nil {
+		slog.Warn("recover agent input queues failed", "error", err)
+	}
 	// Before anything else, mark every still-active background-task row
 	// 'interrupted': the previous worker process was cut off (crash/restart),
 	// so a row left 'pending'/'running' is genuinely not making progress. Pure
@@ -749,6 +766,20 @@ func (svc *Service) RestoreState() {
 func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
 	svc.Output.ClearPendingControlRequests(agentID)
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
+	if !stopped {
+		agentIDs := []string{agentID}
+		descendantIDs, err := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
+		if err != nil {
+			slog.Warn("list child input queues after process exit failed", "agent_id", agentID, "error", err)
+		} else {
+			agentIDs = append(agentIDs, descendantIDs...)
+		}
+		for _, queueAgentID := range agentIDs {
+			if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
+				slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
+			}
+		}
+	}
 }
 
 // Shutdown persists in-memory final state to the database so it

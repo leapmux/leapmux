@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -510,15 +511,35 @@ func zcodeUsableSessionID(id string) bool {
 // for the turn -- the Agent.SendInput contract. A refusal because a turn is already
 // running is retried briefly, because it is transient by construction.
 func (a *zcodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInput(content, attachments, "")
+}
+
+func (a *zcodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInput(content, attachments, "guide")
+}
+
+func (a *zcodeAgent) InputReady() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.stopped && a.sessionID != "" && !a.turnActive
+}
+
+func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, requestedDelivery string) error {
 	a.mu.Lock()
 	if a.stopped {
 		a.mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	sessionID, model := a.sessionID, a.model
+	sessionID, model, turnActive := a.sessionID, a.model, a.turnActive
 	a.mu.Unlock()
 	if sessionID == "" {
 		return fmt.Errorf("agent has no ZCode session")
+	}
+	if requestedDelivery == "" && turnActive {
+		return ErrNoActiveTurn
+	}
+	if requestedDelivery != "" && !turnActive {
+		return ErrNoActiveTurn
 	}
 
 	text, wire, err := a.buildZCodeInput(content, attachments, model)
@@ -534,6 +555,9 @@ func (a *zcodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 	if len(wire) > 0 {
 		params["attachments"] = wire
 	}
+	if requestedDelivery != "" {
+		params["requestedDelivery"] = requestedDelivery
+	}
 
 	deadline := time.Now().Add(zcodeSendRetryWindow)
 	for {
@@ -545,10 +569,18 @@ func (a *zcodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 			if json.Unmarshal(raw, &ack) == nil && !ack.Accepted {
 				return fmt.Errorf("the app-server did not accept the message")
 			}
+			if requestedDelivery != "" {
+				a.mu.Lock()
+				stillActive := a.turnActive
+				a.mu.Unlock()
+				if !stillActive {
+					return ErrNoActiveTurn
+				}
+			}
 			return nil
 		}
 		if !zcodeIsPromptRunning(err) || time.Now().After(deadline) {
-			return err
+			return classifyZCodeInputDeliveryError(err)
 		}
 		select {
 		case <-time.After(zcodeSendRetryInterval):
@@ -558,6 +590,14 @@ func (a *zcodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 			return a.ctx.Err()
 		}
 	}
+}
+
+func classifyZCodeInputDeliveryError(err error) error {
+	var responseErr *zcodeError
+	if errors.As(err, &responseErr) {
+		return err
+	}
+	return fmt.Errorf("%w: ZCode did not confirm session/send delivery: %v", ErrDeliveryUncertain, err)
 }
 
 // Interrupt aborts the running turn.

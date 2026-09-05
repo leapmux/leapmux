@@ -208,7 +208,7 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 	assert.Empty(t, result,
 		"should NOT resume — no user messages were exchanged before this send")
 
-	// Now persist the user message (simulating the SendAgentMessage flow).
+	// Persist the accepted user input.
 	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
 		ID:            "msg-first",
 		AgentID:       "agent-idle",

@@ -71,13 +71,15 @@ CREATE TABLE messages (
     source              INTEGER NOT NULL,
     content             BLOB NOT NULL,
     content_compression INTEGER NOT NULL,
+    -- Non-empty only for an accepted durable queue item. It keeps enqueue
+    -- retries idempotent after the queue item becomes a transcript row.
+    input_fingerprint   TEXT NOT NULL DEFAULT '',
     depth               INTEGER NOT NULL DEFAULT 0,
     span_id             TEXT NOT NULL DEFAULT '',
     parent_span_id      TEXT NOT NULL DEFAULT '',
     span_type           TEXT NOT NULL DEFAULT '',
     span_lines          TEXT NOT NULL DEFAULT '[]',
     span_color          INTEGER NOT NULL DEFAULT 0,
-    delivery_error      TEXT NOT NULL DEFAULT '',
     agent_provider      INTEGER NOT NULL DEFAULT 1,
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
@@ -93,6 +95,55 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, span_id, source, seq) WH
 -- the (agent_id, ORDER BY seq ASC) scan of marked rows from the index alone.
 -- Partial (only marked rows) so the far-more-numerous unmarked inserts skip it.
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type <> 0;
+
+-- Durable conversational input. The state row exists even when the queue is
+-- empty, which keeps a manual pause until the user resumes the queue.
+CREATE TABLE agent_input_queue_state (
+    agent_id        TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+    revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    paused          INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+    pause_reason    INTEGER NOT NULL DEFAULT 0 CHECK (pause_reason BETWEEN 0 AND 5),
+    active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
+    active_turn_kind INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_kind BETWEEN 0 AND 6),
+    active_input_id TEXT NOT NULL DEFAULT '',
+    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE agent_input_queue_items (
+    id              TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    order_index     INTEGER NOT NULL CHECK (order_index > 0),
+    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 6),
+    text            TEXT NOT NULL DEFAULT '',
+    target_mode     TEXT NOT NULL DEFAULT '',
+    prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
+    reclassify_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (reclassify_on_edit IN (0, 1)),
+    state           INTEGER NOT NULL DEFAULT 1 CHECK (state BETWEEN 1 AND 4),
+    error           TEXT NOT NULL DEFAULT '',
+    edit_owner      TEXT NOT NULL DEFAULT '',
+    version         INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    reserved_seq    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_seq >= 0),
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(agent_id, order_index),
+    UNIQUE(agent_id, id)
+);
+CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
+    ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';
+CREATE INDEX idx_agent_input_queue_pending
+    ON agent_input_queue_items(agent_id, order_index, state);
+
+CREATE TABLE agent_input_queue_attachments (
+    item_id     TEXT NOT NULL REFERENCES agent_input_queue_items(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL CHECK (position >= 0),
+    filename    TEXT NOT NULL,
+    mime_type   TEXT NOT NULL,
+    data        BLOB NOT NULL,
+    size        INTEGER NOT NULL CHECK (size >= 0 AND size = length(data)),
+    PRIMARY KEY (item_id, position)
+);
+CREATE INDEX idx_agent_input_queue_attachment_sizes
+    ON agent_input_queue_attachments(item_id, size);
 
 -- Advance agents.message_seq_hwm whenever a message is assigned a seq -- a fresh
 -- insert (CreateMessage) or a notification reseq that moves a row to the tail

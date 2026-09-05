@@ -7,6 +7,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
@@ -80,7 +81,7 @@ func closeOrphanAgent(ctx context.Context, w workerCall, agentID string) {
 // their sum.
 //
 // `ch` is a channel the CALLER opened to args.WorkerID and keeps open for
-// the whole sequence, so OpenAgent, the optional SendAgentMessage, and any
+// the whole sequence, so OpenAgent, the optional EnqueueAgentInput, and any
 // rollback CloseAgent share one Noise_NK handshake instead of one apiece.
 // Pass nil on local-IPC clients, where there is no channel and each call
 // routes through the per-agent socket.
@@ -151,9 +152,9 @@ func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, ar
 	// post-spawn follow-up is the optional initial message -- an inner-RPC against the same
 	// worker that just received OpenAgent, on the same channel it arrived over.
 	if args.InitialMessage != "" {
-		if err := w.Call(ctx, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
-			AgentId: agentID,
-			Content: args.InitialMessage,
+		if err := w.Call(ctx, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			AgentId: agentID, InputId: id.Generate(), Text: args.InitialMessage,
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		}, nil); err != nil {
 			// Non-fatal: the agent is open and its tab is registered, so the
 			// caller reports the spawn as a success carrying this warning.

@@ -559,26 +559,71 @@ type Agent interface {
 	Interrupt() error
 }
 
-// ChildSteerer is optionally implemented by a running Agent whose provider can
-// address a child conversation inside the same process (Codex's collab child
-// threads). It is the backend hook behind "send a message to a subagent":
-// SendAgentMessage resolves the child's registry row, then drives the owner
-// process through this interface. Providers that cannot steer a subagent
-// (Claude, ACP, Pi) simply do not implement it; the service rejects a send to
-// such a child with FailedPrecondition instead of crashing.
+// ContextCompactor runs a provider-native context compaction. Providers that
+// do not expose compaction do not implement this interface.
+type ContextCompactor interface {
+	CompactContext() error
+}
+
+// InputSteerer adds input to an active turn. The queue calls it only for an
+// explicit Steer operation. Normal dispatch always starts a later turn.
+type InputSteerer interface {
+	SteerInput(content string, attachments []*leapmuxv1.Attachment) error
+}
+
+type SteeringCapability interface {
+	SupportsSteering() bool
+}
+
+// InputReadiness reports whether normal queue dispatch can start a turn.
+type InputReadiness interface {
+	InputReady() bool
+}
+
+type inputReadySink interface {
+	InputReady()
+}
+
+type inputStartedSink interface {
+	InputStarted()
+}
+
+func notifyInputStarted(sink OutputSink) {
+	if started, ok := sink.(inputStartedSink); ok {
+		started.InputStarted()
+	}
+}
+
+func notifyInputReady(sink OutputSink) {
+	if ready, ok := sink.(inputReadySink); ok {
+		ready.InputReady()
+	}
+}
+
+var (
+	ErrCompactionUnsupported = errors.New("agent provider does not support native context compaction")
+	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
+	ErrNoActiveTurn          = errors.New("agent has no active turn to steer")
+	ErrDeliveryUncertain     = errors.New("agent input delivery is uncertain")
+)
+
+// ChildSteerer lets a provider address a child conversation in its process.
+// Queue dispatch resolves the child registry row and drives the owner process.
+// Providers that cannot steer a child do not implement this interface.
 type ChildSteerer interface {
 	// SendChildInput sends a user message to a child conversation identified by
 	// childKey (the provider linkage key stored in the registry row_key). Returns
 	// ErrChildSteeringUnsupported only via the Manager's type-assertion path.
 	SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
-	// InterruptChild aborts the child's current turn inside the owner process.
+	// SteerChildInput adds input to the child's active turn.
+	SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
+	// InterruptChild stops the child's current turn inside the owner process.
 	InterruptChild(childKey string) error
 }
 
 // ErrChildSteeringUnsupported is returned by the Manager when a running Agent
 // does not implement ChildSteerer (the provider cannot steer a subagent). The
-// service maps it to FailedPrecondition so the frontend shows the composer
-// gate rather than a delivery-error bubble.
+// service maps it to FailedPrecondition so the frontend shows a clear queue failure.
 var ErrChildSteeringUnsupported = errors.New("agent provider does not support steering a subagent")
 
 // ErrChildNotSteerableYet is returned by a ChildSteerer when the owner process

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -24,6 +25,20 @@ const (
 // OpenCodeAgent manages a single OpenCode ACP process.
 type OpenCodeAgent struct {
 	acpBase
+}
+
+func (a *OpenCodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.mu.Lock()
+	active := a.promptActive
+	a.mu.Unlock()
+	if !active {
+		return ErrNoActiveTurn
+	}
+	return a.sendACPPromptDetached(content, attachments, func(_ json.RawMessage, err error) {
+		if err != nil && !a.IsStopped() {
+			slog.Error("opencode steer failed", "agent_id", a.agentID, "error", err)
+		}
+	})
 }
 
 // StartOpenCode starts an OpenCode ACP agent process and performs the handshake.

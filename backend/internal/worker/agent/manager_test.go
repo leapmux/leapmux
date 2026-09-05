@@ -189,15 +189,12 @@ func TestManager_SendInputUnknownAgent(t *testing.T) {
 	}
 }
 
-// A message that arrives while the agent is restarting must WAIT for the new
+// A message that arrives while the agent restarts must wait for the new
 // process, not fail against the old one.
 //
 // The window is a settings change the provider cannot apply live: the service
 // takes the lifecycle lock, stops the old process, and starts a new one. A send
-// that landed in it used to reach the stopped process and come back "agent is
-// stopped" -- the user's message was persisted with a delivery error and the
-// turn never ran, for a relaunch they had no way to see. E2E 045 died on exactly
-// that: the send raced the startup relaunch and the assistant never answered.
+// that lands in it must not reach the stopped process and fail the queue item.
 func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()
@@ -245,9 +242,8 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 
 // A message to a SUBAGENT tab reaches the owner process, so it meets the same
 // restart window a root send does -- and used to fail the same way, with the
-// user's message persisted carrying a delivery error for a relaunch they had no
-// way to see. The wait belongs on every input door into the process, not just
-// the one the root uses.
+// child's queue item could fail for a restart that the user did not request.
+// Each input path into the process must wait for the restart.
 func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()

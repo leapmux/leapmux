@@ -6,6 +6,7 @@ import {
   clearAttachments,
   collectDroppedAttachmentFiles,
   describeUnsupportedAttachment,
+  forgetAgentAttachments,
   getAttachments,
   inferAttachmentDetails,
   isAttachmentSupported,
@@ -147,6 +148,18 @@ describe('attachment cache', () => {
     setAttachments('agent-2', [{ id: 'a2' } as FileAttachment])
     clearAttachments('agent-2')
     expect(getAttachments('agent-2')).toEqual([])
+  })
+
+  it('forgets normal and queue-edit attachments for a closed agent', () => {
+    setAttachments('agent-3', [{ id: 'normal' } as FileAttachment])
+    setAttachments('agent-3-queue-input-1', [{ id: 'queued' } as FileAttachment])
+    setAttachments('agent-30', [{ id: 'other' } as FileAttachment])
+
+    forgetAgentAttachments('agent-3')
+
+    expect(getAttachments('agent-3')).toEqual([])
+    expect(getAttachments('agent-3-queue-input-1')).toEqual([])
+    expect(getAttachments('agent-30')).toHaveLength(1)
   })
 })
 

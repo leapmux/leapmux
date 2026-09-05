@@ -30,8 +30,8 @@ export interface SpanMessageRevision {
  * the pixel offset from that row's top to the viewport top. The virtualizer
  * produces it (anchorAt) and resolves it back to a scrollTop (scrollTopForAnchor);
  * useChatScroll holds it across geometry changes to keep the row stationary, and
- * SavedViewportScroll persists it for tab-switch restore. Keyed by id (not seq) so
- * stacked optimistic locals (all seq 0n) stay distinct.
+ * SavedViewportScroll persists it for tab-switch restore. The row ID remains stable
+ * when a notification receives a new sequence.
  */
 export interface ScrollAnchor {
   id: string
@@ -61,8 +61,7 @@ export interface ScrollAnchor {
    * row was TRIMMED away before a restore resolves it (id no longer in the window):
    * the seq orders the gone anchor against the surviving rows so the restore can land
    * on the NEAREST survivor (scrollTopNearAnchor) instead of yanking the reader to the
-   * live tail. Optional -- an anchor captured before this field (or for an optimistic
-   * local, seq 0n) just can't do the nearest-survivor recovery and falls back.
+   * live tail. An anchor captured before this field cannot use that recovery.
    */
   seq?: bigint
 }
@@ -72,8 +71,8 @@ export interface ScrollAnchor {
  * specific message (by row id) plus the pixel offset of the viewport top within
  * that row, rather than a raw distance-from-bottom — under virtualization the
  * scroll container's height is partly estimated, so a distance would resolve
- * to the wrong place. Keyed by id (not seq) so stacked optimistic locals (all
- * seq 0n) restore to the right row. `atBottom`/`hasMoreNewer` let restore decide
+ * to the wrong place. The row ID remains stable across sequence changes.
+ * `atBottom` and `hasMoreNewer` let restore decide
  * whether to stick to the live tail or resolve the anchor.
  */
 export interface SavedViewportScroll {

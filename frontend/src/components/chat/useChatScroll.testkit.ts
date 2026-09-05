@@ -198,12 +198,7 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     const hs = heights()
     const offs = cumOffsets()
     return {
-      // seq is 1-based: 0n is the OPTIMISTIC-LOCAL sentinel, which the nearest-anchor
-      // recovery deliberately treats as unorderable (resolveNearestAnchorScrollTop bails
-      // on an anchor with seq 0n and skips 0n survivors). Stamping row 0 with 0n would
-      // silently route every head-of-list recovery test through the local-fallback path
-      // instead of the nearest-survivor path it means to exercise -- and models a state
-      // production can't produce (server rows never carry seq 0n).
+      // Persisted message sequences start at one.
       list: hs.map((_, i) => ({ id: `g${gen()}_${i}`, seq: BigInt(i + 1) })),
       // Largest index whose top offset <= y (the row containing y), clamped to [0, n-1].
       indexAtOffset: (y) => {

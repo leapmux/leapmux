@@ -97,13 +97,13 @@ describe('messageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('copy-json'), action('quote'), action('retry'), dangerAction('delete')],
+      actions: [action('copy-json'), action('quote'), action('diff-view'), dangerAction('expand')],
     })
 
     const ids = [...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid^="message-menu-"]')]
       .map(el => el.getAttribute('data-testid')!.replace('message-menu-', ''))
 
-    expect(ids).toEqual(['retry', 'quote', 'copy-json', 'delete'])
+    expect(ids).toEqual(['diff-view', 'quote', 'copy-json', 'expand'])
     // And behind a rule, like every other danger item in the app.
     expect(screen.getByTestId('message-context-menu').querySelector('hr')).toBeInTheDocument()
   })
@@ -114,9 +114,9 @@ describe('messageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('quote'), dangerAction('delete', run)],
+      actions: [action('quote'), dangerAction('expand', run)],
     })
-    fireEvent.click(screen.getByTestId('message-menu-delete'))
+    fireEvent.click(screen.getByTestId('message-menu-expand'))
 
     expect(run).toHaveBeenCalledTimes(1)
   })

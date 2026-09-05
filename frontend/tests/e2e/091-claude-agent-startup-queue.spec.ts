@@ -1,11 +1,8 @@
 import { expect, test } from './fixtures'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, visibleOnly } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer } from './helpers/ui'
 
 /**
- * Verifies the per-agent startup queue: when the user types and sends a
- * message before the agent's subprocess has finished starting, the
- * bubble appears immediately with a "Queued" sublabel and is delivered
- * the instant the agent transitions to ACTIVE.
+ * Verifies that the Worker queue persists input while an agent starts.
  */
 test.describe('Claude Code agent startup queue', () => {
   test('queues a typed-during-startup message and delivers it on ACTIVE', async ({ page, authenticatedWorkspace }) => {
@@ -20,26 +17,19 @@ test.describe('Claude Code agent startup queue', () => {
     const overlay = page.locator('[data-testid="agent-startup-overlay"]')
     const overlayWasVisible = await overlay.isVisible().catch(() => false)
 
-    // Type and submit while still in STARTING. The frontend should
-    // intercept the send and queue rather than dispatching the RPC.
+    // Type and submit while the agent starts.
     await editor.click()
     await page.keyboard.type(ARITHMETIC_PROMPT)
     await page.keyboard.press('Meta+Enter')
 
-    // Editor clears immediately on submit regardless of queueing.
+    // The editor clears after the Worker accepts the queue item.
     await expect(editor).toHaveText('')
 
     if (overlayWasVisible) {
-      // While still queued, the optimistic bubble must show the
-      // pending sublabel — proof the message was held back, not sent.
-      const pending = visibleOnly(page.getByTestId('message-pending'))
-      await expect(pending).toBeVisible()
-      await expect(pending).toContainText('Queued')
-
-      // The startup overlay disappears when the agent transitions
-      // to ACTIVE. The pending sublabel disappears with it.
+      const queue = page.getByTestId('agent-input-queue')
+      await expect(queue).toContainText(ARITHMETIC_PROMPT)
       await expect(overlay).not.toBeVisible()
-      await expect(pending).not.toBeVisible()
+      await expect(queue).toHaveCount(0)
     }
 
     // The queued message must reach Claude and produce a response.

@@ -315,12 +315,23 @@ func (a *PiAgent) applyStateResponse(raw json.RawMessage) {
 	}
 }
 
-// SendInput forwards a user message to the running Pi agent.
-//
-// If a turn is already streaming, sets streamingBehavior:"steer" so the
-// message is queued and delivered after the current assistant turn finishes
-// executing its tool calls (Pi's "all" steering mode by default).
+// SendInput starts a regular Pi prompt. SteerInput sends explicit guidance
+// with streamingBehavior:"steer" during an active turn.
 func (a *PiAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInput(content, attachments, false)
+}
+
+func (a *PiAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInput(content, attachments, true)
+}
+
+func (a *PiAgent) InputReady() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.stopped && !a.currentTurnActive
+}
+
+func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {
 	a.mu.Lock()
 	if a.stopped {
 		a.mu.Unlock()
@@ -328,6 +339,12 @@ func (a *PiAgent) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	}
 	turnActive := a.currentTurnActive
 	a.mu.Unlock()
+	if steer && !turnActive {
+		return ErrNoActiveTurn
+	}
+	if !steer && turnActive {
+		return ErrNoActiveTurn
+	}
 
 	classified := classifyAttachments(attachments)
 
@@ -361,26 +378,21 @@ func (a *PiAgent) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	if len(images) > 0 {
 		payload["images"] = images
 	}
-	if turnActive {
+	if steer {
 		payload["streamingBehavior"] = PiStreamingBehaviorSteer
 	}
 
-	// Pi blocks for the duration of a turn before responding to `prompt`, so
-	// fire it from a goroutine so SendInput can return promptly. No timeout
-	// on the RPC itself: the turn unblocks via response, process exit, or
-	// ctx cancel (the user interrupting). A wall-clock cap would just kill
-	// long-but-legitimate turns.
-	go func() {
-		if _, err := a.sendPiCommand(PiCommandPrompt, payload, 0); err != nil {
+	// The prompt response arrives at turn end. The queue needs only the stdin
+	// write as delivery acceptance, so the response wait runs separately.
+	return a.sendPiCommandDetached(PiCommandPrompt, payload, func(err error) {
+		if err != nil {
 			slog.Error("pi prompt failed", "agent_id", a.agentID, "error", err)
 			a.sink.PersistLeapMuxNotification(map[string]any{
 				"type":  NotificationTypeAgentError,
 				"error": err.Error(),
 			})
 		}
-	}()
-
-	return nil
+	})
 }
 
 // Stop sends an abort to the running turn (when one is in flight), then tears

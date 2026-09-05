@@ -244,12 +244,12 @@ func TestRouter_CallInner_CrossWorker(t *testing.T) {
 	}
 	resp, err := r.CallInner(context.Background(),
 		controlipc.TokenInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A"},
-		"worker.SendAgentMessage", []byte("hi"),
+		"worker.EnqueueAgentInput", []byte("hi"),
 		"worker-B")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("from-B"), resp.GetPayload())
 	assert.Equal(t, "worker-B", cross.callTarget)
-	assert.Equal(t, "SendAgentMessage", cross.callMethod)
+	assert.Equal(t, "EnqueueAgentInput", cross.callMethod)
 	// The request's workspace_id must flow through the channel pool
 	// key so different workspaces don't share a delegation-scoped
 	// Noise session against the same (target, user) pair.

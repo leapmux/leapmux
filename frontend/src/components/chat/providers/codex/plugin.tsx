@@ -89,7 +89,6 @@ const CODEX_NOTIF_METHODS = new Set<string>([
   CODEX_RATE_LIMITS_METHOD,
   CODEX_METHOD.SKILLS_CHANGED,
   CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED,
-  'thread/compacted',
   'thread/tokenUsage/updated',
   'thread/name/updated',
   'mcpServer/startupStatus/updated',
@@ -132,13 +131,16 @@ function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] }
   return (wrapper as { messages: unknown[] }).messages.some((msg: unknown) => {
     if (!isObject(msg))
       return false
+    const directItem = (msg as Record<string, unknown>).item
+    if (isObject(directItem) && (directItem as Record<string, unknown>).type === 'contextCompaction')
+      return true
     const method = (msg as Record<string, unknown>).method
     if (typeof method !== 'string')
       return false
     if (CODEX_NOTIF_METHODS.has(method))
       return true
     // item/started for a contextCompaction item is the in-progress
-    // compacting indicator (paired with thread/compacted on completion).
+    // compacting indicator. The completed contextCompaction item closes it.
     if (method === 'item/started') {
       const params = (msg as Record<string, unknown>).params
       if (isObject(params)) {
@@ -359,7 +361,6 @@ const codexPlugin: Provider = {
   // heuristic — adding a method to either set propagates automatically.
   nonProgressMethods: new Set<string>([
     ...CODEX_HIDDEN_LIFECYCLE_METHODS,
-    'thread/compacted',
     'mcpServer/startupStatus/updated',
     'account/rateLimits/updated',
   ]),
@@ -432,6 +433,8 @@ const codexPlugin: Provider = {
     const item = pickObject(parent, 'item') ?? undefined
     const itemType = item ? pickString(item, 'type', undefined) : undefined
     if (item && itemType) {
+      if (itemType === 'contextCompaction')
+        return { kind: 'notification', messages: [parent] }
       const itemClassifier = CODEX_ITEM_CLASSIFIERS[itemType]
       if (itemClassifier)
         return itemClassifier(item, context)

@@ -17,13 +17,12 @@ vi.mock('~/api/workerRpc', () => ({
   getAgentMessage: (...args: unknown[]) => mockGetAgentMessage(...args),
 }))
 
-function makeMessage(id: string, seq: bigint, deliveryError = '') {
+function makeMessage(id: string, seq: bigint) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.USER,
     content: new TextEncoder().encode(`{"content":"test"}`),
     seq,
-    deliveryError,
   })
 }
 
@@ -98,33 +97,13 @@ function makeToolResultSpan(id: string, seq: bigint, spanId: string) {
   })
 }
 
-function makeUserMessage(id: string, seq: bigint, content: string, deliveryError = '', agentProvider?: AgentProvider) {
+function makeUserMessage(id: string, seq: bigint, content: string, agentProvider?: AgentProvider) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.USER,
     content: new TextEncoder().encode(JSON.stringify({ content })),
     contentCompression: ContentCompression.NONE,
     seq,
-    deliveryError,
-    agentProvider,
-  })
-}
-
-function makeUserMessageWithAttachments(
-  id: string,
-  seq: bigint,
-  content: string,
-  attachments: Array<{ filename: string, mime_type: string }>,
-  deliveryError = '',
-  agentProvider?: AgentProvider,
-) {
-  return create(AgentChatMessageSchema, {
-    id,
-    source: MessageSource.USER,
-    content: new TextEncoder().encode(JSON.stringify({ content, attachments })),
-    contentCompression: ContentCompression.NONE,
-    seq,
-    deliveryError,
     agentProvider,
   })
 }
@@ -276,52 +255,6 @@ describe('chatstore span content versions', () => {
   })
 })
 
-describe('chatstore get loaded message by seq', () => {
-  it('finds a loaded message by seq, skipping gaps, optimistic locals, and unknown agents', () => {
-    const store = createChatStore()
-    const agentId = 'agent-1'
-    store.setMessages(agentId, [
-      claudeToolUse('m1', 3n, 'span-1'),
-      claudeToolResult('m2', 5n, 'span-1', 'result'),
-    ])
-
-    expect(store.getLoadedMessageBySeq(agentId, 3n)?.id).toBe('m1')
-    expect(store.getLoadedMessageBySeq(agentId, 5n)?.id).toBe('m2')
-    // A seq that is not loaded (a gap between the two rows) resolves to undefined.
-    expect(store.getLoadedMessageBySeq(agentId, 4n)).toBeUndefined()
-    // Optimistic locals carry seq 0n; the guard must never return one for a "0" mark.
-    expect(store.getLoadedMessageBySeq(agentId, 0n)).toBeUndefined()
-    // An agent with no loaded window resolves to undefined rather than throwing.
-    expect(store.getLoadedMessageBySeq('other-agent', 5n)).toBeUndefined()
-  })
-
-  it('finds a server row even when optimistic locals trail the window', () => {
-    const store = createChatStore()
-    const agentId = 'agent-1'
-    const local = create(AgentChatMessageSchema, {
-      id: 'local-1',
-      source: MessageSource.USER,
-      content: jsonContent({ content: 'unsent' }),
-      contentCompression: ContentCompression.NONE,
-      seq: 0n,
-      agentProvider: AgentProvider.CLAUDE_CODE,
-    })
-    // Server rows [3n, 5n] ascending, then a trailing optimistic local (seq 0n). The
-    // binary search must bound itself to the server region (serverMessageEnd) and still
-    // resolve a server seq -- never wander into or trip over the trailing local.
-    store.setMessages(agentId, [
-      claudeToolUse('m1', 3n, 'span-1'),
-      claudeToolResult('m2', 5n, 'span-1', 'result'),
-      local,
-    ])
-
-    expect(store.getLoadedMessageBySeq(agentId, 3n)?.id).toBe('m1')
-    expect(store.getLoadedMessageBySeq(agentId, 5n)?.id).toBe('m2')
-    expect(store.getLoadedMessageBySeq(agentId, 4n)).toBeUndefined()
-    expect(store.getLoadedMessageBySeq(agentId, 0n)).toBeUndefined()
-  })
-})
-
 describe('chatstore loadmessagemarks', () => {
   beforeEach(() => {
     mockListMessageMarks.mockReset()
@@ -404,36 +337,6 @@ describe('chatstore loadmessagemarks', () => {
     const rail = store.getRailData('agent-1')
     expect(rail.marks.map(m => m.seq)).toEqual([9n])
     expect(rail.maxSeq).toBe(9n)
-  })
-
-  it('does not let an in-flight seed resurrect a mark deleted by a live event', async () => {
-    const store = createChatStore()
-    store.addMessage('agent-1', markedMessage('m2', 2n))
-    expect(store.getRailData('agent-1').marks.map(m => m.seq)).toEqual([2n])
-
-    const stale = deferred<ListMessageMarksResponse>()
-    mockListMessageMarks
-      .mockReturnValueOnce(stale.promise)
-      .mockResolvedValueOnce({
-        $typeName: 'leapmux.v1.ListMessageMarksResponse',
-        marks: [],
-        minSeq: 0n,
-        maxSeq: 0n,
-      })
-    const load = store.loadMessageMarks('worker-1', 'agent-1')
-
-    store.removeMessage('agent-1', 'm2', 2n, 0n)
-    stale.resolve({
-      $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(2n, MarkType.USER_MESSAGE)],
-      minSeq: 1n,
-      maxSeq: 2n,
-    })
-    await load
-
-    expect(mockListMessageMarks).toHaveBeenCalledTimes(2)
-    expect(store.getRailData('agent-1').marks.map(m => m.seq)).toEqual([])
-    expect(store.getRailData('agent-1').loaded).toBe(true)
   })
 
   it('retries a stale seed so a live mark during startup still reveals the rail', async () => {
@@ -855,16 +758,6 @@ describe('createChatStore', () => {
     mockGetAgentMessage.mockReset()
   })
 
-  it('should initialize with empty state', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      expect(store.state.messagesByAgent).toEqual({})
-      expect(store.messageErrors()).toEqual({})
-      expect(store.state.loading).toBe(false)
-      dispose()
-    })
-  })
-
   it('should return empty array for unknown agent', () => {
     createRoot((dispose) => {
       const store = createChatStore()
@@ -893,26 +786,6 @@ describe('createChatStore', () => {
     })
   })
 
-  it('should set and clear message errors', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.setMessageError('msg1', 'offline')
-      expect(store.messageErrors().msg1).toBe('offline')
-      store.clearMessageError('msg1')
-      expect(store.messageErrors().msg1).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('should seed messageErrors from deliveryError in addMessage', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeMessage('msg1', 1n, 'worker offline'))
-      expect(store.messageErrors().msg1).toBe('worker offline')
-      dispose()
-    })
-  })
-
   it('should reinsert a thread-merge update when the same ID gets a newer seq', () => {
     createRoot((dispose) => {
       const store = createChatStore()
@@ -933,54 +806,6 @@ describe('createChatStore', () => {
     })
   })
 
-  it('should keep a merged server message ahead of trailing optimistic locals', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeMessage('notif', 1n))
-      store.addMessage('agent1', makeUserMessage('local-1', 0n, '/clear'))
-
-      const merged = makeMessage('notif', 5n)
-      store.addMessage('agent1', merged)
-
-      const msgs = store.getMessages('agent1')
-      expect(msgs).toHaveLength(2)
-      expect(msgs[0].id).toBe('notif')
-      expect(msgs[0].seq).toBe(5n)
-      expect(msgs[1].id).toBe('local-1')
-      expect(msgs[1].seq).toBe(0n)
-      dispose()
-    })
-  })
-
-  it('should not set error for message without deliveryError', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeMessage('msg2', 1n, ''))
-      expect(store.messageErrors().msg2).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('does not orphan a delivery-error annotation for a seq-dedup-discarded fresh message', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // A server message occupies seq 5.
-      store.addMessage('agent1', makeMessage('msg1', 5n))
-      // A DIFFERENT-id failed send arrives reusing seq 5 (a delete freed the seq
-      // and CreateMessage reassigned MAX(seq)+1 before this client saw the delete).
-      // applyFreshMessage DISCARDS it (seq already present under msg1), so it never
-      // joins the window -- its delivery error must not leak into the un-capped
-      // errors map under an id no row carries.
-      store.addMessage('agent1', makeMessage('dup', 5n, 'send failed'))
-
-      const msgs = store.getMessages('agent1')
-      expect(msgs).toHaveLength(1)
-      expect(msgs[0].id).toBe('msg1')
-      expect(store.messageErrors().dup).toBeUndefined()
-      dispose()
-    })
-  })
-
   it('does not bump the message version on a pure seq-dedup discard', () => {
     createRoot((dispose) => {
       const store = createChatStore()
@@ -992,68 +817,6 @@ describe('createChatStore', () => {
       store.addMessage('agent1', makeMessage('dup', 5n))
       expect(store.getMessages('agent1')).toHaveLength(1)
       expect(store.getMessageVersion('agent1')).toBe(versionBefore)
-      dispose()
-    })
-  })
-
-  it('bumps the message version when a discarded seq still reconciles an optimistic local', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // A server row holds seq 5, and an optimistic local "hello" is pending.
-      store.addMessage('agent1', makeMessage('msg1', 5n))
-      store.addMessage('agent1', makeUserMessage('local-1', 0n, 'hello'))
-      const versionBefore = store.getMessageVersion('agent1')
-      // The echo reuses seq 5 (discarded against msg1) BUT reconciles the local away,
-      // so the window DID change (the local is dropped) and the version must bump.
-      store.addMessage('agent1', makeUserMessage('server-1', 5n, 'hello'))
-      const msgs = store.getMessages('agent1')
-      expect(msgs.map(m => m.id)).toEqual(['msg1'])
-      expect(store.getMessageVersion('agent1')).toBeGreaterThan(versionBefore)
-      dispose()
-    })
-  })
-
-  it('reconciles a LIVE failed local to its echo and reclaims the orphaned error annotation', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // A live failure: the local is pending (proto deliveryError empty) but persistFailed
-      // set its error ANNOTATION by hand. The local was already reconcilable; the bug was
-      // the leaked annotation.
-      store.addMessage('agent1', makeUserMessage('local-1', 0n, 'hello'))
-      store.setMessageError('local-1', 'Failed to deliver')
-      expect(store.messageErrors()['local-1']).toBe('Failed to deliver')
-      // The server echoes it -> it WAS delivered: the bubble reconciles to the echo and
-      // its orphaned annotation must be reclaimed from the un-capped errors map.
-      store.addMessage('agent1', makeUserMessage('server-1', 5n, 'hello'))
-      expect(store.getMessages('agent1').map(m => m.id)).toEqual(['server-1'])
-      expect(store.messageErrors()['local-1']).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('reconciles a HYDRATED failed local (proto deliveryError set) to its echo, not a dual bubble', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // A hydrated failure (post-refresh): the local carries the proto deliveryError field,
-      // and addMessage seeds its annotation from it. Previously this was NOT reconcilable,
-      // producing a confusing failed-AND-delivered pair.
-      store.addMessage('agent1', makeUserMessage('local-1', 0n, 'hello', 'Failed to deliver'))
-      expect(store.messageErrors()['local-1']).toBe('Failed to deliver')
-      store.addMessage('agent1', makeUserMessage('server-1', 5n, 'hello'))
-      expect(store.getMessages('agent1').map(m => m.id)).toEqual(['server-1'])
-      expect(store.messageErrors()['local-1']).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('keeps a genuinely-failed local (no matching echo ever arrives)', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeUserMessage('local-1', 0n, 'hello', 'Failed to deliver'))
-      // A DIFFERENT message echoes; nothing matches "hello", so the failed bubble survives.
-      store.addMessage('agent1', makeUserMessage('server-other', 5n, 'different'))
-      expect(store.getMessages('agent1').map(m => m.id)).toContain('local-1')
-      expect(store.messageErrors()['local-1']).toBe('Failed to deliver')
       dispose()
     })
   })
@@ -1084,170 +847,8 @@ describe('createChatStore', () => {
       })
       store.addMessage('agent1', bodyChanged)
       expect(store.getMessages('agent1')).toHaveLength(1)
-      const versionAfterBodyChange = store.getMessageVersion('agent1')
-      expect(versionAfterBodyChange).toBeGreaterThan(versionAfterFirst)
+      expect(store.getMessageVersion('agent1')).toBeGreaterThan(versionAfterFirst)
 
-      // A same-seq update that changes a NON-content field (a delivery error appears)
-      // also bumps.
-      store.addMessage('agent1', makeMessage('notif', 5n, 'send failed'))
-      expect(store.getMessages('agent1')).toHaveLength(1)
-      expect(store.getMessageVersion('agent1')).toBeGreaterThan(versionAfterBodyChange)
-      dispose()
-    })
-  })
-
-  it('should seed messageErrors from deliveryError in setMessages', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.setMessages('agent1', [
-        makeMessage('msg1', 1n, 'error1'),
-        makeMessage('msg2', 2n, ''),
-      ])
-      expect(store.messageErrors().msg1).toBe('error1')
-      expect(store.messageErrors().msg2).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('should remove message and clear error on removeMessage', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeMessage('msg1', 1n, 'error'))
-      expect(store.getMessages('agent1')).toHaveLength(1)
-      expect(store.messageErrors().msg1).toBe('error')
-
-      store.removeMessage('agent1', 'msg1')
-      expect(store.getMessages('agent1')).toHaveLength(0)
-      expect(store.messageErrors().msg1).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('should replace a matching optimistic local user message with the persisted server message', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeUserMessage('local-1', 0n, 'hello', '', AgentProvider.CODEX))
-      store.addMessage('agent1', makeUserMessage('server-1', 5n, 'hello', '', AgentProvider.CODEX))
-
-      const msgs = store.getMessages('agent1')
-      expect(msgs).toHaveLength(1)
-      expect(msgs[0].id).toBe('server-1')
-      expect(msgs[0].seq).toBe(5n)
-      expect(msgs[0].agentProvider).toBe(AgentProvider.CODEX)
-      dispose()
-    })
-  })
-
-  it('should replace a matching optimistic attachment-only local message with the persisted server message', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      const attachments = [{ filename: 'screenshot.png', mime_type: 'image/png' }]
-      store.addMessage('agent1', makeUserMessageWithAttachments('local-1', 0n, '', attachments, '', AgentProvider.CODEX))
-      store.addMessage('agent1', makeUserMessageWithAttachments('server-1', 5n, '', attachments, '', AgentProvider.CODEX))
-
-      const msgs = store.getMessages('agent1')
-      expect(msgs).toHaveLength(1)
-      expect(msgs[0].id).toBe('server-1')
-      expect(msgs[0].seq).toBe(5n)
-      dispose()
-    })
-  })
-
-  it('keeps two identical-text optimistic sends as distinct bubbles (only a server echo reconciles)', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // The same short confirmation sent twice before either echo arrives: each
-      // optimistic local (seq 0n) is a NEW send and must render, not collapse the
-      // second onto the first.
-      store.addMessage('agent1', makeUserMessage('local-a', 0n, 'y'))
-      store.addMessage('agent1', makeUserMessage('local-b', 0n, 'y'))
-      expect(store.getMessages('agent1').filter(m => m.seq === 0n).map(m => m.id)).toEqual(['local-a', 'local-b'])
-      // The first server echo reconciles exactly ONE of them; the other stays
-      // pending until its own echo.
-      store.addMessage('agent1', makeUserMessage('server-a', 5n, 'y'))
-      const remaining = store.getMessages('agent1')
-      expect(remaining.some(m => m.id === 'server-a')).toBe(true)
-      expect(remaining.filter(m => m.seq === 0n).map(m => m.id)).toEqual(['local-b'])
-      dispose()
-    })
-  })
-
-  it('keeps a still-pending local trailing when a later send echoes first (out-of-order reconcile)', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.addMessage('agent1', makeUserMessage('m1', 5n, 'history'))
-      // Two DISTINCT sends queued before either echo arrives.
-      store.addMessage('agent1', makeUserMessage('local-a', 0n, 'alpha'))
-      store.addMessage('agent1', makeUserMessage('local-b', 0n, 'beta'))
-      expect(store.getMessages('agent1').map(m => m.id)).toEqual(['m1', 'local-a', 'local-b'])
-      // The SECOND send's server echo (higher seq) arrives FIRST. It must reconcile
-      // local-b and reinsert in seq order, leaving the still-pending local-a pinned
-      // to the tail -- not stranded mid-window between two server messages (which
-      // would break the "optimistic locals always trail" invariant that
-      // serverMessageEnd / insertServerBySeq / trimOldestEnd all rely on).
-      store.addMessage('agent1', makeUserMessage('server-b', 7n, 'beta'))
-      const msgs = store.getMessages('agent1')
-      expect(msgs.map(m => m.id)).toEqual(['m1', 'server-b', 'local-a'])
-      // Invariant: every optimistic local (seq 0n) sits in the trailing suffix.
-      const firstLocal = msgs.findIndex(m => m.seq === 0n)
-      expect(msgs.slice(firstLocal).every(m => m.seq === 0n)).toBe(true)
-      dispose()
-    })
-  })
-
-  it('full-window replace does not drop a still-pending duplicate against an already-present echo', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // Two identical sends; the first reconciles LIVE, leaving server-a as a
-      // server row in the window and local-b still pending.
-      store.addMessage('agent1', makeUserMessage('local-a', 0n, 'y'))
-      store.addMessage('agent1', makeUserMessage('local-b', 0n, 'y'))
-      store.addMessage('agent1', makeUserMessage('server-a', 5n, 'y'))
-      expect(store.getMessages('agent1').filter(m => m.seq === 0n).map(m => m.id)).toEqual(['local-b'])
-      // A full-window replace (jump-to-latest / reconnect snapshot) whose page
-      // re-lists the already-reconciled server-a but NOT local-b's own echo yet.
-      // server-a is already a server row, so it must not consume local-b -- the
-      // pending second send must survive (without the already-present discount it
-      // would vanish until its real echo lands).
-      store.setMessages('agent1', [makeUserMessage('server-a', 5n, 'y')])
-      const msgs = store.getMessages('agent1')
-      expect(msgs.some(m => m.id === 'server-a')).toBe(true)
-      expect(msgs.filter(m => m.seq === 0n).map(m => m.id)).toEqual(['local-b'])
-      dispose()
-    })
-  })
-
-  it('forgetAgent reclaims all per-agent state and leaves other agents intact', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      // Build up state for a1 across every per-agent slice.
-      store.setMessages('a1', [makeMessage('m1', 1n, 'boom')], true) // window + hasMoreOlder + initialLoadComplete + an error annotation
-      store.appendCommandStream('a1', 's1', 'output', 'streaming')
-      store.streamingText.set('a1', 'partial')
-      store.todos.replace('a1', [create(TodoItemSchema, { content: 'Do', status: TodoStatus.IN_PROGRESS, activeForm: 'Doing' })])
-      store.viewportScroll.set('a1', { anchor: { id: 'm1', offsetWithinRow: 12 }, atBottom: false, hasMoreNewer: true })
-      store.liveTail.bump('a1', 9n)
-      // A second agent, to prove isolation.
-      store.setMessages('a2', [makeMessage('n1', 1n)], true)
-      store.liveTail.bump('a2', 3n)
-
-      store.forgetAgent('a1')
-
-      // Every per-agent slice for a1 is reclaimed.
-      expect(store.getMessages('a1')).toEqual([])
-      expect(store.state.hasMoreOlder.a1).toBeUndefined()
-      expect(store.state.hasMoreNewer.a1).toBeUndefined()
-      expect(store.isInitialLoadComplete('a1')).toBe(false)
-      expect(store.messageErrors().m1).toBeUndefined()
-      expect(store.getCommandStream('a1', 's1')).toEqual([])
-      expect(store.streamingText.get('a1')).toBe('')
-      expect(store.todos.get('a1')).toEqual([])
-      expect(store.viewportScroll.get('a1')).toBeUndefined()
-      expect(store.liveTail.get('a1')).toBe(0n)
-      // a2 is untouched.
-      expect(store.getMessages('a2')).toHaveLength(1)
-      expect(store.isInitialLoadComplete('a2')).toBe(true)
-      expect(store.liveTail.get('a2')).toBe(3n)
       dispose()
     })
   })
@@ -1264,19 +865,6 @@ describe('createChatStore', () => {
       expect(store.liveTail.get('a1')).toBe(2n)
       // window tail (2) now matches the recorded tail, so the affordance clears.
       expect(store.caughtUpToLiveTail('a1')).toBe(true)
-      dispose()
-    })
-  })
-
-  it('reconcileAuthoritativeTail preserves optimistic locals and empties a fully-deleted server window', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.setMessages('a1', [makeMessage('m1', 1n)], false)
-      store.addMessage('a1', makeUserMessage('local-1', 0n, 'pending'))
-      // The entire server history was deleted while away: authoritative tail 0.
-      store.reconcileAuthoritativeTail('a1', 0n)
-      // The server row m1 is dropped; the still-pending optimistic local survives.
-      expect(store.getMessages('a1').map(m => m.id)).toEqual(['local-1'])
       dispose()
     })
   })
@@ -1473,88 +1061,6 @@ describe('createChatStore', () => {
       store.addMessage('a1', makeMessage('m3', 3n))
       expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1', 'm2', 'm3'])
       expect(store.caughtUpToLiveTail('a1')).toBe(true)
-      dispose()
-    })
-  })
-
-  it('resendPendingOutbound drains the queue and sends each via the injected sender', async () => {
-    await createRoot(async (dispose) => {
-      const store = createChatStore()
-      store.pendingOutbound.enqueue('a1', { localId: 'l1', content: 'hi', attachments: [] })
-      store.pendingOutbound.enqueue('a1', { localId: 'l2', content: 'yo', attachments: [] })
-      store.setMessagePendingLabel('l1', 'Queued')
-
-      const sent: string[] = []
-      store.resendPendingOutbound('a1', async (m) => {
-        sent.push(m.content)
-      })
-      await new Promise(resolve => setTimeout(resolve)) // let the fire-and-forget loop finish
-
-      expect(sent).toEqual(['hi', 'yo'])
-      expect(store.messagePendingLabels().l1).toBeUndefined() // pending label cleared
-      expect(store.pendingOutbound.take('a1')).toEqual([]) // queue drained
-      dispose()
-    })
-  })
-
-  it('resendPendingOutbound stamps a delivery error on a send failure', async () => {
-    await createRoot(async (dispose) => {
-      const store = createChatStore()
-      store.pendingOutbound.enqueue('a1', { localId: 'l1', content: 'boom', attachments: [] })
-      store.resendPendingOutbound('a1', async () => {
-        throw new Error('network down')
-      })
-      await new Promise(resolve => setTimeout(resolve))
-      expect(store.messageErrors().l1).toBe('Failed to deliver')
-      dispose()
-    })
-  })
-
-  it('failPendingOutbound stamps the given error on every queued message and drains it', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.pendingOutbound.enqueue('a1', { localId: 'l1', content: 'a', attachments: [] })
-      store.pendingOutbound.enqueue('a1', { localId: 'l2', content: 'b', attachments: [] })
-      store.setMessagePendingLabel('l1', 'Queued')
-      store.failPendingOutbound('a1', 'Agent failed to start')
-      expect(store.messageErrors().l1).toBe('Agent failed to start')
-      expect(store.messageErrors().l2).toBe('Agent failed to start')
-      expect(store.messagePendingLabels().l1).toBeUndefined()
-      expect(store.pendingOutbound.take('a1')).toEqual([])
-      dispose()
-    })
-  })
-
-  it('should preserve attachments when persisting and reloading a failed local message', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.persistLocalMessage('agent1', 'local-1', '', 'Failed to deliver', [
-        { filename: 'failed.png', mime_type: 'image/png' },
-      ])
-
-      store.loadLocalMessages('agent1')
-
-      const msgs = store.getMessages('agent1')
-      expect(msgs).toHaveLength(1)
-      expect(new TextDecoder().decode(msgs[0].content)).toContain('"filename":"failed.png"')
-      dispose()
-    })
-  })
-
-  it('loadLocalMessages skips a local already in the window (no duplicate, no version churn)', () => {
-    createRoot((dispose) => {
-      const store = createChatStore()
-      store.persistLocalMessage('agent1', 'local-1', 'hi', 'Failed to deliver')
-      store.loadLocalMessages('agent1')
-      expect(store.getMessages('agent1').filter(m => m.id === 'local-1')).toHaveLength(1)
-      const versionAfterLoad = store.getMessageVersion('agent1')
-
-      // A second load (a later cold-start path) must SKIP the already-present
-      // local rather than re-add it via the in-place-update branch -- no duplicate
-      // and no redundant message-version bump.
-      store.loadLocalMessages('agent1')
-      expect(store.getMessages('agent1').filter(m => m.id === 'local-1')).toHaveLength(1)
-      expect(store.getMessageVersion('agent1')).toBe(versionAfterLoad)
       dispose()
     })
   })
@@ -1901,47 +1407,6 @@ describe('createChatStore', () => {
           expect(msgs[0].seq).toBe(4n)
           expect(msgs[1].seq).toBe(5n)
           expect(msgs[2].seq).toBe(6n)
-          dispose()
-        })
-      })
-
-      it('surfaces the delivery error of a failed send carried by a merged older page', async () => {
-        await createRoot(async (dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m5', 5n), makeMessage('m6', 6n)], true)
-          // The older page re-loads a historical FAILED send (persisted
-          // delivery_error). The merge must set its error annotation -- mirroring
-          // the initial-load / addMessage paths -- so the bubble shows the error
-          // instead of rendering as a plain message after a scroll-up re-fetch.
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('m4', 4n, 'send failed')], hasMore: false })
-
-          await store.loadOlderMessages('w1', 'a1')
-          expect(store.getMessages('a1').map(m => m.id)).toEqual(['m4', 'm5', 'm6'])
-          expect(store.messageErrors().m4).toBe('send failed')
-          dispose()
-        })
-      })
-
-      it('reconciles via OLDEST when the window holds only locals but hasMoreOlder is set', async () => {
-        await createRoot(async (dispose) => {
-          mockListAgentMessages.mockClear()
-          const store = createChatStore()
-          store.setMessages('a1', [], true) // empty window, hasMoreOlder=true
-          // Only an undelivered optimistic local remains (distinct content so its
-          // signature doesn't match the fetched server echoes).
-          store.addMessage('a1', makeUserMessage('local-1', 0n, 'unsent draft'))
-          expect(store.getFirstSeq('a1')).toBe(0n)
-          expect(store.hasOlderMessages('a1')).toBe(true)
-
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('s1', 1n), makeMessage('s2', 2n)], hasMore: false })
-          await store.loadOlderMessages('w1', 'a1')
-
-          // No server cursor to page BEFORE, so it reconciles by loading the
-          // earliest real page (anchor OLDEST) instead of a permanent no-op.
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: 50 })
-          const msgs = store.getMessages('a1')
-          expect(msgs.map(m => m.id)).toEqual(['s1', 's2', 'local-1']) // earliest page + preserved local
-          expect(store.hasOlderMessages('a1')).toBe(false) // now at the start of history
           dispose()
         })
       })
@@ -2303,21 +1768,6 @@ describe('createChatStore', () => {
           dispose()
         })
       })
-
-      it('counts SERVER rows only -- trailing optimistic locals do not push it over', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // One server row short of the threshold plus a trailing optimistic local (seq
-          // 0n): the local must NOT count (the trims cap server rows). If atWindowCeiling
-          // used the array length it would wrongly read the threshold.
-          store.setMessages('a1', [
-            ...Array.from({ length: threshold - 1 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))),
-            makeMessage('local', 0n),
-          ])
-          expect(store.atWindowCeiling('a1')).toBe(false) // only threshold-1 SERVER rows
-          dispose()
-        })
-      })
     })
 
     describe('trimNewestEnd / trimOldestEnd', () => {
@@ -2346,83 +1796,6 @@ describe('createChatStore', () => {
           expect(msgs.at(-1)!.seq).toBe(200n)
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.hasNewerMessages('a1')).toBe(false)
-          dispose()
-        })
-      })
-
-      it('preserves a trailing optimistic local (seq 0n) when trimming the newest end', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          const server = Array.from({ length: 200 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))
-          // An undelivered optimistic local sits at the tail (seq 0n).
-          store.setMessages('a1', [...server, makeMessage('local-1', 0n)])
-          store.trimNewestEnd('a1', 150)
-          const msgs = store.getMessages('a1')
-          // 150 oldest server messages plus the rescued local — the local is
-          // never on the server and can't be re-fetched, so it must survive.
-          expect(msgs).toHaveLength(151)
-          expect(msgs[0].seq).toBe(1n)
-          expect(msgs.at(-1)!.id).toBe('local-1')
-          expect(store.hasNewerMessages('a1')).toBe(true)
-          dispose()
-        })
-      })
-
-      it('does NOT flag hasMoreNewer when only trailing locals push over the cap', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // Exactly the cap of SERVER messages (seq 1..150): the window already
-          // IS the live tail. An undelivered optimistic local pushes the length
-          // to 151, over the cap -- but no server message gets trimmed.
-          const server = Array.from({ length: 150 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))
-          store.setMessages('a1', [...server, makeMessage('local-1', 0n)])
-          store.trimNewestEnd('a1', 150)
-          const msgs = store.getMessages('a1')
-          // The window is unchanged (all 150 server + the local kept) ...
-          expect(msgs).toHaveLength(151)
-          expect(msgs[0].seq).toBe(1n)
-          expect(msgs.at(-1)!.id).toBe('local-1')
-          // ... so it is still at the tail: hasMoreNewer must stay false, else
-          // live messages would be wrongly dropped and the tail UI hidden.
-          expect(store.hasNewerMessages('a1')).toBe(false)
-          dispose()
-        })
-      })
-
-      it('does NOT trim server messages (or flag hasMoreOlder) on the newer end when only trailing locals push over the cap', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // Exactly the cap of SERVER messages plus an undelivered local at the
-          // tail: length 151 > 150, but the server portion already fits.
-          const server = Array.from({ length: 150 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))
-          store.setMessages('a1', [...server, makeMessage('local-1', 0n)])
-          store.trimOldestEnd('a1', 150)
-          const msgs = store.getMessages('a1')
-          // No server message is dropped (a plain slice(-150) would have dropped
-          // seq 1 to make room for the local), and hasMoreOlder stays false.
-          expect(msgs).toHaveLength(151)
-          expect(msgs[0].seq).toBe(1n)
-          expect(msgs.at(-1)!.id).toBe('local-1')
-          expect(store.hasOlderMessages('a1')).toBe(false)
-          dispose()
-        })
-      })
-
-      it('keeps the newest maxCount SERVER messages alongside trailing locals when over the cap', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // 200 server messages plus a trailing local. A plain slice(-150) would
-          // keep only 149 server + the local; the window must hold the full 150
-          // server budget plus the local instead.
-          const server = Array.from({ length: 200 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1)))
-          store.setMessages('a1', [...server, makeMessage('local-1', 0n)])
-          store.trimOldestEnd('a1', 150)
-          const msgs = store.getMessages('a1')
-          expect(msgs).toHaveLength(151)
-          expect(msgs[0].seq).toBe(51n) // newest 150 server messages
-          expect(msgs[149].seq).toBe(200n)
-          expect(msgs.at(-1)!.id).toBe('local-1')
-          expect(store.hasOlderMessages('a1')).toBe(true)
           dispose()
         })
       })
@@ -2490,23 +1863,6 @@ describe('createChatStore', () => {
         })
       })
 
-      it('drops span entries when a tool message is removed (messageDeleted)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeToolUseSpan('op', 50n, 's1'), makeToolResultSpan('res', 51n, 's1')])
-          expect(store.getToolUseParsedBySpanId('a1', 's1')?.parentObject?.type).toBe('assistant')
-          // A messageDeleted broadcast removes the opener. Like trim/prepend/merge,
-          // removal must reindex so the span index can't keep resolving the
-          // now-deleted tool_use (a window-scoped leak otherwise).
-          store.removeMessage('a1', 'op')
-          expect(store.getMessages('a1').some(m => m.id === 'op')).toBe(false)
-          expect(store.getToolUseParsedBySpanId('a1', 's1')).toBeUndefined()
-          // The surviving result stays indexed.
-          expect(store.getToolResultParsedBySpanId('a1', 's1')?.parentObject?.type).toBe('user')
-          dispose()
-        })
-      })
-
       it('does not index a span for a message discarded by the seq dedup', () => {
         createRoot((dispose) => {
           const store = createChatStore()
@@ -2567,22 +1923,6 @@ describe('createChatStore', () => {
           dispose()
         })
       })
-
-      it('pages before the first SERVER seq, skipping a leading optimistic local', async () => {
-        await createRoot(async (dispose) => {
-          mockListAgentMessages.mockClear()
-          const store = createChatStore()
-          // Degenerate ordering: an optimistic local (seq 0n) leads the window.
-          // getFirstSeq must skip it so the BEFORE cursor is the first SERVER seq
-          // (5), not 0n -- which the backend resolves as an empty `seq < 0` page
-          // that would permanently clear hasMoreOlder.
-          store.setMessages('a1', [makeMessage('local-1', 0n), makeMessage('m5', 5n), makeMessage('m6', 6n)], true)
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('o1', 1n)], hasMore: false })
-          await store.loadOlderMessages('w1', 'a1')
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.BEFORE, cursorSeq: 5n, limit: 50 })
-          dispose()
-        })
-      })
     })
 
     describe('loadNewerPage (single page, scroll-down)', () => {
@@ -2633,7 +1973,7 @@ describe('createChatStore', () => {
           expect(msgs).toHaveLength(31)
           // The reseq'd row is reinserted BY SEQ (35, after the seq-30 tail), not
           // merely appended -- the whole server window stays seq-ascending.
-          const serverSeqs = msgs.map(m => m.seq).filter(s => s !== 0n)
+          const serverSeqs = msgs.map(m => m.seq)
           expect(serverSeqs).toEqual([...serverSeqs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))
           expect(serverSeqs.at(-1)).toBe(35n)
           dispose()
@@ -2671,7 +2011,7 @@ describe('createChatStore', () => {
           expect(msgs).toHaveLength(30)
           // The window stays strictly seq-ascending (no duplicate seq), so the binary
           // searches over the offset map remain valid.
-          const serverSeqs = msgs.map(m => m.seq).filter(s => s !== 0n)
+          const serverSeqs = msgs.map(m => m.seq)
           expect(serverSeqs).toEqual([...serverSeqs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))
           dispose()
         })
@@ -2717,30 +2057,6 @@ describe('createChatStore', () => {
         })
       })
 
-      it('re-anchors via jumpToLatest when the server range emptied but hasMoreNewer is set', async () => {
-        await createRoot(async (dispose) => {
-          mockListAgentMessages.mockClear()
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)])
-          store.trimNewestEnd('a1', 1) // window [m1], hasMoreNewer=true
-          // A messageDeleted broadcast removes the last server message, leaving the
-          // window with no server cursor (getLastSeq 0n) while hasMoreNewer stays set.
-          store.removeMessage('a1', 'm1')
-          expect(store.getLastSeq('a1')).toBe(0n)
-          expect(store.hasNewerMessages('a1')).toBe(true)
-
-          // Mirror loadOlderMessages' OLDEST fallback: with no AFTER cursor, page
-          // down must re-anchor on a fresh LATEST page instead of wedging forever.
-          mockListAgentMessages.mockResolvedValue({ messages: [makeMessage('m1', 1n), makeMessage('m2', 2n)], hasMore: false })
-          await store.loadNewerPage('w1', 'a1')
-
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: 50 })
-          expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1', 'm2'])
-          expect(store.hasNewerMessages('a1')).toBe(false) // back at the live tail
-          dispose()
-        })
-      })
-
       it('trims the oldest end when the appended page overflows the ceiling', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
@@ -2758,80 +2074,6 @@ describe('createChatStore', () => {
           expect(msgs[0].seq).toBe(51n) // oldest end trimmed by 50
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.hasNewerMessages('a1')).toBe(true) // still more newer
-          dispose()
-        })
-      })
-
-      it('inserts the appended page before a trailing optimistic local (seq 0n)', async () => {
-        await createRoot(async (dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true
-          // A failed/undelivered optimistic local sits at the tail.
-          store.addMessage('a1', makeMessage('local-1', 0n))
-          expect(store.getMessages('a1').at(-1)!.id).toBe('local-1')
-
-          const newer = Array.from({ length: 10 }, (_, i) => makeMessage(`n${i}`, BigInt(i + 31)))
-          mockListAgentMessages.mockResolvedValueOnce({ messages: newer, hasMore: false })
-
-          await store.loadNewerPage('w1', 'a1')
-          const msgs = store.getMessages('a1')
-          // Server messages slot in before the local, which stays pinned to the
-          // tail rather than being stranded mid-list.
-          expect(msgs.at(-1)!.id).toBe('local-1')
-          expect(msgs.at(-2)!.seq).toBe(40n)
-          expect(msgs.filter(m => m.seq === 0n)).toHaveLength(1)
-          dispose()
-        })
-      })
-
-      it('reconciles a pending optimistic local when the page carries its server echo', async () => {
-        await createRoot(async (dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true
-          // A successfully-sent message whose live broadcast the live-append guard
-          // dropped (beyondTail while scrolled away) is still pending as a local.
-          store.addMessage('a1', makeUserMessage('local-hello', 0n, 'hello'))
-          expect(store.getMessages('a1').at(-1)!.id).toBe('local-hello')
-
-          // The scroll-down page carries the server echo of that local (same
-          // user-message signature, a real seq).
-          const echo = makeUserMessage('server-hello', 35n, 'hello')
-          const newer = [makeMessage('n31', 31n), echo, makeMessage('n36', 36n)]
-          mockListAgentMessages.mockResolvedValueOnce({ messages: newer, hasMore: false })
-
-          await store.loadNewerPage('w1', 'a1')
-          const msgs = store.getMessages('a1')
-          // The local is reconciled away (no duplicate bubble); only the server
-          // copy survives, and no optimistic local lingers at the tail.
-          expect(msgs.filter(m => m.id === 'local-hello')).toHaveLength(0)
-          expect(msgs.some(m => m.id === 'server-hello')).toBe(true)
-          expect(msgs.filter(m => m.seq === 0n)).toHaveLength(0)
-          expect(msgs).toHaveLength(33) // 30 + three appended, minus the reconciled local
-          dispose()
-        })
-      })
-
-      it('reconciles a failed local to a coinciding server echo on scroll-down (delivery is truth)', async () => {
-        await createRoot(async (dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true
-          // A send marked failed -- but the server echoes the same text, proving it WAS
-          // delivered. Under "delivery is truth" the failed bubble reconciles to the echo
-          // and its error annotation is reclaimed (no failed-AND-delivered pair).
-          store.addMessage('a1', makeUserMessage('local-failed', 0n, 'hello', 'Failed to deliver'))
-          expect(store.messageErrors()['local-failed']).toBe('Failed to deliver')
-
-          const echo = makeUserMessage('server-hello', 35n, 'hello')
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [echo], hasMore: false })
-
-          await store.loadNewerPage('w1', 'a1')
-          const msgs = store.getMessages('a1')
-          expect(msgs.some(m => m.id === 'local-failed')).toBe(false) // reconciled away
-          expect(msgs.some(m => m.id === 'server-hello')).toBe(true)
-          expect(store.messageErrors()['local-failed']).toBeUndefined() // annotation reclaimed
           dispose()
         })
       })
@@ -2914,31 +2156,6 @@ describe('createChatStore', () => {
           dispose()
         })
       })
-
-      it('does NOT clamp the recorded tail when a concurrent delete SHRINKS the window mid-fetch', async () => {
-        await createRoot(async (dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true, latestLiveSeq=50
-          expect(store.liveTail.get('a1')).toBe(50n)
-          // The forward page reaches the server tail with nothing new. Normally that is a
-          // dedup-stall that clamps latestLiveSeq to the window. But WHILE the fetch is in
-          // flight a messageDeleted removes the window's TAIL row (seq 30, id m29) -- NOT
-          // the recorded tail. That lowers getLastSeq BELOW the pre-fetch cursor: a window
-          // SHRINK, not a dedup-stall. The still-reachable recorded tail (31..50) must be
-          // preserved, not erased -- the delete is reconciled by onDelete + a later fill.
-          mockListAgentMessages.mockImplementationOnce(async () => {
-            store.removeMessage('a1', 'm29') // seq 30
-            return { messages: [], hasMore: false }
-          })
-
-          await store.loadNewerPage('w1', 'a1')
-          expect(store.getLastSeq('a1')).toBe(29n) // window shrank to seq 1..29
-          expect(store.liveTail.get('a1')).toBe(50n) // recorded tail preserved (NOT clamped to 29)
-          expect(store.hasNewerMessages('a1')).toBe(true) // more still below
-          dispose()
-        })
-      })
     })
 
     describe('addMessage live-append guard', () => {
@@ -2980,31 +2197,11 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           store.setMessages('a1', [makeMessage('m1', 1n)]) // live phase (catchingUp false), lastSeq=1
-          // A frame at seq 3 (e.g. seq 2 was a failed message since deleted): in the LIVE
+          // A frame at seq 3 (for example, a failed input reserved seq 2): in the LIVE
           // phase the recorded-live-tail comparison keeps it (recordedLiveTail <= lastSeq),
           // so it SPLICES rather than drop+refetch -- the opposite of the catch-up phase.
           store.addMessage('a1', makeMessage('m3', 3n))
           expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1', 'm3'])
-          dispose()
-        })
-      })
-
-      it('seeds (does NOT drop) a live message into an empty server window even with hasMoreNewer', async () => {
-        await createRoot(async (dispose) => {
-          const store = createChatStore()
-          // Reach an empty server window that still flags hasMoreNewer (the
-          // symmetric counterpart of the beforeHead/firstSeq guard). A jump-to-
-          // oldest whose page came back empty but with more beyond it lands here.
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [], hasMore: true })
-          await store.jumpToOldestMessages('w1', 'a1')
-          expect(store.getMessages('a1')).toHaveLength(0)
-          expect(store.hasNewerMessages('a1')).toBe(true)
-          expect(store.getLastSeq('a1')).toBe(0n)
-
-          // With lastSeq 0n there is no loaded range to tear a gap against, so the
-          // message must seed the window rather than be swallowed by `seq > 0n`.
-          store.addMessage('a1', makeMessage('live5', 5n))
-          expect(store.getMessages('a1').map(m => m.id)).toEqual(['live5'])
           dispose()
         })
       })
@@ -3064,20 +2261,6 @@ describe('createChatStore', () => {
         })
       })
 
-      it('reclaims a removed message\'s content version (no per-session leak)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeUserMessage('m1', 1n, 'first')])
-          store.addMessage('a1', makeUserMessage('m1', 1n, 'edited')) // in-place merge -> version 1
-          expect(store.getMessageContentVersion('m1')).toBe(1)
-
-          store.removeMessage('a1', 'm1')
-          // The row is gone; its version entry must not linger for the session.
-          expect(store.getMessageContentVersion('m1')).toBe(0)
-          dispose()
-        })
-      })
-
       it('reclaims content versions of rows trimmed off the oldest end, sparing kept rows', () => {
         createRoot((dispose) => {
           const store = createChatStore()
@@ -3132,87 +2315,6 @@ describe('createChatStore', () => {
         })
       })
 
-      it('reclaims error annotations of rows trimmed off the oldest end, sparing kept rows', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // m0 (oldest, dropped) and m2 (kept) are failed sends carrying a
-          // persisted delivery_error, so both get an error annotation on load.
-          const msgs = Array.from({ length: 5 }, (_, i) =>
-            makeMessage(`m${i}`, BigInt(i + 1), i === 0 || i === 2 ? `err${i}` : ''))
-          store.setMessages('a1', msgs)
-          expect(store.messageErrors().m0).toBe('err0')
-          expect(store.messageErrors().m2).toBe('err2')
-
-          store.trimOldestEnd('a1', 3) // keep newest 3 (m2..m4), drop m0/m1
-          expect(store.messageErrors().m0).toBeUndefined() // dropped -> reclaimed
-          expect(store.messageErrors().m2).toBe('err2') // kept -> preserved
-          dispose()
-        })
-      })
-
-      it('reclaims error annotations of rows trimmed off the newest end, sparing kept rows', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // m0 (oldest, kept) and m4 (newest, dropped) carry delivery errors.
-          const msgs = Array.from({ length: 5 }, (_, i) =>
-            makeMessage(`m${i}`, BigInt(i + 1), i === 0 || i === 4 ? `err${i}` : ''))
-          store.setMessages('a1', msgs)
-          expect(store.messageErrors().m4).toBe('err4')
-
-          store.trimNewestEnd('a1', 3) // keep oldest 3 (m0..m2), drop m3/m4
-          expect(store.messageErrors().m4).toBeUndefined() // dropped -> reclaimed
-          expect(store.messageErrors().m0).toBe('err0') // kept -> preserved
-          dispose()
-        })
-      })
-
-      it('reclaims error annotations of rows dropped by a full-window replace, sparing kept rows', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m0', 1n, 'err0'), makeMessage('m1', 2n, 'err1')])
-          expect(store.messageErrors().m0).toBe('err0')
-
-          // A full-window replace (jump-to-latest / reconnect snapshot) drops m0
-          // but re-lands m1 (which re-carries its error). Without reclamation here
-          // m0's error annotation would orphan in the un-capped errors map.
-          store.setMessages('a1', [makeMessage('m1', 2n, 'err1'), makeMessage('m9', 9n)])
-          expect(store.messageErrors().m0).toBeUndefined() // dropped -> reclaimed
-          expect(store.messageErrors().m1).toBe('err1') // re-landed -> preserved
-          dispose()
-        })
-      })
-
-      it('reclaims a removed message\'s error annotation and pending label', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n, 'boom')])
-          store.setMessagePendingLabel('m1', 'queued')
-          expect(store.messageErrors().m1).toBe('boom')
-          expect(store.messagePendingLabels().m1).toBe('queued')
-
-          store.removeMessage('a1', 'm1')
-          // Both per-id annotations must be reclaimed, not just the content version.
-          expect(store.messageErrors().m1).toBeUndefined()
-          expect(store.messagePendingLabels().m1).toBeUndefined()
-          dispose()
-        })
-      })
-
-      it('reclaims a pending label of a row trimmed off the oldest end', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 5 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.setMessagePendingLabel('m0', 'queued') // oldest, will be dropped
-          store.setMessagePendingLabel('m4', 'queued') // newest, kept
-          expect(store.messagePendingLabels().m0).toBe('queued')
-
-          store.trimOldestEnd('a1', 3) // keep newest 3 (m2..m4), drop m0/m1
-          expect(store.messagePendingLabels().m0).toBeUndefined() // dropped -> reclaimed
-          expect(store.messagePendingLabels().m4).toBe('queued') // kept -> preserved
-          dispose()
-        })
-      })
-
       it('flows fresh content to the classified-entry cache on a same-seq in-place update', () => {
         createRoot((dispose) => {
           // End-to-end: the store reuses the proxy on a same-seq merge, so the
@@ -3224,7 +2326,6 @@ describe('createChatStore', () => {
           const cache = createClassifiedEntryCache({
             messages: () => store.getMessages('a1'),
             contentVersionById: id => store.getMessageContentVersion(id),
-            hasNewerMessages: () => false,
             showHiddenMessages: () => false,
           })
           const before = cache.visibleEntries()[0]
@@ -3236,19 +2337,6 @@ describe('createChatStore', () => {
           expect(after).not.toBe(before) // rebuilt, not the stale cached ref
           expect(JSON.stringify(after.parsed.parentObject)).toContain('second')
           expect(JSON.stringify(after.parsed.parentObject)).not.toContain('first')
-          dispose()
-        })
-      })
-
-      it('still appends an optimistic local message (seq 0n)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 200 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 150)
-          store.addMessage('a1', makeMessage('local-1', 0n))
-          const msgs = store.getMessages('a1')
-          expect(msgs).toHaveLength(151)
-          expect(msgs.at(-1)!.id).toBe('local-1')
           dispose()
         })
       })
@@ -3357,31 +2445,6 @@ describe('createChatStore', () => {
           dispose()
         })
       })
-
-      it('reclaims the content version and error of a row reseq\'d beyond the window', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true, latestLiveSeq=50
-          // A windowed notification (m4, seq 5) gets an in-place same-seq update with
-          // NEW content (bumps its content version) and a delivery error -- the
-          // precondition a reseq'd notification realistically carries before it
-          // consolidates.
-          store.addMessage('a1', makeUserMessage('m4', 5n, 'edited'))
-          store.setMessageError('m4', 'transient')
-          expect(store.getMessageContentVersion('m4')).toBe(1)
-          expect(store.messageErrors().m4).toBe('transient')
-
-          // It consolidates and reseqs to a tail seq beyond the loaded window, so the
-          // moved row is dropped. Unlike the trim/delete/replace paths, this drop must
-          // ALSO reclaim the counter + error or they leak for the session.
-          store.addMessage('a1', makeReseq('m4', 60n, 5n))
-          expect(store.getMessages('a1').find(m => m.id === 'm4')).toBeUndefined()
-          expect(store.getMessageContentVersion('m4')).toBe(0) // reclaimed
-          expect(store.messageErrors().m4).toBeUndefined() // cleared
-          dispose()
-        })
-      })
     })
 
     describe('getResumeAfterSeq', () => {
@@ -3417,137 +2480,14 @@ describe('createChatStore', () => {
       })
     })
 
-    describe('live tail recompute on delete', () => {
-      it('lowers latestLiveSeq when the deleted row WAS the recorded live tail', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeMessage('m1', 1n))
-          store.addMessage('a1', makeMessage('m2', 2n))
-          store.addMessage('a1', makeMessage('m3', 3n))
-          expect(store.liveTail.get('a1')).toBe(3n)
-          expect(store.caughtUpToLiveTail('a1')).toBe(true)
-
-          // Delete the tail row (seq 3 == latestLiveSeq): the live tail drops to 2,
-          // so caughtUpToLiveTail isn't left stuck behind a tail that's now gone.
-          store.removeMessage('a1', 'm3')
-          expect(store.getLastSeq('a1')).toBe(2n)
-          expect(store.liveTail.get('a1')).toBe(2n)
-          expect(store.caughtUpToLiveTail('a1')).toBe(true)
-          dispose()
-        })
-      })
-
-      it('clamps latestLiveSeq at the loaded tail when the deleted-tail broadcast carries a lagging newLatestSeq', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeMessage('m1', 1n))
-          store.addMessage('a1', makeMessage('m2', 2n))
-          store.addMessage('a1', makeMessage('m3', 3n))
-          expect(store.liveTail.get('a1')).toBe(3n)
-
-          // The loaded tail (seq 3 == latestLiveSeq) is deleted, but the worker's
-          // post-delete MAX(seq) read raced a concurrent insert (or hit the degraded
-          // deletedSeq-1 error path) and reports a newLatestSeq (1) BELOW the row still
-          // loaded at seq 2. Clamping keeps latestLiveSeq at the loaded tail (2) instead
-          // of dropping it to 1 below a row the window still holds.
-          store.removeMessage('a1', 'm3', 3n, 1n)
-          expect(store.getLastSeq('a1')).toBe(2n)
-          expect(store.liveTail.get('a1')).toBe(2n)
-          dispose()
-        })
-      })
-
-      it('leaves latestLiveSeq alone when a NON-tail row is deleted', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeMessage('m1', 1n))
-          store.addMessage('a1', makeMessage('m2', 2n))
-          store.addMessage('a1', makeMessage('m3', 3n))
-          store.removeMessage('a1', 'm2') // a middle row, not the tail
-          expect(store.liveTail.get('a1')).toBe(3n)
-          dispose()
-        })
-      })
-
-      it('sets latestLiveSeq to the authoritative new tail when an UNLOADED beyond-window tail is deleted', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true, latestLiveSeq=50
-          store.addMessage('a1', makeMessage('live60', 60n)) // observed but dropped beyond window
-          expect(store.liveTail.get('a1')).toBe(60n)
-          expect(store.caughtUpToLiveTail('a1')).toBe(false)
-
-          // The beyond-window tail (seq 60) is deleted server-side. Its row isn't
-          // loaded (removed is undefined), but the broadcast carries seq 60 == the
-          // recorded tail AND the authoritative new tail (55) the worker computed
-          // post-delete. latestLiveSeq is set to exactly 55 -- no deletedSeq-1 guess.
-          store.removeMessage('a1', 'live60', 60n, 55n)
-          expect(store.liveTail.get('a1')).toBe(55n)
-          expect(store.caughtUpToLiveTail('a1')).toBe(false)
-          dispose()
-        })
-      })
-
-      it('falls back to deletedSeq-1 (clamped at the loaded tail) when no authoritative tail is carried', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, latestLiveSeq=50
-          store.addMessage('a1', makeMessage('live60', 60n))
-          expect(store.liveTail.get('a1')).toBe(60n)
-
-          // No newLatestSeq arg (e.g. a legacy/local path): degrade to the
-          // conservative deletedSeq-1 = 59, clamped at the loaded tail (30).
-          store.removeMessage('a1', 'live60', 60n)
-          expect(store.liveTail.get('a1')).toBe(59n)
-          dispose()
-        })
-      })
-
-      it('clamps an authoritative new tail at the loaded tail (never claims a tail below the window)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, latestLiveSeq=50
-          store.addMessage('a1', makeMessage('live60', 60n))
-
-          // A (defensively low) authoritative tail of 10 -- below the loaded tail 30
-          // -- is clamped up to 30 so the high-water can't drop beneath the window.
-          store.removeMessage('a1', 'live60', 60n, 10n)
-          expect(store.liveTail.get('a1')).toBe(30n)
-          dispose()
-        })
-      })
-
-      it('leaves latestLiveSeq alone when an unloaded NON-tail row is deleted (seq below the recorded tail)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
-          store.trimNewestEnd('a1', 30) // window seq 1..30, latestLiveSeq=50
-          store.addMessage('a1', makeMessage('live60', 60n)) // recorded tail = 60
-          expect(store.liveTail.get('a1')).toBe(60n)
-
-          // A delete arrives for an unloaded row at seq 40 -- below the recorded
-          // tail (60), so the recorded tail (a different row) still exists. The
-          // high-water must NOT move.
-          store.removeMessage('a1', 'unloaded40', 40n)
-          expect(store.liveTail.get('a1')).toBe(60n)
-          dispose()
-        })
-      })
-
+    describe('live tail recompute after server-side deletion', () => {
       it('clears a vanished live tail when jump-to-latest finds the server empty', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
           store.trimNewestEnd('a1', 30) // window seq 1..30, hasMoreNewer=true, latestLiveSeq=50
-          // A live message beyond the window was observed (raising latestLiveSeq),
-          // then the whole history is deleted server-side while we're scrolled away.
-          // If the messageDeleted broadcast is MISSED (e.g. a disconnect spanning the
-          // delete), latestLiveSeq is left pointing at a tail that no longer exists,
-          // and jump-to-latest is the backstop. (When the broadcast IS received,
-          // removeMessage lowers the high-water directly -- covered above.)
+          // A live message beyond the window raises the live sequence. The server
+          // then deletes the history while this client has no connection.
           store.addMessage('a1', makeMessage('live60', 60n)) // dropped beyond window
           expect(store.liveTail.get('a1')).toBe(60n)
           expect(store.caughtUpToLiveTail('a1')).toBe(false)
@@ -3582,7 +2522,7 @@ describe('createChatStore', () => {
       })
     })
 
-    describe('command-stream pruning on trim/remove', () => {
+    describe('command-stream pruning on trim', () => {
       it('spares a break-only (inactive but buffered) span dropped by an oldest-end trim, reclaiming it on a sweep', () => {
         createRoot((dispose) => {
           const store = createChatStore()
@@ -3726,25 +2666,6 @@ describe('createChatStore', () => {
         })
       })
 
-      it('spares an explicitly removed span\'s BUFFERED stream, then reclaims it on a turn-end sweep', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'output', 'output')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          // The row is deleted while its tool is still mid-flight: clearing now
-          // would lose the in-progress segments, so the buffer is SPARED and
-          // recorded as orphaned.
-          store.removeMessage('a1', 'm1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          // The turn-end sweep reclaims the now-unreferenced orphan (this stream
-          // never produced a stream-end).
-          store.sweepOrphanedBufferedSpans('a1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(0)
-          dispose()
-        })
-      })
-
       it('records a break-only span dropped by a newest-end trim, reclaiming it on a sweep', () => {
         createRoot((dispose) => {
           const store = createChatStore()
@@ -3766,94 +2687,6 @@ describe('createChatStore', () => {
           // catch-up sweep reclaim it once no surviving row references it.
           store.sweepOrphanedBufferedSpans('a1')
           expect(store.getCommandStream('a1', 'span49')).toHaveLength(0)
-          dispose()
-        })
-      })
-
-      it('keeps a still-referenced orphan recorded across a sweep, reclaiming it once its row is gone', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'output', 'output')
-          // Delete the row mid-flight: the active buffer is spared and recorded.
-          store.removeMessage('a1', 'm1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          // The row returns (a scroll-back re-fetch), so span1 is recorded AND
-          // referenced again. A sweep now must SKIP it (still rendered) -- but must
-          // NOT forget the record: otherwise a later drop of that row via a
-          // non-recording path (jump-to-latest's full-window replace) would leave
-          // the buffer both unreferenced and untracked, leaking for the session.
-          store.setMessages('a1', [makeToolUseSpan('m1', 1n, 'span1')])
-          store.sweepOrphanedBufferedSpans('a1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1) // spared, still referenced
-
-          // The row leaves again without re-recording (full-window replace).
-          store.setMessages('a1', [])
-          // The orphan is still recorded from the first record, so this sweep
-          // reclaims it instead of leaking.
-          store.sweepOrphanedBufferedSpans('a1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(0)
-          dispose()
-        })
-      })
-
-      it('spares a removed span\'s break-only buffer, reclaiming it on a turn-end sweep', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          // span1 buffers only a content-less break (inactive). The old isActive guard
-          // would clear it on delete, losing the recorded boundary; the buffer-based
-          // guard spares and records it instead.
-          store.appendCommandStream('a1', 'span1', 'reasoning_summary_break', '')
-          expect(store.hasRenderableCommandStream('a1', 'span1')).toBe(false)
-          store.removeMessage('a1', 'm1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          store.sweepOrphanedBufferedSpans('a1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(0)
-          dispose()
-        })
-      })
-
-      it('reclaims a spared orphan on its normal stream-end (no sweep needed)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.addMessage('a1', makeToolUseSpan('m1', 1n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'output', 'output')
-          store.removeMessage('a1', 'm1') // spared (active), orphaned
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          // The stream completes normally: clearCommandStream drops the buffer AND
-          // forgets the orphan, so a later sweep is a no-op.
-          store.clearCommandStream('a1', 'span1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(0)
-          store.appendCommandStream('a1', 'span1', 'output', 're-vivified')
-          store.sweepOrphanedBufferedSpans('a1') // must NOT clear the new buffer
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          dispose()
-        })
-      })
-
-      it('keeps a span command stream while a sibling row still references the spanId', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          // A tool_use opener and its tool_result share one spanId.
-          store.addMessage('a1', makeToolUseSpan('op', 1n, 'span1'))
-          store.addMessage('a1', makeToolUseSpan('res', 2n, 'span1'))
-          store.appendCommandStream('a1', 'span1', 'output', 'output')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-
-          // Deleting only one member must NOT wipe the stream the survivor renders.
-          store.removeMessage('a1', 'op')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          // The sweep must NOT clear it either while a row still references the span.
-          store.sweepOrphanedBufferedSpans('a1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-
-          // Deleting the LAST member spares the still-buffered stream (it could be
-          // mid-flight); the turn-end sweep reclaims the now-unreferenced orphan.
-          store.removeMessage('a1', 'res')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(1)
-          store.sweepOrphanedBufferedSpans('a1')
-          expect(store.getCommandStream('a1', 'span1')).toHaveLength(0)
           dispose()
         })
       })
@@ -4163,110 +2996,6 @@ describe('createChatStore', () => {
       })
     })
 
-    describe('applyMessages preserves optimistic local messages', () => {
-      it('keeps an unsent local (seq 0n) with no echo across a window replacement', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
-          store.addMessage('a1', makeUserMessage('local-1', 0n, 'unsent draft'))
-          // A reconnect snapshot replaces the window; the unsent local has no echo.
-          store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)])
-          const msgs = store.getMessages('a1')
-          expect(msgs.at(-1)!.id).toBe('local-1')
-          expect(msgs.filter(m => m.seq === 0n)).toHaveLength(1)
-          dispose()
-        })
-      })
-
-      it('drops a local once its server echo is in the replacement page', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
-          store.addMessage('a1', makeUserMessage('local-1', 0n, 'hello world'))
-          // The snapshot now carries the echoed message (same user-content signature).
-          store.setMessages('a1', [makeMessage('m1', 1n), makeUserMessage('server-2', 2n, 'hello world')])
-          const msgs = store.getMessages('a1')
-          expect(msgs.filter(m => m.seq === 0n)).toHaveLength(0) // reconciled away
-          expect(msgs.at(-1)!.id).toBe('server-2')
-          dispose()
-        })
-      })
-
-      it('reconciles a failed local across a window replace when the page echoes its text (delivery is truth)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
-          // A send marked failed whose text the replacement page echoes: it WAS delivered,
-          // so under "delivery is truth" the failed bubble reconciles to the echo.
-          store.addMessage('a1', makeUserMessage('local-failed', 0n, 'hello', 'Failed to deliver'))
-          store.setMessages('a1', [makeMessage('m1', 1n), makeUserMessage('server-2', 2n, 'hello')])
-          const msgs = store.getMessages('a1')
-          expect(msgs.some(m => m.id === 'local-failed')).toBe(false) // reconciled to the echo
-          expect(msgs.some(m => m.id === 'server-2')).toBe(true)
-          expect(store.messageErrors()['local-failed']).toBeUndefined() // annotation reclaimed
-          dispose()
-        })
-      })
-
-      it('an echo prefers a pending local over a same-text failed one (does not strand the pending send)', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
-          // A previously-FAILED "hi" (hydrated, proto deliveryError) and a later PENDING
-          // "hi" retry share the tail. A SINGLE echo arrives: it must reconcile the
-          // PENDING retry (the send awaiting an echo), NOT steal the echo for the failed
-          // one and strand the pending send forever. The failed bubble survives (its own
-          // echo never came).
-          store.addMessage('a1', makeUserMessage('local-failed', 0n, 'hi', 'Failed to deliver'))
-          store.addMessage('a1', makeUserMessage('local-pending', 0n, 'hi'))
-          store.setMessages('a1', [makeMessage('m1', 1n), makeUserMessage('server-hi', 2n, 'hi')])
-          const msgs = store.getMessages('a1')
-          expect(msgs.some(m => m.id === 'local-pending')).toBe(false) // reconciled to the echo
-          expect(msgs.some(m => m.id === 'local-failed')).toBe(true) // failed bubble preserved
-          expect(msgs.filter(m => m.seq === 0n).map(m => m.id)).toEqual(['local-failed'])
-          dispose()
-        })
-      })
-
-      it('reconciles only ONE of two identical-text locals when the page carries a single echo', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
-          // The user fires the same text twice before either echo arrives, so two
-          // optimistic locals share one signature.
-          store.addMessage('a1', makeUserMessage('local-ok-1', 0n, 'ok'))
-          store.addMessage('a1', makeUserMessage('local-ok-2', 0n, 'ok'))
-          // The replacement page carries only ONE server echo (the second send is
-          // still in flight / fell beyond the page). Each echo reconciles at most
-          // one local, so exactly one local survives -- not zero (which would drop
-          // the still-pending duplicate send) nor two.
-          store.setMessages('a1', [makeMessage('m1', 1n), makeUserMessage('server-ok', 2n, 'ok')])
-          const locals = store.getMessages('a1').filter(m => m.seq === 0n)
-          expect(locals).toHaveLength(1)
-          expect(locals[0].id).toBe('local-ok-2') // earlier local consumed the echo
-          expect(store.getMessages('a1').some(m => m.id === 'server-ok')).toBe(true)
-          dispose()
-        })
-      })
-
-      it('reconciles both identical-text locals when the page carries both echoes', () => {
-        createRoot((dispose) => {
-          const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
-          store.addMessage('a1', makeUserMessage('local-ok-1', 0n, 'ok'))
-          store.addMessage('a1', makeUserMessage('local-ok-2', 0n, 'ok'))
-          // Both echoes present: both locals reconcile, both server bubbles render.
-          store.setMessages('a1', [
-            makeMessage('m1', 1n),
-            makeUserMessage('server-ok-a', 2n, 'ok'),
-            makeUserMessage('server-ok-b', 3n, 'ok'),
-          ])
-          expect(store.getMessages('a1').filter(m => m.seq === 0n)).toHaveLength(0)
-          dispose()
-        })
-      })
-    })
-
     describe('fetch supersede', () => {
       it('a jump supersedes an in-flight fetch so it cannot wedge pagination', async () => {
         await createRoot(async (dispose) => {
@@ -4476,84 +3205,8 @@ describe('createChatStore', () => {
     })
   })
 
-  describe('local (optimistic) messages with seq === 0n', () => {
-    it('should append local message at the end', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMessage('s1', 1n))
-        store.addMessage('a1', makeMessage('s2', 2n))
-        store.addMessage('a1', makeMessage('local1', 0n))
-
-        const msgs = store.getMessages('a1')
-        expect(msgs).toHaveLength(3)
-        expect(msgs[0].id).toBe('s1')
-        expect(msgs[1].id).toBe('s2')
-        expect(msgs[2].id).toBe('local1')
-        dispose()
-      })
-    })
-
-    it('should insert server message before trailing local messages', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMessage('s1', 1n))
-        store.addMessage('a1', makeMessage('local1', 0n))
-
-        // Server message arrives — should go before local1
-        store.addMessage('a1', makeMessage('s2', 2n))
-
-        const msgs = store.getMessages('a1')
-        expect(msgs).toHaveLength(3)
-        expect(msgs[0].id).toBe('s1')
-        expect(msgs[1].id).toBe('s2')
-        expect(msgs[2].id).toBe('local1')
-        dispose()
-      })
-    })
-
-    it('should keep multiple local messages at end in insertion order', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMessage('s1', 1n))
-        store.addMessage('a1', makeMessage('local1', 0n))
-        store.addMessage('a1', makeMessage('local2', 0n))
-
-        // Server message arrives
-        store.addMessage('a1', makeMessage('s2', 2n))
-
-        const msgs = store.getMessages('a1')
-        expect(msgs).toHaveLength(4)
-        expect(msgs[0].id).toBe('s1')
-        expect(msgs[1].id).toBe('s2')
-        expect(msgs[2].id).toBe('local1')
-        expect(msgs[3].id).toBe('local2')
-        dispose()
-      })
-    })
-
-    it('getLastSeq should skip trailing local messages', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMessage('s1', 5n))
-        store.addMessage('a1', makeMessage('s2', 10n))
-        store.addMessage('a1', makeMessage('local1', 0n))
-
-        expect(store.getLastSeq('a1')).toBe(10n)
-        dispose()
-      })
-    })
-
-    it('getLastSeq should return 0n when only local messages exist', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMessage('local1', 0n))
-
-        expect(store.getLastSeq('a1')).toBe(0n)
-        dispose()
-      })
-    })
-
-    it('getFirstSeq should return first server message seq', () => {
+  describe('message sequence endpoints', () => {
+    it('getFirstSeq returns the first message sequence', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.setMessages('a1', [makeMessage('s1', 5n), makeMessage('s2', 6n)])
@@ -4652,40 +3305,6 @@ describe('createChatStore', () => {
       })
     })
 
-    it('does not record a mark for optimistic locals (seq 0n)', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMarkedMessage('local-1', 0n, MarkType.USER_MESSAGE))
-        expect(store.messageMarks.get('a1').marks).toEqual([])
-        dispose()
-      })
-    })
-
-    it('removeMessage drops the mark for a loaded row', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
-        store.addMessage('a1', makeMarkedMessage('m2', 2n, MarkType.USER_MESSAGE))
-        store.removeMessage('a1', 'm1')
-        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 2n, type: MarkType.USER_MESSAGE }])
-        dispose()
-      })
-    })
-
-    it('removeMessage drops the mark for an unloaded beyond-window delete (seq from the broadcast)', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        // Record a mark for a beyond-window seq (dropped, but marked -- see above).
-        store.setMessages('a1', [makeMessage('m2', 2n)], true)
-        store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
-        expect(store.messageMarks.get('a1').marks.map(m => m.seq)).toEqual([1n])
-        // The row isn't loaded, so removeMessage learns its seq from the broadcast arg.
-        store.removeMessage('a1', 'm1', 1n)
-        expect(store.messageMarks.get('a1').marks).toEqual([])
-        dispose()
-      })
-    })
-
     it('moves a mark on a reseq (previousSeq) instead of stranding a ghost dot at the old seq', () => {
       createRoot((dispose) => {
         const store = createChatStore()
@@ -4751,20 +3370,6 @@ describe('createChatStore', () => {
         expect(rail.loaded).toBe(true)
         expect(rail.minSeq).toBe(1n)
         expect(rail.maxSeq).toBe(9n) // liveTail (9) > seedMax (5)
-        dispose()
-      })
-    })
-
-    it('getRailData drops a deleted tail seq from the range instead of pinning the stale seed max', () => {
-      createRoot((dispose) => {
-        const store = createChatStore()
-        store.messageMarks.seed('a1', [{ seq: 5n, type: MarkType.USER_MESSAGE }], 1n, 10n)
-        store.liveTail.bump('a1', 10n)
-        expect(store.getRailData('a1').maxSeq).toBe(10n)
-        // Delete the tail row (seq 10); the window's new last seq is 9. liveTail lowers.
-        store.liveTail.onDelete('a1', { removedSeq: 10n, windowTail: 9n })
-        // Must follow the live tail down, NOT stay pinned at the stale seed max (10).
-        expect(store.getRailData('a1').maxSeq).toBe(9n)
         dispose()
       })
     })

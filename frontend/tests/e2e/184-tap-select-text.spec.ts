@@ -121,9 +121,8 @@ test.describe('tap to select text (phone)', () => {
   /**
    * Send the message and let the transcript settle before anything measures it.
    *
-   * Both waits are load-bearing, and neither is a general "wait for quiet". A
-   * row that has not committed yet renders an extra pending strip under itself,
-   * and the reply that follows re-anchors the list -- so a word's centre
+   * Both waits are load-bearing. The accepted row must exist, and the reply
+   * re-anchors the list. A word's centre
    * measured before then names a point the text has already left, and the
    * second tap of a double tap lands somewhere else. That is what made the
    * first spec in this file fail while the same double tap passed in the rest.
@@ -133,7 +132,6 @@ test.describe('tap to select text (phone)', () => {
     await sendMessage(page, MESSAGE)
     await expect(userBubbles(page)).toHaveCount(1)
     await waitForAgentIdle(page)
-    await expect(page.getByTestId('message-pending')).toHaveCount(0)
   })
 
   test('a double tap selects the word and offers to copy or quote it', async ({ page }) => {

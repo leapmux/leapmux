@@ -159,10 +159,10 @@ describe('codex classify', () => {
     expect(result).toEqual({ kind: 'notification', messages: [contextCleared] })
   })
 
-  it('classifies wrapped raw thread/compacted (Phase 4.3) as a notification thread', () => {
+  it('classifies a completed contextCompaction item as a notification thread', () => {
     const wrapper = {
       old_seqs: [],
-      messages: [{ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }],
+      messages: [{ threadId: 't1', turnId: 'turn1', item: { type: 'contextCompaction', id: 'compact-1' } }],
     }
     const result = plugin.classify(input(undefined, wrapper))
     expect(result.kind).toBe('notification')

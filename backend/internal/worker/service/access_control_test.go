@@ -64,8 +64,34 @@ var agentHandlerCases = []agentHandlerCase{
 	{"CloseAgent", func(id string) proto.Message {
 		return &leapmuxv1.CloseAgentRequest{AgentId: id}
 	}},
-	{"SendAgentMessage", func(id string) proto.Message {
-		return &leapmuxv1.SendAgentMessageRequest{AgentId: id, Content: "hello"}
+	{"EnqueueAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.EnqueueAgentInputRequest{
+			InputId: newTestAgentInputID(),
+			Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, AgentId: id, Text: "hello"}
+	}},
+	{"BeginQueuedAgentInputEdit", func(id string) proto.Message {
+		return &leapmuxv1.BeginQueuedAgentInputEditRequest{AgentId: id, InputId: "input", ClientId: "client"}
+	}},
+	{"UpdateQueuedAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.UpdateQueuedAgentInputRequest{AgentId: id, InputId: "input", ClientId: "client"}
+	}},
+	{"CancelQueuedAgentInputEdit", func(id string) proto.Message {
+		return &leapmuxv1.CancelQueuedAgentInputEditRequest{AgentId: id, InputId: "input", ClientId: "client"}
+	}},
+	{"DeleteQueuedAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: id, InputId: "input"}
+	}},
+	{"MoveQueuedAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.MoveQueuedAgentInputRequest{AgentId: id, InputId: "input"}
+	}},
+	{"SetAgentInputQueuePaused", func(id string) proto.Message {
+		return &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: id, Paused: true}
+	}},
+	{"SteerQueuedAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.SteerQueuedAgentInputRequest{AgentId: id, InputId: "input"}
+	}},
+	{"RetryQueuedAgentInput", func(id string) proto.Message {
+		return &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: id, InputId: "input"}
 	}},
 	{"SendAgentRawMessage", func(id string) proto.Message {
 		return &leapmuxv1.SendAgentRawMessageRequest{AgentId: id, Content: "{}"}
@@ -73,8 +99,8 @@ var agentHandlerCases = []agentHandlerCase{
 	{"RenameAgent", func(id string) proto.Message {
 		return &leapmuxv1.RenameAgentRequest{AgentId: id, Title: "renamed"}
 	}},
-	{"DeleteAgentMessage", func(id string) proto.Message {
-		return &leapmuxv1.DeleteAgentMessageRequest{AgentId: id, MessageId: "msg-1"}
+	{"ListAgentInputQueue", func(id string) proto.Message {
+		return &leapmuxv1.ListAgentInputQueueRequest{AgentId: id}
 	}},
 	{"UpdateAgentSettings", func(id string) proto.Message {
 		return &leapmuxv1.UpdateAgentSettingsRequest{AgentId: id, Settings: &leapmuxv1.AgentSettings{Options: map[string]string{"model": "opus"}}}

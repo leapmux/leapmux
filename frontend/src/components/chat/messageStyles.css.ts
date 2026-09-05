@@ -1,4 +1,4 @@
-import { globalStyle, keyframes, style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
 import { CHAT_PAD_LEFT_VAR, CHAT_PAD_RIGHT_VAR, CHAT_RAIL_WIDTH_VAR } from './chatChromeVars'
 import { BAND_BORDER_PX } from './chatRowGeometry'
@@ -104,23 +104,6 @@ const endBubble = {
 
 export const userMessage = style([messageBubble, endBubble, {
   border: '1px solid var(--border)',
-}])
-
-const pendingPulse = keyframes({
-  '0%, 100%': { opacity: 0.5 },
-  '50%': { opacity: 0.85 },
-})
-
-/** The same card, pulsing while an optimistic local waits for its agent. */
-export const userMessagePending = style([messageBubble, endBubble, {
-  'border': '1px solid var(--border)',
-  'animation': `${pendingPulse} 1.5s ease-in-out infinite`,
-  '@media': {
-    '(prefers-reduced-motion: reduce)': {
-      animation: 'none',
-      opacity: 0.6,
-    },
-  },
 }])
 
 /**

@@ -7,6 +7,7 @@ import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { createImperativeRef } from '~/lib/imperativeRef'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -88,11 +89,13 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
         metadata: s.metadata,
         selection: s.selection,
         chatStore: createChatStore(),
+        agentInputQueueStore: createAgentInputQueueStore(),
         controlStore: createControlStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
       },
+      clientId: () => 'test-client',
       ops: {
         agentOps: {
           availableProviders: () => [],

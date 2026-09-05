@@ -253,8 +253,7 @@ describe('thinking renderer honors context.expandUiKey', () => {
 
 describe('a user row whose provider has no plugin', () => {
   // LeapMux writes every user row itself, in its own flat `{content, attachments?}`
-  // shape, so it needs no plugin to draw -- and the optimistic bubble a send builds
-  // routinely has none, because an agent tab projected from the CRDT carries no
+  // shape, so it needs no plugin to draw. An agent tab projected from the CRDT carries no
   // agentProvider until useTabHydrators fetches the worker-side metadata. Without
   // the neutral branch this fell through to the raw-JSON span.
   it('draws the same card a registered provider would, not raw JSON', () => {
@@ -265,9 +264,7 @@ describe('a user row whose provider has no plugin', () => {
     expect(neutral.container.textContent).toContain('hello there')
     expect(neutral.container.textContent).not.toContain('"content"')
 
-    // Byte-for-byte the same markup as the plugin path, which is what keeps the
-    // optimistic bubble and its server echo the same size: a difference here is a
-    // re-measure the reader sees as the row blinking.
+    // Keep the markup identical to the plugin path to prevent a hydration-time resize.
     const viaPlugin = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
     expect(neutral.container.innerHTML).toBe(viaPlugin.container.innerHTML)
   })

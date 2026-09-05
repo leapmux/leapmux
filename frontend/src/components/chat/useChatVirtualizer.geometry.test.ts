@@ -656,30 +656,6 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('keeps stacked same-seq optimistic locals distinct (keyed by id, not seq)', () => {
-    createRoot((dispose) => {
-      // Two unsent locals (both seq 0n on the wire) plus a server row. The
-      // virtualizer keys by id, so each local gets its own offset and the
-      // anchor round-trips to the right row — keying by seq would collapse
-      // both locals onto one offset.
-      const items: VirtualItem[] = [
-        { id: 'server', hasSpanLines: false },
-        { id: 'local-a', hasSpanLines: false },
-        { id: 'local-b', hasSpanLines: false },
-      ]
-      const { virt } = setup(items)
-      expect(virt.offsetOfId('server')).toBe(0)
-      expect(virt.offsetOfId('local-a')).toBe(120)
-      expect(virt.offsetOfId('local-b')).toBe(240)
-      // Anchor at the top of the FIRST local and confirm it resolves back to
-      // that local, not the last one.
-      const anchor = virt.anchorAt(120)
-      expect(anchor).toEqual({ id: 'local-a', offsetWithinRow: 0, basisHeight: 100, gapFraction: 0 })
-      expect(virt.scrollTopForAnchor(anchor!)).toBe(120)
-      dispose()
-    })
-  })
-
   it('preserves an in-gap viewport position as a gap FRACTION, re-applied against the current gap', () => {
     createRoot((dispose) => {
       const [list, setList] = createSignal<VirtualItem[]>([

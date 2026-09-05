@@ -6,8 +6,10 @@ import (
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // controlResponsePlanModePayload is the decoded shape of a plan-mode control response: the
@@ -342,15 +344,20 @@ func (svc *Service) handleControlResponsePromptPlan(agentID string, dbAgent db.A
 			go svc.initiatePlanExecution(agentID,
 				resolveTargetMode(crPayload.PermissionMode, plugin.PlanModePermissionMode(agent.PlanModeControlPrompt)))
 		} else {
-			// An auto-injected prompt, not the user's own words: no rail dot.
-			svc.sendSyntheticUserMessage(agentID, "Implement the plan.", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+			if _, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
+				ID: id.Generate(), AgentID: agentID,
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+				Text: "Implement the plan.",
+			}); err != nil {
+				slog.Error("plan execution input enqueue failed", "agent_id", agentID, "error", err)
+			}
 		}
 	case agent.ControlBehaviorDeny:
 		if msg := plan.rejectionMessage(); msg != "" {
 			// The user's typed rejection reason IS their answer to the plan-mode control
 			// request, so mark it CONTROL_RESPONSE for a rail dot -- consistent with every
 			// other deny-with-feedback path (ExitPlanMode, permission decisions).
-			svc.sendSyntheticUserMessage(agentID, msg, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
+			svc.enqueueSyntheticUserInput(agentID, msg, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
 		} else {
 			svc.persistControlResponseRow(agentID, dbAgent.AgentProvider, plan)
 		}

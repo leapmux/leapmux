@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -22,6 +23,45 @@ const (
 // GooseCLIAgent manages a single Goose CLI ACP process.
 type GooseCLIAgent struct {
 	acpBase
+}
+
+func (a *GooseCLIAgent) SupportsSteering() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.steerMethod != ""
+}
+
+func (a *GooseCLIAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.mu.Lock()
+	method, active, sessionID, runID := a.steerMethod, a.promptActive, a.sessionID, a.steerRunID
+	a.mu.Unlock()
+	if method == "" {
+		return ErrSteeringUnsupported
+	}
+	if !active || runID == "" {
+		return ErrNoActiveTurn
+	}
+	params, err := json.Marshal(map[string]interface{}{
+		"sessionId":     sessionID,
+		"expectedRunId": runID,
+		"prompt":        buildACPPromptBlocks(content, classifyAttachments(attachments)),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal ACP steer params: %w", err)
+	}
+	if _, err := a.sendRequest(method, params, a.APITimeout()); err != nil {
+		if hasJSONRPCErrorCode(err, -32600, -32602) {
+			return ErrNoActiveTurn
+		}
+		return classifyJSONRPCDeliveryError(method, err)
+	}
+	a.mu.Lock()
+	stillActive := a.promptActive && a.steerRunID == runID
+	a.mu.Unlock()
+	if !stillActive {
+		return ErrNoActiveTurn
+	}
+	return nil
 }
 
 // StartGooseCLI starts a Goose CLI ACP agent process and performs the handshake.

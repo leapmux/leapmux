@@ -12,8 +12,8 @@ import (
 // classifier. Only a self-displaying control answer (an AskUserQuestion / ExitPlanMode
 // tool_result Claude re-emits into its own transcript) is marked at ingestion, as
 // CONTROL_RESPONSE. Everything else -- including a human-typed prompt (which resolves no
-// span, spanType "") -- is UNSPECIFIED, so ingestion never double-marks a send that the
-// SendAgentMessage handler already dotted. spanType is the resolved tool name for a
+// span, spanType "") -- is UNSPECIFIED, so ingestion never duplicates a mark that queue
+// acceptance wrote. spanType is the resolved tool name for a
 // tool_result row (empty otherwise).
 func TestClaudeUserEnvelopeMarkType(t *testing.T) {
 	t.Parallel()

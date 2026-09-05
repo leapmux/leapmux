@@ -232,10 +232,8 @@ const ATTACHED_READ_TIMEOUT_MS = 15_000
  *
  * Reading a chat row is racy in a way no Playwright API removes. Resolving a
  * locator and reading from what it resolved are two browser round trips, and a
- * chat row does not survive the gap: ChatView re-creates a row whenever its entry
- * is replaced, and every send does exactly that about 350ms later, when the
- * optimistic local (`local-…`, seq 0) reconciles to a server echo carrying a
- * different id AND a different seq. A resolve that lands just before the swap
+ * chat row does not always survive the gap. ChatView re-creates a row when a
+ * notification changes its sequence. A resolve that lands just before the swap
  * leaves the read holding a DETACHED node, whose `closest()` is null, whose rect
  * is all zeroes and whose computed style is EMPTY -- which fails an assertion on
  * geometry at random (https://github.com/leapmux/leapmux/issues/402) and silently

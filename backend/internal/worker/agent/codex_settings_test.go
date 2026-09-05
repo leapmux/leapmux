@@ -564,6 +564,7 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 			})
 			require.NoError(t, err)
 
+			require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
 			sent := requests()
 			require.Len(t, sent, 1)
 			assert.Equal(t, "turn/start", sent[0].Method)

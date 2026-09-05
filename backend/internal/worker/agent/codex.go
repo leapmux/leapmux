@@ -85,11 +85,14 @@ type CodexAgent struct {
 	// Codex-specific state.
 	threadID string // from thread/start response
 	turnID   string // currently active turn ID
-	// Closed by the `turn/started` notification, which is Codex's ACK that it
-	// accepted a `turn/start`. Non-nil only while a start is waiting for that
-	// ack. The turn/start RESPONSE cannot serve as the ack: Codex answers it
-	// when the TURN ENDS, minutes or hours later.
-	turnStartAck      chan struct{}
+	// The `turn/started` notification closes this channel after Codex accepts a
+	// `turn/start`. Response timing differs across Codex versions, but this
+	// notification always identifies the accepted turn.
+	turnStartAck chan struct{}
+	// A contextCompaction item can confirm a compact request before its JSON-RPC
+	// response arrives. Non-nil only while CompactContext waits for acceptance.
+	compactionStartAck chan struct{}
+
 	approvalPolicy    string // Codex approval policy (stored as-is from DB)
 	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
 	networkAccess     string // Codex network access ("restricted" or "enabled")
@@ -128,6 +131,9 @@ type CodexAgent struct {
 	// childTurnIDs records the active turn id per child thread (for steering).
 	// Guarded by mu. Cleared on child turn/completed.
 	childTurnIDs map[string]string
+	// childTurnStartAcks records the turn/started notification that accepts a
+	// queued child input. Guarded by mu.
+	childTurnStartAcks map[string]chan struct{}
 	// interruptCalls coalesces concurrent interrupts for one Codex turn. A
 	// successful call stays cached until the turn ends, so a late retry cannot
 	// send another request for an already interrupted turn. Guarded by mu.
@@ -584,6 +590,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	clear(a.collabChildTitles)
 	a.collabChildPrompts.clear()
 	clear(a.childTurnIDs)
+	clear(a.childTurnStartAcks)
 	a.mu.Unlock()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it
 	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
@@ -595,10 +602,12 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	return thread.ID, true
 }
 
-// SendInput writes a user message to the agent. If a turn is already in
-// progress it uses turn/steer; otherwise it starts a new turn via turn/start
-// with the current model, effort, approval policy and sandbox policy.
+// SendInput starts a new turn with the current settings. It refuses an active
+// turn because only SteerInput can add input to that turn.
 func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	if command := strings.TrimSpace(content); (command == "/compact" || command == "/summarize") && len(attachments) == 0 {
+		return a.CompactContext()
+	}
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
 	if a.stopped {
@@ -622,9 +631,10 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 
 	input := buildCodexInputBlocks(content, classifyAttachments(attachments))
 
-	// If a turn is active, steer it instead of starting a new one.
+	// Normal queue dispatch never changes the active turn. Steering is an
+	// explicit queue operation through SteerInput.
 	if turnID != "" {
-		return a.sendTurnSteer(threadID, turnID, input)
+		return fmt.Errorf("%w: %s", ErrNoActiveTurn, turnID)
 	}
 
 	return a.sendTurnStart(threadID, input, turnSettings{
@@ -636,6 +646,91 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 		collaborationMode: collaborationMode,
 		serviceTier:       serviceTier,
 	})
+}
+
+func (a *CodexAgent) CompactContext() error {
+	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		return fmt.Errorf("agent is stopped")
+	}
+	threadID := a.threadID
+	if threadID == "" {
+		a.mu.Unlock()
+		return fmt.Errorf("codex agent has no active thread")
+	}
+	if a.compactionStartAck != nil {
+		a.mu.Unlock()
+		return fmt.Errorf("context compaction request is already pending")
+	}
+	ack := make(chan struct{})
+	a.compactionStartAck = ack
+	a.mu.Unlock()
+	clearAck := func() {
+		a.mu.Lock()
+		if a.compactionStartAck == ack {
+			a.compactionStartAck = nil
+		}
+		a.mu.Unlock()
+	}
+	params, err := json.Marshal(map[string]interface{}{"threadId": threadID})
+	if err != nil {
+		clearAck()
+		return fmt.Errorf("marshal thread/compact/start params: %w", err)
+	}
+	response := make(chan error, 1)
+	go func() {
+		_, requestErr := a.sendRequest("thread/compact/start", params, 0)
+		response <- requestErr
+	}()
+	timer := time.NewTimer(turnStartAckTimeout)
+	defer timer.Stop()
+	select {
+	case <-ack:
+		return nil
+	case requestErr := <-response:
+		clearAck()
+		if requestErr != nil {
+			return classifyCodexCompactionRequestError(requestErr)
+		}
+		return nil
+	case <-timer.C:
+		clearAck()
+		return classifyCodexCompactionRequestError(fmt.Errorf("no response or contextCompaction start within %s", turnStartAckTimeout))
+	}
+}
+
+func classifyCodexCompactionRequestError(err error) error {
+	return classifyJSONRPCDeliveryError("thread/compact/start", err)
+}
+
+func (a *CodexAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.mu.Lock()
+	threadID, turnID := a.threadID, a.turnID
+	stopped := a.stopped
+	a.mu.Unlock()
+	if stopped {
+		return fmt.Errorf("agent is stopped")
+	}
+	if threadID == "" || turnID == "" {
+		return ErrNoActiveTurn
+	}
+	if err := a.sendTurnSteer(threadID, turnID, buildCodexInputBlocks(content, classifyAttachments(attachments))); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	stillActive := a.turnID == turnID
+	a.mu.Unlock()
+	if !stillActive {
+		return ErrNoActiveTurn
+	}
+	return nil
+}
+
+func (a *CodexAgent) InputReady() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.stopped && a.threadID != "" && a.turnID == ""
 }
 
 // buildCodexInputBlocks converts text + classified attachments into Codex's
@@ -709,52 +804,53 @@ func (a *CodexAgent) sendTurnStart(
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	// SendInput must return when the message is DELIVERED, never when the turn
-	// ends -- see the Agent interface. Codex answers `turn/start` only at turn
-	// end ("minutes-to-hours" is its own description), so waiting on that
-	// response would hold the caller for the whole turn: the worker would
-	// withhold the RPC ack and the user-message broadcast until then, and the
-	// browser, whose deadline is far shorter, would label a message it had
-	// already delivered "Failed to deliver".
-	//
-	// The ack is the `turn/started` notification instead. Register for it BEFORE
-	// the request goes out, or a fast agent can answer before we are listening.
+	// SendInput returns when Codex accepts the message. `turn/started` supplies
+	// that acceptance independent of the response timing in the Codex version.
+	// Register the channel before the request to prevent a missed notification.
 	ack := make(chan struct{})
 	a.mu.Lock()
 	a.turnStartAck = ack
 	a.mu.Unlock()
-
-	// No timeout on the request itself: it resolves at turn end, and a wall-clock
-	// cap would kill long-but-legitimate work. Nothing waits on it, so a turn
-	// that runs for hours costs one parked goroutine and no held lock.
-	go func() {
-		if _, err := a.sendRequest("turn/start", paramsJSON, 0); err != nil {
-			slog.Error("codex turn/start failed", "agent_id", a.agentID, "error", err)
-			a.sink.PersistLeapMuxNotification(map[string]any{
-				"type":  NotificationTypeAgentError,
-				"error": err.Error(),
-			})
-		}
-	}()
-
-	select {
-	case <-ack:
-		// Codex accepted the turn. `turn/started` also set turnID, which is what
-		// makes the next send steer this turn rather than start another.
-		return nil
-	case <-a.processDone:
-		return fmt.Errorf("turn/start: agent exited before it accepted the turn")
-	case <-time.After(turnStartAckTimeout):
-		// Delivery is UNCONFIRMED, not failed: the request is on its way and the
-		// turn may still start. Report it so the user sees an unacknowledged
-		// send rather than a silent one, and stop waiting either way.
+	clearAck := func() {
 		a.mu.Lock()
 		if a.turnStartAck == ack {
 			a.turnStartAck = nil
 		}
 		a.mu.Unlock()
-		return fmt.Errorf("turn/start: no turn/started within %s", turnStartAckTimeout)
 	}
+
+	// turn/started owns the delivery deadline. Keep the request correlated until
+	// Codex responds or the process exits, but do not hold the caller or a lock.
+	requestErr := make(chan error, 1)
+	go func() {
+		if _, err := a.sendRequest("turn/start", paramsJSON, 0); err != nil {
+			slog.Error("codex turn/start failed", "agent_id", a.agentID, "error", err)
+			requestErr <- err
+		}
+	}()
+
+	timer := time.NewTimer(turnStartAckTimeout)
+	defer timer.Stop()
+	select {
+	case <-ack:
+		// `turn/started` also set turnID for explicit steering.
+		return nil
+	case err := <-requestErr:
+		clearAck()
+		return classifyCodexTurnStartRequestError("turn/start", err)
+	case <-a.processDone:
+		clearAck()
+		return classifyCodexTurnStartRequestError("turn/start", a.processExitError())
+	case <-timer.C:
+		// The request can still start a turn. Report uncertain delivery and stop
+		// waiting for its acceptance notification.
+		clearAck()
+		return fmt.Errorf("%w: turn/start received no turn/started within %s", ErrDeliveryUncertain, turnStartAckTimeout)
+	}
+}
+
+func classifyCodexTurnStartRequestError(operation string, err error) error {
+	return classifyJSONRPCDeliveryError(operation, err)
 }
 
 // sendTurnSteer steers the active turn with additional user input.
@@ -769,11 +865,14 @@ func (a *CodexAgent) sendTurnSteer(threadID, turnID string, input []map[string]i
 		return fmt.Errorf("marshal turn/steer params: %w", err)
 	}
 
-	// No timeout: turn/steer rides the active turn's lifetime; Codex only
-	// responds when the steered turn completes (which can be long-running).
+	// Codex versions differ in response timing. Keep the request correlated
+	// until Codex responds or the process exits.
 	_, err = a.sendRequest("turn/steer", paramsJSON, 0)
 	if err != nil {
-		return fmt.Errorf("turn/steer: %w", err)
+		if hasJSONRPCErrorCode(err, -32600, -32602) {
+			return ErrNoActiveTurn
+		}
+		return classifyJSONRPCDeliveryError("turn/steer", err)
 	}
 	return nil
 }

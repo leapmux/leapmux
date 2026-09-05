@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,7 @@ import (
 
 // setupChildAgentTest provisions a root + child agent pair for child-routing
 // tests. The child is linked to the root via a background-task registry row so
-// SendAgentMessage/InterruptAgent can resolve (ownerID, rowKey). Returns the
+// queue dispatch and InterruptAgent can resolve (ownerID, rowKey). Returns the
 // service, dispatcher, the child agent id, and the root agent id.
 func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, string) {
 	t.Helper()
@@ -43,74 +44,57 @@ func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, s
 	return svc, d, childID, "root-1"
 }
 
-// TestSendAgentMessageToChildOwnerNotRunningPersistsDeliveryError verifies the
-// owner-not-running branch of child routing: the user message is persisted into
-// the CHILD transcript stamped with a delivery error (not silently dropped).
-// This path exercises the shared persistChildUserRowWithDeliveryError helper
-// that also backs the SendChildInput-failure branch.
-func TestSendAgentMessageToChildOwnerNotRunningPersistsDeliveryError(t *testing.T) {
+func TestEnqueueAgentInputToChildOwnerNotRunningStaysInQueue(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	svc, d, childID, _ := setupChildAgentTest(t)
 
-	// Register a watch on the CHILD so the broadcast is captured.
-	wWatch := newTestWriter()
-	registerAgentWatch(svc, wWatch.channelID, childID, leapmuxv1.WatchMode_WATCH_MODE_FULL, wWatch)
-
 	w := newTestWriter()
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+	inputID := newTestAgentInputID()
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: inputID,
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: childID,
-		Content: "hello child",
+		Text:    "hello child",
 	}, w)
-	require.Empty(t, w.errors, "the handler acks (it persists with a delivery error)")
+	require.Empty(t, w.errors)
 
-	// The user row landed in the CHILD transcript with a delivery error.
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, childID)
+		return err == nil && len(snapshot.Items) == 1 && snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
+	}, time.Second, 10*time.Millisecond)
 	msgs, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{
 		AgentID: childID, Seq: 0,
 	})
 	require.NoError(t, err)
-	require.Len(t, msgs, 1, "one user row persisted into the child transcript")
-	assert.Equal(t, "agent is not running", msgs[0].DeliveryError,
-		"delivery error must explain the owner process is not running")
-
-	// A broadcast carried the message with the same delivery error.
-	foundDeliveryErr := false
-	for _, stream := range wWatch.streamsSnapshot() {
-		ev := decodeWatchAgentEvent(t, stream)
-		if am := ev.GetAgentMessage(); am != nil && am.GetDeliveryError() == "agent is not running" {
-			foundDeliveryErr = true
-		}
-	}
-	assert.True(t, foundDeliveryErr, "the delivery-error broadcast must reach the child watch")
+	require.Empty(t, msgs, "failed input must not enter the transcript")
 }
 
-// TestSendAgentMessageToChildSlashCommandRejected verifies slash commands are
-// rejected for child targets (InvalidArgument) before any persistence.
-func TestSendAgentMessageToChildSlashCommandRejected(t *testing.T) {
+// This test verifies that a clear operation cannot run for a child agent.
+func TestQueuedClearForChildFailsWithoutTranscript(t *testing.T) {
 	t.Parallel()
 
-	_, d, childID, _ := setupChildAgentTest(t)
+	svc, d, childID, _ := setupChildAgentTest(t)
 
 	w := newTestWriter()
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: childID,
-		Content: "/clear",
+		Text:    "/clear",
 	}, w)
 
-	rejs := w.rejections()
-	require.Len(t, rejs, 1)
-	assert.Contains(t, rejs[0].message, "slash commands")
+	require.Empty(t, w.rejections())
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(context.Background(), childID)
+		return err == nil && len(snapshot.Items) == 1 &&
+			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
+	}, time.Second, 10*time.Millisecond)
 }
 
-// TestSendAgentMessageToChildMissingRegistryRowRejected verifies a child with no
-// registry row linking it to an owner is rejected (FailedPrecondition) -- there
-// is no way to steer it.
-// TestSendAgentMessageToChildMissingRegistryRowReturnsUnavailable verifies that a
-// child send against a transient registry miss (the child agent row exists but
-// the registry upsert hasn't replayed yet after a worker restart) returns
-// UNAVAILABLE so the frontend re-queues — NOT a hard FailedPrecondition.
-func TestSendAgentMessageToChildMissingRegistryRowReturnsUnavailable(t *testing.T) {
+// This test verifies that a transient registry miss leaves the child input failed.
+func TestQueuedChildInputWaitsAsFailedWhenRegistryIsMissing(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -133,16 +117,19 @@ func TestSendAgentMessageToChildMissingRegistryRowReturnsUnavailable(t *testing.
 	}))
 
 	w := newTestWriter()
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: "orphan-child",
-		Content: "hello",
+		Text:    "hello",
 	}, w)
 
-	rejs := w.rejections()
-	require.Len(t, rejs, 1)
-	// A transient registry miss is UNAVAILABLE (retry), not FailedPrecondition.
-	assert.Equal(t, int32(codes.Unavailable), rejs[0].code)
-	assert.Contains(t, rejs[0].message, "not yet loaded")
+	require.Empty(t, w.rejections())
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, "orphan-child")
+		return err == nil && len(snapshot.Items) == 1 &&
+			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
+	}, time.Second, 10*time.Millisecond)
 }
 
 // TestCloseAgentOnChildKeepsRowAndTranscript verifies closing a child tab is
@@ -269,6 +256,10 @@ func TestInterruptAgentOnChildRoutesViaChildSteerer(t *testing.T) {
 		assert.Equal(t, int32(codes.FailedPrecondition), rejs[0].code,
 			"ErrChildSteeringUnsupported maps to FailedPrecondition, proving InterruptChild routing")
 		assert.Contains(t, rejs[0].message, "cannot be interrupted")
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, childID)
+		require.NoError(t, snapshotErr)
+		assert.True(t, snapshot.Paused)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshot.PauseReason)
 	})
 
 	t.Run("ownerNotRunningReportsNotFoundViaChildPath", func(t *testing.T) {
@@ -278,7 +269,7 @@ func TestInterruptAgentOnChildRoutesViaChildSteerer(t *testing.T) {
 		// that to NotFound. This is the child-routing NotFound arm -- a direct
 		// Interrupt on a non-child root id would only run AFTER the
 		// ParentAgentID check, which this child never reaches.
-		_, d, childID, _ := setupChildAgentTest(t)
+		svc, d, childID, _ := setupChildAgentTest(t)
 
 		w := newTestWriter()
 		dispatch(d, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{
@@ -290,6 +281,10 @@ func TestInterruptAgentOnChildRoutesViaChildSteerer(t *testing.T) {
 		assert.Equal(t, int32(codes.NotFound), rejs[0].code,
 			"owner-not-running routes through InterruptChild -> ErrAgentNotFound -> NotFound")
 		assert.Contains(t, rejs[0].message, "not found or not running")
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, childID)
+		require.NoError(t, snapshotErr)
+		assert.True(t, snapshot.Paused)
+		assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, snapshot.PauseReason)
 	})
 }
 
@@ -318,7 +313,7 @@ func TestEnsureAgentRunningRefusesChildAgent(t *testing.T) {
 }
 
 // TestUpdateAgentSettingsRejectsChildAgent verifies a settings change against a
-// virtual child is rejected before the optimistic DB write: a child has no
+// virtual child is rejected before the database write. A child has no
 // process and no settings of its own (it inherits the owner's), so persisting
 // divergent options to the child row would store options no live process honors.
 func TestUpdateAgentSettingsRejectsChildAgent(t *testing.T) {

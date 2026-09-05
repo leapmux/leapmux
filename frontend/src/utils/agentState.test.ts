@@ -5,8 +5,8 @@ import { AgentProvider, AgentStatus, MessageSource } from '~/generated/proto/lea
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { isAgentWorking, shouldShowThinkingIndicator } from '~/utils/agentState'
 
-function makeMsg(source: MessageSource, content?: Uint8Array, deliveryError?: string) {
-  return makeMessage({ source, content, deliveryError })
+function makeMsg(source: MessageSource, content?: Uint8Array) {
+  return makeMessage({ source, content })
 }
 
 function makeAgent(overrides: Partial<AgentInfo> = {}): AgentInfo {
@@ -160,20 +160,6 @@ describe('isAgentWorking', () => {
     })
   })
 
-  it('skips USER message with deliveryError (agent never received it)', () => {
-    expect(isAgentWorking([
-      makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
-      makeMsg(MessageSource.USER, undefined, 'connection lost'),
-    ])).toBe(false)
-  })
-
-  it('skips trailing deliveryError messages and finds preceding AGENT', () => {
-    expect(isAgentWorking([
-      makeMsg(MessageSource.AGENT),
-      makeMsg(MessageSource.USER, undefined, 'connection lost'),
-    ])).toBe(true)
-  })
-
   it('skips trailing LEAPMUX context_cleared and stops at preceding result divider', () => {
     expect(isAgentWorking([
       makeMsg(MessageSource.AGENT, rawContent({ type: 'result', subtype: 'turn_result' })),
@@ -227,7 +213,6 @@ describe('isAgentWorking', () => {
     { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
     { method: 'hook/started', params: { threadId: 'thread-1', turnId: 'turn-1' } },
     { method: 'hook/completed', params: { threadId: 'thread-1', turnId: 'turn-1' } },
-    { method: 'thread/compacted', params: {} },
     { method: 'mcpServer/startupStatus/updated', params: {} },
     { method: 'account/rateLimits/updated', params: {} },
   ])('skips AGENT-source Codex JSON-RPC notification (%j) and finds preceding AGENT', (payload) => {

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -10,13 +11,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// Codex's ACK for a `turn/start` is the `turn/started` notification, and
-// `sendTurnStart` waits on exactly that.
-//
-// The turn/start RESPONSE cannot serve: Codex answers it when the turn ENDS,
-// minutes or hours later. Waiting on it held the worker's RPC ack and the
-// user-message broadcast for the whole turn, so the browser -- whose deadline is
-// 15s -- labelled a message it had already delivered "Failed to deliver".
+// The `turn/started` notification confirms that Codex accepted a turn.
+// sendTurnStart uses it because response timing differs across Codex versions.
 func TestCodex_TurnStartedIsTheAckThatReleasesASend(t *testing.T) {
 	t.Parallel()
 	ack := make(chan struct{})
@@ -58,7 +54,7 @@ func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 // owner process is running but its in-memory collab index does not know the
 // thread (empty after a worker restart), SendChildInput wraps the failure in
 // ErrChildNotSteerableYet. The service maps that to UNAVAILABLE so the client
-// re-queues, instead of persisting a permanent delivery error.
+// keeps the queue item retryable instead of storing a permanent failure.
 func TestCodex_SendChildInputUnknownThreadReturnsRetryable(t *testing.T) {
 	t.Parallel()
 	// A fresh CodexAgent has an empty collabThreadSpans (the post-restart
@@ -67,6 +63,59 @@ func TestCodex_SendChildInputUnknownThreadReturnsRetryable(t *testing.T) {
 	err := a.SendChildInput("unknown-thread", "hello", []*leapmuxv1.Attachment{})
 	assert.ErrorIs(t, err, ErrChildNotSteerableYet,
 		"an unknown thread on a running owner must be retryable, not a hard failure")
+}
+
+func TestCodex_SendChildInputReturnsAfterTurnStarted(t *testing.T) {
+	t.Parallel()
+
+	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.SendChildInput("child-thread", "hello", nil)
+	}()
+	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("child input returned before turn/started: %v", err)
+	default:
+	}
+	agent.setChildTurnID("child-thread", "turn-1")
+	require.NoError(t, <-done)
+}
+
+func TestCodex_SendChildInputDoesNotAutomaticallySteer(t *testing.T) {
+	t.Parallel()
+
+	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	agent.setChildTurnID("child-thread", "turn-1")
+
+	assert.ErrorIs(t, agent.SendChildInput("child-thread", "later turn", nil), ErrNoActiveTurn)
+	assert.Empty(t, requests())
+}
+
+func TestCodex_SteerChildInputUsesActiveTurn(t *testing.T) {
+	t.Parallel()
+
+	agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	agent.setChildTurnID("child-thread", "turn-1")
+
+	require.NoError(t, agent.SteerChildInput("child-thread", "guide", nil))
+	require.Len(t, requests(), 1)
+	assert.Equal(t, "turn/steer", requests()[0].Method)
+	assert.Equal(t, "turn-1", requests()[0].Params["expectedTurnId"])
+}
+
+func TestCodex_SendChildInputProcessExitIsDeliveryUncertain(t *testing.T) {
+	t.Parallel()
+
+	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
+	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
+	close(agent.processDone)
+
+	assert.ErrorIs(t, agent.SendChildInput("child-thread", "hello", nil), ErrDeliveryUncertain)
 }
 
 // TestCodex_InterruptChildUnknownThreadReturnsRetryable mirrors the send path

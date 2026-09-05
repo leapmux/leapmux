@@ -68,7 +68,9 @@ interface MarkdownEditorProps {
   draftKey?: MarkdownEditorDraftKey
   attachments?: MarkdownEditorAttachments
   imperative?: MarkdownEditorImperative
-  onSend: (markdown: string) => boolean | void
+  onSend: (markdown: string) => boolean | void | Promise<boolean | void>
+  onAfterSend?: () => void
+  onDraftKeyChanged?: (key: string | null) => void
   disabled?: boolean
   requestedHeight?: number
   maxHeight?: number
@@ -267,7 +269,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (props.disabled || !editorInstance)
       return
     // Read the caret BEFORE anything moves it: `onSendRef` can open a dialog,
@@ -290,14 +292,37 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (!text) {
       // Allow sending empty text only when explicitly enabled (e.g. Enter-to-approve for control requests).
       if (allowEmptySendRef) {
-        onSendRef('')
+        let emptySendResult: boolean | void
+        try {
+          emptySendResult = await onSendRef('')
+        }
+        catch {
+          applySendFocus(hadFocus, false)
+          return
+        }
+        if (emptySendResult === false) {
+          applySendFocus(hadFocus, false)
+          return
+        }
+        const key = getDraftKey()
+        if (key)
+          clearDraft(key)
+        props.onAfterSend?.()
       }
       // An empty draft commits only under `allowEmptySend`; otherwise nothing
       // left the composer and the caret stays for the user to type into.
       applySendFocus(hadFocus, allowEmptySendRef)
       return
     }
-    if (onSendRef(text) === false) {
+    let sendResult: boolean | void
+    try {
+      sendResult = await onSendRef(text)
+    }
+    catch {
+      applySendFocus(hadFocus, false)
+      return
+    }
+    if (sendResult === false) {
       applySendFocus(hadFocus, false)
       return
     }
@@ -308,6 +333,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     if (key) {
       clearDraft(key)
     }
+    props.onAfterSend?.()
     applySendFocus(hadFocus, true)
   }
 
@@ -622,6 +648,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       catch { /* editor may not be ready */ }
 
       prevDraftKey = newDraftKey
+      props.onDraftKeyChanged?.(newDraftKey)
     },
   ))
 

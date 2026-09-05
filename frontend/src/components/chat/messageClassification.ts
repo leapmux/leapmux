@@ -103,17 +103,9 @@ export function classifyMessage(
   const plugin = pluginFor(input.agentProvider)
   if (!plugin) {
     // A USER row is the one message no plugin is needed to read: LeapMux writes
-    // every one of them itself, in its own flat `{content, attachments?}` shape
-    // (see the SendAgentMessage handler and chatReconcile's payload extractor).
-    // There are no provider bytes here to misread, so the loud error below is
-    // the wrong answer for it -- and it is not hypothetical. An agent tab
-    // arrives from the CRDT projection with NO worker-side metadata, because the
-    // hub strips the agent payload (it is E2EE on the worker) and useTabHydrators
-    // fetches it separately. Until that answers, the tab carries no
-    // agentProvider, so the optimistic bubble a send builds from it claims
-    // UNSPECIFIED -- and the user's own message rendered as "Unsupported agent
-    // provider: Unknown (0)" for as long as the echo took to arrive, in a META
-    // row that also lost the full-bleed geometry a user row is laid out with.
+    // every one of them in its flat `{content, attachments?}` shape. A tab can
+    // lack worker metadata while hydration runs, so its provider can be unknown.
+    // The row remains safe to classify because it contains no provider bytes.
     if (isLeapMuxUserPayload(input))
       return { kind: 'user_content' }
     return { kind: 'unsupported_provider' }
@@ -361,21 +353,12 @@ export function rowIsWidened(kind: MessageCategory['kind'], source: MessageSourc
  * turn-end divider IS widened, but its row does not mirror -- its rule reaches
  * both edges by a descendant's own margins.
  *
- * A delivery error is the one case that opts out. It stacks "Failed to deliver /
- * Retry / Delete" under the bubble, laid out against the row's CONTENT edge, so a
- * bleeding bubble above it would leave the two right edges a whole gutter apart.
- * Bleeding that line to match would be worse: it would put Retry and Delete under
- * the scroll rail's column, which takes every pointer event in its own box. An
- * undelivered message is also not part of the settled transcript that runs off
- * the panel edge, and a closed bubble with its controls squared under it says so.
  */
 export function bubbleRunsToRightEdge(
   kind: MessageCategory['kind'],
   source: MessageSource,
-  hasDeliveryError: boolean,
 ): boolean {
-  return !hasDeliveryError
-    && isMirroredMessageRow(kind, source)
+  return isMirroredMessageRow(kind, source)
     && rowIsWidened(kind, source)
 }
 

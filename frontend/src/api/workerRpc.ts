@@ -9,21 +9,29 @@
 import type { MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
 import type {
+  BeginQueuedAgentInputEditResponse,
+  CancelQueuedAgentInputEditResponse,
   CloseAgentResponse,
-  DeleteAgentMessageResponse,
+  DeleteQueuedAgentInputResponse,
+  EnqueueAgentInputResponse,
   GetAgentMessageResponse,
   InterruptAgentResponse,
+  ListAgentInputQueueResponse,
   ListAgentMessagesResponse,
   ListAgentSessionsResponse,
   ListAgentsResponse,
   ListAvailableProvidersResponse,
   ListMessageMarksResponse,
+  MoveQueuedAgentInputResponse,
   OpenAgentResponse,
   RenameAgentResponse,
-  SendAgentMessageResponse,
+  RetryQueuedAgentInputResponse,
   SendAgentRawMessageResponse,
   SendControlResponseResponse,
+  SetAgentInputQueuePausedResponse,
+  SteerQueuedAgentInputResponse,
   UpdateAgentSettingsResponse,
+  UpdateQueuedAgentInputResponse,
 } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { EncryptionMode, InnerStreamMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import type {
@@ -77,14 +85,22 @@ import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
 import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import { WS_CHANNEL_ROUTE, WS_SUBPROTOCOL_CHANNEL_RELAY } from '~/generated/contracts/wire'
 import {
+  BeginQueuedAgentInputEditRequestSchema,
+  BeginQueuedAgentInputEditResponseSchema,
+  CancelQueuedAgentInputEditRequestSchema,
+  CancelQueuedAgentInputEditResponseSchema,
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
-  DeleteAgentMessageRequestSchema,
-  DeleteAgentMessageResponseSchema,
+  DeleteQueuedAgentInputRequestSchema,
+  DeleteQueuedAgentInputResponseSchema,
+  EnqueueAgentInputRequestSchema,
+  EnqueueAgentInputResponseSchema,
   GetAgentMessageRequestSchema,
   GetAgentMessageResponseSchema,
   InterruptAgentRequestSchema,
   InterruptAgentResponseSchema,
+  ListAgentInputQueueRequestSchema,
+  ListAgentInputQueueResponseSchema,
   ListAgentMessagesRequestSchema,
   ListAgentMessagesResponseSchema,
   ListAgentSessionsRequestSchema,
@@ -95,18 +111,26 @@ import {
   ListAvailableProvidersResponseSchema,
   ListMessageMarksRequestSchema,
   ListMessageMarksResponseSchema,
+  MoveQueuedAgentInputRequestSchema,
+  MoveQueuedAgentInputResponseSchema,
   OpenAgentRequestSchema,
   OpenAgentResponseSchema,
   RenameAgentRequestSchema,
   RenameAgentResponseSchema,
-  SendAgentMessageRequestSchema,
-  SendAgentMessageResponseSchema,
+  RetryQueuedAgentInputRequestSchema,
+  RetryQueuedAgentInputResponseSchema,
   SendAgentRawMessageRequestSchema,
   SendAgentRawMessageResponseSchema,
   SendControlResponseRequestSchema,
   SendControlResponseResponseSchema,
+  SetAgentInputQueuePausedRequestSchema,
+  SetAgentInputQueuePausedResponseSchema,
+  SteerQueuedAgentInputRequestSchema,
+  SteerQueuedAgentInputResponseSchema,
   UpdateAgentSettingsRequestSchema,
   UpdateAgentSettingsResponseSchema,
+  UpdateQueuedAgentInputRequestSchema,
+  UpdateQueuedAgentInputResponseSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ChannelService } from '~/generated/proto/leapmux/v1/channel_pb'
 import {
@@ -392,8 +416,44 @@ export function closeAgent(workerId: string, req: MessageInitShape<typeof CloseA
   return callWorker(workerId, 'CloseAgent', CloseAgentRequestSchema, CloseAgentResponseSchema, req)
 }
 
-export function sendAgentMessage(workerId: string, req: MessageInitShape<typeof SendAgentMessageRequestSchema>): Promise<SendAgentMessageResponse> {
-  return callWorker(workerId, 'SendAgentMessage', SendAgentMessageRequestSchema, SendAgentMessageResponseSchema, req)
+export function enqueueAgentInput(workerId: string, req: MessageInitShape<typeof EnqueueAgentInputRequestSchema>): Promise<EnqueueAgentInputResponse> {
+  return callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, req)
+}
+
+export function listAgentInputQueue(workerId: string, req: MessageInitShape<typeof ListAgentInputQueueRequestSchema>): Promise<ListAgentInputQueueResponse> {
+  return callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, req)
+}
+
+export function beginQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof BeginQueuedAgentInputEditRequestSchema>): Promise<BeginQueuedAgentInputEditResponse> {
+  return callWorker(workerId, 'BeginQueuedAgentInputEdit', BeginQueuedAgentInputEditRequestSchema, BeginQueuedAgentInputEditResponseSchema, req)
+}
+
+export function updateQueuedAgentInput(workerId: string, req: MessageInitShape<typeof UpdateQueuedAgentInputRequestSchema>): Promise<UpdateQueuedAgentInputResponse> {
+  return callWorker(workerId, 'UpdateQueuedAgentInput', UpdateQueuedAgentInputRequestSchema, UpdateQueuedAgentInputResponseSchema, req)
+}
+
+export function cancelQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof CancelQueuedAgentInputEditRequestSchema>): Promise<CancelQueuedAgentInputEditResponse> {
+  return callWorker(workerId, 'CancelQueuedAgentInputEdit', CancelQueuedAgentInputEditRequestSchema, CancelQueuedAgentInputEditResponseSchema, req)
+}
+
+export function deleteQueuedAgentInput(workerId: string, req: MessageInitShape<typeof DeleteQueuedAgentInputRequestSchema>): Promise<DeleteQueuedAgentInputResponse> {
+  return callWorker(workerId, 'DeleteQueuedAgentInput', DeleteQueuedAgentInputRequestSchema, DeleteQueuedAgentInputResponseSchema, req)
+}
+
+export function moveQueuedAgentInput(workerId: string, req: MessageInitShape<typeof MoveQueuedAgentInputRequestSchema>): Promise<MoveQueuedAgentInputResponse> {
+  return callWorker(workerId, 'MoveQueuedAgentInput', MoveQueuedAgentInputRequestSchema, MoveQueuedAgentInputResponseSchema, req)
+}
+
+export function setAgentInputQueuePaused(workerId: string, req: MessageInitShape<typeof SetAgentInputQueuePausedRequestSchema>): Promise<SetAgentInputQueuePausedResponse> {
+  return callWorker(workerId, 'SetAgentInputQueuePaused', SetAgentInputQueuePausedRequestSchema, SetAgentInputQueuePausedResponseSchema, req)
+}
+
+export function steerQueuedAgentInput(workerId: string, req: MessageInitShape<typeof SteerQueuedAgentInputRequestSchema>): Promise<SteerQueuedAgentInputResponse> {
+  return callWorker(workerId, 'SteerQueuedAgentInput', SteerQueuedAgentInputRequestSchema, SteerQueuedAgentInputResponseSchema, req)
+}
+
+export function retryQueuedAgentInput(workerId: string, req: MessageInitShape<typeof RetryQueuedAgentInputRequestSchema>): Promise<RetryQueuedAgentInputResponse> {
+  return callWorker(workerId, 'RetryQueuedAgentInput', RetryQueuedAgentInputRequestSchema, RetryQueuedAgentInputResponseSchema, req)
 }
 
 export function sendAgentRawMessage(workerId: string, req: MessageInitShape<typeof SendAgentRawMessageRequestSchema>): Promise<SendAgentRawMessageResponse> {
@@ -426,10 +486,6 @@ export function interruptAgent(workerId: string, req: MessageInitShape<typeof In
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {
   return callWorker(workerId, 'SendControlResponse', SendControlResponseRequestSchema, SendControlResponseResponseSchema, req)
-}
-
-export function deleteAgentMessage(workerId: string, req: MessageInitShape<typeof DeleteAgentMessageRequestSchema>): Promise<DeleteAgentMessageResponse> {
-  return callWorker(workerId, 'DeleteAgentMessage', DeleteAgentMessageRequestSchema, DeleteAgentMessageResponseSchema, req)
 }
 
 export function updateAgentSettings(workerId: string, req: MessageInitShape<typeof UpdateAgentSettingsRequestSchema>): Promise<UpdateAgentSettingsResponse> {

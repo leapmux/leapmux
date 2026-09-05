@@ -4,15 +4,16 @@ import type { EditorContentRef } from './controls/types'
 import type { BypassController, ProviderSettingChangeHandler } from './providerSettings'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
-import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentInputQueueSnapshot, Attachment, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab } from '~/stores/tab.types'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
@@ -20,8 +21,10 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import { clearDraft, loadDraft } from '~/lib/editor/draftPersistence'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
+import { randomUUID } from '~/lib/idGenerator'
 import { flavorFromOs } from '~/lib/paths'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
@@ -33,6 +36,7 @@ import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
+import { AgentInputQueue } from './AgentInputQueue'
 import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
 import { ComposerPlusMenu } from './composer/ComposerPlusMenu'
@@ -63,7 +67,18 @@ export interface AgentEditorPanelProps {
    * shows this one resolved string rather than inventing its own wording.
    */
   disabledReason?: string
-  onSendMessage: (content: string, attachments?: FileAttachment[]) => void
+  onSendMessage: (content: string, attachments?: FileAttachment[]) => void | Promise<void>
+  onSendControlFeedback?: (content: string) => void | Promise<void>
+  inputQueue?: AgentInputQueueSnapshot
+  queueClientId?: string
+  onBeginQueueEdit?: (item: QueuedAgentInput, takeover: boolean) => Promise<{ snapshot?: AgentInputQueueSnapshot, attachments: Attachment[], text?: string }>
+  onUpdateQueueItem?: (item: QueuedAgentInput, text: string, attachments: FileAttachment[]) => Promise<void>
+  onCancelQueueEdit?: (item: QueuedAgentInput) => Promise<void>
+  onDeleteQueueItem?: (item: QueuedAgentInput) => Promise<void>
+  onMoveQueueItem?: (item: QueuedAgentInput, beforeInputId: string) => Promise<void>
+  onRetryQueueItem?: (item: QueuedAgentInput, confirmUncertain: boolean) => Promise<void>
+  onSteerQueueItem?: (item: QueuedAgentInput) => Promise<void>
+  onSetQueuePaused?: (paused: boolean) => Promise<void>
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
   onControlResponse?: (request: ControlRequest, content: Uint8Array) => Promise<void>
@@ -112,12 +127,27 @@ export interface AgentEditorPanelProps {
   triggerSendRef?: (fn: () => void) => void
 }
 
+const AgentInputQueuePauseButton: Component<{
+  paused: boolean
+  onSetPaused?: (paused: boolean) => Promise<void>
+}> = props => (
+  <button
+    type="button"
+    class="outline"
+    onMouseDown={keepFocusOnPress}
+    onClick={() => { void props.onSetPaused?.(!props.paused).catch(() => {}) }}
+    data-testid="queue-pause-button"
+  >
+    {props.paused ? 'Resume Queue' : 'Pause Queue'}
+  </button>
+)
+
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let panelRef: HTMLDivElement | undefined
   const [_editorContentHeight, setEditorContentHeight] = createSignal(0)
   const [hasContent, setHasContent] = createSignal(false)
   let fileInputRef: HTMLInputElement | undefined
-  const { loading: sending, start: startSending } = createLoadingSignal()
+  const { loading: sending, start: startSending, stop: stopSending } = createLoadingSignal()
   const interruptLoading = createLoadingSignal()
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
@@ -132,9 +162,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // few pixels higher.
   const disabled = () => !!props.disabledReason
   const preferences = usePreferences()
+  const [editingInput, setEditingInput] = createSignal<QueuedAgentInput>()
+  const [uncertainRetry, setUncertainRetry] = createSignal<QueuedAgentInput>()
+  const [queueUpdateInFlight, setQueueUpdateInFlight] = createSignal(false)
+  let finishQueueEditAfterSend = false
+  let pendingQueueEditText: string | undefined
+  let pendingQueueEditAttachments: FileAttachment[] | undefined
+  let normalAttachmentRestore: { key: string, attachments: FileAttachment[] } | undefined
+  let queueEditRequestId = ''
+  const attachmentDraftKey = () => editingInput() ? `${props.agentId}-queue-${editingInput()!.id}` : props.agentId
 
   const att = useChatAttachments({
-    agentId: () => props.agentId,
+    agentId: attachmentDraftKey,
     agentProvider: () => props.agent?.agentProvider ?? AgentProvider.CLAUDE_CODE,
     providerLabel: currentProviderLabel,
   })
@@ -143,7 +182,81 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const addFiles = att.addFiles
   const removeAttachment = att.removeAttachment
   const clearAllAttachments = att.clearAllAttachments
+  const replaceAttachments = att.replaceAttachments
   const handleFileInputChange = () => att.handleFileInputChange(fileInputRef)
+
+  const loadQueueEdit = (item: QueuedAgentInput, takeover: boolean, restoreDraft: boolean) => {
+    if (queueEditRequestId === item.id)
+      return
+    const beginEdit = props.onBeginQueueEdit
+    if (!beginEdit)
+      return
+    queueEditRequestId = item.id
+    const request = beginEdit(item, takeover)
+    void request.then((response) => {
+      const edited = response.snapshot?.items.find(candidate => candidate.id === item.id) ?? item
+      const queueDraftKey = `${props.agentId}-queue-${item.id}`
+      pendingQueueEditText = restoreDraft && loadDraft(queueDraftKey).content
+        ? undefined
+        : (response.text ?? edited.text)
+      pendingQueueEditAttachments = response.attachments.map(attachment => ({
+        id: randomUUID(),
+        file: new File([new Uint8Array(attachment.data).buffer], attachment.filename, { type: attachment.mimeType }),
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+        size: attachment.data.byteLength,
+      }))
+      normalAttachmentRestore = { key: untrack(() => props.agentId), attachments: [...untrack(attachments)] }
+      setEditingInput(edited)
+    }).catch(() => {}).finally(() => {
+      if (queueEditRequestId === item.id)
+        queueEditRequestId = ''
+    })
+  }
+
+  createEffect(() => {
+    if (editingInput() || queueEditRequestId || !props.queueClientId)
+      return
+    const owned = props.inputQueue?.items.find(item => item.editOwnerClientId === props.queueClientId)
+    if (owned)
+      loadQueueEdit(owned, false, true)
+  })
+
+  createEffect(() => {
+    const editing = editingInput()
+    const activeAttachmentKey = att.activeDraftKey()
+    if (editing && activeAttachmentKey === `${props.agentId}-queue-${editing.id}` && pendingQueueEditAttachments !== undefined) {
+      replaceAttachments(pendingQueueEditAttachments)
+      pendingQueueEditAttachments = undefined
+      return
+    }
+    if (!editing && normalAttachmentRestore?.key === activeAttachmentKey) {
+      replaceAttachments(normalAttachmentRestore.attachments)
+      normalAttachmentRestore = undefined
+    }
+  })
+
+  createEffect(() => {
+    const initialEditing = editingInput()
+    const snapshot = props.inputQueue
+    if (!initialEditing || !snapshot)
+      return
+    let current: QueuedAgentInput | undefined
+    for (const item of snapshot.items) {
+      if (item.id === initialEditing.id) {
+        current = item
+        break
+      }
+    }
+    if ((!current || current.editOwnerClientId !== props.queueClientId) && !queueUpdateInFlight()) {
+      pendingQueueEditText = undefined
+      pendingQueueEditAttachments = undefined
+      clearAllAttachments()
+      setEditingInput()
+      queueMicrotask(() => clearDraft(`${props.agentId}-queue-${initialEditing.id}`))
+    }
+  })
 
   const editorHeight = useEditorMinHeight({
     agentId: () => props.agentId,
@@ -244,6 +357,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       get onControlResponse() { return props.onControlResponse },
       get onSettingChange() { return props.onSettingChange },
       get onSendMessage() { return props.onSendMessage },
+      get onSendControlFeedback() { return props.onSendControlFeedback },
       get settingsLoading() { return props.settingsLoading },
       get agentWorking() { return props.agentWorking },
       get canInterrupt() { return props.canInterrupt },
@@ -252,9 +366,29 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     () => editorContentRef,
     editorHeight.resetEditorHeight,
     () => attachments(),
-    (content, fileAttachments) => {
-      props.onSendMessage(content, fileAttachments)
-      clearAllAttachments()
+    async (content, fileAttachments) => {
+      startSending()
+      try {
+        const editing = editingInput()
+        if (editing && props.onUpdateQueueItem) {
+          setQueueUpdateInFlight(true)
+          try {
+            await props.onUpdateQueueItem(editing, content, fileAttachments ?? [])
+          }
+          catch (error) {
+            setQueueUpdateInFlight(false)
+            throw error
+          }
+          finishQueueEditAfterSend = true
+        }
+        else {
+          await props.onSendMessage(content, fileAttachments)
+        }
+        clearAllAttachments()
+      }
+      finally {
+        stopSending()
+      }
     },
   )
 
@@ -325,14 +459,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       return undefined
     const request = ctrl.activeControlRequest()
     if (!request)
-      return props.agentId
+      return editingInput() ? `${props.agentId}-queue-${editingInput()!.id}` : props.agentId
     // Keyed on the request INSTANCE, so a re-ask that reuses the id opens an
     // empty editor rather than the text the user typed for the instance that
     // went away. `cleanupControlRequestDrafts` composes the same key.
     const pageSuffix = ctrl.isAskUserQuestion() ? `-q-${answerState.currentPage()}` : ''
     return `${props.agentId}-ctrl-${requestInstanceId(request)}${pageSuffix}`
   })
-
   let triggerSend: (() => void) | undefined
 
   // The body of the agent-info card. Rendered by the status bar's info popover
@@ -400,6 +533,45 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         class={styles.inputArea}
         data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
       >
+        <AgentInputQueue
+          snapshot={props.inputQueue}
+          clientId={props.queueClientId ?? ''}
+          activeEditInputId={editingInput()?.id}
+          supportsSteering={props.agent?.supportsSteering ?? false}
+          onEdit={(item, takeover) => {
+            loadQueueEdit(item, takeover, false)
+          }}
+          onDelete={(item) => {
+            // The RPC completion must inspect edit ownership after newer snapshots apply.
+            // eslint-disable-next-line solid/reactivity
+            void props.onDeleteQueueItem?.(item).then(() => {
+              clearDraft(`${props.agentId}-queue-${item.id}`)
+              if (untrack(editingInput)?.id === item.id) {
+                clearAllAttachments()
+                setEditingInput()
+              }
+            }).catch(() => {})
+          }}
+          onCancelEdit={(item) => {
+            // The RPC completion must inspect edit ownership after newer snapshots apply.
+            // eslint-disable-next-line solid/reactivity
+            void props.onCancelQueueEdit?.(item).then(() => {
+              clearDraft(`${props.agentId}-queue-${item.id}`)
+              if (untrack(editingInput)?.id === item.id) {
+                clearAllAttachments()
+                setEditingInput()
+              }
+            }).catch(() => {})
+          }}
+          onMove={(item, beforeInputId) => { void props.onMoveQueueItem?.(item, beforeInputId).catch(() => {}) }}
+          onRetry={(item, confirmUncertain) => {
+            if (confirmUncertain)
+              setUncertainRetry(item)
+            else
+              void props.onRetryQueueItem?.(item, false).catch(() => {})
+          }}
+          onSteer={(item) => { void props.onSteerQueueItem?.(item).catch(() => {}) }}
+        />
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
         </Show>
@@ -419,6 +591,22 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             controlRequestId: ctrl.activeControlRequest()?.requestId,
           }}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
+          onAfterSend={() => {
+            if (finishQueueEditAfterSend) {
+              finishQueueEditAfterSend = false
+              setEditingInput()
+              setQueueUpdateInFlight(false)
+            }
+          }}
+          onDraftKeyChanged={(key) => {
+            const editing = editingInput()
+            if (!editing || key !== `${props.agentId}-queue-${editing.id}`)
+              return
+            if (pendingQueueEditText !== undefined) {
+              editorContentRef?.set(pendingQueueEditText)
+              pendingQueueEditText = undefined
+            }
+          }}
           disabled={disabled()}
           disabledPlaceholder={props.disabledReason}
           onTogglePlanMode={ctrl.togglePlanMode}
@@ -539,27 +727,33 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               ? {
                   layout: 'fullWidth' as const,
                   node: () => (
-                    <ControlRequestActions
-                      request={request}
-                      answerState={answerState}
-                      agentProvider={props.agent?.agentProvider}
-                      onRespond={(content) => {
-                        ctrl.finishAnswer(request)
-                        return ctrl.respondTo(request)(content)
-                      }}
-                      hasEditorContent={hasContent()}
-                      onTriggerSend={() => triggerSend?.()}
-                      editorContentRef={() => editorContentRef}
-                      bypass={bypass()}
-                      contextUsage={props.agentSessionInfo?.contextUsage}
-                      modelContextWindow={modelContextWindow()}
-                    />
+                    <>
+                      <div class={styles.actionCluster}>
+                        <AgentInputQueuePauseButton paused={props.inputQueue?.paused ?? false} onSetPaused={props.onSetQueuePaused} />
+                      </div>
+                      <ControlRequestActions
+                        request={request}
+                        answerState={answerState}
+                        agentProvider={props.agent?.agentProvider}
+                        onRespond={(content) => {
+                          ctrl.finishAnswer(request)
+                          return ctrl.respondTo(request)(content)
+                        }}
+                        hasEditorContent={hasContent()}
+                        onTriggerSend={() => triggerSend?.()}
+                        editorContentRef={() => editorContentRef}
+                        bypass={bypass()}
+                        contextUsage={props.agentSessionInfo?.contextUsage}
+                        modelContextWindow={modelContextWindow()}
+                      />
+                    </>
                   ),
                 }
               : {
                   layout: 'corner' as const,
                   node: () => (
                     <div class={styles.actionCluster} data-testid="composer-actions">
+                      <AgentInputQueuePauseButton paused={props.inputQueue?.paused ?? false} onSetPaused={props.onSetQueuePaused} />
                       <Show when={ctrl.showInterrupt()}>
                         <button
                           class="outline"
@@ -590,7 +784,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
                         onMouseDown={keepFocusOnPress}
                         onClick={() => {
-                          startSending()
                           triggerSend?.()
                         }}
                         data-testid="send-button"
@@ -618,6 +811,23 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           disabledReason={props.disabledReason}
           infoTrigger={info.showInfoTrigger() ? renderAgentInfoTrigger : undefined}
         />
+      </Show>
+      <Show when={uncertainRetry()}>
+        {item => (
+          <ConfirmDialog
+            title="Retry uncertain input?"
+            confirmLabel="Retry"
+            onConfirm={() => {
+              const retryItem = item()
+              setUncertainRetry()
+              void props.onRetryQueueItem?.(retryItem, true).catch(() => {})
+            }}
+            onCancel={() => setUncertainRetry()}
+            data-testid="retry-uncertain-input-dialog"
+          >
+            The provider can already have accepted this input. A retry can send it twice.
+          </ConfirmDialog>
+        )}
       </Show>
     </div>
   )

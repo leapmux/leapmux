@@ -1,10 +1,12 @@
 import type { AgentEditorPanelProps } from './AgentEditorPanel'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { create } from '@bufbuild/protobuf'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageGet, localStorageSet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
@@ -13,6 +15,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { AgentEditorPanel } from './AgentEditorPanel'
+import { clearAttachments, getAttachments, setAttachments } from './attachments'
 import '~/components/chat/providers'
 
 const HOME = '/home/dev'
@@ -434,6 +437,132 @@ describe('agentEditorPanel control request lifecycle', () => {
 })
 
 describe('agentEditorPanel working-tree chip', () => {
+  it('always shows the queue pause control', () => {
+    renderPanel()
+    expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')
+  })
+
+  it('preserves normal attachments when a queue edit is canceled', async () => {
+    const normalAttachment = {
+      id: 'normal-1',
+      file: new File(['normal'], 'normal.txt', { type: 'text/plain' }),
+      filename: 'normal.txt',
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode('normal'),
+      size: 6,
+    }
+    setAttachments('a1', [normalAttachment])
+    const queueSnapshot = (owner: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      revision: owner ? 2n : 1n,
+      paused: true,
+      items: [{
+        id: 'queued-1',
+        agentId: 'a1',
+        text: 'queued preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: owner,
+      }],
+    })
+    const [snapshot, setSnapshot] = createSignal(queueSnapshot(''))
+    const edited = queueSnapshot('client-a')
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot()}
+          queueClientId="client-a"
+          onBeginQueueEdit={() => {
+            setSnapshot(edited)
+            return Promise.resolve({ snapshot: edited, attachments: [], text: 'full queued text' })
+          }}
+          onCancelQueueEdit={() => {
+            setSnapshot(queueSnapshot(''))
+            return Promise.resolve()
+          }}
+        />
+      </PreferencesProvider>
+    ))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await Promise.resolve()
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
+    await Promise.resolve()
+    expect(getAttachments('a1')).toEqual([normalAttachment])
+    clearAttachments('a1')
+  })
+
+  it('requires confirmation before it retries uncertain delivery', async () => {
+    const onRetryQueueItem = vi.fn().mockResolvedValue(undefined)
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      items: [{
+        id: 'uncertain-1',
+        agentId: 'a1',
+        text: 'possibly delivered',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.DELIVERY_UNCERTAIN,
+      }],
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot}
+          queueClientId="client-a"
+          onRetryQueueItem={onRetryQueueItem}
+        />
+      </PreferencesProvider>
+    ))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    const dialog = screen.getByTestId('retry-uncertain-input-dialog')
+    expect(dialog).toHaveTextContent('The provider can already have accepted this input.')
+    expect(onRetryQueueItem).not.toHaveBeenCalled()
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }))
+    expect(onRetryQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'uncertain-1' }), true)
+  })
+
+  it('reloads an edit that the same browser client owns', () => {
+    const onBeginQueueEdit = vi.fn(() => new Promise<never>(() => {}))
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      items: [{
+        id: 'owned-1',
+        agentId: 'a1',
+        text: 'preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+      }],
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot}
+          queueClientId="client-a"
+          onBeginQueueEdit={onBeginQueueEdit}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-1' }), false)
+    expect(screen.getByRole('button', { name: 'Resume Edit' })).toBeInTheDocument()
+  })
+
   // The defect this pins: the chip printed an absolute path while the sidebar
   // row for the SAME checkout printed a tilde one, because the panel read the
   // home dir off a field nothing populates.

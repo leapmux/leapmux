@@ -50,12 +50,14 @@ type testSink struct {
 	reservedColorSpans []testSinkSpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
-	tracker          spantrack.SpanTracker
-	resetSpanCount   int
-	statusActives    []string
-	autoSchedules    []AutoContinueSchedule
-	autoCancels      []AutoContinueReason
-	planModeToolUses sync.Map
+	tracker           spantrack.SpanTracker
+	resetSpanCount    int
+	inputStartedCount int
+	inputReadyCount   int
+	statusActives     []string
+	autoSchedules     []AutoContinueSchedule
+	autoCancels       []AutoContinueReason
+	planModeToolUses  sync.Map
 	// childSinkMu + children let testSink serve ChildSink as a per-child testSink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
@@ -719,6 +721,30 @@ func (s *testSink) MessageCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.messages)
+}
+
+func (s *testSink) InputReady() {
+	s.mu.Lock()
+	s.inputReadyCount++
+	s.mu.Unlock()
+}
+
+func (s *testSink) InputStarted() {
+	s.mu.Lock()
+	s.inputStartedCount++
+	s.mu.Unlock()
+}
+
+func (s *testSink) InputStartedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inputStartedCount
+}
+
+func (s *testSink) InputReadyCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inputReadyCount
 }
 
 func (s *testSink) NotificationCount() int {

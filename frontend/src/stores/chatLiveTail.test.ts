@@ -12,14 +12,15 @@ function withTracker(body: (t: ReturnType<typeof createLiveTailTracker>) => void
 
 describe('chatlivetail', () => {
   describe('get / bump', () => {
-    it('defaults to 0n and raises only on a higher SERVER seq', () => {
+    it('defaults to 0n and raises only on a higher positive sequence', () => {
       withTracker((t) => {
         expect(t.get('a1')).toBe(0n)
         t.bump('a1', 5n)
         expect(t.get('a1')).toBe(5n)
         t.bump('a1', 3n) // lower -> ignored
         expect(t.get('a1')).toBe(5n)
-        t.bump('a1', 0n) // optimistic local -> ignored
+        t.bump('a1', 0n)
+        t.bump('a1', -1n)
         expect(t.get('a1')).toBe(5n)
         t.bump('a1', 9n)
         expect(t.get('a1')).toBe(9n)
@@ -83,92 +84,6 @@ describe('chatlivetail', () => {
         t.bump('a1', 60n) // raised during the fetch
         t.resetToEmptyIfStale('a1', 50n)
         expect(t.get('a1')).toBe(60n)
-      })
-    })
-  })
-
-  describe('onDelete', () => {
-    it('drops the recorded tail to the authoritative new tail when the LOADED tail is deleted', () => {
-      withTracker((t) => {
-        t.bump('a1', 3n) // window caught up to seq 3
-        t.onDelete('a1', { removedSeq: 3n, newLatestSeq: 2n, windowTail: 2n })
-        expect(t.get('a1')).toBe(2n)
-      })
-    })
-
-    it('clamps a lagging newLatestSeq at the loaded window tail (delete-vs-insert race)', () => {
-      withTracker((t) => {
-        t.bump('a1', 3n)
-        // The worker's MAX(seq) read lagged: newLatestSeq 1 is below the loaded tail 2.
-        t.onDelete('a1', { removedSeq: 3n, newLatestSeq: 1n, windowTail: 2n })
-        expect(t.get('a1')).toBe(2n) // never below a row still loaded
-      })
-    })
-
-    it('sets the authoritative new tail when an UNLOADED beyond-window tail is deleted', () => {
-      withTracker((t) => {
-        t.bump('a1', 60n) // observed-but-dropped beyond the window (tail loaded = 30)
-        t.onDelete('a1', { deletedSeq: 60n, newLatestSeq: 55n, windowTail: 30n })
-        expect(t.get('a1')).toBe(55n)
-      })
-    })
-
-    it('falls back to deletedSeq-1 (clamped at the window tail) for an unloaded delete with no authoritative tail', () => {
-      withTracker((t) => {
-        t.bump('a1', 60n)
-        t.onDelete('a1', { deletedSeq: 60n, windowTail: 30n })
-        expect(t.get('a1')).toBe(59n)
-      })
-    })
-
-    it('lowers to deletedSeq-1 for an unloaded beyond-window delete with an indeterminate (-1) tail', () => {
-      withTracker((t) => {
-        t.bump('a1', 60n)
-        // The worker left new_latest_seq unset (couldn't read the tail), but deletedSeq
-        // (60) === the recorded tail, so it is the highest observed seq and the new tail is
-        // provably <= 59. Lower to it rather than leaving the recorded tail pointing at the
-        // now-deleted 60 (which would keep the "new messages below" affordance falsely lit
-        // forever, since 60 can never load again).
-        t.onDelete('a1', { deletedSeq: 60n, newLatestSeq: undefined, windowTail: 30n })
-        expect(t.get('a1')).toBe(59n)
-      })
-    })
-
-    it('clears the caught-up gap when the window had loaded right up to the deleted unloaded tail', () => {
-      withTracker((t) => {
-        t.bump('a1', 31n) // the unloaded tail was 31; the window loaded up to 30
-        // 31 is deleted with an indeterminate (unset) tail. deletedSeq-1 = 30 == windowTail,
-        // so the reader has now loaded everything that still exists: caughtUp must resolve
-        // (recorded clamps to 30), not stay wedged at the deleted 31.
-        t.onDelete('a1', { deletedSeq: 31n, newLatestSeq: undefined, windowTail: 30n })
-        expect(t.get('a1')).toBe(30n)
-        expect(t.caughtUp('a1', 30n)).toBe(true)
-      })
-    })
-
-    it('uses the loaded window tail for a LOADED-tail delete with an indeterminate (unset) tail', () => {
-      withTracker((t) => {
-        t.bump('a1', 3n)
-        // A loaded-tail delete can see the new last loaded row (windowTail), so an
-        // indeterminate broadcast falls back to it rather than a missing tail.
-        t.onDelete('a1', { removedSeq: 3n, newLatestSeq: undefined, windowTail: 2n })
-        expect(t.get('a1')).toBe(2n)
-      })
-    })
-
-    it('leaves the recorded tail alone when a NON-tail row is deleted', () => {
-      withTracker((t) => {
-        t.bump('a1', 10n)
-        t.onDelete('a1', { removedSeq: 4n, newLatestSeq: 9n, windowTail: 9n })
-        expect(t.get('a1')).toBe(10n)
-      })
-    })
-
-    it('ignores a deleted optimistic local (seq 0n)', () => {
-      withTracker((t) => {
-        t.bump('a1', 10n)
-        t.onDelete('a1', { removedSeq: 0n, windowTail: 10n })
-        expect(t.get('a1')).toBe(10n)
       })
     })
   })

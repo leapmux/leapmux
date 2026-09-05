@@ -8,7 +8,7 @@ import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
@@ -26,23 +26,19 @@ import { createTestTabStores } from '~/test-support/tabStores'
 const mockCloseAgent = vi.fn<(workerId: string, req: { agentId: string, worktreeAction?: WorktreeAction }) => Promise<CloseAgentResponse>>()
 const mockOpenAgent = vi.fn()
 const mockSendAgentRawMessage = vi.fn()
-const mockSendAgentMessage = vi.fn()
 const mockInterruptAgent = vi.fn()
 const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
-const mockDeleteAgentMessage = vi.fn()
 
-vi.mock('~/api/workerRpc', () => ({
+vi.mock('~/api/workerRpc', async importOriginal => ({
+  ...await importOriginal<typeof import('~/api/workerRpc')>(),
   closeAgent: (...args: unknown[]) => mockCloseAgent(...args as [string, { agentId: string, worktreeAction?: WorktreeAction }]),
   openAgent: (...args: unknown[]) => mockOpenAgent(...args),
-  sendAgentMessage: (...args: unknown[]) => mockSendAgentMessage(...args),
   sendAgentRawMessage: (...args: unknown[]) => mockSendAgentRawMessage(...args),
   interruptAgent: (...args: unknown[]) => mockInterruptAgent(...args),
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
-  retryAgentMessage: vi.fn(),
-  deleteAgentMessage: (...args: unknown[]) => mockDeleteAgentMessage(...args),
   listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
@@ -113,17 +109,16 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
 
   const chatStore = {
     getMessages: vi.fn().mockReturnValue([]),
-    clearMessageError: vi.fn(),
-    setMessageError: vi.fn(),
-    removeMessage: vi.fn(),
     forgetAgent: vi.fn(),
     clearToolProgress: vi.fn(),
     streamingText: { clear: vi.fn() },
   } as any
 
   const repoGitStore = createRepoGitStore()
+  const agentInputQueueStore = { clearAgent: vi.fn() } as any
   const ops = useAgentOperations({
     agentSessionStore,
+    agentInputQueueStore,
     chatStore,
     controlStore,
     view: stores.view,
@@ -146,6 +141,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     agentSessionStore,
     controlStore,
     chatStore,
+    agentInputQueueStore,
     repoGitStore,
     ops,
     /** Place an agent on the seeded root tile — the only tile that exists. */
@@ -403,14 +399,12 @@ describe('useAgentOperations', () => {
       const stores = createTestTabStores('ws-1')
       const chatStore = {
         getMessages: vi.fn().mockReturnValue([]),
-        clearMessageError: vi.fn(),
-        setMessageError: vi.fn(),
-        removeMessage: vi.fn(),
         forgetAgent: vi.fn(),
       } as any
 
       const ops = useAgentOperations({
         agentSessionStore: createAgentSessionStore(),
+        agentInputQueueStore: { clearAgent: vi.fn() } as any,
         chatStore,
         controlStore: createControlStore(),
         view: stores.view,
@@ -712,99 +706,11 @@ describe('useAgentOperations', () => {
     })
   })
 
-  describe('handleRetryMessage', () => {
-    it('clears the delivery error before resending the message', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { chatStore, ops, add } = setup()
-          const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          chatStore.getMessages.mockReturnValue([{
-            id: 'local-1',
-            source: MessageSource.USER,
-            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
-            contentCompression: ContentCompression.NONE,
-          }])
-          mockSendAgentMessage.mockResolvedValueOnce({})
-
-          await ops.handleRetryMessage('a-1', 'local-1')
-
-          expect(chatStore.clearMessageError).toHaveBeenCalledWith('local-1')
-          expect(mockSendAgentMessage).toHaveBeenCalledWith('w-1', { agentId: 'a-1', content: 'retry me' })
-          expect(chatStore.removeMessage).toHaveBeenCalledWith('a-1', 'local-1')
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
-
-    it('restores the delivery error if resend fails', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { chatStore, ops, add } = setup()
-          const agent = create(AgentInfoSchema, { id: 'a-2', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          chatStore.getMessages.mockReturnValue([{
-            id: 'local-2',
-            source: MessageSource.USER,
-            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
-            contentCompression: ContentCompression.NONE,
-          }])
-          mockSendAgentMessage.mockRejectedValueOnce(new Error('offline'))
-
-          await ops.handleRetryMessage('a-2', 'local-2')
-
-          expect(chatStore.clearMessageError).toHaveBeenCalledWith('local-2')
-          expect(chatStore.setMessageError).toHaveBeenCalledWith('local-2', 'Failed to deliver')
-          expect(mockShowWarnToast).toHaveBeenCalledWith('Retry failed', expect.any(Error))
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
-
-    it('does not re-stamp a delivery error when the resend succeeds but the cleanup delete fails', async () => {
-      await createRoot(async (dispose) => {
-        try {
-          const { chatStore, ops, add } = setup()
-          mockSendAgentMessage.mockReset()
-          mockDeleteAgentMessage.mockReset()
-          mockShowWarnToast.mockReset()
-          const agent = create(AgentInfoSchema, { id: 'a-3', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          // A SERVER-persisted failed message (non-local id) so the deleteAgentMessage
-          // cleanup path runs.
-          chatStore.getMessages.mockReturnValue([{
-            id: 'srv-3',
-            source: MessageSource.USER,
-            content: new TextEncoder().encode(JSON.stringify({ content: 'retry me' })),
-            contentCompression: ContentCompression.NONE,
-          }])
-          mockSendAgentMessage.mockResolvedValueOnce({}) // resend SUCCEEDS
-          mockDeleteAgentMessage.mockRejectedValueOnce(new Error('not a failed user message')) // cleanup fails
-
-          await ops.handleRetryMessage('a-3', 'srv-3')
-
-          // The resend landed, so the old bubble must NOT be re-marked as failed.
-          expect(chatStore.setMessageError).not.toHaveBeenCalled()
-          // The cleanup failure is surfaced softly, NOT as a "Retry failed".
-          expect(mockShowWarnToast).toHaveBeenCalledWith('Could not remove the old failed message', expect.any(Error))
-          expect(mockShowWarnToast).not.toHaveBeenCalledWith('Retry failed', expect.any(Error))
-        }
-        finally {
-          dispose()
-        }
-      })
-    })
-  })
-
   describe('handleAgentClose', () => {
     it('removes agent/tab synchronously BEFORE the close RPC resolves', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { view, chatStore, ops, add } = setup()
+          const { view, chatStore, agentInputQueueStore, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           add({ id: 'a-1', title: 'Agent Olivia', workerId: 'w-1', workingDir: '/tmp' })
@@ -816,9 +722,9 @@ describe('useAgentOperations', () => {
 
           // Store mutations happened synchronously.
           expect(view.getAgentTab('a-1')).toBeUndefined()
-          expect(view.getAgentTab('a-1')).toBeUndefined()
-          // Chat-store per-agent state is reclaimed synchronously too (no leak).
+          // Per-agent state is reclaimed synchronously too.
           expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-1')
+          expect(agentInputQueueStore.clearAgent).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
         }
@@ -1039,14 +945,14 @@ describe('useAgentOperations', () => {
      * A descendant the optimistic sweep could not see never goes through
      * `handleTabClose`, so this pass is the ONLY thing that retires it -- and a
      * bare tombstone would leave its chat-store entry (loaded window, live tail,
-     * command streams, span index, to-dos, pending outbound), its control-store
+     * command streams, span index, and to-dos), its input queue snapshot, its control-store
      * entry and its attachments allocated for the life of the page. Nothing else
      * reclaims them: `forgetAgent` has no other caller.
      */
     it('reclaims per-agent store state for each subagent it retires', async () => {
       await createRoot(async (dispose) => {
         try {
-          const { ops, add, chatStore, controlStore } = setup()
+          const { ops, add, chatStore, agentInputQueueStore, controlStore } = setup()
           for (const id of ['a-root4', 'a-kid']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
             add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
@@ -1063,6 +969,7 @@ describe('useAgentOperations', () => {
           await flush()
 
           expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-kid')
+          expect(agentInputQueueStore.clearAgent).toHaveBeenCalledWith('a-kid')
           expect(clearAgent).toHaveBeenCalledWith('a-kid')
         }
         finally {

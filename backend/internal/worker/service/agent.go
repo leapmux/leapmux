@@ -3,22 +3,18 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"os"
 	"strings"
-	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
-	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -26,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/leapmux/leapmux/util/validate"
@@ -65,6 +62,7 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d registrar, svc *Service) {
+	registerAgentInputQueueHandlers(d, svc)
 	registerOwnerGated(d, "OpenAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
 			if svc.refuseIfShuttingDown(sender) {
@@ -305,227 +303,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			})
 		})
 
-	// SendAgentMessage persists the user message, forwards it to the agent
-	// subprocess, and broadcasts it to every connected watcher. The
-	// dispatcher ctx is intentionally not threaded — the persist + forward
-	// + broadcast must complete even if the originating client disconnects
-	// a millisecond after firing the RPC, otherwise the agent's *other*
-	// watchers would silently miss the message.
-	registerAgentGated(d, "SendAgentMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendAgentMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
-			agentID := r.GetAgentId()
-
-			// Reject sends only on permanent startup failure — STARTING
-			// messages are queued on the frontend and dispatched on the
-			// status transition to ACTIVE. A STARTING-state send gate on
-			// the server would race with the ACTIVE broadcast that fires
-			// from the output sink before runAgentStartup's bookkeeping
-			// completes; ensureAgentRunning already restarts crashed
-			// subprocesses on demand. Also reject when the persisted
-			// startup_error is set (covers worker restart: the in-memory
-			// registry was wiped but the DB remembers the failure).
-			if status, _, _, ok := svc.AgentStartup.status(agentID); ok && status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
-				sendFailedPrecondition(sender, "agent failed to start; open a new agent")
-				return
-			}
-			if dbAgent.StartupError != "" && !svc.Agents.HasAgent(agentID) {
-				sendFailedPrecondition(sender, "agent failed to start; open a new agent")
-				return
-			}
-
-			// --- Subagent (child) routing ---
-			// A virtual child agent is fed by its parent provider's process.
-			// Resolves the registry row (owner + row_key), then drives the owner
-			// process via ChildSteerer (Codex). Slash commands and provider-
-			// specific attachment semantics are unsupported for child targets.
-			if dbAgent.ParentAgentID.Valid {
-				svc.sendChildMessage(agentID, dbAgent, r, sender)
-				return
-			}
-
-			content := r.GetContent()
-			attachments := r.GetAttachments()
-
-			// Validate text: at least 1 character when no attachments,
-			// or allow empty text when attachments are present.
-			trimmed := strings.TrimSpace(content)
-			if len(attachments) == 0 && utf8.RuneCountInString(trimmed) < 1 {
-				sendInvalidArgument(sender, "message must be at least 1 character")
-				return
-			}
-
-			// Validate total attachment size (max 10 MB).
-			const maxAttachmentSize = 10 * 1024 * 1024
-			var totalSize int
-			for _, a := range attachments {
-				totalSize += len(a.GetData())
-			}
-			if totalSize > maxAttachmentSize {
-				sendInvalidArgument(sender, "total attachment size exceeds 10 MB")
-				return
-			}
-
-			// Pre-resolve the resume session ID BEFORE persisting the user
-			// message. HasUserMessages must run before the current message is
-			// written; otherwise the just-persisted message is counted as a
-			// prior conversation and --resume is used for a session that never
-			// had any messages (e.g. after an app restart on an idle tab).
-			resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-
-			attachments, err := agent.NormalizeAttachmentsForProvider(
-				leapmuxv1.AgentProvider(dbAgent.AgentProvider),
-				attachments,
-			)
-			if err != nil {
-				sendInvalidArgument(sender, err.Error())
-				return
-			}
-
-			messageID := id.Generate()
-			now := nowMillis()
-
-			// Store user content as a plain JSON object with a "content" field,
-			// which the frontend classifies as user_content and renders as markdown.
-			// When attachments are present, include their metadata (filename + mime_type)
-			// but not the raw binary data (too large for DB storage).
-			// A marshal failure must NOT fall through: innerJSON would stay nil and we'd
-			// compress + persist + broadcast an empty-content row (while still handing the
-			// agent the real content), silently corrupting the visible history. Fail the
-			// RPC instead so the caller can retry, mirroring the persist-failure path below.
-			var innerJSON []byte
-			var encErr error
-			if len(attachments) > 0 {
-				type attachmentMeta struct {
-					Filename string `json:"filename"`
-					MimeType string `json:"mime_type"`
-				}
-				meta := make([]attachmentMeta, len(attachments))
-				for i, a := range attachments {
-					meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
-				}
-				// A different envelope, so it stays inline: userMessageContent encodes
-				// the {content} shape alone.
-				innerJSON, encErr = json.Marshal(map[string]interface{}{"content": content, "attachments": meta})
-			} else {
-				innerJSON, encErr = userMessageContent(content)
-			}
-			if encErr != nil {
-				slog.Error("failed to encode user message", "agent_id", agentID, "error", encErr)
-				sendInternalError(sender, "failed to encode message")
-				return
-			}
-			compressed, compressionType := msgcodec.Compress(innerJSON)
-
-			// Capture currently-active spans so the user message renders with
-			// passthrough vertical bars instead of breaking the column.
-			spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
-
-			// Persist the user message. mark_type=USER_MESSAGE so the scroll rail
-			// draws a jump dot for every message the human actually typed and sent.
-			seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
-				ID:                 messageID,
-				AgentID:            agentID,
-				Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-				Content:            compressed,
-				ContentCompression: compressionType,
-				Depth:              0,
-				SpanID:             "",
-				ParentSpanID:       "",
-				SpanLines:          spanLines,
-				SpanColor:          0,
-				AgentProvider:      dbAgent.AgentProvider,
-				MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-				CreatedAt:          sqltime.NewSQLiteTime(now),
-			})
-			if err != nil {
-				slog.Error("failed to persist message", "agent_id", agentID, "error", err)
-				sendInternalError(sender, "failed to persist message")
-				return
-			}
-
-			// Check for leapmux-level slash commands (e.g. /clear) that
-			// Claude Code does not handle natively.
-			isSlashClear := trimmed == "/clear" || trimmed == "/reset" || trimmed == "/new"
-
-			userMsg := &leapmuxv1.AgentChatMessage{
-				Id:                 messageID,
-				Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-				Content:            compressed,
-				ContentCompression: compressionType,
-				Seq:                seq,
-				AgentProvider:      dbAgent.AgentProvider,
-				CreatedAt:          timefmt.Format(now),
-				Depth:              0,
-				SpanLines:          spanLines,
-				MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-			}
-
-			// For /clear, broadcast the user message before restarting so live
-			// watchers never see context_cleared ahead of the triggering command.
-			if isSlashClear {
-				svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-					AgentId: agentID,
-					Event: &leapmuxv1.AgentEvent_AgentMessage{
-						AgentMessage: userMsg,
-					},
-				})
-			}
-
-			// Attempt to send the message to the agent process (unless it's
-			// a command that leapmux handles itself).
-			var deliveryError string
-			if isSlashClear {
-				// /clear: restart the agent with a fresh context.
-				svc.handleClearContext(agentID)
-			} else if !svc.Agents.HasAgent(agentID) {
-				// Agent is not running — try to auto-start it (e.g. after worker restart).
-				if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID, interactiveStart); startErr != nil {
-					deliveryError = "agent is not running"
-				} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
-					slog.Error("failed to send input to agent after auto-start", "agent_id", agentID, "error", sendErr)
-					deliveryError = sendErr.Error()
-				}
-			} else if sendErr := svc.Agents.SendInput(agentID, content, attachments); sendErr != nil {
-				slog.Error("failed to send input to agent", "agent_id", agentID, "error", sendErr)
-				deliveryError = sendErr.Error()
-			}
-			if deliveryError != "" {
-				_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
-					DeliveryError: deliveryError,
-					ID:            messageID,
-					AgentID:       agentID,
-				})
-			}
-
-			sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
-
-			// Broadcast the user message to all watchers so it appears in
-			// every connected frontend's chat view.
-			if !isSlashClear {
-				userMsg.DeliveryError = deliveryError
-				svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-					AgentId: agentID,
-					Event: &leapmuxv1.AgentEvent_AgentMessage{
-						AgentMessage: userMsg,
-					},
-				})
-			}
-
-			// Broadcast delivery error separately (frontend uses both events).
-			if deliveryError != "" {
-				svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-					AgentId: agentID,
-					Event: &leapmuxv1.AgentEvent_MessageError{
-						MessageError: &leapmuxv1.AgentMessageError{
-							AgentId:   agentID,
-							MessageId: messageID,
-							Error:     deliveryError,
-						},
-					},
-				})
-			}
-		})
-
 	// SendAgentRawMessage forwards a provider-shaped raw message (Codex
 	// interrupt frames etc.) to the agent subprocess. The forward + any
 	// synthetic-message persistence must complete past a client
@@ -539,7 +316,15 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			content := r.GetContent()
-			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
+			isInterrupt := agent.IsInterruptRequest(dbAgent.AgentProvider, content)
+			if isInterrupt {
+				if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
+					slog.Warn("failed to pause agent input queue before raw interrupt", "agent_id", agentID, "error", err)
+					sendInternalError(sender, "failed to pause agent input queue")
+					return
+				}
+			}
+			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && isInterrupt {
 				// An interrupt notice is not the user's answer to a control request, so it
 				// draws no rail dot.
 				svc.persistSyntheticUserMessage(agentID, dbAgent.AgentProvider, notice)
@@ -889,88 +674,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{Title: title})
 		})
 
-	// DeleteAgentMessage removes the row and broadcasts a MessageDeleted
-	// event to every watcher. The DB write + broadcast must complete past
-	// a client disconnect; dispatcher ctx is intentionally not threaded.
-	registerAgentGatedByID(d, "DeleteAgentMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
-		func(_ context.Context, _ channel.Caller, r *leapmuxv1.DeleteAgentMessageRequest, sender channel.ResponseWriter) {
-			agentID := r.GetAgentId()
-			messageID := r.GetMessageId()
-
-			// Deletion is allowed ONLY for a FAILED USER message -- the single thing the UI
-			// ever deletes (retrying or dismissing a message that failed to reach the agent;
-			// see useAgentOperations.handleRetryMessage / handleDeleteMessage). Enforcing it
-			// here, not just client-side, keeps the windowing invariants intact: deleting an
-			// arbitrary DELIVERED message -- a mid-history row, a tool_use/tool_result span,
-			// or a reseq'd notification thread -- could strand a windowed reader's loaded rows
-			// above a vanished tail or orphan the (window-scoped) span index. A failed user
-			// message carries no span and sits where it was sent, so removing it can never
-			// drop the live tail below a delivered loaded row -- which is what makes the
-			// windowed client's delete reconcile (chatLiveTail.onDelete) provably safe.
-			row, err := svc.Queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
-				ID:      messageID,
-				AgentID: agentID,
-			})
-			if errors.Is(err, sql.ErrNoRows) {
-				// Already gone (idempotent double-delete): the delete that removed it already
-				// broadcast the real seq, so respond OK and skip the broadcast.
-				sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
-				return
-			}
-			if err != nil {
-				slog.Error("failed to read message before delete", "agent_id", agentID, "message_id", messageID, "error", err)
-				sendInternalError(sender, "failed to delete message")
-				return
-			}
-			if row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_USER || row.DeliveryError == "" {
-				sendInvalidArgument(sender, "only a failed user message can be deleted")
-				return
-			}
-
-			deletedSeq, err := svc.Queries.DeleteMessageByAgentAndID(bgCtx(), db.DeleteMessageByAgentAndIDParams{
-				AgentID: agentID,
-				ID:      messageID,
-			})
-			if errors.Is(err, sql.ErrNoRows) {
-				// Raced with a concurrent delete between the read above and here: still an
-				// idempotent no-op -- the delete that won already broadcast the real seq.
-				sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
-				return
-			}
-			if err != nil {
-				slog.Error("failed to delete message", "agent_id", agentID, "message_id", messageID, "error", err)
-				sendInternalError(sender, "failed to delete message")
-				return
-			}
-
-			sendProtoResponse(sender, &leapmuxv1.DeleteAgentMessageResponse{})
-
-			// The authoritative new live tail AFTER the delete (0 if no rows remain). A
-			// windowed client whose loaded window lags the live tail sets its recorded
-			// live-tail seq to exactly this when the deleted row was that tail -- no
-			// guesswork. On the exceptional query-error path, leave the field UNSET
-			// (indeterminate) rather than guessing deletedSeq - 1: the old guess
-			// under-reported a non-tail delete's tail and conflated a deleted seq 1 with
-			// "agent empty". An unset field tells the client to leave its recorded tail
-			// unchanged (see AgentMessageDeleted.new_latest_seq / removeMessage), always safe.
-			newLatestSeq := svc.maxSeqOrNil(agentID, "failed to read max seq after delete")
-
-			// Broadcast deletion to all watchers, carrying the deleted row's seq (so a
-			// windowed client can tell whether the deleted row was its recorded tail)
-			// and the authoritative new tail (so it can set the tail exactly).
-			svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-				AgentId: agentID,
-				Event: &leapmuxv1.AgentEvent_MessageDeleted{
-					MessageDeleted: &leapmuxv1.AgentMessageDeleted{
-						AgentId:      agentID,
-						MessageId:    messageID,
-						Seq:          deletedSeq,
-						NewLatestSeq: newLatestSeq,
-					},
-				},
-			})
-		})
-
 	// UpdateAgentSettings persists the new settings and (for providers
 	// that need it) restarts the agent subprocess. Both must complete past
 	// a client disconnect, otherwise the agent ends up in a half-applied
@@ -1074,6 +777,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGatedByID(d, "InterruptAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
+				slog.Warn("failed to pause agent input queue before interrupt", "agent_id", agentID, "error", err)
+				sendInternalError(sender, "failed to pause agent input queue")
+				return
+			}
 			// A child agent: resolve its registry row, then interrupt the child
 			// conversation inside the owner process via ChildSteerer.
 			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
@@ -1395,120 +1103,6 @@ func (svc *Service) resolveChildRegistryRow(agentID string, sender channel.Respo
 	return row, nil
 }
 
-// sendChildMessage routes a user message to a virtual child (subagent) agent.
-// A child is fed by its parent provider's process: this resolves the registry
-// row (owner + row_key), then drives the owner process via ChildSteerer (Codex).
-// Slash commands and provider-specific attachment semantics are unsupported for
-// child targets. Extracted from SendAgentMessage so the child-routing concerns
-// sit in one place and the persist-with-delivery-error path is co-located.
-func (svc *Service) sendChildMessage(
-	agentID string,
-	dbAgent db.Agent,
-	r *leapmuxv1.SendAgentMessageRequest,
-	sender channel.ResponseWriter,
-) {
-	row, rowErr := svc.resolveChildRegistryRow(agentID, sender, "this subagent cannot be messaged")
-	if rowErr != nil {
-		return
-	}
-	trimmedChild := strings.TrimSpace(r.GetContent())
-	if trimmedChild == "/clear" || trimmedChild == "/reset" || trimmedChild == "/new" {
-		sendInvalidArgument(sender, "slash commands are not supported for this subagent")
-		return
-	}
-	// persistChildUserRowWithDeliveryError writes a user row into the CHILD
-	// transcript stamped with a delivery error, broadcasts it, and acks the
-	// request. Used by both the owner-not-running path and the SendChildInput-
-	// failure path so a transient steering failure surfaces in the child
-	// transcript instead of dropping the message.
-	persistChildUserRowWithDeliveryError := func(deliveryErr string) {
-		childMsgID := id.Generate()
-		nowChild := nowMillis()
-		innerJSON, mErr := userMessageContent(r.GetContent())
-		if mErr != nil {
-			sendInternalError(sender, "failed to encode message")
-			return
-		}
-		compressedChild, compChild := msgcodec.Compress(innerJSON)
-		childSpanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
-		childSeq, pErr := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
-			ID:                 childMsgID,
-			AgentID:            agentID,
-			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-			Content:            compressedChild,
-			ContentCompression: compChild,
-			SpanLines:          childSpanLines,
-			AgentProvider:      dbAgent.AgentProvider,
-			MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-			CreatedAt:          sqltime.NewSQLiteTime(nowChild),
-		})
-		if pErr != nil {
-			slog.Error("failed to persist child message", "agent_id", agentID, "error", pErr)
-			sendInternalError(sender, "failed to persist message")
-			return
-		}
-		_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
-			DeliveryError: deliveryErr,
-			ID:            childMsgID,
-			AgentID:       agentID,
-		})
-		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-			AgentId: agentID,
-			Event: &leapmuxv1.AgentEvent_AgentMessage{
-				AgentMessage: &leapmuxv1.AgentChatMessage{
-					Id:                 childMsgID,
-					Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-					Content:            compressedChild,
-					ContentCompression: compChild,
-					Seq:                childSeq,
-					AgentProvider:      dbAgent.AgentProvider,
-					CreatedAt:          timefmt.Format(nowChild),
-					SpanLines:          childSpanLines,
-					MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-					DeliveryError:      deliveryErr,
-				},
-			},
-		})
-		sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
-	}
-	if !svc.Agents.HasAgent(row.OwnerAgentID) {
-		// Owner not running: persist the user row into the CHILD transcript
-		// with a delivery error; no auto-start (a child has no process of its
-		// own, and starting the owner to feed a single child message is not the
-		// contract).
-		persistChildUserRowWithDeliveryError("agent is not running")
-		return
-	}
-	// Owner running: steer the child conversation. An unsupported provider
-	// surfaces as FailedPrecondition with NO persisted row.
-	childAtts, attErr := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, r.GetAttachments())
-	if attErr != nil {
-		sendInvalidArgument(sender, attErr.Error())
-		return
-	}
-	if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, r.GetContent(), childAtts); err != nil {
-		if errors.Is(err, agent.ErrChildSteeringUnsupported) {
-			sendFailedPrecondition(sender, "this subagent does not accept messages")
-			return
-		}
-		if errors.Is(err, agent.ErrChildNotSteerableYet) {
-			// The owner is running but its in-memory spawn index is empty (a
-			// restart before the live spawn re-fires). The registry row
-			// resolved, so the child is steerable in principle -- tell the
-			// client to retry instead of persisting a delivery error.
-			sendUnavailable(sender, "subagent not yet steerable in the running owner process; retry")
-			return
-		}
-		// Other errors: persist the user row with a delivery error so the
-		// failure is visible in the child transcript rather than dropping the
-		// message silently.
-		slog.Error("send child input failed", "agent_id", agentID, "error", err)
-		persistChildUserRowWithDeliveryError("failed to send message to subagent")
-		return
-	}
-	sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
-}
-
 // replayAgentCatchUp replays one verified agent's catch-up burst to a freshly
 // (re)subscribed watcher: a CatchUpStart pre-trim marker, the bounded message replay,
 // the authoritative to-do snapshot, the status marker, pending control requests, and
@@ -1672,6 +1266,16 @@ func (svc *Service) replayAgentCatchUp(
 		AgentId: agentID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: statusChange},
 	})
+	if queueSnapshot, queueErr := svc.InputQueue.Snapshot(bgCtx(), agentID); queueErr != nil {
+		slog.Warn("failed to load agent input queue for replay", "agent_id", agentID, "error", queueErr)
+	} else {
+		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+			AgentId: agentID,
+			Event: &leapmuxv1.AgentEvent_InputQueueChanged{
+				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: queueSnapshotProto(queueSnapshot)},
+			},
+		})
+	}
 
 	if !sink.alive() {
 		return
@@ -1747,19 +1351,20 @@ func (svc *Service) deriveAgentStatus(a *db.Agent, isRunning bool) (status leapm
 func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentInfo {
 	status, startupError, startupMessage := svc.deriveAgentStatus(a, isRunning)
 	info := &leapmuxv1.AgentInfo{
-		Id:             a.ID,
-		Title:          a.Title,
-		Status:         status,
-		WorkingDir:     a.WorkingDir,
-		AgentSessionId: a.AgentSessionID,
-		HomeDir:        a.HomeDir,
-		WorkerId:       svc.WorkerID,
-		CreatedAt:      timefmt.Format(a.CreatedAt.Time),
-		GitStatus:      gs,
-		AgentProvider:  a.AgentProvider,
-		OptionGroups:   svc.optionGroupsForAgent(a),
-		StartupError:   startupError,
-		StartupMessage: startupMessage,
+		Id:               a.ID,
+		Title:            a.Title,
+		Status:           status,
+		WorkingDir:       a.WorkingDir,
+		AgentSessionId:   a.AgentSessionID,
+		HomeDir:          a.HomeDir,
+		WorkerId:         svc.WorkerID,
+		CreatedAt:        timefmt.Format(a.CreatedAt.Time),
+		GitStatus:        gs,
+		AgentProvider:    a.AgentProvider,
+		OptionGroups:     svc.optionGroupsForAgent(a),
+		StartupError:     startupError,
+		StartupMessage:   startupMessage,
+		SupportsSteering: isRunning && (&agentInputQueueAdapter{svc: svc}).SupportsSteering(a.ID),
 	}
 
 	// Subagent linkage. parent_agent_id is set only for virtual child agents.
@@ -1936,11 +1541,9 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 		return
 	}
 
-	// Clear the startup registry entry *before* persistConfirmedAgentSettings
-	// so that any SendAgentMessage racing against the early ACTIVE
-	// broadcast (emitted from the output sink when the first init message
-	// arrives inside startAgent) is not rejected by the SendAgentMessage
-	// startup-gate. The subprocess is up and ready for input at this
+	// Clear the startup registry entry before persistConfirmedAgentSettings.
+	// A queue dispatch can race with the early ACTIVE broadcast from the output
+	// sink. The subprocess is ready for input at this
 	// point; settings persistence is a best-effort DB write.
 	svc.AgentStartup.succeed(agentID, h)
 	if dbAgent.StartupError != "" {
@@ -2186,6 +1789,7 @@ func buildAgentFailedStatus(dbAgent *db.Agent, errMsg string, gitStatus *leapmux
 func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, gitStatus)
 	sc.OptionGroups = svc.optionGroupsForAgent(dbAgent)
+	sc.SupportsSteering = (&agentInputQueueAdapter{svc: svc}).SupportsSteering(dbAgent.ID)
 	return sc
 }
 
@@ -2234,10 +1838,8 @@ func (svc *Service) broadcastAgentActive(dbAgent *db.Agent, gitStatus *leapmuxv1
 }
 
 // broadcastAgentInactive fans out an INACTIVE AgentStatusChange. Used to
-// clear a transient STARTING spinner when an auto-start attempt
-// (ensureAgentRunning) fails — the failure surfaces to the user as a
-// per-message delivery_error rather than a permanent STARTUP_FAILED, so
-// the agent stays retryable on the next send.
+// clear a transient STARTING spinner when an auto-start attempt fails. The
+// queue retains the failed input, so the agent remains available for retry.
 func (svc *Service) broadcastAgentInactive(dbAgent *db.Agent) {
 	svc.broadcastStatusChange(dbAgent.ID, buildAgentInactiveStatus(dbAgent, nil))
 }
@@ -2934,16 +2536,16 @@ func (svc *Service) persistConfirmedAgentSettingsPreservingStartedSettings(agent
 	})
 }
 
-// handleClearContext implements the /clear command by restarting the agent
-// without resuming the previous session, giving it a fresh context window.
-func (svc *Service) handleClearContext(agentID string) {
+// prepareClearContext restarts the agent without resuming its prior session.
+// The returned function publishes the boundary after queue acceptance.
+func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
 
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		slog.Error("clear context: failed to fetch agent", "agent_id", agentID, "error", err)
-		return
+		return nil, err
 	}
 
 	// Broadcast STARTING so frontends gate the thinking indicator and
@@ -2988,7 +2590,7 @@ func (svc *Service) handleClearContext(agentID string) {
 			"type":  agent.NotificationTypeAgentError,
 			"error": "Failed to restart agent after clearing context: " + errMsg,
 		})
-		return
+		return nil, err
 	}
 	activeDbAgent, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings)
 	if err != nil {
@@ -2997,25 +2599,37 @@ func (svc *Service) handleClearContext(agentID string) {
 	}
 	slog.Info("clear context: agent restarted successfully", "agent_id", agentID)
 
-	// Persist context_cleared before broadcasting ACTIVE so the frontend
-	// receives the notification while the startup banner is still showing,
-	// and the banner is replaced atomically by the new message instead of
-	// disappearing into a brief empty gap. broadcastAgentActive is an
-	// in-memory fan-out (microseconds), while PersistLeapMuxNotification
-	// runs a DB write before broadcasting (5–50ms) — sending ACTIVE first
-	// would let the banner clear before the message lands, producing the
-	// flicker the ordering avoids. On failure the agent_error /
-	// STARTUP_FAILED pair above stands on its own so clients do not see a
-	// "cleared" UI state for an agent that is down.
-	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": agent.NotificationTypeContextCleared,
-	})
+	finish := func() {
+		// Persist context_cleared before broadcasting ACTIVE so the frontend
+		// receives the notification while the startup banner is still showing,
+		// and the banner is replaced atomically by the new message instead of
+		// disappearing into a brief empty gap. broadcastAgentActive is an
+		// in-memory fan-out (microseconds), while PersistLeapMuxNotification
+		// runs a DB write before broadcasting (5–50ms) — sending ACTIVE first
+		// would let the banner clear before the message lands, producing the
+		// flicker the ordering avoids. On failure the agent_error /
+		// STARTUP_FAILED pair above stands on its own so clients do not see a
+		// "cleared" UI state for an agent that is down.
+		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
+			"type": agent.NotificationTypeContextCleared,
+		})
 
-	// Broadcast ACTIVE explicitly so the frontend leaves STARTING even if
-	// the OutputSink's init handshake didn't (or hasn't yet) emitted its
-	// own ACTIVE broadcast. broadcastAgentActive carries the fresh model
-	// catalogs that the catch-up path also relies on.
-	svc.broadcastAgentActive(&activeDbAgent, nil)
+		// Broadcast ACTIVE explicitly so the frontend leaves STARTING even if
+		// the OutputSink's init handshake didn't (or hasn't yet) emitted its
+		// own ACTIVE broadcast. broadcastAgentActive carries the fresh model
+		// catalogs that the catch-up path also relies on.
+		svc.broadcastAgentActive(&activeDbAgent, nil)
+	}
+	return finish, nil
+}
+
+func (svc *Service) handleClearContext(agentID string) error {
+	finish, err := svc.prepareClearContext(agentID)
+	if err != nil {
+		return err
+	}
+	finish()
+	return nil
 }
 
 // resolveResumeSessionID returns the session ID to resume if the agent was
@@ -3078,9 +2692,8 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// The open path holds no manager entry until its final handoff, so HasAgent
 	// stays false for the whole of it -- and a message that lands in that window
 	// takes this path. Without the wait, begin below finds the id claimed and
-	// this returns an error, which SendAgentMessage records on the row as
-	// "agent is not running": the user's first message never reaches the CLI
-	// that the open path brings up a second later, and nothing retries it.
+	// this returns an error. The queue then retains the failed input even though
+	// the open path starts the command-line interface a second later.
 	//
 	// Only an INTERACTIVE caller waits; see startPriority.joinsInFlightStartup.
 	//
@@ -3124,8 +2737,8 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 
 	// Serialize this cold-start against any concurrent auto-start or restart for the same
 	// agent. The HasAgent check above and startAgent below otherwise straddle no lock, so two
-	// concurrent sends to a cold agent (SendAgentMessage / a synthetic message / a control
-	// request) would both pass the check and spawn duplicate subprocesses -- the second
+	// concurrent dispatches to a cold agent would both pass the check and spawn duplicate
+	// subprocesses. The second process could
 	// overwriting (and orphaning) the first in the manager's agent map. LockAgent is the same
 	// per-agent lifecycle mutex restart/clear use (see RestartAgent); re-check HasAgent under
 	// it (double-checked locking) so a start that won the race is observed rather than repeated.
@@ -3192,8 +2805,8 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// succeed() on BOTH outcomes, because it only means "drop the override and
 	// derive the status from the manager again". fail() would report
 	// STARTUP_FAILED, which refuses the user's next message for the whole
-	// failed-entry TTL; this path deliberately stays retryable, and the failure
-	// reaches the user as the caller's per-message delivery error.
+	// failed-entry TTL. This path stays retryable, and the queue stores a
+	// delivery failure on the input.
 	defer svc.AgentStartup.succeed(agentID, handle)
 
 	// Broadcast STARTING so the chat startup banner appears beneath any
@@ -3218,11 +2831,9 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 		// than stranding it until the worker exits.
 		cancel()
 		slog.Error("ensureAgentRunning: failed to start agent", "agent_id", agentID, "error", err)
-		// Revert the STARTING broadcast so the spinner clears. Caller
-		// surfaces the failure as a per-message delivery_error; we don't
-		// broadcast STARTUP_FAILED here because that would make the
-		// agent permanently unusable until the user opens a new one,
-		// while the existing design keeps it retryable on the next send.
+		// Revert the STARTING broadcast so the spinner clears. The caller
+		// keeps the failed queue item available for retry. Do not broadcast
+		// STARTUP_FAILED because that state prevents another dispatch.
 		svc.broadcastAgentInactive(&dbAgent)
 		return err
 	}
@@ -3428,116 +3039,20 @@ func (svc *Service) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 		applyOptionsSpec{live: false, notifyFirstSet: false})
 }
 
-// sendSyntheticUserMessage persists a `{content}` user row AND forwards it to the agent as input --
-// used for local plan-mode flows that originate from a UI prompt rather than a frontend
-// SendAgentMessage RPC. markType tags it for the scroll rail: UNSPECIFIED for a truly synthetic
-// prompt the user did not type (e.g. the auto-injected "Implement the plan."), or CONTROL_RESPONSE for
-// the user's own typed answer to a control request that is delivered as agent input (a Codex
-// plan-mode-prompt denial's feedback) -- so only genuine user answers draw a rail dot.
-func (svc *Service) sendSyntheticUserMessage(agentID, content string, markType leapmuxv1.MarkType) {
-	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
-	if err != nil {
-		slog.Error("synthetic user message: agent not found", "agent_id", agentID, "error", err)
-		return
+// enqueueSyntheticUserInput enqueues input from a local plan-mode flow. A control
+// response uses a control-feedback item. Other text uses an auto-continue item.
+func (svc *Service) enqueueSyntheticUserInput(agentID, content string, markType leapmuxv1.MarkType) {
+	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE
+	if markType == leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE {
+		kind = leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 	}
-
-	// Pre-resolve the resume session ID before persisting (same reason
-	// as in SendAgentMessage — see comment there).
-	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-
-	messageID := id.Generate()
-	now := nowMillis()
-	innerJSON, err := userMessageContent(content)
-	if err != nil {
-		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
-		return
-	}
-	compressed, compressionType := msgcodec.Compress(innerJSON)
-
-	// Capture currently-active spans so the user message renders with
-	// passthrough vertical bars instead of breaking the column.
-	spanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
-
-	// mark_type is caller-scoped: UNSPECIFIED for an auto-injected synthetic prompt
-	// (no rail dot), CONTROL_RESPONSE for the user's own typed control answer delivered
-	// as agent input (a rail dot, like every other control-answer path).
-	seq, err := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
-		ID:                 messageID,
-		AgentID:            agentID,
-		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		Depth:              0,
-		SpanID:             "",
-		ParentSpanID:       "",
-		SpanLines:          spanLines,
-		SpanColor:          0,
-		AgentProvider:      dbAgent.AgentProvider,
-		MarkType:           markType,
-		CreatedAt:          sqltime.NewSQLiteTime(now),
-	})
-	if err != nil {
-		slog.Error("synthetic user message: failed to persist message", "agent_id", agentID, "error", err)
-		return
-	}
-
-	deliveryError := ""
-	if !svc.Agents.HasAgent(agentID) {
-		if startErr := svc.ensureAgentRunning(agentID, &resumeSessionID, interactiveStart); startErr != nil {
-			deliveryError = "agent is not running"
-		} else if sendErr := svc.Agents.SendInput(agentID, content, nil); sendErr != nil {
-			slog.Error("synthetic user message: failed to send after auto-start", "agent_id", agentID, "error", sendErr)
-			deliveryError = sendErr.Error()
-		}
-	} else if sendErr := svc.Agents.SendInput(agentID, content, nil); sendErr != nil {
-		slog.Error("synthetic user message: failed to send input", "agent_id", agentID, "error", sendErr)
-		deliveryError = sendErr.Error()
-	}
-	if deliveryError != "" {
-		_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
-			DeliveryError: deliveryError,
-			ID:            messageID,
-			AgentID:       agentID,
-		})
-	}
-
-	userMsg := &leapmuxv1.AgentChatMessage{
-		Id:                 messageID,
-		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		Seq:                seq,
-		DeliveryError:      deliveryError,
-		AgentProvider:      dbAgent.AgentProvider,
-		CreatedAt:          timefmt.Format(now),
-		Depth:              0,
-		SpanLines:          spanLines,
-		MarkType:           markType,
-	}
-	svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-		AgentId: agentID,
-		Event: &leapmuxv1.AgentEvent_AgentMessage{
-			AgentMessage: userMsg,
-		},
-	})
-	if deliveryError != "" {
-		svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
-			AgentId: agentID,
-			Event: &leapmuxv1.AgentEvent_MessageError{
-				MessageError: &leapmuxv1.AgentMessageError{
-					AgentId:   agentID,
-					MessageId: messageID,
-					Error:     deliveryError,
-				},
-			},
-		})
+	if _, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
+		ID: id.Generate(), AgentID: agentID, Kind: kind, Text: content,
+	}); err != nil {
+		slog.Error("synthetic user input enqueue failed", "agent_id", agentID, "error", err)
 	}
 }
 
-// initiatePlanExecution clears the agent's context and sends the plan as a
-// user message. For providers that support in-place context clearing (Codex),
-// it sends a new thread/start on the running process. For others (Claude Code),
-// it stops and restarts the agent process entirely.
 func (svc *Service) initiatePlanExecution(agentID string, targetMode string) {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
@@ -3569,54 +3084,38 @@ func (svc *Service) initiatePlanExecution(agentID string, targetMode string) {
 		planMsg += "\n\n---\n\nThe above plan has been written to " + dbAgent.PlanFilePath + " — re-read it if needed."
 	}
 
-	// Try in-place context clearing first (e.g. Codex thread/start on
-	// the running process). Fall back to full restart if not supported.
-	if newSessionID, ok := svc.Agents.ClearContext(agentID); ok {
-		slog.Info("plan exec: context cleared in-place", "agent_id", agentID, "session_id", newSessionID)
+	if _, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
+		ID: id.Generate(), AgentID: agentID,
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION,
+		Text: planMsg, TargetMode: targetMode, PrepareContext: true,
+	}); err != nil {
+		slog.Error("plan execution input enqueue failed", "agent_id", agentID, "error", err)
+	}
+}
 
-		// Update the session ID in the DB.
-		_ = svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
+func (svc *Service) preparePlanExecutionContext(agentID, targetMode string, dbAgent db.Agent) error {
+	if newSessionID, ok := svc.Agents.ClearContext(agentID); ok {
+		if err := svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 			AgentSessionID: newSessionID,
 			ID:             agentID,
-		})
-
-		// Clear span tracking and broadcast notifications.
+		}); err != nil {
+			return err
+		}
 		svc.Output.ResetSpanTracker(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
 			"type": agent.NotificationTypeContextCleared,
 		})
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":           agent.NotificationTypePlanExecution,
-			"plan_file_path": dbAgent.PlanFilePath,
+			"type": agent.NotificationTypePlanExecution, "plan_file_path": dbAgent.PlanFilePath,
 		})
-	} else {
-		// Full restart path (Claude Code and other providers).
-		svc.initiatePlanExecutionRestart(agentID, targetMode, dbAgent, planMsg)
+		return nil
 	}
-
-	// Send plan content as user message and persist it for the frontend.
-	if err := svc.Agents.SendInput(agentID, planMsg, nil); err != nil {
-		slog.Error("plan exec: failed to send plan content", "agent_id", agentID, "error", err)
-	}
-
-	// Persist the plan execution message so the frontend can render it as
-	// a collapsible "Execute plan" bubble.
-	innerJSON, err := json.Marshal(map[string]interface{}{
-		"content":       planMsg,
-		"planExecution": true,
-	})
-	if err != nil {
-		slog.Warn("plan exec: marshal plan execution message", "agent_id", agentID, "error", err)
-		return
-	}
-	if err := svc.Output.persistAndBroadcast(agentID, dbAgent.AgentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, innerJSON, agent.SpanInfo{}, nil); err != nil {
-		slog.Warn("plan exec: failed to persist plan execution message", "agent_id", agentID, "error", err)
-	}
+	return svc.initiatePlanExecutionRestart(agentID, targetMode, dbAgent)
 }
 
 // initiatePlanExecutionRestart performs a full stop-and-restart to clear
 // context for providers that don't support in-place clearing (e.g. Claude Code).
-func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbAgent db.Agent, planMsg string) {
+func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbAgent db.Agent) error {
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
 
@@ -3658,13 +3157,14 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 			"type":  agent.NotificationTypeAgentError,
 			"error": "Failed to restart agent for plan execution: " + err.Error(),
 		})
-		return
+		return err
 	}
 	if _, err := svc.persistConfirmedStartupSettings(agentID, dbAgent.AgentProvider, launchOptions.Options, confirmedSettings); err != nil {
 		slog.Warn("plan exec: failed to persist confirmed settings", "agent_id", agentID, "error", err)
 	}
 
 	slog.Info("plan exec: agent restarted successfully", "agent_id", agentID)
+	return nil
 }
 
 // broadcastReplayAgentEvent wraps an AgentEvent in the WatchEventsResponse
@@ -3831,7 +3331,6 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		Source:             m.Source,
 		Content:            m.Content,
 		Seq:                m.Seq,
-		DeliveryError:      m.DeliveryError,
 		ContentCompression: leapmuxv1.ContentCompression(m.ContentCompression),
 		AgentProvider:      m.AgentProvider,
 		CreatedAt:          timefmt.Format(m.CreatedAt.Time),

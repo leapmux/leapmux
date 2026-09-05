@@ -98,7 +98,7 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-plan")
 	require.NoError(t, err)
 
-	svc.initiatePlanExecutionRestart("agent-plan", contracts.ClaudeModeDefault, dbAgent, "Execute the plan.")
+	require.NoError(t, svc.initiatePlanExecutionRestart("agent-plan", contracts.ClaudeModeDefault, dbAgent))
 
 	assertControlRequestsCleared(t, ctx, svc, w, "agent-plan", requestID)
 }
@@ -119,7 +119,7 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-clear", "ws-1")
 
-	svc.handleClearContext("agent-clear")
+	require.NoError(t, svc.handleClearContext("agent-clear"))
 
 	assertControlRequestsCleared(t, ctx, svc, w, "agent-clear", requestID)
 }

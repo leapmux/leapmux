@@ -370,25 +370,13 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 // SendInput routes a user message to the specified agent, waiting out any
 // lifecycle operation that is in flight for it.
 //
-// The wait is the point. A restart (a settings change the provider cannot apply
-// live, a /clear, a plan execution) stops the old process and starts a new one,
-// and a message that arrives inside that window used to reach the OLD provider
-// and come back "agent is stopped" -- the user's message was persisted with a
-// delivery error and the turn never ran, for a restart they could not see.
-// Resolving the provider under the lifecycle lock makes the send block for the
-// length of the restart and then reach the NEW process, which is what the user
-// asked for.
+// A restart stops the old process and starts a new process. Resolve the provider
+// under the lifecycle lock so input that arrives during this interval reaches
+// the new process.
 //
-// The lock covers the RESOLVE only, never the write. A provider's SendInput
-// blocks for as long as the turn takes -- Codex's turn/start has no timeout at
-// all, "minutes-to-hours" by its own comment -- and holding a lifecycle lock
-// across that would park every restart, /clear, plan execution and auto-start
-// for the agent behind one message, turn a stalled write into a wedged agent,
-// and defeat mid-turn steering, which needs the second send to reach the
-// provider WHILE the first turn runs. What remains is a race of a few
-// instructions: a restart that begins between the resolve and the write still
-// meets the old process. That is the pre-existing failure, now vanishingly
-// narrow, rather than a new class of one.
+// The lock covers only provider resolution. A blocked provider write must not
+// block a restart or explicit steering. A restart can still start between the
+// resolution and the write, but the interval is only the provider call setup.
 //
 // Never call this from a caller that already holds the lifecycle lock
 // (LockAgent, RestartAgent): the lock is not reentrant, so it deadlocks. Send
@@ -401,6 +389,58 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		return err
 	}
 	return p.SendInput(content, attachments)
+}
+
+func (m *Manager) CompactContext(agentID string) error {
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
+	}
+	compactor, ok := p.(ContextCompactor)
+	if !ok {
+		return ErrCompactionUnsupported
+	}
+	return compactor.CompactContext()
+}
+
+func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
+	}
+	steerer, ok := p.(InputSteerer)
+	if !ok {
+		return ErrSteeringUnsupported
+	}
+	return steerer.SteerInput(content, attachments)
+}
+
+func (m *Manager) SupportsSteering(agentID string) bool {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	_, ok = p.(InputSteerer)
+	if !ok {
+		return false
+	}
+	if capability, hasCapability := p.(SteeringCapability); hasCapability {
+		return capability.SupportsSteering()
+	}
+	return true
+}
+
+func (m *Manager) InputReady(agentID string) bool {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	ready, ok := p.(InputReadiness)
+	return !ok || ready.InputReady()
 }
 
 // providerAfterLifecycle resolves an agent's running provider, first waiting out
@@ -456,13 +496,8 @@ func (m *Manager) Interrupt(agentID string) error {
 // ChildSteerer; providers that cannot steer a subagent return
 // ErrChildSteeringUnsupported. The service resolves childKey from the registry
 // before calling here.
-// Like SendInput, it waits out a lifecycle operation in flight for the OWNER
-// process before it resolves one: a message to a subagent tab, sent while a
-// settings change or /clear restarts the owner, otherwise reached the stopped
-// process and came back "agent is not running" -- persisted with a delivery
-// error, for a restart the user could not see. The lock covers the resolve
-// only, for the reason SendInput gives: steering a child blocks for the whole
-// child turn.
+// Like SendInput, it waits for an active lifecycle operation on the owner.
+// The lock covers only provider resolution because child steering can block.
 func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	p, err := m.providerAfterLifecycle(rootAgentID)
 	if err != nil {
@@ -473,6 +508,18 @@ func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachme
 		return ErrChildSteeringUnsupported
 	}
 	return steerer.SendChildInput(childKey, content, attachments)
+}
+
+func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	p, err := m.providerAfterLifecycle(rootAgentID)
+	if err != nil {
+		return err
+	}
+	steerer, ok := p.(ChildSteerer)
+	if !ok {
+		return ErrChildSteeringUnsupported
+	}
+	return steerer.SteerChildInput(childKey, content, attachments)
 }
 
 // InterruptChild aborts a subagent's current turn inside the owner process,

@@ -220,6 +220,8 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
+	inputReady    func(agentID string)
+	inputStarted  func(agentID string)
 
 	// wakeLock prevents system sleep while there is agent/terminal activity.
 	wakeLock *wakelock.ActivityTracker
@@ -282,6 +284,14 @@ func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
 // is processed.
 func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
+}
+
+func (h *OutputHandler) SetInputReadyFunc(fn func(agentID string)) {
+	h.inputReady = fn
+}
+
+func (h *OutputHandler) SetInputStartedFunc(fn func(agentID string)) {
+	h.inputStarted = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -587,6 +597,18 @@ type agentOutputSink struct {
 
 func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, content, span, s.tracker)
+}
+
+func (s *agentOutputSink) InputReady() {
+	if s.h.inputReady != nil {
+		s.h.inputReady(s.agentID)
+	}
+}
+
+func (s *agentOutputSink) InputStarted() {
+	if s.h.inputStarted != nil {
+		s.h.inputStarted(s.agentID)
+	}
 }
 
 // PersistTurnEnd persists the universal turn-end divider envelope and

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -67,12 +68,6 @@ const (
 	acpUpdateConfigOptionUpdate      = "config_option_update"
 )
 
-// acpPendingInput holds a user message queued while a prompt is in flight.
-type acpPendingInput struct {
-	content     string
-	attachments []*leapmuxv1.Attachment
-}
-
 // jsonrpcBase extends processBase with JSON-RPC request/response plumbing
 // shared by all ACP agents and CodexAgent.
 type jsonrpcBase struct {
@@ -80,16 +75,11 @@ type jsonrpcBase struct {
 	responseCorrelator[int64]
 	nextReqID atomic.Int64
 
-	// Prompt queueing: ACP servers support only one active prompt per session.
-	// Messages arriving mid-turn are queued and coalesced into a single prompt
-	// once the current turn completes.
-	promptActive    bool              // true while a prompt RPC is in flight
-	pendingMessages []acpPendingInput // queued messages waiting for current turn
-
-	// promptFunc is set by the concrete agent during construction. It sends
-	// a single prompt RPC and blocks until the turn completes (including
-	// response handling). Called by runPrompt on a goroutine.
-	promptFunc func(content string, attachments []*leapmuxv1.Attachment)
+	// promptActive is true while the provider processes one ACP prompt. The
+	// Worker-owned durable queue holds later input.
+	promptActive bool
+	steerMethod  string
+	steerRunID   string
 }
 
 // acpModeChannel identifies how an ACP provider maps the configOptions `mode` select
@@ -315,22 +305,40 @@ func (b *acpBase) handleACPPromptResponse(resp json.RawMessage) {
 	b.mu.Lock()
 	assistantText := b.turnAssistantText.String()
 	b.turnAssistantText.Reset()
-	// BUG: this clear runs BEFORE enrichWithToolUses below reads the same
-	// field, so every ACP turn reports num_tool_uses:0 and the frontend
-	// suppresses the completion sound for all six ACP providers. The fix is to
-	// capture the count here and enrich from the captured value.
-	// https://github.com/leapmux/leapmux/issues/435
+	numToolUses := b.turnToolUses
 	b.turnToolUses = 0
 	b.mu.Unlock()
 
 	b.persistPromptResponse(assistantText, resp, func(resp json.RawMessage) json.RawMessage {
-		return b.enrichWithToolUses(resp)
+		return enrichWithToolUseCount(resp, numToolUses)
 	})
 }
 
 // acpSessionUpdateHandler is called for session update types not handled by
 // the shared dispatcher. Return true if the update was consumed.
 type acpSessionUpdateHandler func(sessionUpdate string, update json.RawMessage) bool
+
+func (b *acpBase) captureGooseSteerRunID(updateType string, metadata map[string]json.RawMessage) bool {
+	if b.providerName != "goose" || updateType != "session_info_update" {
+		return false
+	}
+	var goose map[string]json.RawMessage
+	if json.Unmarshal(metadata["goose"], &goose) != nil {
+		return false
+	}
+	rawRunID, ok := goose["activeRunId"]
+	if !ok {
+		return false
+	}
+	var runID string
+	if string(rawRunID) != "null" && json.Unmarshal(rawRunID, &runID) != nil {
+		return false
+	}
+	b.mu.Lock()
+	b.steerRunID = runID
+	b.mu.Unlock()
+	return true
+}
 
 // acpMethodHandler is called for JSON-RPC methods not handled by the shared
 // ACP dispatcher. Return true if the method was consumed.
@@ -351,12 +359,16 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 	update := wrapper.Update
 
 	var header struct {
-		SessionUpdate string          `json:"sessionUpdate"`
-		Role          string          `json:"role"`
-		Content       json.RawMessage `json:"content"`
+		SessionUpdate string                     `json:"sessionUpdate"`
+		Role          string                     `json:"role"`
+		Content       json.RawMessage            `json:"content"`
+		Meta          map[string]json.RawMessage `json:"_meta"`
 	}
 	if err := json.Unmarshal(update, &header); err != nil {
 		slog.Warn("acp session update unmarshal header failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
+		return
+	}
+	if b.captureGooseSteerRunID(header.SessionUpdate, header.Meta) {
 		return
 	}
 
@@ -1150,6 +1162,30 @@ func (b *jsonrpcBase) sendRequest(method string, params json.RawMessage, timeout
 	return resp, nil
 }
 
+func (b *jsonrpcBase) sendDetachedRequest(method string, params json.RawMessage, handle func(json.RawMessage, error)) error {
+	reqID := b.nextReqID.Add(1)
+	ch, release := b.register(reqID)
+	data, err := json.Marshal(jsonrpcMessage{JSONRPC: "2.0", ID: reqID, Method: method, Params: params})
+	if err != nil {
+		release()
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	data = append(data, '\n')
+	if err := b.writeStdin(data); err != nil {
+		release()
+		return fmt.Errorf("write request: %w", err)
+	}
+	go func() {
+		defer release()
+		resp, err := b.awaitResponse(ch, method, 0)
+		if err == nil {
+			err = jsonRPCResultError(resp)
+		}
+		handle(resp, err)
+	}()
+	return nil
+}
+
 func (b *jsonrpcBase) sendNotification(method string, params json.RawMessage) error {
 	data, err := json.Marshal(jsonrpcMessage{
 		JSONRPC: "2.0",
@@ -1224,72 +1260,104 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
-// enqueueOrSendPrompt queues a message if a prompt is in flight, or starts
-// a new prompt goroutine if idle. Returns an error only if the agent is stopped.
-func (b *jsonrpcBase) enqueueOrSendPrompt(content string, attachments []*leapmuxv1.Attachment) error {
-	b.mu.Lock()
-	if b.stopped {
-		b.mu.Unlock()
-		return fmt.Errorf("agent is stopped")
-	}
-	if b.promptActive {
-		b.pendingMessages = append(b.pendingMessages, acpPendingInput{content, attachments})
-		b.mu.Unlock()
-		return nil
-	}
-	b.promptActive = true
-	b.mu.Unlock()
-
-	go b.runPrompt(content, attachments)
-	return nil
-}
-
-// runPrompt calls the agent's promptFunc and then drains any queued messages.
-// It runs on a dedicated goroutine and loops until the queue is empty.
-func (b *jsonrpcBase) runPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	for {
-		b.promptFunc(content, attachments)
-
-		b.mu.Lock()
-		if len(b.pendingMessages) == 0 || b.stopped {
-			b.promptActive = false
-			b.pendingMessages = nil
-			b.mu.Unlock()
-			return
-		}
-		pending := b.pendingMessages
-		b.pendingMessages = nil
-		b.mu.Unlock()
-
-		// Coalesce queued messages into a single prompt.
-		var parts []string
-		var allAttachments []*leapmuxv1.Attachment
-		for _, p := range pending {
-			if p.content != "" {
-				parts = append(parts, p.content)
-			}
-			allAttachments = append(allAttachments, p.attachments...)
-		}
-		content = strings.Join(parts, "\n\n")
-		attachments = allAttachments
-	}
-}
-
-// SendInput queues a user message or starts a new prompt if idle.
+// SendInput starts one prompt. The Worker queue holds later input until this
+// prompt ends.
 func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	b.mu.Lock()
 	if b.sessionID == "" {
 		b.mu.Unlock()
 		return fmt.Errorf("agent has no active session")
 	}
+	if b.stopped {
+		b.mu.Unlock()
+		return fmt.Errorf("agent is stopped")
+	}
+	if b.promptActive {
+		b.mu.Unlock()
+		return ErrNoActiveTurn
+	}
+	b.promptActive = true
 	b.mu.Unlock()
-	return b.enqueueOrSendPrompt(content, attachments)
+	err := b.sendACPPromptDetached(content, attachments, func(resp json.RawMessage, err error) {
+		if err != nil {
+			if !b.IsStopped() {
+				slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
+				b.sink.PersistLeapMuxNotification(map[string]interface{}{"type": NotificationTypeAgentError, "error": fmt.Sprintf("prompt failed: %v", err)})
+			}
+		} else {
+			b.handleACPPromptResponse(resp)
+		}
+		b.mu.Lock()
+		b.promptActive = false
+		b.steerRunID = ""
+		b.mu.Unlock()
+		notifyInputReady(b.sink)
+	})
+	if err != nil {
+		b.mu.Lock()
+		b.promptActive = false
+		b.steerRunID = ""
+		b.mu.Unlock()
+	}
+	return err
 }
 
-// Stop clears the prompt queue, tears down host terminals, and terminates the
+func (b *acpBase) InputReady() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.stopped && b.sessionID != "" && !b.promptActive
+}
+
+func (b *acpBase) sendACPPromptDetached(content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
+	b.mu.Lock()
+	sessionID := b.sessionID
+	b.mu.Unlock()
+	params, err := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"prompt":    buildACPPromptBlocks(content, classifyAttachments(attachments)),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal ACP prompt params: %w", err)
+	}
+	return b.sendDetachedRequest(acpMethodSessionPrompt, params, handle)
+}
+
+func (b *acpBase) steerAdvertised(content string, attachments []*leapmuxv1.Attachment) error {
+	b.mu.Lock()
+	method, active, sessionID := b.steerMethod, b.promptActive, b.sessionID
+	b.mu.Unlock()
+	if method == "" {
+		return ErrSteeringUnsupported
+	}
+	if !active {
+		return ErrNoActiveTurn
+	}
+	params, err := json.Marshal(map[string]interface{}{
+		"sessionId": sessionID,
+		"prompt":    buildACPPromptBlocks(content, classifyAttachments(attachments)),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal ACP steer params: %w", err)
+	}
+	if _, err := b.sendRequest(method, params, b.APITimeout()); err != nil {
+		if hasJSONRPCErrorCode(err, -32600, -32602) {
+			return ErrNoActiveTurn
+		}
+		return classifyJSONRPCDeliveryError(method, err)
+	}
+	b.mu.Lock()
+	stillActive := b.promptActive
+	b.mu.Unlock()
+	if !stillActive {
+		return ErrNoActiveTurn
+	}
+	return nil
+}
+
+// Stop clears prompt state, tears down host terminals, and terminates the
 // agent process.
 func (b *acpBase) Stop() {
-	b.clearPromptQueue()
+	b.clearActivePrompt()
 	b.releaseAllTerminals()
 	b.processBase.Stop()
 }
@@ -1311,48 +1379,12 @@ func (b *acpBase) stopAndWait() {
 	_ = b.Wait()
 }
 
-// clearPromptQueue discards any queued messages and resets the prompt-active flag.
-func (b *jsonrpcBase) clearPromptQueue() {
+// clearActivePrompt resets the provider-local active-turn state.
+func (b *jsonrpcBase) clearActivePrompt() {
 	b.mu.Lock()
-	b.pendingMessages = nil
 	b.promptActive = false
+	b.steerRunID = ""
 	b.mu.Unlock()
-}
-
-// sendPrompt builds and sends an ACP prompt, then calls the provided
-// response handler. The shared send/queue core behind doSendACPPrompt.
-func (b *acpBase) sendPrompt(
-	content string,
-	attachments []*leapmuxv1.Attachment,
-	sendRPC func(json.RawMessage) (json.RawMessage, error),
-	handleResponse func(json.RawMessage),
-) {
-	b.mu.Lock()
-	sessionID := b.sessionID
-	b.mu.Unlock()
-
-	prompt := buildACPPromptBlocks(content, classifyAttachments(attachments))
-	params, err := json.Marshal(map[string]interface{}{
-		"sessionId": sessionID,
-		"prompt":    prompt,
-	})
-	if err != nil {
-		slog.Warn("acp marshal prompt params", "agent_id", b.agentID, "error", err)
-		return
-	}
-
-	resp, err := sendRPC(json.RawMessage(params))
-	if err != nil {
-		if !b.IsStopped() {
-			slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
-			b.sink.PersistLeapMuxNotification(map[string]interface{}{
-				"type":  NotificationTypeAgentError,
-				"error": fmt.Sprintf("prompt failed: %v", err),
-			})
-		}
-		return
-	}
-	handleResponse(resp)
 }
 
 // extractACPChunkText pulls the `text` field from an ACP content envelope.
@@ -1966,13 +1998,35 @@ func parseJSONRPCError(resp json.RawMessage) (code int, message string, ok bool)
 	return rpcErr.Code, rpcErr.Message, true
 }
 
+type jsonRPCResponseError struct {
+	Code    int
+	Message string
+}
+
+func (e *jsonRPCResponseError) Error() string {
+	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
+}
+
+func hasJSONRPCErrorCode(err error, codes ...int) bool {
+	var responseErr *jsonRPCResponseError
+	return errors.As(err, &responseErr) && slices.Contains(codes, responseErr.Code)
+}
+
+func classifyJSONRPCDeliveryError(operation string, err error) error {
+	var responseErr *jsonRPCResponseError
+	if errors.As(err, &responseErr) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return fmt.Errorf("%w: provider did not confirm delivery for %s: %v", ErrDeliveryUncertain, operation, err)
+}
+
 // jsonRPCResultError returns an error if resp is a JSON-RPC error response.
 func jsonRPCResultError(resp json.RawMessage) error {
 	code, message, ok := parseJSONRPCError(resp)
 	if !ok {
 		return nil
 	}
-	return fmt.Errorf("json-rpc error %d: %s", code, message)
+	return &jsonRPCResponseError{Code: code, Message: message}
 }
 
 // ExtractJSONRPCID extracts the JSON-RPC "id" field from a raw JSON payload,
@@ -2050,11 +2104,12 @@ func (b *acpBase) startACPHandshake(
 	timeout := opts.startupTimeout()
 
 	// 1. Send "initialize" request.
-	_, err := b.sendRequest(acpMethodInitialize, initParams, timeout)
+	initResp, err := b.sendRequest(acpMethodInitialize, initParams, timeout)
 	if err != nil {
 		cleanup()
 		return nil, b.formatStartupError("initialize", err)
 	}
+	b.steerMethod = advertisedACPSteerMethod(b.providerName, initResp)
 	// 2. Send session request (resume or new).
 	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
 	sessionResp, err := b.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
@@ -2094,6 +2149,38 @@ func (b *acpBase) startACPHandshake(
 	b.sink.BroadcastStatusActive(sessionID)
 
 	return session, nil
+}
+
+func advertisedACPSteerMethod(providerName string, initializeResponse []byte) string {
+	var namespace, candidate string
+	switch providerName {
+	case "goose":
+		namespace = "goose"
+		candidate = "_goose/unstable/session/steer"
+	case "reasonix":
+		namespace = "reasonix.io"
+		candidate = "_reasonix.io/session/steer"
+	}
+	if candidate == "" {
+		return ""
+	}
+	var response struct {
+		AgentCapabilities struct {
+			Meta map[string]json.RawMessage `json:"_meta"`
+		} `json:"agentCapabilities"`
+	}
+	if json.Unmarshal(initializeResponse, &response) != nil {
+		return ""
+	}
+	var capability struct {
+		SessionSteer struct {
+			Method string `json:"method"`
+		} `json:"sessionSteer"`
+	}
+	if json.Unmarshal(response.AgentCapabilities.Meta[namespace], &capability) == nil && capability.SessionSteer.Method == candidate {
+		return candidate
+	}
+	return ""
 }
 
 // acpStartSpec configures acpStart for one ACP provider. acpStart runs the
@@ -2162,9 +2249,6 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
 	b.sink = sink
 	b.model = opts.Model()
-	// Default prompt sender shared by every ACP provider; a provider may override
-	// it in configure.
-	b.promptFunc = b.doSendACPPrompt
 	// Default settings-lifecycle hooks shared by every mode-bearing ACP provider:
 	// reapply on relaunch/ClearContext and refresh from a session response both derive
 	// the secondary axis + model writer from modeChannel/modelSetter, so one body serves
@@ -3503,19 +3587,4 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 			slog.Error("acp persist notification", "agent_id", b.agentID, "method", line.Method, "error", err)
 		}
 	}
-}
-
-// doSendACPPrompt sends a single ACP session/prompt RPC and processes the
-// response. It is the default promptFunc for every ACP agent.
-//
-// No timeout on the RPC: the turn unblocks via response, process exit, or
-// ctx cancel (the user interrupting). A wall-clock cap would just kill
-// long-but-legitimate turns.
-func (b *acpBase) doSendACPPrompt(content string, attachments []*leapmuxv1.Attachment) {
-	b.sendPrompt(content, attachments,
-		func(params json.RawMessage) (json.RawMessage, error) {
-			return b.sendRequest(acpMethodSessionPrompt, params, 0)
-		},
-		b.handleACPPromptResponse,
-	)
 }

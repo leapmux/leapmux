@@ -478,9 +478,8 @@ export function renderMessageContent(
     // A user row is provider-neutral in the renderer layer for the same reason it
     // is in `classifyMessage`: LeapMux writes it, in its own flat
     // `{content, attachments?}` shape. Every plugin that names this kind already
-    // draws it with UserContentMessage, so a message whose provider has no plugin
-    // -- an optimistic bubble built from a tab whose worker metadata has not
-    // hydrated yet -- gets the SAME card here, rather than the raw-JSON span
+    // draws it with UserContentMessage. A message whose provider metadata has not
+    // loaded gets the same card here instead of the raw JSON span
     // below. Reached only when no plugin claimed the row above.
     if (category?.kind === 'user_content')
       return <UserContentMessage parsed={parsed} context={context} />

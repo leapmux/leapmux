@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // RunAgentSend forwards a user message to the agent.
@@ -38,7 +39,10 @@ func RunAgentSend(rawCtx any, args []string) error {
 			return nil
 		},
 		body: func(ctx context.Context, c *control.Client, workerID, agentID string) error {
-			if err := callInnerRPC(ctx, c, workerID, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{AgentId: agentID, Content: message}, nil); err != nil {
+			if err := callInnerRPC(ctx, c, workerID, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+				AgentId: agentID, InputId: id.Generate(), Text: message,
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+			}, nil); err != nil {
 				return err
 			}
 			return control.EmitData(map[string]string{"agent_id": agentID})

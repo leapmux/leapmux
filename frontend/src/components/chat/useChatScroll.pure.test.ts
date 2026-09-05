@@ -221,13 +221,6 @@ describe('computekeepnewest', () => {
     // Anchor at index 1 (m2): keep m2, m3, m4 -> 3 rows.
     expect(computeKeepNewest(msgs, anchor('m2'), 1)).toBe(3)
   })
-
-  it('excludes trailing optimistic locals (seq 0n) from the kept-server count', () => {
-    // m1, m2 server + two trailing locals; anchor at m1 (index 0). The store caps
-    // server messages only, so the locals must NOT inflate the kept count.
-    const withLocals = [msg('m1', 1n), msg('m2', 2n), msg('local-a', 0n), msg('local-b', 0n)]
-    expect(computeKeepNewest(withLocals, anchor('m1'), 0)).toBe(2)
-  })
 })
 
 describe('computebufferawarekeepnewest', () => {

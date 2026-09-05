@@ -333,7 +333,7 @@ func TestClearContext_MintsAControlSocket(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	svc.handleClearContext("agent-1")
+	require.NoError(t, svc.handleClearContext("agent-1"))
 
 	assert.Contains(t, rec.envFor("agent-1"), "LEAPMUX_CONTROL_TOKEN=token-1")
 }
@@ -365,7 +365,7 @@ func TestPlanExecutionRestart_MintsAControlSocket(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	svc.initiatePlanExecutionRestart("agent-1", "acceptEdits", requireAgentRow(t, svc, "agent-1"), "run the plan")
+	require.NoError(t, svc.initiatePlanExecutionRestart("agent-1", "acceptEdits", requireAgentRow(t, svc, "agent-1")))
 
 	assert.Contains(t, rec.envFor("agent-1"), "LEAPMUX_CONTROL_TOKEN=token-1")
 }
@@ -383,7 +383,7 @@ func TestPlanExecutionRestart_MissingIdentityRefusesTheSpawn(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	svc.initiatePlanExecutionRestart("agent-1", "acceptEdits", requireAgentRow(t, svc, "agent-1"), "run the plan")
+	require.Error(t, svc.initiatePlanExecutionRestart("agent-1", "acceptEdits", requireAgentRow(t, svc, "agent-1")))
 
 	assert.Empty(t, rec.ids(), "no process may start when its control socket cannot be scoped to a user")
 	assert.Empty(t, requireAgentRow(t, svc, "agent-1").AgentSessionID,
@@ -778,10 +778,8 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 //
 // A message sent inside the open path's startup window takes the auto-start
 // path, because HasAgent is false until that startup's final handoff. Refusing
-// there loses the message outright: SendAgentMessage records "agent is not
-// running" on the row, the open path brings the CLI up a second later, and
-// nothing ever hands it what the user typed. Joining the startup that is already
-// running is what keeps that message.
+// there leaves the input failed even though the open path starts the command-line
+// interface a second later. Joining the existing startup delivers that input.
 func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 	t.Parallel()
 

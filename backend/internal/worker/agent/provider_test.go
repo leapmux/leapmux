@@ -120,7 +120,6 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 	skillsChanged := json.RawMessage(`{"method":"skills/changed","params":{}}`)
 	remoteControlStatus := json.RawMessage(`{"method":"remoteControl/status/changed","params":{"status":"disabled","environmentId":null}}`)
 	startup := json.RawMessage(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":"ready"}}`)
-	threadCompacted := json.RawMessage(`{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`)
 	contextCompactionStart := json.RawMessage(`{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}`)
 	commandExecutionStart := json.RawMessage(`{"method":"item/started","params":{"item":{"type":"commandExecution","id":"cmd-1"}}}`)
 
@@ -143,12 +142,6 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 		Kind: NotificationKindProviderScoped,
 		Key:  "codex:mcpServer/startupStatus/updated:codex_apps",
 	}, plugin.Classify(startup))
-
-	assert.Equal(t, NotificationClassification{
-		Kind: NotificationKindCompactionBoundary,
-		Key:  "codex:thread/compacted",
-	}, plugin.Classify(threadCompacted),
-		"thread/compacted is the boundary signal — consolidatable so repeated boundaries collapse")
 
 	assert.Equal(t, NotificationClassification{
 		Kind: NotificationKindStatus,

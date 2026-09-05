@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
-import * as bubbleStyles from '~/components/chat/MessageBubble.css'
 import { classifyAgentMessage, messageRowChromeClass } from '~/components/chat/messageClassification'
 import { MessageContextMenuHostProvider } from '~/components/chat/MessageContextMenuHost'
 import * as chatStyles from '~/components/chat/messageStyles.css'
@@ -501,63 +500,6 @@ describe('thinking message expansion preference', () => {
 // ---------------------------------------------------------------------------
 
 describe('messageBubble rawJson', () => {
-  it('includes metadata fields', async () => {
-    const innerMsg = {
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'Hello' }] },
-    }
-    const msg = makeMsg({
-      id: 'msg-meta-1',
-      source: MessageSource.AGENT,
-      seq: 3n,
-      createdAt: '2025-01-15T10:00:00.000Z',
-      deliveryError: 'worker offline',
-      content: rawContent(innerMsg),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} error="worker offline" />
-      </PreferencesProvider>
-    ))
-
-    const envelope = await copyRawJson()
-    expect(envelope.id).toBe('msg-meta-1')
-    expect(envelope.source).toBe('agent')
-    expect(envelope.seq).toBe(3)
-    expect(envelope.created_at).toBe('2025-01-15T10:00:00.000Z')
-    expect(envelope.delivery_error).toBe('worker offline')
-    // Raw JSON format uses content (not messages) for non-LEAPMUX messages
-    expect(envelope).toHaveProperty('content')
-    expect(envelope).not.toHaveProperty('messages')
-  })
-
-  it('omits empty optional fields', async () => {
-    const innerMsg = {
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'No optionals' }] },
-    }
-    const msg = makeMsg({
-      id: 'msg-no-opts',
-      source: MessageSource.AGENT,
-      deliveryError: '',
-      content: rawContent(innerMsg),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    const envelope = await copyRawJson()
-    expect(envelope).not.toHaveProperty('delivery_error')
-    // Required fields should still be present.
-    expect(envelope.id).toBe('msg-no-opts')
-    expect(envelope.source).toBe('agent')
-    expect(envelope).toHaveProperty('content')
-  })
-
   it('includes content as object for non-LEAPMUX messages', async () => {
     const innerMsg = {
       type: 'assistant',
@@ -1209,116 +1151,6 @@ describe('agent stats summary', () => {
   })
 })
 
-describe('pending user bubble state', () => {
-  it('stops pulsation when a local user message has a delivery error', () => {
-    const msg = makeMsg({
-      id: 'local-1',
-      source: MessageSource.USER,
-      content: rawContent({ content: 'hello' }),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} error="Failed to deliver" />
-      </PreferencesProvider>
-    ))
-
-    expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.userMessagePending)
-  })
-
-  it('keeps pulsation for a local user message without a delivery error', () => {
-    const msg = makeMsg({
-      id: 'local-2',
-      source: MessageSource.USER,
-      content: rawContent({ content: 'hello' }),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessagePending)
-  })
-
-  it('widens the row behind a pulsing local bubble, which bleeds like a settled one', () => {
-    // `userMessagePending` is the same `endBubble` card, so it takes the same flush-right
-    // marker. The negative right margin that marker turns on lives in the stylesheet's
-    // `bleedRow .bubbleFlushRight` rule, and paint containment on the virtual row clips a
-    // descendant to the row's padding box -- so the row has to widen to match. This branch
-    // is picked by isPendingUserMessage, which messageBubbleClass never sees, so the
-    // (kind, source) sweep beside bubbleRunsToRightEdge cannot reach it.
-    const msg = makeMsg({
-      id: 'local-3',
-      source: MessageSource.USER,
-      content: rawContent({ content: 'hello' }),
-    })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessagePending)
-    expect(messageRowChromeClass(classifyAgentMessage(msg).kind, msg.source)).toBe(chatStyles.bleedRow)
-  })
-
-  it('closes the bubble again when the message failed to deliver', () => {
-    // The "Failed to deliver / Retry / Delete" line is a sibling below the row, laid out
-    // against the row's content edge -- so a bleeding bubble above it would leave the two
-    // right edges a whole gutter apart. Bleeding that line to match would put Retry and
-    // Delete under the scroll rail's column, which takes every pointer event in its own box.
-    const msg = makeMsg({
-      id: 'local-4',
-      source: MessageSource.USER,
-      content: rawContent({ content: 'hello' }),
-    })
-
-    const { container } = render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} error="Failed to deliver" />
-      </PreferencesProvider>
-    ))
-
-    expect(container.querySelector(`.${bubbleStyles.messageWithError}`)).not.toBeNull()
-    expect(screen.getByTestId('message-error')).toBeInTheDocument()
-    // The bubble is still a user bubble, and it drops ONLY the flush-right marker.
-    // Nothing cancels a bleed here: without the marker no bleed is declared at all.
-    expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessage)
-    expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.bubbleFlushRight)
-  })
-
-  it('marks a delivered user bubble flush-right, settled or pending alike', () => {
-    for (const [id, expected] of [['m-settled', chatStyles.userMessage], ['local-5', chatStyles.userMessagePending]] as const) {
-      const msg = makeMsg({ id, source: MessageSource.USER, content: rawContent({ content: 'hello' }) })
-      const view = render(() => (
-        <PreferencesProvider>
-          <MessageBubble message={msg} />
-        </PreferencesProvider>
-      ))
-      const bubble = view.getByTestId('message-bubble')
-      expect(bubble).toHaveClass(expected)
-      expect(bubble).toHaveClass(chatStyles.bubbleFlushRight)
-      view.unmount()
-    }
-  })
-
-  it('never marks an AGENT bubble flush-right', () => {
-    // The marker only takes effect inside a widened row, and an agent row is not
-    // widened -- but it must not carry the marker either, or the stylesheet is the
-    // only thing standing between it and a clipped bleed.
-    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent({ content: 'hi' }) })
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-    expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.bubbleFlushRight)
-  })
-})
-
 describe('plan execution bubble', () => {
   /**
    * The shape the worker persists when the user approves a plan: a USER-source row
@@ -1377,21 +1209,6 @@ describe('plan execution bubble', () => {
     ))
     expect(planFlushes).toBe(typedView.getByTestId('message-bubble').classList.contains(chatStyles.bubbleFlushRight))
     expect(planFlushes).toBe(true)
-  })
-
-  it('closes the card again when the plan hand-off failed to deliver', () => {
-    // Same opt-out a typed message takes: the "Failed to deliver / Retry / Delete"
-    // line is laid out against the row's CONTENT edge, so the bubble above it must
-    // square up at that edge too.
-    const msg = planExecutionMsg('plan-4')
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} error="Failed to deliver" />
-      </PreferencesProvider>
-    ))
-    const bubble = screen.getByTestId('message-bubble')
-    expect(bubble).toHaveClass(chatStyles.planExecutionMessage)
-    expect(bubble).not.toHaveClass(chatStyles.bubbleFlushRight)
   })
 })
 
@@ -1556,43 +1373,6 @@ describe('edit/write tool_use rendering', () => {
       expect(e.defaultPrevented).toBe(false)
     })
 
-    it('carries Retry and Delete for a failed message, but keeps them off the toolbar', async () => {
-      const onRetry = vi.fn()
-      const onDelete = vi.fn()
-      const msg = agentMsg()
-
-      const { container } = render(() => (
-        <PreferencesProvider>
-          <MessageContextMenuHostProvider>
-            <MessageBubble message={msg} onReply={() => {}} error="send failed" onRetry={onRetry} onDelete={onDelete} />
-          </MessageContextMenuHostProvider>
-        </PreferencesProvider>
-      ))
-
-      // The row's own visible buttons are unchanged, and the toolbar did not grow.
-      expect(screen.getByTestId('message-retry-button')).toBeInTheDocument()
-      expect(screen.getByTestId('message-delete-button')).toBeInTheDocument()
-      const toolbar = screen.getByTestId('message-toolbar')
-      expect(toolbar.querySelector('[data-testid="message-menu-retry"]')).toBeNull()
-      expect(toolbar.querySelector('[data-testid="message-menu-delete"]')).toBeNull()
-
-      // Activating an item closes the menu, so each is exercised from its own open.
-      const openMenu = async () => {
-        rowOf(container).dispatchEvent(
-          new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true }),
-        )
-        await waitFor(() => expect(screen.queryByTestId('message-menu-delete')).toBeInTheDocument())
-      }
-
-      await openMenu()
-      fireEvent.click(screen.getByTestId('message-menu-retry'))
-      expect(onRetry).toHaveBeenCalledTimes(1)
-
-      await openMenu()
-      fireEvent.click(screen.getByTestId('message-menu-delete'))
-      expect(onDelete).toHaveBeenCalledTimes(1)
-    })
-
     it('offers no recovery actions for a message that delivered', async () => {
       const { container } = renderWithHost(agentMsg())
 
@@ -1603,25 +1383,6 @@ describe('edit/write tool_use rendering', () => {
 
       expect(screen.queryByTestId('message-menu-retry')).not.toBeInTheDocument()
       expect(screen.queryByTestId('message-menu-delete')).not.toBeInTheDocument()
-    })
-
-    it('opens the menu from the failed-delivery strip, which is a row sibling', async () => {
-      // The strip sits OUTSIDE the row div the gesture normally attaches to, so
-      // it carries the gesture of its own -- a press on the one place a user
-      // most expects Retry and Delete must not fall through to the browser.
-      render(() => (
-        <PreferencesProvider>
-          <MessageContextMenuHostProvider>
-            <MessageBubble message={agentMsg()} onReply={() => {}} error="send failed" onRetry={() => {}} onDelete={() => {}} />
-          </MessageContextMenuHostProvider>
-        </PreferencesProvider>
-      ))
-
-      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
-      screen.getByTestId('message-error').dispatchEvent(e)
-      expect(e.defaultPrevented).toBe(true)
-
-      await waitFor(() => expect(screen.queryByTestId('message-menu-retry')).toBeInTheDocument())
     })
 
     it('renders without a host, so a bare bubble is unaffected', () => {

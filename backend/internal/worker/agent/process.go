@@ -557,7 +557,10 @@ func (p *processBase) enrichWithToolUses(content []byte) []byte {
 	p.mu.Lock()
 	numToolUses := p.turnToolUses
 	p.mu.Unlock()
+	return enrichWithToolUseCount(content, numToolUses)
+}
 
+func enrichWithToolUseCount(content []byte, numToolUses int) []byte {
 	enriched := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(content, &enriched); err != nil {
 		return content

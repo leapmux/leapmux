@@ -61,15 +61,6 @@ describe('binarysearch', () => {
       expect(lowerBoundBySeq([], 5n)).toBe(0)
     })
 
-    it('restricts the search to the [0, hi) prefix, ignoring trailing rows', () => {
-      // The prefix bound excludes indices >= hi entirely, so a target present only in the
-      // excluded suffix lands at hi (the insertion point), never scanning the trailing rows --
-      // this is the "server region, excluding trailing optimistic locals" call shape.
-      const withTail = [{ seq: 2n }, { seq: 5n }, { seq: 0n }, { seq: 0n }] as const
-      expect(lowerBoundBySeq(withTail, 5n, 2)).toBe(1)
-      expect(lowerBoundBySeq(withTail, 9n, 2)).toBe(2) // hi, not the array length
-    })
-
     it('matches a linear lower-bound scan across the range', () => {
       const asc: { seq: bigint }[] = [{ seq: 0n }, { seq: 3n }, { seq: 3n }, { seq: 8n }, { seq: 100n }]
       for (let t = -2n; t <= 102n; t += 1n) {

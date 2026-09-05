@@ -86,6 +86,8 @@ export interface AgentTab extends BaseTab {
   parentAgentId?: string
   /** Whether this agent accepts a message sent directly to it (composer gate). */
   acceptsMessages?: boolean
+  /** Whether the live provider accepts an explicit queue-head steer. */
+  supportsSteering?: boolean
   /**
    * The ROOT owner agent id (top of the parentAgentId chain). Equals the tab's
    * own id for a root. Set on hydration from AgentInfo.root_agent_id; the

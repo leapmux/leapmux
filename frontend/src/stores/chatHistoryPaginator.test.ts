@@ -56,8 +56,7 @@ function harness(init: {
     },
   )
 
-  const serverRows = (agentId: string) =>
-    (state.messagesByAgent[agentId] ?? []).filter(m => m.seq !== 0n)
+  const serverRows = (agentId: string) => state.messagesByAgent[agentId] ?? []
   const firstServer = (agentId: string) => serverRows(agentId)[0]?.seq
   const lastServer = (agentId: string) => serverRows(agentId).at(-1)?.seq
 
@@ -99,8 +98,8 @@ function harness(init: {
     maxLoadedCeiling: CEILING,
     getFirstSeq: agentId => firstServer(agentId) ?? 0n,
     getLastSeq: agentId => lastServer(agentId) ?? 0n,
-    getFirstServerSeq: firstServer,
-    getLastServerSeq: lastServer,
+    getFirstMessageSeq: firstServer,
+    getLastMessageSeq: lastServer,
     caughtUpToLiveTail: init.caughtUp ?? (() => true),
     addMessage,
     trimOldestEnd,
@@ -108,7 +107,6 @@ function harness(init: {
     replaceTodos: vi.fn(),
     replaceBackgroundTasks,
     markBackgroundTasksLoadFailed,
-    loadLocalMessages: vi.fn(),
   })
 
   return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed }
@@ -405,21 +403,6 @@ describe('chathistorypaginator', () => {
       caught = true
       await h.paginator.resumeDeferredTailFill('w', 'a')
       expect(h.state.tailFillDeferred.a).toBe(false)
-    })
-  })
-
-  describe('forwardfilltolivetail all-locals guard', () => {
-    it('does not page the OLDEST page as the tail when the window holds only locals', async () => {
-      // Window holds only an optimistic local (seq 0n); a mid-fetch broadcast left the
-      // recorded tail at 10n so it is not caught up. getLastSeq collapses to 0n, and
-      // listMessagesAfter(0n) would fetch the OLDEST page -- which must NOT be spliced
-      // in as the tail. The fill must re-anchor below the recorded tail instead.
-      const h = harness({ messages: [makeMsg(0n, 'local-1')], hasMoreNewer: false, caughtUp: () => false, liveGet: () => 10n })
-      listAgentMessages.mockResolvedValue(page([], false)) // the tail region is empty (vanished seq)
-      await h.paginator.forwardFillToLiveTail('w', 'a', new AbortController().signal, 5n)
-      // Never paged from 0n (the OLDEST page); the recovery re-anchored at recordedTail-1 (9n).
-      expect(listAgentMessages).not.toHaveBeenCalledWith('w', expect.objectContaining({ cursorSeq: 0n }))
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ cursorSeq: 9n }))
     })
   })
 

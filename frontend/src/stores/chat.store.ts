@@ -1,5 +1,4 @@
 import type { ChatRailData } from './chatMessageMarks'
-import type { PendingOutboundMessage } from './chatPendingOutbound'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { CommandStreamSegment, SavedViewportScroll, SpanMessageRevision } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -10,7 +9,7 @@ import { createStore, produce, unwrap } from 'solid-js/store'
 import { getAgentMessage } from '~/api/workerRpc'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
 import { invalidateMessageClassificationCache } from '~/components/chat/messageClassification'
-import { AgentChatMessageSchema, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
@@ -18,14 +17,10 @@ import { createCommandStreamStore } from './chatCommandStreams'
 import { createContentVersionStore } from './chatContentVersions'
 import { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
-import { getPersistedLocalMessages, hydrateLocalMessage, persistLocalMessage, removePersistedLocalMessage } from './chatLocalMessages'
-import { createMessageAnnotationStore } from './chatMessageAnnotations'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
-import { applyFreshMessage, firstServerSeq, insertServerBySeq, isReapablePhantom, lastServerSeq, mergeWindow, prunableDroppedSpanIds, serverMessageEnd, withTrailingLocals } from './chatMessageOrder'
-import { createPendingOutboundStore } from './chatPendingOutbound'
+import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, prunableDroppedSpanIds, transcriptMessageEnd } from './chatMessageOrder'
 import { createPerAgentStore } from './chatPerAgentStore'
-import { isOptimisticLocal, isOptimisticLocalSeq, isReconcilableLocal, priorServerIds, reconcileEchoedLocals, userMessageSignature } from './chatReconcile'
 import { createSpanIndex } from './chatSpanIndex'
 import { createStreamingTextStore } from './chatStreamingText'
 import { createTodoStore } from './chatTodoStore'
@@ -71,7 +66,7 @@ function sameAgentMessage(a: AgentChatMessage, b: AgentChatMessage): boolean {
 }
 /**
  * The windowing core's reactive state. Orthogonal per-concern slices (streaming
- * text, command streams, message annotations, to-dos, pending-outbound, saved
+ * text, command streams, to-dos, and saved
  * viewport scroll) live in their own composed sub-stores -- this holds only the
  * loaded message window and the pagination bookkeeping its invariants depend on.
  */
@@ -131,8 +126,7 @@ export function createChatStore() {
   })
 
   // Orthogonal per-concern slices, each its own composed sub-store. The window
-  // core reaches into them only where it must (delivery errors on add/replace,
-  // the message-version bump that wakes auto-scroll on a command-stream delta).
+  // The window core reaches into them only for shared window mutations.
   const streaming = createStreamingTextStore()
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
   const commandStreams = createCommandStreamStore({ onMutate: bumpMessageVersion })
@@ -143,8 +137,6 @@ export function createChatStore() {
   // badge is built to avoid, since replacing a row's nodes drops a text
   // selection the user holds.
   const toolProgress = createToolProgressStore()
-  const annotations = createMessageAnnotationStore()
-  const pendingOutbound = createPendingOutboundStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
   // Saved per-agent scroll position for tab-switch viewport restore. A pure
@@ -288,43 +280,16 @@ export function createChatStore() {
       : { id: message.id, seq: message.seq, contentVersion: contentVersions.get(message.id) }
   }
 
-  /**
-   * Reclaim the per-id UI side-state of rows leaving the window for good: their
-   * error annotation, pending-label annotation, AND content-version counter. The
-   * single home for the reclamation every structural drop must perform -- delete
-   * (removeMessage), both trims, the full-window replace (applyMessages), the page
-   * merge (mergeFetchedMessages), and the reseq-beyond-window drop -- so the
-   * un-capped errors / pendingLabels / messageContentVersions maps stay bounded by
-   * the window instead of leaking an entry per departed row for the session.
-   * Before this was centralized the trims / full-window replace / merge reclaimed
-   * only the content-version counter and left the error + pending-label
-   * annotations to leak, contradicting the "every structural drop reclaims ...
-   * error annotations" invariant the reseq path documents. All three writes are
-   * guarded (a no-op when the id never had that state), so passing the full
-   * dropped set is cheap and an error-free / label-free drop doesn't churn a store.
-   */
-  function reclaimDroppedRowState(droppedIds: Iterable<string>) {
+  /** Remove content versions for rows that left the window. */
+  function forgetContentVersions(droppedIds: Iterable<string>) {
     const ids = [...droppedIds]
-    annotations.clearErrors(ids)
-    annotations.clearPendingLabels(ids)
     contentVersions.forget(ids)
   }
 
-  /**
-   * Reclaim a structural drop's per-row state in ONE call, binding the two
-   * reclamations that must always travel together: the UI side-state (error +
-   * pending-label annotations and the content-version counter) of every `prev`
-   * row absent from `kept`, AND the command streams of the spans `kept` no longer
-   * references (subject to the shared survivor + spare-buffered rule). A drop that
-   * prunes spans but forgets the side-state leaks the un-capped annotation/version
-   * maps; one that reclaims the side-state but forgets the spans strands a buffer --
-   * so doing both here makes "drop these rows for good" a single call that can't be
-   * half-applied. Shared by reconcileAuthoritativeTail / mergeFetchedMessages /
-   * applyMessages (the trims take the same two steps via commitTrim).
-   */
+  /** Remove content versions and streams for rows that left the window. */
   function reclaimDroppedRows(agentId: string, prev: AgentChatMessage[], kept: AgentChatMessage[]) {
     const keptIds = new Set(kept.map(m => m.id))
-    reclaimDroppedRowState(prev.filter(m => !keptIds.has(m.id)).map(m => m.id))
+    forgetContentVersions(prev.filter(m => !keptIds.has(m.id)).map(m => m.id))
     commandStreams.pruneSpans(agentId, prunableSpanIdsSparingBuffered(agentId, prev, kept))
   }
 
@@ -347,12 +312,9 @@ export function createChatStore() {
     fetchWatchCleanup.delete(agentId)
     catchUpAbort.get(agentId)?.abort()
     catchUpAbort.delete(agentId)
-    // Reclaim the per-MESSAGE side-state (error + pending-label annotations and
-    // content-version counters, all keyed by message id) of every loaded row, plus
-    // the command streams and span index keyed by the agent's spans -- the same
-    // reclamation a structural drop performs, applied to the whole window at once.
+    // Remove content versions, streams, and span indexes for the agent.
     const rows = state.messagesByAgent[agentId] ?? []
-    reclaimDroppedRowState(rows.map(m => m.id))
+    forgetContentVersions(rows.map(m => m.id))
     commandStreams.forgetAgent(agentId)
     toolProgress.clearAgent(agentId)
     spanIdx.reindex(agentId, [])
@@ -380,12 +342,11 @@ export function createChatStore() {
     streaming.remove(agentId)
     todos.remove(agentId)
     backgroundTasks.remove(agentId)
-    pendingOutbound.remove(agentId)
     viewportScroll.remove(agentId)
   }
 
   /**
-   * Drop loaded SERVER rows in the phantom band -- seq > latestSeq, EXCEPT live arrivals
+   * Drop loaded transcript rows in the phantom band -- seq > latestSeq, except live arrivals
    * exempted above reapCeilingSeq (broadcast during catch-up, so post-replay, not a
    * deletion the client missed) -- reclaiming their per-id side-state and command
    * streams and re-indexing the smaller window, exactly as a trim / delete does, then
@@ -407,10 +368,9 @@ export function createChatStore() {
     // the lowered maxSeq, so the reseed's beyond-horizon preserve (seed's
     // freshBeyondSnapshot) keeps it -- indistinguishable from a live send racing the
     // reseed -- and it resurfaces as a ghost dot the moment a later append raises maxSeq
-    // past it. Mirrors the removeMessage / reseq-MOVE mark drop for the online case. remove()
-    // bumps the marks store's own seed-race revision on each real drop.
+    // past it. The mark store bumps its revision on each real drop.
     for (const m of prev) {
-      if (!isOptimisticLocalSeq(m.seq) && isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
+      if (isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
         messageMarks.remove(agentId, m.seq)
     }
     reclaimDroppedRows(agentId, prev, survivors)
@@ -422,18 +382,16 @@ export function createChatStore() {
     // when that tail fell strictly BELOW the authoritative tail -- rows up to
     // latestSeq remain unloaded; a surviving live arrival (tail > latestSeq) is the
     // newest known row and correctly yields false.
-    setState('hasMoreNewer', agentId, (lastServerSeq(survivors) ?? 0n) < latestSeq)
+    setState('hasMoreNewer', agentId, (lastMessageSeq(survivors) ?? 0n) < latestSeq)
   }
 
   /**
    * Reconcile the loaded window to the authoritative live-tail seq the worker reports
-   * at catch-up (CatchUpStart/Complete.latest_seq). A client that was disconnected never
-   * received the AgentMessageDeleted for rows deleted meanwhile, so it drops any loaded
-   * SERVER row whose seq exceeds `latestSeq` (a deletion it missed) and clamps its
+   * at catch-up (CatchUpStart/Complete.latest_seq). It drops a loaded row whose
+   * sequence exceeds `latestSeq` and clamps its
    * recorded live-tail -- so the "new messages below" affordance can't stay stuck past a
    * now-shorter history. An UNSET (`undefined`) `latestSeq` means the worker couldn't
    * determine the tail (query error); skip rather than trim against a value we don't trust.
-   * Optimistic locals (seq 0n) are never above a present tail, so they're preserved.
    *
    * `reapCeilingSeq` (CatchUpComplete.start_tail_seq -- the tail when replay BEGAN)
    * exempts live arrivals from the reap: a row ABOVE it was broadcast DURING catch-up
@@ -456,7 +414,7 @@ export function createChatStore() {
   function reconcileAuthoritativeTail(agentId: string, latestSeq: bigint | undefined, reapCeilingSeq?: bigint, probeIndeterminate = false) {
     if (latestSeq === undefined) {
       if (probeIndeterminate) {
-        const windowTail = lastServerSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
+        const windowTail = lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
         if (windowTail > 0n)
           liveTail.bump(agentId, windowTail + 1n)
       }
@@ -469,11 +427,8 @@ export function createChatStore() {
   /**
    * Update a message already in the window (matched by id): a same-seq in-place
    * merge or a reseq reinsert. The same-seq path uses the index path-setter so
-   * the store proxy reference is preserved -- <For> keeps the existing
-   * MessageBubble and its local UI state survives. A NEW seq (notification rows
-   * are updated in place on the backend but reseq) removes the old entry and
-   * reinserts by seq so the visible order follows seq; an optimistic local
-   * (seq 0n) stays pinned to the tail.
+   * the store proxy reference is preserved. A new sequence removes the old entry
+   * and reinserts it so the visible order follows the sequence.
    */
   function updateExistingMessage(agentId: string, prev: AgentChatMessage[], existingIdx: number, message: AgentChatMessage): boolean {
     if (prev[existingIdx].seq === message.seq) {
@@ -502,7 +457,7 @@ export function createChatStore() {
       return true
     }
     const without = prev.filter((_, i) => i !== existingIdx)
-    setState('messagesByAgent', agentId, isOptimisticLocal(message) ? [...without, message] : insertServerBySeq(without, message))
+    setState('messagesByAgent', agentId, insertMessageBySeq(without, message))
     return true
   }
 
@@ -516,7 +471,7 @@ export function createChatStore() {
    * when still mid-flight. The single-row analogue of prunableSpanIdsSparingBuffered;
    * the survivor check (does a surviving row still carry the span?) lives here
    * because it reads the window, and the spare-vs-clear policy lives in the
-   * command-stream slice. Shared by the reseq-beyond-window drop and removeMessage.
+   * command-stream slice. A sequence change beyond the window uses this helper.
    */
   function clearDroppedSpanStreamIfUnreferenced(agentId: string, droppedSpanId: string | undefined) {
     if (!droppedSpanId)
@@ -551,16 +506,9 @@ export function createChatStore() {
   function handleReseqMovedBeyondWindow(agentId: string, prev: AgentChatMessage[], existingIdx: number) {
     const dropped = prev[existingIdx]
     setState('messagesByAgent', agentId, prev.filter((_, i) => i !== existingIdx))
-    // Reclaim the dropped row's UI side-state (error + pending-label annotations
-    // and content-version counter), one of the permanent-removal paths alongside
-    // delete / both trims / full-window replace / page merge. A reseq'd row is
-    // typically a notification, which gets an in-place same-seq update (writing a
-    // content version) BEFORE it consolidates to the next monotonic seq
-    // (message_seq_hwm+1) and moves beyond the window -- so without this the
-    // counter (and any error annotation) would leak
-    // for the session, exactly what the sibling paths' reclamation prevents.
-    // Guarded inside the helper, so the common no-in-place-update reseq is a no-op.
-    reclaimDroppedRowState([dropped.id])
+    // Reclaim the content version when the row leaves the window. A notification
+    // can receive an in-place update before it moves to a new sequence.
+    forgetContentVersions([dropped.id])
     // The reseq'd row left the loaded window (it's re-fetched on return), so
     // prune its command stream to stay window-bounded -- subject to the shared
     // survivor rule, sparing AND recording a still-streaming span so its
@@ -569,34 +517,16 @@ export function createChatStore() {
   }
 
   /**
-   * The window's optimistic locals that are eligible to reconcile to a server
-   * echo (see isReconcilableLocal). The reconcile preamble shared by the
-   * scroll-down merge and the full-window replace, so the "which locals can be
-   * dropped on an echo" rule lives in one place.
+   * Return the window and its end index when it exceeds `maxCount` messages.
    */
-  function reconcilableLocals(agentId: string): AgentChatMessage[] {
-    return (state.messagesByAgent[agentId] ?? []).filter(isReconcilableLocal)
-  }
-
-  /**
-   * The window to trim when it exceeds `maxCount` SERVER messages, plus its
-   * server-message end index, or null when no server trim is needed -- under the
-   * cap, or only trailing optimistic locals (seq 0n) push it over. Trimming for
-   * locals alone would drop re-fetchable server messages for nothing, and (on the
-   * newest end) falsely flag hasMoreNewer, which hides the streaming/thinking tail
-   * UI and makes the live-append guard start dropping genuinely-new messages.
-   * Returning `serverEnd` (already computed for the guard) saves trimOldestEnd a
-   * recompute. Shared guard for trimNewestEnd / trimOldestEnd; locals are never
-   * the trim target.
-   */
-  function windowOverServerCap(agentId: string, maxCount: number): { prev: AgentChatMessage[], serverEnd: number } | null {
+  function windowOverMessageCap(agentId: string, maxCount: number): { prev: AgentChatMessage[], messageEnd: number } | null {
     const prev = state.messagesByAgent[agentId]
     if (!prev || prev.length <= maxCount)
       return null
-    const serverEnd = serverMessageEnd(prev)
-    if (serverEnd <= maxCount)
+    const messageEnd = transcriptMessageEnd(prev)
+    if (messageEnd <= maxCount)
       return null
-    return { prev, serverEnd }
+    return { prev, messageEnd }
   }
 
   /**
@@ -622,70 +552,28 @@ export function createChatStore() {
    * Merge a fetched page into the in-memory window, deduped by seq, and index
    * its span ids:
    *  - 'older': prepend the page before the window (older history).
-   *  - 'newer': append after the last server message but BEFORE any trailing
-   *    optimistic local messages (seq 0n), so locals stay pinned to the tail;
-   *    also advances latestLiveSeq.
+   *  - 'newer': insert the page in sequence order and advance the live tail.
    */
   function mergeFetchedMessages(agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') {
     if (fetched.length === 0)
       return
-    // Snapshot the pre-merge window so the command streams of rows the merge drops
-    // for good -- a reconciled local, or the stale same-id copy a reseq replaces
-    // below -- can be pruned afterward, symmetric with removeMessage / the trims.
+    // Snapshot the pre-merge window so the merge can prune dropped streams.
     const prevWindow = state.messagesByAgent[agentId] ?? []
-    // A 'newer' page can carry the server echo of a still-pending optimistic
-    // local whose own live broadcast the live-append guard dropped (a beyondTail
-    // message is discarded while hasMoreNewer). Without reconciling, that local
-    // renders as a duplicate bubble beside its server copy once the page lands.
-    // Mirror applyMessages/addMessage: drop any local whose user-message
-    // signature the page echoes, discounting echoes already standing as server
-    // rows so a second identical send isn't reconciled against the first send's
-    // echo. (The 'older' side never carries a local's echo -- optimistic locals
-    // pin to the tail, never the head.)
-    const reconciledLocalIds = side === 'newer'
-      ? reconcileEchoedLocals(
-          agentId,
-          fetched,
-          reconcilableLocals(agentId),
-          priorServerIds(prevWindow),
-        )
-      : new Set<string>()
     // The pure window-merge (dedup / reseq-collision / seq-ordered insert / older
     // prepend vs newer splice) lives in chatMessageOrder.mergeWindow so its rules are
     // unit-testable on plain arrays; the reactive side effects below stay here.
     setState('messagesByAgent', agentId, (prev = []) =>
-      mergeWindow(prev, fetched, side, reconciledLocalIds))
+      mergeWindow(prev, fetched, side))
     // Rebuild the span index over the merged, seq-ascending window rather than
     // incrementally indexing only the fetched page: a prepended opener whose
     // result is already in the window would otherwise be misfiled, and the
     // 'older' prepend never re-establishes opener-first ordering on its own.
     reindexSpans(agentId)
     // Prune the command streams of spans the pre-merge window carried that the
-    // merged window no longer references -- a reconciled local dropped by id, OR a
-    // same-id reseq that swapped a row's spanId in place (which an id-only diff would
-    // miss). The survivor filter keeps any span a merged row still references. Latent
-    // today -- the documented reseq trigger (notification consolidation) carries no
-    // spanId -- but keeps the merge symmetric with every other structural drop so a
-    // future span-carrying reseq can't strand a buffer.
+    // The survivor filter keeps a span that any merged row still uses.
     const merged = state.messagesByAgent[agentId] ?? []
-    const mergedIds = new Set(merged.map(m => m.id))
-    // Reclaim the side-state (error + pending-label annotations and the content-version
-    // counter) AND the command streams of rows the merge dropped for good -- a
-    // reconciled local, dropped by id. A same-id reseq REPLACES (the id stays in the
-    // window), so it isn't dropped here. Symmetric with the trims / full-window replace;
-    // without it a reconciled local that ever carried an annotation or a mid-stream span
-    // leaks it. See reclaimDroppedRows.
+    // Reclaim content versions and command streams for rows that left the window.
     reclaimDroppedRows(agentId, prevWindow, merged)
-    // Surface the delivery error of any FAILED send the page (re)loads: a user
-    // message whose send failed carries a persisted delivery_error column. Mirror
-    // applyMessages / addMessage so a failed send re-fetched after a trim (or
-    // loaded fresh by an older/newer page) shows its error bubble instead of
-    // rendering as a plain message. Gated on the merged window so a dup-seq row
-    // the merge skipped can't orphan an annotation under an id absent from it.
-    for (const msg of fetched) {
-      if (msg.deliveryError && mergedIds.has(msg.id))
-        annotations.setError(msg.id, msg.deliveryError)
-    }
     if (side === 'newer') {
       for (const msg of fetched)
         liveTail.bump(agentId, msg.seq)
@@ -694,46 +582,12 @@ export function createChatStore() {
 
   /** Shared implementation for setMessages / loadInitialMessages. */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
-    // Preserve unsent optimistic local messages (seq 0n) across a full-window
-    // replacement (initial load, reconnect snapshot, jump-to-latest/oldest). A
-    // local is dropped only when it is reconcilable AND the incoming page already
-    // carries its server echo; otherwise it would vanish until the echo happens
-    // to arrive. A FAILED send (deliveryError) is never reconciled away -- mirror
-    // mergeFetchedMessages/addMessage so its error bubble survives even when a
-    // later real message coincidentally shares its text. Skip the work entirely
-    // when there are no locals (the norm).
     const prevRows = state.messagesByAgent[agentId] ?? []
-    let preservedLocals: AgentChatMessage[] = []
-    const prevLocals = prevRows.filter(isOptimisticLocal)
-    if (prevLocals.length > 0) {
-      // Echoes already standing as server rows (a local reconciled live, then
-      // this replace re-lists its echo) must not consume a still-pending second
-      // identical send -- pass them so reconcileEchoedLocals counts only echoes
-      // the page newly introduces.
-      const reconciled = reconcileEchoedLocals(agentId, messages, reconcilableLocals(agentId), priorServerIds(prevRows))
-      preservedLocals = reconciled.size > 0
-        ? prevLocals.filter(local => !reconciled.has(local.id))
-        : prevLocals
-    }
-
-    const finalMessages = withTrailingLocals(messages, preservedLocals)
-    // Reclaim the side-state (error + pending-label annotations and the content-version
-    // counter) AND the command streams of rows the full-window replace drops for good.
-    // This reclamation otherwise only runs on delete/trim, so a jump-to-latest /
-    // jump-to-oldest / reconnect snapshot would orphan the error annotation of every
-    // dropped failed send, the counter of every row that ever got an in-place same-seq
-    // merge (notification consolidation), and a mid-stream tail span (jump-to-oldest
-    // while a tool streams, a reconnect snapshot landing on a non-tail page) -- unbounded
-    // leaks in the un-capped errors / messageContentVersions maps and the command
-    // streams, exactly what the delete/trim reclamation exists to prevent. See
-    // reclaimDroppedRows: it passes the FULL prior window so the survivor filter keeps
-    // any span a final row still references and catches a same-id row whose spanId
-    // changed in place.
+    const finalMessages = messages
+    // Reclaim content versions and command streams for rows that leave the window.
+    // The survivor filter keeps a stream that a final row still uses.
     reclaimDroppedRows(agentId, prevRows, finalMessages)
-    // Rebuild the span index from the FINAL array (preserved locals included)
-    // before setting messages, so reactive computations triggered by the update
-    // can already look up tool_use messages by spanId, a preserved local carrying
-    // a span isn't dropped, and stale entries from the prior window can't leak.
+    // Rebuild the span index before the update wakes reactive computations.
     spanIdx.reindex(agentId, finalMessages)
     setState('messagesByAgent', agentId, finalMessages)
     setState('hasMoreOlder', agentId, hasMore)
@@ -744,9 +598,6 @@ export function createChatStore() {
     setState('hasMoreNewer', agentId, false)
     setState('initialLoadComplete', agentId, true)
     for (const msg of messages) {
-      if (msg.deliveryError) {
-        annotations.setError(msg.id, msg.deliveryError)
-      }
       liveTail.bump(agentId, msg.seq)
     }
   }
@@ -823,12 +674,9 @@ export function createChatStore() {
      *    live-tail comparison below can't see a beyond-tail live frame.
      *  - in the LIVE phase: the loaded tail provably lags a KNOWN higher live tail
      *    (lastSeq < recordedLiveTail) and `seq` is beyond it (seq > recordedLiveTail).
-     *    Used here rather than contiguity so a message that follows a DELETED row -- whose
-     *    delete lowered the recorded tail to the loaded tail -- correctly SPLICES instead
-     *    of forcing a needless re-fetch (onDelete keeps recordedLiveTail == lastSeq, so
-     *    the comparison is false and the frame is kept).
-     * Requires a real server cursor (lastSeq != 0n): an empty server window (only locals
-     * loaded) has nothing to tear a gap against, so a frame seeds it instead.
+     *    Used here rather than contiguity so a message after a reconciled sequence gap
+     *    can splice into the window instead of forcing a needless re-fetch.
+     * An empty window has no sequence cursor and no gap to protect.
      *
      * `recordedLiveTail` is the live tail known BEFORE this message bumped it (so a live
      * arrival is measured against the tail seen so far, not against itself).
@@ -846,8 +694,8 @@ export function createChatStore() {
 
     /**
      * Whether a fresh (not-yet-present) message would tear a gap into the loaded
-     * window and so must be dropped rather than spliced in. True only for a real
-     * server message (seq != 0n) that lands OUTSIDE the contiguous window on a
+     * window and so must be dropped rather than spliced in. True only for a
+     * persisted message that lands outside the contiguous window on a
      * side that still has unloaded history:
      *  - past the loaded tail (seq > lastSeq) while NEWER history is unloaded -- the
      *    scrolled-away-from-tail case (hasMoreNewer) OR a bounded catch-up replay whose
@@ -856,21 +704,15 @@ export function createChatStore() {
      *    (hasMoreOlder): e.g. a connect-time WatchEvents replay of the OLDEST page
      *    arriving in front of a freshly-loaded LATEST page -- this is what produced
      *    the [seq 1 ... gap ... latest] window.
-     * An in-range gap-fill (firstSeq <= seq <= lastSeq) and optimistic locals
-     * (seq 0n) are allowed through. Dropped messages are NOT lost: latestLiveSeq
+     * An in-range gap-fill (firstSeq <= seq <= lastSeq) is allowed through.
+     * Dropped messages are not lost: latestLiveSeq
      * records them and paging toward the edge (loadOlder/loadNewer/jump) re-fetches
-     * the range contiguously. Each edge also requires a real server cursor on its
-     * side (lastSeq/firstSeq != 0n): an empty server window (only locals loaded)
-     * has nothing to tear a gap against, so the message must seed the window rather
-     * than be dropped -- `seq > 0n` would otherwise be trivially true and swallow
-     * every live message.
+     * the range contiguously. An empty window has no gap to protect.
      *
      * `recordedLiveTail` is the live tail known BEFORE this message bumped it (passed
      * through to beyondUnloadedNewerTail's live-phase comparison).
      */
     shouldDropBeyondWindow(agentId: string, message: AgentChatMessage, recordedLiveTail: bigint): boolean {
-      if (isOptimisticLocal(message))
-        return false
       const firstSeq = this.getFirstSeq(agentId)
       const beyondTail = this.beyondUnloadedNewerTail(agentId, message.seq, recordedLiveTail)
       const beforeHead = !!state.hasMoreOlder[agentId] && firstSeq !== 0n && message.seq < firstSeq
@@ -884,44 +726,11 @@ export function createChatStore() {
      * its old position rather than reinserted at the new seq (handleReseqMovedBeyondWindow),
      * which would tear a [oldTail..newSeq) hole and falsely advance getLastSeq. The third
      * sibling of the beyond-window predicate family (beyondUnloadedNewerTail /
-     * shouldDropBeyondWindow): a method because it reads beyondUnloadedNewerTail. An
-     * optimistic local (seq 0n) and a non-reseq same-seq update are never this.
+     * shouldDropBeyondWindow): a method because it reads beyondUnloadedNewerTail.
      */
     isReseqMovedBeyondWindow(agentId: string, message: AgentChatMessage, recordedLiveTail: bigint): boolean {
-      return !isOptimisticLocal(message)
-        && message.previousSeq > 0n
+      return message.previousSeq > 0n
         && this.beyondUnloadedNewerTail(agentId, message.seq, recordedLiveTail)
-    },
-
-    /**
-     * The id of the optimistic local (seq 0n) that `message` is the server echo
-     * of -- matched by user-message signature -- or undefined when there's none.
-     * Only a SERVER echo (seq != 0n) reconciles a pending local: an incoming
-     * optimistic local (seq 0n) is a NEW send, so two identical rapid sends (e.g.
-     * "y" twice) must both render rather than the second collapsing onto the
-     * first and vanishing until its own echo arrives. A FAILED send IS a candidate
-     * (isReconcilableLocal no longer excludes deliveryError): an arriving echo means
-     * it was delivered, so the failed bubble reconciles to the echo and freshInsertArm
-     * reclaims its error annotation. A genuinely-failed send gets no echo, so nothing
-     * matches and its bubble survives.
-     */
-    findReconcilableEcho(agentId: string, message: AgentChatMessage): string | undefined {
-      if (message.source !== MessageSource.USER || isOptimisticLocal(message))
-        return undefined
-      const incomingSignature = userMessageSignature(message)
-      if (!incomingSignature)
-        return undefined
-      const current = state.messagesByAgent[agentId] ?? []
-      const matches = current.filter(candidate =>
-        isReconcilableLocal(candidate)
-        && userMessageSignature(candidate) === incomingSignature)
-      // Prefer a still-pending local (no recorded proto deliveryError) over a
-      // previously-failed one, so an echo pairs with the send most likely awaiting it; a
-      // failed local absorbs an echo only when no pending same-text local remains -- then
-      // delivery is the truth and it reconciles (freshInsertArm clears its error). A
-      // live-failed local (annotation only, proto deliveryError empty) is indistinguishable
-      // from pending here and reconciles either way, which is fine.
-      return (matches.find(c => !c.deliveryError) ?? matches[0])?.id
     },
 
     /**
@@ -958,29 +767,15 @@ export function createChatStore() {
 
     /**
      * The FRESH-INSERT arm of addMessage: a message whose id is NOT in the window.
-     * Reconciles the optimistic local it is the server echo of (findReconcilableEcho;
-     * clearing the local's persisted shadow OUTSIDE the pure insert helper), inserts by
-     * seq -- or discards a pure same-seq dup (a server message whose seq already exists
+     * Inserts by sequence or discards a pure same-sequence duplicate
      * under a different id) -- and incrementally indexes its span. applyFreshMessage
      * returns the SAME array reference on a pure dedup-discard (nothing inserted, no
-     * local dropped), so `changed` is false there; any real change yields a new array.
+     * dropped), so `changed` is false there; any real change yields a new array.
      * Returns whether the id was actually inserted (inWindow) and whether the window
      * mutated (changed).
      */
     freshInsertArm(agentId: string, messages: AgentChatMessage[], message: AgentChatMessage): { inWindow: boolean, changed: boolean } {
-      const reconciledLocalId = this.findReconcilableEcho(agentId, message)
-      if (reconciledLocalId) {
-        removePersistedLocalMessage(agentId, reconciledLocalId)
-        // The reconciled local is dropped from the window (the echo replaces it), so
-        // reclaim its per-id side-state -- error annotation, pending-label, content
-        // version -- exactly as every other structural drop does. A failed-but-delivered
-        // local (deliveryError set, but its echo arrived) otherwise leaves an orphaned
-        // entry in the un-capped errors map under an id no row carries. The batch
-        // reconcile paths (applyMessages / mergeFetchedMessages) already reclaim via
-        // reclaimDroppedRows; this is the live-append path's equivalent.
-        reclaimDroppedRowState([reconciledLocalId])
-      }
-      const { next, inserted } = applyFreshMessage(messages, message, reconciledLocalId)
+      const { next, inserted } = applyFreshMessage(messages, message)
       const changed = next !== messages
       setState('messagesByAgent', agentId, next)
       // Index only a message that was actually inserted: the seq dedup can DISCARD it,
@@ -1004,7 +799,7 @@ export function createChatStore() {
 
       // Record the scroll-rail mark BEFORE any beyond-window drop, so a message the
       // reader scrolled away from still gets its jump dot. The mark rides the proto
-      // (set at write time by the worker); optimistic locals (seq 0n) are excluded.
+      // set at write time by the worker.
       // A reseq MOVE (previousSeq set) carries the mark to its new seq, so drop the
       // stale mark at the vacated old seq first, or it strands a ghost dot. (Threaded
       // rows are unmarked today, so this is latent -- but the worker now carries
@@ -1022,13 +817,13 @@ export function createChatStore() {
       const messages = state.messagesByAgent[agentId] ?? []
       const existingIdx = messages.findLastIndex(m => m.id === message.id)
 
-      // Live-append guard: drop a fresh server message that would tear a gap into the
+      // Live-append guard: drop a fresh transcript message that would tear a gap into the
       // loaded window (see shouldDropBeyondWindow). In-place updates (existingIdx !== -1)
-      // and optimistic locals are never dropped here.
+      // are never dropped here.
       if (existingIdx === -1 && this.shouldDropBeyondWindow(agentId, message, recordedLiveTail))
         return false
 
-      // Dispatch to the existing-row or fresh-insert arm. `inWindow` is whether
+      // Dispatch to the existing-row or fresh-insert path. `inWindow` is whether
       // message.id actually ends up loaded (a reseq-beyond-window drop / seq-dedup
       // discard leave it absent); `changed` is whether the window mutated (false on a
       // pure dedup-discard or an identical same-seq re-delivery, where a version bump
@@ -1037,169 +832,14 @@ export function createChatStore() {
         ? this.updateExistingArm(agentId, messages, existingIdx, message, recordedLiveTail)
         : this.freshInsertArm(agentId, messages, message)
 
-      // Surface a FAILED send's delivery error -- but only when the message actually
-      // landed in the window. A seq-dedup discard or a reseq moved beyond the window
-      // leaves message.id absent (and handleReseqMovedBeyondWindow even reclaims any prior
-      // error for that id), so writing the error then would orphan an annotation in the
-      // un-capped errors map under an id no row carries -- the leak mergeFetchedMessages
-      // guards with mergedIds.has(id).
-      if (message.deliveryError && inWindow)
-        annotations.setError(message.id, message.deliveryError)
-
       if (changed)
         bumpMessageVersion(agentId)
       return inWindow
     },
 
     getLastSeq(agentId: string): bigint {
-      // lastServerSeq skips trailing locals (seq 0n) and returns undefined for an
-      // empty / all-locals window; the store collapses that to 0n.
-      return lastServerSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
-    },
-
-    /** The reactive id -> delivery-error map (a failed send's bubble text). */
-    messageErrors() {
-      return annotations.errors
-    },
-
-    /** The reactive id -> pending-label map (startup-queued optimistic bubbles). */
-    messagePendingLabels() {
-      return annotations.pendingLabels
-    },
-
-    setMessageError(messageId: string, error: string) {
-      annotations.setError(messageId, error)
-    },
-
-    clearMessageError(messageId: string) {
-      annotations.clearError(messageId)
-    },
-
-    setMessagePendingLabel(messageId: string, label: string) {
-      annotations.setPendingLabel(messageId, label)
-    },
-
-    clearMessagePendingLabel(messageId: string) {
-      annotations.clearPendingLabel(messageId)
-    },
-
-    /**
-     * Drain the agent's pending-outbound queue (messages composed while the
-     * subprocess was STARTING) and resend each in order through the injected
-     * `send`, clearing its pending label first and stamping a delivery error on
-     * failure. The network send is INJECTED so the store stays I/O-free -- it owns
-     * the queue and its per-message UI side-state, the caller owns the transport.
-     * Fire-and-forget: returns immediately; the sends run in the background. No-op
-     * on an empty queue.
-     */
-    resendPendingOutbound(agentId: string, send: (msg: PendingOutboundMessage) => Promise<unknown>) {
-      const queued = pendingOutbound.take(agentId)
-      if (queued.length === 0)
-        return
-      void (async () => {
-        for (const m of queued) {
-          annotations.clearPendingLabel(m.localId)
-          try {
-            await send(m)
-          }
-          catch {
-            annotations.setError(m.localId, 'Failed to deliver')
-          }
-        }
-      })()
-    },
-
-    /**
-     * Fail the agent's entire pending-outbound queue (a STARTING -> STARTUP_FAILED
-     * transition): clear each pending label and stamp `error`. No-op on an empty
-     * queue. The synchronous partner of resendPendingOutbound.
-     */
-    failPendingOutbound(agentId: string, error: string) {
-      for (const m of pendingOutbound.take(agentId)) {
-        annotations.clearPendingLabel(m.localId)
-        annotations.setError(m.localId, error)
-      }
-    },
-
-    removeMessage(agentId: string, messageId: string, deletedSeq?: bigint, newLatestSeq?: bigint) {
-      // Note the removed row's spanId BEFORE the filter: a removed
-      // tool_use/tool_result must also leave the (window-scoped) span index,
-      // mirroring every other structural drop (trim/prepend/merge all reindex).
-      // Otherwise getToolUse/ResultParsedBySpanId keeps returning the deleted
-      // message's parsed content.
-      const removed = state.messagesByAgent[agentId]?.find(m => m.id === messageId)
-      const removedSpanId = removed?.spanId
-      setState(
-        'messagesByAgent',
-        agentId,
-        (prev = []) => prev.filter(m => m.id !== messageId),
-      )
-      reclaimDroppedRowState([messageId])
-      if (messageId.startsWith('local-')) {
-        removePersistedLocalMessage(agentId, messageId)
-      }
-      // Reconcile the recorded live tail when the deleted row was that tail (loaded or
-      // an unloaded beyond-window tail the broadcast names). The tracker drops the
-      // high-water to the authoritative post-delete tail, clamped at the window's new
-      // last seq so a lagging newLatestSeq can't claim a tail below a loaded row.
-      liveTail.onDelete(agentId, {
-        removedSeq: removed?.seq,
-        deletedSeq,
-        newLatestSeq,
-        windowTail: this.getLastSeq(agentId),
-      })
-      // Drop the deleted row's scroll-rail mark. The seq comes from the loaded row when
-      // present, else the broadcast-carried seq for an unloaded beyond-window delete.
-      // remove() bumps the marks store's own seed-race revision only on a real drop (an
-      // unmarked row's delete is a no-op and must not perturb a concurrent seed).
-      const goneSeq = removed?.seq ?? deletedSeq
-      if (goneSeq !== undefined && goneSeq !== 0n)
-        messageMarks.remove(agentId, goneSeq)
-      // Only rebuild when the removed row actually carried a span (the common
-      // case -- a user/local message -- has none, so this is usually skipped).
-      if (removedSpanId) {
-        reindexSpans(agentId)
-        // Drop the span's live command stream too -- but ONLY once no surviving
-        // row still carries that spanId (the shared survivor rule). A tool_use
-        // opener and its tool_result share one spanId, so a single messageDeleted
-        // for one member must NOT wipe the stream the other member still renders;
-        // a still-buffered stream is spared and recorded so its in-flight segments
-        // survive without leaking.
-        clearDroppedSpanStreamIfUnreferenced(agentId, removedSpanId)
-      }
-    },
-
-    /** Persist a local optimistic message to localStorage. */
-    persistLocalMessage(
-      agentId: string,
-      messageId: string,
-      contentText: string,
-      deliveryError: string,
-      attachments?: Array<{ filename?: string, mime_type?: string, data?: string }>,
-    ) {
-      persistLocalMessage(agentId, {
-        id: messageId,
-        contentText,
-        createdAt: new Date().toISOString(),
-        deliveryError,
-        attachments,
-      })
-    },
-
-    /** Load persisted local messages from localStorage and add them to the store. */
-    loadLocalMessages(agentId: string) {
-      const list = getPersistedLocalMessages(agentId)
-      if (list.length === 0)
-        return
-      // Skip locals already in the window (a cold start that preserved them across
-      // a full-window replace): re-adding via addMessage would hit the in-place
-      // branch and do a redundant setState + reindexSpans + version bump per row.
-      const present = new Set((state.messagesByAgent[agentId] ?? []).map(m => m.id))
-      for (const p of list) {
-        if (present.has(p.id))
-          continue
-        this.addMessage(agentId, hydrateLocalMessage(p))
-      }
+      // The store uses 0n as the empty-window sentinel.
+      return lastMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
     },
 
     appendCommandStream(agentId: string, spanId: string, segmentKind: CommandStreamSegment['kind'], text: string) {
@@ -1290,20 +930,17 @@ export function createChatStore() {
     },
 
     /**
-     * Cap the in-memory window after prepending OLDER history: keep the OLDEST
-     * maxCount server messages, drop the NEWEST, and flag hasMoreNewer. Trailing
-     * optimistic locals (seq 0n) are preserved -- they aren't on the server and
-     * can't be re-fetched, so trimming them would lose an unsent/failed bubble.
+     * Cap the window after prepending older history. Keep the oldest
+     * `maxCount` messages and flag newer history.
      */
     trimNewestEnd(agentId: string, maxCount: number) {
-      const cap = windowOverServerCap(agentId, maxCount)
+      const cap = windowOverMessageCap(agentId, maxCount)
       if (!cap)
         return
       const { prev } = cap
       const kept = prev.slice(0, maxCount)
       const dropped = prev.slice(maxCount)
-      const droppedLocals = dropped.filter(isOptimisticLocal)
-      const survivors = withTrailingLocals(kept, droppedLocals)
+      const survivors = kept
       // Prune the dropped NEWEST spans' command streams so the segment buffers
       // stay bounded by the window. The PRIMARY guard is hasBufferedSegments: a
       // newest-end trim (scroll-up while the agent works) is the one trim that can
@@ -1313,7 +950,7 @@ export function createChatStore() {
       // recorded part boundary that hasRenderableContent deliberately ignores -- is spared too.
       // prunableDroppedSpanIds additionally spares any span a SURVIVING row still
       // references (a tool_use/tool_result pair sharing one spanId, split across the
-      // boundary by a reseq) -- the same guard removeMessage and trimOldestEnd apply.
+      // boundary by a sequence change). Both trim paths apply this guard.
       //
       // Record every spared span as orphaned (exactly like trimOldestEnd): the live
       // tail span normally re-fetches and ends on scroll-back, clearing its own
@@ -1323,34 +960,25 @@ export function createChatStore() {
       // sweep only touches RECORDED orphans. Recording it lets the turn-end /
       // catch-up sweep reclaim it once no surviving row references it.
       const droppedSpanIds = prunableSpanIdsSparingBuffered(agentId, dropped, survivors)
-      // Reclaim the UI side-state (error + pending-label annotations and the
-      // content-version counter) of the dropped server rows; dropped locals are
-      // re-added by withTrailingLocals above, so spare them.
-      reclaimDroppedRowState(dropped.filter(m => !isOptimisticLocal(m)).map(m => m.id))
+      // Reclaim the content versions of the dropped rows.
+      forgetContentVersions(dropped.map(m => m.id))
       commitTrim(agentId, survivors, 'hasMoreNewer', droppedSpanIds)
     },
 
     /**
-     * Cap the in-memory window after appending NEWER history (or a live message
-     * landing): keep the NEWEST maxCount server messages plus all trailing
-     * optimistic locals (seq 0n), drop the OLDEST, and flag hasMoreOlder. The
-     * locals trail the server budget so they don't eat into it -- a plain
-     * slice(-maxCount) would drop an extra server message per local and shrink
-     * visible history below the cap.
+     * Cap the window after appending newer history. Keep the newest
+     * `maxCount` messages and flag older history.
      */
     trimOldestEnd(agentId: string, maxCount: number) {
-      const cap = windowOverServerCap(agentId, maxCount)
+      const cap = windowOverMessageCap(agentId, maxCount)
       if (!cap)
         return
-      const { prev, serverEnd } = cap
-      // serverEnd > maxCount (windowOverServerCap already bailed otherwise), so
-      // the slice start is always positive -- never a from-the-end negative index
-      // that would silently keep the wrong rows.
-      const keptServer = prev.slice(serverEnd - maxCount, serverEnd)
-      const locals = prev.slice(serverEnd)
-      const survivors = withTrailingLocals(keptServer, locals)
-      const droppedOldest = prev.slice(0, serverEnd - maxCount)
-      // The oldest server messages we're about to drop. They're historical, so
+      const { prev, messageEnd } = cap
+      // The slice start is positive because messageEnd exceeds maxCount.
+      const keptMessages = prev.slice(messageEnd - maxCount, messageEnd)
+      const survivors = keptMessages
+      const droppedOldest = prev.slice(0, messageEnd - maxCount)
+      // These oldest messages are historical. Thus,
       // prune their live command streams to keep the segment buffers bounded by
       // the window -- but SPARE any span a surviving row still references: a
       // tool_use opener (oldest, dropped) and its tool_result (kept) can share one
@@ -1361,14 +989,12 @@ export function createChatStore() {
       // content while it still streams would lose its in-flight segments if cleared.
       // So mirror trimNewestEnd -- spare any span with buffered segments (renderable
       // or a content-less reasoning_summary_break alike) -- and record it as orphaned
-      // (like removeMessage) so the turn-end / catch-up sweep reclaims a
+      // so the turn-end or catch-up sweep reclaims a
       // genuinely-stale buffer instead of leaking it, while a real mid-flight stream
       // keeps its segments until it ends.
       const droppedSpanIds = prunableSpanIdsSparingBuffered(agentId, droppedOldest, survivors)
-      // The dropped oldest rows are all server messages (locals trail at the tail
-      // and are preserved), so reclaim their UI side-state (error + pending-label
-      // annotations and the content-version counter).
-      reclaimDroppedRowState(droppedOldest.map(m => m.id))
+      // Reclaim the content versions of the dropped oldest rows.
+      forgetContentVersions(droppedOldest.map(m => m.id))
       commitTrim(agentId, survivors, 'hasMoreOlder', droppedSpanIds)
     },
 
@@ -1395,7 +1021,7 @@ export function createChatStore() {
     /**
      * Whether the loaded window has reached the highest live seq ever observed
      * (latestLiveSeq), including messages dropped by the live-append guard while
-     * scrolled away. Reaching the SERVER tail (has_more false) does NOT imply
+     * scrolled away. Reaching the persisted tail (has_more false) does not imply
      * this -- a broadcast that landed mid-fetch can sit beyond the window -- so
      * the forward-fetch paths gate the "at the live tail" decision on this, not
      * on has_more alone. `0n` default means "no live seq seen", which any
@@ -1422,11 +1048,10 @@ export function createChatStore() {
       return liveSeq > lastSeq ? liveSeq : lastSeq
     },
 
-    /** Get the seq of the first SERVER message in the current window (skips leading locals). */
+    /** Get the first sequence in the current window. */
     getFirstSeq(agentId: string): bigint {
-      // firstServerSeq skips leading locals and returns undefined for an empty /
-      // all-locals window; the store collapses that to 0n.
-      return firstServerSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
+      // The store uses zero for an empty window.
+      return firstMessageSeq(state.messagesByAgent[agentId] ?? []) ?? 0n
     },
 
     hasOlderMessages(agentId: string): boolean {
@@ -1459,7 +1084,7 @@ export function createChatStore() {
     },
 
     /**
-     * Whether the in-memory window is within ONE page of the RAW CEILING of SERVER
+     * Whether the in-memory window is within one page of the row ceiling.
      * rows, so the buffer-filler must stop pre-fetching: a further page only SHUFFLES
      * the window (a prepend forces an opposite-end trim and vice versa), reaping the
      * other side's buffer (a ceiling ping-pong) or, at the live tail, the pinned tail.
@@ -1468,13 +1093,11 @@ export function createChatStore() {
      * a single 50-row page can take serverEnd from just under the ceiling (e.g. 1199)
      * to just over it (1249), and trimNewestEnd only flips hasMoreNewer / drops the
      * live tail once serverEnd EXCEEDS the ceiling. Stopping a full page early keeps the
-     * filler's last allowed fetch from crossing the ceiling and silently dropping the
-     * live tail. Counts SERVER rows only (serverMessageEnd skips trailing locals), since
-     * the trims cap server rows and locals are pinned separately.
+     * filler's last allowed fetch from crossing the ceiling and dropping the live tail.
      */
     atWindowCeiling(agentId: string): boolean {
       const msgs = state.messagesByAgent[agentId]
-      return !!msgs && serverMessageEnd(msgs) >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
+      return !!msgs && transcriptMessageEnd(msgs) >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
     },
 
     isFetchingOlder(agentId: string): boolean {
@@ -1512,8 +1135,8 @@ export function createChatStore() {
     maxLoadedCeiling: MAX_LOADED_CHAT_MESSAGES_CEILING,
     getFirstSeq: agentId => baseStore.getFirstSeq(agentId),
     getLastSeq: agentId => baseStore.getLastSeq(agentId),
-    getFirstServerSeq: agentId => firstServerSeq(state.messagesByAgent[agentId] ?? []),
-    getLastServerSeq: agentId => lastServerSeq(state.messagesByAgent[agentId] ?? []),
+    getFirstMessageSeq: agentId => firstMessageSeq(state.messagesByAgent[agentId] ?? []),
+    getLastMessageSeq: agentId => lastMessageSeq(state.messagesByAgent[agentId] ?? []),
     caughtUpToLiveTail: agentId => baseStore.caughtUpToLiveTail(agentId),
     addMessage: (agentId, message) => baseStore.addMessage(agentId, message),
     trimOldestEnd: (agentId, maxCount) => baseStore.trimOldestEnd(agentId, maxCount),
@@ -1521,7 +1144,6 @@ export function createChatStore() {
     replaceTodos: todos.replace,
     replaceBackgroundTasks: backgroundTasks.replace,
     markBackgroundTasksLoadFailed: backgroundTasks.markLoadFailed,
-    loadLocalMessages: agentId => baseStore.loadLocalMessages(agentId),
   })
 
   // Expose the composed sub-stores directly so consumers reach a slice's own
@@ -1537,7 +1159,6 @@ export function createChatStore() {
     todos,
     backgroundTasks,
     streamingText: streaming,
-    pendingOutbound,
     viewportScroll,
     /**
      * Reactive scroll-rail data for an agent: the marked seqs, the window-aware whole-history
@@ -1549,8 +1170,8 @@ export function createChatStore() {
     getRailData(agentId: string): ChatRailData {
       const marks = messageMarks.get(agentId)
       const messages = state.messagesByAgent[agentId] ?? []
-      const windowFirstSeq = firstServerSeq(messages)
-      const windowLastSeq = lastServerSeq(messages)
+      const windowFirstSeq = firstMessageSeq(messages)
+      const windowLastSeq = lastMessageSeq(messages)
       const { minSeq, maxSeq } = resolveRailRange({
         seededMinSeq: marks.minSeq,
         seedMaxSeq: marks.seedMaxSeq,
@@ -1573,8 +1194,7 @@ export function createChatStore() {
     /**
      * The loaded message at `seq`, or undefined when it isn't in the current window.
      * Used by the scroll rail's hover preview to extract a mark's preview WITHOUT a
-     * fetch when the marked message is already loaded. Optimistic locals (seq 0n) are
-     * skipped -- a real mark's seq never matches them.
+     * fetch when the marked message is already loaded.
      *
      * Non-reactive, and `untrack` is what MAKES it so rather than asking callers to
      * be careful. The body walks `messagesByAgent`, so a caller inside a tracking
@@ -1587,16 +1207,13 @@ export function createChatStore() {
      */
     getLoadedMessageBySeq(agentId: string, seq: bigint): AgentChatMessage | undefined {
       return untrack(() => {
-        if (isOptimisticLocalSeq(seq))
-          return undefined
         const messages = state.messagesByAgent[agentId]
         if (!messages)
           return undefined
-        // Server rows occupy [0, serverMessageEnd) ascending by unique seq (optimistic locals,
-        // seq 0n, trail after and are excluded by the guard above), so binary-search that region
-        // instead of a linear .find: a marked message is usually OUTSIDE the loaded window, so the
+        // Rows are ascending by unique sequence, so binary-search the window
+        // instead of a linear search. A marked message is usually outside the loaded window, so the
         // old scan traversed the whole ~1200-row window fruitlessly for every hovered/scrubbed dot.
-        const end = serverMessageEnd(messages)
+        const end = transcriptMessageEnd(messages)
         const idx = lowerBoundBySeq(messages, seq, end)
         const hit = messages[idx]
         return hit?.seq === seq ? hit : undefined

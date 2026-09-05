@@ -246,6 +246,9 @@ message AgentInfo {
   // directly -- without walking a client-side parent chain that can be partially
   // hydrated and fall back to the wrong id.
   string root_agent_id = 19;
+  // True when the running provider can safely add the queue head to an active
+  // regular turn. The Worker computes this from the live provider capability.
+  bool supports_steering = 20;
 }
 
 // AvailableOption describes a single selectable value within an option group
@@ -305,13 +308,145 @@ message Attachment {
   bytes data = 3;  // Raw file bytes
 }
 
-message SendAgentMessageRequest {
-  string agent_id = 1;
-  string content = 2; // User message text
-  repeated Attachment attachments = 3;
+enum AgentInputKind {
+  AGENT_INPUT_KIND_UNSPECIFIED = 0;
+  AGENT_INPUT_KIND_USER_MESSAGE = 1;
+  AGENT_INPUT_KIND_CLEAR_CONTEXT = 2;
+  AGENT_INPUT_KIND_COMPACT_CONTEXT = 3;
+  AGENT_INPUT_KIND_PLAN_EXECUTION = 4;
+  AGENT_INPUT_KIND_AUTO_CONTINUE = 5;
+  AGENT_INPUT_KIND_CONTROL_FEEDBACK = 6;
 }
 
-message SendAgentMessageResponse {}
+enum AgentInputState {
+  AGENT_INPUT_STATE_UNSPECIFIED = 0;
+  AGENT_INPUT_STATE_QUEUED = 1;
+  AGENT_INPUT_STATE_DISPATCHING = 2;
+  AGENT_INPUT_STATE_FAILED = 3;
+  AGENT_INPUT_STATE_DELIVERY_UNCERTAIN = 4;
+}
+
+enum AgentInputQueuePauseReason {
+  AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED = 0;
+  AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL = 1;
+  AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED = 2;
+  AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED = 3;
+  AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED = 4;
+  AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN = 5;
+}
+
+message QueuedAgentInputAttachment {
+  string filename = 1;
+  string mime_type = 2;
+  int64 size = 3;
+  int32 order = 4;
+}
+
+message QueuedAgentInput {
+  string id = 1;
+  string agent_id = 2;
+  AgentInputKind kind = 3;
+  // A bounded text preview. BeginQueuedAgentInputEdit returns the full text.
+  string text = 4;
+  repeated QueuedAgentInputAttachment attachments = 5;
+  int64 order = 6;
+  AgentInputState state = 7;
+  string error = 8;
+  string edit_owner_client_id = 9;
+  uint64 version = 10;
+  string created_at = 11;
+  string updated_at = 12;
+}
+
+message AgentInputQueueSnapshot {
+  string agent_id = 1;
+  uint64 revision = 2;
+  bool paused = 3;
+  AgentInputQueuePauseReason pause_reason = 4;
+  bool active_turn = 5;
+  repeated QueuedAgentInput items = 6;
+  AgentInputKind active_turn_kind = 7;
+}
+
+message AgentInputQueueChanged {
+  AgentInputQueueSnapshot snapshot = 1;
+}
+
+message EnqueueAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+  string text = 3;
+  repeated Attachment attachments = 4;
+  AgentInputKind kind = 5;
+}
+
+message EnqueueAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message ListAgentInputQueueRequest { string agent_id = 1; }
+message ListAgentInputQueueResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message BeginQueuedAgentInputEditRequest {
+  string agent_id = 1;
+  string input_id = 2;
+  string client_id = 3;
+  bool takeover = 4;
+}
+message BeginQueuedAgentInputEditResponse {
+  AgentInputQueueSnapshot snapshot = 1;
+  repeated Attachment attachments = 2;
+  string text = 3; // Full text for the item that the client edits.
+}
+
+message UpdateQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+  string client_id = 3;
+  uint64 expected_version = 4;
+  string text = 5;
+  repeated Attachment attachments = 6;
+}
+message UpdateQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message CancelQueuedAgentInputEditRequest {
+  string agent_id = 1;
+  string input_id = 2;
+  string client_id = 3;
+}
+message CancelQueuedAgentInputEditResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message DeleteQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+}
+message DeleteQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message MoveQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+  // Empty moves the input to the end. Otherwise, the input moves immediately
+  // before this input.
+  string before_input_id = 3;
+}
+message MoveQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message SetAgentInputQueuePausedRequest {
+  string agent_id = 1;
+  bool paused = 2;
+}
+message SetAgentInputQueuePausedResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message SteerQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+}
+message SteerQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
+
+message RetryQueuedAgentInputRequest {
+  string agent_id = 1;
+  string input_id = 2;
+  bool confirm_delivery_uncertain = 3;
+}
+message RetryQueuedAgentInputResponse { AgentInputQueueSnapshot snapshot = 1; }
 
 message SendAgentRawMessageRequest {
   string agent_id = 1;
@@ -327,7 +462,8 @@ message AgentChatMessage {
   bytes content = 3; // JSON blob from Claude Code (may be compressed per content_compression)
   int64 seq = 4;
   string created_at = 5;
-  string delivery_error = 6; // Non-empty if worker delivery failed
+  reserved 6;
+  reserved "delivery_error";
   ContentCompression content_compression = 7; // Compression algorithm used for content
   AgentProvider agent_provider = 8; // Provider that produced this message
   int32 depth = 9; // Nesting level: 0=main agent, 1=subagent, 2=nested subagent
@@ -386,6 +522,7 @@ message AgentStatusChange {
 
   // Git.
   GitRepoStatus git_status = 9; // Git status for the agent's working directory
+  bool supports_steering = 10;
 }
 
 // AgentGitStatus was replaced by GitRepoStatus in leapmux/v1/common.proto.
@@ -453,7 +590,7 @@ message ListAgentMessagesResponse {
   // content: when page 1 comes back empty it resumes after latest_seq instead of seq 0,
   // so a transient empty page on a populated agent can no longer collapse to the
   // "drain the entire history from OLDEST" path. Explicit presence (the shared convention
-  // with CatchUpStart/Complete.latest_seq and AgentMessageDeleted.new_latest_seq): UNSET =
+  // with CatchUpStart/Complete.latest_seq): UNSET =
   // the worker couldn't determine it (a DB error) and the consumer skips reconciliation /
   // falls back to its loaded cursor; present 0 = the agent genuinely has no messages;
   // present >0 = the authoritative MAX(seq).
@@ -632,39 +769,6 @@ message SendControlResponseRequest {
 }
 
 message SendControlResponseResponse {}
-
-// AgentMessageError notifies watchers of a message delivery failure.
-message AgentMessageError {
-  string agent_id = 1;
-  string message_id = 2;
-  string error = 3; // Non-empty = error, empty = cleared
-}
-
-// AgentMessageDeleted notifies watchers that a message was deleted.
-message AgentMessageDeleted {
-  string agent_id = 1;
-  string message_id = 2;
-  // The seq of the deleted row. Lets a windowed client whose loaded window lags
-  // the live tail tell whether the deleted row was at or beyond its recorded
-  // live-tail seq.
-  int64 seq = 3;
-  // The agent's authoritative MAX(seq) AFTER this deletion. When the deleted row was
-  // the recorded live tail, a windowed client sets its live-tail seq to exactly this
-  // value instead of guessing seq - 1 -- so a delete of an unloaded beyond-window tail
-  // can't strand the recorded tail above the true server max, and the next forward-fill
-  // resolves against the real tail rather than a conservative under-estimate. Explicit
-  // presence (shared with latest_seq): UNSET = the worker couldn't determine it (a DB
-  // error) and the client leaves its recorded tail unchanged; present 0 = no messages
-  // remain; present >0 = the authoritative MAX(seq).
-  optional int64 new_latest_seq = 4;
-}
-
-message DeleteAgentMessageRequest {
-  string agent_id = 1;
-  string message_id = 2;
-}
-
-message DeleteAgentMessageResponse {}
 
 // AgentSettings holds option values to apply, keyed by option-group id
 // (e.g. "model", "effort", "permissionMode", "sandbox_policy"). Sparse: only

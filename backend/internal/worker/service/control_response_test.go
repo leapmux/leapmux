@@ -250,9 +250,7 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 
 	require.Empty(t, w.errors)
 
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
+	rows := waitForMessageCount(t, svc, "agent-1", 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	assert.Equal(t, "Not yet -- split the migration first.", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType,
@@ -354,9 +352,7 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 
 	require.Empty(t, w.errors)
 
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, rows, 2)
+	rows := waitForMessageCount(t, svc, "agent-1", 2)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0].Content, rows[0].ContentCompression)
 	assert.Equal(t, "CODEX", cr.Provider)
@@ -454,10 +450,7 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 	dispatch(d, "SendControlResponse", answer, w)
 	require.Empty(t, w.errors)
 
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, rows, 2,
-		"the plan-prompt approval applies once: one structured row + one 'Implement the plan.' prompt, not doubled")
+	rows := waitForMessageCount(t, svc, "agent-1", 2)
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
 	assert.Equal(t, "Implement the plan.", decodeMessageContent(t, rows[1].Content, rows[1].ContentCompression))
 }
@@ -1102,6 +1095,7 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 	}
 	dispatch(d, "SendControlResponse", answer, w)
 	require.Empty(t, w.errors)
+	_ = waitForMessageCount(t, svc, "agent-1", 2)
 
 	// Stop the agent so any forward the duplicate ATTEMPTS surfaces as an "agent not running" error.
 	svc.Agents.StopAgent("agent-1")

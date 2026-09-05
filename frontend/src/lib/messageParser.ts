@@ -3,7 +3,7 @@ import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import { CONTEXT_USAGE_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { decompressContentToString } from '~/lib/decompress'
-import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickString } from '~/lib/jsonPick'
+import { isObject, pickFirstNumber, pickFirstObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 
 /**
  * Content-type discriminator emitted by the backend's `wrapNotifContent`
@@ -334,7 +334,7 @@ function parseCompactionMeta(meta: Record<string, unknown> | undefined): Compact
 
 /**
  * A completed compaction boundary: Claude's `compact_boundary` system message or Codex's
- * `thread/compacted` JSON-RPC notification -- both the same signal. Deliberately NEUTRAL and
+ * completed `contextCompaction` item. Deliberately NEUTRAL and
  * shape-based (not a per-provider hook): the notification-thread renderer and the context-usage
  * grid recognize a boundary by SHAPE regardless of the row's provider, so legacy Codex rows still
  * carrying the `compact_boundary` shape, and any cross-provider row, render correctly. This is the
@@ -342,7 +342,8 @@ function parseCompactionMeta(meta: Record<string, unknown> | undefined): Compact
  * shared metadata-key knowledge, not one provider's wire parsing.
  */
 export function isCompactBoundary(m: Record<string, unknown>): boolean {
-  return (m.type === 'system' && m.subtype === 'compact_boundary') || m.method === 'thread/compacted'
+  return (m.type === 'system' && m.subtype === 'compact_boundary')
+    || pickObject(m, 'item')?.type === 'contextCompaction'
 }
 
 /**
@@ -367,13 +368,13 @@ export function parseBoundaryMeta(m: Record<string, unknown>): CompactionDetail 
  *
  * Returns undefined when there is no boundary, or no boundary carries a
  * resolvable post (`post_tokens` absent and no `pre - tokens_saved` to derive it
- * from) -- e.g. Codex's `thread/compacted`, which carries no metadata today.
+ * from) -- for example, a Codex contextCompaction item with no metadata.
  * The caller leaves the grid untouched in that case.
  */
 export function extractCompactionContextTokens(parsed: ParsedMessageContent): number | undefined {
   const messages = messagesOf(parsed)
   // Reverse so the most recent boundary wins. Skip a boundary whose post is
-  // unresolvable (e.g. Codex's metadata-less thread/compacted) and keep scanning
+  // unresolvable (for example, a Codex item with no metadata) and keep scanning
   // so an earlier boundary that does carry a post can still refresh the grid,
   // rather than bailing out on the first boundary encountered.
   for (let i = messages.length - 1; i >= 0; i--) {

@@ -1250,9 +1250,9 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 		"control_request":          true,
 		"control_cancel":           true,
 		"turn_end":                 true,
-		"message_deleted":          true,
 		"todos_changed":            true,
 		"background_tasks_changed": true,
+		"input_queue_changed":      true,
 	}
 
 	msg := &leapmuxv1.AgentEvent{}
@@ -1273,7 +1273,7 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 	}
 }
 
-func TestBroadcast_MessageDeletedReachesNotifyWatcher(t *testing.T) {
+func TestBroadcast_InputQueueChangedReachesNotifyWatcher(t *testing.T) {
 	t.Parallel()
 
 	m := NewWatcherManager()
@@ -1282,11 +1282,11 @@ func TestBroadcast_MessageDeletedReachesNotifyWatcher(t *testing.T) {
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
-		Event: &leapmuxv1.AgentEvent_MessageDeleted{
-			MessageDeleted: &leapmuxv1.AgentMessageDeleted{MessageId: "m1", Seq: 3},
+		Event: &leapmuxv1.AgentEvent_InputQueueChanged{
+			InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: &leapmuxv1.AgentInputQueueSnapshot{AgentId: "agent-1"}},
 		},
 	})
-	assert.Equal(t, int64(1), mock.streamCount.Load(), "MessageDeleted is notify-class")
+	assert.Equal(t, int64(1), mock.streamCount.Load(), "InputQueueChanged is notify-class")
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",

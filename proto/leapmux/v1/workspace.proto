@@ -354,6 +354,8 @@ message WatchUpdateAck {
 
 message AgentEvent {
   string agent_id = 1;
+  reserved 8, 9;
+  reserved "message_error", "message_deleted";
   oneof event {
     AgentChatMessage agent_message = 2;
     AgentStreamChunk stream_chunk = 3;
@@ -361,13 +363,12 @@ message AgentEvent {
     AgentStatusChange status_change = 5;
     AgentControlRequest control_request = 6;
     AgentControlCancelRequest control_cancel = 7;
-    AgentMessageError message_error = 8;
-    AgentMessageDeleted message_deleted = 9;
     CatchUpComplete catch_up_complete = 10;
     AgentTodosChanged todos_changed = 11;
     CatchUpStart catch_up_start = 12;
     AgentTurnEnd turn_end = 13;
     AgentBackgroundTasksChanged background_tasks_changed = 14;
+    AgentInputQueueChanged input_queue_changed = 15;
   }
 }
 
@@ -399,9 +400,8 @@ message CatchUpStart {
 
 message CatchUpComplete {
   // The agent's authoritative live-tail seq at the moment replay completed. A windowed
-  // client that was disconnected never receives the AgentMessageDeleted for rows
-  // deleted meanwhile, so it reconciles here: it drops any loaded row whose seq exceeds
-  // latest_seq (a tail deletion it missed) and clamps its recorded live-tail to this
+  // client can hold a stale tail if authoritative storage removed rows while it was
+  // disconnected. It drops any loaded row whose seq exceeds latest_seq and clamps its tail to this
   // value, so its "new messages below" affordance can't stay stuck past a now-shorter
   // history. Explicit presence: UNSET = the worker couldn't determine it (a DB error) and
   // the client skips reconciliation; present 0 = the agent genuinely has no messages;

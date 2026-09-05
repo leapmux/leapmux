@@ -233,3 +233,11 @@ func (s *thinkingResetSink) BroadcastControlRequest(requestID string, payload []
 	s.est.reset()
 	s.OutputSink.BroadcastControlRequest(requestID, payload, claimToken)
 }
+
+func (s *thinkingResetSink) InputStarted() {
+	notifyInputStarted(s.OutputSink)
+}
+
+func (s *thinkingResetSink) InputReady() {
+	notifyInputReady(s.OutputSink)
+}

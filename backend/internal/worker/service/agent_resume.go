@@ -489,7 +489,7 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	if dbAgent.ClosedAt.Valid {
 		return resumeSkipClosed
 	}
-	// The same permanent-failure gate SendAgentMessage applies. Respawning an
+	// Apply the same permanent-failure check as queue dispatch. Respawning an
 	// agent whose last startup failed would burn a slot on a CLI that is going to
 	// fail again, and the row already tells the user to open a new agent.
 	if dbAgent.StartupError != "" {

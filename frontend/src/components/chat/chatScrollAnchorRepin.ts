@@ -581,9 +581,8 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
           }
         }
         else {
-          // The anchored row no longer resolves -- it was trimmed out of the window, or (the
-          // common case) an optimistic local reconciled to its server echo under a new id /
-          // a reseq changed its id. Re-anchor to whatever row now sits at the viewport
+          // The anchored row no longer resolves because it left the window or changed ID.
+          // Re-anchor to the row that now sits at the viewport
           // midpoint (scrollTop is unchanged) so subsequent geometry changes keep a valid
           // pin instead of letting the view silently drift. Drop any deferred fling drift:
           // it was the accumulated correction to keep the now-gone row stationary, so

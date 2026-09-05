@@ -1,7 +1,7 @@
 import type { ScrollContext } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
-import { firstServerSeq, lastServerSeq } from '~/stores/chatMessageOrder'
+import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { nearestServerRowIndexBySeq } from './chatScrollAnchor'
 import { clampScrollTop } from './chatScrollGeometry'
 
@@ -56,7 +56,7 @@ export interface ChatSeek {
  * callbacks.
  */
 export interface ChatSeekExtras {
-  /** Live loaded messages (server rows + trailing optimistic locals). */
+  /** Live loaded transcript messages. */
   messages: () => AgentChatMessage[]
   /** Clamped logical scrollTop read (Safari rubber-band safe). */
   readScrollTop: (el: HTMLDivElement) => number
@@ -106,9 +106,8 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     pendingSeek = null
   }
 
-  // The window's first/last SERVER seq (skipping seq-0n optimistic locals) come from the
-  // shared chatMessageOrder helpers -- the same definition the rail's window bounds and the
-  // windowing core use -- so the in-window seek decision can't drift from them.
+  // Shared order helpers supply the window sequences. The rail and the window use
+  // the same values for the in-window seek decision.
 
   /**
    * The loaded server row nearest `seq` by absolute seq distance, via the same
@@ -184,8 +183,8 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     if (!el)
       return Promise.resolve(false)
     const msgs = extras.messages()
-    const firstS = firstServerSeq(msgs)
-    const lastS = lastServerSeq(msgs)
+    const firstS = firstMessageSeq(msgs)
+    const lastS = lastMessageSeq(msgs)
     // In-window: the seq sits within the loaded server span. Re-take control (clear the
     // per-window filler pause/settle/suppress flags, same as forceScrollToBottom) and land.
     if (firstS !== undefined && lastS !== undefined && seq >= firstS && seq <= lastS) {

@@ -50,6 +50,7 @@ import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
@@ -151,6 +152,7 @@ export const AppShell: Component = () => {
   // via useTabPersistence.
   const selection = createTabSelectionStore(tabView, tabMetadata)
   const chatStore = createChatStore()
+  const agentInputQueueStore = createAgentInputQueueStore()
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
   const layoutStore = createLayoutStore({
@@ -325,6 +327,7 @@ export const AppShell: Component = () => {
   // Streaming connection management
   useWorkspaceConnection({
     chatStore,
+    agentInputQueueStore,
     view: tabView,
     metadata: tabMetadata,
     selection,
@@ -670,6 +673,7 @@ export const AppShell: Component = () => {
 
   const agentOps = useAgentOperations({
     agentSessionStore,
+    agentInputQueueStore,
     chatStore,
     controlStore,
     view: tabView,
@@ -1164,12 +1168,14 @@ export const AppShell: Component = () => {
       metadata: tabMetadata,
       selection,
       chatStore,
+      agentInputQueueStore,
       controlStore,
       layoutStore,
       agentSessionStore,
       repoGitStore,
     },
     ops: { agentOps, termOps },
+    clientId: ownClientId,
     workspace: {
       isActiveWorkspaceMutatable,
       isActiveWorkspaceArchived,

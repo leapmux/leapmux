@@ -7,10 +7,8 @@ import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 // `locator.evaluate` / `locator.evaluateAll`.
 //
 // Resolving a locator and reading from what it resolved are two browser round
-// trips, and a chat row does not survive the gap. ChatView re-creates a row
-// whenever its entry is replaced, which every send does about 350ms later, when
-// the optimistic local reconciles to a server echo carrying a different id and a
-// different seq. A resolve that lands just before the swap leaves the read
+// trips, and a chat row does not always survive the gap. ChatView re-creates a
+// row when a notification changes its sequence. A resolve just before the swap leaves the read
 // holding a DETACHED node.
 //
 // `evaluateAll` is no safer than `evaluate`, which is worth stating because it

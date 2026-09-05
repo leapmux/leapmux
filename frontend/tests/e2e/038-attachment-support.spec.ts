@@ -232,9 +232,7 @@ test.describe('Attachment Support', () => {
     await page.keyboard.type('analyze this image')
     await page.keyboard.press('Meta+Enter')
 
-    // The user message bubble should contain the attachment filename.
-    // The optimistic message is rendered immediately.
-    await page.waitForTimeout(500)
+    // The accepted user message contains the attachment filename.
     const userBubbles = page.locator('[class*="userMessage"]')
     const lastBubble = userBubbles.last()
     await expect(lastBubble).toContainText('history.png')

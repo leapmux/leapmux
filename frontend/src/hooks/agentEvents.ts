@@ -19,7 +19,6 @@ import type { AgentTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { sendAgentMessage } from '~/api/workerRpc'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
@@ -736,6 +735,7 @@ export function buildAgentStatusTabUpdate(
 ): Partial<AgentTab> {
   return {
     ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
+    ...(hasStatus ? { supportsSteering: sc.supportsSteering } : {}),
     // Carry startupError alongside status transitions so the in-tab error view can
     // render the server-formatted message; only on the failed/cleared transitions, so
     // an unrelated status (e.g. INACTIVE from turn end) leaves it alone.
@@ -754,44 +754,6 @@ export function buildAgentStatusTabUpdate(
   }
 }
 
-/**
- * Drain the per-agent pending-outbound queue on a STARTING -> ACTIVE / STARTUP_FAILED
- * transition. Messages composed while the subprocess was still starting were queued
- * (chatStore.pendingOutbound); on ACTIVE they are sent in order (a send failure surfaces
- * a per-message "Failed to deliver"), on STARTUP_FAILED every queued message surfaces an
- * "Agent failed to start" error. A no-op unless the PRIOR status was STARTING and the
- * queue is non-empty. `prev` is the pre-update tab (its status + worker id).
- */
-export function drainPendingOutboundOnStart(
-  sc: AgentStatusChange,
-  prev: AgentTab | undefined,
-  chatStore: ReturnType<typeof createChatStore>,
-): void {
-  if (prev?.agentStatus !== AgentStatus.STARTING)
-    return
-  // Pure status -> action dispatch; the store owns the queue drain, the per-message
-  // pending-label/error side-state, and the fire-and-forget send loop (with the
-  // transport injected here so the store stays I/O-free).
-  if (sc.status === AgentStatus.ACTIVE) {
-    const wid = prev.workerId ?? ''
-    chatStore.resendPendingOutbound(sc.agentId, m =>
-      sendAgentMessage(wid, { agentId: sc.agentId, content: m.content, attachments: m.attachments }))
-  }
-  else if (sc.status === AgentStatus.STARTUP_FAILED) {
-    chatStore.failPendingOutbound(sc.agentId, 'Agent failed to start')
-  }
-}
-
-/**
- * INACTIVE cleanup: the agent subprocess stopped. Clear stale control requests (so the
- * user can send a regular message that auto-starts the agent instead of being stuck on
- * an unanswerable prompt) and the per-turn thinking estimate. While LIVE, the turn is
- * definitively over -- reclaim any command-stream buffer a mid-stream trim spared as
- * orphaned (an agent that exits mid-turn emits INACTIVE but no result divider, so the
- * divider's turn-end sweep never fires for it, leaking the buffer) and signal turn-end.
- * Both 'live'-gated like the result-divider sweep; the catch-up phase is reclaimed by
- * the catchUpComplete sweep instead.
- */
 export function handleAgentInactive(
   agentId: string,
   sc: AgentStatusChange,
@@ -986,9 +948,8 @@ function applyAgentStatusTabUpdate(
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   streamWorkerId = '',
 ): void {
-  const { chatStore, view, metadata, repoGitStore } = stores
+  const { view, metadata, repoGitStore } = stores
   const prev = view.getAgentTab(sc.agentId)
-  drainPendingOutboundOnStart(sc, prev, chatStore)
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
   const workerId = prev?.workerId || streamWorkerId || ''

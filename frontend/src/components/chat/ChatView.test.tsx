@@ -10,7 +10,7 @@ import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression,
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
 import { railIdle } from './ChatScrollRail.css'
-import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, rowChromeHeightKey, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
+import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
 import { bandTailMerged, messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
 import { computeOverscanPx, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { bandMessage, bandRow, bandRowThought, bleedRow } from './messageStyles.css'
@@ -579,15 +579,6 @@ describe('samevirtualitems', () => {
   })
 })
 
-describe('rowChromeHeightKey', () => {
-  it('changes when delivery error or pending-label chrome changes', () => {
-    const base = rowChromeHeightKey(undefined, undefined)
-    expect(rowChromeHeightKey('failed', undefined)).not.toBe(base)
-    expect(rowChromeHeightKey(undefined, 'queued')).not.toBe(base)
-    expect(rowChromeHeightKey('failed', 'queued')).not.toBe(rowChromeHeightKey('failed', undefined))
-  })
-})
-
 describe('chatView', () => {
   it('renders empty state when no messages', () => {
     render(() => (
@@ -898,37 +889,6 @@ describe('chatView', () => {
     expect(row!.classList.contains(bandRow)).toBe(false)
     expect(row!.dataset.band).toBeUndefined()
     expect(view.container.querySelector('[data-testid="result-divider"]')).not.toBeNull()
-  })
-
-  it('hides a trailing optimistic local while windowed away from the live tail', () => {
-    const messages = [
-      makeMessage('assistant', 'Server reply', 'm1'),
-      { ...makeMessage('user', 'My pending message', 'local-1'), seq: 0n },
-    ]
-    render(() => (
-      <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" pagination={{ hasNewerMessages: true }} />
-      </PreferencesProvider>
-    ))
-    // The server message renders; the optimistic local (seq 0n) is hidden -- it
-    // belongs at the live tail, not stranded after a scrolled-away window. It
-    // stays in the store and reappears on jump-to-latest.
-    expect(screen.getByText('Server reply')).toBeInTheDocument()
-    expect(screen.queryByText('My pending message')).toBeNull()
-  })
-
-  it('renders a trailing optimistic local at the live tail', () => {
-    const messages = [
-      makeMessage('assistant', 'Server reply', 'm1'),
-      { ...makeMessage('user', 'My pending message', 'local-1'), seq: 0n },
-    ]
-    render(() => (
-      <PreferencesProvider>
-        <ChatView messages={messages} streamingText="" pagination={{ hasNewerMessages: false }} />
-      </PreferencesProvider>
-    ))
-    expect(screen.getByText('Server reply')).toBeInTheDocument()
-    expect(screen.getByText('My pending message')).toBeInTheDocument()
   })
 
   it('renders streaming text', async () => {
@@ -3018,16 +2978,6 @@ describe('chat view virtualized with stubbed deps', () => {
     it('keeps the native scrollbar while the rail is unseeded (marks RPC failed / slow)', () => {
       const { container } = render(() => (
         <ChatView messages={[message('m0', 1)]} streamingText="" rail={{ ...railBase, loaded: false }} />
-      ))
-      expect(scroller(container).className).not.toContain(messageListRailActive)
-    })
-
-    it('keeps the native scrollbar for an all-optimistic-local window (no server seq to anchor)', () => {
-      // A window of only optimistic locals (seq 0n) has no server row for the rail to anchor a thumb
-      // to, so the rail hides itself and the native scrollbar must stay or overflowing local content
-      // would have no scrollbar at all. windowFirst/LastSeq are undefined to match (no server seq).
-      const { container } = render(() => (
-        <ChatView messages={[message('m0', 0)]} streamingText="" rail={{ ...railBase, windowFirstSeq: undefined, windowLastSeq: undefined }} />
       ))
       expect(scroller(container).className).not.toContain(messageListRailActive)
     })

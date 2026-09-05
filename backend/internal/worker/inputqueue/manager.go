@@ -1,0 +1,386 @@
+package inputqueue
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+)
+
+type coordinator struct {
+	mu       sync.Mutex
+	draining bool
+}
+
+type Manager struct {
+	store      *Store
+	dispatcher Dispatcher
+	observer   Observer
+
+	mu           sync.Mutex
+	coordinators map[string]*coordinator
+}
+
+func NewManager(store *Store, dispatcher Dispatcher, observer Observer) *Manager {
+	if observer == nil {
+		observer = NopObserver{}
+	}
+	return &Manager{
+		store: store, dispatcher: dispatcher, observer: observer,
+		coordinators: make(map[string]*coordinator),
+	}
+}
+
+func (m *Manager) coordinator(agentID string) *coordinator {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.coordinators[agentID]
+	if c == nil {
+		c = &coordinator{}
+		m.coordinators[agentID] = c
+	}
+	return c
+}
+
+func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+	c := m.coordinator(input.AgentID)
+	c.mu.Lock()
+	snapshot, err := m.store.Enqueue(ctx, input)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil {
+		m.scheduleDrain(input.AgentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return m.store.Snapshot(ctx, agentID)
+}
+
+func (m *Manager) BeginEdit(ctx context.Context, agentID, inputID, clientID string, takeover bool) (Snapshot, string, []Attachment, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot, text, attachments, err := m.store.BeginEdit(ctx, agentID, inputID, clientID, takeover)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	return snapshot, text, attachments, err
+}
+
+func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string, expectedVersion uint64, text string, attachments []Attachment) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) CancelEdit(ctx context.Context, agentID, inputID, clientID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.CancelEdit(ctx, agentID, inputID, clientID)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.Delete(ctx, agentID, inputID)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) Move(ctx context.Context, agentID, inputID, beforeInputID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.Move(ctx, agentID, inputID, beforeInputID)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (Snapshot, error) {
+	reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED
+	if paused {
+		reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
+	}
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.SetPaused(ctx, agentID, paused, reason)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil && !paused {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) Pause(ctx context.Context, agentID string, reason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot, err := m.store.Pause(ctx, agentID, reason)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := m.store.TurnEnded(ctx, agentID)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) TurnStarted(ctx context.Context, agentID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot, err := m.store.TurnStarted(ctx, agentID)
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	return snapshot, err
+}
+
+func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUncertain bool) (Snapshot, error) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot, err := m.store.Retry(ctx, agentID, inputID, confirmUncertain)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	m.observer.QueueChanged(snapshot)
+	return m.dispatchPrepared(ctx, agentID, m.store.PrepareRetry)
+}
+
+func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot, error) {
+	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
+		return Snapshot{}, ErrSteeringUnsupported
+	}
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	if prepared == nil {
+		c.mu.Unlock()
+		return snapshot, ErrTurnEnded
+	}
+	m.observer.QueueChanged(snapshot)
+	c.mu.Unlock()
+
+	result, err := m.dispatcher.Steer(prepared.Item)
+	c.mu.Lock()
+	turnEnded := errors.Is(err, ErrTurnEnded)
+	if err != nil && !turnEnded {
+		snapshot, storeErr := m.recordDispatchFailure(ctx, *prepared, err)
+		c.mu.Unlock()
+		return snapshot, storeErr
+	}
+	if !turnEnded {
+		current, storeErr := m.store.Snapshot(ctx, agentID)
+		if storeErr != nil {
+			c.mu.Unlock()
+			return Snapshot{}, storeErr
+		}
+		turnEnded = !current.ActiveTurn
+	}
+	if turnEnded {
+		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
+		if storeErr != nil {
+			c.mu.Unlock()
+			return Snapshot{}, storeErr
+		}
+		m.observer.QueueChanged(snapshot)
+		shouldDrain := !snapshot.ActiveTurn && !snapshot.Paused
+		c.mu.Unlock()
+		if shouldDrain {
+			m.scheduleDrain(agentID)
+		}
+		return snapshot, nil
+	}
+	result.StartsTurn = true
+	result.Steering = true
+	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	shouldDrain := !snapshot.ActiveTurn && !snapshot.Paused
+	c.mu.Unlock()
+	if shouldDrain {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, nil
+}
+
+func (m *Manager) Recover(ctx context.Context) error {
+	snapshots, err := m.store.Recover(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range snapshots {
+		m.observer.QueueChanged(snapshots[i])
+		if !snapshots[i].Paused {
+			m.scheduleDrain(snapshots[i].AgentID)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) scheduleDrain(agentID string) {
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	if c.draining {
+		c.mu.Unlock()
+		return
+	}
+	c.draining = true
+	c.mu.Unlock()
+	go m.drain(agentID, c)
+}
+
+func (m *Manager) drain(agentID string, c *coordinator) {
+	for {
+		c.mu.Lock()
+		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID)
+		if err != nil {
+			slog.Error("agent input queue prepare failed", "agent_id", agentID, "error", err)
+			c.draining = false
+			c.mu.Unlock()
+			return
+		}
+		if prepared == nil {
+			c.draining = false
+			c.mu.Unlock()
+			_ = snapshot
+			return
+		}
+		m.observer.QueueChanged(snapshot)
+		result, err := m.dispatcher.Dispatch(prepared.Item)
+		if err != nil {
+			_, storeErr := m.recordDispatchFailure(context.Background(), *prepared, err)
+			if storeErr != nil {
+				slog.Error("agent input queue failure persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", storeErr)
+			}
+			c.draining = false
+			c.mu.Unlock()
+			return
+		}
+		_, persisted, err := m.acceptDispatch(context.Background(), *prepared, result)
+		if err != nil {
+			slog.Error("agent input queue acceptance persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", err)
+			c.draining = false
+			c.mu.Unlock()
+			return
+		}
+		if !persisted {
+			c.draining = false
+			c.mu.Unlock()
+			return
+		}
+		if result.StartsTurn {
+			c.draining = false
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
+	}
+}
+
+type prepareFunc func(context.Context, string) (*PreparedDispatch, Snapshot, error)
+
+func (m *Manager) dispatchPrepared(ctx context.Context, agentID string, prepare prepareFunc) (Snapshot, error) {
+	prepared, snapshot, err := prepare(ctx, agentID)
+	if err != nil || prepared == nil {
+		return snapshot, err
+	}
+	m.observer.QueueChanged(snapshot)
+	result, err := m.dispatcher.Dispatch(prepared.Item)
+	if err != nil {
+		return m.recordDispatchFailure(ctx, *prepared, err)
+	}
+	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (m *Manager) acceptDispatch(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (Snapshot, bool, error) {
+	transcript, snapshot, err := m.store.Accept(ctx, prepared, result)
+	if err == nil {
+		m.observer.InputAccepted(transcript)
+		m.observer.QueueChanged(snapshot)
+		if result.AfterAccept != nil {
+			result.AfterAccept()
+		}
+		return snapshot, true, nil
+	}
+	uncertainErr := fmt.Errorf("provider accepted input but transcript persistence failed: %w", err)
+	snapshot, failErr := m.store.FailDispatch(ctx, prepared.Item.AgentID, prepared.Item.ID, uncertainErr, true)
+	if failErr != nil {
+		return Snapshot{}, false, errors.Join(err, failErr)
+	}
+	m.observer.QueueChanged(snapshot)
+	return snapshot, false, nil
+}
+
+func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
+	var deliveryErr *DeliveryError
+	uncertain := errors.As(dispatchErr, &deliveryErr) && deliveryErr.Uncertain
+	snapshot, err := m.store.FailDispatch(ctx, prepared.Item.AgentID, prepared.Item.ID, dispatchErr, uncertain)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	m.observer.QueueChanged(snapshot)
+	return snapshot, nil
+}

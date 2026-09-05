@@ -14,7 +14,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { startDevServer, stopDevServer } from './helpers/devServer'
-import { loginViaToken, openWorkspace, visibleOnly } from './helpers/ui'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 
 function startServerWithFailingClaude(): Promise<DevServerHandle> {
   return startDevServer({
@@ -62,14 +62,13 @@ test.describe('Claude Code agent startup error', () => {
     await expect(errorPanel.locator('h2')).toContainText('failed to start')
     await expect(errorPanel.locator('pre code')).toBeVisible()
 
-    // Sends from a stale UI must not produce a network round-trip that
-    // succeeds — type a message and submit; the message should appear
-    // with an error label rather than being delivered.
+    // The Worker retains the input as a failed queue item.
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await editor.click()
     await page.keyboard.type('hello')
     await page.keyboard.press('Meta+Enter')
-    await expect(visibleOnly(page.getByTestId('message-error'))).toBeVisible()
+    await expect(page.getByTestId('agent-input-queue')).toContainText('Failed')
+    await expect(page.getByTestId('agent-input-queue')).toContainText('hello')
 
     await deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId).catch(() => {})
     await context.close()

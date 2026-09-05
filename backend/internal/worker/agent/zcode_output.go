@@ -324,6 +324,7 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 		}
 	}
 	a.mu.Unlock()
+	notifyInputReady(a.sink)
 
 	// The app-server's own reading is authoritative, and reading it takes an RPC --
 	// which the read loop must stay free to deliver, so it cannot run inline here.

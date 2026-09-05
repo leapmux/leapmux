@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import Eye from 'lucide-solid/icons/eye'
-import FileEdit from 'lucide-solid/icons/file-edit'
+import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import Folder from 'lucide-solid/icons/folder'
 import Search from 'lucide-solid/icons/search'
@@ -113,7 +113,7 @@ function PiEditRenderer(props: { payload: Record<string, unknown>, context?: Ren
   }
   return (
     <ToolUseLayout
-      icon={FileEdit}
+      icon={FilePen}
       toolName="Edit"
       title={`Edit ${path()}`}
       summary={(

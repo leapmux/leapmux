@@ -97,7 +97,7 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 // createAgentRecord enforces the same real-provider invariant at the point agent
 // rows are born, so a misconfigured caller fails at creation with a clear error
 // rather than later when createMessageRow rejects the agent's first message. The
-// production SendAgentMessage path defaults an UNSPECIFIED request to a real
+// production agent creation path defaults an UNSPECIFIED request to a real
 // provider before reaching here, so this guard is a backstop.
 func TestCreateAgentRecord_RejectsUnspecifiedProvider(t *testing.T) {
 	t.Parallel()

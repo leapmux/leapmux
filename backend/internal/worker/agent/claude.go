@@ -99,6 +99,7 @@ type ClaudeCodeAgent struct {
 	// Claude Code-specific state.
 	contextUsage           *contextUsageSnapshot
 	lastAgentStatus        string
+	turnActive             bool
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 
 	pendingControlMu        sync.Mutex
@@ -636,15 +637,39 @@ func (a *ClaudeCodeAgent) Interrupt() error {
 
 // SendInput writes a user message to the agent's stdin.
 func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.sendInput(content, attachments, "")
+}
+
+func (a *ClaudeCodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.mu.Lock()
+	active := a.turnActive
+	a.mu.Unlock()
+	if !active {
+		return ErrNoActiveTurn
+	}
+	return a.sendInput(content, attachments, "next")
+}
+
+func (a *ClaudeCodeAgent) InputReady() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.stopped && !a.turnActive
+}
+
+func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, priority string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.stopped {
 		return fmt.Errorf("agent is stopped")
 	}
+	if priority == "" && a.turnActive {
+		return ErrNoActiveTurn
+	}
 
 	msg := UserInputMessage{
-		Type: MessageTypeUser,
+		Type:     MessageTypeUser,
+		Priority: priority,
 		Message: UserInputContent{
 			Role: "user",
 		},
@@ -667,6 +692,9 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 	data = append(data, '\n')
 	if err := a.writeStdin(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
+	}
+	if priority == "" {
+		a.turnActive = true
 	}
 
 	return nil

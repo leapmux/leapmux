@@ -17,6 +17,7 @@ import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
   clearPerTurnLiveState,
@@ -175,6 +176,7 @@ export function reconcileLaggingTails(deps: {
 
 export interface WorkspaceConnectionParams {
   chatStore: ReturnType<typeof createChatStore>
+  agentInputQueueStore?: ReturnType<typeof createAgentInputQueueStore>
   view: TabView
   metadata: TabMetadataStore
   selection: TabSelectionStore
@@ -189,6 +191,7 @@ export interface WorkspaceConnectionParams {
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading, repoGitStore } = params
+  const agentInputQueueStore = params.agentInputQueueStore ?? createAgentInputQueueStore()
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
   // Per-agent catch-up phase across all workers.
@@ -347,17 +350,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           params.onTurnEnd,
         )
         break
-      case 'messageError': {
-        const me = inner.value
-        if (me.error)
-          chatStore.setMessageError(me.messageId, me.error)
-        else
-          chatStore.clearMessageError(me.messageId)
-        break
-      }
-      case 'messageDeleted': {
-        const md = inner.value
-        chatStore.removeMessage(md.agentId, md.messageId, md.seq, md.newLatestSeq)
+      case 'inputQueueChanged': {
+        agentInputQueueStore.apply(inner.value.snapshot)
         break
       }
       case 'todosChanged': {

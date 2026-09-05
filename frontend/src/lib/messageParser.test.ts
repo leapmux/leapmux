@@ -356,8 +356,8 @@ describe('extractCompactionContextTokens', () => {
     expect(extractPost(parse(boundary({ pre_tokens: 100000, post_tokens: -5 })))).toBe(0)
   })
 
-  it('returns undefined for Codex thread/compacted, which carries no metadata', () => {
-    expect(extractPost(parse({ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }))).toBeUndefined()
+  it('returns undefined for a completed Codex contextCompaction item without metadata', () => {
+    expect(extractPost(parse({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' }))).toBeUndefined()
   })
 
   it('returns undefined for a microcompact boundary (Claude emits no metadata)', () => {

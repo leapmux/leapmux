@@ -5,8 +5,7 @@ import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
 import { monotonicNow } from '~/lib/monotonicNow'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
-import { firstServerSeq, lastServerSeq } from '~/stores/chatMessageOrder'
-import { isOptimisticLocal } from '~/stores/chatReconcile'
+import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { createAnchorRepin } from './chatScrollAnchorRepin'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
 import { classifyUnexplainedJump, createScrollDiagnostics, KEYBOARD_SCROLL_GRACE_MS } from './chatScrollDiagnostics'
@@ -204,17 +203,14 @@ const SCROLL_TO_BOTTOM_MAX_FRAMES = 60
  *  - anchor set but UNRESOLVABLE in `msgs` (displaced / not present): the whole window,
  *    so no still-visible row is trimmed (the store clamps to the hard ceiling so memory
  *    stays bounded).
- *  - anchor resolvable: the SERVER rows from the anchor down to the tail. msgs carries
- *    trailing optimistic locals (seq 0n), but the store's oldest-end trim caps SERVER
- *    messages only and pins locals separately -- counting locals here would inflate the
- *    cap and over-retain old rows.
+ *  - anchor resolvable: the rows from the anchor down to the tail.
  */
 export function computeKeepNewest(msgs: AgentChatMessage[], anchor: ScrollAnchor | null, anchorIdx: number): number {
   if (!anchor)
     return 0
   if (anchorIdx < 0)
     return msgs.length
-  return msgs.slice(anchorIdx).filter(m => !isOptimisticLocal(m)).length
+  return msgs.length - anchorIdx
 }
 
 /**
@@ -1645,14 +1641,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // existing tool_use) which don't change messages.length.
   createEffect(() => {
     const msgs = opts.messages()
-    // Track the SERVER head's seq (firstServerSeq), not msgs[0].seq: a prepend is
-    // the server head moving EARLIER. A local landing at index 0 (the server range
-    // emptied to a pending local) would read as seq 0n -- smaller than any server seq
-    // -- and spuriously trip prependedOlderMessages, suppressing the bottom auto-stick
-    // when a new tail message arrives in the same update. undefined (not 0n) for an
-    // all-locals window keeps that case out of the comparison below.
-    const firstSeq = firstServerSeq(msgs)
-    const newestSeq = lastServerSeq(msgs)
+    // A prepend moves the first sequence earlier. An empty window has no sequence.
+    const firstSeq = firstMessageSeq(msgs)
+    const newestSeq = lastMessageSeq(msgs)
     const prependedOlderMessages = autoScrollFirstSeq !== undefined
       && firstSeq !== undefined
       && firstSeq < autoScrollFirstSeq

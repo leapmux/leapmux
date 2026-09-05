@@ -107,13 +107,12 @@ export interface HistoryPaginatorDeps {
   getFirstSeq: (agentId: string) => bigint
   getLastSeq: (agentId: string) => bigint
   /**
-   * The window's first/last SERVER seq, or `undefined` when the window has none
-   * (empty, or only optimistic locals). The undefined-returning honest signal the
-   * re-anchor guards test, vs getFirstSeq/getLastSeq which collapse it to the magic
+   * The window's first and last persisted sequence, or `undefined` when the window is empty.
+   * The re-anchor guards use this signal. Cursor readers use methods that return
    * 0n a cursor reader wants.
    */
-  getFirstServerSeq: (agentId: string) => bigint | undefined
-  getLastServerSeq: (agentId: string) => bigint | undefined
+  getFirstMessageSeq: (agentId: string) => bigint | undefined
+  getLastMessageSeq: (agentId: string) => bigint | undefined
   caughtUpToLiveTail: (agentId: string) => boolean
   addMessage: (agentId: string, message: AgentChatMessage) => void
   trimOldestEnd: (agentId: string, maxCount: number) => void
@@ -121,7 +120,6 @@ export interface HistoryPaginatorDeps {
   replaceTodos: (agentId: string, protoTodos: ProtoTodoItem[]) => void
   replaceBackgroundTasks: (agentId: string, protoTasks: ProtoBackgroundTaskItem[]) => void
   markBackgroundTasksLoadFailed: (agentId: string) => void
-  loadLocalMessages: (agentId: string) => void
 }
 
 /**
@@ -215,11 +213,6 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // page; subsequent live updates arrive via AgentTodosChanged broadcasts.
       applyLatestPage(agentId, resp)
     })
-    // Restore any local messages that were persisted to localStorage
-    // (e.g. undelivered messages that survived a page refresh). Runs even when
-    // a jump superseded the fetch above -- the jump replaces the server window
-    // but never reloads locals.
-    deps.loadLocalMessages(agentId)
   }
 
   /** Fetch older messages before the current window. */
@@ -232,17 +225,11 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     if (!messages || messages.length === 0)
       return
 
-    // Page before the oldest SERVER message. getFirstServerSeq returns undefined
-    // when the window has no server cursor to page BEFORE (only leading optimistic
-    // locals), the honest signal -- no magic 0n the backend would resolve as
-    // `seq < 0` (an empty page).
-    const firstSeq = deps.getFirstServerSeq(agentId)
+    // Page before the oldest persisted message. A missing cursor violates the
+    // nonempty-window invariant, so reload from the start.
+    const firstSeq = deps.getFirstMessageSeq(agentId)
     if (firstSeq === undefined) {
-      // The window holds only optimistic locals (no server cursor to page
-      // BEFORE) yet hasMoreOlder is flagged true. Rather than no-op forever and
-      // wedge the "load older" affordance, reconcile by loading the earliest
-      // real page (anchor OLDEST), which resolves hasMoreOlder/hasMoreNewer from
-      // the response and preserves the locals.
+      // Reload the earliest page so an invalid cursor cannot keep the control active.
       await jumpToOldestMessages(workerId, agentId)
       return
     }
@@ -403,8 +390,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // The loop drained the server's forward pages (reached has_more=false or an empty
       // page) while at the tail (hasMoreNewer stayed false). If the recorded live tail
       // STILL sits ahead of the loaded window, it points at a seq the server can no
-      // longer give us -- e.g. a tail row deleted with an indeterminate broadcast that
-      // couldn't lower the high-water (chatLiveTail.onDelete). Without clamping it,
+      // longer give us. A server-side history change can leave this client with a
+      // stale high-water value. Without clamping it,
       // caughtUpToLiveTail never resolves, so the continuous reconcile re-issues this
       // empty fetch on EVERY tick and the scroll-to-bottom affordance stays lit forever.
       // Clamp it to the window (mirrors loadNewerPage's dedup-stall settle); an empty
@@ -431,14 +418,9 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       return
     if (!state.hasMoreNewer[agentId])
       return
-    const lastSeq = deps.getLastServerSeq(agentId)
+    const lastSeq = deps.getLastMessageSeq(agentId)
     if (lastSeq === undefined) {
-      // The window has no SERVER cursor to page AFTER -- only optimistic locals
-      // remain, or a messageDeleted broadcast emptied the server range -- yet
-      // hasMoreNewer is set, so a plain return would wedge the scroll-down
-      // affordance forever. Mirror loadOlderMessages' OLDEST fallback: re-anchor
-      // on a fresh latest page (jumpToLatestMessages resolves hasMoreNewer from
-      // the response and preserves locals).
+      // Reload the latest page so an empty window cannot keep the control active.
       await jumpToLatestMessages(workerId, agentId)
       return
     }
@@ -455,8 +437,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       if (signal.aborted)
         return
       deps.mergeFetchedMessages(agentId, resp.messages, 'newer')
-      // Reaching the SERVER tail (has_more false) does NOT prove we reached the
-      // LIVE tail: a broadcast that arrived mid-fetch (seq beyond this page) was
+      // Reaching the persisted tail (has_more false) does not prove we reached the
+      // live tail. A broadcast that arrived mid-fetch (seq beyond this page) was
       // dropped by addMessage's live-append guard and only recorded in
       // latestLiveSeq. Keep hasMoreNewer set until the window actually reaches
       // that observed seq, so a further scroll-down (or jump-to-latest) fetches
@@ -478,10 +460,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // The dedup-stall is EXACTLY `getLastSeq === lastSeq` (the window neither
       // advanced nor shrank). A `< lastSeq` is NOT a dedup-stall but a window that
       // SHRANK during the fetch: mergeFetchedMessages('newer') only ever appends, so
-      // the only thing that lowers the tail mid-fetch is a concurrent messageDeleted
-      // removing the window's tail row. Clamping on a shrink would erase a still-
-      // reachable recorded tail (the deleted row need not be the recorded one), so the
-      // delete is left to onDelete + a later forward-fill to reconcile instead.
+      // a concurrent window replacement can also lower the tail. Clamping on a shrink
+      // would erase a still-reachable recorded tail, so a later forward fill reconciles it.
       if (!resp.hasMore && deps.getLastSeq(agentId) === lastSeq)
         deps.liveTail.settleToWindow(agentId, liveSeqAtEntry, deps.getLastSeq(agentId))
       setState('hasMoreNewer', agentId, resp.hasMore || !deps.caughtUpToLiveTail(agentId))
@@ -527,13 +507,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     // advance). Returns 'aborted' if a superseding fetch took over mid-flight.
     const fillRound = async (): Promise<'aborted' | 'settled'> => {
       while (!deps.caughtUpToLiveTail(agentId)) {
-        // An all-locals / empty window has no SERVER cursor to page AFTER: getLastSeq
-        // collapses it to 0n, and listMessagesAfter(0n) fetches the OLDEST page (seq > 0),
-        // which appendNewerAtTail would splice in as the tail -- showing the head while
-        // claiming to be at the live tail, gap unfilled. Break so retryDedupStall
+        // An empty window has no cursor to page after. Break so retryDedupStall
         // re-anchors just below the recorded live seq (the real tail region), or the
         // terminal settle clamps a genuinely-vanished tail.
-        if (deps.getLastServerSeq(agentId) === undefined)
+        if (deps.getLastMessageSeq(agentId) === undefined)
           break
         const cursorSeq = deps.getLastSeq(agentId)
         const resp = await listMessagesAfter(workerId, agentId, cursorSeq)
@@ -672,22 +649,16 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       if (signal.aborted)
         return
       applyLatestPage(agentId, latest)
-      // An empty LATEST page with no more beyond it is the server's ground
-      // truth that NO messages exist -- e.g. the whole history was deleted while
-      // we were scrolled away, leaving the recorded live tail pointing at a vanished
-      // tail (whose own messageDeleted broadcast was a no-op, since it wasn't loaded
-      // and the broadcast carries no seq). Clear the recorded live tail so
-      // caughtUpToLiveTail resolves and the forward-fill below stops chasing it.
-      // settleToWindow can't do this -- it refuses to clamp to an empty window because
-      // a TRANSIENT empty-during-fetch must not read as caught up -- but an
-      // authoritative empty LATEST response is not transient. resetToEmptyIfStale skips
-      // the clear if a message broadcast mid-fetch raised the tail past the snapshot
-      // (that seq is genuinely reachable; forward-fill will pull it).
+      // An empty LATEST page with no more pages proves that no messages exist.
+      // Clear a stale live tail so caughtUpToLiveTail resolves.
+      // settleToWindow cannot clear a transient empty window during a fetch.
+      // This empty LATEST response is authoritative. resetToEmptyIfStale keeps
+      // a tail that a message broadcast raised after this request started.
       if (latest.messages.length === 0 && !latest.hasMore)
         deps.liveTail.resetToEmptyIfStale(agentId, liveSeqAtEntry)
       // applyMessages set hasMoreNewer=false. If a live message landed beyond
       // the page we just fetched (race), forward-fill to the live tail and
-      // settle (the shared gap-free terminal).
+      // settle through the shared gap-free completion path.
       await forwardFillToLiveTail(workerId, agentId, signal, liveSeqAtEntry)
     }, watchSignal)
   }
@@ -703,8 +674,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       const oldest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_SIZE })
       if (signal.aborted)
         return
-      // applyMessages preserves optimistic locals and sets hasMoreOlder from
-      // its `hasMore` arg (false: nothing older than the first page) and
+      // applyMessages sets hasMoreOlder from its `hasMore` argument and
       // hasMoreNewer=false; override the latter since newer messages DO exist
       // beyond the earliest page.
       deps.applyMessages(agentId, oldest.messages, false)

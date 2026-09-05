@@ -20,7 +20,8 @@ export interface ControlResponseHandlingProps {
   controlRequests?: ControlRequest[]
   onControlResponse?: (request: ControlRequest, content: Uint8Array) => Promise<void>
   onSettingChange?: ProviderSettingChangeHandler
-  onSendMessage: (content: string, attachments?: FileAttachment[]) => void
+  onSendMessage: (content: string, attachments?: FileAttachment[]) => void | Promise<void>
+  onSendControlFeedback?: (content: string) => void | Promise<void>
   settingsLoading?: boolean
   agentWorking?: boolean
   /**
@@ -36,7 +37,7 @@ export interface ControlResponseHandlingResult {
   isAskUserQuestion: Accessor<boolean>
   showInterrupt: Accessor<boolean>
   handleControlSend: (content: string) => boolean | void
-  handleSend: (content: string) => boolean | void
+  handleSend: (content: string) => boolean | void | Promise<boolean | void>
   /** Discards ONE answered request's drafts and collapses the composer. */
   finishAnswer: (request: ControlRequest) => void
   /** Builds the responder that answers as ONE request instance. See `respondTo` below. */
@@ -50,8 +51,9 @@ export function useControlResponseHandling(
   editorContentRefAccessor: () => EditorContentRef | undefined,
   resetEditorHeightFn: () => void,
   getAttachments?: () => FileAttachment[],
-  onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void,
+  onSendMessageOverride?: (content: string, attachments?: FileAttachment[]) => void | Promise<void>,
 ): ControlResponseHandlingResult {
+  let sendInFlight = false
   const planModeConfig = () => pluginFor(props.agent?.agentProvider)?.planMode
 
   // Track previous non-plan mode for Shift+Tab toggling.
@@ -276,7 +278,7 @@ export function useControlResponseHandling(
       const bytes = new TextEncoder().encode(JSON.stringify(response))
       const sent = respond(bytes)
       if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload)) {
-        void sent.then(() => props.onSendMessage(content)).catch(() => {})
+        void sent.then(() => (props.onSendControlFeedback ?? props.onSendMessage)(content)).catch(() => {})
       }
       else {
         void sent.catch(() => {})
@@ -285,12 +287,30 @@ export function useControlResponseHandling(
     finishAnswer(req)
   }
 
-  const handleSend = (content: string): boolean | void => {
+  const handleSend = (content: string): boolean | void | Promise<boolean | void> => {
     const currentAttachments = getAttachments?.() ?? []
     if (content.trim().length < 1 && currentAttachments.length === 0)
       return false
+    if (sendInFlight)
+      return false
     const sendFn = onSendMessageOverride ?? props.onSendMessage
-    sendFn(content, currentAttachments.length > 0 ? currentAttachments : undefined)
+    sendInFlight = true
+    let sent: void | Promise<void>
+    try {
+      sent = sendFn(content, currentAttachments.length > 0 ? currentAttachments : undefined)
+    }
+    catch (error) {
+      sendInFlight = false
+      throw error
+    }
+    if (sent && typeof sent.then === 'function') {
+      return Promise.resolve(sent).then(() => {
+        resetEditorHeightFn()
+      }).finally(() => {
+        sendInFlight = false
+      })
+    }
+    sendInFlight = false
     resetEditorHeightFn()
   }
 

@@ -1,6 +1,5 @@
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { clamp } from '~/lib/clamp'
-import { isOptimisticLocalSeq } from '~/stores/chatReconcile'
 
 // ---------------------------------------------------------------------------
 // Scroll-anchor math
@@ -122,9 +121,8 @@ export function resolveAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: Scroll
 }
 
 /**
- * Index of the SERVER row whose seq is nearest `target` by absolute distance, or -1 when
- * the list holds no server row. Skips rows with no seq / an optimistic-local 0n seq (which
- * pin to the tail out of seq order). The single home for the "nearest surviving row by seq"
+ * Index of the row whose sequence is nearest `target`, or -1 when no row has a sequence.
+ * This is the single home for the "nearest surviving row by sequence"
  * scan shared by the trim-restore recovery ({@link resolveNearestAnchorScrollTop}) and the
  * scroll rail's out-of-window seek landing (useChatScroll.landOnSeq), so the two can't
  * drift on the skip rule or the tie-break (strict `<` keeps the first/oldest on a tie).
@@ -135,7 +133,7 @@ export function nearestServerRowIndexBySeq(rows: readonly { seq?: bigint }[], ta
   let bestDelta = 0n
   for (let i = 0; i < rows.length; i++) {
     const s = rows[i].seq
-    if (s == null || isOptimisticLocalSeq(s))
+    if (s == null)
       continue
     const delta = s > target ? s - target : target - s
     if (bestIdx < 0 || delta < bestDelta) {
@@ -150,22 +148,15 @@ export function nearestServerRowIndexBySeq(rows: readonly { seq?: bigint }[], ta
  * Resolve an anchor to a scrollTop, recovering when its row was TRIMMED away (id gone)
  * by landing on the NEAREST surviving row by seq. Returns the exact scrollTopForAnchor
  * when the row still resolves; otherwise, if the anchor carries a seq and the list has a
- * server row, the offset (top) of the surviving server row whose seq is closest to the
- * anchor's. Null when the row is gone AND there is no seq / no surviving server row.
+ * row, the offset of the surviving row whose sequence is closest to the anchor.
+ * Returns null when the row is gone and no sequence is available.
  */
 export function resolveNearestAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: ScrollAnchor): number | null {
   const exact = resolveAnchorScrollTop(geo, anchor)
   if (exact != null)
     return exact
-  // Bail when the anchor has no orderable seq. `== null` covers a pre-seq persisted
-  // anchor; `=== 0n` covers an anchor captured on an optimistic LOCAL (ChatView stamps
-  // VirtualItem.seq from the message seq, which is 0n until the server echo arrives).
-  // A 0n anchor has no ordering against server rows -- the delta scan below would treat
-  // every survivor's delta as its own seq and pick the OLDEST (smallest-seq) row, yanking
-  // a reader parked on a tail-pinned local to the top of history once the local
-  // reconciles (its id changes, so the exact resolve above fails). Falling back to null
-  // lets the caller snap to the tail, which is where a local lived anyway.
-  if (anchor.seq == null || isOptimisticLocalSeq(anchor.seq))
+  // A persisted anchor from an older client can lack a sequence.
+  if (anchor.seq == null)
     return null
   // A trim/replacement drops a contiguous run, so the nearest survivor is normally the
   // list's oldest (anchor older) or newest (anchor newer) row; the general nearest also
