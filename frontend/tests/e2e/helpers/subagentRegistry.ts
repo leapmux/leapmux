@@ -8,7 +8,8 @@
  * expect timeout (playwright.config.ts) applies.
  */
 import type { Locator, Page } from '@playwright/test'
-import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { decompressContentToString } from '../../../src/lib/decompress'
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
 
@@ -29,6 +30,39 @@ export async function expandBackgroundTasksSection(page: Page): Promise<void> {
   const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed')).catch(() => true)
   if (!isOpen)
     await section.locator('> [role="button"]').click()
+}
+
+/**
+ * The session-goal card inside the work panel.
+ *
+ * `:visible`-scoped for the reason every locator in this file is: the sidebar is
+ * mounted twice, so the bare test id matches two elements.
+ */
+export function goalCard(page: Page): Locator {
+  return page.locator('[data-testid="goal-card"]:visible')
+}
+
+/** One of the panel's tabs, by key (`all`, `subagent`, `shell`, `goal`). */
+export function workPanelTab(page: Page, key: string): Locator {
+  return page.locator(`[data-testid="bg-task-filter-${key}"]:visible`)
+}
+
+/** A verb button on the goal card, by action (`set`, `clear`, `pause`, `resume`). */
+export function goalAction(page: Page, action: string): Locator {
+  return page.locator(`[data-testid="goal-action-${action}"]:visible`)
+}
+
+/**
+ * Wait for the goal card to report a status.
+ *
+ * Polls rather than asserting once: the status is worker state that arrives on a
+ * broadcast, so the card can be on screen before the status it will settle on
+ * is.
+ */
+export async function expectGoalStatus(page: Page, status: string): Promise<void> {
+  await expect
+    .poll(async () => await page.locator('[data-testid="goal-status-dot"]:visible').getAttribute('data-status'))
+    .toBe(status)
 }
 
 /**
@@ -277,6 +311,47 @@ export async function waitForChildAgent(
 export async function expectSectionPersists(page: Page): Promise<void> {
   await expect(backgroundTasksSection(page)).toBeVisible()
   await expect(page.locator('[data-testid="bg-task-row"]:visible').first()).toBeVisible()
+}
+
+/**
+ * Count the session-goal TRANSITIONS the worker persisted, read over the E2EE
+ * test channel.
+ *
+ * Worker-backed rather than read off the screen, for the reason every registry
+ * assertion in this file is: the chat is a virtual list, so a row scrolled out
+ * of view is not in the DOM at all and a text count would report whatever the
+ * viewport happens to hold.
+ *
+ * Returns null while the channel is re-establishing, so a caller polls.
+ */
+export async function countGoalTransitions(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  agentId: string,
+): Promise<number | null> {
+  const channel = await getTestChannel(hubUrl, token)
+  try {
+    const resp = await channel.callWorker(
+      workerId,
+      'ListAgentMessages',
+      ListAgentMessagesRequestSchema,
+      ListAgentMessagesResponseSchema,
+      { agentId, limit: 200 },
+    )
+    let count = 0
+    for (const message of resp.messages ?? []) {
+      // Every persisted message is zstd-compressed unconditionally (see
+      // msgcodec.Compress), so the bytes must go through the same decoder the
+      // browser uses. Reading them as text finds nothing, silently.
+      const body = decompressContentToString(message.content, message.contentCompression)
+      count += body?.match(/"goal_(?:updated|cleared)"/g)?.length ?? 0
+    }
+    return count
+  }
+  catch {
+    return null
+  }
 }
 
 /**

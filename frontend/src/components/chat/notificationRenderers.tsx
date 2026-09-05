@@ -130,6 +130,38 @@ function planUpdatedLabel(source: Record<string, unknown>): string | null {
     : `Plan updated: ${title}`
 }
 
+/**
+ * The transcript label for a session-goal transition.
+ *
+ * The worker writes these rows only when the goal actually CHANGES -- never for
+ * the progress reports Codex sends after every completed tool call -- so each
+ * one is worth a line.
+ *
+ * The row is provider-NEUTRAL: five CLIs report a goal in five wire shapes and
+ * the worker normalizes them, so this is the one renderer for all of them
+ * rather than a copy in each provider plugin.
+ */
+function goalUpdatedLabel(source: Record<string, unknown>): string | null {
+  const objective = pickString(source, 'objective')
+  if (!objective)
+    return null
+  const status = pickString(source, 'goal_status')
+  // The verb states what changed, so a status flip does not read as a fresh
+  // goal. `active` is the only one that means "this is now the objective".
+  const verb = status === 'done'
+    ? 'Goal achieved'
+    : status === 'paused'
+      ? 'Goal paused'
+      : status === 'blocked'
+        ? 'Goal blocked'
+        : 'Goal set'
+  // The provider's own word, when it says more than the neutral status does --
+  // "usageLimited" and "notSatisfied" are both `blocked`.
+  const detail = pickString(source, 'status_detail')
+  const suffix = detail && detail !== status ? ` (${detail})` : ''
+  return `${verb}: ${objective}${suffix}`
+}
+
 function formatApiRetryLabel(data: Record<string, unknown>): string {
   const attempt = pickNumber(data, 'attempt', '?' as const)
   const maxRetries = pickNumber(data, 'max_retries', '?' as const)
@@ -348,6 +380,14 @@ function threadEntriesFor(
   if (t === NOTIFICATION_TYPE.PlanUpdated) {
     const label = planUpdatedLabel(m)
     return label !== null ? textEntry(label) : []
+  }
+  if (t === NOTIFICATION_TYPE.GoalUpdated) {
+    const label = goalUpdatedLabel(m)
+    return label !== null ? textEntry(label) : []
+  }
+  if (t === NOTIFICATION_TYPE.GoalCleared) {
+    const objective = pickString(m, 'objective')
+    return textEntry(objective ? `Goal cleared: ${objective}` : 'Goal cleared')
   }
   if (t === 'system' && st === 'api_retry')
     return textEntry(formatApiRetryLabel(m))

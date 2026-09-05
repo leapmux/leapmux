@@ -544,6 +544,10 @@ type zcodeStatePatchBody struct {
 	// `prompt_started`). It is named so the shape is documented, not consumed:
 	// turn.started/turn.completed already drive the turn state.
 	Status string `json:"status"`
+	// Goal is RAW for the reason the snapshot's is: a patch that changed
+	// something else omits the key entirely, and reporting an absent key as
+	// "no goal" would clear the goal on every settings change.
+	Goal json.RawMessage `json:"goal"`
 }
 
 // hasSettings reports whether the patch carried any settings axis at all. A patch
@@ -579,6 +583,9 @@ func (a *zcodeAgent) handleZCodeStateUpdated(params json.RawMessage) {
 	if body.Runtime != nil {
 		a.applyZCodeRuntimeState(body.Runtime)
 	}
+	// A patch reports a change as it happens, so it is NOT a snapshot: this is
+	// the path that announces a goal transition in the transcript.
+	a.reportZCodeGoal(body.Goal, false)
 	// Only the session scope carries settings. The workspace scope patches
 	// `modelCatalog`, whose keys this struct does not read, so it must not be
 	// mistaken for an all-absent settings patch.

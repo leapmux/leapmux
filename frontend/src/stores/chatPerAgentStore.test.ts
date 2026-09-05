@@ -3,6 +3,68 @@ import { describe, expect, it } from 'vitest'
 import { createPerAgentListStore, createPerAgentStore } from '~/stores/chatPerAgentStore'
 
 describe('createPerAgentStore', () => {
+  /**
+   * The one Solid trap this spine has to hide: an OBJECT written at a store
+   * path is MERGED into the object already there, so the obvious one-line clear
+   * silently kept every key it was meant to drop. An array leaf replaces
+   * correctly and a primitive one trivially does, which is why it went
+   * unnoticed until the first object leaf (the session goal's counters).
+   */
+  it('really empties an object leaf, rather than merging the empty over it', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<Record<string, number>>({})
+      store.set('a', { tokensUsed: 900, iterations: 3 })
+      store.clear('a')
+      expect(store.get('a')).toEqual({})
+      dispose()
+    })
+  })
+
+  it('empties an array leaf and a primitive one', () => {
+    createRoot((dispose) => {
+      const list = createPerAgentStore<number[]>([])
+      list.set('a', [1, 2, 3])
+      list.clear('a')
+      expect(list.get('a')).toEqual([])
+      const text = createPerAgentStore<string>('')
+      text.set('a', 'hello')
+      text.clear('a')
+      expect(text.get('a')).toBe('')
+      dispose()
+    })
+  })
+
+  /**
+   * The second half of the same trap: a cleared leaf must not BE the shared
+   * default. Solid wraps whatever is stored, so a later write for that agent
+   * would merge into the default every other unset agent reads -- one agent's
+   * value appearing under all of them, with nothing to trace it by.
+   */
+  it('does not let a write after a clear reach the shared empty value', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<Record<string, number>>({})
+      store.set('a', { x: 1 })
+      store.clear('a')
+      store.set('a', { y: 2 })
+      expect(store.get('b')).toEqual({})
+      dispose()
+    })
+  })
+
+  // `clear` resets the value but keeps the KEY, which is what separates it from
+  // `remove`; the two are documented as different answers to a presence check.
+  it('keeps the agent present after a clear', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<Record<string, number>>({})
+      store.set('a', { x: 1 })
+      store.clear('a')
+      expect(store.byAgent.a).not.toBeUndefined()
+      store.remove('a')
+      expect(store.byAgent.a).toBeUndefined()
+      dispose()
+    })
+  })
+
   it('returns the configured empty value for an unset agent', () => {
     createRoot((dispose) => {
       const store = createPerAgentStore<string>('')

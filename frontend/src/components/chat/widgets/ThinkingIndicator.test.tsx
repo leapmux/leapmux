@@ -1,5 +1,6 @@
-/// <reference types="vitest/globals" />
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+/// <reference types="vitest/globals" />
+import type { GoalAction, SessionGoal } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -158,6 +159,8 @@ describe('thinking indicator chips', () => {
     onOpenSubagent?: (item: BackgroundTaskItem) => void
     todos?: TodoItem[]
     thinkingTokens?: number
+    goal?: SessionGoal
+    goalActions?: GoalAction[]
   }) {
     globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
     try {
@@ -315,6 +318,38 @@ describe('thinking indicator chips', () => {
   // The row reads "<verb>... <background tasks> · <to-dos> · <tokens>": the
   // rotating verb leads, and the counters trail it, middot-separated. The verb
   // is outside the separator chain, so leading it adds no middot of its own.
+  /**
+   * The goal chip, which leads the counters.
+   *
+   * It is a CONVENIENCE, not the way a goal is reached: this whole indicator is
+   * hidden unless the agent is ACTIVE and no permission prompt is pending, which
+   * is exactly the paused / blocked / achieved states a goal needs acting on.
+   * The sidebar section is the reachable surface -- see
+   * shouldShowBackgroundTasksSection.
+   */
+  it('shows a goal chip naming the status, and hides it without a goal', () => {
+    const goal: SessionGoal = { objective: 'every test passes', status: 'blocked' }
+    const { getByTestId } = renderChips({ goal })
+    expect(getByTestId('thinking-goal-chip').textContent).toBe('Goal: needs attention')
+    expect(renderChips({}).queryByTestId('thinking-goal-chip')).toBeNull()
+  })
+
+  // A goal is not a background task, so it must not resurrect the chip that
+  // counts them -- the two answer different questions.
+  it('does not show the background-tasks chip for a goal alone', () => {
+    const goal: SessionGoal = { objective: 'x', status: 'active' }
+    const { queryByTestId } = renderChips({ goal })
+    expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
+  })
+
+  it('draws three separators when all four counters show', () => {
+    const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
+    const goal: SessionGoal = { objective: 'x', status: 'active' }
+    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos, goal })
+    const dots = (getByTestId('thinking-indicator').textContent ?? '').split('\u00B7').length - 1
+    expect(dots).toBe(3)
+  })
+
   it('orders the verb before the counters, separated by middots', () => {
     const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
     const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })

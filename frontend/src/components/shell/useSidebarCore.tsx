@@ -10,6 +10,7 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -79,6 +80,10 @@ export interface SidebarCommonProps {
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
+  activeGoal?: SessionGoal
+  activeGoalProgress: GoalProgress
+  activeGoalActions: GoalAction[]
+  onGoalAction?: (action: GoalAction) => void
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
@@ -253,6 +258,13 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get showBackgroundTasks() { return props.showBackgroundTasks },
     get activeBackgroundTasks() { return props.activeBackgroundTasks },
     get activeBackgroundTasksFailed() { return props.activeBackgroundTasksFailed },
+    // Getters, never plain values: a bare read here would subscribe once at
+    // build time and never update, which compiles and renders a card frozen at
+    // whatever the goal was when the sidebar was created.
+    get activeGoal() { return props.activeGoal },
+    get activeGoalProgress() { return props.activeGoalProgress },
+    get activeGoalActions() { return props.activeGoalActions },
+    onGoalAction: props.onGoalAction,
     get onOpenBackgroundTask() { return props.onOpenBackgroundTask },
     get workers() { return props.workers },
     get localSolo() { return props.localSolo },

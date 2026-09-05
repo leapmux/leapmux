@@ -314,22 +314,38 @@ describe('filterBackgroundTasksByKind', () => {
  */
 describe('shouldShowBackgroundTasksSection', () => {
   it('shows the section for any row, finished ones included', () => {
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'running' })], false)).toBe(true)
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'completed' })], false)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'running' })], false, false)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'completed' })], false, false)).toBe(true)
   })
 
   it('hides the section for an empty registry that loaded fine', () => {
-    expect(shouldShowBackgroundTasksSection([], false)).toBe(false)
+    expect(shouldShowBackgroundTasksSection([], false, false)).toBe(false)
   })
 
   it('shows the section when the load failed, so the failure can say so', () => {
-    expect(shouldShowBackgroundTasksSection([], true)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([], true, false)).toBe(true)
   })
 
   // A failure with rows still shows: the rows are what the user came for, and
   // the flag only decides visibility, never what replaces the content.
   it('shows the section when the load failed and rows survive', () => {
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a' })], true)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a' })], true, false)).toBe(true)
+  })
+
+  /**
+   * The goal arm, and the two reasons it exists. The ThinkingIndicator's goal
+   * chip is hidden whenever the agent is not ACTIVE or a permission prompt is
+   * pending -- which is exactly the states a goal needs acting on. And the panel
+   * is where a FIRST goal is set, so a section that appeared only once a goal
+   * existed could never be opened to create one.
+   */
+  it('shows the section for a goal surface with no rows at all', () => {
+    expect(shouldShowBackgroundTasksSection([], false, true)).toBe(true)
+  })
+
+  // A provider with no goal support at all keeps the old behaviour exactly.
+  it('stays hidden for an agent with no rows and no goal surface', () => {
+    expect(shouldShowBackgroundTasksSection([], false, false)).toBe(false)
   })
 })
 

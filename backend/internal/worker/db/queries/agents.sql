@@ -189,6 +189,32 @@ UPDATE agents SET plan_file_path = ?, plan_title = ? WHERE id = ?;
 -- name: UpdateAgentPlanAndTitle :exec
 UPDATE agents SET plan_file_path = ?, plan_title = ?, title = ?, title_auto_generated = 1 WHERE id = ?;
 
+-- UpdateAgentGoal writes the durable half of the session goal. The progress
+-- counters are deliberately absent: they change after every tool call and ride
+-- the ephemeral session-info broadcast, so keeping them here would make this
+-- statement run hundreds of times per turn.
+-- name: UpdateAgentGoal :exec
+UPDATE agents
+SET goal_objective = ?, goal_status = ?, goal_status_detail = ?, goal_created_at = ?, goal_updated_at = ?
+WHERE id = ?;
+
+-- ClearAgentGoal removes the goal. It is unconditional on purpose. Codex's
+-- thread/resume pushes thread/goal/cleared to mean "this thread has no goal",
+-- and a caller that skipped the write because its in-memory copy was already
+-- empty would leave a goal from a previous process in the table forever.
+-- name: ClearAgentGoal :exec
+UPDATE agents
+SET goal_objective = '', goal_status = '', goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
+WHERE id = ?;
+
+-- ClearAllAgentGoalStatuses runs once at worker boot. A goal that survived a
+-- restart is not being pursued by any process, so leaving its status set would
+-- draw live Pause and Clear buttons for a goal nothing is running. The
+-- objective text stays so the panel can still show what was being attempted;
+-- the provider's own snapshot re-arms the status when a session resumes.
+-- name: ClearAllAgentGoalStatuses :exec
+UPDATE agents SET goal_status = '', goal_status_detail = '' WHERE goal_status <> '';
+
 -- name: ListAgentsByIDs :many
 SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;
 

@@ -88,7 +88,11 @@ const (
 
 // ClaudeCodeAgent manages a single Claude Code process.
 type ClaudeCodeAgent struct {
-	processBase // shared process lifecycle (Stop, Wait, Stderr, etc.)
+	// hasGoalCommand records whether the running CLI advertises /goal in its
+	// init frame'''s slash_commands. The command shipped in 2.1.139, so this is
+	// read from the process rather than assumed -- see observeSlashCommands.
+	hasGoalCommand bool
+	processBase    // shared process lifecycle (Stop, Wait, Stderr, etc.)
 
 	model      string
 	effort     string

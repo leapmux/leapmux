@@ -19,6 +19,7 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { Show } from 'solid-js'
+import { SetGoalDialog } from '~/components/backgroundtasks/SetGoalDialog'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
 import { showWarnToast } from '~/components/common/Toast'
@@ -161,12 +162,22 @@ export interface AppShellDialogStates {
   // a status refresh. That capability is what keeps its <Show> non-keyed.
   lastTabConfirm: UpdatableDialogState<LastTabConfirmState>
   keyPinConfirm: DialogState<KeyPinConfirmState>
+  setGoal: DialogState<SetGoalState>
   changeBranch: DialogState<ChangeBranchState>
   deleteBranch: DialogState<DeleteBranchState>
 }
 
+/** What the session-goal editor acts on. */
+export interface SetGoalState {
+  agentId: string
+  /** The objective to start from: the current one when replacing, empty when setting. */
+  initialObjective: string
+}
+
 interface AppShellDialogsProps {
   dialogs: AppShellDialogStates
+  /** Commit an edited session goal. */
+  onSetGoal?: (agentId: string, objective: string) => void
   /**
    * Called after a successful Change branch / non-worktree Delete
    * branch with the branch the working directory is now on. The
@@ -512,6 +523,16 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             state={confirm()}
             onDismiss={() => props.dialogs.lastTabConfirm.close()}
             onStatusRefreshed={refreshed => props.dialogs.lastTabConfirm.update(refreshed)}
+          />
+        )}
+      </Show>
+
+      <Show when={props.dialogs.setGoal.value()} keyed>
+        {state => (
+          <SetGoalDialog
+            initialObjective={state.initialObjective}
+            onSubmit={objective => props.onSetGoal?.(state.agentId, objective)}
+            onClose={() => props.dialogs.setGoal.close()}
           />
         )}
       </Show>

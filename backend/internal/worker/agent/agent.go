@@ -307,6 +307,52 @@ type OutputSink interface {
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string)
+	// UpsertGoal records the provider's current session goal (see goal.go for the
+	// neutral shape and why there is only ever one).
+	//
+	// It takes the WHOLE goal every time, because every provider that reports one
+	// restates it in full -- these are last-write-wins snapshots, not deltas.
+	//
+	// The sink splits the report by how fast each half changes. The objective,
+	// the status and the identity are durable: they go to the agents row and, on
+	// a real transition, to one neutral transcript notification. The progress
+	// counters ride the ephemeral session-info broadcast. That split is the
+	// point of this method: Codex reports after EVERY completed tool call, so a
+	// design that persisted the counters would cost a database write and a
+	// broadcast per tool call for state nobody keeps.
+	//
+	// A GoalUpdate marked Snapshot updates state and writes no transcript row.
+	//
+	// Like every registry primitive on this interface, a CHILD sink writes under
+	// its ROOT owner. That is right for the one provider with child threads --
+	// Codex collab children are threads and can carry their own goal, and the
+	// Codex handler drops a child's goal rather than letting it overwrite the
+	// root's. A provider that later wants a per-child goal must change that
+	// decision here, not work around it.
+	UpsertGoal(update GoalUpdate)
+	// ClearGoal removes the session goal.
+	//
+	// It is unconditional, and a caller must NOT skip it because its own copy is
+	// already empty. Codex's thread/resume pushes thread/goal/cleared to mean
+	// "this thread has no goal", which is exactly the case where the worker's
+	// in-memory copy is cold and the DATABASE still holds a goal from a previous
+	// process. Short-circuiting there would strand that goal forever.
+	ClearGoal()
+	// PublishGoalCapabilities re-broadcasts the goal together with the actions
+	// the now-registered process supports.
+	//
+	// It exists because that capability is read from the LIVE agent, and the
+	// agent is not reachable until the Manager has registered it -- which
+	// happens after the provider's start function returns. Every earlier chance
+	// to answer (the cold-load response, the WatchEvents replay, the
+	// status-active broadcast a provider makes during its own handshake) can run
+	// before that, and each would report an agent that can do nothing.
+	//
+	// Getting this wrong is not a cosmetic loss: the work panel is the only
+	// route to a FIRST goal, and it is hidden for an agent that reports no goal
+	// capability -- so an answer that is merely early leaves the feature
+	// unreachable for the life of the session.
+	PublishGoalCapabilities()
 	ScheduleAutoContinue(schedule AutoContinueSchedule)
 	CancelAutoContinue(reason AutoContinueReason)
 

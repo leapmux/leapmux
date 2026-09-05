@@ -165,6 +165,16 @@ type OutputHandler struct {
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
 
+	// Per-agent session-goal mutex. The goal applier is a read-modify-write
+	// over the agents row (compare the stored goal, write only the difference),
+	// and three writers reach it: the provider's output-read loop, the
+	// UpdateAgentGoal RPC, and a cold-load read. Without this, two reports that
+	// arrive together both read the old row, both decide they are the
+	// transition, and both write a transcript row for one change. Separate from
+	// notifMu so a goal write never waits on notification threading for an
+	// unrelated message.
+	goalMu sync.Map // agentID -> *sync.Mutex
+
 	// Per-agent span tracking. The registry records whether each tracker
 	// belongs to a root main agent or a virtual child, so cleanup and the
 	// orphan sweep can reason about each population explicitly. See

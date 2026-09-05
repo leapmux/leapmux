@@ -15,6 +15,7 @@ import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
 import { createCommandStreamStore } from './chatCommandStreams'
 import { createContentVersionStore } from './chatContentVersions'
+import { createGoalStore } from './chatGoalStore'
 import { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
@@ -139,6 +140,7 @@ export function createChatStore() {
   const toolProgress = createToolProgressStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
+  const goal = createGoalStore()
   // Saved per-agent scroll position for tab-switch viewport restore. A pure
   // get/set/clear slice with no domain logic, so it uses the per-agent spine
   // directly rather than through a dedicated wrapper module.
@@ -342,6 +344,7 @@ export function createChatStore() {
     streaming.remove(agentId)
     todos.remove(agentId)
     backgroundTasks.remove(agentId)
+    goal.remove(agentId)
     viewportScroll.remove(agentId)
   }
 
@@ -1138,6 +1141,7 @@ export function createChatStore() {
     trimNewestEnd: (agentId, maxCount) => baseStore.trimNewestEnd(agentId, maxCount),
     replaceTodos: todos.replace,
     replaceBackgroundTasks: backgroundTasks.replace,
+    replaceGoal: goal.replace,
     markBackgroundTasksLoadFailed: backgroundTasks.markLoadFailed,
   })
 
@@ -1153,6 +1157,7 @@ export function createChatStore() {
     messageMarks,
     todos,
     backgroundTasks,
+    goal,
     streamingText: streaming,
     viewportScroll,
     /**

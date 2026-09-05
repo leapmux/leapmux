@@ -339,6 +339,7 @@ export const SESSION_INFO_TABLES = [
   { json: 'rateLimitFields', goPrefix: 'RateLimitField', ts: 'RATE_LIMIT_FIELD', tsType: 'RateLimitField', what: 'fields of one rate_limits tier' },
   { json: 'runningToolFields', goPrefix: 'RunningToolField', ts: 'RUNNING_TOOL_FIELD', tsType: 'RunningToolField', what: 'fields of the running_tool object' },
   { json: 'runningToolRetryFields', goPrefix: 'RunningToolRetryField', ts: 'RUNNING_TOOL_RETRY_FIELD', tsType: 'RunningToolRetryField', what: 'fields of running_tool.retry' },
+  { json: 'goalProgressFields', goPrefix: 'GoalProgressField', ts: 'GOAL_PROGRESS_FIELD', tsType: 'GoalProgressField', what: 'fields of the goal_progress object' },
 ]
 
 export function checkSessionInfo(v) {

@@ -1,11 +1,9 @@
 import type { Component, JSX } from 'solid-js'
-import type { FilterTab } from '~/components/common/FilterTabBar'
 import type { BackgroundTaskItem, BackgroundTaskKindFilter } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
 import Terminal from 'lucide-solid/icons/terminal'
-import { createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
-import { FilterTabBar } from '~/components/common/FilterTabBar'
 import { StatusDot } from '~/components/common/StatusDot'
 import { cleanName } from '~/lib/validate'
 import {
@@ -18,10 +16,15 @@ import {
   opensSubagentTranscript,
   sortBackgroundTasks,
 } from '~/stores/chatBackgroundTasks'
+import * as panelStyles from './AgentWorkPanel.css'
 import * as styles from './BackgroundTaskList.css'
 
 interface BackgroundTaskListProps {
   tasks: BackgroundTaskItem[]
+  /** Which kind the host's selected tab shows. */
+  kind: BackgroundTaskKindFilter
+  /** What to say when this kind has no rows. Supplied by the host, which owns the tabs. */
+  emptyMessage: string
   /**
    * The worker could not answer for this registry, so an empty list means "no
    * answer", not "no tasks". Says so in place of the empty message: the two are
@@ -30,37 +33,7 @@ interface BackgroundTaskListProps {
    */
   loadFailed?: boolean
   onOpenSubagent?: (item: BackgroundTaskItem) => void
-  /**
-   * Which surface hosts the list, which is what decides how the root is sized.
-   * `sidebar` fills the section's content box; `popover` caps its own height and
-   * width, because the DropdownMenu card sizes to whatever it holds. The rows
-   * scroll either way, so the kind tabs stay on screen.
-   */
-  variant: 'sidebar' | 'popover'
 }
-
-/**
- * Every kind tab: its label, and what it says when it holds no rows.
- *
- * A `Record` over the filter union, so a new `BackgroundTaskItem['kind']` fails
- * to compile until it has both. A plain array of tabs type-checked with any
- * subset, which let a new kind ship reachable only through All -- the tab list
- * and the empty messages have to be one declaration for that to be impossible.
- *
- * A new kind still needs two things this cannot force: a case in
- * `protoBackgroundTaskToStore`, and a case in the kind-icon `Show` inside
- * `rowBody` below.
- */
-const KIND_TABS_META: Record<BackgroundTaskKindFilter, { label: string, empty: string }> = {
-  all: { label: 'All', empty: 'No background tasks' },
-  subagent: { label: 'Subagents', empty: 'No subagents' },
-  shell: { label: 'Shell', empty: 'No shell commands' },
-}
-
-/** The kind tabs, in render order -- the key order of {@link KIND_TABS_META}. */
-const KIND_TABS: readonly FilterTab<BackgroundTaskKindFilter>[]
-  = (Object.keys(KIND_TABS_META) as BackgroundTaskKindFilter[])
-    .map(key => ({ key, label: KIND_TABS_META[key].label }))
 
 /**
  * What an unanswerable registry says instead.
@@ -188,23 +161,20 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
 }
 
 /**
- * BackgroundTaskList renders the background-task registry for the sidebar
- * section and the ThinkingIndicator popover. Shared by both surfaces. Filters
- * by kind through its own tab bar, sorts active-first (running before pending),
+ * BackgroundTaskList renders the ROWS of the background-task registry for the
+ * kind its host selected. It sorts active-first (running before pending),
  * groups by workflow/phase, and renders a kind icon, a title with its status dot
  * at the end of the title line, and a secondary line. Each line is held to one
  * line and clipped, and gives its full text on hover. Subagent rows with a
  * childAgentId are clickable buttons; shell rows are static.
+ *
+ * It owns no tab bar and no root box: AgentWorkPanel does, because the panel
+ * also shows the session goal and one host has to decide what a tab contains.
+ * Everything here exists to keep a ROW's identity stable across a broadcast,
+ * which is why it stayed one component when the shell moved out.
  */
 export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) => {
-  // Per mount, not shared: the sidebar section and the popover are separate
-  // mounts, and a filter one of them set is not a preference for the other.
-  const [kindFilter, setKindFilter] = createSignal<BackgroundTaskKindFilter>('all')
-  // Ties each role=tab to the region it swaps. Unique per mount, because both
-  // surfaces can be on screen at once and an id may name only one element.
-  const panelId = createUniqueId()
-
-  const visible = createMemo(() => filterBackgroundTasksByKind(props.tasks, kindFilter()))
+  const visible = createMemo(() => filterBackgroundTasksByKind(props.tasks, props.kind))
 
   /**
    * Whether the empty slot reports a FAILURE rather than an absence.
@@ -362,65 +332,39 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   }
 
   return (
-    <div
-      class={styles.root}
-      classList={{
-        [styles.sidebarRoot]: props.variant === 'sidebar',
-        [styles.popoverRoot]: props.variant === 'popover',
-      }}
-      data-testid="bg-task-list"
-    >
-      <FilterTabBar
-        tabs={KIND_TABS}
-        active={kindFilter()}
-        onSelect={setKindFilter}
-        ariaLabel="Filter background tasks"
-        panelId={panelId}
-        testId="bg-task-filter-tab-bar"
-        tabTestId={key => `bg-task-filter-${key}`}
-      />
-      {/* `tabIndex`, because `rows` is the scroller for both surfaces and holds
-          nothing focusable of its own: the rows are buttons only when a
-          subagent can be opened. Without it a keyboard user cannot reach a
-          registry taller than the box -- the arrow keys land on the tablist,
-          which spends them switching kind tabs. The Files section's panel
-          carries the same attribute for the same reason. */}
-      <div id={panelId} role="tabpanel" tabIndex={0} class={styles.rows}>
-        <Show
-          when={visible().length > 0}
-          fallback={(
-            <div
-              class={styles.emptyMessage}
-              classList={{ [styles.loadFailedMessage]: reportsLoadFailure() }}
-              data-testid={reportsLoadFailure() ? 'bg-task-load-failed' : 'bg-task-empty'}
-            >
-              {reportsLoadFailure() ? LOAD_FAILED_MESSAGE : KIND_TABS_META[kindFilter()].empty}
-            </div>
-          )}
+    <Show
+      when={visible().length > 0}
+      fallback={(
+        <div
+          class={panelStyles.emptyMessage}
+          classList={{ [panelStyles.loadFailedMessage]: reportsLoadFailure() }}
+          data-testid={reportsLoadFailure() ? 'bg-task-load-failed' : 'bg-task-empty'}
         >
-          <For each={grouped().ungrouped}>{item => renderRow(item)}</For>
-          {/* Keyed by the group KEY, not by the group object. `groupBackgroundTasks`
-              builds fresh `{key, label, items}` objects on every run and `For`
-              reconciles by reference, so iterating the objects tore down and
-              rebuilt every grouped row whenever the memo re-ran -- which any
-              status change does, because the sort reads `status`. That is the
-              same flicker `setReconciled` removes for the ungrouped rows, and it
-              reached every row of a Claude workflow, which groups its subagents.
-              `For` compares primitives by value, and a group key is unique by
-              construction. */}
-          <For each={groupKeys()}>
-            {(key) => {
-              const group = createMemo(() => grouped().groups.find(g => g.key === key))
-              return (
-                <>
-                  <ClippedText text={groupHeading(group()?.label ?? key)} class={styles.groupHeader} />
-                  <For each={group()?.items ?? []}>{item => renderRow(item)}</For>
-                </>
-              )
-            }}
-          </For>
-        </Show>
-      </div>
-    </div>
+          {reportsLoadFailure() ? LOAD_FAILED_MESSAGE : props.emptyMessage}
+        </div>
+      )}
+    >
+      <For each={grouped().ungrouped}>{item => renderRow(item)}</For>
+      {/* Keyed by the group KEY, not by the group object. `groupBackgroundTasks`
+          builds fresh `{key, label, items}` objects on every run and `For`
+          reconciles by reference, so iterating the objects tore down and
+          rebuilt every grouped row whenever the memo re-ran -- which any
+          status change does, because the sort reads `status`. That is the
+          same flicker `setReconciled` removes for the ungrouped rows, and it
+          reached every row of a Claude workflow, which groups its subagents.
+          `For` compares primitives by value, and a group key is unique by
+          construction. */}
+      <For each={groupKeys()}>
+        {(key) => {
+          const group = createMemo(() => grouped().groups.find(g => g.key === key))
+          return (
+            <>
+              <ClippedText text={groupHeading(group()?.label ?? key)} class={styles.groupHeader} />
+              <For each={group()?.items ?? []}>{item => renderRow(item)}</For>
+            </>
+          )
+        }}
+      </For>
+    </Show>
   )
 }

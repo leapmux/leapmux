@@ -65,6 +65,7 @@ function harness(init: {
   const applyMessages = vi.fn()
   const replaceBackgroundTasks = vi.fn()
   const markBackgroundTasksLoadFailed = vi.fn()
+  const replaceGoal = vi.fn()
 
   const paginator = createHistoryPaginator({
     state,
@@ -107,9 +108,10 @@ function harness(init: {
     replaceTodos: vi.fn(),
     replaceBackgroundTasks,
     markBackgroundTasksLoadFailed,
+    replaceGoal,
   })
 
-  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed }
+  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed, replaceGoal }
 }
 
 describe('chathistorypaginator', () => {
