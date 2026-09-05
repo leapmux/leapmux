@@ -102,6 +102,69 @@ type testWriter struct{ t *testing.T }
 
 func (w testWriter) Write(p []byte) (int, error) { w.t.Log(string(p)); return len(p), nil }
 
+// TestNewOrphanReconciler_RefusesAListFnWithoutArchiveHooks pins the
+// constructor guard that reconcileOnce depends on.
+//
+// A reconciler that reads the Hub's tab state MUST be able to apply it, so the
+// hooks are required rather than optional. reconcileOnce relies on exactly that
+// and calls applyArchiveState unconditionally: a nil check there would read as
+// "the hooks are optional", and a wiring that omitted one would then converge
+// while it silently skipped every archive transition. The panic is what keeps
+// that wiring impossible, so it is the thing to pin.
+func TestNewOrphanReconciler_RefusesAListFnWithoutArchiveHooks(t *testing.T) {
+	t.Parallel()
+
+	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		return &leapmuxv1.ListOwnedTabsForWorkerResponse{}, nil
+	}
+	applyFn := func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error) {
+		return nil, nil
+	}
+	resumeFn := func([]string) {}
+	closeTab := func(leapmuxv1.TabType, string, string) {}
+
+	for _, testCase := range []struct {
+		name   string
+		opts   service.OrphanReconcilerOptions
+		panics bool
+	}{
+		{name: "both hooks absent", panics: true, opts: service.OrphanReconcilerOptions{
+			CloseTab: closeTab,
+		}},
+		{name: "resume hook absent", panics: true, opts: service.OrphanReconcilerOptions{
+			CloseTab: closeTab, ApplyArchiveState: applyFn,
+		}},
+		{name: "apply hook absent", panics: true, opts: service.OrphanReconcilerOptions{
+			CloseTab: closeTab, ResumeAgents: resumeFn,
+		}},
+		{name: "both hooks present", panics: false, opts: service.OrphanReconcilerOptions{
+			CloseTab: closeTab, ApplyArchiveState: applyFn, ResumeAgents: resumeFn,
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			build := func() { service.NewOrphanReconciler(nil, listFn, testCase.opts) }
+			if testCase.panics {
+				assert.Panics(t, build)
+				return
+			}
+			assert.NotPanics(t, build)
+		})
+	}
+}
+
+// A reconciler with NO listFn reads no Hub state, so it needs no archive hooks:
+// reconcileOnce returns after the worktree sweep, before it could use them.
+func TestNewOrphanReconciler_LocalOnlyNeedsNoArchiveHooks(t *testing.T) {
+	t.Parallel()
+
+	assert.NotPanics(t, func() {
+		service.NewOrphanReconciler(nil, nil, service.OrphanReconcilerOptions{
+			CloseTab: func(leapmuxv1.TabType, string, string) {},
+		})
+	})
+}
+
 func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 	t.Parallel()
 

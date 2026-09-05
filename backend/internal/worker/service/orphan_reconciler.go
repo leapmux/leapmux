@@ -380,44 +380,46 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 		return false
 	}
 	hubTabs := resp.GetTabStates()
-	if r.applyArchiveState != nil {
-		byState := map[leapmuxv1.WorkspaceArchiveState][]*leapmuxv1.TabRef{
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:   nil,
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED: nil,
+	// Unconditional: NewOrphanReconciler refuses a listFn without both archive
+	// hooks, and the listFn == nil case returned above -- so reaching here means
+	// both are set. A nil check would read as "the hooks are optional", which is
+	// the opposite of what the constructor enforces.
+	byState := map[leapmuxv1.WorkspaceArchiveState][]*leapmuxv1.TabRef{
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:   nil,
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED: nil,
+	}
+	for _, tab := range hubTabs {
+		state := tab.GetArchiveState()
+		if state != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE &&
+			state != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+			r.logger.Warn("orphan reconciler: hub returned an unspecified archive state",
+				"tab_id", tab.GetTabId())
+			return false
 		}
-		for _, tab := range hubTabs {
-			state := tab.GetArchiveState()
-			if state != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE &&
-				state != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
-				r.logger.Warn("orphan reconciler: hub returned an unspecified archive state",
-					"tab_id", tab.GetTabId())
-				return false
-			}
-			byState[state] = append(byState[state], &leapmuxv1.TabRef{
-				TabType: tab.GetTabType(),
-				TabId:   tab.GetTabId(),
-			})
+		byState[state] = append(byState[state], &leapmuxv1.TabRef{
+			TabType: tab.GetTabType(),
+			TabId:   tab.GetTabId(),
+		})
+	}
+	for _, state := range []leapmuxv1.WorkspaceArchiveState{
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+	} {
+		if len(byState[state]) == 0 {
+			continue
 		}
-		for _, state := range []leapmuxv1.WorkspaceArchiveState{
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
-		} {
-			if len(byState[state]) == 0 {
-				continue
-			}
-			resumeAgentIDs, err := r.applyArchiveState(ctx, state, byState[state])
-			if err != nil {
-				r.logger.Warn("orphan reconciler: apply archive state", "state", state, "error", err)
-				return false
-			}
-			for _, agentID := range resumeAgentIDs {
-				r.pendingResumeAgents[agentID] = struct{}{}
-			}
-			if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
-				for _, tab := range byState[state] {
-					if tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
-						delete(r.pendingResumeAgents, tab.GetTabId())
-					}
+		resumeAgentIDs, err := r.applyArchiveState(ctx, state, byState[state])
+		if err != nil {
+			r.logger.Warn("orphan reconciler: apply archive state", "state", state, "error", err)
+			return false
+		}
+		for _, agentID := range resumeAgentIDs {
+			r.pendingResumeAgents[agentID] = struct{}{}
+		}
+		if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+			for _, tab := range byState[state] {
+				if tab.GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
+					delete(r.pendingResumeAgents, tab.GetTabId())
 				}
 			}
 		}
