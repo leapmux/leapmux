@@ -630,7 +630,7 @@ func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (S
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
+	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ? AND state = ?`,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID,
 		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING)
 	if err != nil {

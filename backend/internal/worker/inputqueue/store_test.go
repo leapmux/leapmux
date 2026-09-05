@@ -366,6 +366,52 @@ func TestStoreSteerRejectsOperationHeadAndCompactionTurn(t *testing.T) {
 	})
 }
 
+func TestStoreRequeuedSteerReservesASequenceAfterTheEndedTurn(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{
+		ID: "active", AgentID: "agent-1", Text: "active",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	active, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, active)
+	_, _, err = store.Accept(ctx, *active, DispatchResult{StartsTurn: true})
+	require.NoError(t, err)
+	_, err = store.Enqueue(ctx, NewItem{
+		ID: "steer", AgentID: "agent-1", Text: "guide",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	steer, _, err := store.PrepareSteer(ctx, "agent-1", "steer")
+	require.NoError(t, err)
+	require.NotNil(t, steer)
+
+	snapshot, err := store.RequeuePrepared(ctx, "agent-1", "steer")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Zero(t, snapshot.Items[0].ReservedSeq)
+	var turnEndSeq int64
+	require.NoError(t, database.QueryRowContext(ctx, `
+		UPDATE agents SET message_seq_hwm = message_seq_hwm + 1
+		WHERE id = 'agent-1' RETURNING message_seq_hwm`).Scan(&turnEndSeq))
+	_, err = database.ExecContext(ctx, `
+		INSERT INTO messages (id, agent_id, seq, source, content, content_compression)
+		VALUES ('turn-end', 'agent-1', ?, ?, '{}', 0)`,
+		turnEndSeq, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	require.NoError(t, err)
+	_, err = store.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	retried, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, retried)
+	assert.Greater(t, turnEndSeq, steer.ReservedSeq)
+	assert.Greater(t, retried.ReservedSeq, turnEndSeq)
+}
+
 func TestStoreReservesPositiveSequenceAndCommitsAfterAcceptance(t *testing.T) {
 	t.Parallel()
 
