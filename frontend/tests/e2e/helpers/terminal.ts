@@ -33,10 +33,6 @@ export async function waitForTerminalText(page: Page, text: string, timeout?: nu
 }
 
 /**
- * Focus the helper textarea of the active terminal, so keyboard input (and a
- * real input method driven over CDP) lands in xterm.
- */
-/**
  * Wait until the shell is actually accepting input.
  *
  * A terminal renders before its shell finishes sourcing its init files, and a
@@ -59,6 +55,10 @@ export async function waitForTerminalReady(page: Page): Promise<void> {
   }).toPass()
 }
 
+/**
+ * Focus the helper textarea of the active terminal, so keyboard input (and a
+ * real input method driven over CDP) lands in xterm.
+ */
 export async function focusActiveTerminal(page: Page): Promise<void> {
   await page.evaluate(() => {
     const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')

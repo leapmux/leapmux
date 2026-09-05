@@ -19,25 +19,40 @@ describe('createAgentActivityStore', () => {
     expect(store.isBusy('a1')).toBe(false)
   })
 
-  it('reports whether a write actually changed the value', () => {
+  it('reports the busy -> idle edge, and only that edge', () => {
     const store = createAgentActivityStore()
 
-    // The turn-end alert reads this return. The worker broadcasts on transition,
-    // but the same value still reaches a client twice -- a catch-up replay
-    // landing beside a live event -- and alerting on arrival would ring twice.
-    expect(store.setBusy('a1', true)).toBe(true)
+    // The turn-end alert reads this return, so only the settle may answer true.
+    expect(store.setBusy('a1', true)).toBe(false)
     expect(store.setBusy('a1', true)).toBe(false)
     expect(store.setBusy('a1', false)).toBe(true)
+    // The worker broadcasts on transition, but the same value still reaches a
+    // client twice -- a catch-up replay landing beside a live event -- and
+    // ringing on arrival would ring twice for one settle.
     expect(store.setBusy('a1', false)).toBe(false)
   })
 
-  it('treats the first false as a change, not as a no-op against the default', () => {
+  it('does not call an idle report for an agent it never saw working a settle', () => {
     const store = createAgentActivityStore()
 
-    // Hydration seeds an idle agent, and that write must land: otherwise a later
-    // busy -> idle transition would be the FIRST recorded false and would alert
-    // for work the user never saw start.
+    // A NOTIFY-mode tab can subscribe after the turn started and receive the
+    // idle report alone. Nothing the user watched finished, so nothing rings.
+    expect(store.setBusy('a1', false)).toBe(false)
+    // The write still lands, so the next real turn settles normally.
+    expect(store.setBusy('a1', true)).toBe(false)
     expect(store.setBusy('a1', false)).toBe(true)
+  })
+
+  it('does not settle an agent whose state was forgotten mid-turn', () => {
+    const store = createAgentActivityStore()
+    store.setBusy('a1', true)
+
+    // The worker-offline sweep forgets the agent. When the worker returns, its
+    // catch-up replay reports idle -- for a turn that died with the old link,
+    // not one this client watched finish.
+    store.forget('a1')
+
+    expect(store.setBusy('a1', false)).toBe(false)
   })
 
   it('keeps agents independent', () => {

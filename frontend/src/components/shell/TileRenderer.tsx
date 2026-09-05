@@ -597,14 +597,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // What the THINKING INDICATOR and the Interrupt button read: the Worker's
   // answer, pushed on change and seeded on hydration.
   //
-  // This used to be assembled here from six inputs -- a backwards scan of the
-  // transcript, live streaming text, the Codex turn id, the background-task
-  // registry, pending control requests and agent status -- through a precedence
-  // ladder in utils/agentState.ts. Every one of those facts belongs to the
-  // Worker, which now derives the answer once and publishes it, so the ladder
-  // and its per-provider hooks are gone. The root/child distinction the ladder
-  // encoded lives in the Worker's derivation instead: a subagent's registry row
-  // IS its run.
+  // A store read, and it must stay one. The browser owns none of the inputs --
+  // the provider's turn bookkeeping, the background-task registry, the pending
+  // control requests, the process state -- so any answer assembled here is a
+  // guess that disagrees with the Worker's, and a wrong answer hides the
+  // Interrupt button on a runaway agent. The root/child rule lives in the
+  // Worker's derivation too: a subagent's registry row IS its run.
   const agentThinking = (agentId: string) => agentActivityStore.isBusy(agentId)
   // Todos are owned by the root agent (the child has no independent todo list).
   // Resolve to the root so a child tab shows the root's todos, mirroring

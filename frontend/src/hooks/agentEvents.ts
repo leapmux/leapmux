@@ -10,6 +10,7 @@ import type { Provider } from '~/components/chat/providers/registry'
 import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
@@ -903,7 +904,11 @@ export function handleControlRequest(
 }
 
 /**
- * The agent SETTLED: it stopped working and is not merely between envelopes.
+ * Whether this agent's tab is the one the user is looking at: it exists, it is
+ * in the active workspace, and it is the selected tab of its tile.
+ *
+ * "On screen" is a property of the TILE's selection, not of the tab alone --
+ * a tab in a background tile is mounted and invisible.
  */
 export function isAgentTabOnScreen(
   agentId: string,
@@ -936,6 +941,28 @@ export function isAgentTabOnScreen(
  * 'live'-gated: a catch-up replay would otherwise ring for every agent that
  * settled while the tab was closed.
  */
+/**
+ * AgentActivityChanged arm: store the Worker's answer, and alert on the edge.
+ *
+ * One function so the store write and the alert cannot separate. The store
+ * answers whether this write was the busy -> idle EDGE, which is not the same
+ * as an idle report arriving: the same value reaches a client twice when a
+ * catch-up replay lands beside a live event, and an idle report can arrive for
+ * an agent this client never saw working. See AgentActivityStore.setBusy.
+ */
+export function handleActivityChanged(
+  agentId: string,
+  value: { busy: boolean, numToolUses?: number },
+  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
+    agentActivityStore: AgentActivityStore
+    onTurnEnd?: (agentId: string, numToolUses?: number) => void
+  },
+  catchUpPhase: CatchUpPhase,
+): void {
+  if (stores.agentActivityStore.setBusy(agentId, value.busy))
+    handleAgentSettled(agentId, value.numToolUses, stores, catchUpPhase)
+}
+
 export function handleAgentSettled(
   agentId: string,
   numToolUses: number | undefined,

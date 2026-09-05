@@ -170,21 +170,6 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 
 // --- turn lifecycle ---
 
-// zcodeTurnStarted is the turn.started payload.
-type zcodeTurnStarted struct {
-	TurnNumber  int64  `json:"turnNumber"`
-	Input       string `json:"input"`
-	InputID     string `json:"inputId"`
-	InputSource string `json:"inputSource"`
-	MessageID   string `json:"messageId"`
-}
-
-// handleZCodeTurnStarted arms the turn.
-//
-// A turn whose inputSource is set was started by the RUNTIME, not by the user: a
-// background task reporting back, a subagent's reply being folded in, a todo
-// reminder. Such a turn is armed as a background turn, so its completion does not
-// end the user's turn and its transcript rows still land.
 // publishTurnActive republishes the Worker-visible turn state from turnActive,
 // the single source. Call it after EVERY critical section that writes that
 // field.
@@ -205,6 +190,21 @@ func (a *zcodeAgent) publishTurnActive() {
 	publishTurnActiveTo(a.sink, active)
 }
 
+// zcodeTurnStarted is the turn.started payload.
+type zcodeTurnStarted struct {
+	TurnNumber  int64  `json:"turnNumber"`
+	Input       string `json:"input"`
+	InputID     string `json:"inputId"`
+	InputSource string `json:"inputSource"`
+	MessageID   string `json:"messageId"`
+}
+
+// handleZCodeTurnStarted arms the turn.
+//
+// A turn whose inputSource is set was started by the RUNTIME, not by the user: a
+// background task reporting back, a subagent's reply being folded in, a todo
+// reminder. Such a turn is armed as a background turn, so its completion does not
+// end the user's turn and its transcript rows still land.
 func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	var payload zcodeTurnStarted
 	if len(event.Payload) > 0 {
@@ -314,10 +314,15 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	}
 	a.backgroundTurn = false
 	a.mu.Unlock()
-	// Before the early returns below. A background turn, and a turn whose event
-	// carries no persistable content, both leave through them -- and a turn that
-	// published no clear would latch the agent busy for the life of the process.
-	a.publishTurnActive()
+	// Deferred, for two reasons at once. It runs on EVERY path, including the
+	// two early returns below -- a background turn, and a turn whose event
+	// carries no persistable content -- and a turn that published no clear would
+	// latch the agent busy for the life of the process. And it runs AFTER
+	// PersistTurnEnd, which hands this turn's tool-call count to the activity
+	// latch: the clear is what produces the settle edge that spends the count,
+	// so publishing it first would settle the agent with no count and ring the
+	// completion sound for a turn that used no tool.
+	defer a.publishTurnActive()
 
 	content := event.persistBytes()
 	if content == nil {

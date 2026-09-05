@@ -287,3 +287,109 @@ func TestACPTurnActive_ClearActivePromptCloses(t *testing.T) {
 
 	assert.Equal(t, []bool{false}, sink.TurnActives())
 }
+
+// --- The turn-end / turn-clear order, per provider ---------------------------
+
+// A turn end and the clear it produces are ONE event split across two sink
+// calls, and their order is a requirement rather than an implementation
+// detail. PersistTurnEnd hands the finished turn's tool-call count to the
+// Worker's activity latch; the clear that follows is the settle edge that
+// spends it. Clear first and the agent settles with no count, so the client
+// rings the completion sound for a turn that used no tool -- the exact case the
+// "skip a zero-tool turn" rule exists to keep quiet.
+//
+// One test per provider, because each one funnels its turn end through a
+// different handler and the order is easy to invert while every other assertion
+// in the suite stays green.
+
+func TestTurnEndPrecedesTheClear_Claude(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+	require.NoError(t, a.SendInput("hello", nil))
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","num_tool_uses":2}`))
+
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+}
+
+func TestTurnEndPrecedesTheClear_Codex(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
+	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
+
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+}
+
+func TestTurnEndPrecedesTheClear_ZCode(t *testing.T) {
+	t.Parallel()
+
+	// ZCode is the one that had it backwards: finishZCodeTurn published the
+	// clear early so it would run before the two early returns below it. The
+	// clear is deferred instead, which covers those returns AND lands after the
+	// divider.
+	sink := &testSink{}
+	a := newZCodeTestAgentWithStdin(t, sink, &zcodeRecordedStdin{})
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"input":"hi"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventTurnCompleted, `{"toolCallCount":1}`))
+
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+}
+
+func TestTurnEndPrecedesTheClear_Pi(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","willRetry":false}`)))
+
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+}
+
+func TestTurnEndPrecedesTheClear_ACP(t *testing.T) {
+	t.Parallel()
+
+	// The ACP base handles the prompt response -- which persists the turn end --
+	// and only then clears promptActive, both inside one callback. This pins that
+	// order, because a callback that cleared first would invert it.
+	var out bytes.Buffer
+	b, sink := newACPTurnBase(t, nopWriteCloser{&out})
+
+	require.NoError(t, b.SendInput("hi", nil))
+	b.handleJSONRPCResponse(parseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)))
+
+	assert.Eventually(t, func() bool { return len(sink.TurnLifecycle()) == 3 }, time.Second, 5*time.Millisecond)
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+}
+
+// Pi keeps the turn open across a retry it drives itself, so the retried
+// attempt persists a plain message rather than a turn end -- and publishes no
+// clear for the settle to spend a count on.
+func TestTurnEndPrecedesTheClear_PiRetryEndsNoTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_start"}`)))
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","willRetry":true}`)))
+
+	// The republished `true` is a re-read of an unchanged flag, not a second
+	// turn. It is harmless because the Worker's latch is edge-triggered, and it
+	// is the price of publishing from the field rather than from an argument --
+	// which is what makes a MISSING publish the only way the two can drift.
+	assert.Equal(t, []string{"turn_active:true", "turn_active:true"}, sink.TurnLifecycle(),
+		"a retried attempt neither ends the turn nor clears the flag")
+
+	handlePiOutput(a, parseLine([]byte(`{"type":"agent_end","willRetry":false}`)))
+
+	assert.Equal(t, []string{"turn_active:true", "turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+}

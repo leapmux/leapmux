@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,11 @@ type testSink struct {
 	// the observable that matters: a provider that clears its turn flag before
 	// it publishes the turn-end envelope, or that never clears it on a path the
 	// happy case does not reach, latches the agent busy forever.
-	TurnActiveCalls    []bool
+	TurnActiveCalls []bool
+	// turnLifecycle interleaves the turn-end envelope with the turn-flag
+	// transitions, which the two slices above cannot show apart. See
+	// TurnLifecycle.
+	turnLifecycle      []string
 	reservedColorSpans []testSinkSpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
@@ -187,6 +192,7 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 		TurnEnd:            true,
 		SpansOpenAtPersist: s.liveSpansLocked(),
 	})
+	s.turnLifecycle = append(s.turnLifecycle, "turn_end")
 	return nil
 }
 
@@ -196,6 +202,22 @@ func (s *testSink) SetTurnActive(active bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.TurnActiveCalls = append(s.TurnActiveCalls, active)
+	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", active))
+}
+
+// TurnLifecycle returns the turn-end envelopes and the turn-flag transitions in
+// the one order the provider produced them.
+//
+// The order is a REQUIREMENT on every provider, not an implementation detail:
+// PersistTurnEnd hands the finished turn's tool-call count to the Worker's
+// activity latch, and the clear that follows is the settle edge that spends it.
+// A provider that clears first settles the agent with no count, and the client
+// then rings the completion sound for a turn that used no tool. Two slices
+// cannot show that, because neither records the other's position.
+func (s *testSink) TurnLifecycle() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.turnLifecycle...)
 }
 
 // TurnActives returns the published turn states in order.

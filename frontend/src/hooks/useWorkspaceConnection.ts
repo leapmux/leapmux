@@ -21,8 +21,8 @@ import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
   clearPerTurnLiveState,
+  handleActivityChanged,
   handleAgentMessage,
-  handleAgentSettled,
   handleAgentStatusChange,
   handleControlRequest,
   handleStreamChunk,
@@ -191,7 +191,6 @@ export interface WorkspaceConnectionParams {
   settingsLoading: ReturnType<typeof createLoadingSignal>
   repoGitStore: ReturnType<typeof createRepoGitStore>
   getActiveWorkspaceId: () => string | null
-  /** Called when an agent turn ends (turn completed or control request received). */
   /** Alert + badge when an agent SETTLES. See handleAgentSettled. */
   onTurnEnd?: (agentId: string, numToolUses?: number) => void
   /**
@@ -387,27 +386,24 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.backgroundTasks.replace(bc.agentId, bc.tasks)
         break
       }
-      case 'activityChanged': {
+      case 'activityChanged':
         // The Worker's authoritative "is this agent working". Notification-class
         // and edge-triggered, so an off-screen tab still learns that its agent
         // settled -- which is the tab that most needs to ring and badge.
         //
-        // The store reports whether this actually CHANGED anything, and only a
-        // real transition alerts: the worker broadcasts on transition, but the
-        // same value still reaches a client twice when a catch-up replay lands
-        // beside a live event.
-        const changed = agentActivityStore.setBusy(agentId, inner.value.busy)
-        if (changed && !inner.value.busy) {
-          handleAgentSettled(agentId, inner.value.numToolUses, {
-            metadata,
-            selection,
-            view,
-            getActiveWorkspaceId: params.getActiveWorkspaceId,
-            onTurnEnd: params.onTurnEnd,
-          }, catchUpPhases.get(agentId) ?? 'catchingUp')
-        }
+        // `catchUpPhase` is this file's shared resolution, which reads 'live'
+        // for an agent with no entry: catchUpPhases carries one only while a tab
+        // replays into FULL, so a tab watching in NOTIFY mode has none -- and
+        // that is exactly the off-screen tab this event exists to ring for.
+        handleActivityChanged(agentId, inner.value, {
+          metadata,
+          selection,
+          view,
+          getActiveWorkspaceId: params.getActiveWorkspaceId,
+          agentActivityStore,
+          onTurnEnd: params.onTurnEnd,
+        }, catchUpPhase)
         break
-      }
       case 'catchUpStart':
         chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTails.get(agentId))
         break

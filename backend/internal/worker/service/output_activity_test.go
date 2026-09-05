@@ -1,11 +1,13 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -339,4 +341,122 @@ func TestCountActiveBackgroundTasks(t *testing.T) {
 	assert.Equal(t, int32(1), countActiveBackgroundTasks(rows, "child-2"))
 	assert.Equal(t, int32(0), countActiveBackgroundTasks(rows, "child-unknown"), "no row means no run")
 	assert.Equal(t, int32(0), countActiveBackgroundTasks(nil, ""))
+}
+
+// --- The registry legs, against a real store -------------------------------
+//
+// The tests above drive the in-memory inputs with no database, so the
+// background-task leg of the derivation -- the one that carries the root/child
+// split -- never runs there. These wire the real registry.
+
+// setupActivityRegistryTest gives a root, one linked child and a handler whose
+// process check answers true, so the registry is the only input that moves.
+func setupActivityRegistryTest(t *testing.T) (*Service, agent.OutputSink, string, string) {
+	t.Helper()
+	svc, _, childID, rootID := setupChildAgentTest(t)
+	// A running process is a precondition of every busy answer, and this suite
+	// is about what the registry says. The real check reads the agent manager,
+	// which holds no subprocess in a test.
+	svc.Output.processRunning = func(string) bool { return true }
+	return svc, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), rootID, childID
+}
+
+func TestActivity_RootRollsUpDescendantsAndAChildReadsOnlyItsOwnRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, rootID, childID := setupActivityRegistryTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "child task", Status: bgtask.StatusRunning,
+	}))
+
+	// A subagent's registry row IS its run, so the child needs no turn of its
+	// own. The root rolls the same row up: its tab has always meant "anything
+	// under me is working".
+	rootBusy, rootTasks := svc.Output.AgentActivitySnapshot(rootID, rootID)
+	assert.True(t, rootBusy, "a running descendant makes the root busy with no turn of its own")
+	assert.Equal(t, int32(1), rootTasks)
+	childBusy, childTasks := svc.Output.AgentActivitySnapshot(childID, rootID)
+	assert.True(t, childBusy)
+	assert.Equal(t, int32(1), childTasks)
+}
+
+func TestActivity_AFinishedChildIsIdleWhileASiblingKeepsRunning(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, rootID, childID := setupActivityRegistryTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "child task", Status: bgtask.StatusRunning,
+	}))
+	siblingID, err := sink.EnsureChildAgent("spawn-span-2", "row-key-2", "sibling task")
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-key-2", Kind: bgtask.KindSubagent, ChildAgentID: siblingID,
+		Title: "sibling task", Status: bgtask.StatusRunning,
+	}))
+
+	require.NoError(t, sink.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
+
+	// Counting the root's whole registry for a child was the bug this split
+	// exists to prevent: it kept a finished subagent spinning for as long as any
+	// sibling ran.
+	childBusy, _ := svc.Output.AgentActivitySnapshot(childID, rootID)
+	assert.False(t, childBusy, "a child whose own row ended is done, whatever its siblings do")
+	siblingBusy, _ := svc.Output.AgentActivitySnapshot(siblingID, rootID)
+	assert.True(t, siblingBusy)
+	rootBusy, rootTasks := svc.Output.AgentActivitySnapshot(rootID, rootID)
+	assert.True(t, rootBusy, "the root still rolls up the sibling")
+	assert.Equal(t, int32(1), rootTasks, "the finished row drops out of the count")
+}
+
+func TestActivity_ChildIsIdleWhenTheFeedingProcessIsGone(t *testing.T) {
+	t.Parallel()
+
+	svc, sink, rootID, childID := setupActivityRegistryTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "child task", Status: bgtask.StatusRunning,
+	}))
+	// A child owns no process. Both legs ask about the root, because a child tab
+	// is working only while the process feeding it runs -- and a crash leaves
+	// registry rows that never reached a final status.
+	svc.Output.processRunning = func(string) bool { return false }
+
+	childBusy, childTasks := svc.Output.AgentActivitySnapshot(childID, rootID)
+	assert.False(t, childBusy)
+	assert.Equal(t, int32(1), childTasks, "the count still reports the stranded row")
+	rootBusy, _ := svc.Output.AgentActivitySnapshot(rootID, rootID)
+	assert.False(t, rootBusy)
+}
+
+func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink, rootID, childID := setupActivityRegistryTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "child task", Status: bgtask.StatusRunning,
+	}))
+
+	// The hydration leg. A tab watching in NOTIFY mode gets no catch-up replay,
+	// so a list read is the only place it learns the current value -- and both
+	// close guards start from a list read.
+	rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
+	require.NoError(t, err)
+	rootInfo := svc.agentToProto(&rootRow, true, nil)
+	assert.True(t, rootInfo.GetBusy())
+	assert.Equal(t, int32(1), rootInfo.GetActiveBackgroundTasks())
+
+	childRow, err := svc.Queries.GetAgentByID(ctx, childID)
+	require.NoError(t, err)
+	childInfo := svc.agentToProto(&childRow, false, nil)
+	assert.True(t, childInfo.GetBusy(), "a child is busy while its own row runs")
+	assert.Equal(t, int32(1), childInfo.GetActiveBackgroundTasks())
+
+	require.NoError(t, sink.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
+	childRow, err = svc.Queries.GetAgentByID(ctx, childID)
+	require.NoError(t, err)
+	assert.False(t, svc.agentToProto(&childRow, false, nil).GetBusy())
 }

@@ -220,7 +220,13 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 		a.turnStartedAt = time.Time{}
 	}
 	a.mu.Unlock()
-	a.publishTurnActive()
+	// Deferred so it runs AFTER persistPiAgentEnd below. That call hands the
+	// finished turn's tool-call count to the activity latch, and the clear
+	// published here is the settle edge that spends it -- so publishing first
+	// would settle the agent with no count. Pi reports no count today
+	// (https://github.com/leapmux/leapmux/issues/435), which is exactly why the
+	// order has to be right before it does.
+	defer a.publishTurnActive()
 	// Recover from any tool calls that didn't get a matching
 	// tool_execution_end (e.g. aborted turn). Otherwise the map retains the
 	// cumulative result text indefinitely across sessions.

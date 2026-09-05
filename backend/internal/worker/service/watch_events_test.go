@@ -836,6 +836,59 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 	assert.Equal(t, "beta", keys["task-b"].GetTitle())
 }
 
+// TestReplayIncludesActivitySnapshot pins the activity leg of
+// replayAgentCatchUp: a tab promoting to FULL must learn whether its agent is
+// working BEFORE the message burst, so it renders the right spinner and the
+// right Interrupt button at once rather than after the replay drains.
+//
+// This is the third leg of the same pattern the background-task registry
+// already uses -- AgentInfo.busy hydrates, this replays, AgentActivityChanged
+// pushes -- and it is the one that covers the transition into FULL.
+func TestReplayIncludesActivitySnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	// A running process is a precondition of every busy answer; the real check
+	// reads the agent manager, which holds no subprocess in a test.
+	svc.Output.processRunning = func(string) bool { return true }
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
+	}))
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
+	assert.False(t, streamEndedWithError(w), "watch replay must not surface a stream error")
+
+	var activity *leapmuxv1.AgentActivityChanged
+	var activityAgentID string
+	for _, e := range decodeAgentEvents(w) {
+		if changed := e.GetActivityChanged(); changed != nil {
+			activity = changed
+			activityAgentID = e.GetAgentId()
+			break
+		}
+	}
+	require.NotNil(t, activity, "replay must include an AgentActivityChanged event")
+	// Under the WATCHED agent's own id, not the registry owner's: a child tab's
+	// answer is its own row, which differs from its root's.
+	assert.Equal(t, "root-1", activityAgentID)
+	assert.True(t, activity.GetBusy(), "a running registry row makes the agent busy")
+	assert.Nil(t, activity.NumToolUses, "a replay completes no turn, so it carries no count")
+}
+
 // TestWatchChildAgentReplaysWithoutProcess pins that watching a CHILD agent
 // (parent_agent_id set) replays its messages WITHOUT requiring a process.
 // Children are tabless virtual transcripts fed by their root's process, so they

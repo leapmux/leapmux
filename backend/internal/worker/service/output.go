@@ -705,10 +705,15 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 		}
 	}
 	count, ok := agent.ProviderFor(s.agentProvider).TurnEndToolUses(content)
-	// Hand the count to the activity latch BEFORE the event, so it is already
-	// recorded if the provider's SetTurnActive(false) lands first. The two
-	// arrive in provider-defined order, and only the latch's edge knows whether
-	// this turn actually settled the agent or left a subagent running.
+	// Hand the count to the activity latch first. The latch spends it on the
+	// busy->idle EDGE, not here, because this turn can end and still leave a
+	// subagent running -- only the edge knows which turn end actually settled
+	// the agent.
+	//
+	// That makes the order a requirement on every provider: clear the turn flag
+	// AFTER PersistTurnEnd returns, never before. A clear that lands first
+	// settles the agent with no count, and the client then rings the completion
+	// sound for a turn that used no tool.
 	s.h.noteTurnEnded(s.agentID, count, ok)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,

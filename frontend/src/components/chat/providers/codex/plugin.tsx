@@ -112,11 +112,11 @@ const CODEX_NOTIF_METHODS = new Set<string>([
  * consolidated thread (isCodexHiddenNotificationThreadMessage), so the two
  * paths agree.
  *
- * Exported because `agentState.ts`'s working-state heuristic must skip these
- * too — anything we hide from the chat must also be ignored when deciding
- * "is the agent thinking?". Adding a method here propagates automatically.
+ * Module-private. It once fed the browser's working-state heuristic as well,
+ * which had to skip anything the chat hides; the Worker now publishes that
+ * state, so hiding a method is a rendering decision only.
  */
-export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
+const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
   CODEX_METHOD.THREAD_STARTED,
   CODEX_METHOD.TURN_STARTED,
   CODEX_METHOD.THREAD_STATUS_CHANGED,
@@ -494,10 +494,6 @@ const codexPlugin: Provider = {
   toolResultImages: codexToolResultImages,
 
   resultDivider: codexResultDivider,
-
-  // A persisted `turn_completed` result divider is the turn boundary that must stop
-  // the thinking indicator after a reconnect / missed live event -- so it clears the
-  // active codex_turn_id, mirroring the ephemeral session-info clear.
 
   rateLimitsFromMessage: codexRateLimitsFromMessage,
   contextUsageFromMessage: codexContextUsageFromNotification,

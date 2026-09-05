@@ -46,19 +46,22 @@ export function createAgentActivityStore() {
     },
 
     /**
-     * Apply the worker's answer. Returns whether this CHANGED the stored value.
+     * Apply the worker's answer. Returns whether this write was the busy -> idle
+     * EDGE -- the settle the turn-end alert rings on.
      *
-     * The return is what the turn-end alert reads. The worker broadcasts on
-     * transition only, but it can still repeat a value a client already holds --
-     * a catch-up replay lands beside a live event, and a subprocess teardown
-     * drops the worker's "already published" mark. Ringing on the arrival of an
-     * event rather than on an observed change would double-ring both cases.
+     * The edge, not the arrival of an idle report, and not merely a changed
+     * value. The worker broadcasts on transition, but the same value still
+     * reaches a client twice (a catch-up replay landing beside a live event, a
+     * subprocess teardown dropping the worker's "already published" mark), and
+     * an idle report can arrive for an agent this client never saw working (a
+     * NOTIFY-mode tab that subscribed mid-turn). Ringing on either announces a
+     * settle the user never saw start, or announces one settle twice.
      */
     setBusy(agentId: string, busy: boolean): boolean {
-      if (state.busyByAgent[agentId] === busy)
-        return false
-      setState('busyByAgent', agentId, busy)
-      return true
+      const settled = state.busyByAgent[agentId] === true && !busy
+      if (state.busyByAgent[agentId] !== busy)
+        setState('busyByAgent', agentId, busy)
+      return settled
     },
 
     /** Drop one agent's state, on tab close. */

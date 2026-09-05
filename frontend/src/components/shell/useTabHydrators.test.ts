@@ -53,6 +53,8 @@ function agentInfo(id: string, over: Record<string, unknown> = {}) {
     startupError: '',
     startupMessage: '',
     gitStatus: undefined,
+    busy: false,
+    activeBackgroundTasks: 0,
     ...over,
   }
 }
@@ -98,10 +100,12 @@ function setup(workspaceId = 'ws-test') {
   const harness = installTestBridge({ workspaceId })
   const stores = createTestTabStores(workspaceId)
   const repoGitStore = createRepoGitStore()
+  const agentActivityStore = createAgentActivityStore()
   let seq = 0
   return {
     ...stores,
     repoGitStore,
+    agentActivityStore,
     harness,
     mount: (
       onlineWorkerIds?: () => ReadonlySet<string>,
@@ -111,7 +115,7 @@ function setup(workspaceId = 'ws-test') {
         view: stores.view,
         metadata: stores.metadata,
         repoGitStore,
-        agentActivityStore: createAgentActivityStore(),
+        agentActivityStore,
         onlineWorkerIds,
         settingsPendingAxes,
       }),
@@ -153,6 +157,30 @@ describe('useTabHydrators', () => {
 
       expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
       expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      d()
+    })
+
+    // The hydration leg of the activity state. It is the ONLY leg that reaches
+    // a tab watching in NOTIFY mode, which gets no catch-up replay at all --
+    // without it a background tab shows no spinner until its agent's next
+    // transition, and the close guard lets a working agent go unwarned.
+    it('seeds the worker-derived busy state from the reply', async () => {
+      mockListAgents.mockResolvedValue({
+        agents: [agentInfo('a1', { busy: true }), agentInfo('a2', { busy: false })],
+        verdicts: [],
+      })
+      const s = setup()
+      const d = createRoot((dispose) => {
+        s.add(TabType.AGENT, 'a1')
+        s.add(TabType.AGENT, 'a2')
+        s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(s.agentActivityStore.isBusy('a1')).toBe(true)
+      expect(s.agentActivityStore.isBusy('a2')).toBe(false)
       d()
     })
 

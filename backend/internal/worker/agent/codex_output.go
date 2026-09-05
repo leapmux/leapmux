@@ -180,11 +180,6 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
 		a.thinkingTokens.reset()
-
-		// Broadcast the turn ID so the frontend can use it for interrupts.
-		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			contracts.SessionInfoKeyCodexTurnId: notif.Turn.ID,
-		})
 		// The queue normally marks a turn active before delivery. This callback
 		// repairs that state when a delayed acceptance follows an uncertain result.
 		notifyInputStarted(a.sink)
@@ -654,13 +649,14 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	a.mu.Unlock()
-	a.publishTurnActive()
+	// Deferred, so it lands AFTER the PersistTurnEnd below. That call hands the
+	// finished turn's tool-call count to the Worker's activity latch, and the
+	// clear published here is the settle edge that spends it -- publishing at
+	// the assignment above would settle the agent with no count and ring the
+	// completion sound for a turn that used no tool. The turn state itself
+	// still clears early, which is what lets the next queued input start a turn.
+	defer a.publishTurnActive()
 	a.clearInterruptCallsForThread(notif.ThreadID)
-
-	// Clear the turn ID in session info.
-	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyCodexTurnId: "",
-	})
 
 	// Persist as a result divider.
 	if err := a.sink.PersistTurnEnd(params, SpanInfo{}); err != nil {

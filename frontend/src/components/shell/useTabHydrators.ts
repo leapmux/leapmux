@@ -565,8 +565,11 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
         )
         opts.metadata.patch(tab.id, { ...fields, ...settingsFields })
-        // Hydration, not a transition: seed the store WITHOUT alerting. A reply
-        // that reports an agent still working is not news the user asked for.
+        // Hydration, not a transition: seed the store and drop the settle edge
+        // setBusy reports. This batch runs when a tab first appears and on an
+        // explicit re-ask, never as a poll, so an agent that settled between
+        // the two is not news the user asked for -- and the live event that
+        // announced that settle already rang if this client was watching.
         opts.agentActivityStore.setBusy(tab.id, agent.busy)
         resolved.add(tab.id)
       }
