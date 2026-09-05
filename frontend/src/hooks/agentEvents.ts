@@ -754,6 +754,16 @@ export function buildAgentStatusTabUpdate(
   }
 }
 
+/**
+ * INACTIVE cleanup: the agent subprocess stopped. Clear stale control requests (so the
+ * user can send a regular message that auto-starts the agent instead of being stuck on
+ * an unanswerable prompt) and the per-turn thinking estimate. While LIVE, the turn is
+ * definitively over -- reclaim any command-stream buffer a mid-stream trim spared as
+ * orphaned (an agent that exits mid-turn emits INACTIVE but no result divider, so the
+ * divider's turn-end sweep never fires for it, leaking the buffer) and signal turn-end.
+ * Both 'live'-gated like the result-divider sweep; the catch-up phase is reclaimed by
+ * the catchUpComplete sweep instead.
+ */
 export function handleAgentInactive(
   agentId: string,
   sc: AgentStatusChange,
@@ -896,14 +906,16 @@ export function handleTurnEnd(
 
 /**
  * The `statusChange` case: apply a worker status snapshot to the agent tab. Skips a
- * payload-less catch-up sentinel; otherwise drains the pending-outbound queue on a
- * STARTING->ACTIVE/STARTUP_FAILED transition, reconciles the reported option-group
+ * payload-less catch-up sentinel; otherwise reconciles the reported option-group
  * catalog into the tab (with per-axis optimistic suppression), consolidates every field
  * into ONE metadata patch, stops the aggregate settings spinner when nothing's pending, and
  * runs the INACTIVE turn-end cleanup. The worker-online flag is authoritative only on a
  * full status snapshot. Orchestration over the already-extracted pure helpers
- * (drainPendingOutboundOnStart / resolveSettingsTabFields / buildAgentStatusTabUpdate /
- * handleAgentInactive); `setWorkerOnline` is the hook's signal setter.
+ * (resolveSettingsTabFields / buildAgentStatusTabUpdate / handleAgentInactive);
+ * `setWorkerOnline` is the hook's signal setter.
+ *
+ * A STARTING->ACTIVE transition no longer drains anything here. The Worker owns the
+ * durable input queue, so it dispatches a queued input itself once the agent runs.
  */
 export function handleAgentStatusChange(
   agentId: string,
