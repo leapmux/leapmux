@@ -357,6 +357,13 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		contracts.SessionInfoKeyRateLimits:    {},
 		contracts.SessionInfoKeyCodexTurnId:   {},
 		contracts.SessionInfoKeyStreamingType: {},
+		// The goal counters are CUMULATIVE spend against a standing objective,
+		// not per-turn state the frontend drops at a turn boundary, so they
+		// carry across turns and the dedup is right for them. It is also load
+		// bearing here: Codex reports the goal after every completed tool call,
+		// and the dedup is what makes a report whose numbers did not move cost
+		// nothing.
+		contracts.SessionInfoKeyGoalProgress: {},
 	}
 
 	_, thisFile, _, ok := runtime.Caller(0)

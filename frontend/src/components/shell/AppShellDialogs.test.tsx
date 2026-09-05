@@ -178,6 +178,7 @@ function makeDialogs(): AppShellDialogStates {
     keyPinConfirm: createDialogState(),
     changeBranch: createDialogState(),
     deleteBranch: createDialogState(),
+    setGoal: createDialogState(),
   }
 }
 

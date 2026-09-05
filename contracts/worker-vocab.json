@@ -1,5 +1,5 @@
 {
-  "_readme": "Single source of truth for the worker's wire vocabulary: the notification-type tokens the platform persists inside notification envelopes (the Go agent package's NotificationType* constants and the browser's NOTIFICATION_TYPE are generated from this file), the notification-thread wrapper discriminator, the one Codex rateLimitReachedType that lifts on a timer, and the model sentinels. workerAuthoredNotificationTypes lists the types the WORKER is the sole writer of -- the browser keeps a standalone-row set from it, and a type moves between the two regimes by editing this file, not by editing a per-side list. Adding a notification type is: one entry here, task generate, and both sides' dispatch switches compile against it.",
+  "_readme": "Single source of truth for the worker's wire vocabulary: the notification-type tokens the platform persists inside notification envelopes (the Go agent package's NotificationType* constants and the browser's NOTIFICATION_TYPE are generated from this file), the notification-thread wrapper discriminator, the one Codex rateLimitReachedType that lifts on a timer, and the model sentinels. workerAuthoredNotificationTypes lists the types the WORKER is the sole writer of -- the browser keeps a standalone-row set from it, and a type moves between the two regimes by editing this file, not by editing a per-side list. Adding a notification type is: one entry here, task generate, and both sides' dispatch switches compile against it. GoalUpdated/GoalCleared are worker-authored on purpose: five providers report a session goal in five different wire shapes, and persisting each verbatim would put every provider's goal parsing in that provider's renderer. The worker normalizes once and writes a neutral row, so the browser has ONE goal renderer.",
   "notificationTypes": {
     "AgentError": "agent_error",
     "SettingsChanged": "settings_changed",
@@ -11,9 +11,11 @@
     "AgentSessionInfo": "agent_session_info",
     "RateLimit": "rate_limit",
     "RateLimitEvent": "rate_limit_event",
-    "SubagentEnded": "subagent_ended"
+    "SubagentEnded": "subagent_ended",
+    "GoalUpdated": "goal_updated",
+    "GoalCleared": "goal_cleared"
   },
-  "workerAuthoredNotificationTypes": ["SubagentEnded"],
+  "workerAuthoredNotificationTypes": ["SubagentEnded", "GoalUpdated", "GoalCleared"],
   "notificationThreadWrapperType": "notification_thread",
   "codexRateLimitReachedTimeWindow": "rate_limit_reached",
   "modelSentinels": {

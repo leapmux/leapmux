@@ -1,7 +1,7 @@
 import type { SetStoreFunction } from 'solid-js/store'
 import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
-import type { AgentChatMessage, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentGoal as ProtoAgentGoal, AgentGoalAction as ProtoAgentGoalAction, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { listAgentMessages } from '~/api/workerRpc'
 import { MessagePageAnchor } from '~/generated/proto/leapmux/v1/agent_pb'
 
@@ -120,6 +120,7 @@ export interface HistoryPaginatorDeps {
   trimNewestEnd: (agentId: string, maxCount: number) => void
   replaceTodos: (agentId: string, protoTodos: ProtoTodoItem[]) => void
   replaceBackgroundTasks: (agentId: string, protoTasks: ProtoBackgroundTaskItem[]) => void
+  replaceGoal: (agentId: string, goal: ProtoAgentGoal | undefined, supportedActions: ProtoAgentGoalAction[]) => void
   markBackgroundTasksLoadFailed: (agentId: string) => void
   loadLocalMessages: (agentId: string) => void
 }
@@ -166,6 +167,9 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       todos: ProtoTodoItem[]
       backgroundTasksLoaded: boolean
       backgroundTasks: ProtoBackgroundTaskItem[]
+      goalLoaded: boolean
+      goal?: ProtoAgentGoal
+      goalSupportedActions: ProtoAgentGoalAction[]
     },
   ): void {
     deps.applyMessages(agentId, resp.messages, resp.hasMore)
@@ -175,6 +179,12 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       deps.replaceBackgroundTasks(agentId, resp.backgroundTasks)
     else
       deps.markBackgroundTasksLoadFailed(agentId)
+    // Only on a successful read. A CHILD agent answers loaded=true with an
+    // ABSENT goal -- a subagent never owns one -- so this write is what clears a
+    // goal a tab inherited from a previous root, and skipping it on a DB error
+    // is what stops a transient failure from blanking a live card.
+    if (resp.goalLoaded)
+      deps.replaceGoal(agentId, resp.goal, resp.goalSupportedActions)
   }
 
   /** Fetch the latest messages for an agent (initial page load). */

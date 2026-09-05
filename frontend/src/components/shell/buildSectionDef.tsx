@@ -11,6 +11,7 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -20,7 +21,7 @@ import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
-import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
+import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
 import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
@@ -99,6 +100,12 @@ export interface SectionDefContext {
 
   // Background tasks section
   showBackgroundTasks: boolean
+  /** The active root's session goal, or undefined when it has none. */
+  activeGoal?: SessionGoal
+  activeGoalProgress: GoalProgress
+  /** What the running agent can do with its goal; empty disables every control. */
+  activeGoalActions: GoalAction[]
+  onGoalAction?: (action: GoalAction) => void
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
@@ -355,11 +362,15 @@ export function buildSectionDef(
         ? () => <span class={csStyles.railBadgeText}>{activeCount}</span>
         : undefined,
       content: () => (
-        <BackgroundTaskList
+        <AgentWorkPanel
           variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
+          goal={ctx.activeGoal}
+          goalProgress={ctx.activeGoalProgress}
+          goalActions={ctx.activeGoalActions}
           loadFailed={ctx.activeBackgroundTasksFailed}
           onOpenSubagent={ctx.onOpenBackgroundTask}
+          onGoalAction={ctx.onGoalAction}
         />
       ),
     }

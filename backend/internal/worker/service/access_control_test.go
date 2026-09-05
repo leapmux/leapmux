@@ -82,6 +82,13 @@ var agentHandlerCases = []agentHandlerCase{
 	{"SendControlResponse", func(id string) proto.Message {
 		return &leapmuxv1.SendControlResponseRequest{AgentId: id, Content: []byte("{}")}
 	}},
+	{"UpdateAgentGoal", func(id string) proto.Message {
+		return &leapmuxv1.UpdateAgentGoalRequest{
+			AgentId:   id,
+			Action:    leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_CLEAR,
+			Objective: "",
+		}
+	}},
 	{"ListAgentMessages", func(id string) proto.Message {
 		return &leapmuxv1.ListAgentMessagesRequest{AgentId: id}
 	}},

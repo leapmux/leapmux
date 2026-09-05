@@ -368,6 +368,7 @@ message AgentEvent {
     CatchUpStart catch_up_start = 12;
     AgentTurnEnd turn_end = 13;
     AgentBackgroundTasksChanged background_tasks_changed = 14;
+    AgentGoalChanged goal_changed = 15;
   }
 }
 

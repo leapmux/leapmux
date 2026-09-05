@@ -45,10 +45,15 @@ type zcodeAgent struct {
 
 	// --- guarded by mu ---
 
-	sessionID    string
-	model        string // the composite catalog id, providerId/modelId
-	thoughtLevel string
-	mode         string
+	sessionID string
+	// stateRevision is the app-server's optimistic-concurrency counter, taken
+	// from the last runtime state observed. session/goal sends it as
+	// expectedRevision so a goal write that races a change the agent just made
+	// is refused rather than silently overwriting it.
+	stateRevision int64
+	model         string // the composite catalog id, providerId/modelId
+	thoughtLevel  string
+	mode          string
 	// modeObserved is true once the RUNNING session reported its own mode through
 	// `settings.mode.current`. Until then `mode` holds what the launch asked for, not
 	// what the app-server settled on, and the two must not be compared. It resets with
@@ -280,6 +285,11 @@ type zcodeStateSnapshot struct {
 		ContextUsed   int64 `json:"contextUsed"`
 		ContextWindow int64 `json:"contextWindow"`
 	} `json:"projection"`
+	// Goal is RAW so the three cases stay distinct: absent (key missing),
+	// null (no goal), and an object. A decoded pointer would fold the first
+	// two together, and a snapshot with no goal must CLEAR one that a previous
+	// process stored.
+	Goal json.RawMessage `json:"goal"`
 }
 
 // openSession creates a fresh session, or resumes the one the client specified.
@@ -306,6 +316,11 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 			return resumeFailedError(resumeID, fmt.Errorf("%s returned no session id", ZCodeMethodSessionResume))
 		}
 		a.applyParsedStateSnapshot(snap)
+		// A resume RESTATES the session's goal, so it is reported as a snapshot:
+		// it updates the panel and writes no transcript row for a goal that may
+		// be hours old. Outside applyParsedStateSnapshot, which holds a.mu for
+		// its whole body and must not call into the sink.
+		a.reportZCodeGoal(snap.Goal, true)
 		return nil
 	}
 
@@ -437,6 +452,7 @@ func (a *zcodeAgent) subscribe(timeout time.Duration) error {
 func (a *zcodeAgent) applyStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, bool) {
 	if snap, ok := a.parseStateSnapshot(raw); ok {
 		a.applyParsedStateSnapshot(snap)
+		a.reportZCodeGoal(snap.Goal, true)
 		return snap, true
 	}
 	return zcodeStateSnapshot{}, false

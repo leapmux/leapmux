@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -81,6 +82,15 @@ type CodexAgent struct {
 	effort     string
 	workingDir string
 	sink       OutputSink
+	// resumingThread is true only while a thread/resume handshake is in flight.
+	//
+	// It is what tells a goal RESTATEMENT from a goal EVENT. Codex marks the
+	// resume snapshot with a null turnId, but it uses null for every report made
+	// outside a turn -- including the acknowledgement of a thread/goal/set this
+	// worker issued -- so the null alone reads a user's own action as history.
+	// Atomic because the read loop consults it from its own goroutine while the
+	// handshake sets it.
+	resumingThread atomic.Bool
 
 	// Codex-specific state.
 	threadID string // from thread/start response
@@ -245,15 +255,36 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		threadMethod = "thread/resume"
 	}
 
+	// Publish the resume target BEFORE the request goes out. thread/resume
+	// pushes unsolicited notifications for the thread -- among them the session
+	// goal snapshot -- and the read loop is already running and serialized ahead
+	// of the response. Assigning threadID only after startOrResumeThread
+	// returned meant every one of those arrived while a.threadID was still "",
+	// so isMainThreadID rejected them and the resumed goal was dropped.
+	if opts.ResumeSessionID != "" {
+		a.mu.Lock()
+		a.threadID = opts.ResumeSessionID
+		a.mu.Unlock()
+		// Mark the handshake, so the unsolicited reports it triggers are read as
+		// restatements rather than as events the user just caused. Cleared once
+		// the resume settles, whether it held or not.
+		a.resumingThread.Store(true)
+		defer a.resumingThread.Store(false)
+	}
+
 	thread, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.formatStartupError(threadMethod, err)
 	}
+	// Under the lock: the read loop has been running since before the handshake
+	// and reads threadID through isMainThreadID on every routed notification.
+	a.mu.Lock()
 	a.applyThreadResult(thread)
 	a.threadID = thread.ID
-	sink.UpdateSessionID(a.threadID)
-	sink.BroadcastStatusActive(a.threadID)
+	a.mu.Unlock()
+	sink.UpdateSessionID(thread.ID)
+	sink.BroadcastStatusActive(thread.ID)
 
 	// 5. Query available models (best-effort; don't fail startup if this fails).
 	a.availableModels = a.queryAvailableModels(timeout)

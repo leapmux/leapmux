@@ -95,6 +95,17 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 	case "account/rateLimits/updated":
 		a.handleRateLimitsUpdated(line.Raw, line.Params)
 
+	// The session goal. These are claimed out of the `default:` arm below on
+	// purpose: Codex reports the goal after EVERY completed tool call, so the
+	// fallback wrote a raw-JSON row per tool call, and each of those rows also
+	// broke notification adjacency. The sink keeps the goal as session state and
+	// writes the transcript only when the goal actually changes.
+	case codexMethodGoalUpdated:
+		a.handleGoalUpdated(line.Params)
+
+	case codexMethodGoalCleared:
+		a.handleGoalCleared(line.Params)
+
 	case "error":
 		a.handleErrorNotification(line.Params)
 

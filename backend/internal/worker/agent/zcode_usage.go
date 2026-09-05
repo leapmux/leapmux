@@ -128,6 +128,17 @@ func (a *zcodeAgent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
 	if runtime == nil {
 		return
 	}
+	// Track the revision monotonically. A stale patch that arrives out of order
+	// must not move it backwards, or the next session/goal would send an
+	// expectedRevision the app-server already passed and the write would be
+	// refused for a conflict that does not exist.
+	if runtime.StateRevision > 0 {
+		a.mu.Lock()
+		if runtime.StateRevision > a.stateRevision {
+			a.stateRevision = runtime.StateRevision
+		}
+		a.mu.Unlock()
+	}
 	info := map[string]any{}
 
 	if usage := zcodeContextUsageFromRuntime(runtime.ContextUsage); len(usage) > 0 {

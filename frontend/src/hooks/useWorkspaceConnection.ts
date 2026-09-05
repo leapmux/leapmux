@@ -365,6 +365,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.todos.replace(tc.agentId, tc.todos)
         break
       }
+      case 'goalChanged': {
+        // Keyed by the ROOT owner agent id like the registry above, and
+        // notification-class for the same reason: an off-screen root tab must
+        // still update its goal card and its section visibility.
+        const gc = inner.value
+        chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions)
+        break
+      }
       case 'backgroundTasksChanged': {
         // The registry is keyed by the ROOT owner agent id and rides the root
         // tab's existing WatchAgentEntry (notification-class, so an off-screen

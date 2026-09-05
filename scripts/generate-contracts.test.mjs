@@ -974,6 +974,7 @@ describe('checkSessionInfo', () => {
       rateLimitFields: { Status: 'status' },
       runningToolFields: { SpanId: 'span_id' },
       runningToolRetryFields: { Attempt: 'attempt' },
+      goalProgressFields: { TokensUsed: 'tokens_used' },
       ...overrides,
     }
   }

@@ -140,6 +140,16 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		RowKey:       "bg-1",
 	}))
 
+	// agents.goal_created_at / goal_updated_at are Go-bound on UpdateAgentGoal.
+	require.NoError(t, queries.UpdateAgentGoal(ctx, gendb.UpdateAgentGoalParams{
+		GoalObjective:    "make the tests pass",
+		GoalStatus:       "active",
+		GoalStatusDetail: "active",
+		GoalCreatedAt:    sqltime.SQLiteNullTimeOf(now),
+		GoalUpdatedAt:    sqltime.SQLiteNullTimeOf(now),
+		ID:               "agent-1",
+	}))
+
 	// control_requests.created_at via the column DEFAULT on CreateControlRequest.
 	require.NoError(t, queries.CreateControlRequest(ctx, gendb.CreateControlRequestParams{
 		AgentID:    "agent-1",

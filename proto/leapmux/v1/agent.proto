@@ -469,6 +469,19 @@ message ListAgentMessagesResponse {
   // client overwrites its registry ONLY when this is true, so a transient DB
   // error can't wipe a populated list with an empty array.
   bool background_tasks_loaded = 7;
+  // Authoritative session goal at the time the response is served, absent when
+  // the agent has none. Same explicit-presence contract as the two pairs above:
+  // only meaningful when goal_loaded is true.
+  AgentGoal goal = 8;
+  // Whether `goal` carries an authoritative answer. True only on a latest page
+  // the worker could read; false on a non-latest page or a DB error. A CHILD
+  // agent answers true with an absent goal -- a child never owns one, and
+  // answering false would let it keep whatever its previous root put there.
+  bool goal_loaded = 9;
+  // The goal actions the running agent supports, for the reason
+  // AgentGoalChanged.supported_actions carries them: the panel must know
+  // whether a goal can be SET on an agent that has none.
+  repeated AgentGoalAction goal_supported_actions = 10;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the
@@ -596,6 +609,89 @@ enum BackgroundTaskStatus {
 message AgentBackgroundTasksChanged {
   string agent_id = 1;                       // ROOT owner agent id
   repeated BackgroundTaskItem tasks = 2;     // authoritative; replace wholesale
+}
+
+// --- Session goal ---
+
+// AgentGoal is the provider-neutral session goal: a standing objective the
+// agent keeps working toward, re-checked at the end of every turn, until the
+// check says the condition holds. Sources are Codex thread/goal/updated,
+// ZCode's session snapshot `goal`, Claude Code's `active_goal` stdout frame,
+// and Reasonix's _reasonix.io/session/status_update.
+//
+// There is at most ONE goal per agent. Every CLI that has the feature enforces
+// that itself, so this is a single message rather than a list.
+//
+// It carries only the DURABLE half. The progress counters (tokens used,
+// seconds spent, iterations) advance after every tool call and would make this
+// message a per-tool-call broadcast, so they ride the ephemeral
+// agent_session_info map instead -- see contracts/session-info.json.
+message AgentGoal {
+  string objective = 1;
+  AgentGoalStatus status = 2;
+  // The provider's OWN status word ("usageLimited", "notSatisfied",
+  // "verifying"). `status` branches the UI; this keeps the precision that
+  // mapping five vocabularies onto four values loses, for display only.
+  string status_detail = 3;
+  // Part of the goal's IDENTITY, not decoration: Codex puts no goal id on the
+  // wire, so a goal restarted with the same objective text is distinguishable
+  // only by a fresh created_at.
+  string created_at = 4;
+  string updated_at = 5;
+}
+
+// AgentGoalStatus is the neutral status vocabulary. Four values, because the UI
+// branches three ways (pause iff active, resume iff paused, clear always) and
+// the providers' own enums do not agree: Codex says
+// active/paused/blocked/usageLimited/budgetLimited/complete, ZCode says
+// active/paused/verifying/verified/notSatisfied/failed. A neutral enum with a
+// value per provider word would pretend to a precision the mapping does not
+// have -- AgentGoal.status_detail carries the provider's word instead.
+enum AgentGoalStatus {
+  // No goal. This is the zero value, so an absent goal and a goal with no
+  // status are the same thing, which is what every caller wants.
+  AGENT_GOAL_STATUS_UNSPECIFIED = 0;
+  AGENT_GOAL_STATUS_ACTIVE = 1;
+  AGENT_GOAL_STATUS_PAUSED = 2;
+  // Not progressing and needs the user: Codex blocked/usageLimited/
+  // budgetLimited, ZCode notSatisfied/failed, Reasonix blocked/stopped.
+  AGENT_GOAL_STATUS_BLOCKED = 3;
+  AGENT_GOAL_STATUS_DONE = 4;
+}
+
+enum AgentGoalAction {
+  AGENT_GOAL_ACTION_UNSPECIFIED = 0;
+  AGENT_GOAL_ACTION_SET = 1;
+  AGENT_GOAL_ACTION_CLEAR = 2;
+  AGENT_GOAL_ACTION_PAUSE = 3;
+  AGENT_GOAL_ACTION_RESUME = 4;
+}
+
+// AgentGoalChanged is broadcast when the goal's durable half changes -- the
+// objective, the status, or the identity. It is NOT broadcast for a progress
+// update, which is what keeps a 200-tool turn from costing 200 broadcasts.
+// Recipients replace their copy wholesale; this event is authoritative.
+message AgentGoalChanged {
+  string agent_id = 1;
+  // Absent when the agent has no goal. A message field carries explicit
+  // presence, so this needs no companion boolean the way the cold-load
+  // hydration pair does.
+  AgentGoal goal = 2;
+  // What the RUNNING agent can do, decided by the worker from the live process
+  // -- never a static per-provider table. Goal support is version-dependent
+  // (Claude Code shipped /goal in 2.1.139, ZCode in 3.10.2) and Reasonix
+  // advertises it in its initialize reply, so a hardcoded table would offer a
+  // button that does nothing against an older CLI. Empty when the agent is not
+  // running, or when its provider can report a goal but not change one.
+  //
+  // It sits HERE rather than on AgentGoal because it must exist when a goal
+  // does NOT: "this agent can set a goal" is exactly what the empty state needs
+  // to know, and a capability hanging off the absent goal could never say it.
+  //
+  // Same posture as AgentInfo.accepts_messages: derived from a type assertion
+  // on the running agent, so the capability cannot drift from the code that
+  // implements it.
+  repeated AgentGoalAction supported_actions = 3;
 }
 
 // --- Control Request/Response ---
@@ -752,3 +848,21 @@ message InterruptAgentRequest {
 }
 
 message InterruptAgentResponse {}
+
+// UpdateAgentGoal sets, clears, pauses, or resumes the session goal. The worker
+// dispatches the provider's own mechanism; callers never synthesize provider
+// JSON. An action the running agent does not support is refused -- the browser
+// reads AgentGoal.supported_actions and disables the control, and this check is
+// the backstop for a stale view.
+message UpdateAgentGoalRequest {
+  string agent_id = 1;
+  AgentGoalAction action = 2;
+  // The objective. Required for SET, ignored otherwise.
+  string objective = 3;
+}
+
+// Deliberately empty, like InterruptAgentResponse. Only Codex's
+// thread/goal/set returns the resulting goal; a response field that four of
+// five providers cannot fill would be a field that lies. The AgentGoalChanged
+// broadcast is the single source of the new state.
+message UpdateAgentGoalResponse {}

@@ -737,6 +737,17 @@ func (svc *Service) RestoreState() {
 		slog.Info("marked background tasks interrupted on boot", "count", len(endedChildIDs))
 		svc.Output.WriteSubagentEndDividers(endedChildIDs, bgtask.StatusInterrupted)
 	}
+	// Blank every stored session-goal status, for the same reason the sweep
+	// above interrupts the task rows: the previous process is gone, so no goal
+	// is being pursued. Leaving a status set would draw a goal panel with live
+	// Pause and Clear buttons for a goal nothing is running, and pressing one
+	// would act on a process that never knew about it. The OBJECTIVE text stays
+	// so the panel can still say what was being attempted, and the provider's
+	// own snapshot re-arms the status when a session resumes -- Codex pushes
+	// exactly that on thread/resume.
+	if err := svc.Output.ClearGoalStatusesAtBoot(bgCtx()); err != nil {
+		slog.Warn("clear session-goal statuses on boot failed", "error", err)
+	}
 	svc.Output.restoreAutoContinueSchedules()
 }
 

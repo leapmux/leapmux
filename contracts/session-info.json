@@ -1,5 +1,5 @@
 {
-  "_readme": "The agent_session_info wire vocabulary: the keys of the ephemeral `info` map the Worker broadcasts (seq -1, never persisted) and the browser reads. Six of them reach wireSessionInfoToUpdates; running_tool takes its own path (wireRunningToolToUpdate) because it is span-keyed state for the chat store, not a scalar AgentSessionInfo field. Every token here is written by Go and read by TS, so the two copies must not drift -- a one-character difference silently stops a counter updating instead of failing a build. Object-valued keys carry their nested field names too, because those cross the boundary exactly as the top-level keys do. Keys the browser does NOT read stay out, per the contracts rule's one-side-only exemption: the seven pi_* keys (pi_status, pi_widget, pi_terminal_title, pi_editor_text, pi_queue_depth, pi_steering_depth, pi_follow_up_depth) and zcode_api_retry are Go-side literals until something renders them; see https://github.com/leapmux/leapmux/issues/433 and https://github.com/leapmux/leapmux/issues/434. The same rule keeps the running_tool frame's tool_name and subagent_type OUT of runningToolFields: the tool card already shows both, read from the tool_use row, so the badge never reads either off this payload and the Worker does not broadcast them. TotalCostUsd is the one token LeapMux cannot rename: Claude Code writes total_cost_usd on its own result line, the worker persists that line unchanged, and the browser reads the persisted row through this constant while the Go decoder reads it through a struct tag, which takes a literal. checkSessionInfo pins it. Pi's `tokens` alias for context_tokens is Pi's own protocol token, not a LeapMux-owned one, so it belongs in pi-protocol.json if anywhere.",
+  "_readme": "The agent_session_info wire vocabulary: the keys of the ephemeral `info` map the Worker broadcasts (seq -1, never persisted) and the browser reads. Six of them reach wireSessionInfoToUpdates; running_tool takes its own path (wireRunningToolToUpdate) because it is span-keyed state for the chat store, not a scalar AgentSessionInfo field. Every token here is written by Go and read by TS, so the two copies must not drift -- a one-character difference silently stops a counter updating instead of failing a build. Object-valued keys carry their nested field names too, because those cross the boundary exactly as the top-level keys do. Keys the browser does NOT read stay out, per the contracts rule's one-side-only exemption: the seven pi_* keys (pi_status, pi_widget, pi_terminal_title, pi_editor_text, pi_queue_depth, pi_steering_depth, pi_follow_up_depth) and zcode_api_retry are Go-side literals until something renders them; see https://github.com/leapmux/leapmux/issues/433 and https://github.com/leapmux/leapmux/issues/434. The same rule keeps the running_tool frame's tool_name and subagent_type OUT of runningToolFields: the tool card already shows both, read from the tool_use row, so the badge never reads either off this payload and the Worker does not broadcast them. TotalCostUsd is the one token LeapMux cannot rename: Claude Code writes total_cost_usd on its own result line, the worker persists that line unchanged, and the browser reads the persisted row through this constant while the Go decoder reads it through a struct tag, which takes a literal. checkSessionInfo pins it. Pi's `tokens` alias for context_tokens is Pi's own protocol token, not a LeapMux-owned one, so it belongs in pi-protocol.json if anywhere. goal_progress is the VOLATILE half of the session goal: Codex advances these counters after every completed tool call, so carrying them on AgentGoalChanged would make a 200-tool turn cost 200 database writes and 200 broadcasts. The durable half (objective, status, identity) lives on the agents row and broadcasts only on a transition. Every field here is OPTIONAL because no two providers report the same set -- Codex has no iteration count, ZCode and Claude Code report no token usage -- and a field the provider did not send must render as absent, not as zero.",
   "keys": {
     "TotalCostUsd": "total_cost_usd",
     "ContextUsage": "context_usage",
@@ -7,7 +7,8 @@
     "CodexTurnId": "codex_turn_id",
     "StreamingType": "streaming_type",
     "ThinkingTokens": "thinking_tokens",
-    "RunningTool": "running_tool"
+    "RunningTool": "running_tool",
+    "GoalProgress": "goal_progress"
   },
   "contextUsageFields": {
     "InputTokens": "input_tokens",
@@ -26,6 +27,12 @@
     "OverageStatus": "overage_status",
     "OverageResetsAt": "overage_resets_at",
     "IsUsingOverage": "is_using_overage"
+  },
+  "goalProgressFields": {
+    "TokensUsed": "tokens_used",
+    "TokenBudget": "token_budget",
+    "TimeUsedSeconds": "time_used_seconds",
+    "Iterations": "iterations"
   },
   "runningToolFields": {
     "SpanId": "span_id",

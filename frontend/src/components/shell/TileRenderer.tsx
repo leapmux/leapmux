@@ -17,6 +17,7 @@ import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { TabWorkState } from '~/stores/chatBackgroundTasks'
+import type { GoalAction } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -149,6 +150,7 @@ interface TileRendererOpts {
    * non-clickable.
    */
   onOpenBackgroundTask?: (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => void
+  onGoalAction?: (agentId: string, action: GoalAction) => void
   /**
    * Open an image an agent returned in its own tab. Receives the agent the row
    * belongs to plus the message identity the bubble stamped; the shell resolves
@@ -568,6 +570,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
     fetchMessageBySeq: chatStore.fetchMessageBySeq,
   }
   const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
+  // The session goal is ROOT state, like the registry: a child tab shows its
+  // root's, because a subagent has no goal of its own.
+  const goalFor = (agentId: string) => chatStore.goal.get(bgRootFor(agentId))
+  const goalProgressFor = (agentId: string) => chatStore.goal.progress(bgRootFor(agentId))
+  const goalActionsFor = (agentId: string) => chatStore.goal.supportedActions(bgRootFor(agentId))
   // Scoped in the store beside the other registry-scoping rules; see
   // chipTasksFor for why a child tab must not show its parent's count.
   // "This tab is a subagent's own transcript." One definition, because the
@@ -600,6 +607,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // background tasks. The root entry in the watch plan delivers the live updates.
   const todosFor = (agentId: string) => chatStore.todos.get(bgRootFor(agentId))
   const onOpenBackgroundTask = opts.onOpenBackgroundTask
+  const onGoalAction = opts.onGoalAction
   const onOpenChatImage = opts.onOpenChatImage
 
   /**
@@ -873,6 +881,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
               get registryRows() { return rootTasks() },
+              // Getters, for the reason the comment above gives: a plain value
+              // here compiles, renders once, and never updates.
+              get goal() { return goalFor(agentId) },
+              get goalProgress() { return goalProgressFor(agentId) },
+              get goalActions() { return goalActionsFor(agentId) },
+              onGoalAction: onGoalAction ? action => onGoalAction(bgRootFor(agentId), action) : undefined,
               onOpenSubagent: onOpenBackgroundTask,
               // The WORKER travels with the agent, from the tab that owns this
               // transcript. Reading it from the focused tile instead would take

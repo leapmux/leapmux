@@ -69,6 +69,10 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			// Reasonix's rawInput carries {description, prompt} with NO
 			// subagent_type, so it uses its own shape detector.
 			a.subagentFromToolCall = reasonixSubagentFromToolCall
+			// Reasonix streams its goal state on its own notification, outside
+			// the standard ACP session updates. Read-only: see reasonix_goal.go
+			// for why no GoalController is implemented.
+			a.extraMethod = a.handleExtraMethod
 		},
 	})
 }

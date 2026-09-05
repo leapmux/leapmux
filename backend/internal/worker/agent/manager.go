@@ -297,6 +297,12 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 	}
 	m.mu.Unlock()
 
+	// The first moment SupportedGoalActions can answer for this process: it
+	// type-asserts the agent this map now holds, and every earlier publication
+	// ran while the lookup still missed. See OutputSink.PublishGoalCapabilities
+	// for why an early answer is worse than a late one here.
+	sink.PublishGoalCapabilities()
+
 	// Wait for the agent to exit in the background, then clean up.
 	go func() {
 		// Close `done` last -- AFTER onExit has run -- so a stopAndWait blocked on it observes
@@ -490,6 +496,70 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 		return ErrChildSteeringUnsupported
 	}
 	return steerer.InterruptChild(childKey)
+}
+
+// SupportedGoalActions reports the session-goal actions the RUNNING agent can
+// perform, by type-asserting it to GoalController.
+//
+// An agent that is not running answers with nothing, and so does a provider
+// that reports its goal without being able to change it (Reasonix). The browser
+// disables every control it does not find here, so "nothing" is the safe answer
+// in both cases -- and it is why this is read from the live process rather than
+// a per-provider table: goal support is version-dependent (Claude Code shipped
+// /goal in 2.1.139, ZCode in 3.10.2), so a table would offer a button that does
+// nothing against an older CLI.
+//
+// Same shape as the AgentInfo.accepts_messages decision, which type-asserts
+// ChildSteerer for the same reason: the capability cannot drift from the code
+// that implements it.
+func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	controller, ok := p.(GoalController)
+	if !ok {
+		return nil
+	}
+	return controller.SupportedGoalActions()
+}
+
+// UpdateGoal performs one session-goal action on the running agent.
+//
+// It refuses an action the agent does not list in SupportedGoalActions, so a
+// browser acting on a stale capability list gets a refusal instead of a call
+// the provider silently ignores. That check lives here, beside the dispatch,
+// rather than in the service: the two answers must come from the same agent
+// instance, and a service-side check would read the capability through a second
+// lookup that could resolve a different process.
+func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) error {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+	}
+	controller, ok := p.(GoalController)
+	if !ok {
+		return ErrGoalControlUnsupported
+	}
+	if !slices.Contains(controller.SupportedGoalActions(), action) {
+		return ErrGoalControlUnsupported
+	}
+	switch action {
+	case GoalActionSet:
+		return controller.SetGoal(objective)
+	case GoalActionClear:
+		return controller.ClearGoal()
+	case GoalActionPause:
+		return controller.PauseGoal()
+	case GoalActionResume:
+		return controller.ResumeGoal()
+	default:
+		return ErrGoalControlUnsupported
+	}
 }
 
 // StopAgent stops the agent with the given agent ID.

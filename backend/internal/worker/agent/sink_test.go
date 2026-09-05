@@ -50,12 +50,19 @@ type testSink struct {
 	reservedColorSpans []testSinkSpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
-	tracker          spantrack.SpanTracker
-	resetSpanCount   int
-	statusActives    []string
-	autoSchedules    []AutoContinueSchedule
-	autoCancels      []AutoContinueReason
-	planModeToolUses sync.Map
+	tracker        spantrack.SpanTracker
+	resetSpanCount int
+	statusActives  []string
+	// goals records every UpsertGoal in arrival order, and goalClears counts
+	// ClearGoal. A provider's goal parser is tested through these: they hold the
+	// neutral GoalUpdate, so a test asserts what the parser MEANT rather than
+	// the provider bytes it read.
+	goals                   []GoalUpdate
+	goalClears              int
+	goalCapabilityPublishes int
+	autoSchedules           []AutoContinueSchedule
+	autoCancels             []AutoContinueReason
+	planModeToolUses        sync.Map
 	// childSinkMu + children let testSink serve ChildSink as a per-child testSink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
@@ -336,6 +343,60 @@ func (s *testSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool)
 }
 
 func (s *testSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string) {}
+
+// UpsertGoal and ClearGoal record what a provider reported, so a parser test
+// asserts against the neutral GoalUpdate rather than the provider's wire bytes.
+func (s *testSink) UpsertGoal(update GoalUpdate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goals = append(s.goals, update)
+}
+
+func (s *testSink) ClearGoal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goalClears++
+}
+
+// PublishGoalCapabilities is counted rather than ignored: the Manager calls it
+// once per start, and a provider test asserting the goal path needs to see that
+// the capability was published after registration rather than during it.
+func (s *testSink) PublishGoalCapabilities() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goalCapabilityPublishes++
+}
+
+// GoalCapabilityPublishes counts the PublishGoalCapabilities calls.
+func (s *testSink) GoalCapabilityPublishes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.goalCapabilityPublishes
+}
+
+// Goals returns the goal reports in arrival order.
+func (s *testSink) Goals() []GoalUpdate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]GoalUpdate(nil), s.goals...)
+}
+
+// LastGoal returns the most recent goal report, or false when none arrived.
+func (s *testSink) LastGoal() (GoalUpdate, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.goals) == 0 {
+		return GoalUpdate{}, false
+	}
+	return s.goals[len(s.goals)-1], true
+}
+
+// GoalClears counts the ClearGoal calls.
+func (s *testSink) GoalClears() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.goalClears
+}
 func (s *testSink) ScheduleAutoContinue(schedule AutoContinueSchedule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -933,6 +994,9 @@ func (noopSink) PersistLeapMuxNotification(map[string]interface{})              
 func (noopSink) StorePlanModeToolUse(string, string)                               {}
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}
+func (noopSink) UpsertGoal(GoalUpdate)                                             {}
+func (noopSink) ClearGoal()                                                        {}
+func (noopSink) PublishGoalCapabilities()                                          {}
 func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                         {}
 func (noopSink) CancelAutoContinue(AutoContinueReason)                             {}
 func (noopSink) EnsureChildAgent(string, string, string) (string, error)           { return "", nil }

@@ -32,6 +32,7 @@ const (
 	claudeMsgTypeControlCancelRequest = "control_cancel_request"
 	claudeMsgTypeControlResponse      = "control_response"
 	claudeMsgTypeToolProgress         = "tool_progress"
+	claudeMsgTypeActiveGoal           = "active_goal"
 )
 
 // claudeSystemSubtypeThinkingTokens is the `subtype` of the `system` telemetry
@@ -158,6 +159,11 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 
 	switch msgType {
 	case claudeMsgTypeAssistant, claudeMsgTypeSystem, claudeMsgTypeResult:
+		if msgType == claudeMsgTypeSystem {
+			// The init frame states which slash commands THIS build has, which
+			// is what decides whether the session-goal controls are offered.
+			a.observeSlashCommands(content)
+		}
 		a.handlePersistableMessage(content, msgType)
 
 	case claudeMsgTypeUser:
@@ -194,6 +200,9 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 
 	case claudeMsgTypeToolProgress:
 		a.claudeHandleToolProgress(content)
+
+	case claudeMsgTypeActiveGoal:
+		a.handleActiveGoal(content)
 
 	default:
 		// A type this switch does not know is DROPPED, never forwarded. The

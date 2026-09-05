@@ -67,4 +67,21 @@ const (
 	// holds as many of these as the subagent had runs, each with more messages
 	// below it.
 	NotificationTypeSubagentEnded = contracts.NotificationTypeSubagentEnded
+
+	// NotificationTypeGoalUpdated / NotificationTypeGoalCleared mark a session
+	// goal TRANSITION: the objective changed, the status changed, or the goal
+	// went away. Carries `objective`, and for an update the neutral
+	// `goal_status` plus the provider's own `status_detail`.
+	//
+	// They are worker-authored and provider-NEUTRAL on purpose. Five CLIs report
+	// a goal in five different wire shapes, so persisting each verbatim would
+	// put five copies of goal parsing in five renderers; the worker normalizes
+	// once and the browser has one.
+	//
+	// A transition only. The provider reports the goal far more often than it
+	// changes -- Codex sends a full report after every completed tool call --
+	// and a row per report would bury the transcript. The progress counters go
+	// out on the ephemeral session-info channel instead, and never here.
+	NotificationTypeGoalUpdated = contracts.NotificationTypeGoalUpdated
+	NotificationTypeGoalCleared = contracts.NotificationTypeGoalCleared
 )

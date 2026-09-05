@@ -670,6 +670,23 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 			}
 
+			// Session goal, same explicit-presence contract again. LoadGoal
+			// answers nil for a CHILD agent for the reason the registry does:
+			// a child owns no goal, and goal_loaded stays TRUE so the client
+			// overwrites with the correct empty answer instead of keeping
+			// whatever its previous root put there.
+			var goal *leapmuxv1.AgentGoal
+			goalLoaded := false
+			if isLatestPage {
+				loaded, goalErr := svc.Output.LoadGoal(ctx, agentID)
+				if goalErr != nil {
+					slog.Warn("failed to load agent goal", "agent_id", agentID, "error", goalErr)
+				} else {
+					goal = loaded
+					goalLoaded = true
+				}
+			}
+
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
 			dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
 			if queryErr != nil {
@@ -716,6 +733,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				LatestSeq:             latestSeq,
 				BackgroundTasks:       bgtask.ItemsToProto(bgItems),
 				BackgroundTasksLoaded: bgTasksLoaded,
+				Goal:                  goal,
+				GoalLoaded:            goalLoaded,
+				GoalSupportedActions:  svc.Output.SupportedGoalActions(agentID),
 			})
 		})
 
@@ -1117,6 +1137,51 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+		})
+
+	// UpdateAgentGoal sets, clears, pauses or resumes the session goal.
+	//
+	// It writes NO optimistic local state, which is the same discipline
+	// InterruptAgent keeps and for a sharper reason here: the provider echoes
+	// every goal change back as a notification, so a local write would race an
+	// echo already in flight and the user would watch the button flip back. The
+	// provider's report is the sole writer of goal state.
+	//
+	// A child agent has no goal of its own (see OutputSink.UpsertGoal), so it is
+	// refused rather than redirected to its root -- silently acting on a
+	// different agent than the one addressed is worse than saying no.
+	registerAgentGatedByID(d, "UpdateAgentGoal", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateAgentGoalRequest, sender channel.ResponseWriter) {
+			agentID := r.GetAgentId()
+			action, ok := agent.GoalActionFromProto(r.GetAction())
+			if !ok {
+				sendInvalidArgument(sender, "unknown session-goal action")
+				return
+			}
+			objective := strings.TrimSpace(r.GetObjective())
+			if action == agent.GoalActionSet && objective == "" {
+				sendInvalidArgument(sender, "a session goal needs an objective")
+				return
+			}
+			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+			if err != nil {
+				sendNotFoundError(sender, "agent not found")
+				return
+			}
+			if dbAgent.ParentAgentID.Valid {
+				sendFailedPrecondition(sender, "a subagent has no session goal")
+				return
+			}
+			if err := svc.Agents.UpdateGoal(agentID, action, objective); err != nil {
+				if errors.Is(err, agent.ErrGoalControlUnsupported) {
+					sendFailedPrecondition(sender, "this agent cannot perform that session-goal action")
+					return
+				}
+				slog.Warn("update agent goal failed", "agent_id", agentID, "action", r.GetAction(), "error", err)
+				sendNotFoundError(sender, "agent not found or not running")
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.UpdateAgentGoalResponse{})
 		})
 
 	// WatchWorkerPrivateEvents streams this worker's private tab events
@@ -1637,6 +1702,28 @@ func (svc *Service) replayAgentCatchUp(
 				BackgroundTasksChanged: &leapmuxv1.AgentBackgroundTasksChanged{
 					AgentId: rootID,
 					Tasks:   bgtask.ItemsToProto(bgItems),
+				},
+			},
+		})
+	}
+
+	// Refresh the session goal on (re)subscribe, same rationale as the two legs
+	// above. It ships under the ROOT id, reusing the root already resolved for
+	// the registry: a child owns no goal, so a child tab's replay carries its
+	// root's, and LoadGoal answers nil for the child id itself.
+	if !sink.alive() {
+		return
+	}
+	if goal, goalErr := svc.Output.LoadGoal(bgCtx(), rootID); goalErr != nil {
+		slog.Warn("failed to load agent goal for replay", "agent_id", agentID, "error", goalErr)
+	} else {
+		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+			AgentId: rootID,
+			Event: &leapmuxv1.AgentEvent_GoalChanged{
+				GoalChanged: &leapmuxv1.AgentGoalChanged{
+					AgentId:          rootID,
+					Goal:             goal,
+					SupportedActions: svc.Output.SupportedGoalActions(rootID),
 				},
 			},
 		})

@@ -5,12 +5,14 @@ import type { SectionActions } from './sectionUtils'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
+import type { SetGoalState } from '~/components/shell/AppShellDialogs'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
+import type { GoalAction } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
@@ -183,6 +185,9 @@ export const AppShell: Component = () => {
   const sectionNameDialog = createDialogState<SectionNamePayload>()
   const confirmDeleteSectionDialog = createDialogState<SectionConfirmPayload>()
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
+  // The session-goal editor. Carries the agent it acts on and the objective to
+  // start from, so REPLACE opens with the current text rather than an empty box.
+  const setGoalDialog = createDialogState<SetGoalState>()
   const changeBranchDialog = createDialogState<ChangeBranchState>()
   const deleteBranchDialog = createDialogState<DeleteBranchState>()
   // Both branch surfaces -- the sidebar's branch row and the composer's branch
@@ -737,6 +742,7 @@ export const AppShell: Component = () => {
     confirmDeleteSection: confirmDeleteSectionDialog,
     lastTabConfirm: tabOps.lastTabConfirmDialog,
     keyPinConfirm: keyPinConfirmDialog,
+    setGoal: setGoalDialog,
     changeBranch: changeBranchDialog,
     deleteBranch: deleteBranchDialog,
   }
@@ -1006,8 +1012,27 @@ export const AppShell: Component = () => {
   const activeBackgroundTasksFailed = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
   )
+  // The active root's session goal, and the counters that ride the ephemeral
+  // session-info channel beside it. Read from the ROOT for the reason the
+  // registry is: a child tab shows its root's goal, because a subagent has none
+  // of its own.
+  const activeGoal = createMemo(() =>
+    activeRootAgentId() ? chatStore.goal.get(activeRootAgentId()!) : undefined,
+  )
+  const activeGoalProgress = createMemo(() =>
+    activeRootAgentId() ? chatStore.goal.progress(activeRootAgentId()!) : {},
+  )
+  const activeGoalActions = createMemo(() =>
+    activeRootAgentId() ? chatStore.goal.supportedActions(activeRootAgentId()!) : [],
+  )
   const showBackgroundTasks = createMemo(() =>
-    shouldShowBackgroundTasksSection(activeBackgroundTasks(), activeBackgroundTasksFailed()),
+    shouldShowBackgroundTasksSection(
+      activeBackgroundTasks(),
+      activeBackgroundTasksFailed(),
+      // "There is a goal, OR one can be set here." The second half is what makes
+      // the first goal reachable at all -- see the predicate's own doc.
+      activeGoal() !== undefined || activeGoalActions().includes('set'),
+    ),
   )
   // Open a subagent tab from a Background tasks row. Built once here and shared
   // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
@@ -1202,6 +1227,13 @@ export const AppShell: Component = () => {
     },
     settingsLoading,
     onOpenBackgroundTask,
+    onGoalAction: (agentId: string, action: GoalAction) => {
+      if (action === 'set') {
+        setGoalDialog.open({ agentId, initialObjective: chatStore.goal.get(agentId)?.objective ?? '' })
+        return
+      }
+      void agentOps.handleGoalAction(agentId, action)
+    },
     onOpenChatImage: tabOps.handleChatImageOpen,
     branch: {
       actions: branchActions,
@@ -1279,6 +1311,23 @@ export const AppShell: Component = () => {
     get showBackgroundTasks() { return showBackgroundTasks() },
     get activeBackgroundTasks() { return activeBackgroundTasks() },
     get activeBackgroundTasksFailed() { return activeBackgroundTasksFailed() },
+    get activeGoal() { return activeGoal() },
+    get activeGoalProgress() { return activeGoalProgress() },
+    get activeGoalActions() { return activeGoalActions() },
+    onGoalAction: (action: GoalAction) => {
+      const agentId = activeRootAgentId()
+      if (!agentId)
+        return
+      // SET is the one action that needs input, so it opens the editor and the
+      // RPC fires from the dialog's submit. The other three act immediately --
+      // clearing destroys no artifact, and the editor reopens prefilled with the
+      // objective it cleared, which is a better undo than a confirmation.
+      if (action === 'set') {
+        setGoalDialog.open({ agentId, initialObjective: activeGoal()?.objective ?? '' })
+        return
+      }
+      void agentOps.handleGoalAction(agentId, action)
+    },
     onOpenBackgroundTask: item => onOpenBackgroundTask(item),
     termOps,
     gitStatusStore: repoGitStore,
@@ -1506,6 +1555,7 @@ export const AppShell: Component = () => {
 
         <AppShellDialogs
           dialogs={dialogs}
+          onSetGoal={(agentId, objective) => void agentOps.handleGoalAction(agentId, 'set', objective)}
           loadSections={loadSections}
           onBranchChanged={(repo, newBranch) => handleBranchChanged(
             { repoGitStore },
