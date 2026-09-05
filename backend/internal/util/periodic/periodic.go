@@ -9,7 +9,17 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/util/panicsafe"
+)
+
+// tagTicker and tagJitter name the two waits of the loop. A test that drives a
+// mock clock traps a clock call by tag, so the interval ticker and the pre-run
+// jitter timer must carry different tags: a test that releases one must not
+// release the other.
+const (
+	tagTicker = "periodic.ticker"
+	tagJitter = "periodic.jitter"
 )
 
 // Schedule defines the cadence of a periodic background task.
@@ -38,16 +48,38 @@ type Schedule struct {
 // A panic inside `task` is recovered and logged so the loop survives. The
 // next scheduled run will fire normally.
 //
-// Panics if Schedule.Interval <= 0 (which would otherwise crash inside
-// time.NewTicker). This is a programmer-error check intended to fail at
-// process startup, not at runtime.
+// Panics if Schedule.Interval <= 0 (which would otherwise crash inside the
+// ticker that the loop arms). This is a programmer-error check intended to
+// fail at process startup, not at runtime.
 func Start(ctx context.Context, schedule Schedule, task func(context.Context)) {
+	start(ctx, quartz.NewReal(), schedule, task)
+}
+
+// start is Start with the clock supplied, and with the exit of the goroutine
+// observable through the returned channel, which closes after the loop stops.
+//
+// The tests take both. A mock clock lets a test assert the ORDER of the steps
+// of the loop and the exact delay each step asks for, instead of racing two
+// real timers: a window that a test sizes at a fraction of Interval holds only
+// while the sleep of the host is accurate, and Windows rounds a sleep up to a
+// timer granularity of about 15.6ms, which is wide enough to step over a whole
+// interval. The exit channel then replaces "wait and see whether the task runs
+// again" with the statement that the loop stopped.
+func start(
+	ctx context.Context,
+	clock quartz.Clock,
+	schedule Schedule,
+	task func(context.Context),
+) <-chan struct{} {
 	if schedule.Interval <= 0 {
 		panic("periodic.Start: Schedule.Interval must be > 0")
 	}
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
+
 		runOnce := func() {
-			if !waitJitter(ctx, schedule.Jitter) {
+			if !waitJitter(ctx, clock, schedule.Jitter) {
 				return
 			}
 			defer panicsafe.RecoverAndLog(nil, "periodic.Start: task panic recovered")
@@ -58,8 +90,8 @@ func Start(ctx context.Context, schedule Schedule, task func(context.Context)) {
 			runOnce()
 		}
 
-		ticker := time.NewTicker(schedule.Interval)
-		defer ticker.Stop()
+		ticker := clock.NewTicker(schedule.Interval, tagTicker)
+		defer ticker.Stop(tagTicker)
 		for {
 			select {
 			case <-ctx.Done():
@@ -69,20 +101,26 @@ func Start(ctx context.Context, schedule Schedule, task func(context.Context)) {
 			}
 		}
 	}()
+	return stopped
 }
 
 // waitJitter blocks for a random duration in [0, jitter) (or returns
 // immediately if jitter <= 0). Returns false if ctx was canceled while
 // waiting, so the caller can short-circuit before invoking the task.
-func waitJitter(ctx context.Context, jitter time.Duration) bool {
+func waitJitter(ctx context.Context, clock quartz.Clock, jitter time.Duration) bool {
 	if jitter <= 0 {
 		return ctx.Err() == nil
 	}
 	d := time.Duration(rand.Int64N(int64(jitter)))
+	timer := clock.NewTimer(d, tagJitter)
+	// Stop releases the timer on the cancel path. time.After, which this
+	// replaced, holds its timer until it fires -- for a loop that a canceled
+	// context takes out of a long jitter, that is the whole jitter.
+	defer timer.Stop(tagJitter)
 	select {
 	case <-ctx.Done():
 		return false
-	case <-time.After(d):
+	case <-timer.C:
 		return true
 	}
 }

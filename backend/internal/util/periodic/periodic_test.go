@@ -2,87 +2,197 @@ package periodic
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// waitFor polls until cond returns true or timeout elapses. Used to keep
-// goroutine-timing tests deterministic without arbitrary sleeps.
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) bool {
+// stopWindow limits the wait for the loop to leave its goroutine. It is a
+// DEADLOCK GUARD, not a timing assumption: a loop that honors its canceled
+// context returns at once and never reaches it.
+const stopWindow = 10 * time.Second
+
+// loop drives one periodic loop on a mock clock. Every wait below ends on a
+// step the loop itself takes -- a clock call the test traps, an invocation the
+// task records, the exit of the goroutine -- so the assertions state the order
+// of those steps and the exact delay each step asks for. None of them measures
+// a wall-clock window.
+type loop struct {
+	t     *testing.T
+	ctx   context.Context
+	clock *quartz.Mock
+
+	// tickerArm and jitterArm catch the loop as it arms each of its two waits.
+	// A caught call parks the loop until the test releases it, which is what
+	// makes "the task did not run yet" a statement about the position of the
+	// loop rather than about elapsed time.
+	tickerArm *quartz.Trap
+	jitterArm *quartz.Trap
+
+	// calls carries the mock-clock time elapsed at each invocation of the
+	// task, stamped by the task itself.
+	calls   chan time.Duration
+	stopped <-chan struct{}
+	cancel  context.CancelFunc
+}
+
+// startLoop starts one loop on a mock clock and registers the cleanup that
+// stops it. body runs inside the task after the invocation is recorded; pass
+// nil for a task that does nothing else.
+func startLoop(t *testing.T, schedule Schedule, body func()) *loop {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		time.Sleep(time.Millisecond)
+
+	clock := testutil.NewQuartzMock(t)
+	loopCtx, cancel := context.WithCancel(context.Background())
+	l := &loop{
+		t:      t,
+		ctx:    testutil.DeadlineContext(t),
+		clock:  clock,
+		calls:  make(chan time.Duration, 16),
+		cancel: cancel,
 	}
-	return cond()
+	epoch := clock.Now()
+
+	// A cleanup runs before the one registered ahead of it, so the traps close
+	// FIRST and the wait for the exit comes after. A test that leaves the loop
+	// parked inside a trapped clock call would otherwise never let it see the
+	// cancel, and the wait would hold until stopWindow.
+	t.Cleanup(func() {
+		cancel()
+		l.awaitStopped()
+	})
+	l.tickerArm = clock.Trap().NewTicker(tagTicker)
+	l.jitterArm = clock.Trap().NewTimer(tagJitter)
+	t.Cleanup(func() {
+		l.tickerArm.Close()
+		l.jitterArm.Close()
+	})
+
+	l.stopped = start(loopCtx, clock, schedule, func(context.Context) {
+		l.calls <- clock.Since(epoch)
+		if body != nil {
+			body()
+		}
+	})
+	return l
+}
+
+// awaitCall returns the mock-clock time elapsed at the next invocation of the
+// task.
+func (l *loop) awaitCall() time.Duration {
+	l.t.Helper()
+	select {
+	case at := <-l.calls:
+		return at
+	case <-l.ctx.Done():
+		l.t.Fatal("the task did not run")
+		return 0
+	}
+}
+
+// awaitTickerArmed blocks until the loop arms its interval ticker and returns
+// the interval it asked for. It is also an ordering point: every step the loop
+// takes before it arms the ticker is complete when this returns.
+func (l *loop) awaitTickerArmed() time.Duration {
+	l.t.Helper()
+	return testutil.WaitForTimer(l.t, l.ctx, l.tickerArm)
+}
+
+// awaitJitterArmed blocks until the loop arms the jitter timer of the next run
+// and returns the delay it drew.
+func (l *loop) awaitJitterArmed() time.Duration {
+	l.t.Helper()
+	return testutil.WaitForTimer(l.t, l.ctx, l.jitterArm)
+}
+
+// advance moves the mock clock by d and waits until every timer that d fires
+// delivered its tick.
+func (l *loop) advance(d time.Duration) {
+	l.t.Helper()
+	l.clock.Advance(d).MustWait(l.ctx)
+}
+
+// awaitStopped waits for the goroutine of the loop to return.
+//
+// It takes its own deadline instead of l.ctx because the cleanup calls it too,
+// and t.Context() -- the parent of l.ctx -- is already canceled by the time a
+// cleanup runs. See stopWindow for what the limit means.
+func (l *loop) awaitStopped() {
+	l.t.Helper()
+	timer := time.NewTimer(stopWindow)
+	defer timer.Stop()
+	select {
+	case <-l.stopped:
+	case <-timer.C:
+		l.t.Error("the loop did not stop after its context was canceled")
+	}
+}
+
+// requireNoCalls states that the task did not run. It is valid only at an
+// ordering point -- a trap the test just released, the exit of the loop --
+// where the loop sits at a known step and no invocation can still be in
+// flight.
+func (l *loop) requireNoCalls(msg string) {
+	l.t.Helper()
+	require.Zero(l.t, len(l.calls), msg)
 }
 
 func TestStart_FirstRunFiresThenTickerFires(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	const interval = 20 * time.Millisecond
 
-	var calls atomic.Int64
-	Start(ctx, Schedule{Interval: 20 * time.Millisecond}, func(context.Context) {
-		calls.Add(1)
-	})
+	l := startLoop(t, Schedule{Interval: interval}, nil)
 
-	require.True(t, waitFor(t, 500*time.Millisecond, func() bool { return calls.Load() >= 3 }),
-		"expected at least 3 invocations; got %d", calls.Load())
+	assert.Equal(t, time.Duration(0), l.awaitCall(), "the first run must fire at once")
+	assert.Equal(t, interval, l.awaitTickerArmed(), "the ticker must carry Interval")
+
+	l.advance(interval)
+	assert.Equal(t, interval, l.awaitCall(), "the second run must land on the first tick")
+
+	l.advance(interval)
+	assert.Equal(t, 2*interval, l.awaitCall(), "the third run must land on the second tick")
 }
 
 func TestStart_CancellationDuringJitterStopsLoop(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	l := startLoop(t, Schedule{Interval: time.Hour, Jitter: time.Hour}, nil)
 
-	var calls atomic.Int64
-	// Long jitter so the first run is still waiting when we cancel.
-	Start(ctx, Schedule{Interval: time.Hour, Jitter: time.Hour}, func(context.Context) {
-		calls.Add(1)
-	})
+	// The loop waits out its jitter. The clock never advances, so only the
+	// cancel can release it.
+	l.awaitJitterArmed()
+	l.cancel()
 
-	cancel()
-	time.Sleep(20 * time.Millisecond)
-	assert.Equal(t, int64(0), calls.Load(), "task must not run after pre-tick cancel")
+	l.awaitTickerArmed()
+	l.awaitStopped()
+	l.requireNoCalls("the task must not run after a cancel that lands during the jitter")
 }
 
 func TestStart_CancellationBetweenTicksStopsLoop(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	l := startLoop(t, Schedule{Interval: 10 * time.Millisecond}, nil)
 
-	var calls atomic.Int64
-	Start(ctx, Schedule{Interval: 10 * time.Millisecond}, func(context.Context) {
-		calls.Add(1)
-	})
+	require.Equal(t, time.Duration(0), l.awaitCall(), "the first run must fire at once")
+	l.awaitTickerArmed()
 
-	require.True(t, waitFor(t, 500*time.Millisecond, func() bool { return calls.Load() >= 1 }),
-		"expected first run to complete")
-
-	cancel()
-	snapshot := calls.Load()
-	time.Sleep(50 * time.Millisecond)
-	// At most one more invocation can race the cancel signal in the select
-	// (Go's select is non-deterministic between ready channels).
-	assert.LessOrEqual(t, calls.Load()-snapshot, int64(1), "loop must stop firing after cancel")
+	l.cancel()
+	l.awaitStopped()
+	l.requireNoCalls("the loop must not run the task again after the cancel")
 }
 
 func TestStart_TaskPanicIsRecoveredAndLoopContinues(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	const interval = 10 * time.Millisecond
 
-	var calls atomic.Int64
-	Start(ctx, Schedule{Interval: 10 * time.Millisecond}, func(context.Context) {
-		calls.Add(1)
-		panic("boom")
-	})
+	l := startLoop(t, Schedule{Interval: interval}, func() { panic("boom") })
 
-	require.True(t, waitFor(t, 500*time.Millisecond, func() bool { return calls.Load() >= 3 }),
-		"loop must survive panicking task; got %d invocations", calls.Load())
+	assert.Equal(t, time.Duration(0), l.awaitCall(), "the first run must fire at once")
+	l.awaitTickerArmed()
+
+	l.advance(interval)
+	assert.Equal(t, interval, l.awaitCall(), "the loop must survive the panic of the first run")
+
+	l.advance(interval)
+	assert.Equal(t, 2*interval, l.awaitCall(), "the loop must keep its cadence after a panic")
 }
 
 func TestStart_ZeroIntervalPanics(t *testing.T) {
@@ -102,93 +212,94 @@ func TestStart_NegativeIntervalPanics(t *testing.T) {
 }
 
 func TestStart_SkipFirstRunWaitsForFirstTick(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	const interval = 50 * time.Millisecond
 
-	var calls atomic.Int64
-	// Nanos from `start` to the FIRST invocation, stamped by the task itself.
-	var firstAtNanos atomic.Int64
-	start := time.Now()
-	Start(ctx, Schedule{Interval: interval, SkipFirstRun: true}, func(context.Context) {
-		calls.Add(1)
-		firstAtNanos.CompareAndSwap(0, int64(time.Since(start)))
-	})
+	l := startLoop(t, Schedule{Interval: interval, SkipFirstRun: true}, nil)
 
-	// At ~half an interval (well before the first tick), the task must not have
-	// run yet — proving the eager invocation was skipped.
-	time.Sleep(interval / 2)
-	assert.Equal(t, int64(0), calls.Load(), "task must not run before the first tick when SkipFirstRun is true")
+	// Arming the ticker is the first clock call of the loop when SkipFirstRun
+	// is true. An eager run would already have invoked the task here, because
+	// it comes before this call.
+	assert.Equal(t, interval, l.awaitTickerArmed(), "the ticker must carry Interval")
+	l.requireNoCalls("the task must not run before the first tick when SkipFirstRun is true")
 
-	// After the first tick, it should fire normally.
-	require.True(t, waitFor(t, 500*time.Millisecond, func() bool { return calls.Load() >= 1 }),
-		"task must fire on the first tick")
-
-	// Timed at the INVOCATION, not at the observation of it. `time.Since(start)`
-	// after waitFor returns includes that helper's poll latency, so it measured
-	// "when the test noticed" rather than "when the task ran" -- a number that
-	// only ever overstates, and therefore a bound that could pass while the task
-	// fired early. Stamping inside the task removes the poll from the
-	// measurement entirely.
-	//
-	// A LOWER bound, which machine load cannot break: load only delays the tick,
-	// and the failure being guarded against is firing EARLY.
-	assert.GreaterOrEqual(t, time.Duration(firstAtNanos.Load()), interval,
-		"first invocation must wait for at least one Interval")
+	l.advance(interval)
+	assert.Equal(t, interval, l.awaitCall(), "the first run must land on the first tick")
 }
 
 func TestStart_SkipFirstRunHonorsJitterBeforeFirstTick(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	const interval = 50 * time.Millisecond
 	const jitter = 50 * time.Millisecond
 
-	var firstSeen atomic.Int64
-	start := time.Now()
-	Start(ctx, Schedule{Interval: interval, Jitter: jitter, SkipFirstRun: true}, func(context.Context) {
-		firstSeen.CompareAndSwap(0, time.Since(start).Nanoseconds())
-	})
+	l := startLoop(t, Schedule{Interval: interval, Jitter: jitter, SkipFirstRun: true}, nil)
 
-	require.True(t, waitFor(t, time.Second, func() bool { return firstSeen.Load() > 0 }),
-		"first invocation must occur")
+	l.awaitTickerArmed()
+	l.advance(interval)
 
-	got := time.Duration(firstSeen.Load())
-	// First tick lands at Interval; jitter then adds [0, jitter) before the
-	// task body runs — so the lower bound is Interval (no jitter), and the
-	// upper bound is Interval + jitter (plus scheduler slack).
-	assert.GreaterOrEqual(t, got, interval, "first invocation must wait at least Interval")
-	assert.Less(t, got, interval+jitter+200*time.Millisecond, "first invocation should fire within Interval+Jitter+slack")
+	// The first tick starts the run; the jitter is the delay the run then adds
+	// on top of it.
+	drawn := l.awaitJitterArmed()
+	assert.GreaterOrEqual(t, drawn, time.Duration(0), "the jitter must not be negative")
+	assert.Less(t, drawn, jitter, "the jitter must stay below Schedule.Jitter")
+	l.requireNoCalls("the task must not run before its jitter elapses")
+
+	l.advance(drawn)
+	assert.Equal(t, interval+drawn, l.awaitCall(), "the first run must land at Interval plus the jitter")
+}
+
+func TestStart_JitterDelaysEagerFirstRun(t *testing.T) {
+	const interval = 50 * time.Millisecond
+	const jitter = 20 * time.Millisecond
+
+	l := startLoop(t, Schedule{Interval: interval, Jitter: jitter}, nil)
+
+	drawn := l.awaitJitterArmed()
+	assert.GreaterOrEqual(t, drawn, time.Duration(0), "the jitter must not be negative")
+	assert.Less(t, drawn, jitter, "the jitter must stay below Schedule.Jitter")
+	l.requireNoCalls("the eager first run must wait out its jitter")
+
+	l.advance(drawn)
+	assert.Equal(t, drawn, l.awaitCall(), "the eager first run must land at the drawn jitter")
+}
+
+func TestStart_JitterAppliesToEveryRun(t *testing.T) {
+	const interval = 50 * time.Millisecond
+	const jitter = 20 * time.Millisecond
+
+	l := startLoop(t, Schedule{Interval: interval, Jitter: jitter}, nil)
+
+	first := l.awaitJitterArmed()
+	l.advance(first)
+	require.Equal(t, first, l.awaitCall(), "the eager first run must land at the drawn jitter")
+
+	// The ticker starts at the end of the first run, so its first tick lands
+	// one whole Interval later.
+	require.Equal(t, interval, l.awaitTickerArmed(), "the ticker must carry Interval")
+	l.advance(interval)
+
+	second := l.awaitJitterArmed()
+	assert.Less(t, second, jitter, "each run must draw its own jitter")
+	l.requireNoCalls("the tick-driven run must wait out its jitter too")
+
+	l.advance(second)
+	assert.Equal(t, first+interval+second, l.awaitCall(),
+		"the tick-driven run must land at its tick plus its own jitter")
 }
 
 func TestStart_SkipFirstRunStillStopsOnCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	l := startLoop(t, Schedule{Interval: 10 * time.Millisecond, SkipFirstRun: true}, nil)
 
-	var calls atomic.Int64
-	Start(ctx, Schedule{Interval: 10 * time.Millisecond, SkipFirstRun: true}, func(context.Context) {
-		calls.Add(1)
-	})
+	l.awaitTickerArmed()
+	l.cancel()
 
-	cancel()
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, int64(0), calls.Load(), "cancellation before any tick must short-circuit the loop")
+	l.awaitStopped()
+	l.requireNoCalls("a cancel before any tick must short-circuit the loop")
 }
 
 func TestStart_ZeroJitterDoesNotPanic(t *testing.T) {
-	// rand.Int64N(0) panics; the helper must guard against jitter == 0.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// rand.Int64N(0) panics, and it panics OUTSIDE the recover of the loop,
+	// which covers the task alone. The guard for jitter == 0 in waitJitter is
+	// what keeps the run below from taking down the process.
+	l := startLoop(t, Schedule{Interval: time.Hour}, nil)
 
-	done := make(chan struct{})
-	var once sync.Once
-	Start(ctx, Schedule{Interval: time.Hour}, func(context.Context) {
-		once.Do(func() { close(done) })
-	})
-
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("zero-jitter run did not fire")
-	}
+	assert.Equal(t, time.Duration(0), l.awaitCall(), "a zero-jitter run must fire with no wait")
 }
