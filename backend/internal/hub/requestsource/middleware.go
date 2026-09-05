@@ -29,8 +29,17 @@ func Middleware(manager *settings.Manager, next http.Handler) http.Handler {
 		}
 		clientIP, scheme := resolve(r, trusted)
 		ctx := peer.WithClientIP(r.Context(), clientIP)
-		request := r.Clone(ctx)
-		request.URL.Scheme = scheme
+
+		// A SHALLOW copy plus a copy of the URL, not r.Clone. This runs on
+		// every request the hub serves, and Clone deep-copies the header map,
+		// the trailer, the transfer encoding and the parsed forms -- a slice
+		// allocation per header to change one string. The only field this
+		// middleware writes is URL.Scheme, so the URL is the one value that
+		// must not stay shared with the caller's request.
+		request := r.WithContext(ctx)
+		url := *r.URL
+		url.Scheme = scheme
+		request.URL = &url
 		next.ServeHTTP(w, request)
 	})
 }

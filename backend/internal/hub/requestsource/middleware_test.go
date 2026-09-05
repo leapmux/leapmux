@@ -242,6 +242,32 @@ func TestMiddleware_XForwardedProtocolAlignment(t *testing.T) {
 	}
 }
 
+// The middleware hands the next handler its own Request and its own URL. It
+// must not write the effective scheme back onto the caller's request: net/http
+// owns that value, and the URL is the one field this middleware changes, so a
+// shared URL would leak the rewrite out of the handler chain.
+func TestMiddleware_LeavesTheCallersRequestAlone(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "http://hub.example.test/path?q=1", nil)
+	request.RemoteAddr = "203.0.113.9:4327"
+	request.TLS = &tls.ConnectionState{}
+	originalURL := request.URL
+	originalScheme := request.URL.Scheme
+
+	var seen *http.Request
+	requestsource.Middleware(nil, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = r
+	})).ServeHTTP(httptest.NewRecorder(), request)
+
+	require.NotNil(t, seen)
+	assert.Equal(t, "https", seen.URL.Scheme, "the handler reads the effective scheme")
+	assert.Equal(t, "/path", seen.URL.Path, "the copied URL keeps every other field")
+	assert.Equal(t, "q=1", seen.URL.RawQuery)
+	assert.NotSame(t, originalURL, seen.URL, "the handler must not share the caller's URL")
+	assert.Equal(t, originalScheme, request.URL.Scheme, "the caller's scheme is untouched")
+	assert.Equal(t, "203.0.113.9:4327", seen.RemoteAddr, "RemoteAddr stays the physical peer")
+}
+
 func TestMiddleware_PreservesActualTLS(t *testing.T) {
 	t.Parallel()
 	observed := observeRequest(t, requestsource.TrustedRanges{}, func(r *http.Request) {

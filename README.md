@@ -179,7 +179,7 @@ Each `dev` target generates code and builds prerequisites, then launches `mprocs
 | Command | Processes | Description |
 |---------|-----------|-------------|
 | `task dev` | Go backend (`leapmux dev`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
-| `task dev-solo` | Go backend (`leapmux solo`) + Bun frontend dev server | Localhost-only, no login, single-user |
+| `task dev-solo` | Go backend (`leapmux solo`) + Bun frontend dev server | Localhost-only, single-user; the browser sets the first `solo` password |
 | `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
 ## Development

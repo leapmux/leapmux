@@ -19,7 +19,7 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/admin/running-leapmux
 | **Dev** (`leapmux dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
 | **Hub** (`leapmux hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
 
-In **solo mode** there is nothing to sign up for. Local IPC opens the app without a credential. A passwordless TCP connection shows only the first-password setup screen. It cannot call another protected RPC. After setup, TCP shows the normal sign-in page.
+In **solo mode** there is nothing to sign up for. Local IPC opens the app without a credential. A passwordless TCP connection shows only the first-password setup screen. It cannot call another protected RPC. After setup, TCP shows the normal sign-in page. Solo mode also disables most account actions in every state: it refuses a change to your profile or your email, and it refuses to detach an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
 **Password is the exception.** **Preferences → Account → Password** is the one account row solo mode keeps, and it both sets the account's first password and changes it afterwards. Setting one is also what lets the Hub answer on a network address, so **Preferences → Administration → Network access** asks for that first password as well, beside the addresses it guards. See [Network access](/docs/admin/configuration/#network-access).
 

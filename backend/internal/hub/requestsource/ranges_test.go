@@ -70,6 +70,38 @@ func TestTrustedRanges_RejectsInvalidSelectors(t *testing.T) {
 	}
 }
 
+// Overlap is checked against EVERY earlier selector, not the previous one.
+//
+// The set accumulates across the loop, and a two-selector test cannot tell
+// that apart from a set rebuilt on each step: with two, "all the earlier ones"
+// and "the previous one" are the same selector. The third below overlaps the
+// FIRST and is disjoint from the second, so it is caught only by the
+// accumulated set.
+func TestTrustedRanges_DetectsAnOverlapWithAnySelectorNotOnlyTheLast(t *testing.T) {
+	t.Parallel()
+	_, err := requestsource.NewTrustedRanges([]string{
+		"192.0.2.0/24",
+		"198.51.100.0/24",
+		"192.0.2.7",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlaps")
+	assert.Contains(t, err.Error(), "selector 3", "the report must name the selector that collided")
+
+	// The same three, with the collision removed, are accepted together -- so
+	// the refusal above is the overlap and not the count.
+	ranges, err := requestsource.NewTrustedRanges([]string{
+		"192.0.2.0/24",
+		"198.51.100.0/24",
+		"203.0.113.7",
+	})
+	require.NoError(t, err)
+	assert.True(t, ranges.Contains(netip.MustParseAddr("192.0.2.7")))
+	assert.True(t, ranges.Contains(netip.MustParseAddr("198.51.100.9")))
+	assert.True(t, ranges.Contains(netip.MustParseAddr("203.0.113.7")))
+	assert.False(t, ranges.Contains(netip.MustParseAddr("203.0.113.8")))
+}
+
 func TestTrustedRanges_EnforcesConfiguredSelectorCap(t *testing.T) {
 	t.Parallel()
 	selectors := make([]string, contracts.MaxTrustedProxySelectors+1)

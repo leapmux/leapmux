@@ -236,17 +236,19 @@ Point solo mode at a non-loopback address with `-listen` and LeapMux warns you a
 The app shows only the password-setup screen on every passwordless TCP connection, including loopback. Set the password from a trusted connection. Firewall or tunnel a non-loopback address.
 {{< /callout >}}
 
-### Trusted reverse proxies
+The bundled Worker that solo and dev modes auto-register is created in-process and flagged as auto-registered; it deliberately bypasses the registration-key flow, since presenting a bearer token to a local in-process RPC would give no real security.
+
+The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and `leapmux solo` on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
+
+## Trusted reverse proxies
+
+Every Hub mode reads this setting, so it is not part of the solo section above.
 
 LeapMux trusts no forwarding header by default. The `trusted_proxy_ranges` setting identifies the transport peers that may supply one. The Hub first verifies the unchanged physical peer. It then walks `Forwarded`, or X-Forwarded headers when `Forwarded` is absent, from the trusted side. A malformed preferred header produces an unknown client and no fallback.
 
 Provider presets such as `cloudflare` and `cloudfront` are broad trust decisions. They identify shared provider infrastructure, not your account. Another customer can target your origin unless you restrict it to your distribution or require authenticated origin requests. Each proxy must remove client-supplied forwarding headers or append only verified values. LeapMux bundles provider snapshots and does not refresh them automatically.
 
 The verified client IP controls address-keyed rate limits and new session records. Forwarded protocol data changes request URL metadata, but it never changes `secure_cookies`. Configure that setting explicitly. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
-
-The bundled Worker that solo and dev modes auto-register is created in-process and flagged as auto-registered; it deliberately bypasses the registration-key flow, since presenting a bearer token to a local in-process RPC would give no real security.
-
-The **desktop app** avoids the exposure differently: it always starts its in-process Hub with the TCP listener disabled, reaching it over a local Unix socket (named pipe on Windows) instead. There is no `--no-tcp` flag or setting — it is how the desktop app is built, and `leapmux solo` on the command line does not do it. So the desktop app opens no loopback port for its Hub, and the non-loopback warning above cannot apply to it. Tunnels you create yourself still bind a loopback TCP port, by design.
 
 ## Session elevation
 
