@@ -4,7 +4,7 @@ import { connect } from 'node:net'
 import { expect, test } from './fixtures'
 import { startSoloServer, stopSoloServer } from './helpers/devServer'
 import { findFreePort } from './helpers/server'
-import { logoutViaUI, openSettingsAt } from './helpers/ui'
+import { loginViaToken, logoutViaUI, openSettingsAt } from './helpers/ui'
 
 /** A password the hub's own validator accepts. */
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
@@ -187,5 +187,36 @@ test.describe('Network access', () => {
     const reopened = await openSettingsAt(page, 'admin-network')
     await expect(reopened.locator('[data-setting-id="trusted_proxy_ranges"]')
       .getByLabel('Trusted proxy selector')).toHaveValue('cloudfront')
+  })
+})
+
+/**
+ * The same section on a hub that is NOT solo, which is the half the solo
+ * instance above cannot show.
+ *
+ * The listen-address row is solo-only, so here the category holds the
+ * trusted-proxy row alone — and the navigation section has to survive on that
+ * one row. `occupiedNavGroups` decides it, and a unit test states the rule
+ * against rows a test wrote; this states it against the rows the hub sends.
+ */
+test.describe('Network access outside solo mode', () => {
+  test('keeps the section for the trusted-proxy row when the listen row is hidden', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+
+    const dialog = await openSettingsAt(page, 'admin-network')
+    await expect(dialog.getByTestId('preferences-nav-admin-network')).toBeVisible()
+
+    const proxies = dialog.locator('[data-setting-id="trusted_proxy_ranges"]')
+    await expect(proxies).toBeVisible()
+    await expect(dialog.locator('[data-setting-id="extra_listen_addresses"]')).toHaveCount(0)
+
+    // The row works here, not merely renders: dev mode reaches the same
+    // setting through the same binding.
+    await proxies.getByRole('button', { name: /^Add/ }).click()
+    await page.getByRole('menuitemcheckbox', { name: /Cloudflare/ }).click()
+    await proxies.getByRole('button', { name: 'Apply' }).click()
+    await expect(proxies.getByText('Trusted reverse proxies updated.')).toBeVisible()
+    await expect(proxies.getByLabel('Trusted proxy selector')).toHaveValue('cloudflare')
   })
 })

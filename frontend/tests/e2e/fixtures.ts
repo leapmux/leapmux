@@ -25,7 +25,7 @@ import {
 } from './helpers/api'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
 import { stopProcess } from './helpers/process'
-import { findFreePort, getGlobalState, hubDataDir, waitForServer } from './helpers/server'
+import { findFreePort, getGlobalState, hubDataDir, hubSpawnEnv, waitForServer } from './helpers/server'
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -114,7 +114,7 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_CODEX_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_COPILOT_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_WORKER_NAME: 'Local' },
+      env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_CODEX_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_COPILOT_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_WORKER_NAME: 'Local' }),
     })
 
     // Consume server output (also prevents backpressure), keeping a tail for

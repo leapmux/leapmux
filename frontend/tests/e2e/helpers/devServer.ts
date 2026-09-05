@@ -10,7 +10,6 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import process from 'node:process'
 import {
   getUserId,
   getWorkerId,
@@ -20,7 +19,7 @@ import {
   TEST_ADMIN_USERNAME,
 } from './api'
 import { stopProcess } from './process'
-import { findFreePort, getGlobalState, waitForServer } from './server'
+import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './server'
 
 export interface DevServerHandle {
   hubUrl: string
@@ -71,7 +70,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 
   const proc = spawn(binaryPath, ['dev', '-listen', `:${port}`, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...opts.env },
+    env: hubSpawnEnv(opts.env),
   })
 
   if (opts.onStdio) {
@@ -136,13 +135,7 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 
   const proc = spawn(binaryPath, ['solo', '-listen', listen, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    // LEAPMUX_HUB_DEV_FRONTEND is CLEARED, and a caller may set it again
-    // through `opts.env`. The variable points the hub at a Vite dev server
-    // instead of the frontend built into `binaryPath`, and a developer who
-    // exports it for their own `leapmux solo` exports it into this suite too:
-    // the spec then drives a hub that proxies to a server nobody started, and
-    // every page it opens fails for a reason that is not in the spec.
-    env: { ...process.env, LEAPMUX_HUB_DEV_FRONTEND: undefined, ...opts.env },
+    env: hubSpawnEnv(opts.env),
   })
 
   if (opts.onStdio) {
