@@ -34,7 +34,6 @@ export interface SessionGoal {
    */
   statusDetail?: string
   createdAt?: string
-  updatedAt?: string
 }
 
 /**
@@ -61,7 +60,6 @@ export function protoGoalToStore(g: ProtoAgentGoal): SessionGoal {
     status: goalStatusFromProto(g.status),
     statusDetail: g.statusDetail || undefined,
     createdAt: g.createdAt || undefined,
-    updatedAt: g.updatedAt || undefined,
   }
 }
 

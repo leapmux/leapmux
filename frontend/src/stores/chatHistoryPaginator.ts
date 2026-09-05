@@ -119,7 +119,7 @@ export interface HistoryPaginatorDeps {
   trimNewestEnd: (agentId: string, maxCount: number) => void
   replaceTodos: (agentId: string, protoTodos: ProtoTodoItem[]) => void
   replaceBackgroundTasks: (agentId: string, protoTasks: ProtoBackgroundTaskItem[]) => void
-  replaceGoal: (agentId: string, goal: ProtoAgentGoal | undefined, supportedActions: ProtoAgentGoalAction[]) => void
+  replaceGoal: (agentId: string, goal: ProtoAgentGoal | undefined, supportedActions: ProtoAgentGoalAction[], updatedAt: string) => void
   markBackgroundTasksLoadFailed: (agentId: string) => void
 }
 
@@ -168,6 +168,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       goalLoaded: boolean
       goal?: ProtoAgentGoal
       goalSupportedActions: ProtoAgentGoalAction[]
+      goalUpdatedAt: string
     },
   ): void {
     deps.applyMessages(agentId, resp.messages, resp.hasMore)
@@ -182,7 +183,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     // goal a tab inherited from a previous root, and skipping it on a DB error
     // is what stops a transient failure from blanking a live card.
     if (resp.goalLoaded)
-      deps.replaceGoal(agentId, resp.goal, resp.goalSupportedActions)
+      deps.replaceGoal(agentId, resp.goal, resp.goalSupportedActions, resp.goalUpdatedAt)
   }
 
   /** Fetch the latest messages for an agent (initial page load). */
