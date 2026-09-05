@@ -424,7 +424,7 @@ interface RowSelectionContextValue {
   activeTabKey: Accessor<string | null>
   tabItemOps: Accessor<TabItemOps | undefined>
   onTabClick: (type: TabType, id: string) => void
-  canClose: (tab: Tab) => boolean
+  canClose: () => boolean
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
   /**
@@ -507,7 +507,7 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
       onRename={edit.canRename(props.tab) ? () => edit.startEditing(props.tab) : undefined}
       onClose={() => sel.tabItemOps()?.onClose?.(props.tab)}
       isClosing={sel.tabItemOps()?.closingKeys?.has(tabKey(props.tab))}
-      canClose={sel.canClose(props.tab)}
+      canClose={sel.canClose()}
       onEditInput={v => edit.setEditingValue(v)}
       onEditCommit={() => edit.commitEdit(props.tab)}
       onEditCancel={edit.cancelEdit}
@@ -944,7 +944,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
   let editCancelled = false
-  const canClose = (tab: Tab) => canCloseTab(props.archived, tab)
+  const canClose = () => canCloseTab(props.archived)
 
   // `canRenameTab` states the rule; this surface adds only whether it HAS a
   // rename handler. Shared with the tab strip, which renders the same tabs.

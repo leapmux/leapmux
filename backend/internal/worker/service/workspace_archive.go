@@ -148,8 +148,11 @@ func (svc *Service) stopArchivedTabs(agentIDs, terminalIDs []string) {
 		svc.Terminals.StopTerminal(terminalID)
 	}
 
-	for agentID, startup := range agentStarts {
-		svc.AgentStartup.waitForFinished(startup)
+	// Iterate the SLICE, not the map: the broadcasts below reach every watcher
+	// in the order the caller listed the tabs, rather than in Go's randomized
+	// map order.
+	for _, agentID := range agentIDs {
+		svc.AgentStartup.waitForFinished(agentStarts[agentID])
 		unlock := svc.Agents.LockAgent(agentID)
 		svc.Agents.StopAndWaitAgent(agentID)
 		unlock()
@@ -163,8 +166,8 @@ func (svc *Service) stopArchivedTabs(agentIDs, terminalIDs []string) {
 		}
 	}
 
-	for _, startup := range terminalStarts {
-		svc.TerminalStartup.waitForFinished(startup)
+	for _, terminalID := range terminalIDs {
+		svc.TerminalStartup.waitForFinished(terminalStarts[terminalID])
 	}
 	for _, terminalID := range terminalIDs {
 		svc.Terminals.WaitForExit(terminalID)
@@ -177,6 +180,13 @@ func (svc *Service) stopArchivedTabs(agentIDs, terminalIDs []string) {
 			}
 			continue
 		}
+		// Broadcast even though a PTY that was RUNNING already broadcast the
+		// same event from makeTerminalExitFn: a terminal that never spawned, or
+		// that exited before the archive, fires no exit handler, and the client
+		// has to learn that its shell is gone from something. WaitForExit above
+		// returns only after that handler persisted the row, so the exit code
+		// read here is the final one rather than a stale zero, and the repeat is
+		// a repeat rather than a contradiction.
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{

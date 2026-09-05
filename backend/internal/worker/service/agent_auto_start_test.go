@@ -385,7 +385,8 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	}))
 
 	// Stand in for the open path's in-flight startup.
-	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
+	openHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, openHandle)
 
 	sent := make(chan struct{})
 	go func() {
@@ -405,7 +406,7 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 
 	// The open path finishes and hands over its process.
 	svc.AgentStartup.succeed("agent-1")
-	svc.AgentStartup.finish()
+	svc.AgentStartup.finishEntry(openHandle)
 
 	select {
 	case <-sent:

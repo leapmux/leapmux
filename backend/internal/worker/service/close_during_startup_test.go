@@ -478,7 +478,7 @@ func TestFailStartup_KeepCloseLeavesWorktreeAlone(t *testing.T) {
 				_, wtErr := svc.Queries.GetWorktreeByPath(ctx, gm.Rollback.CreatedWorktree.WorktreePath)
 				assert.NoError(t, wtErr, "the tracked worktree row must survive")
 			}
-			svc.AgentStartup.finish()
+			svc.AgentStartup.finishEntry(h)
 		})
 	}
 }

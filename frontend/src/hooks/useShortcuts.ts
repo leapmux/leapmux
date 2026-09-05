@@ -158,10 +158,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.closeActiveTab', 'Close Active Tab', () => {
     const tab = resolveFocusedTab()
     // The SAME predicate the tab strip and the sidebar tree draw their close
-    // controls from. An archived workspace keeps its agent and terminal tabs, so
-    // a shortcut that closed one would be the only surface that disagrees --
-    // and the user would have no visible control to undo it with.
-    if (tab && canCloseTab(props.isActiveWorkspaceArchived(), tab))
+    // controls from. An archived workspace keeps EVERY tab it held, so a
+    // shortcut that closed one would be the only surface that disagrees -- and
+    // the user would have no visible control to undo it with.
+    if (tab && canCloseTab(props.isActiveWorkspaceArchived()))
       tabOps.handleTabClose(tab)
   }, 'Tab')
   cmd('app.toggleLeftSidebar', 'Toggle Left Sidebar', toggleLeftSidebar, 'Layout')

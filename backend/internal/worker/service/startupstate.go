@@ -254,19 +254,23 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 	}
 }
 
-// finish marks one startup goroutine as returned. Always called via `defer` at
-// the top of runAgentStartup / runTerminalStartup so it fires regardless of
-// which branch the goroutine exits through (succeed, fail, close-detected,
-// panic recovery elsewhere, …).
+// finishEntry marks one startup goroutine as returned. Always called via
+// `defer` at the top of runAgentStartup / runTerminalStartup so it fires
+// regardless of which branch the goroutine exits through (succeed, fail,
+// close-detected, archive-stopped, panic recovery elsewhere, …).
 //
-// It has no cleanup to do beyond the counter: the close disposition lives on
-// the handle the goroutine is about to drop, so it is collected with it.
-func (r *startupCore) finish() {
-	r.wg.Done()
-}
-
+// It does two things, and the pairing is why there is no counter-only variant.
+// The WaitGroup counter is what WaitForInFlight joins. `finished` is what
+// cancelForArchive's caller waits on before it clears the tab's runtime state,
+// and `inflight` is what makes the handle reachable from a tab id at all. A
+// caller that dropped the counter alone would leave a live-looking inflight
+// entry whose `finished` nobody ever closes, and the next archive of that tab
+// would block for ever waiting on it.
+//
+// The entry carries no other cleanup: its close disposition lives on the handle
+// the goroutine is about to drop, so it is collected with it.
 func (r *startupCore) finishEntry(entry *startupEntry) {
-	if entry != nil && entry.finished != nil {
+	if entry != nil {
 		r.mu.Lock()
 		if r.inflight[entry.id] == entry {
 			delete(r.inflight, entry.id)
@@ -274,7 +278,7 @@ func (r *startupCore) finishEntry(entry *startupEntry) {
 		r.mu.Unlock()
 		close(entry.finished)
 	}
-	r.finish()
+	r.wg.Done()
 }
 
 // WaitForInFlight blocks until every startup goroutine counted by begin

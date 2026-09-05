@@ -335,13 +335,14 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 		ID: id, Cols: 80, Rows: 25, Shell: testutil.TestShell(), Screen: []byte{},
 	}))
 
-	svc.TerminalStartup.begin(id, func() {})
+	entry := svc.TerminalStartup.begin(id, func() {})
+	require.NotNil(t, entry)
 	// begin() bumps the in-flight WaitGroup. cancelAndClear only deletes
-	// the entry and runs the cancel — finish() is the matching Done()
+	// the entry and runs the cancel — finishEntry() is the matching Done()
 	// call. Without this, drainAllInFlight would block forever.
 	defer func() {
 		svc.TerminalStartup.cancelAndClear(id, keepWorktreeOnClose)
-		svc.TerminalStartup.finish()
+		svc.TerminalStartup.finishEntry(entry)
 	}()
 
 	dispatchRestart(d, id, w)

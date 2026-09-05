@@ -243,22 +243,6 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     cancelRename()
   }
 
-  const moveWorkspace = async (workspaceId: string, sectionId: string) => {
-    const sectionItems = store.getItemsForSection(sectionId)
-    const position = appendPosition(sectionItems)
-    const done = startWorkspaceLoading(workspaceId)
-    try {
-      await sectionClient.moveWorkspace({ workspaceId, sectionId, position })
-      store.moveWorkspace(workspaceId, sectionId, position)
-    }
-    catch (err) {
-      showWarnToast('Failed to move workspace', err)
-    }
-    finally {
-      done()
-    }
-  }
-
   const archiveWorkspace = async (workspaceId: string) => {
     const archivedSection = store.getArchivedSection()
     if (!archivedSection)
@@ -323,6 +307,55 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
     catch (err) {
       showWarnToast('Failed to unarchive workspace', err)
+    }
+    finally {
+      done()
+    }
+  }
+
+  /**
+   * Move one workspace into `sectionId`, resolving the archive boundary first.
+   *
+   * Crossing that boundary is a LIFECYCLE change, not a sidebar move, and the
+   * hub enforces it: `SectionService.MoveWorkspace` answers FailedPrecondition
+   * for a destination on the other side, because stopping or restarting a
+   * workspace's processes must not ride on a generic reorder. So a crossing is
+   * routed through archive/unarchive here, and the plain move below runs only
+   * when both sides agree.
+   *
+   * Unarchiving lands the workspace in In progress, so a destination that is
+   * neither Archived nor In progress takes the second, now same-side, move.
+   * That two-step is what keeps "Move to" working on an archived workspace,
+   * which is the only way to unarchive into a specific CUSTOM section.
+   */
+  const moveWorkspace = async (workspaceId: string, sectionId: string) => {
+    const destination = store.state.sections.find(section => section.id === sectionId)
+    const destinationArchived = destination?.sectionType === SectionType.WORKSPACES_ARCHIVED
+    // The two sides COMPARED, not the destination alone: a reorder inside the
+    // archive is a move within one side, and treating it as a crossing would
+    // ask the user to confirm archiving a workspace that is already archived.
+    if (destinationArchived !== isWorkspaceArchived(workspaceId)) {
+      if (destinationArchived) {
+        await archiveWorkspace(workspaceId)
+        return
+      }
+      await unarchiveWorkspace(workspaceId)
+      // Still archived means the unarchive failed and already raised its own
+      // toast. A plain move now would fail again for the same reason and report
+      // it a second time, so stop here.
+      if (isWorkspaceArchived(workspaceId) || sectionId === store.getInProgressSection()?.id)
+        return
+    }
+    // Read the destination AFTER any unarchive above, which appends a row to
+    // In progress and can therefore move what "the last position" is.
+    const position = appendPosition(store.getItemsForSection(sectionId))
+    const done = startWorkspaceLoading(workspaceId)
+    try {
+      await sectionClient.moveWorkspace({ workspaceId, sectionId, position })
+      store.moveWorkspace(workspaceId, sectionId, position)
+    }
+    catch (err) {
+      showWarnToast('Failed to move workspace', err)
     }
     finally {
       done()
@@ -556,10 +589,16 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       return
     }
 
-    // If dragging to the archived section, use the archive flow with confirmation
+    // A drop that CROSSES the archive boundary -- in either direction -- is a
+    // lifecycle change, and `moveWorkspace` owns what that means: the archive
+    // confirmation on the way in, the unarchive on the way out, and the hub
+    // call that a plain `MoveWorkspace` would have been refused for. The drop
+    // POSITION is dropped with it, because both lifecycle calls append at the
+    // destination's end; a same-side drop keeps the optimistic path below.
     const resolvedTargetSection = store.state.sections.find(s => s.id === targetSectionId)
-    if (resolvedTargetSection?.sectionType === SectionType.WORKSPACES_ARCHIVED) {
-      archiveWorkspace(wsId)
+    const targetArchived = resolvedTargetSection?.sectionType === SectionType.WORKSPACES_ARCHIVED
+    if (targetArchived !== isWorkspaceArchived(wsId)) {
+      void moveWorkspace(wsId, targetSectionId)
       return
     }
 

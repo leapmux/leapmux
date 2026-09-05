@@ -175,6 +175,41 @@ func TestAgentResume_SkipsArchivedAgents(t *testing.T) {
 	assert.Empty(t, recorder.ids())
 }
 
+// TestAgentResume_SkipsSubagentTranscripts covers the candidate the BOOT sweep
+// cannot produce and the unarchive fan-out can.
+//
+// The sweep's own query selects roots, so a child never reaches it from there.
+// Schedule takes the tab ids the Hub listed for the workspace, and a subagent
+// transcript IS a tab in that layout -- so unarchiving a workspace that holds
+// one hands this scheduler an agent that owns no process. ensureAgentRunning
+// refuses it, which would spend a startup permit and log a failed start per
+// subagent tab.
+func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	seedOpenAgent(t, svc, "agent-root", true)
+	require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
+		ID:            "agent-child",
+		ParentAgentID: sql.NullString{String: "agent-root", Valid: true},
+		SpawnSpanID:   "span-1",
+		Title:         "child task",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	resumer := svc.NewAgentResumer()
+	t.Cleanup(resumer.Stop)
+	resumer.Schedule(t.Context(), []string{"agent-child", "agent-root"})
+
+	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 }, "the root resumes")
+	assert.Equal(t, []string{"agent-root"}, recorder.ids(),
+		"a subagent transcript owns no process, so it must never be a resume candidate")
+}
+
 // TestAgentResume_UsesTheBackgroundStartPath pins which manager entry point the
 // sweep reaches, which the shared recorder cannot see because it stubs both.
 //

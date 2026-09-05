@@ -58,7 +58,11 @@ func (svc *Service) NewAgentResumer() *AgentResumer {
 	svc.resumeSchedulerMu.Lock()
 	defer svc.resumeSchedulerMu.Unlock()
 	if svc.agentResumer == nil {
-		limit := svc.Agents.StartupConcurrency()
+		// max(1): a zero capacity makes resumeSlots unbuffered, and no goroutine
+		// ever receives from it, so every scheduled resume would block until Stop.
+		// The manager caps the value at one already; this keeps the deadlock
+		// impossible rather than merely absent today.
+		limit := max(1, svc.Agents.StartupConcurrency())
 		svc.agentResumer = &AgentResumer{
 			svc:         svc,
 			stop:        make(chan struct{}),
@@ -377,6 +381,7 @@ type resumeSkipReason string
 
 const (
 	resumeSkipAlreadyRunning resumeSkipReason = "already running"
+	resumeSkipSubagent       resumeSkipReason = "subagent transcript, which owns no process"
 	resumeSkipClosed         resumeSkipReason = "tab closed since the sweep listed it"
 	resumeSkipStartupFailed  resumeSkipReason = "previous startup failed"
 	resumeSkipArchived       resumeSkipReason = "workspace archived"
@@ -409,7 +414,16 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	if r.svc.Agents.HasAgent(dbAgent.ID) {
 		return resumeSkipAlreadyRunning
 	}
-	// The candidate list is a SNAPSHOT: ListAllOpenRootAgentIDs ran once, and a
+	// A virtual child agent is a subagent transcript: it has no process of its
+	// own, and ensureAgentRunning refuses one. The boot sweep never lists a
+	// child (its query selects roots), but Schedule takes the tab ids the Hub
+	// fanned out, and a subagent transcript IS a tab in the workspace layout.
+	// Without this the unarchive of a workspace holding one logs a failed start
+	// per subagent tab and spends a startup permit on each.
+	if dbAgent.ParentAgentID.Valid {
+		return resumeSkipSubagent
+	}
+	// The candidate list is a SNAPSHOT: ListRootAgentIDsForResume ran once, and a
 	// candidate at the back of a throttled queue is reached much later -- minutes,
 	// on a machine with many tabs and a concurrency of 1. A CloseAgent in between
 	// already ran that tab's whole teardown, so a process started for it now is

@@ -728,7 +728,7 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	t.Cleanup(openCancel)
 	openHandle := svc.AgentStartup.begin("agent-1", openCancel)
 	require.NotNil(t, openHandle)
-	t.Cleanup(func() { svc.AgentStartup.finish() })
+	t.Cleanup(func() { svc.AgentStartup.finishEntry(openHandle) })
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
@@ -794,7 +794,7 @@ func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 
 	// The open path finishes.
 	svc.AgentStartup.succeed("agent-1")
-	svc.AgentStartup.finish()
+	svc.AgentStartup.finishEntry(openHandle)
 
 	select {
 	case err := <-errCh:
@@ -821,8 +821,9 @@ func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testi
 	clock := newFakeStartupClock()
 	svc.AgentStartup.clock = clock
 
-	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
-	t.Cleanup(func() { svc.AgentStartup.finish() })
+	openHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, openHandle)
+	t.Cleanup(func() { svc.AgentStartup.finishEntry(openHandle) })
 
 	require.Error(t, svc.ensureAgentRunning("agent-1", nil, backgroundStart))
 	assert.Empty(t, rec.ids())
@@ -851,8 +852,9 @@ func TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor(t *testi
 	svc.AgentStartup.clock = clock
 
 	// Stand in for the open path's in-flight startup.
-	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
-	t.Cleanup(func() { svc.AgentStartup.finish() })
+	openHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, openHandle)
+	t.Cleanup(func() { svc.AgentStartup.finishEntry(openHandle) })
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
