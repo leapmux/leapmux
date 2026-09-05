@@ -31,12 +31,12 @@ func applyArchive(t *testing.T, svc *Service, state leapmuxv1.WorkspaceArchiveSt
 	return resumeAgentIDs
 }
 
-// agentStatuses collects the statuses broadcast for one agent from a writer
-// that a WatchEvents dispatch streams into. Duplicates are kept: "how many
-// times" is exactly what the duplicate-request test asks.
-func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmuxv1.AgentStatus {
+// agentStatusChanges collects the status changes broadcast for one agent from
+// a writer that a watch registration streams into. Duplicates are kept: "how
+// many times" is exactly what the duplicate-request test asks.
+func agentStatusChanges(t *testing.T, w *testResponseWriter, agentID string) []*leapmuxv1.AgentStatusChange {
 	t.Helper()
-	var out []leapmuxv1.AgentStatus
+	var out []*leapmuxv1.AgentStatusChange
 	for _, s := range w.streamsSnapshot() {
 		var resp leapmuxv1.WatchEventsResponse
 		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
@@ -47,10 +47,34 @@ func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmu
 			continue
 		}
 		if sc := event.GetStatusChange(); sc != nil {
-			out = append(out, sc.GetStatus())
+			out = append(out, sc)
 		}
 	}
 	return out
+}
+
+// agentStatuses reduces those broadcasts to the status each one carries.
+func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmuxv1.AgentStatus {
+	t.Helper()
+	var out []leapmuxv1.AgentStatus
+	for _, sc := range agentStatusChanges(t, w, agentID) {
+		out = append(out, sc.GetStatus())
+	}
+	return out
+}
+
+// requireOneStatusChange waits for exactly one status change for the agent and
+// returns it. The broadcast reaches the writer on the broadcaster's goroutine,
+// so the wait is what makes a read of it deterministic.
+func requireOneStatusChange(t *testing.T, w *testResponseWriter, agentID string) *leapmuxv1.AgentStatusChange {
+	t.Helper()
+	var changes []*leapmuxv1.AgentStatusChange
+	require.Eventually(t, func() bool {
+		changes = agentStatusChanges(t, w, agentID)
+		return len(changes) > 0
+	}, time.Second, 10*time.Millisecond, "no status change reached the watcher for %s", agentID)
+	require.Len(t, changes, 1)
+	return changes[0]
 }
 
 // watchAgent subscribes to one agent's events so a test can read the broadcasts
@@ -804,4 +828,64 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	assert.Zero(t, settled.WorkspaceArchived)
 	assert.False(t, settled.ClosedAt.Valid, "neither operation may close the tab")
 	assert.Empty(t, settled.StartupError, "neither operation may mark the tab failed")
+}
+
+// TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree pins that both
+// halves of the archive reach a SUBAGENT.
+//
+// The Hub lists root tabs only, and a subagent owns no tab of its own, so a
+// walk over the requested tabs stops at the root. The archive then stopped the
+// owner process while the child queue stayed live, and the child's next
+// dispatch found no process and failed the item permanently -- a message the
+// user had to retry by hand after the workspace came back.
+func TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, childID, rootID := setupChildAgentTest(t)
+	rootTab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}
+
+	// The child is inside a turn, so its queue HOLDS the input below instead of
+	// dispatching it. Without the turn the enqueue dispatches at once, fails on
+	// an owner that runs no process, and pauses the queue for that reason --
+	// which is the state this test must not start from.
+	_, err := svc.InputQueue.TurnStarted(ctx, childID)
+	require.NoError(t, err)
+	inputID := newTestAgentInputID()
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: inputID, AgentID: childID, Text: "hello child",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	live, err := svc.InputQueue.Snapshot(ctx, childID)
+	require.NoError(t, err)
+	require.False(t, live.Paused, "fixture check: the child queue must start live")
+	require.Len(t, live.Items, 1)
+
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, rootTab)
+
+	archived, err := svc.InputQueue.Snapshot(ctx, childID)
+	require.NoError(t, err)
+	assert.True(t, archived.Paused,
+		"the archive stopped the owner process and left the child queue dispatching")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
+		archived.PauseReason)
+	assert.False(t, archived.ActiveTurn, "the archive must end the child's turn")
+	require.Len(t, archived.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, archived.Items[0].State,
+		"an archive holds the input; it never fails it")
+
+	// The user deletes the message before the workspace comes back. A queue
+	// that still held one would dispatch it the moment the resume lifts the
+	// pause, find no owner process, and pause again -- which hides the resume
+	// that the assertion below measures.
+	_, err = svc.InputQueue.Delete(ctx, childID, inputID)
+	require.NoError(t, err)
+
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, rootTab)
+
+	resumed, err := svc.InputQueue.Snapshot(ctx, childID)
+	require.NoError(t, err)
+	assert.False(t, resumed.Paused,
+		"the unarchive left the child queue paused, so no later message reaches the child")
 }

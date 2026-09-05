@@ -81,6 +81,16 @@ function isCodexEmptyCompletedWebSearch(item: Record<string, unknown>): boolean 
 /** Extra notification types for Codex (agent_error). */
 const CODEX_EXTRA_NOTIF_TYPES = new Set([NOTIFICATION_TYPE.AgentError])
 /**
+ * The Codex method that reports an automatic compaction of the thread.
+ *
+ * The Worker persists it as a threadable notification. The COMPLETION of a
+ * `contextCompaction` item is the compaction boundary, not this method, so the
+ * chat hides this one.
+ */
+const CODEX_THREAD_COMPACTED_METHOD = CODEX_METHOD.THREAD_COMPACTED
+/** The Codex method that reports one finished item of a turn. */
+const CODEX_ITEM_COMPLETED_METHOD = CODEX_METHOD.ITEM_COMPLETED
+/**
  * Codex JSON-RPC methods that, when persisted as SYSTEM, are notification-thread
  * entries. The consolidator treats these the same way `system+subtype` events
  * are treated for Claude.
@@ -117,6 +127,7 @@ export const CODEX_HIDDEN_LIFECYCLE_METHODS = new Set<string>([
   CODEX_METHOD.REMOTE_CONTROL_STATUS_CHANGED,
   CODEX_METHOD.HOOK_STARTED,
   CODEX_METHOD.HOOK_COMPLETED,
+  CODEX_THREAD_COMPACTED_METHOD,
 ])
 
 function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] } | null): wrapper is { old_seqs: number[], messages: unknown[] } {
@@ -139,9 +150,10 @@ function isCodexNotifThread(wrapper: { old_seqs: number[], messages: unknown[] }
       return false
     if (CODEX_NOTIF_METHODS.has(method))
       return true
-    // item/started for a contextCompaction item is the in-progress
-    // compacting indicator. The completed contextCompaction item closes it.
-    if (method === 'item/started') {
+    // item/started for a contextCompaction item is the in-progress compacting
+    // indicator, and item/completed for the same item is the boundary that
+    // closes it. Both belong in the notification thread.
+    if (method === 'item/started' || method === CODEX_ITEM_COMPLETED_METHOD) {
       const params = (msg as Record<string, unknown>).params
       if (isObject(params)) {
         const item = (params as Record<string, unknown>).item
@@ -180,8 +192,9 @@ function isCodexRateLimitAllAllowed(m: Record<string, unknown>): boolean {
  * Hides:
  *  - lifecycle/metadata methods (CODEX_HIDDEN_LIFECYCLE_METHODS): thread/started,
  *    turn/started, thread/{status,name,settings,tokenUsage}/updated,
- *    skills/changed, remoteControl/status/changed, hook/{started,completed} --
- *    transient signals persisted upstream, never rendered in chat.
+ *    thread/compacted, skills/changed, remoteControl/status/changed,
+ *    hook/{started,completed} -- transient signals persisted upstream, never
+ *    rendered in chat.
  *  - a final (non-compacting) system status (see isFinalCompactingStatus).
  *  - the "Codex turn failed" agent_error (surfaced via the result divider).
  *  - an all-allowed rate-limit update (no throttle to show).
@@ -356,9 +369,9 @@ const codexPlugin: Provider = {
     binary: false,
   },
   // Codex's wire format dispatches via JSON-RPC `method`. Anything we hide
-  // from the chat plus the metadata-only updates (mcp startup, rate limits,
-  // thread compaction) must also be invisible to the working-state
-  // heuristic — adding a method to either set propagates automatically.
+  // from the chat plus the metadata-only updates (mcp startup, rate limits)
+  // must also be invisible to the working-state heuristic -- adding a method to
+  // either set propagates automatically.
   nonProgressMethods: new Set<string>([
     ...CODEX_HIDDEN_LIFECYCLE_METHODS,
     'mcpServer/startupStatus/updated',

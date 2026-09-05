@@ -7,9 +7,143 @@ import (
 	"testing"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Every steering provider must supply BOTH methods of InputSteerer.
+// SupportsSteering belongs to that interface, so a provider that drops it stops
+// satisfying InputSteerer, and Manager.SupportsSteering then answers false with
+// no build error. These assertions turn that silent regression into a compile
+// error.
+var (
+	_ InputSteerer = (*ClaudeCodeAgent)(nil)
+	_ InputSteerer = (*CodexAgent)(nil)
+	_ InputSteerer = (*PiAgent)(nil)
+	_ InputSteerer = (*zcodeAgent)(nil)
+	_ InputSteerer = (*OpenCodeAgent)(nil)
+	_ InputSteerer = (*GooseCLIAgent)(nil)
+	_ InputSteerer = (*ReasonixAgent)(nil)
+)
+
+// steeringStub is an InputSteerer whose SupportsSteering answer the test
+// controls. It embeds idleAgent (manager_startup_concurrency_test.go) for the
+// rest of the Agent surface, because manager_test.go's stubProvider is
+// `//go:build unix` and this case has no platform behaviour.
+type steeringStub struct {
+	idleAgent
+	supports bool
+}
+
+func (s *steeringStub) SteerInput(string, []*leapmuxv1.Attachment) error { return nil }
+func (s *steeringStub) SupportsSteering() bool                           { return s.supports }
+
+// Manager.SupportsSteering asks the provider and reports the answer. It never
+// assumes true for a provider that implements SteerInput, because the Manager
+// publishes this answer to the client, which shows or hides the Steer control.
+func TestManagerSupportsSteeringAsksTheProvider(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil)
+	m.mu.Lock()
+	m.agents["refuses"] = &steeringStub{}
+	m.agents["accepts"] = &steeringStub{supports: true}
+	m.agents["opencode"] = &OpenCodeAgent{}
+	m.agents["goose"] = &GooseCLIAgent{}
+	m.agents["plain"] = idleAgent{}
+	m.mu.Unlock()
+
+	assert.False(t, m.SupportsSteering("refuses"),
+		"a provider that answers false must not claim the capability")
+	assert.True(t, m.SupportsSteering("accepts"))
+	assert.True(t, m.SupportsSteering("opencode"),
+		"OpenCode steers with a second session/prompt and advertises no steer method")
+	assert.False(t, m.SupportsSteering("goose"),
+		"Goose steers only through the method that its handshake advertises")
+	assert.False(t, m.SupportsSteering("plain"),
+		"a provider that does not implement SteerInput cannot steer")
+	assert.False(t, m.SupportsSteering("unknown-agent"))
+}
+
+// A provider that already runs a turn reports ErrAgentBusy, never
+// ErrNoActiveTurn. The two sentinels state opposite conditions, and the queue
+// reads them differently: ErrAgentBusy is transient, so the item waits for the
+// turn to end, while ErrNoActiveTurn says that steering has no target.
+func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		send func(t *testing.T) error
+	}{
+		{
+			name: "acpBase",
+			send: func(t *testing.T) error {
+				agent, requests := newACPAgentForRPC(t,
+					func() *OpenCodeAgent { return &OpenCodeAgent{} },
+					func(agent *OpenCodeAgent) *acpBase { return &agent.acpBase },
+				)
+				agent.promptActive = true
+				err := agent.SendInput("later turn", nil)
+				assert.Empty(t, requests(), "a refused send must reach no RPC")
+				return err
+			},
+		},
+		{
+			name: "codex",
+			send: func(t *testing.T) error {
+				agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+					return json.RawMessage(`{}`)
+				})
+				agent.threadID = "thread-1"
+				agent.turnID = "turn-1"
+				err := agent.SendInput("later turn", nil)
+				assert.Empty(t, requests(), "a refused send must reach no RPC")
+				return err
+			},
+		},
+		{
+			name: "claude",
+			send: func(t *testing.T) error {
+				agent := &ClaudeCodeAgent{turnActive: true}
+				return agent.SendInput("later turn", nil)
+			},
+		},
+		{
+			name: "pi",
+			send: func(t *testing.T) error {
+				agent := &PiAgent{
+					processBase:       processBase{agentID: "test-agent"},
+					currentTurnActive: true,
+				}
+				return agent.SendInput("later turn", nil)
+			},
+		},
+		{
+			name: "zcode",
+			send: func(t *testing.T) error {
+				stdin := &zcodeRecordedStdin{}
+				agent := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+				agent.mu.Lock()
+				agent.sessionID = "session-1"
+				agent.model = "provider/model"
+				agent.turnActive = true
+				agent.mu.Unlock()
+				return agent.SendInput("later turn", nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.send(t)
+			assert.ErrorIs(t, err, ErrAgentBusy)
+			assert.NotErrorIs(t, err, ErrNoActiveTurn,
+				"a busy agent has a turn; the no-active-turn sentinel states the opposite")
+		})
+	}
+}
 
 func TestClaudeSteerWritesNextPriority(t *testing.T) {
 	t.Parallel()

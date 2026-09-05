@@ -11,9 +11,18 @@ import (
 )
 
 type coordinator struct {
-	mu        sync.Mutex
-	restartMu sync.Mutex
-	draining  bool
+	mu       sync.Mutex
+	draining bool
+	// plannedRestarts counts the restarts in flight for this agent. The last
+	// one to finish resumes the pause that the first one created.
+	//
+	// This replaces a mutex that BeginPlannedRestart held until Finish. That
+	// mutex deadlocked the Worker: Finish runs only after StopAndWaitAgent
+	// returns, StopAndWaitAgent waits for the exit goroutine, and a crashed
+	// process makes that goroutine call Pause, which took the same mutex. The
+	// durable pause_owner column now carries what the mutex protected, so no
+	// lock spans a process stop.
+	plannedRestarts int
 }
 
 // PlannedRestart keeps explicit dispatch operations behind one agent restart.
@@ -51,6 +60,29 @@ func NewManager(store *Store, dispatcher Dispatcher, observer Observer) *Manager
 		coordinators: make(map[string]*coordinator),
 		recovered:    make(map[string]struct{}),
 	}
+}
+
+// mutateAndDrain runs one store mutation under the agent's coordinator lock,
+// broadcasts the new snapshot, and then schedules a drain OUTSIDE that lock.
+// The order is load-bearing: scheduleDrain takes the same non-reentrant mutex,
+// so a copy that called it while holding the lock would deadlock.
+func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, error)) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, err := mutate()
+	if err == nil {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		return snapshot, err
+	}
+	m.scheduleDrain(agentID)
+	return snapshot, nil
 }
 
 func (m *Manager) beginActivity() bool {
@@ -98,22 +130,51 @@ func (m *Manager) coordinator(agentID string) *coordinator {
 	return c
 }
 
-func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+// refuseUnacceptedKind rejects a kind that this agent can never take, BEFORE
+// the mutation opens its write transaction.
+//
+// The test must not run inside that transaction. The dispatcher answers it
+// from the agents table, and SQLite admits one writer, so a read issued on a
+// second connection while the mutation holds the write lock waits for a
+// transaction that waits for the read.
+func (m *Manager) refuseUnacceptedKind(agentID string, kind leapmuxv1.AgentInputKind) error {
+	if m.dispatcher == nil || m.dispatcher.AcceptsKind(agentID, kind) {
+		return nil
+	}
+	return fmt.Errorf("%w: this agent does not accept that input", ErrInvalidInput)
+}
+
+// mutateLocked runs one store mutation under the agent's coordinator lock and
+// broadcasts the new snapshot when the mutation changed the durable state.
+//
+// It never drains, and the name says so: a caller whose mutation can release
+// the queue uses mutateAndDrain, or schedules the drain itself AFTER it
+// unlocks. scheduleDrain takes this same non-reentrant mutex, so a drain from
+// inside the locked section deadlocks the Worker.
+func (m *Manager) mutateLocked(agentID string, mutate func() (Snapshot, bool, error)) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
-	c := m.coordinator(input.AgentID)
+	c := m.coordinator(agentID)
 	c.mu.Lock()
-	snapshot, err := m.store.Enqueue(ctx, input)
-	if err == nil {
+	defer c.mu.Unlock()
+	snapshot, changed, err := mutate()
+	if err == nil && changed {
 		m.observer.QueueChanged(snapshot)
 	}
-	c.mu.Unlock()
-	if err == nil {
-		m.scheduleDrain(input.AgentID)
-	}
 	return snapshot, err
+}
+
+func (m *Manager) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
+	// The classifier rewrites a slash command into its own kind, so the test
+	// must see the kind the store will store, not the one the client sent.
+	if err := m.refuseUnacceptedKind(input.AgentID, m.store.Classify(input.Kind, input.Text)); err != nil {
+		return Snapshot{}, err
+	}
+	return m.mutateAndDrain(input.AgentID, func() (Snapshot, error) {
+		return m.store.Enqueue(ctx, input)
+	})
 }
 
 func (m *Manager) Snapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -132,86 +193,49 @@ func (m *Manager) BeginEdit(ctx context.Context, agentID, inputID, clientID stri
 		return Snapshot{}, "", nil, ErrManagerStopped
 	}
 	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	snapshot, text, attachments, err := m.store.BeginEdit(ctx, agentID, inputID, clientID, takeover)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
+	var text string
+	var attachments []Attachment
+	snapshot, err := m.mutateLocked(agentID, func() (Snapshot, bool, error) {
+		var inner Snapshot
+		var innerErr error
+		inner, text, attachments, innerErr = m.store.BeginEdit(ctx, agentID, inputID, clientID, takeover)
+		return inner, true, innerErr
+	})
 	return snapshot, text, attachments, err
 }
 
 func (m *Manager) Update(ctx context.Context, agentID, inputID, clientID string, expectedVersion uint64, text string, attachments []Attachment) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	snapshot, err := m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments)
+	// An edit can reclassify the item, so the new text can carry a kind this
+	// agent cannot take. Store.Update refuses it below on a stale read only;
+	// this refuses it before the write transaction opens.
+	kind, err := m.store.KindAfterEdit(ctx, agentID, inputID, text)
 	if err == nil {
-		m.observer.QueueChanged(snapshot)
+		err = m.refuseUnacceptedKind(agentID, kind)
 	}
-	c.mu.Unlock()
-	if err == nil {
-		m.scheduleDrain(agentID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return Snapshot{}, err
 	}
-	return snapshot, err
+	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+		return m.store.Update(ctx, agentID, inputID, clientID, expectedVersion, text, attachments)
+	})
 }
 
 func (m *Manager) CancelEdit(ctx context.Context, agentID, inputID, clientID string) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	snapshot, err := m.store.CancelEdit(ctx, agentID, inputID, clientID)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
-	c.mu.Unlock()
-	if err == nil {
-		m.scheduleDrain(agentID)
-	}
-	return snapshot, err
+	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+		return m.store.CancelEdit(ctx, agentID, inputID, clientID)
+	})
 }
 
 func (m *Manager) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	snapshot, err := m.store.Delete(ctx, agentID, inputID)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
-	c.mu.Unlock()
-	if err == nil {
-		m.scheduleDrain(agentID)
-	}
-	return snapshot, err
+	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+		return m.store.Delete(ctx, agentID, inputID)
+	})
 }
 
 func (m *Manager) Move(ctx context.Context, agentID, inputID, beforeInputID string) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	snapshot, err := m.store.Move(ctx, agentID, inputID, beforeInputID)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
-	c.mu.Unlock()
-	if err == nil {
-		m.scheduleDrain(agentID)
-	}
-	return snapshot, err
+	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+		return m.store.Move(ctx, agentID, inputID, beforeInputID)
+	})
 }
 
 func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (Snapshot, error) {
@@ -220,8 +244,6 @@ func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (S
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
-	c.restartMu.Lock()
-	defer c.restartMu.Unlock()
 	reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED
 	if paused {
 		reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
@@ -243,16 +265,10 @@ func (m *Manager) Pause(ctx context.Context, agentID string, reason leapmuxv1.Ag
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.restartMu.Lock()
-	defer c.restartMu.Unlock()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	snapshot, err := m.store.Pause(ctx, agentID, reason)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
-	return snapshot, err
+	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
+		snapshot, err := m.store.Pause(ctx, agentID, reason)
+		return snapshot, true, err
+	})
 }
 
 // PauseForArchive stops automatic dispatch before an archived agent process
@@ -262,16 +278,9 @@ func (m *Manager) PauseForArchive(ctx context.Context, agentID string) (Snapshot
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.restartMu.Lock()
-	defer c.restartMu.Unlock()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	snapshot, changed, err := m.store.PauseForArchive(ctx, agentID)
-	if err == nil && changed {
-		m.observer.QueueChanged(snapshot)
-	}
-	return snapshot, err
+	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
+		return m.store.PauseForArchive(ctx, agentID)
+	})
 }
 
 // ResumeAfterArchive resumes only a pause that PauseForArchive created.
@@ -281,8 +290,6 @@ func (m *Manager) ResumeAfterArchive(ctx context.Context, agentID string) (Snaps
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
-	c.restartMu.Lock()
-	defer c.restartMu.Unlock()
 	c.mu.Lock()
 	snapshot, changed, err := m.store.ResumeAfterArchive(ctx, agentID)
 	if err == nil && changed {
@@ -296,21 +303,9 @@ func (m *Manager) ResumeAfterArchive(ctx context.Context, agentID string) (Snaps
 }
 
 func (m *Manager) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	snapshot, err := m.store.TurnEnded(ctx, agentID)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
-	c.mu.Unlock()
-	if err == nil {
-		m.scheduleDrain(agentID)
-	}
-	return snapshot, err
+	return m.mutateAndDrain(agentID, func() (Snapshot, error) {
+		return m.store.TurnEnded(ctx, agentID)
+	})
 }
 
 func (m *Manager) TurnStarted(ctx context.Context, agentID string) (Snapshot, error) {
@@ -318,14 +313,10 @@ func (m *Manager) TurnStarted(ctx context.Context, agentID string) (Snapshot, er
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
-	c := m.coordinator(agentID)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	snapshot, err := m.store.TurnStarted(ctx, agentID)
-	if err == nil {
-		m.observer.QueueChanged(snapshot)
-	}
-	return snapshot, err
+	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
+		snapshot, err := m.store.TurnStarted(ctx, agentID)
+		return snapshot, true, err
+	})
 }
 
 func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUncertain bool) (Snapshot, error) {
@@ -334,16 +325,41 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
-	c.restartMu.Lock()
-	defer c.restartMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	snapshot, err := m.store.Retry(ctx, agentID, inputID, confirmUncertain)
 	if err != nil {
+		c.mu.Unlock()
 		return Snapshot{}, err
 	}
 	m.observer.QueueChanged(snapshot)
-	return m.dispatchPrepared(ctx, agentID, m.store.PrepareRetry)
+	prepared, snapshot, err := m.store.PrepareRetry(ctx, agentID)
+	if err != nil || prepared == nil {
+		c.mu.Unlock()
+		return snapshot, err
+	}
+	m.observer.QueueChanged(snapshot)
+	// The store reserved the item as DISPATCHING, so no other caller can take
+	// it. Release the lock for the provider call: it can stop and relaunch the
+	// agent process, and the exit goroutine that a stop wakes needs this same
+	// lock to pause the queue.
+	c.mu.Unlock()
+	result, dispatchErr := m.dispatcher.Dispatch(prepared.Item)
+	c.mu.Lock()
+	if dispatchErr != nil {
+		snapshot, storeErr := m.recordDispatchFailure(ctx, *prepared, dispatchErr)
+		c.mu.Unlock()
+		return snapshot, storeErr
+	}
+	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
+	if err != nil {
+		c.mu.Unlock()
+		return Snapshot{}, err
+	}
+	c.mu.Unlock()
+	// Retry lifted the delivery pause, so the items behind the retried head
+	// must dispatch too. Without this the queue stalls with no visible reason.
+	m.scheduleDrain(agentID)
+	return snapshot, nil
 }
 
 func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot, error) {
@@ -352,8 +368,6 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
-	c.restartMu.Lock()
-	defer c.restartMu.Unlock()
 	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
 		return Snapshot{}, ErrSteeringUnsupported
 	}
@@ -431,21 +445,28 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 }
 
 // BeginPlannedRestart pauses automatic dispatch before a provider replacement.
-// The returned guard serializes retry, steering, and pause changes until Finish.
+// The pause carries pauseOwnerPlannedRestart, so Retry and Steer refuse to
+// write into the stopping process and Finish resumes only its own pause.
+//
+// This guard holds NO lock across the restart. It held one before, and that
+// deadlocked the Worker whenever the old process crashed during the stop: the
+// exit goroutine calls Pause, Pause took the guard's lock, and the stop waits
+// for that same exit goroutine.
 func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*PlannedRestart, error) {
 	if !m.beginActivity() {
 		return nil, ErrManagerStopped
 	}
 	c := m.coordinator(agentID)
-	c.restartMu.Lock()
 	c.mu.Lock()
 	snapshot, resumeQueue, err := m.store.pauseForPlannedRestart(ctx, agentID)
-	if err == nil && resumeQueue {
-		m.observer.QueueChanged(snapshot)
+	if err == nil {
+		c.plannedRestarts++
+		if resumeQueue {
+			m.observer.QueueChanged(snapshot)
+		}
 	}
 	c.mu.Unlock()
 	if err != nil {
-		c.restartMu.Unlock()
 		m.endActivity()
 		return nil, err
 	}
@@ -462,15 +483,18 @@ func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSuc
 		return nil
 	}
 	r.once.Do(func() {
-		resumeQueue := r.resumeQueue && (!processReplaced || restartSucceeded)
 		r.coordinator.mu.Lock()
+		r.coordinator.plannedRestarts--
+		// Only the last restart in flight resumes. An overlapping restart keeps
+		// its own process stop ahead of the queue.
+		last := r.coordinator.plannedRestarts == 0
+		resumeQueue := last && r.resumeQueue && (!processReplaced || restartSucceeded)
 		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, processReplaced, resumeQueue)
 		if err == nil && changed {
 			r.manager.observer.QueueChanged(snapshot)
 		}
 		shouldDrain := err == nil && changed && !snapshot.Paused && !snapshot.ActiveTurn && len(snapshot.Items) > 0
 		r.coordinator.mu.Unlock()
-		r.coordinator.restartMu.Unlock()
 		r.manager.endActivity()
 		if shouldDrain {
 			r.manager.scheduleDrain(r.agentID)
@@ -564,6 +588,21 @@ func (m *Manager) scheduleDrain(agentID string) {
 	}()
 }
 
+// drain delivers queued input until the queue empties or a turn starts.
+//
+// The coordinator lock covers the store calls only. It is NEVER held across
+// dispatcher.Dispatch, and that rule is load-bearing three times over. Dispatch
+// stops and relaunches the agent process for a clear or a plan execution, and
+// the exit goroutine that a stop wakes calls Pause, which takes this same lock:
+// holding it deadlocks the Worker. Dispatch also waits for the provider to
+// acknowledge the turn, and the provider's reader goroutine reports that turn
+// through TurnStarted, which takes this lock too. And every queue RPC, down to
+// a plain list, waits behind it.
+//
+// Releasing the lock is safe because the store already reserved the item:
+// PrepareDispatch commits state = DISPATCHING with active_turn = 1, and Accept
+// re-checks both before it writes the transcript, so no concurrent caller can
+// take or deliver the same item twice.
 func (m *Manager) drain(agentID string, c *coordinator) {
 	for {
 		c.mu.Lock()
@@ -582,14 +621,16 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		if prepared == nil {
 			c.draining = false
 			c.mu.Unlock()
-			_ = snapshot
 			return
 		}
 		m.observer.QueueChanged(snapshot)
-		result, err := m.dispatcher.Dispatch(prepared.Item)
-		if err != nil {
-			_, storeErr := m.recordDispatchFailure(context.Background(), *prepared, err)
-			if storeErr != nil {
+		c.mu.Unlock()
+
+		result, dispatchErr := m.dispatcher.Dispatch(prepared.Item)
+
+		c.mu.Lock()
+		if dispatchErr != nil {
+			if _, storeErr := m.recordDispatchFailure(context.Background(), *prepared, dispatchErr); storeErr != nil {
 				slog.Error("agent input queue failure persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", storeErr)
 			}
 			c.draining = false
@@ -603,37 +644,13 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 			c.mu.Unlock()
 			return
 		}
-		if !persisted {
-			c.draining = false
-			c.mu.Unlock()
-			return
-		}
-		if result.StartsTurn {
+		if !persisted || result.StartsTurn {
 			c.draining = false
 			c.mu.Unlock()
 			return
 		}
 		c.mu.Unlock()
 	}
-}
-
-type prepareFunc func(context.Context, string) (*PreparedDispatch, Snapshot, error)
-
-func (m *Manager) dispatchPrepared(ctx context.Context, agentID string, prepare prepareFunc) (Snapshot, error) {
-	prepared, snapshot, err := prepare(ctx, agentID)
-	if err != nil || prepared == nil {
-		return snapshot, err
-	}
-	m.observer.QueueChanged(snapshot)
-	result, err := m.dispatcher.Dispatch(prepared.Item)
-	if err != nil {
-		return m.recordDispatchFailure(ctx, *prepared, err)
-	}
-	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return snapshot, nil
 }
 
 func (m *Manager) acceptDispatch(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (Snapshot, bool, error) {
@@ -655,7 +672,21 @@ func (m *Manager) acceptDispatch(ctx context.Context, prepared PreparedDispatch,
 	return snapshot, false, nil
 }
 
+// recordDispatchFailure stores the outcome of a dispatch that the provider
+// refused. Delivery has three outcomes, not two. ErrDispatchNotReady means the
+// input never reached the provider, so the item returns to the queue and only
+// the queue pauses: a message the user typed must not need a manual retry
+// because the agent was between processes. The other two outcomes mark the
+// item FAILED or DELIVERY_UNCERTAIN, which the user resolves explicitly.
 func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
+	if errors.Is(dispatchErr, ErrDispatchNotReady) {
+		snapshot, err := m.store.RequeueAndPause(ctx, prepared.Item.AgentID, prepared.Item.ID, dispatchErr)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		m.observer.QueueChanged(snapshot)
+		return snapshot, nil
+	}
 	var deliveryErr *DeliveryError
 	uncertain := errors.As(dispatchErr, &deliveryErr) && deliveryErr.Uncertain
 	snapshot, err := m.store.FailDispatch(ctx, prepared.Item.AgentID, prepared.Item.ID, dispatchErr, uncertain)

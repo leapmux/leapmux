@@ -25,12 +25,6 @@ type GooseCLIAgent struct {
 	acpBase
 }
 
-func (a *GooseCLIAgent) SupportsSteering() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.steerMethod != ""
-}
-
 func (a *GooseCLIAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	method, active, sessionID, runID := a.steerMethod, a.promptActive, a.sessionID, a.steerRunID

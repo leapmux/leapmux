@@ -1,7 +1,7 @@
 /**
  * What a send does with the caret.
  *
- * `restore` puts the caret back in the editor, `release` gives the caret up so
+ * `restore` keeps the caret in the editor, `release` gives the caret up so
  * the on-screen keyboard goes away, and `none` leaves focus where it is.
  */
 export type SendFocusAction = 'restore' | 'release' | 'none'

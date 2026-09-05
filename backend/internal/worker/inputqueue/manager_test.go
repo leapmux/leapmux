@@ -14,6 +14,9 @@ import (
 )
 
 type recordingDispatcher struct {
+	// refusedKind lets a test refuse one kind the way a subagent refuses a
+	// clear or a compact.
+	refusedKind     leapmuxv1.AgentInputKind
 	mu              sync.Mutex
 	dispatched      []string
 	dispatchRelease <-chan struct{}
@@ -55,6 +58,13 @@ func (d *recordingDispatcher) Steer(item Item) (DispatchResult, error) {
 }
 
 func (d *recordingDispatcher) SupportsSteering(string) bool { return d.steering }
+
+// AcceptsKind admits every kind unless a test narrows refusedKind.
+func (d *recordingDispatcher) AcceptsKind(_ string, kind leapmuxv1.AgentInputKind) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return kind != d.refusedKind
+}
 
 func (d *recordingDispatcher) dispatches() []string {
 	d.mu.Lock()
@@ -490,7 +500,13 @@ func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
 	}
 }
 
-func TestManagerPlannedRestartSerializesExplicitResume(t *testing.T) {
+// A planned restart takes NO lock that an explicit resume can wait on. It held
+// one before, and that deadlocked the Worker whenever the old process crashed
+// during the stop: the exit goroutine calls Pause, Pause took the restart's
+// lock, and the stop waits for that same exit goroutine. The durable
+// pause_owner column carries what the lock protected, so the restart never
+// blocks a caller and never resumes a pause that a different cause created.
+func TestManagerPlannedRestartNeverBlocksAnExplicitResume(t *testing.T) {
 	t.Parallel()
 
 	_, store := newStoreFixture(t)
@@ -503,10 +519,65 @@ func TestManagerPlannedRestartSerializesExplicitResume(t *testing.T) {
 		_, resumeErr := manager.SetPaused(ctx, "agent-1", false)
 		resumeDone <- resumeErr
 	}()
-	assert.Never(t, func() bool { return len(resumeDone) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
+	select {
+	case resumeErr := <-resumeDone:
+		require.NoError(t, resumeErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("an explicit resume waited on the planned restart")
+	}
+
+	// The user owns the queue state now, so finishing the restart must not
+	// pause it again or resume something it no longer owns.
+	require.NoError(t, restart.Finish(ctx, true, true))
+	after, err := manager.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, after.Paused)
+}
+
+// A pause that a crash records during a planned restart must survive the
+// restart. The crash takes ownership, so Finish leaves it in place.
+func TestManagerPlannedRestartKeepsACrashPause(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	ctx := context.Background()
+	restart, err := manager.BeginPlannedRestart(ctx, "agent-1")
+	require.NoError(t, err)
+	_, err = manager.Pause(ctx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+	require.NoError(t, err)
 
 	require.NoError(t, restart.Finish(ctx, true, true))
-	require.NoError(t, <-resumeDone)
+	after, err := manager.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, after.Paused, "the crash pause must outlive the restart that did not create it")
+}
+
+// Retry and Steer write into the provider, so they must refuse while the
+// Worker replaces the process. The old code relied on a mutex for this; the
+// durable owner keeps the refusal after a Worker restart too.
+func TestManagerRetryRefusesDuringAPlannedRestart(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{
+		ID: "one", AgentID: "agent-1", Text: "hello",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
+	require.NoError(t, err)
+
+	restart, err := manager.BeginPlannedRestart(ctx, "agent-1")
+	require.NoError(t, err)
+	_, err = manager.Retry(ctx, "agent-1", "one", false)
+	assert.ErrorIs(t, err, ErrPlannedRestart)
+	require.NoError(t, restart.Finish(ctx, true, true))
 }
 
 func TestManagerStopRefusesNewWorkAndWaitJoinsDispatch(t *testing.T) {

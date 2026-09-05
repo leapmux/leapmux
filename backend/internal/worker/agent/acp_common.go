@@ -475,7 +475,7 @@ func (b *acpBase) newSessionLocked() (sessionID string, resp json.RawMessage, ok
 	b.sessionMu.Lock()
 	defer b.sessionMu.Unlock()
 
-	_, params := buildACPSessionRequest("", b.workingDir, acpMethodSessionNew, "")
+	_, params := buildACPSessionRequest("", b.currentWorkingDir(), acpMethodSessionNew, "")
 	resp, err := b.sendRequest(acpMethodSessionNew, json.RawMessage(params), b.APITimeout())
 	if err != nil {
 		slog.Error("acp ClearContext failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
@@ -1274,7 +1274,7 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	}
 	if b.promptActive {
 		b.mu.Unlock()
-		return ErrNoActiveTurn
+		return ErrAgentBusy
 	}
 	b.promptActive = true
 	b.mu.Unlock()
@@ -1302,12 +1302,6 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	return err
 }
 
-func (b *acpBase) InputReady() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return !b.stopped && b.sessionID != "" && !b.promptActive
-}
-
 func (b *acpBase) sendACPPromptDetached(content string, attachments []*leapmuxv1.Attachment, handle func(json.RawMessage, error)) error {
 	b.mu.Lock()
 	sessionID := b.sessionID
@@ -1320,6 +1314,16 @@ func (b *acpBase) sendACPPromptDetached(content string, attachments []*leapmuxv1
 		return fmt.Errorf("marshal ACP prompt params: %w", err)
 	}
 	return b.sendDetachedRequest(acpMethodSessionPrompt, params, handle)
+}
+
+// SupportsSteering reports whether the handshake found an advertised steer
+// method. An ACP server declares that method in its initialize response, so a
+// provider that steers through it can answer only after the handshake. A
+// provider that steers by another route overrides this method.
+func (b *acpBase) SupportsSteering() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.steerMethod != ""
 }
 
 func (b *acpBase) steerAdvertised(content string, attachments []*leapmuxv1.Attachment) error {
@@ -2109,7 +2113,13 @@ func (b *acpBase) startACPHandshake(
 		cleanup()
 		return nil, b.formatStartupError("initialize", err)
 	}
-	b.steerMethod = advertisedACPSteerMethod(b.providerName, initResp)
+	// Write under the lock. The note at the session-ID write below gives the
+	// reason.
+	steerMethod := advertisedACPSteerMethod(b.providerName, initResp)
+	b.mu.Lock()
+	b.steerMethod = steerMethod
+	b.mu.Unlock()
+
 	// 2. Send session request (resume or new).
 	sessionMethod, sessionParams := buildACPSessionRequest(opts.ResumeSessionID, opts.WorkingDir, sessionCfg.newMethod, sessionCfg.resumeMethod)
 	sessionResp, err := b.sendRequest(sessionMethod, json.RawMessage(sessionParams), timeout)
@@ -2135,11 +2145,16 @@ func (b *acpBase) startACPHandshake(
 		return nil, b.formatStartupError(sessionMethod, fmt.Errorf("response did not contain a session ID"))
 	}
 
-	// Write under the lock: the reader goroutine started above before Start*
-	// reaches here, and a server pushing a config_option_update right after
-	// session/new reads b.sessionID under b.mu (handleACPConfigOptionUpdate's
-	// list-change broadcast). This mirrors applyHandshakeModels/applyHandshakeMode,
-	// which already write their shared fields under the lock.
+	// Write under the lock. The reader goroutine starts above, before Start*
+	// reaches here, so it runs in parallel with the rest of the handshake. A
+	// server that pushes a config_option_update right after session/new reads
+	// b.sessionID under b.mu (the list-change broadcast in
+	// handleACPConfigOptionUpdate), and the queue goroutine reads b.steerMethod
+	// under b.mu (SupportsSteering, steerAdvertised, GooseCLIAgent.SteerInput).
+	// The invariant, stated once for the whole handshake: every access to
+	// b.steerMethod, b.sessionID, and b.workingDir happens under b.mu. This
+	// matches applyHandshakeModels and applyHandshakeMode, which already write
+	// their shared fields under the lock.
 	b.mu.Lock()
 	b.sessionID = session.SessionID
 	b.workingDir = opts.WorkingDir

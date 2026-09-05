@@ -15,7 +15,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { AgentEditorPanel } from './AgentEditorPanel'
-import { clearAttachments, getAttachments, setAttachments } from './attachments'
+import { clearAttachments, getAttachments, queueEditDraftKey, setAttachments } from './attachments'
 import '~/components/chat/providers'
 
 const HOME = '/home/dev'
@@ -484,6 +484,59 @@ describe('agent editor panel', () => {
     await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
   })
 
+  // The spinner holds for a debounce window after the enqueue resolves, so it
+  // never flashes away. That window must not hold the attachment paths: the
+  // enqueue takes milliseconds, and a composer that refuses a paste, a drop and
+  // the file picker for the rest of the second is the bug this pins.
+  it('accepts an attachment while the send spinner still holds its debounce', async () => {
+    vi.useRealTimers()
+    let finishEnqueue: (() => void) | undefined
+    let send: (() => void) | undefined
+    let addFiles: ((files: File[]) => Promise<number>) | undefined
+    const onSendMessage = vi.fn(() => new Promise<void>((resolve) => {
+      finishEnqueue = resolve
+    }))
+    saveDraft('a1', 'queued text', -1)
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={onSendMessage}
+          triggerSendRef={(value) => { send = value }}
+          addFilesRef={(fn) => { addFiles = fn }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(addFiles).toBeTypeOf('function'))
+
+    // Fake `setTimeout` alone, so the 1000 ms debounce cannot fire on its own
+    // while every assertion below runs. A full fake clock also stops the
+    // FileReader that `addFiles` awaits, and the read never completes.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    send?.()
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('queued text', undefined))
+    expect(screen.getByTestId('file-input')).toBeDisabled()
+    expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
+
+    finishEnqueue?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+
+    // The enqueue settled, so every attachment path opens again -- while the
+    // spinner still shows, which is what proves the two are separate.
+    expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
+    await expect(addFiles?.([new File(['hello'], 'hello.txt', { type: 'text/plain' })])).resolves.toBe(1)
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    expect(screen.getByTestId('composer-attach-file')).not.toBeDisabled()
+
+    // The spinner clears only when its own debounce ends.
+    vi.advanceTimersByTime(1000)
+    expect(screen.queryByTestId('send-spinner')).not.toBeInTheDocument()
+  })
+
   it('clears only the submitted draft after an agent switch', async () => {
     vi.useRealTimers()
     const [agentId, setAgentId] = createSignal('a1')
@@ -524,10 +577,13 @@ describe('agent editor panel', () => {
     setAgentId('a2')
     await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b'))
     finishEnqueue?.()
-    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+    // Wait on the draft that the send clears, not on the composer re-opening:
+    // the attachment paths open one microtask before the editor clears its
+    // submitted draft.
+    await waitFor(() => expect(loadDraft('a1').content).toBe(''))
 
+    expect(screen.getByTestId('file-input')).not.toBeDisabled()
     expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b')
-    expect(loadDraft('a1').content).toBe('')
     expect(loadDraft('a2').content).toBe('draft b')
     expect(getAttachments('a1')).toEqual([])
     expect(getAttachments('a2')).toEqual([attachmentB])
@@ -639,6 +695,45 @@ describe('agent editor panel', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
     await Promise.resolve()
     expect(getAttachments('a1')).toEqual([normalAttachment])
+  })
+
+  // The delete path and the cancel path share one cleanup helper. This pins the
+  // delete call site: no edit is loaded here, so only the helper can drop the
+  // draft that the deleted input left behind.
+  it('forgets the draft of a deleted queued input', async () => {
+    const draftKey = queueEditDraftKey('a1', 'queued-1')
+    saveDraft(draftKey, 'stale edit', -1)
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      items: [{
+        id: 'queued-1',
+        agentId: 'a1',
+        text: 'queued preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+      }],
+    })
+    const onDeleteQueueItem = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot}
+          queueClientId="client-a"
+          onDeleteQueueItem={onDeleteQueueItem}
+        />
+      </PreferencesProvider>
+    ))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await Promise.resolve()
+
+    expect(onDeleteQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'queued-1' }))
+    expect(loadDraft(draftKey).content).toBe('')
   })
 
   it('requires confirmation before it retries uncertain delivery', async () => {

@@ -281,7 +281,7 @@ func agentGatedHandler[T any, PT agentScopedRequest[T]](
 	})
 }
 
-// registerAgentGated registers a handler for a request naming an agent. fn
+// registerAgentGated registers a handler for a request that carries an agent id. fn
 // receives the loaded row so the body never double-fetches.
 func registerAgentGated[T any, PT agentScopedRequest[T]](
 	r registrar,
@@ -314,7 +314,7 @@ func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 	})
 }
 
-// registerAgentGatedByID registers a handler for a request naming an agent,
+// registerAgentGatedByID registers a handler for a request that carries an agent id,
 // resolved through an id-only existence probe — no full-row load for a handler
 // that only needs "does this agent exist?".
 func registerAgentGatedByID[T any, PT agentScopedRequest[T]](

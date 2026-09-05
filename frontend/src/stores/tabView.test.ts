@@ -7,6 +7,7 @@ import type { createTestLayoutStore } from '~/test-support/tabStores'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { NodeKind } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import { EntityRemovedSchema } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -99,6 +100,63 @@ describe('tabView', () => {
         // ...metadata from the store, joined on tab id.
         expect(tab.title).toBe('My Agent')
         expect(tab.gitToplevel).toBe('/repo')
+        expect(tab.supportsSteering).toBe(true)
+        expect(tab.rootAgentId).toBe('root-1')
+        dispose()
+      })
+    })
+  })
+
+  // `assemble` copies each metadata field by hand, and `satisfies Complete<AgentTab>`
+  // makes a forgotten field a compile error. This test states the same contract at
+  // run time: it patches every field the AGENT arm reads and asserts each arrives.
+  it('copies every agent metadata field onto the assembled tab', () => {
+    withTestBridge((harness) => {
+      createRoot((dispose) => {
+        const { view, metadata } = mountView()
+        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
+        metadata.patch('a1', {
+          title: 'Agent One',
+          hasNotification: true,
+          mru: 42,
+          workingDir: '/repo/sub',
+          createdAt: '2026-01-02T03:04:05Z',
+          gitToplevel: '/repo',
+          agentProvider: AgentProvider.CLAUDE_CODE,
+          agentStatus: AgentStatus.ACTIVE,
+          agentSessionId: 'sess-1',
+          optionValues: { model: 'opus' },
+          optionGroups: [],
+          startupError: 'boom',
+          startupMessage: 'starting',
+          parentAgentId: 'parent-1',
+          acceptsMessages: true,
+          supportsSteering: true,
+          rootAgentId: 'root-1',
+        })
+
+        const tab = view.getAgentTab('a1')!
+        expect(tab.type).toBe(TabType.AGENT)
+        expect(tab.id).toBe('a1')
+        expect(tab.workspaceId).toBe(harness.workspaceId)
+        expect(tab.tileId).toBe(harness.rootTileId)
+        expect(tab.position).toBe('M')
+        expect(tab.workerId).toBe('wkr-1')
+        expect(tab.title).toBe('Agent One')
+        expect(tab.hasNotification).toBe(true)
+        expect(tab.mru).toBe(42)
+        expect(tab.workingDir).toBe('/repo/sub')
+        expect(tab.createdAt).toBe('2026-01-02T03:04:05Z')
+        expect(tab.gitToplevel).toBe('/repo')
+        expect(tab.agentProvider).toBe(AgentProvider.CLAUDE_CODE)
+        expect(tab.agentStatus).toBe(AgentStatus.ACTIVE)
+        expect(tab.agentSessionId).toBe('sess-1')
+        expect(tab.optionValues).toEqual({ model: 'opus' })
+        expect(tab.optionGroups).toEqual([])
+        expect(tab.startupError).toBe('boom')
+        expect(tab.startupMessage).toBe('starting')
+        expect(tab.parentAgentId).toBe('parent-1')
+        expect(tab.acceptsMessages).toBe(true)
         expect(tab.supportsSteering).toBe(true)
         expect(tab.rootAgentId).toBe('root-1')
         dispose()

@@ -44,6 +44,10 @@ func setupChildAgentTest(t *testing.T) (*Service, *channel.Dispatcher, string, s
 	return svc, d, childID, "root-1"
 }
 
+// An owner process that is not running is a TRANSIENT condition: the Worker
+// restarts the owner and the same input then delivers. The item stays QUEUED
+// and only the queue pauses, so the user does not have to retry a message by
+// hand because the agent was between processes.
 func TestEnqueueAgentInputToChildOwnerNotRunningStaysInQueue(t *testing.T) {
 	t.Parallel()
 
@@ -62,17 +66,26 @@ func TestEnqueueAgentInputToChildOwnerNotRunningStaysInQueue(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		snapshot, err := svc.InputQueue.Snapshot(ctx, childID)
-		return err == nil && len(snapshot.Items) == 1 && snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
+		return err == nil && len(snapshot.Items) == 1 &&
+			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
+			snapshot.Paused
 	}, time.Second, 10*time.Millisecond)
 	msgs, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{
 		AgentID: childID, Seq: 0,
 	})
 	require.NoError(t, err)
-	require.Empty(t, msgs, "failed input must not enter the transcript")
+	require.Empty(t, msgs, "undelivered input must not enter the transcript")
 }
 
-// This test verifies that a clear operation cannot run for a child agent.
-func TestQueuedClearForChildFailsWithoutTranscript(t *testing.T) {
+// A subagent runs inside its owner's process, so it takes a message or control
+// feedback only. The classifier rewrites "/clear" to a clear-context input,
+// which a subagent can NEVER take -- so the enqueue itself must refuse it.
+//
+// Storing it and failing it at dispatch was worse than useless: the whole
+// child queue paused, a retry classified the text the same way and failed
+// again, and every message behind it stopped. The only escape was to delete
+// the item.
+func TestQueuedClearForChildIsRefusedAtEnqueue(t *testing.T) {
 	t.Parallel()
 
 	svc, d, childID, _ := setupChildAgentTest(t)
@@ -85,12 +98,21 @@ func TestQueuedClearForChildFailsWithoutTranscript(t *testing.T) {
 		Text:    "/clear",
 	}, w)
 
-	require.Empty(t, w.rejections())
-	require.Eventually(t, func() bool {
-		snapshot, err := svc.InputQueue.Snapshot(context.Background(), childID)
-		return err == nil && len(snapshot.Items) == 1 &&
-			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
-	}, time.Second, 10*time.Millisecond)
+	require.NotEmpty(t, w.errors, "the RPC states the refusal")
+	snapshot, err := svc.InputQueue.Snapshot(context.Background(), childID)
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items, "a refused input is never stored")
+	assert.False(t, snapshot.Paused, "and it never stops the queue")
+
+	// A plain message still reaches the same child.
+	plain := newTestWriter()
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		AgentId: childID,
+		Text:    "hello child",
+	}, plain)
+	require.Empty(t, plain.errors)
 }
 
 // This test verifies that a transient registry miss leaves the child input failed.

@@ -91,7 +91,10 @@ func TestCodex_SendChildInputDoesNotAutomaticallySteer(t *testing.T) {
 	agent.collabThreadSpans = map[string]string{"child-thread": "spawn-1"}
 	agent.setChildTurnID("child-thread", "turn-1")
 
-	assert.ErrorIs(t, agent.SendChildInput("child-thread", "later turn", nil), ErrNoActiveTurn)
+	// A child that already runs a turn is busy. The queue holds the item and
+	// dispatches it when the turn ends; ErrNoActiveTurn would fail it instead.
+	assert.ErrorIs(t, agent.SendChildInput("child-thread", "later turn", nil), ErrAgentBusy)
+	assert.NotErrorIs(t, agent.SendChildInput("child-thread", "later turn", nil), ErrNoActiveTurn)
 	assert.Empty(t, requests())
 }
 

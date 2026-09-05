@@ -592,6 +592,7 @@ func New(cfg Config) *Service {
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
+	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
 	svc.Output.SetInputReadyFunc(func(agentID string) {
 		if _, err := svc.InputQueue.TurnEnded(bgCtx(), agentID); err != nil {
 			slog.Warn("advance agent input queue after turn end failed", "agent_id", agentID, "error", err)
@@ -613,7 +614,7 @@ func New(cfg Config) *Service {
 	// An auto-continue injection is not a human-typed input, so it stays
 	// UNSPECIFIED (no scroll-rail jump dot).
 	svc.Output.SetSendMessageFunc(func(agentID, content string) {
-		svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+		svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE)
 	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
@@ -767,19 +768,26 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 	svc.Output.ClearPendingControlRequests(agentID)
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
 	if !stopped {
-		agentIDs := []string{agentID}
-		descendantIDs, err := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
-		if err != nil {
-			slog.Warn("list child input queues after process exit failed", "agent_id", agentID, "error", err)
-		} else {
-			agentIDs = append(agentIDs, descendantIDs...)
-		}
-		for _, queueAgentID := range agentIDs {
+		for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
 			if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
 				slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
 			}
 		}
 	}
+}
+
+// agentSubtreeIDs returns the agent and every descendant of it. A subagent
+// runs inside its parent's process and owns no tab, so every path that stops
+// or archives one agent must reach the whole subtree: a child queue that keeps
+// dispatching after its owner stops fails each item permanently.
+func (svc *Service) agentSubtreeIDs(agentID string) []string {
+	agentIDs := []string{agentID}
+	descendantIDs, err := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
+	if err != nil {
+		slog.Warn("list descendant agents failed", "agent_id", agentID, "error", err)
+		return agentIDs
+	}
+	return append(agentIDs, descendantIDs...)
 }
 
 // Shutdown persists in-memory final state to the database so it

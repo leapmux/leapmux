@@ -119,7 +119,9 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-clear", "ws-1")
 
-	require.NoError(t, svc.handleClearContext("agent-clear"))
+	clearFinish, clearErr := svc.prepareClearContext("agent-clear")
+	require.NoError(t, clearErr)
+	clearFinish()
 
 	assertControlRequestsCleared(t, ctx, svc, w, "agent-clear", requestID)
 }

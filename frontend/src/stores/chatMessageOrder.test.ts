@@ -9,8 +9,6 @@ import {
   lastMessageSeq,
   mergeWindow,
   prunableDroppedSpanIds,
-  transcriptMessageEnd,
-  transcriptMessageStart,
 } from '~/stores/chatMessageOrder'
 
 function msg(id: string, seq: bigint, spanId = '') {
@@ -19,10 +17,8 @@ function msg(id: string, seq: bigint, spanId = '') {
 const ids = (list: { id: string }[]) => list.map(message => message.id)
 
 describe('chatMessageOrder', () => {
-  it('reads the server range directly from a positive-sequence window', () => {
+  it('reads the edge sequences of a window', () => {
     const messages = [msg('a', 1n), msg('b', 2n)]
-    expect(transcriptMessageStart(messages)).toBe(0)
-    expect(transcriptMessageEnd(messages)).toBe(2)
     expect(firstMessageSeq(messages)).toBe(1n)
     expect(lastMessageSeq(messages)).toBe(2n)
     expect(firstMessageSeq([])).toBeUndefined()
@@ -82,6 +78,25 @@ describe('chatMessageOrder', () => {
     finally {
       vi.unstubAllEnvs()
     }
+  })
+
+  it('interleaves a newer page with the rows already in the window', () => {
+    const merged = mergeWindow(
+      [msg('a', 1n), msg('c', 3n), msg('e', 5n)],
+      [msg('b', 2n), msg('d', 4n), msg('f', 6n)],
+      'newer',
+    )
+    expect(ids(merged)).toEqual(['a', 'b', 'c', 'd', 'e', 'f'])
+    expect(merged.map(message => message.seq)).toEqual([1n, 2n, 3n, 4n, 5n, 6n])
+  })
+
+  it('keeps an unordered page in sequence order', () => {
+    const merged = mergeWindow(
+      [msg('a', 1n), msg('d', 4n)],
+      [msg('e', 5n), msg('b', 2n), msg('c', 3n)],
+      'newer',
+    )
+    expect(ids(merged)).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
 
   it('replaces a stable ID after a resequence', () => {

@@ -13,6 +13,7 @@ import {
   extractSettingsChanges,
   getInnerMessage,
   getInnerMessageType,
+  isCompactBoundary,
   messageUsage,
   parseMessageContent,
 } from './messageParser'
@@ -295,6 +296,49 @@ describe('extractContextUsage', () => {
     }
     const msg = makeMsg(MessageSource.AGENT, content)
     expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isCompactBoundary
+// ---------------------------------------------------------------------------
+
+describe('isCompactBoundary', () => {
+  it('recognizes the Claude compact_boundary system message', () => {
+    expect(isCompactBoundary({ type: 'system', subtype: 'compact_boundary' })).toBe(true)
+  })
+
+  it('recognizes a completed Codex contextCompaction item at the top level', () => {
+    expect(isCompactBoundary({ item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1' })).toBe(true)
+  })
+
+  it('recognizes a completed Codex contextCompaction item inside an item/completed notification', () => {
+    expect(isCompactBoundary({
+      method: 'item/completed',
+      params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
+    })).toBe(true)
+  })
+
+  it('refuses an item/completed notification for any other item type', () => {
+    expect(isCompactBoundary({
+      method: 'item/completed',
+      params: { item: { type: 'agentMessage', id: 'msg-1' } },
+    })).toBe(false)
+  })
+
+  it('refuses the item/started notification that only opens the compaction', () => {
+    expect(isCompactBoundary({
+      method: 'item/started',
+      params: { item: { type: 'contextCompaction', id: 'compact-1' } },
+    })).toBe(false)
+  })
+
+  it('refuses an item/completed notification with no params', () => {
+    expect(isCompactBoundary({ method: 'item/completed' })).toBe(false)
+  })
+
+  it('refuses the thread/compacted notification, which carries no boundary', () => {
+    expect(isCompactBoundary({ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } })).toBe(false)
   })
 })
 

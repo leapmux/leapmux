@@ -604,10 +604,17 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 
 // SendInput starts a new turn with the current settings. It refuses an active
 // turn because only SteerInput can add input to that turn.
+//
+// SendInput sends the text and nothing else. It reads no command out of the
+// text. The queue classifies "/compact" and "/summarize" before dispatch and
+// calls CompactContext instead, so CompactContext is the single entry point to
+// a native compaction.
+//
+// Do not add a second command check here. It disagrees with the one in the
+// queue, which classifies only a plain user message: a control response whose
+// text is "/compact" keeps its kind, reaches this method, and a check here
+// starts a compaction in place of the answer that the agent waits for.
 func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
-	if command := strings.TrimSpace(content); (command == "/compact" || command == "/summarize") && len(attachments) == 0 {
-		return a.CompactContext()
-	}
 	// Read shared state under lock, then release before the blocking RPC.
 	a.mu.Lock()
 	if a.stopped {
@@ -634,7 +641,7 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 	// Normal queue dispatch never changes the active turn. Steering is an
 	// explicit queue operation through SteerInput.
 	if turnID != "" {
-		return fmt.Errorf("%w: %s", ErrNoActiveTurn, turnID)
+		return fmt.Errorf("%w: %s", ErrAgentBusy, turnID)
 	}
 
 	return a.sendTurnStart(threadID, input, turnSettings{
@@ -704,6 +711,10 @@ func classifyCodexCompactionRequestError(err error) error {
 	return classifyJSONRPCDeliveryError("thread/compact/start", err)
 }
 
+// SupportsSteering always reports true. The Codex app-server accepts turn/steer
+// for any active turn, so the capability needs no handshake discovery.
+func (a *CodexAgent) SupportsSteering() bool { return true }
+
 func (a *CodexAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	threadID, turnID := a.threadID, a.turnID
@@ -725,12 +736,6 @@ func (a *CodexAgent) SteerInput(content string, attachments []*leapmuxv1.Attachm
 		return ErrNoActiveTurn
 	}
 	return nil
-}
-
-func (a *CodexAgent) InputReady() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return !a.stopped && a.threadID != "" && a.turnID == ""
 }
 
 // buildCodexInputBlocks converts text + classified attachments into Codex's

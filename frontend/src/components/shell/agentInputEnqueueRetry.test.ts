@@ -1,7 +1,7 @@
 import type { FileAttachment } from '~/components/chat/attachments'
 import { describe, expect, it } from 'vitest'
 import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createAgentInputEnqueueRetry } from './agentInputEnqueueRetry'
+import { createAgentInputEnqueueRetry, MAX_PENDING_ATTEMPTS } from './agentInputEnqueueRetry'
 
 function attachment(filename: string, data: number[]): FileAttachment {
   const bytes = new Uint8Array(data)
@@ -12,6 +12,15 @@ function attachment(filename: string, data: number[]): FileAttachment {
     mimeType: 'text/plain',
     data: bytes,
     size: bytes.byteLength,
+  }
+}
+
+function message(text: string) {
+  return {
+    agentId: 'agent-1',
+    kind: AgentInputKind.USER_MESSAGE,
+    text,
+    attachments: [] as FileAttachment[],
   }
 }
 
@@ -63,6 +72,59 @@ describe('agent input enqueue retry', () => {
     expect(retry.inputIdFor(message)).toBe('input-1')
     expect(retry.inputIdFor({ ...message, kind: AgentInputKind.CONTROL_FEEDBACK, text: 'feedback' })).toBe('input-2')
     expect(retry.inputIdFor(message)).toBe('input-1')
+  })
+
+  // A failed send leaves the text in the composer. The user can abandon it,
+  // type a different message, and send that instead. Both attempts stay
+  // pending, so a later re-send of either one recovers its own input ID rather
+  // than minting a second ID for an input the Worker can already hold.
+  it('keeps two abandoned attempts for one agent independent', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const first = {
+      agentId: 'agent-1',
+      kind: AgentInputKind.USER_MESSAGE,
+      text: 'first',
+      attachments: [] as FileAttachment[],
+    }
+    const second = { ...first, text: 'second' }
+
+    const firstId = retry.inputIdFor(first)
+    const secondId = retry.inputIdFor(second)
+
+    expect(secondId).not.toBe(firstId)
+    expect(retry.inputIdFor(first)).toBe(firstId)
+    expect(retry.inputIdFor(second)).toBe(secondId)
+  })
+
+  it('drops the oldest attempt once the pending map is full', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const oldestId = retry.inputIdFor(message('message-0'))
+    const newestText = `message-${MAX_PENDING_ATTEMPTS}`
+    let newestId = ''
+    for (let index = 1; index <= MAX_PENDING_ATTEMPTS; index++)
+      newestId = retry.inputIdFor(message(`message-${index}`))
+
+    // One attempt past the cap, so the oldest aged out and mints a fresh ID.
+    expect(retry.inputIdFor(message('message-0'))).not.toBe(oldestId)
+    // Every attempt inside the cap still recovers its own ID.
+    expect(retry.inputIdFor(message(newestText))).toBe(newestId)
+  })
+
+  it('moves a repeated attempt to the newest slot so it does not age out', () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const ids: string[] = []
+    for (let index = 1; index <= MAX_PENDING_ATTEMPTS; index++)
+      ids.push(retry.inputIdFor(message(`message-${index}`)))
+
+    // Repeat the oldest attempt, then add one more past the cap.
+    expect(retry.inputIdFor(message('message-1'))).toBe(ids[0])
+    retry.inputIdFor(message('overflow'))
+
+    expect(retry.inputIdFor(message('message-1'))).toBe(ids[0])
+    expect(retry.inputIdFor(message('message-2'))).not.toBe(ids[1])
   })
 
   it('does not let a late acknowledgement clear a newer attempt', () => {

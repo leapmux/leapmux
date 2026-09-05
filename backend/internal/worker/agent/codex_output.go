@@ -16,11 +16,14 @@ import (
 var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected before completion(?:$|[^[:alnum:]].*)`)
 
 // codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
-// carry agent/system metadata (lifecycle, MCP startup, skills invalidation,
-// remote-control status). They share one handler — persist verbatim as
-// agent-emitted notifications. Methods with extra side effects
-// (rate-limit, token-usage broadcasts) keep dedicated cases below.
+// carry agent/system metadata (auto-compaction, lifecycle, MCP startup, skills
+// invalidation, remote-control status). They share one handler — persist
+// verbatim as agent-emitted notifications. Methods with extra side effects
+// (rate-limit, token-usage broadcasts) keep dedicated cases below. A method
+// that this table omits falls to the default branch and lands in the transcript
+// as a raw JSON-RPC bubble.
 var codexSystemMetadataMethods = map[string]struct{}{
+	"thread/compacted":                {},
 	"thread/name/updated":             {},
 	"skills/changed":                  {},
 	"remoteControl/status/changed":    {},
@@ -71,7 +74,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleItemStarted(line.Raw, line.Params)
 
 	case "item/completed":
-		a.handleItemCompleted(line.Params)
+		a.handleItemCompleted(line.Raw, line.Params)
 
 	case "turn/completed":
 		a.handleTurnCompleted(line.Params)
@@ -457,7 +460,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 }
 
 // handleItemCompleted processes item/completed notifications.
-func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
+func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 	item, itemType, itemID, threadID := extractCodexItem(params)
 	if item == nil {
 		return
@@ -551,9 +554,15 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		a.sink.BroadcastStreamEnd(itemID)
 	case "contextCompaction":
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType,
-		}); err != nil {
+		// Persist the raw `item/completed` JSON-RPC notification verbatim as
+		// AGENT, the same way the `item/started` arm above does. It must join
+		// the notification thread that the start opened, because the
+		// consolidator drops the "Compacting context..." status only when the
+		// compaction boundary lands in that same thread. PersistMessage clears
+		// the thread instead, which leaves the status in place for the rest of
+		// the session. codexProvider.Classify gives this notification the
+		// compaction-boundary kind.
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("codex persist contextCompaction/completed", "agent_id", a.agentID, "error", err)
 		}
 	default:

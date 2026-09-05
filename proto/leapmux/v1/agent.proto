@@ -346,7 +346,7 @@ message QueuedAgentInput {
   string id = 1;
   string agent_id = 2;
   AgentInputKind kind = 3;
-  // A bounded text preview. BeginQueuedAgentInputEdit returns the full text.
+  // A size-limited text preview. BeginQueuedAgentInputEdit returns the full text.
   string text = 4;
   repeated QueuedAgentInputAttachment attachments = 5;
   int64 order = 6;
@@ -356,6 +356,11 @@ message QueuedAgentInput {
   uint64 version = 10;
   string created_at = 11;
   string updated_at = 12;
+  // True when SteerQueuedAgentInput accepts this item right now. The Worker
+  // computes it from the same predicate its steering guard applies, so a
+  // client never offers a Steer that the Worker then refuses. A client that
+  // derives this from the kind alone drifts the moment AgentInputKind grows.
+  bool can_steer = 13;
 }
 
 message AgentInputQueueSnapshot {

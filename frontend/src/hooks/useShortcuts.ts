@@ -244,7 +244,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.scrollActiveTabPageDown', 'Scroll Active Tab Down One Page', () => scrollActiveTabPage(1), 'View')
 
   cmd('chat.sendMessage', 'Send Message', () => {
-    getFocusedChatSend()?.()
+    void getFocusedChatSend()?.()
   }, 'Chat')
 
   // Terminal cursor navigation

@@ -95,7 +95,7 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
       showWarnToast(count === 1 ? reason : `${reason} (${count} files)`)
     }
     if (sizeLimitHit)
-      showWarnToast('Total attachment size exceeds 10 MB')
+      showWarnToast(`One message accepts at most ${MAX_TOTAL_ATTACHMENT_SIZE / 1024 / 1024} MiB of text and attachments`)
 
     if (accepted.length === 0)
       return 0
@@ -140,7 +140,7 @@ export function useChatAttachments(opts: UseChatAttachmentsOptions): UseChatAtta
   const addDroppedDataTransfer = async (dataTransfer: DataTransfer): Promise<number> => {
     const { files, sizeLimitHit } = await collectDroppedAttachmentFiles(dataTransfer, totalAttachmentSize(attachments()))
     if (sizeLimitHit)
-      showWarnToast('Total attachment size exceeds 10 MB')
+      showWarnToast(`One message accepts at most ${MAX_TOTAL_ATTACHMENT_SIZE / 1024 / 1024} MiB of text and attachments`)
     return addFiles(files)
   }
 

@@ -15,6 +15,7 @@ import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerm
 import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -2543,6 +2544,7 @@ describe('useWorkspaceConnection chat history load', () => {
       dispose = d
       useWorkspaceConnection({
         chatStore: createChatStore(),
+        agentInputQueueStore: createAgentInputQueueStore(),
         view: tabs.view,
         metadata: tabs.metadata,
         selection: tabs.selection,

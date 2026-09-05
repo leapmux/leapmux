@@ -107,9 +107,9 @@ export interface HistoryPaginatorDeps {
   getFirstSeq: (agentId: string) => bigint
   getLastSeq: (agentId: string) => bigint
   /**
-   * The window's first and last persisted sequence, or `undefined` when the window is empty.
-   * The re-anchor guards use this signal. Cursor readers use methods that return
-   * 0n a cursor reader wants.
+   * The window's first and last persisted sequence, or `undefined` when the window
+   * is empty. The re-anchor guards read this honest pair, because getFirstSeq and
+   * getLastSeq above collapse an empty window to the 0n that a cursor reader wants.
    */
   getFirstMessageSeq: (agentId: string) => bigint | undefined
   getLastMessageSeq: (agentId: string) => bigint | undefined

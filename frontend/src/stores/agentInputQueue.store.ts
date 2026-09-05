@@ -36,9 +36,5 @@ export function createAgentInputQueueStore(isLiveAgent: (agentId: string) => boo
         delete queues[agentId]
       }))
     },
-
-    clearAll() {
-      setState('byAgent', {})
-    },
   }
 }

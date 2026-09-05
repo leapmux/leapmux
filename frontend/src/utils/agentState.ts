@@ -63,8 +63,9 @@ function nonProgressTypes(): Set<string> {
 /**
  * Aggregate `nonProgressMethods` across every registered provider.
  * The base set is empty (no provider-agnostic JSON-RPC methods exist);
- * Codex contributes its hidden-lifecycle methods plus the metadata-only
- * notifications (mcp startup, rate limits, thread compaction).
+ * Codex contributes its hidden-lifecycle methods -- which include
+ * `thread/compacted` -- plus the metadata-only notifications (mcp startup,
+ * rate limits).
  */
 function nonProgressMethods(): Set<string> {
   if (cachedNonProgressMethods)

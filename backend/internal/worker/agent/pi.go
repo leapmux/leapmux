@@ -321,14 +321,13 @@ func (a *PiAgent) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	return a.sendInput(content, attachments, false)
 }
 
+// SupportsSteering always reports true. Pi accepts a message with
+// streamingBehavior:"steer" during any turn, so the capability needs no
+// handshake discovery.
+func (a *PiAgent) SupportsSteering() bool { return true }
+
 func (a *PiAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(content, attachments, true)
-}
-
-func (a *PiAgent) InputReady() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return !a.stopped && !a.currentTurnActive
 }
 
 func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, steer bool) error {
@@ -343,7 +342,7 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 		return ErrNoActiveTurn
 	}
 	if !steer && turnActive {
-		return ErrNoActiveTurn
+		return ErrAgentBusy
 	}
 
 	classified := classifyAttachments(attachments)

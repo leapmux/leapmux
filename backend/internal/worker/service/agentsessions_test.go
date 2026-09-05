@@ -492,3 +492,78 @@ func TestMergeSessionSummaries_AClosedRowCannotReviveAnOpenHandle(t *testing.T) 
 	)
 	assert.Equal(t, []string{"other"}, summaryHandles(got))
 }
+
+// seedSessionMessage stores one transcript row for the agent at an explicit
+// time and returns the seq the store allocated. The store allocates seq from
+// the agent's monotonic high-water mark, so the call ORDER fixes the seq order
+// while the caller fixes the times independently -- which is the whole point of
+// the test below.
+func seedSessionMessage(t *testing.T, svc *Service, agentID, messageID string, at time.Time) int64 {
+	t.Helper()
+	seq, err := createMessageRow(context.Background(), svc.Queries, db.CreateMessageParams{
+		ID:            messageID,
+		AgentID:       agentID,
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte("hello"),
+		SpanLines:     "[]",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     sqltime.NewSQLiteTime(at),
+	})
+	require.NoError(t, err)
+	return seq
+}
+
+// TestListAgentSessions_RanksBySessionsLatestMessageTime pins that
+// last_activity is the LATEST message time, and not the time of the latest
+// message.
+//
+// The two differ because a message the durable input queue accepts keeps the
+// time the user COMPOSED it, and an item can wait in a paused queue for an
+// hour before it takes its seq. The highest-seq row is then OLDER than an
+// earlier row of the same session. Read through the seq order, a session that
+// just ran reports an hour of silence, and it sorts below sessions that are
+// genuinely older.
+func TestListAgentSessions_RanksBySessionsLatestMessageTime(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	dir := t.TempDir()
+	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+
+	justRan := mergeBase.Add(-time.Minute)
+	genuinelyOlder := mergeBase.Add(-30 * time.Minute)
+	composedLongAgo := mergeBase.Add(-2 * time.Hour)
+
+	seedResumableAgent(t, svc, "a-recent", "handle-recent", "Ran a minute ago", dir, provider, true)
+	seedResumableAgent(t, svc, "a-older", "handle-older", "Idle for half an hour", dir, provider, true)
+
+	// The turn that just ran takes the lower seq.
+	firstSeq := seedSessionMessage(t, svc, "a-recent", "recent-1", justRan)
+	// The message the user typed two hours ago, which sat in a paused queue and
+	// took its seq only when the queue delivered it. It is the HIGHEST seq of
+	// this session and carries the OLDEST time.
+	secondSeq := seedSessionMessage(t, svc, "a-recent", "recent-2", composedLongAgo)
+	require.Greater(t, secondSeq, firstSeq,
+		"fixture check: the oldest time must sit on the highest seq")
+	seedSessionMessage(t, svc, "a-older", "older-1", genuinelyOlder)
+
+	rows, err := svc.Queries.ListSessionsForResume(ctx, db.ListSessionsForResumeParams{
+		AgentProvider: provider,
+		WorkingDir:    dir,
+	})
+	require.NoError(t, err)
+	activity := make(map[string]time.Time, len(rows))
+	for i := range rows {
+		activity[rows[i].AgentSessionID] = rows[i].LastActivity.Time
+	}
+	assert.True(t, justRan.Equal(activity["handle-recent"]),
+		"the session reports %s; the queued message hid the turn that just ran",
+		activity["handle-recent"])
+	assert.True(t, genuinelyOlder.Equal(activity["handle-older"]),
+		"a session with one message must report that message's time, got %s",
+		activity["handle-older"])
+
+	resp := listAgentSessions(t, d, w, provider, dir)
+	assert.Equal(t, []string{"handle-recent", "handle-older"}, summaryHandles(resp.GetSessions()),
+		"the picker sorted the session that just ran below an older one")
+}

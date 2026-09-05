@@ -491,6 +491,18 @@ func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 			}
 		}
 		return NotificationClassification{}
+	case "item/completed":
+		// The contextCompaction completion is the Codex compaction boundary:
+		// it ends the "Compacting context..." status that the matching
+		// item/started opened. Every other item type routes through the
+		// per-item handler and never hits PersistNotification.
+		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == "contextCompaction" {
+			return NotificationClassification{
+				Kind: NotificationKindCompactionBoundary,
+				Key:  "codex:item/completed:contextCompaction",
+			}
+		}
+		return NotificationClassification{}
 	default:
 		return NotificationClassification{}
 	}

@@ -569,15 +569,14 @@ type ContextCompactor interface {
 // explicit Steer operation. Normal dispatch always starts a later turn.
 type InputSteerer interface {
 	SteerInput(content string, attachments []*leapmuxv1.Attachment) error
-}
-
-type SteeringCapability interface {
+	// SupportsSteering reports whether this provider can steer the running
+	// process right now. The Manager publishes the answer to the client, which
+	// shows or hides the Steer control, so a provider that cannot steer must
+	// answer false. A provider that discovers the capability at the handshake
+	// answers false until the discovery succeeds. The method belongs to the
+	// interface, not to an optional one, so a new provider cannot forget it and
+	// claim a capability that it does not have.
 	SupportsSteering() bool
-}
-
-// InputReadiness reports whether normal queue dispatch can start a turn.
-type InputReadiness interface {
-	InputReady() bool
 }
 
 type inputReadySink interface {
@@ -605,6 +604,15 @@ var (
 	ErrSteeringUnsupported   = errors.New("agent provider does not support steering")
 	ErrNoActiveTurn          = errors.New("agent has no active turn to steer")
 	ErrDeliveryUncertain     = errors.New("agent input delivery is uncertain")
+
+	// ErrAgentBusy reports the opposite condition to ErrNoActiveTurn: the agent
+	// already runs a turn, so it refuses input that starts another turn. A
+	// provider returns it from SendInput.
+	//
+	// The condition is transient. The queue must hold the item and dispatch it
+	// again after the turn ends. The queue must not record a permanent failure,
+	// because the agent works and the text is still deliverable.
+	ErrAgentBusy = errors.New("agent is already running a turn")
 )
 
 // ChildSteerer lets a provider address a child conversation in its process.
@@ -622,15 +630,27 @@ type ChildSteerer interface {
 }
 
 // ErrChildSteeringUnsupported is returned by the Manager when a running Agent
-// does not implement ChildSteerer (the provider cannot steer a subagent). The
-// service maps it to FailedPrecondition so the frontend shows a clear queue failure.
+// does not implement ChildSteerer, which means that the provider cannot address
+// a subagent at all.
+//
+// Each caller maps it on its own, and the three mappings differ. The
+// InterruptChild handler maps it to FailedPrecondition, so the client shows the
+// reason. Queue steer maps it to inputqueue.ErrSteeringUnsupported, through
+// classifyQueueSteerError. Queue dispatch (SendChildInput) has no case for it
+// and passes it to classifyQueueDeliveryError with every other delivery error.
 var ErrChildSteeringUnsupported = errors.New("agent provider does not support steering a subagent")
 
 // ErrChildNotSteerableYet is returned by a ChildSteerer when the owner process
-// is running but does not yet know the child thread (a worker restart emptied
-// the in-memory spawn index; the registry row resolves, but the live stream has
-// not re-fired the spawn). The service maps it to UNAVAILABLE so the frontend
-// re-queues the send/interrupt instead of treating it as a permanent delivery
-// failure (SendChildInput) or a missing child (InterruptChild). Distinguished
-// from ErrChildSteeringUnsupported: this provider DOES steer, just not yet.
+// runs but does not yet know the child thread. A worker restart empties the
+// in-memory spawn index, so the registry row resolves while the live stream did
+// not report the spawn again. The condition is transient: the same call
+// succeeds after the owner process reports the spawn.
+//
+// ErrChildSteeringUnsupported is the opposite condition. That provider cannot
+// address a subagent at all. This provider does address one, but not yet.
+//
+// Each caller maps it on its own. The InterruptChild handler maps it to
+// UNAVAILABLE, so the client sends the interrupt again. Queue dispatch
+// (SendChildInput) passes it to classifyQueueDeliveryError, which decides how
+// the queue records the failed delivery.
 var ErrChildNotSteerableYet = errors.New("subagent not yet steerable in the running owner process; retry")

@@ -339,6 +339,49 @@ describe('chatstore loadmessagemarks', () => {
     expect(rail.maxSeq).toBe(9n)
   })
 
+  it('does not let an in-flight seed resurrect a mark that a reap dropped', async () => {
+    const store = createChatStore()
+    store.addMessage('agent-1', markedMessage('m1', 1n))
+    store.addMessage('agent-1', markedMessage('m2', 2n))
+    store.liveTail.bump('agent-1', 2n)
+    expect(store.getRailData('agent-1').marks.map(m => m.seq)).toEqual([1n, 2n])
+
+    const stale = deferred<ListMessageMarksResponse>()
+    mockListMessageMarks
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValueOnce({
+        $typeName: 'leapmux.v1.ListMessageMarksResponse',
+        marks: [messageMark(1n, MarkType.USER_MESSAGE)],
+        minSeq: 1n,
+        maxSeq: 1n,
+      })
+    const load = store.loadMessageMarks('worker-1', 'agent-1')
+
+    // The same catchUpComplete frame reseeds the marks AND reconciles the tail, so
+    // the reap lands while the seed is in flight. The worker reports 1 as the
+    // authoritative tail: the server deleted m2 while this client was disconnected.
+    // reapPhantomRows drops the row and calls messageMarks.remove for its seq.
+    store.reconcileAuthoritativeTail('agent-1', 1n)
+    expect(store.getMessages('agent-1').map(m => m.id)).toEqual(['m1'])
+    expect(store.getRailData('agent-1').marks.map(m => m.seq)).toEqual([1n])
+
+    // The seed left before the reap, so its response still carries seq 2. The
+    // revision that remove() bumped makes the seeder discard this answer and ask
+    // again, instead of re-adding a dot for a row the server no longer holds.
+    stale.resolve({
+      $typeName: 'leapmux.v1.ListMessageMarksResponse',
+      marks: [messageMark(1n, MarkType.USER_MESSAGE), messageMark(2n, MarkType.USER_MESSAGE)],
+      minSeq: 1n,
+      maxSeq: 2n,
+    })
+    await load
+
+    const rail = store.getRailData('agent-1')
+    expect(mockListMessageMarks).toHaveBeenCalledTimes(2)
+    expect(rail.marks.map(m => m.seq)).toEqual([1n])
+    expect(rail.loaded).toBe(true)
+  })
+
   it('retries a stale seed so a live mark during startup still reveals the rail', async () => {
     const store = createChatStore()
     const stale = deferred<ListMessageMarksResponse>()

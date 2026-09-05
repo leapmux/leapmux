@@ -427,10 +427,11 @@ func (b *blockingStub) Wait() error { <-b.waitCh; return nil }
 func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 	t.Parallel()
 
+	type exitView struct{ hasAgent, alive bool }
 	m := NewManager(nil)
-	registeredDuringExit := make(chan bool, 1)
+	viewDuringExit := make(chan exitView, 1)
 	m.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
-		registeredDuringExit <- m.HasAgent(agentID)
+		viewDuringExit <- exitView{hasAgent: m.HasAgent(agentID), alive: m.AgentAlive(agentID)}
 	})
 	provider := &blockingStub{waitCh: make(chan struct{})}
 	_, err := m.startAgentWith(context.Background(), Options{
@@ -440,8 +441,12 @@ func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
 
 	close(provider.waitCh)
 	select {
-	case registered := <-registeredDuringExit:
-		assert.True(t, registered, "the exit callback must pause the queue before the slot permits a restart")
+	case view := <-viewDuringExit:
+		assert.True(t, view.hasAgent, "the exit callback must pause the queue before the slot permits a restart")
+		// The slot outliving the process is exactly why HasAgent cannot answer
+		// "may I write to this provider". A caller that is about to write asks
+		// AgentAlive, or it writes to a closed pipe and fails the user's input.
+		assert.False(t, view.alive, "a provider that already exited must not read as alive")
 	case <-time.After(2 * time.Second):
 		t.Fatal("exit callback did not run")
 	}

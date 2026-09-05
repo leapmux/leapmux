@@ -79,6 +79,24 @@ export function createLiveTailTracker() {
       if (get(agentId) <= liveSeqAtEntry)
         setByAgent(agentId, 0n)
     },
+    /**
+     * Reconcile the recorded live tail to the AUTHORITATIVE maximum server seq that
+     * the worker reports at catch-up.
+     *
+     * The method raises a lagging tail to `seq`. It also lowers a tail that the
+     * client over-recorded from a deletion it missed while disconnected, so a stale
+     * high-water mark cannot wedge `caughtUp` at false forever.
+     *
+     * The method NEVER lowers a recorded tail above `reapCeilingSeq`. Such a seq is
+     * higher than the catch-up START tail, so it post-dates the replay: it came from
+     * a live broadcast that raced in DURING catch-up. The worker registers the
+     * watcher BEFORE it reads the tail, so that frame can precede catch-up complete.
+     * The server can still supply the row, and the forward-fill pulls it.
+     *
+     * With no ceiling -- the CatchUpStart path, before any live arrival -- the method
+     * lowers every stale tail above `seq`. It clamps the result to a non-negative
+     * value.
+     */
     setAuthoritative(agentId: string, seq: bigint, reapCeilingSeq?: bigint) {
       const recorded = get(agentId)
       // Behind the authoritative tail: raise to it (the server has observed up to `seq`).
@@ -92,10 +110,10 @@ export function createLiveTailTracker() {
         setByAgent(agentId, seq > 0n ? seq : 0n)
     },
     /**
-     * Drop an agent's recorded live tail entirely when the agent is closed. The
-     * The reconcilers only raise or lower the bigint. They never
-     * remove the key, so without this a long session leaks one entry per agent
-     * ever observed. Called from the chat store's forgetAgent cleanup.
+     * Drop an agent's recorded live tail entirely when the agent is closed.
+     * The reconcilers only raise or lower the bigint. They never remove the key,
+     * so without this a long session leaks one entry per agent ever observed.
+     * Called from the chat store's forgetAgent cleanup.
      */
     forget(agentId: string) {
       base.remove(agentId)

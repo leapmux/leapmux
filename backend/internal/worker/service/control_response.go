@@ -357,7 +357,7 @@ func (svc *Service) handleControlResponsePromptPlan(agentID string, dbAgent db.A
 			// The user's typed rejection reason IS their answer to the plan-mode control
 			// request, so mark it CONTROL_RESPONSE for a rail dot -- consistent with every
 			// other deny-with-feedback path (ExitPlanMode, permission decisions).
-			svc.enqueueSyntheticUserInput(agentID, msg, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE)
+			svc.enqueueSyntheticUserInput(agentID, msg, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK)
 		} else {
 			svc.persistControlResponseRow(agentID, dbAgent.AgentProvider, plan)
 		}

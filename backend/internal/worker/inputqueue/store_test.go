@@ -3,6 +3,7 @@ package inputqueue
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -57,10 +58,19 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_one_edit'`).Scan(&editIndexSQL))
 	assert.Contains(t, editIndexSQL, "WHERE edit_owner <> ''")
-	var archiveMarkerColumns int
+	var pauseOwnerColumns, archiveMarkerColumns int
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'pause_owner'`).Scan(&pauseOwnerColumns))
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'paused_for_archive'`).Scan(&archiveMarkerColumns))
-	assert.Equal(t, 1, archiveMarkerColumns)
+	assert.Equal(t, 1, pauseOwnerColumns)
+	assert.Zero(t, archiveMarkerColumns, "pause_owner replaced the single-cause archive flag")
+	// The item id is the primary key, so a composite unique over (agent_id, id)
+	// can never reject a row that the primary key admits.
+	var itemsTableSQL string
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_master WHERE name = 'agent_input_queue_items'`).Scan(&itemsTableSQL))
+	assert.NotContains(t, itemsTableSQL, "UNIQUE(agent_id, id)")
 }
 
 func TestStoreEnqueueRoundTripAndIdempotency(t *testing.T) {
@@ -86,7 +96,7 @@ func TestStoreEnqueueRoundTripAndIdempotency(t *testing.T) {
 	assert.ErrorIs(t, err, ErrConflict)
 }
 
-func TestStoreSnapshotsBoundTextButEditReturnsFullText(t *testing.T) {
+func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
 	t.Parallel()
 
 	_, store := newStoreFixture(t)
@@ -495,7 +505,7 @@ func TestStoreRecoveryIgnoresClosedAgents(t *testing.T) {
 func TestStoreRetryRequiresUncertainDeliveryConfirmation(t *testing.T) {
 	t.Parallel()
 
-	_, store := newStoreFixture(t)
+	database, store := newStoreFixture(t)
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
@@ -510,10 +520,16 @@ func TestStoreRetryRequiresUncertainDeliveryConfirmation(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+	// The item returned to QUEUED, so it released its reservation. Any message
+	// the transcript took between the failure and the retry holds a higher seq
+	// than the stale reservation, so reusing it would sort the retried message
+	// above rows that already precede it.
+	_, err = database.ExecContext(ctx, `UPDATE agents SET message_seq_hwm = message_seq_hwm + 5 WHERE id = ?`, "agent-1")
+	require.NoError(t, err)
 	retried, _, err := store.PrepareRetry(ctx, "agent-1")
 	require.NoError(t, err)
 	require.NotNil(t, retried)
-	assert.Equal(t, prepared.ReservedSeq, retried.ReservedSeq)
+	assert.Greater(t, retried.ReservedSeq, prepared.ReservedSeq)
 }
 
 func TestStoreRetryRejectsEditedFailedHead(t *testing.T) {
@@ -549,7 +565,7 @@ func TestStoreEnforcesQueueItemCap(t *testing.T) {
 	assert.ErrorIs(t, err, ErrQueueFull)
 }
 
-func TestStoreRejectsUnboundedAttachmentMetadata(t *testing.T) {
+func TestStoreRejectsAttachmentMetadataOverTheLimits(t *testing.T) {
 	t.Parallel()
 
 	_, store := newStoreFixture(t)
@@ -600,4 +616,171 @@ func TestStoreEnforcesAggregateAttachmentCap(t *testing.T) {
 		Attachments: []Attachment{{Filename: "one.bin", Data: []byte{1}}},
 	})
 	assert.ErrorIs(t, err, ErrQueueAttachmentsLarge)
+}
+
+// The head returns to the queue and the pause it caused lifts, so the items
+// behind it dispatch again. Retry that left the pause in place stalled the
+// whole queue with no visible reason: the failure the user retried had already
+// succeeded, and only a manual resume moved the queue again.
+func TestStoreRetryLiftsTheDeliveryPause(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"one", "two"} {
+		_, err := store.Enqueue(ctx, NewItem{ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id})
+		require.NoError(t, err)
+	}
+	_, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	failed, err := store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
+	require.NoError(t, err)
+	require.True(t, failed.Paused)
+
+	retried, err := store.Retry(ctx, "agent-1", "one", false)
+	require.NoError(t, err)
+	assert.False(t, retried.Paused, "the retried failure no longer holds the queue")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED, retried.PauseReason)
+}
+
+// A pause the USER created is not the delivery pause, so a retry leaves it.
+func TestStoreRetryKeepsAManualPause(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	_, _, err = store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
+	require.NoError(t, err)
+	_, err = store.SetPaused(ctx, "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+	require.NoError(t, err)
+
+	retried, err := store.Retry(ctx, "agent-1", "one", false)
+	require.NoError(t, err)
+	assert.True(t, retried.Paused, "the user's pause outlives a retry it did not cause")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, retried.PauseReason)
+}
+
+// A plan-execution input keeps its marker whatever else it carries. The
+// renderers key the collapsible "Execute plan" bubble off that marker alone,
+// so an attachment used to turn the row into an ordinary user message.
+func TestStoreAcceptKeepsThePlanMarkerWithAttachments(t *testing.T) {
+	t.Parallel()
+
+	item := Item{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION, Text: "run it"}
+	withAttachment, err := transcriptContent(item, []Attachment{{Filename: "a.png", MimeType: "image/png"}})
+	require.NoError(t, err)
+	withoutAttachment, err := transcriptContent(item, nil)
+	require.NoError(t, err)
+
+	var parsedWith, parsedWithout map[string]any
+	require.NoError(t, json.Unmarshal(withAttachment, &parsedWith))
+	require.NoError(t, json.Unmarshal(withoutAttachment, &parsedWithout))
+	assert.Equal(t, true, parsedWith["planExecution"])
+	assert.Equal(t, true, parsedWithout["planExecution"])
+	assert.Len(t, parsedWith["attachments"], 1)
+	assert.NotContains(t, parsedWithout, "attachments")
+}
+
+// The persisted row carries the passthrough span column, and the live
+// broadcast must repeat it. Without it the same bubble renders with no bars
+// now and with them after a reload.
+func TestStoreAcceptReportsTheSpanColumn(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, SpanLines: `[{"color":2}]`})
+	require.NoError(t, err)
+	assert.Equal(t, `[{"color":2}]`, transcript.SpanLines)
+}
+
+// Steering always addresses one item. An empty ID skipped the head test and
+// reserved whatever sat at the head; the recovery paths then requeued by that
+// same empty ID, matched no row, and left the item DISPATCHING until the
+// Worker restarted -- a queue that stops forever.
+func TestStorePrepareSteerRefusesAnEmptyInputID(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+
+	prepared, _, err := store.PrepareSteer(ctx, "agent-1", "")
+	assert.ErrorIs(t, err, ErrNotHead)
+	assert.Nil(t, prepared)
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+}
+
+// A client that closes its tab abandons its edit lock, and the client ID lives
+// in session storage, so it never returns. Recovery releases every lock: a
+// stale one refuses the head forever, and the queue then stops with no pause
+// and nothing on screen to explain it.
+func TestStoreRecoveryReleasesAnAbandonedEditLock(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := context.Background()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	_, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-gone", false)
+	require.NoError(t, err)
+	blocked, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Nil(t, blocked, "an edited head blocks dispatch")
+
+	_, err = NewStore(database).Recover(ctx)
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.NotNil(t, prepared, "recovery released the lock, so the head dispatches")
+}
+
+// The store answers the steering precondition, so a client never offers a
+// Steer the Worker refuses.
+func TestStoreSnapshotAnswersTheSteerPrecondition(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := context.Background()
+	for _, id := range []string{"one", "two"} {
+		_, err := store.Enqueue(ctx, NewItem{ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id})
+		require.NoError(t, err)
+	}
+	idle, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.False(t, idle.Items[0].CanSteer, "with no active turn there is nothing to steer into")
+
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	_, active, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
+	require.NoError(t, err)
+	require.Len(t, active.Items, 1)
+	assert.True(t, active.Items[0].CanSteer)
+
+	// A clear runs no regular turn, so the head is not steerable into it.
+	_, err = store.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	_, err = store.Enqueue(ctx, NewItem{ID: "clear", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, Text: "/clear"})
+	require.NoError(t, err)
+	_, err = store.Move(ctx, "agent-1", "clear", "two")
+	require.NoError(t, err)
+	clearPrepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, clearPrepared)
+	_, clearing, err := store.Accept(ctx, *clearPrepared, DispatchResult{StartsTurn: true})
+	require.NoError(t, err)
+	require.NotEmpty(t, clearing.Items)
+	assert.False(t, clearing.Items[0].CanSteer, "a clear is not a regular turn")
 }

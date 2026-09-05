@@ -19,7 +19,7 @@ import { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } from './ch
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
-import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, prunableDroppedSpanIds, transcriptMessageEnd } from './chatMessageOrder'
+import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, prunableDroppedSpanIds } from './chatMessageOrder'
 import { createPerAgentStore } from './chatPerAgentStore'
 import { createSpanIndex } from './chatSpanIndex'
 import { createStreamingTextStore } from './chatStreamingText'
@@ -125,7 +125,7 @@ export function createChatStore() {
     messageVersion: {},
   })
 
-  // Orthogonal per-concern slices, each its own composed sub-store. The window
+  // Orthogonal per-concern slices, each its own composed sub-store.
   // The window core reaches into them only for shared window mutations.
   const streaming = createStreamingTextStore()
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
@@ -516,17 +516,12 @@ export function createChatStore() {
     clearDroppedSpanStreamIfUnreferenced(agentId, dropped.spanId)
   }
 
-  /**
-   * Return the window and its end index when it exceeds `maxCount` messages.
-   */
-  function windowOverMessageCap(agentId: string, maxCount: number): { prev: AgentChatMessage[], messageEnd: number } | null {
+  /** Return the window when it holds more than `maxCount` messages, else null. */
+  function windowOverMessageCap(agentId: string, maxCount: number): AgentChatMessage[] | null {
     const prev = state.messagesByAgent[agentId]
     if (!prev || prev.length <= maxCount)
       return null
-    const messageEnd = transcriptMessageEnd(prev)
-    if (messageEnd <= maxCount)
-      return null
-    return { prev, messageEnd }
+    return prev
   }
 
   /**
@@ -570,6 +565,8 @@ export function createChatStore() {
     // 'older' prepend never re-establishes opener-first ordering on its own.
     reindexSpans(agentId)
     // Prune the command streams of spans the pre-merge window carried that the
+    // merged window no longer uses. A same-id reseq swaps a row's spanId in place,
+    // which a diff by id alone misses.
     // The survivor filter keeps a span that any merged row still uses.
     const merged = state.messagesByAgent[agentId] ?? []
     // Reclaim content versions and command streams for rows that left the window.
@@ -934,23 +931,21 @@ export function createChatStore() {
      * `maxCount` messages and flag newer history.
      */
     trimNewestEnd(agentId: string, maxCount: number) {
-      const cap = windowOverMessageCap(agentId, maxCount)
-      if (!cap)
+      const prev = windowOverMessageCap(agentId, maxCount)
+      if (!prev)
         return
-      const { prev } = cap
-      const kept = prev.slice(0, maxCount)
+      const survivors = prev.slice(0, maxCount)
       const dropped = prev.slice(maxCount)
-      const survivors = kept
-      // Prune the dropped NEWEST spans' command streams so the segment buffers
-      // stay bounded by the window. The PRIMARY guard is hasBufferedSegments: a
+      // Prune the dropped NEWEST spans' command streams so the window limits the
+      // size of the segment buffers. The PRIMARY guard is hasBufferedSegments: a
       // newest-end trim (scroll-up while the agent works) is the one trim that can
       // drop the live tail span, whose buffer is mid-flight -- clearing it would
       // lose the in-progress segments and re-vivify from empty. Buffered (not just
       // renderable) so a span holding only a content-less reasoning_summary_break -- a
       // recorded part boundary that hasRenderableContent deliberately ignores -- is spared too.
-      // prunableDroppedSpanIds additionally spares any span a SURVIVING row still
-      // references (a tool_use/tool_result pair sharing one spanId, split across the
-      // boundary by a sequence change). Both trim paths apply this guard.
+      // prunableDroppedSpanIds additionally spares any span that a SURVIVING row
+      // still refers to (a tool_use/tool_result pair sharing one spanId, split across
+      // the boundary by a sequence change). Both trim paths apply this guard.
       //
       // Record every spared span as orphaned (exactly like trimOldestEnd): the live
       // tail span normally re-fetches and ends on scroll-back, clearing its own
@@ -970,28 +965,26 @@ export function createChatStore() {
      * `maxCount` messages and flag older history.
      */
     trimOldestEnd(agentId: string, maxCount: number) {
-      const cap = windowOverMessageCap(agentId, maxCount)
-      if (!cap)
+      const prev = windowOverMessageCap(agentId, maxCount)
+      if (!prev)
         return
-      const { prev, messageEnd } = cap
-      // The slice start is positive because messageEnd exceeds maxCount.
-      const keptMessages = prev.slice(messageEnd - maxCount, messageEnd)
-      const survivors = keptMessages
-      const droppedOldest = prev.slice(0, messageEnd - maxCount)
-      // These oldest messages are historical. Thus,
-      // prune their live command streams to keep the segment buffers bounded by
-      // the window -- but SPARE any span a surviving row still references: a
-      // tool_use opener (oldest, dropped) and its tool_result (kept) can share one
-      // spanId, and wiping the dropped opener's stream would blank the kept
-      // result's output. A buffered span among the OLDEST rows is usually stale (a
-      // still-streaming span normally lives at the tail), but that is NOT an
-      // enforced invariant: a long-running tool whose whole exchange is the oldest
-      // content while it still streams would lose its in-flight segments if cleared.
-      // So mirror trimNewestEnd -- spare any span with buffered segments (renderable
-      // or a content-less reasoning_summary_break alike) -- and record it as orphaned
-      // so the turn-end or catch-up sweep reclaims a
-      // genuinely-stale buffer instead of leaking it, while a real mid-flight stream
-      // keeps its segments until it ends.
+      // The slice start is positive because the window length exceeds maxCount.
+      const survivors = prev.slice(prev.length - maxCount)
+      const droppedOldest = prev.slice(0, prev.length - maxCount)
+      // These oldest messages are historical. Thus, prune their live command
+      // streams, so the window limits the size of the segment buffers. But SPARE
+      // any span that a surviving row still refers to: a tool_use opener (oldest,
+      // dropped) and its tool_result (kept) can share one spanId, and wiping the
+      // dropped opener's stream would blank the kept result's output. A buffered
+      // span among the OLDEST rows is usually stale (a still-streaming span
+      // normally lives at the tail), but that is NOT an enforced invariant: a
+      // long-running tool whose whole exchange is the oldest content while it still
+      // streams would lose its in-flight segments if cleared. So mirror
+      // trimNewestEnd -- spare any span with buffered segments (renderable or a
+      // content-less reasoning_summary_break alike) -- and record it as orphaned so
+      // the turn-end or catch-up sweep reclaims a genuinely-stale buffer instead of
+      // leaking it, while a real mid-flight stream keeps its segments until it
+      // ends.
       const droppedSpanIds = prunableSpanIdsSparingBuffered(agentId, droppedOldest, survivors)
       // Reclaim the content versions of the dropped oldest rows.
       forgetContentVersions(droppedOldest.map(m => m.id))
@@ -1084,20 +1077,22 @@ export function createChatStore() {
     },
 
     /**
-     * Whether the in-memory window is within one page of the row ceiling.
-     * rows, so the buffer-filler must stop pre-fetching: a further page only SHUFFLES
-     * the window (a prepend forces an opposite-end trim and vice versa), reaping the
-     * other side's buffer (a ceiling ping-pong) or, at the live tail, the pinned tail.
+     * Whether the in-memory window comes within one page of the row ceiling, so the
+     * buffer-filler must stop the pre-fetch. A further page only moves the window: a
+     * prepend forces a trim at the newest end, and an append forces a trim at the
+     * oldest end. That trim drops the buffer on the other side, or, at the live tail,
+     * the pinned tail row.
      *
-     * The threshold is CEILING - MESSAGE_PAGE_SIZE, not the ceiling itself, on purpose:
-     * a single 50-row page can take serverEnd from just under the ceiling (e.g. 1199)
-     * to just over it (1249), and trimNewestEnd only flips hasMoreNewer / drops the
-     * live tail once serverEnd EXCEEDS the ceiling. Stopping a full page early keeps the
-     * filler's last allowed fetch from crossing the ceiling and dropping the live tail.
+     * The threshold is CEILING - MESSAGE_PAGE_SIZE, not the ceiling itself, on
+     * purpose. One 50-row page can take the window length from just under the ceiling
+     * (1199) to just over it (1249), and trimNewestEnd flips hasMoreNewer and drops
+     * the live tail only after the window length EXCEEDS the ceiling. A stop one full
+     * page early keeps the filler's last permitted fetch from crossing the ceiling and
+     * dropping the live tail.
      */
     atWindowCeiling(agentId: string): boolean {
       const msgs = state.messagesByAgent[agentId]
-      return !!msgs && transcriptMessageEnd(msgs) >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
+      return !!msgs && msgs.length >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
     },
 
     isFetchingOlder(agentId: string): boolean {
@@ -1213,8 +1208,7 @@ export function createChatStore() {
         // Rows are ascending by unique sequence, so binary-search the window
         // instead of a linear search. A marked message is usually outside the loaded window, so the
         // old scan traversed the whole ~1200-row window fruitlessly for every hovered/scrubbed dot.
-        const end = transcriptMessageEnd(messages)
-        const idx = lowerBoundBySeq(messages, seq, end)
+        const idx = lowerBoundBySeq(messages, seq)
         const hit = messages[idx]
         return hit?.seq === seq ? hit : undefined
       })

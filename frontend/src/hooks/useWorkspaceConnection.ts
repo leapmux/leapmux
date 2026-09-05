@@ -1,13 +1,13 @@
 import type { CatchUpPhase } from './agentEvents'
 import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { createControlStore } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
-
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
@@ -17,7 +17,6 @@ import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
-import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
   clearPerTurnLiveState,
@@ -176,7 +175,7 @@ export function reconcileLaggingTails(deps: {
 
 export interface WorkspaceConnectionParams {
   chatStore: ReturnType<typeof createChatStore>
-  agentInputQueueStore?: ReturnType<typeof createAgentInputQueueStore>
+  agentInputQueueStore: ReturnType<typeof createAgentInputQueueStore>
   view: TabView
   metadata: TabMetadataStore
   selection: TabSelectionStore
@@ -190,8 +189,7 @@ export interface WorkspaceConnectionParams {
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { chatStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading, repoGitStore } = params
-  const agentInputQueueStore = params.agentInputQueueStore ?? createAgentInputQueueStore()
+  const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
   // Per-agent catch-up phase across all workers.

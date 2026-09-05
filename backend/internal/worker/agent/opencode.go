@@ -27,6 +27,13 @@ type OpenCodeAgent struct {
 	acpBase
 }
 
+// SupportsSteering always reports true, and overrides the acpBase answer.
+// OpenCode steers with a plain second session/prompt on the same session, so it
+// needs no advertised steer method. The acpBase implementation reads
+// b.steerMethod, which advertisedACPSteerMethod leaves empty for every provider
+// except Goose and Reasonix.
+func (a *OpenCodeAgent) SupportsSteering() bool { return true }
+
 func (a *OpenCodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	active := a.promptActive

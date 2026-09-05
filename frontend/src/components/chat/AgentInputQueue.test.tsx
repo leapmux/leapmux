@@ -23,8 +23,6 @@ function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSch
 
 function renderQueue(overrides: {
   items?: ReturnType<typeof item>[]
-  activeTurn?: boolean
-  activeTurnKind?: AgentInputKind
   supportsSteering?: boolean
   activeEditInputId?: string
 } = {}) {
@@ -38,8 +36,6 @@ function renderQueue(overrides: {
   }
   const snapshot = create(AgentInputQueueSnapshotSchema, {
     agentId: 'agent-1',
-    activeTurn: overrides.activeTurn,
-    activeTurnKind: overrides.activeTurn ? (overrides.activeTurnKind ?? AgentInputKind.USER_MESSAGE) : AgentInputKind.UNSPECIFIED,
     items: overrides.items ?? [item('one'), item('two')],
   })
   render(() => (
@@ -67,14 +63,31 @@ describe('agentInputQueue', () => {
     expect(screen.getByText(/Compact context · Queued · a\.txt \(4 B\)/)).toBeInTheDocument()
   })
 
-  it('moves inputs with keyboard actions', async () => {
+  it('moves an input up with the keyboard action', async () => {
     const handlers = renderQueue()
     const second = screen.getByTestId('queued-input-two')
-    await fireEvent.click(second.querySelector('button')!)
+    await fireEvent.click(within(second).getByRole('button', { name: 'Move Up' }))
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), 'one')
   })
 
-  it('moves a dragged input before its drop target', async () => {
+  // Move Down passes the item TWO slots below, because the Worker takes the
+  // item out of the list before it looks the target up. `index + 1` would name
+  // the item's own new position, which makes the button a silent no-op.
+  it('moves an input down with the keyboard action', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+    const first = screen.getByTestId('queued-input-one')
+    await fireEvent.click(within(first).getByRole('button', { name: 'Move Down' }))
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), 'three')
+  })
+
+  it('moves the second-to-last input to the end with the keyboard action', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+    const second = screen.getByTestId('queued-input-two')
+    await fireEvent.click(within(second).getByRole('button', { name: 'Move Down' }))
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), '')
+  })
+
+  it('moves an input dragged upward before its drop target', async () => {
     const handlers = renderQueue()
     const first = screen.getByTestId('queued-input-one')
     const second = screen.getByTestId('queued-input-two')
@@ -85,10 +98,47 @@ describe('agentInputQueue', () => {
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), 'one')
   })
 
+  it('moves an input dragged downward onto the drop target slot', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+
+    await fireEvent.dragStart(screen.getByTestId('queued-input-one'))
+    await fireEvent.drop(screen.getByTestId('queued-input-two'))
+
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), 'three')
+  })
+
+  it('moves an input dragged onto the last row to the end', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+
+    await fireEvent.dragStart(screen.getByTestId('queued-input-one'))
+    await fireEvent.drop(screen.getByTestId('queued-input-three'))
+
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), '')
+  })
+
+  it('ignores a drop on the dragged row itself', async () => {
+    const handlers = renderQueue()
+    const first = screen.getByTestId('queued-input-one')
+
+    await fireEvent.dragStart(first)
+    await fireEvent.drop(first)
+
+    expect(handlers.onMove).not.toHaveBeenCalled()
+  })
+
+  it('ignores a drop on a dispatching row', async () => {
+    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+
+    await fireEvent.dragStart(screen.getByTestId('queued-input-two'))
+    await fireEvent.drop(screen.getByTestId('queued-input-one'))
+
+    expect(handlers.onMove).not.toHaveBeenCalled()
+  })
+
   it('does not move an item across a dispatching head', () => {
     renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
     const second = screen.getByTestId('queued-input-two')
-    expect(second.querySelector('button')).toBeDisabled()
+    expect(within(second).getByRole('button', { name: 'Move Up' })).toBeDisabled()
   })
 
   it('shows Take Over for an edit owned by another client', async () => {
@@ -125,43 +175,30 @@ describe('agentInputQueue', () => {
     expect(handlers.onCancelEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
   })
 
-  it('offers Steer only for the eligible active queue head', () => {
-    renderQueue({ activeTurn: true, supportsSteering: true })
-    expect(screen.getAllByText('Steer')).toHaveLength(1)
-    expect(screen.getByTestId('queued-input-one')).toContainElement(screen.getByText('Steer'))
+  // The steering precondition lives in the Worker, which reports it per item as
+  // `canSteer`. These cases pin that the browser only reads the flag; the
+  // precondition itself is covered by the store's own tests.
+  it('offers Steer for the head that the Worker marks steerable', async () => {
+    const handlers = renderQueue({
+      supportsSteering: true,
+      items: [item('one', { canSteer: true }), item('two', { canSteer: true })],
+    })
+    expect(screen.getAllByRole('button', { name: 'Steer' })).toHaveLength(1)
+    expect(screen.getByTestId('queued-input-one')).toContainElement(screen.getByRole('button', { name: 'Steer' }))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Steer' }))
+
+    expect(handlers.onSteer).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
   })
 
-  it.each([
-    AgentInputKind.AUTO_CONTINUE,
-    AgentInputKind.CONTROL_FEEDBACK,
-  ])('offers Steer for steerable generated input kind %s', (kind) => {
-    renderQueue({
-      activeTurn: true,
-      supportsSteering: true,
-      items: [item('generated', { kind })],
-    })
-    expect(screen.getByText('Steer')).toBeInTheDocument()
+  it('does not offer Steer for a head that the Worker refuses to steer', () => {
+    renderQueue({ supportsSteering: true, items: [item('one', { canSteer: false })] })
+    expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
   })
 
-  it('does not offer Steer for an operation or a compaction turn', () => {
-    const first = renderQueue({
-      activeTurn: true,
-      supportsSteering: true,
-      items: [item('compact', { kind: AgentInputKind.COMPACT_CONTEXT })],
-    })
-    expect(screen.queryByText('Steer')).not.toBeInTheDocument()
-    first.onSteer.mockClear()
-    renderQueue({ activeTurn: true, activeTurnKind: AgentInputKind.COMPACT_CONTEXT, supportsSteering: true })
-    expect(screen.queryByText('Steer')).not.toBeInTheDocument()
-  })
-
-  it('does not offer Steer for a plan execution input', () => {
-    renderQueue({
-      activeTurn: true,
-      supportsSteering: true,
-      items: [item('plan', { kind: AgentInputKind.PLAN_EXECUTION })],
-    })
-    expect(screen.queryByText('Steer')).not.toBeInTheDocument()
+  it('does not offer Steer when the provider does not support steering', () => {
+    renderQueue({ supportsSteering: false, items: [item('one', { canSteer: true })] })
+    expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
   })
 
   it('offers Retry for a failed head', async () => {

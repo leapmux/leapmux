@@ -640,6 +640,11 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 	return a.sendInput(content, attachments, "")
 }
 
+// SupportsSteering always reports true. The Claude Code stream-json protocol
+// accepts a priority:"next" user message during any turn, so the capability
+// needs no handshake discovery.
+func (a *ClaudeCodeAgent) SupportsSteering() bool { return true }
+
 func (a *ClaudeCodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.mu.Lock()
 	active := a.turnActive
@@ -650,12 +655,6 @@ func (a *ClaudeCodeAgent) SteerInput(content string, attachments []*leapmuxv1.At
 	return a.sendInput(content, attachments, "next")
 }
 
-func (a *ClaudeCodeAgent) InputReady() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return !a.stopped && !a.turnActive
-}
-
 func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, priority string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -664,7 +663,7 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 		return fmt.Errorf("agent is stopped")
 	}
 	if priority == "" && a.turnActive {
-		return ErrNoActiveTurn
+		return ErrAgentBusy
 	}
 
 	msg := UserInputMessage{

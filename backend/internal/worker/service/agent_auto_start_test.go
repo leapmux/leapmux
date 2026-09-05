@@ -228,7 +228,7 @@ func TestEnqueueAgentInput_AutoStartFailureRevertsToInactive(t *testing.T) {
 // WITHOUT broadcasting when its row read fails. The resume sweep is the one
 // caller with no follow-up traffic to correct the banner, so an already
 // connected watcher sits on "Starting" for ever, for an agent that is running
-// and accepting input. handleClearContext states the same reason at its own
+// and accepting input. prepareClearContext states the same reason at its own
 // ACTIVE broadcast.
 func TestEnsureAgentRunning_BroadcastsActiveWhenTheSinkEmitsNone(t *testing.T) {
 	t.Parallel()

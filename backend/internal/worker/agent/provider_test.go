@@ -151,6 +151,22 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 
 	assert.False(t, plugin.Classify(commandExecutionStart).Consolidatable(),
 		"item/started for non-contextCompaction items must NOT be classified as a notification — those go through PersistMessage as AGENT spans")
+
+	contextCompactionEnd := json.RawMessage(`{"method":"item/completed","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}`)
+	agentMessageEnd := json.RawMessage(`{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg-1"}}}`)
+	threadCompacted := json.RawMessage(`{"method":"thread/compacted","params":{"threadId":"t1"}}`)
+
+	assert.Equal(t, NotificationClassification{
+		Kind: NotificationKindCompactionBoundary,
+		Key:  "codex:item/completed:contextCompaction",
+	}, plugin.Classify(contextCompactionEnd),
+		"item/completed for a contextCompaction item is the boundary that ends the compacting indicator")
+
+	assert.False(t, plugin.Classify(agentMessageEnd).Consolidatable(),
+		"item/completed for every other item type goes through PersistMessage as an AGENT span")
+
+	assert.False(t, plugin.Classify(threadCompacted).Consolidatable(),
+		"thread/compacted persists as a plain threadable notification; item/completed is the boundary")
 }
 
 func TestProviderFor_TurnEndToolUses(t *testing.T) {

@@ -333,7 +333,9 @@ func TestClearContext_MintsAControlSocket(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.handleClearContext("agent-1"))
+	clearFinish, clearErr := svc.prepareClearContext("agent-1")
+	require.NoError(t, clearErr)
+	clearFinish()
 
 	assert.Contains(t, rec.envFor("agent-1"), "LEAPMUX_CONTROL_TOKEN=token-1")
 }

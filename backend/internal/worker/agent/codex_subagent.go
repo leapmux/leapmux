@@ -268,28 +268,33 @@ func (a *CodexAgent) recordCollabChildTitle(threadID, prompt string) {
 
 // --- ChildSteerer implementation ---
 
-// SendChildInput sends a user message to a child conversation (childKey = child
-// threadId). If an active child turn is known (childTurnIDs), it steers via
-// turn/steer; with no active turn it starts a new turn on the child thread via
-// turn/start. A steer error is RETURNED, never swallowed into a second
-// turn/start: turn/steer and turn/start are not safely composable because a
-// transport hiccup after the host applied the steer would start a DUPLICATE
-// concurrent turn on the same thread (interleaved output, an unsteerable
-// orphaned turn). A turn-ended race returns ErrNoActiveTurn so the Worker queue
-// can dispatch the input as a regular later turn.
+// SendChildInput starts a new turn on a child conversation (childKey = child
+// threadId). It never steers. SteerChildInput is the one method that adds input
+// to an active child turn.
+//
+// turn/steer and turn/start are not safely composable, so this method must not
+// try one and then the other. A transport failure after the host applies the
+// steer starts a DUPLICATE concurrent turn on the same thread, which
+// interleaves the output and leaves an orphaned turn that nothing can steer.
+// So this method refuses an active child turn and returns ErrNoActiveTurn. The
+// Worker queue then holds the input until that turn ends.
 func (a *CodexAgent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	threadID := childKey
 	if !a.knownCollabChild(threadID) {
-		// The owner process is running but its in-memory spawn index does not
-		// know this thread (the index is rebuilt only when the live collab
-		// spawn re-fires, so it is empty after a worker restart). The persisted
-		// registry row resolves, so the child IS steerable in principle -- map
-		// this to ErrChildNotSteerableYet so the service tells the client to
-		// retry instead of storing a permanent queue failure.
+		// The owner process runs, but its in-memory spawn index does not know
+		// this thread. The worker rebuilds that index only when the live collab
+		// spawn reports the thread again, so the index is empty after a worker
+		// restart. The persisted registry row resolves, so the child IS
+		// steerable in principle. ErrChildNotSteerableYet states exactly that
+		// condition; its declaration lists the caller that maps it and where.
 		return fmt.Errorf("%w: unknown codex subagent thread %q", ErrChildNotSteerableYet, childKey)
 	}
+	// The child already runs a turn, so it cannot take a NEW turn now. That is
+	// the busy condition, not the absent-turn condition: ErrNoActiveTurn here
+	// would tell the queue to store a permanent failure whose text says the
+	// child has no turn, while the child is visibly working.
 	if a.childTurnID(threadID) != "" {
-		return ErrNoActiveTurn
+		return ErrAgentBusy
 	}
 	return a.sendTurnStartChild(threadID, codexChildInput(content, attachments))
 }

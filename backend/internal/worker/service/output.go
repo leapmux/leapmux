@@ -213,6 +213,14 @@ type OutputHandler struct {
 	// user message. Set via SetSendMessageFunc in service.New.
 	sendMessageFunc func(agentID, content string)
 
+	// supportsSteering answers whether the running provider can add the queue
+	// head to an active turn. Set via SetSupportsSteeringFunc in service.New;
+	// nil in tests that build an OutputHandler directly, where the answer is
+	// false. buildStatusChange must carry it, because the frontend applies the
+	// field on EVERY status it receives -- a status built without it turns the
+	// tab's Steer action off for a provider that does support steering.
+	supportsSteering func(agentID string) bool
+
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
 	// in service.New; nil in tests that build an OutputHandler directly, where
@@ -277,6 +285,12 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 // agent output is processed.
 func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
 	h.sendMessageFunc = fn
+}
+
+// SetSupportsSteeringFunc wires the steering-capability answer that every
+// status change carries. Call before any agent output is processed.
+func (h *OutputHandler) SetSupportsSteeringFunc(fn func(agentID string) bool) {
+	h.supportsSteering = fn
 }
 
 // SetAgentStartingFunc wires the predicate PersistSettingsRefresh uses to detect
@@ -801,14 +815,19 @@ func (s *agentOutputSink) buildStatusChange(
 	status leapmuxv1.AgentStatus,
 	sessionID string,
 ) *leapmuxv1.AgentStatusChange {
+	supportsSteering := false
+	if s.h.supportsSteering != nil {
+		supportsSteering = s.h.supportsSteering(s.agentID)
+	}
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:        s.agentID,
-		Status:         status,
-		AgentSessionId: sessionID,
-		WorkerOnline:   true,
-		GitStatus:      gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:  s.agentProvider,
-		OptionGroups:   optionGroupsView(s.h.agents, &dbAgent, nil),
+		AgentId:          s.agentID,
+		Status:           status,
+		AgentSessionId:   sessionID,
+		WorkerOnline:     true,
+		GitStatus:        gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		AgentProvider:    s.agentProvider,
+		OptionGroups:     optionGroupsView(s.h.agents, &dbAgent, nil),
+		SupportsSteering: supportsSteering,
 	}
 }
 

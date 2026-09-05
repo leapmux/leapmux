@@ -7,10 +7,9 @@ import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
-import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentLifecycleProps, ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
-import type { AgentProvider, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
@@ -29,18 +28,15 @@ import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
-import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
-import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
@@ -55,7 +51,7 @@ import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/ta
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
-import { createAgentInputEnqueueRetry } from './agentInputEnqueueRetry'
+import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
@@ -243,9 +239,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const onAttachTab = opts.floatingWindow?.onAttachTab
 
   const chatHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void }>()
-  // Keep ambiguous enqueue attempts across editor unmounts. A user can switch
-  // to a file and back while the unchanged draft still needs its original ID.
-  const enqueueRetry = createAgentInputEnqueueRetry()
   // One walk per tick for the whole renderer, not two per file pane.
   // `getMruAgentContext` sorts the workspace's tabs on every call, and the file
   // pane reads it through Solid prop GETTERS -- `rootPath` and `homeDir` are two
@@ -1137,10 +1130,21 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return tab.id
   })
 
+  // The composer's queue commands. This module composes tiles and sends no
+  // Worker RPC of its own, so the request shapes, the failure toasts and the
+  // snapshot apply live in `agentInputQueueOperations`.
+  const queueOps = createAgentInputQueueOperations({
+    view,
+    store: agentInputQueueStore,
+    clientId: opts.clientId,
+    focusedAgentId,
+    forceScrollToBottom: () => forceScrollToBottomRef()?.(),
+  })
+
   // Refs for ChatDropZone integration: addFiles and triggerSend from AgentEditorPanel.
   const addFilesRef = createImperativeRef<(files: FileList | File[]) => Promise<number>>()
   const addDropDataTransferRef = createImperativeRef<(dataTransfer: DataTransfer) => Promise<number>>()
-  const triggerSendRef = createImperativeRef<() => void>()
+  const triggerSendRef = createImperativeRef<() => void | Promise<void>>()
 
   // Clear refs when no agent is focused to avoid stale closures.
   createEffect(() => {
@@ -1156,7 +1160,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     if (addDrop) {
       const addedCount = await addDrop(dataTransfer)
       if (shiftKey && addedCount > 0)
-        triggerSendRef()?.()
+        void triggerSendRef()?.()
       return
     }
     const addFiles = addFilesRef()
@@ -1164,7 +1168,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       return
     const addedCount = await addFiles(dataTransfer.files)
     if (shiftKey && addedCount > 0)
-      triggerSendRef()?.()
+      void triggerSendRef()?.()
   }
 
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
@@ -1196,102 +1200,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
         : undefined
     }
     const focusedAgentTab = () => view.getAgentTab(agentId())
-    const queueWorkerID = (item: QueuedAgentInput) => view.getAgentTab(item.agentId)?.workerId ?? ''
-    const runQueueAction = async <T,>(label: string, action: () => Promise<T>): Promise<T> => {
-      try {
-        return await action()
-      }
-      catch (error) {
-        showWarnToast(label, error)
-        throw error
-      }
-    }
-    const beginQueueEdit = async (item: QueuedAgentInput, takeover: boolean) => {
-      const response = await runQueueAction('Failed to edit queued input', () => workerRpc.beginQueuedAgentInputEdit(queueWorkerID(item), {
-        agentId: item.agentId,
-        inputId: item.id,
-        clientId: opts.clientId(),
-        takeover,
-      }))
-      agentInputQueueStore.apply(response.snapshot)
-      return response
-    }
-    const updateQueueItem = async (item: QueuedAgentInput, text: string, fileAttachments: FileAttachment[]) => {
-      const response = await runQueueAction('Failed to save queued input', () => workerRpc.updateQueuedAgentInput(queueWorkerID(item), {
-        agentId: item.agentId,
-        inputId: item.id,
-        clientId: opts.clientId(),
-        expectedVersion: item.version,
-        text,
-        attachments: fileAttachments.map(attachment => ({
-          filename: attachment.filename,
-          mimeType: attachment.mimeType,
-          data: attachment.data,
-        })),
-      }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const cancelQueueEdit = async (item: QueuedAgentInput) => {
-      const response = await runQueueAction('Failed to cancel queued input edit', () => workerRpc.cancelQueuedAgentInputEdit(queueWorkerID(item), {
-        agentId: item.agentId,
-        inputId: item.id,
-        clientId: opts.clientId(),
-      }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const deleteQueueItem = async (item: QueuedAgentInput) => {
-      const response = await runQueueAction('Failed to delete queued input', () => workerRpc.deleteQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const moveQueueItem = async (item: QueuedAgentInput, beforeInputId: string) => {
-      const response = await runQueueAction('Failed to move queued input', () => workerRpc.moveQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id, beforeInputId }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const retryQueueItem = async (item: QueuedAgentInput, confirmUncertain: boolean) => {
-      const response = await runQueueAction('Failed to retry queued input', () => workerRpc.retryQueuedAgentInput(queueWorkerID(item), {
-        agentId: item.agentId,
-        inputId: item.id,
-        confirmDeliveryUncertain: confirmUncertain,
-      }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const steerQueueItem = async (item: QueuedAgentInput) => {
-      const response = await runQueueAction('Failed to steer queued input', () => workerRpc.steerQueuedAgentInput(queueWorkerID(item), { agentId: item.agentId, inputId: item.id }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const setQueuePaused = async (paused: boolean) => {
-      const initialAgentTab = focusedAgentTab()
-      const initialAgentID = agentId()
-      const response = await runQueueAction('Failed to change queue pause state', () => workerRpc.setAgentInputQueuePaused(initialAgentTab?.workerId ?? '', { agentId: initialAgentID, paused }))
-      agentInputQueueStore.apply(response.snapshot)
-    }
-    const enqueueComposerInput = async (kind: AgentInputKind, content: string, fileAttachments?: FileAttachment[]) => {
-      const id = focusedAgentId()
-      if (!id)
-        return
-      const sendAgent = view.getAgentTab(id)
-      const attachments = fileAttachments ?? []
-      const inputId = enqueueRetry.inputIdFor({ agentId: id, kind, text: content, attachments })
-      try {
-        const response = await workerRpc.enqueueAgentInput(sendAgent?.workerId ?? '', {
-          agentId: id,
-          inputId,
-          kind,
-          text: content,
-          attachments: attachments.map(attachment => ({
-            filename: attachment.filename,
-            mimeType: attachment.mimeType,
-            data: attachment.data,
-          })),
-        })
-        enqueueRetry.markAccepted(inputId)
-        agentInputQueueStore.apply(response.snapshot)
-      }
-      catch (error) {
-        showWarnToast('Failed to queue message', error)
-        throw error
-      }
-    }
     return (
       <AgentEditorPanel
         agentId={agentId()}
@@ -1300,16 +1208,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
         queueClientId={opts.clientId()}
         repoGitStore={repoGitStore}
         gitTab={focusedAgentTab()}
-        onSendMessage={(content, fileAttachments) => enqueueComposerInput(AgentInputKind.USER_MESSAGE, content, fileAttachments)}
-        onSendControlFeedback={content => enqueueComposerInput(AgentInputKind.CONTROL_FEEDBACK, content)}
-        onBeginQueueEdit={beginQueueEdit}
-        onUpdateQueueItem={updateQueueItem}
-        onCancelQueueEdit={cancelQueueEdit}
-        onDeleteQueueItem={deleteQueueItem}
-        onMoveQueueItem={moveQueueItem}
-        onRetryQueueItem={retryQueueItem}
-        onSteerQueueItem={steerQueueItem}
-        onSetQueuePaused={setQueuePaused}
+        onSendMessage={queueOps.sendMessage}
+        onSendControlFeedback={queueOps.sendControlFeedback}
+        onBeginQueueEdit={queueOps.beginQueueEdit}
+        onUpdateQueueItem={queueOps.updateQueueItem}
+        onCancelQueueEdit={queueOps.cancelQueueEdit}
+        onDeleteQueueItem={queueOps.deleteQueueItem}
+        onMoveQueueItem={queueOps.moveQueueItem}
+        onRetryQueueItem={queueOps.retryQueueItem}
+        onSteerQueueItem={queueOps.steerQueueItem}
+        onSetQueuePaused={queueOps.setQueuePaused}
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}

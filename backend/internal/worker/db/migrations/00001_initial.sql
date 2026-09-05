@@ -103,7 +103,19 @@ CREATE TABLE agent_input_queue_state (
     revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
     paused          INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
     pause_reason    INTEGER NOT NULL DEFAULT 0 CHECK (pause_reason BETWEEN 0 AND 5),
-    paused_for_archive INTEGER NOT NULL DEFAULT 0 CHECK (paused_for_archive IN (0, 1)),
+    -- Which cause created the pause that still holds. Only that cause may lift
+    -- it: an archive resume, or the end of a planned restart, matches its own
+    -- owner and leaves a pause that a later crash or the user created. A pause
+    -- writer always overwrites this column, so the newest cause owns the pause.
+    -- See pauseOwner* in inputqueue/model.go for the values.
+    pause_owner     INTEGER NOT NULL DEFAULT 0 CHECK (pause_owner BETWEEN 0 AND 6),
+    -- Set while the Worker replaces this agent's process. It answers a
+    -- different question from pause_owner: not "who paused" but "is a write to
+    -- the provider safe right now". Retry and steering refuse while it is set,
+    -- because the old process is stopping and a write reaches a closed pipe.
+    -- Recovery clears it, because a Worker restart ends every restart in
+    -- flight.
+    restarting      INTEGER NOT NULL DEFAULT 0 CHECK (restarting IN (0, 1)),
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
     active_turn_kind INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_kind BETWEEN 0 AND 6),
     active_input_id TEXT NOT NULL DEFAULT '',
@@ -126,8 +138,7 @@ CREATE TABLE agent_input_queue_items (
     reserved_seq    INTEGER NOT NULL DEFAULT 0 CHECK (reserved_seq >= 0),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(agent_id, order_index),
-    UNIQUE(agent_id, id)
+    UNIQUE(agent_id, order_index)
 );
 CREATE UNIQUE INDEX idx_agent_input_queue_one_edit
     ON agent_input_queue_items(agent_id) WHERE edit_owner <> '';

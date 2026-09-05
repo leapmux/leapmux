@@ -1,16 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 
-/** Index after the final message in the ordered transcript window. */
-export function transcriptMessageEnd(messages: AgentChatMessage[]): number {
-  return messages.length
-}
-
-/** Index of the first message in the ordered transcript window. */
-export function transcriptMessageStart(_messages: AgentChatMessage[]): number {
-  return 0
-}
-
 /** The first message sequence, or undefined for an empty window. */
 export function firstMessageSeq(messages: AgentChatMessage[]): bigint | undefined {
   return messages[0]?.seq
@@ -86,6 +76,43 @@ function olderRowsPrecedeWindowHead(older: AgentChatMessage[], base: AgentChatMe
   return headSeq === undefined || older.every(message => message.seq < headSeq)
 }
 
+/** Test whether every sequence in `list` is greater than the sequence before it. */
+function ascendsBySeq(list: AgentChatMessage[]): boolean {
+  for (let index = 1; index < list.length; index++) {
+    if (list[index].seq <= list[index - 1].seq)
+      return false
+  }
+  return true
+}
+
+/**
+ * Merge two seq-ascending lists into one new ascending array.
+ *
+ * The output keeps every row of both inputs. On an equal sequence the function
+ * writes the incoming row before the base row, which is the order that
+ * {@link insertMessageBySeq} produces for the same pair.
+ *
+ * One pass replaces a fold over insertMessageBySeq, which allocates a fresh
+ * array for each incoming row. A 50-row page merged into a 1200-row window
+ * copies about 59,000 elements that way; this copies 1250.
+ */
+function mergeAscendingBySeq(base: AgentChatMessage[], incoming: AgentChatMessage[]): AgentChatMessage[] {
+  const merged = Array.from<AgentChatMessage>({ length: base.length + incoming.length })
+  let baseIndex = 0
+  let incomingIndex = 0
+  let out = 0
+  while (baseIndex < base.length && incomingIndex < incoming.length) {
+    merged[out++] = incoming[incomingIndex].seq <= base[baseIndex].seq
+      ? incoming[incomingIndex++]
+      : base[baseIndex++]
+  }
+  while (baseIndex < base.length)
+    merged[out++] = base[baseIndex++]
+  while (incomingIndex < incoming.length)
+    merged[out++] = incoming[incomingIndex++]
+  return merged
+}
+
 /**
  * Merge one fetched page into an ordered transcript window.
  *
@@ -120,5 +147,11 @@ export function mergeWindow(
     if (import.meta.env.DEV)
       throw new Error('mergeWindow: an older page overlaps the window head -- the older-side prepend would break seq ordering')
   }
+  // Both lists are normally ascending by a unique seq -- `base` is the window and
+  // `incoming` is one server page -- so a single two-pointer pass merges them.
+  // A list that breaks that precondition falls back to the repeated ordered
+  // insert, which sorts an arbitrary input at the cost of one array per row.
+  if (ascendsBySeq(base) && ascendsBySeq(incoming))
+    return mergeAscendingBySeq(base, incoming)
   return incoming.reduce((result, message) => insertMessageBySeq(result, message), base)
 }

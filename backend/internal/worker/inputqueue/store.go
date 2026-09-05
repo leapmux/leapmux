@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 type Store struct {
@@ -22,6 +23,35 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db, classifier: ExactCommandClassifier{}}
+}
+
+// Classify answers the kind that this text takes. The Manager asks BEFORE it
+// calls a mutation, so it can refuse a kind the agent cannot accept without a
+// database read inside the mutation's own write transaction.
+func (s *Store) Classify(kind leapmuxv1.AgentInputKind, text string) leapmuxv1.AgentInputKind {
+	return s.classifier.Classify(kind, text)
+}
+
+// KindAfterEdit answers the kind that an existing item takes once its text
+// becomes newText. An item that does not reclassify keeps the kind it holds.
+// This is a short read on its own connection, so a caller may run it before it
+// opens the write transaction that applies the edit.
+func (s *Store) KindAfterEdit(ctx context.Context, agentID, inputID, newText string) (leapmuxv1.AgentInputKind, error) {
+	var kind leapmuxv1.AgentInputKind
+	var reclassify bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT kind, reclassify_on_edit FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`,
+		agentID, inputID).Scan(&kind, &reclassify)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	if reclassify {
+		return s.classifier.Classify(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, newText), nil
+	}
+	return kind, nil
 }
 
 func validKind(kind leapmuxv1.AgentInputKind) bool {
@@ -84,10 +114,10 @@ func regularTurnKind(kind leapmuxv1.AgentInputKind) bool {
 }
 
 func (s *Store) Enqueue(ctx context.Context, input NewItem) (Snapshot, error) {
-	input.Kind = s.classifier.Classify(input.Kind, input.Text)
 	if !validateIdentity(input.ID) || !validateIdentity(input.AgentID) {
 		return Snapshot{}, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
 	}
+	input.Kind = s.classifier.Classify(input.Kind, input.Text)
 	if err := validateContent(input.Kind, input.Text, input.Attachments); err != nil {
 		return Snapshot{}, err
 	}
@@ -288,7 +318,7 @@ func (s *Store) Update(ctx context.Context, agentID, inputID, clientID string, e
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
-		SET kind = ?, text = ?, state = ?, error = '', edit_owner = '', version = version + 1, updated_at = ?
+		SET kind = ?, text = ?, state = ?, reserved_seq = 0, error = '', edit_owner = '', version = version + 1, updated_at = ?
 		WHERE agent_id = ? AND id = ? AND version = ?`,
 		kind, text, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID, expectedVersion)
 	if err != nil {
@@ -460,7 +490,11 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	} else if reason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
 		reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, paused_for_archive = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, reason, nowText(), agentID); err != nil {
+	owner := pauseOwnerNone
+	if paused {
+		owner = pauseOwnerManual
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, reason, owner, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -477,15 +511,8 @@ func (s *Store) PauseForArchive(ctx context.Context, agentID string) (Snapshot, 
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, `
-		UPDATE agent_input_queue_state
-		SET active_turn = 0, active_turn_kind = 0, active_input_id = '',
-			paused = 1,
-			pause_reason = CASE WHEN paused = 0 THEN ? ELSE pause_reason END,
-			paused_for_archive = CASE WHEN paused = 0 THEN 1 ELSE paused_for_archive END,
-			revision = revision + 1, updated_at = ?
-		WHERE agent_id = ? AND (active_turn = 1 OR paused = 0)`,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, nowText(), agentID)
+	result, err := pauseAndEndTurn(ctx, tx, agentID,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerArchive)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
@@ -506,16 +533,23 @@ func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Sna
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
+	// The pause and the marker answer different questions, so they are written
+	// separately. The pause holds only when this restart created it, which is
+	// what the returned Boolean reports; the marker holds either way, because
+	// a write to a stopping process is unsafe however the queue came to pause.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
-		SET paused = 1, pause_reason = ?, revision = revision + 1, updated_at = ?
+		SET paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ?
 		WHERE agent_id = ? AND paused = 0`,
-		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, nowText(), agentID)
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerPlannedRestart, nowText(), agentID)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
+		return Snapshot{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
 		return Snapshot{}, false, err
 	}
 	snapshot, err := commitSnapshot(ctx, tx, agentID)
@@ -533,31 +567,43 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, proces
 	}
 	var paused, active bool
 	var reason leapmuxv1.AgentInputQueuePauseReason
+	var owner int
 	if err := tx.QueryRowContext(ctx, `
-		SELECT paused, pause_reason, active_turn
-		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &reason, &active); err != nil {
+		SELECT paused, pause_reason, pause_owner, active_turn
+		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &reason, &owner, &active); err != nil {
 		return Snapshot{}, false, err
 	}
 	nextPaused := paused
 	nextReason := reason
-	if resumeQueue && paused && reason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED {
+	nextOwner := owner
+	// Resume only the pause that this restart created. A crash, an archive, or
+	// the user overwrites pause_owner, so their pause survives the restart.
+	if resumeQueue && paused && owner == pauseOwnerPlannedRestart {
 		nextPaused = false
 		nextReason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED
+		nextOwner = pauseOwnerNone
+	} else if paused && owner == pauseOwnerPlannedRestart {
+		// The restart keeps the pause. It no longer owns it, so a later resume
+		// of a different cause cannot mistake this pause for its own.
+		nextOwner = pauseOwnerAgentStopped
 	}
 	nextActive := active
 	if processReplaced {
 		nextActive = false
 	}
-	changed := nextPaused != paused || nextReason != reason || nextActive != active
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	changed := nextPaused != paused || nextReason != reason || nextOwner != owner || nextActive != active
 	if changed {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE agent_input_queue_state
-			SET paused = ?, pause_reason = ?, active_turn = ?,
+			SET paused = ?, pause_reason = ?, pause_owner = ?, active_turn = ?,
 				active_turn_kind = CASE WHEN ? THEN active_turn_kind ELSE 0 END,
 				active_input_id = CASE WHEN ? THEN active_input_id ELSE '' END,
 				revision = revision + 1, updated_at = ?
 			WHERE agent_id = ?`,
-			nextPaused, nextReason, nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
+			nextPaused, nextReason, nextOwner, nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
@@ -574,6 +620,13 @@ func (s *Store) PrepareRetry(ctx context.Context, agentID string) (*PreparedDisp
 }
 
 func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string) (*PreparedDispatch, Snapshot, error) {
+	// Steering always addresses one item. An empty ID would skip the head test
+	// below and reserve whatever sits at the head, and the manager's recovery
+	// paths would then requeue by that same empty ID and match no row, so the
+	// item would stay DISPATCHING until the Worker restarts.
+	if !validateIdentity(inputID) {
+		return nil, Snapshot{}, ErrNotHead
+	}
 	return s.prepare(ctx, agentID, inputID, true, true)
 }
 
@@ -586,12 +639,21 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
-	var paused, active bool
+	var paused, active, restarting bool
 	var activeKind leapmuxv1.AgentInputKind
-	if err := tx.QueryRowContext(ctx, `SELECT paused, active_turn, active_turn_kind FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &active, &activeKind); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT paused, restarting, active_turn, active_turn_kind FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &restarting, &active, &activeKind); err != nil {
 		return nil, Snapshot{}, err
 	}
-	item, attachments, found, err := headItem(ctx, tx, agentID)
+	// allowPaused lets retry and steering dispatch through a pause. A restart
+	// in flight is what they must still respect: the old process is stopping,
+	// so a write reaches a closed pipe and fails the item permanently.
+	if allowPaused && restarting {
+		return nil, Snapshot{}, ErrPlannedRestart
+	}
+	// Read the metadata only. The guards below reject most calls, and the head
+	// item can carry up to MaxItemBytes of attachment data that this call then
+	// discards. The dispatch path loads the data after the guards pass.
+	item, _, found, err := headItem(ctx, tx, agentID, false)
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
@@ -615,10 +677,15 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 		}
 		return nil, snapshot, nil
 	}
+	attachments, metadata, err := loadItemAttachments(ctx, tx, item.ID, true)
+	if err != nil {
+		return nil, Snapshot{}, err
+	}
+	item.Metadata = metadata
 	var reservedSeq int64
 	if item.ReservedSeq > 0 {
 		reservedSeq = item.ReservedSeq
-	} else if err := tx.QueryRowContext(ctx, `UPDATE agents SET message_seq_hwm = message_seq_hwm + 1 WHERE id = ? RETURNING message_seq_hwm`, agentID).Scan(&reservedSeq); err != nil {
+	} else if reservedSeq, err = reserveMessageSeq(ctx, tx, agentID); err != nil {
 		return nil, Snapshot{}, err
 	}
 	result, err := tx.ExecContext(ctx, `
@@ -671,6 +738,33 @@ func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (S
 		return Snapshot{}, ErrConflict
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
+		return Snapshot{}, err
+	}
+	return commitSnapshot(ctx, tx, agentID)
+}
+
+// RequeueAndPause returns a prepared item to the queue and pauses the queue.
+// It records the reason on the item without a failed state, so the queue
+// resumes the same input when the agent can take it again.
+func (s *Store) RequeueAndPause(ctx context.Context, agentID, inputID string, dispatchErr error) (Snapshot, error) {
+	errText := "agent cannot accept input yet"
+	if dispatchErr != nil {
+		errText = dispatchErr.Error()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = ?, updated_at = ? WHERE agent_id = ? AND id = ?`,
+		leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, errText, nowText(), agentID, inputID); err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := pauseAndEndTurn(ctx, tx, agentID,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, pauseOwnerAgentStopped); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -748,7 +842,8 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	return AcceptedTranscript{
 		ID: item.ID, AgentID: item.AgentID, Seq: item.ReservedSeq,
 		Content: compressed, ContentCompression: compression,
-		AgentProvider: provider, MarkType: mark, CreatedAt: item.CreatedAt,
+		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
+		CreatedAt: item.CreatedAt,
 	}, snapshot, nil
 }
 
@@ -771,12 +866,30 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = ?, updated_at = ? WHERE agent_id = ? AND id = ?`, state, errText, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, pauseOwnerDelivery, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
 }
 
+// TurnEnded clears the active turn.
+//
+// The clear carries no turn identity, because the provider callback that
+// reports a turn end carries none either: agent.notifyInputReady names only
+// the agent. Order is what keeps the clear correct. Every provider reports a
+// turn end on its own single reader goroutine, in wire order, and drain never
+// starts the next turn before Accept commits, so a turn end for turn N always
+// precedes the turn start for N+1. Two rules preserve that order, and both are
+// load-bearing: no call site may report a turn end from a NEW goroutine (an
+// earlier `go notifyInputReady` in codex_output.go did, to escape the
+// coordinator lock, and reordered the two reports), and drain must not hold
+// the coordinator lock across a provider call, which is what made that escape
+// look necessary.
+//
+// One case stays open: a turn end that an agent process emits AFTER the Worker
+// replaced it clears the new process's turn. Only a provider generation
+// threaded through SetInputReadyFunc can reject that, and the callback does not
+// carry one today.
 func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -819,26 +932,56 @@ func (s *Store) TurnStarted(ctx context.Context, agentID string) (Snapshot, erro
 }
 
 func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, error) {
-	if reason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if err := ensureState(ctx, tx, agentID); err != nil {
-			return Snapshot{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE agent_input_queue_state
-			SET active_turn = 0, active_turn_kind = 0, active_input_id = '',
-				paused = 1, pause_reason = CASE WHEN paused = 1 THEN pause_reason ELSE ? END,
-				revision = revision + 1, updated_at = ?
-			WHERE agent_id = ? AND (active_turn = 1 OR paused = 0)`, reason, nowText(), agentID); err != nil {
-			return Snapshot{}, err
-		}
-		return commitSnapshot(ctx, tx, agentID)
+	if reason != leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED {
+		return s.SetPaused(ctx, agentID, true, reason)
 	}
-	return s.SetPaused(ctx, agentID, true, reason)
+	// A stopped agent also ends the active turn, and it keeps the reason that
+	// an earlier pause recorded.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, err
+	}
+	if _, err := pauseAndEndTurn(ctx, tx, agentID, reason, pauseOwnerAgentStopped); err != nil {
+		return Snapshot{}, err
+	}
+	return commitSnapshot(ctx, tx, agentID)
+}
+
+// pauseAndEndTurn pauses the queue and ends the active turn in one statement.
+// It keeps the reason and the owner that an earlier pause recorded, so a
+// resume by THIS cause cannot lift a pause the user or a crash created.
+//
+// One case takes ownership from an existing pause: a pause that a planned
+// restart owns. That pause is temporary by definition -- the restart lifts it
+// when the new process runs -- so a crash or an archive that arrives during
+// the restart must claim it, or the restart resumes a queue that a real
+// failure had stopped.
+//
+// The result reports whether the row changed.
+func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason leapmuxv1.AgentInputQueuePauseReason, owner int) (sql.Result, error) {
+	return tx.ExecContext(ctx, `
+		UPDATE agent_input_queue_state
+		SET active_turn = 0, active_turn_kind = 0, active_input_id = '',
+			paused = 1,
+			pause_reason = CASE WHEN paused = 1 THEN pause_reason ELSE ? END,
+			pause_owner = CASE WHEN paused = 0 OR pause_owner = ? THEN ? ELSE pause_owner END,
+			revision = revision + 1, updated_at = ?
+		WHERE agent_id = ? AND (active_turn = 1 OR paused = 0 OR pause_owner = ?)`,
+		reason, pauseOwnerPlannedRestart, owner, nowText(), agentID, pauseOwnerPlannedRestart)
+}
+
+// resumeOwnedPause lifts a pause only when the given cause still owns it.
+// The result reports whether the row changed.
+func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner int) (sql.Result, error) {
+	return tx.ExecContext(ctx, `
+		UPDATE agent_input_queue_state
+		SET paused = 0, pause_reason = 0, pause_owner = 0,
+			revision = revision + 1, updated_at = ?
+		WHERE agent_id = ? AND paused = 1 AND pause_owner = ?`, nowText(), agentID, owner)
 }
 
 // ResumeAfterArchive resumes only the pause that PauseForArchive created. The
@@ -852,11 +995,7 @@ func (s *Store) ResumeAfterArchive(ctx context.Context, agentID string) (Snapsho
 	if err := ensureState(ctx, tx, agentID); err != nil {
 		return Snapshot{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, `
-		UPDATE agent_input_queue_state
-		SET paused = 0, pause_reason = 0, paused_for_archive = 0,
-			revision = revision + 1, updated_at = ?
-		WHERE agent_id = ? AND paused = 1 AND paused_for_archive = 1`, nowText(), agentID)
+	result, err := resumeOwnedPause(ctx, tx, agentID, pauseOwnerArchive)
 	if err != nil {
 		return Snapshot{}, false, err
 	}
@@ -874,7 +1013,7 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 		return Snapshot{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	item, _, found, err := headItem(ctx, tx, agentID)
+	item, _, found, err := headItem(ctx, tx, agentID, false)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -890,10 +1029,26 @@ func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncer
 	if item.State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN && !confirmUncertain {
 		return Snapshot{}, ErrUncertainConfirmation
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
+	var restarting bool
+	if err := tx.QueryRowContext(ctx, `SELECT restarting FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&restarting); err != nil {
+		return Snapshot{}, err
+	}
+	if restarting {
+		return Snapshot{}, ErrPlannedRestart
+	}
+	// The item returns to QUEUED, so it releases its reservation. A stale
+	// reservation makes the retried message sort before an agent message that
+	// the transcript took after the failure.
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET state = ?, reserved_seq = 0, error = '', updated_at = ? WHERE agent_id = ? AND id = ?`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, nowText(), agentID, inputID); err != nil {
 		return Snapshot{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
+		return Snapshot{}, err
+	}
+	// Lift the pause that the failure created, so the items behind the retried
+	// head dispatch again. A pause that the user or an archive created keeps
+	// its own owner and survives.
+	if _, err := resumeOwnedPause(ctx, tx, agentID, pauseOwnerDelivery); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -927,6 +1082,20 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 		if err != nil {
 			return nil, err
 		}
+		// A Worker restart invalidates every client session, so no edit lock
+		// can still have an owner. A lock left behind refuses the head in
+		// prepare forever, and the queue then stops with no pause and no
+		// stated reason.
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_items SET edit_owner = '', updated_at = ? WHERE agent_id = ? AND edit_owner <> ''`, nowText(), agentID); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		// A Worker restart ends every agent restart it had in flight. A marker
+		// left behind would refuse every retry for the life of the queue.
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET restarting = 0, updated_at = ? WHERE agent_id = ? AND restarting = 1`, nowText(), agentID); err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
 		var dispatching int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE agent_id = ? AND state = ?`, agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING).Scan(&dispatching); err != nil {
 			_ = tx.Rollback()
@@ -942,12 +1111,12 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 				_ = tx.Rollback()
 				return nil, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, nowText(), agentID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_UNCERTAIN, pauseOwnerRecovery, nowText(), agentID); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
 		} else if active {
-			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, nowText(), agentID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED, pauseOwnerRecovery, nowText(), agentID); err != nil {
 				_ = tx.Rollback()
 				return nil, err
 			}
@@ -965,9 +1134,16 @@ func (s *Store) Recover(ctx context.Context) ([]Snapshot, error) {
 	return result, nil
 }
 
+// ensureState and reserveMessageSeq run the generated statements, so sqlc
+// checks them against the schema at generation time. Every other statement in
+// this file is hand-written because a generated SELECT * cannot express what
+// it needs -- a truncated preview, or a join across the whole queue.
 func ensureState(ctx context.Context, tx *sql.Tx, agentID string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO agent_input_queue_state (agent_id) VALUES (?) ON CONFLICT(agent_id) DO NOTHING`, agentID)
-	return err
+	return db.New(tx).EnsureAgentInputQueueState(ctx, agentID)
+}
+
+func reserveMessageSeq(ctx context.Context, tx *sql.Tx, agentID string) (int64, error) {
+	return db.New(tx).ReserveAgentMessageSeq(ctx, agentID)
 }
 
 func bumpRevision(ctx context.Context, tx *sql.Tx, agentID string) error {
@@ -1025,7 +1201,10 @@ func getItem(ctx context.Context, tx *sql.Tx, agentID, inputID string, loadAttac
 	return item, attachments, true, err
 }
 
-func headItem(ctx context.Context, tx *sql.Tx, agentID string) (Item, []Attachment, bool, error) {
+// headItem reads the first item in queue order. loadAttachments controls
+// whether it also reads every attachment's DATA, which one item can carry up
+// to MaxItemBytes of; a caller that only tests the item's state passes false.
+func headItem(ctx context.Context, tx *sql.Tx, agentID string, loadAttachments bool) (Item, []Attachment, bool, error) {
 	var inputID string
 	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index LIMIT 1`, agentID).Scan(&inputID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1034,7 +1213,7 @@ func headItem(ctx context.Context, tx *sql.Tx, agentID string) (Item, []Attachme
 	if err != nil {
 		return Item{}, nil, false, err
 	}
-	return getItem(ctx, tx, agentID, inputID, true)
+	return getItem(ctx, tx, agentID, inputID, loadAttachments)
 }
 
 func loadItemAttachments(ctx context.Context, tx *sql.Tx, inputID string, loadData bool) ([]Attachment, []AttachmentMetadata, error) {
@@ -1111,14 +1290,54 @@ func snapshotTx(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, erro
 	if err := rows.Close(); err != nil {
 		return Snapshot{}, err
 	}
+	// One query for every item's attachment metadata. A per-item query costs
+	// one round trip for each of up to MaxItems entries, inside the write
+	// transaction that every queue mutation already holds.
+	metadata, err := loadQueueAttachmentMetadata(ctx, tx, agentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	for i := range snapshot.Items {
-		_, metadata, err := loadItemAttachments(ctx, tx, snapshot.Items[i].ID, false)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		snapshot.Items[i].Metadata = metadata
+		snapshot.Items[i].Metadata = metadata[snapshot.Items[i].ID]
+		// Answer the steering precondition where the store already knows it,
+		// from the same predicate that prepare applies. A browser that derives
+		// this from the kind alone offers a Steer the Worker then refuses.
+		snapshot.Items[i].CanSteer = i == 0 &&
+			snapshot.Items[i].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED &&
+			snapshot.Items[i].EditOwner == "" &&
+			snapshot.ActiveTurn &&
+			steerableInputKind(snapshot.Items[i].Kind) &&
+			regularTurnKind(snapshot.ActiveTurnKind)
 	}
 	return snapshot, nil
+}
+
+// loadQueueAttachmentMetadata reads every attachment's metadata for one
+// agent's queue, keyed by item ID. It never reads the attachment data.
+func loadQueueAttachmentMetadata(ctx context.Context, tx *sql.Tx, agentID string) (map[string][]AttachmentMetadata, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.item_id, a.filename, a.mime_type, a.size
+		FROM agent_input_queue_attachments a
+		JOIN agent_input_queue_items i ON i.id = a.item_id
+		WHERE i.agent_id = ?
+		ORDER BY a.item_id, a.position`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byItem := make(map[string][]AttachmentMetadata)
+	for rows.Next() {
+		var itemID, filename, mimeType string
+		var size int64
+		if err := rows.Scan(&itemID, &filename, &mimeType, &size); err != nil {
+			return nil, err
+		}
+		byItem[itemID] = append(byItem[itemID], AttachmentMetadata{
+			Filename: filename, MimeType: mimeType, Size: size,
+			Order: int32(len(byItem[itemID])),
+		})
+	}
+	return byItem, rows.Err()
 }
 
 func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, error) {
@@ -1133,15 +1352,14 @@ func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, 
 }
 
 func compactOrder(ctx context.Context, tx *sql.Tx, agentID string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {
 		return err
 	}
 	var itemIDs []string
 	for rows.Next() {
 		var itemID string
-		var state leapmuxv1.AgentInputState
-		if err := rows.Scan(&itemID, &state); err != nil {
+		if err := rows.Scan(&itemID); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -1167,22 +1385,27 @@ func writeOrder(ctx context.Context, tx *sql.Tx, agentID string, itemIDs []strin
 	return nil
 }
 
+// transcriptContent builds the stored message body. Every optional part is
+// independent: a plan-execution input keeps its marker whether or not it
+// carries attachments, because each renderer keys the collapsible bubble off
+// that marker alone.
 func transcriptContent(item Item, attachments []Attachment) ([]byte, error) {
-	if len(attachments) == 0 {
-		if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION {
-			return json.Marshal(map[string]any{"content": item.Text, "planExecution": true})
+	content := map[string]any{"content": item.Text}
+	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION {
+		content["planExecution"] = true
+	}
+	if len(attachments) != 0 {
+		type metadata struct {
+			Filename string `json:"filename"`
+			MimeType string `json:"mime_type"`
 		}
-		return json.Marshal(map[string]string{"content": item.Text})
+		meta := make([]metadata, len(attachments))
+		for i := range attachments {
+			meta[i] = metadata{Filename: attachments[i].Filename, MimeType: attachments[i].MimeType}
+		}
+		content["attachments"] = meta
 	}
-	type metadata struct {
-		Filename string `json:"filename"`
-		MimeType string `json:"mime_type"`
-	}
-	meta := make([]metadata, len(attachments))
-	for i := range attachments {
-		meta[i] = metadata{Filename: attachments[i].Filename, MimeType: attachments[i].MimeType}
-	}
-	return json.Marshal(map[string]any{"content": item.Text, "attachments": meta})
+	return json.Marshal(content)
 }
 
 func inputFingerprint(input NewItem) string {

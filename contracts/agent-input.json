@@ -1,0 +1,8 @@
+{
+  "_readme": "Limits on one queued agent input, enforced on BOTH sides. The browser refuses an over-size composer draft before it sends EnqueueAgentInput, and the Worker refuses the same draft in Store.Enqueue. One composer draft becomes exactly one queue item, so both sides must measure the SAME quantity: the UTF-8 byte length of the text PLUS the byte length of every attachment. Before this contract the two halves measured different quantities -- the browser summed attachment bytes alone -- so a draft with exactly maxItemBytes of attachments plus any text passed the client check and the Worker rejected it. maxItems and maxAttachmentsPerItem let the browser refuse an over-full queue or an over-full draft with the same number the Worker uses.",
+  "limits": {
+    "maxItemBytes": 10485760,
+    "maxItems": 100,
+    "maxAttachmentsPerItem": 100
+  }
+}

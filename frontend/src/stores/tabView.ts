@@ -299,6 +299,23 @@ export function createTabView(opts: CreateTabViewOpts) {
     return held.length === 0 ? rows : [...rows, ...held]
   }, NO_PLACEMENTS, { equals: samePlacements })
 
+  /**
+   * Every field of a tab variant, with each key REQUIRED in the object literal.
+   *
+   * `Record<keyof T, unknown>` makes each key mandatory, and `unknown` accepts the
+   * `undefined` that an absent metadata field reads as. The intersection with `T`
+   * keeps the real type of each value. Thus `satisfies Complete<AgentTab>` turns a
+   * forgotten field into a compile error, instead of a UI affordance that silently
+   * disappears -- commit b25bdf4b had to add `supportsSteering` and `rootAgentId`
+   * after their absence hid the Steer action.
+   *
+   * The mapped form `{ [K in keyof T]-?: T[K] | undefined }` is impossible here:
+   * TypeScript strips `undefined` from the property type when `-?` removes the
+   * optional marker, so each key then rejects the `undefined` that `metadata.get`
+   * returns for an unset field.
+   */
+  type Complete<T> = T & Record<keyof T, unknown>
+
   /** Assemble one `Tab` from its projected placement plus its metadata. */
   function assemble(r: RenderedTab): Tab {
     const m = opts.metadata.get(r.tabId) ?? {}
@@ -331,7 +348,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           acceptsMessages: m.acceptsMessages,
           supportsSteering: m.supportsSteering,
           rootAgentId: m.rootAgentId,
-        } satisfies AgentTab
+        } satisfies Complete<AgentTab>
       case TabType.TERMINAL:
         return {
           ...base,
@@ -347,7 +364,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           ptyTitle: m.ptyTitle,
           progressState: m.progressState,
           progressPercent: m.progressPercent,
-        } satisfies TerminalTab
+        } satisfies Complete<TerminalTab>
       case TabType.IMAGE:
         return {
           ...base,
@@ -355,7 +372,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           imageAgentId: m.imageAgentId,
           imageSeq: m.imageSeq,
           imageIndex: m.imageIndex,
-        } satisfies ImageTab
+        } satisfies Complete<ImageTab>
       default:
         return {
           ...base,
@@ -367,7 +384,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           fileViewMode: m.fileViewMode,
           fileDiffBase: m.fileDiffBase,
           fileOpenSource: m.fileOpenSource,
-        } satisfies FileTab
+        } satisfies Complete<FileTab>
     }
   }
 

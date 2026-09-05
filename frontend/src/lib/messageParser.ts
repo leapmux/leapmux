@@ -334,7 +334,8 @@ function parseCompactionMeta(meta: Record<string, unknown> | undefined): Compact
 
 /**
  * A completed compaction boundary: Claude's `compact_boundary` system message or Codex's
- * completed `contextCompaction` item. Deliberately NEUTRAL and
+ * completed `contextCompaction` item, either at the top level or inside an
+ * `item/completed` JSON-RPC notification. Deliberately NEUTRAL and
  * shape-based (not a per-provider hook): the notification-thread renderer and the context-usage
  * grid recognize a boundary by SHAPE regardless of the row's provider, so legacy Codex rows still
  * carrying the `compact_boundary` shape, and any cross-provider row, render correctly. This is the
@@ -344,6 +345,9 @@ function parseCompactionMeta(meta: Record<string, unknown> | undefined): Compact
 export function isCompactBoundary(m: Record<string, unknown>): boolean {
   return (m.type === 'system' && m.subtype === 'compact_boundary')
     || pickObject(m, 'item')?.type === 'contextCompaction'
+    // The completed `contextCompaction` item arrives as a raw JSON-RPC
+    // notification, so the item sits under `params` rather than at the top.
+    || (m.method === 'item/completed' && pickObject(pickObject(m, 'params'), 'item')?.type === 'contextCompaction')
 }
 
 /**

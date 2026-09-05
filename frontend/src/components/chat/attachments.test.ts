@@ -1,6 +1,7 @@
 import type { FileAttachment } from './attachments'
 import type { AttachmentCapabilities } from './providers/registry'
 import { describe, expect, it } from 'vitest'
+import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
 import {
   buildAcceptAttribute,
   clearAttachments,
@@ -13,6 +14,8 @@ import {
   isImageMimeType,
   MAX_TOTAL_ATTACHMENT_SIZE,
   nextPastedImageName,
+  queueEditDraftKey,
+  queueEditDraftKeyPrefix,
   readFileAsAttachment,
   setAttachments,
   totalAttachmentSize,
@@ -129,7 +132,10 @@ describe('totalAttachmentSize', () => {
 
 describe('max total attachment size', () => {
   it('is 10 MB', () => {
-    expect(MAX_TOTAL_ATTACHMENT_SIZE).toBe(10 * 1024 * 1024)
+    // The limit comes from contracts/agent-input.json, so the Worker enforces
+    // the same number. Restating the literal here would recreate the second
+    // copy the contract exists to remove.
+    expect(MAX_TOTAL_ATTACHMENT_SIZE).toBe(MAX_AGENT_INPUT_ITEM_BYTES)
   })
 })
 
@@ -160,6 +166,23 @@ describe('attachment cache', () => {
     expect(getAttachments('agent-3')).toEqual([])
     expect(getAttachments('agent-3-queue-input-1')).toEqual([])
     expect(getAttachments('agent-30')).toHaveLength(1)
+  })
+})
+
+describe('queueEditDraftKey', () => {
+  it('composes the item key from the agent prefix', () => {
+    expect(queueEditDraftKeyPrefix('agent-1')).toBe('agent-1-queue-')
+    expect(queueEditDraftKey('agent-1', 'input-9')).toBe('agent-1-queue-input-9')
+    expect(queueEditDraftKey('agent-1', 'input-9').startsWith(queueEditDraftKeyPrefix('agent-1'))).toBe(true)
+  })
+
+  it('produces a key that the agent sweep forgets', () => {
+    const key = queueEditDraftKey('agent-sweep', 'input-1')
+    setAttachments(key, [{ id: 'queued' } as FileAttachment])
+
+    forgetAgentAttachments('agent-sweep')
+
+    expect(getAttachments(key)).toEqual([])
   })
 })
 

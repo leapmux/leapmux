@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
@@ -18,13 +19,19 @@ type agentInputQueueAdapter struct {
 	svc *Service
 }
 
-const queuedInputTextPreviewBytes = 4096
-
+// queuedInputTextPreview caps the text one snapshot item puts on the wire.
+// The store already truncates in SQL, so this never fires for a snapshot the
+// store built. It is the guard at the wire boundary itself: a snapshot holds
+// up to MaxItems entries, and the channel drops a message over
+// contracts.MaxMessageSize, so an untruncated item would disconnect every
+// watcher instead of showing a long message. The limit is the store's own
+// preview limit measured in bytes, so the two layers cannot state different
+// numbers.
 func queuedInputTextPreview(value string) string {
-	if len(value) <= queuedInputTextPreviewBytes {
+	if len(value) <= inputqueue.SnapshotTextPreviewBytes {
 		return value
 	}
-	end := queuedInputTextPreviewBytes
+	end := inputqueue.SnapshotTextPreviewBytes
 	for end > 0 && !utf8.ValidString(value[:end]) {
 		end--
 	}
@@ -62,6 +69,14 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 	if err != nil {
 		return inputqueue.DispatchResult{}, err
 	}
+	// Two checks, because either one alone can miss. The registry holds the
+	// live outcome, and persistAgentStartupError only logs when its write
+	// fails, so a failed write leaves the column empty while the registry says
+	// STARTUP_FAILED.
+	if status, _, _, ok := svc.AgentStartup.status(item.AgentID); ok &&
+		status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
+		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
+	}
 	if dbAgent.StartupError != "" && !svc.Agents.HasAgent(item.AgentID) {
 		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
 	}
@@ -79,18 +94,29 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 		if err != nil {
 			return inputqueue.DispatchResult{}, err
 		}
-		if !svc.Agents.HasAgent(row.OwnerAgentID) {
-			return inputqueue.DispatchResult{}, agent.ErrAgentNotFound
+		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
+			return inputqueue.DispatchResult{}, fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, agent.ErrAgentNotFound)
 		}
 		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, item.Text, attachments); err != nil {
+			if errors.Is(err, agent.ErrChildSteeringUnsupported) {
+				return inputqueue.DispatchResult{}, inputqueue.ErrSteeringUnsupported
+			}
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
 		return inputqueue.DispatchResult{StartsTurn: true, SpanLines: spanLines}, nil
 	}
 
 	ensureRunning := func() error {
-		if svc.Agents.HasAgent(item.AgentID) {
+		if svc.Agents.AgentAlive(item.AgentID) {
 			return nil
+		}
+		if svc.Agents.HasAgent(item.AgentID) {
+			// The process exited and its exit callback still runs. The slot
+			// stays registered until that callback pauses the queue, and
+			// ensureAgentRunning returns at once for a registered slot, so a
+			// start here would resolve the dying provider and write to a
+			// closed pipe. Return the input to the queue instead.
+			return fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, agent.ErrAgentNotFound)
 		}
 		resumeID := svc.resolveResumeSessionID(item.AgentID, dbAgent.AgentSessionID, dbAgent.Resumed)
 		return svc.ensureAgentRunning(item.AgentID, &resumeID, interactiveStart)
@@ -138,7 +164,24 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 	}
 }
 
+// classifyQueueDeliveryError turns a provider error into the queue's own
+// outcome. Two conditions are transient and must NOT become a permanent
+// failure that the user has to retry by hand:
+//
+//   - ErrChildNotSteerableYet: the owner process runs but has not re-fired the
+//     child spawn yet, which happens after every Worker restart.
+//   - ErrAgentBusy: the provider is already inside a turn that the queue's own
+//     active_turn view has not recorded yet.
+//   - ErrAgentNotFound: the process exited between the readiness test and the
+//     write. Manager returns it from providerAfterLifecycle, which resolves the
+//     provider BEFORE any write, so nothing reached the agent.
+//
+// All three mean the input never reached the provider, so redispatch is safe.
 func classifyQueueDeliveryError(err error) error {
+	if errors.Is(err, agent.ErrChildNotSteerableYet) || errors.Is(err, agent.ErrAgentBusy) ||
+		errors.Is(err, agent.ErrAgentNotFound) {
+		return fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, err)
+	}
 	return &inputqueue.DeliveryError{Err: err, Uncertain: errors.Is(err, agent.ErrDeliveryUncertain)}
 }
 
@@ -179,19 +222,46 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.Item) (inputqueue.Dispatc
 	}, classifyQueueSteerError(err)
 }
 
+// AcceptsKind answers whether this agent can ever take the kind. A subagent
+// runs inside its owner's process, so it takes a message or control feedback
+// only: a slash command that the classifier rewrote to a clear or a compact
+// has no path to it. Enqueue refuses it here, where the user sees an invalid
+// argument, instead of storing it and pausing the whole queue at dispatch.
+func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.AgentInputKind) bool {
+	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err != nil {
+		// The enqueue itself fails on the missing agent, so admit the kind and
+		// let that error carry the reason.
+		return true
+	}
+	if !dbAgent.ParentAgentID.Valid {
+		return true
+	}
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+}
+
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
 		return false
 	}
+	return a.svc.agentSupportsSteering(&dbAgent)
+}
+
+// agentSupportsSteering answers the capability from a row the caller already
+// holds. agentToProto and buildAgentActiveStatus each hold one, and ListAgents
+// runs agentToProto for every requested tab, so an ID-based call would repeat
+// a `SELECT *` on the agents row once per agent.
+func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 	if dbAgent.ParentAgentID.Valid {
 		if !agent.ProviderFor(dbAgent.AgentProvider).SupportsChildSteering() {
 			return false
 		}
-		row, err := a.svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), agentID)
-		return err == nil && a.svc.Agents.SupportsSteering(row.OwnerAgentID)
+		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), dbAgent.ID)
+		return err == nil && svc.Agents.SupportsSteering(row.OwnerAgentID)
 	}
-	return a.svc.Agents.SupportsSteering(agentID)
+	return svc.Agents.SupportsSteering(dbAgent.ID)
 }
 
 func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
@@ -206,15 +276,21 @@ func (a *agentInputQueueAdapter) QueueChanged(snapshot inputqueue.Snapshot) {
 func (a *agentInputQueueAdapter) InputAccepted(message inputqueue.AcceptedTranscript) {
 	a.svc.Watchers.BroadcastAgentEvent(message.AgentID, &leapmuxv1.AgentEvent{
 		AgentId: message.AgentID,
-		Event: &leapmuxv1.AgentEvent_AgentMessage{
-			AgentMessage: &leapmuxv1.AgentChatMessage{
-				Id: message.ID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
-				Content: message.Content, ContentCompression: message.ContentCompression,
-				Seq: message.Seq, AgentProvider: message.AgentProvider,
-				MarkType: message.MarkType, CreatedAt: message.CreatedAt,
-			},
-		},
+		Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: acceptedTranscriptProto(message)},
 	})
+}
+
+// acceptedTranscriptProto builds the live row for an input the provider took.
+// It must carry every column that a later read of the same database row
+// returns, or the bubble renders one way now and another way after a reload.
+func acceptedTranscriptProto(message inputqueue.AcceptedTranscript) *leapmuxv1.AgentChatMessage {
+	return &leapmuxv1.AgentChatMessage{
+		Id: message.ID, Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content: message.Content, ContentCompression: message.ContentCompression,
+		Seq: message.Seq, AgentProvider: message.AgentProvider,
+		MarkType: message.MarkType, SpanLines: message.SpanLines,
+		CreatedAt: message.CreatedAt,
+	}
 }
 
 func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueueSnapshot {
@@ -237,7 +313,7 @@ func queueSnapshotProto(snapshot inputqueue.Snapshot) *leapmuxv1.AgentInputQueue
 			Id: item.ID, AgentId: item.AgentID, Kind: item.Kind, Text: queuedInputTextPreview(item.Text),
 			Attachments: attachments, Order: item.Order, State: item.State,
 			Error: item.Error, EditOwnerClientId: item.EditOwner, Version: item.Version,
-			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+			CanSteer: item.CanSteer, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		}
 	}
 	return result

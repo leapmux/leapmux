@@ -11,6 +11,7 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
+import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
@@ -23,6 +24,8 @@ import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
 import { decidePasteHandling } from './pasteDecision'
 import { decideSendFocus } from './sendFocus'
+
+const logger = createLogger('MarkdownEditor')
 
 export { clearDraft }
 
@@ -57,7 +60,7 @@ export interface MarkdownEditorAttachments {
 
 /** Imperative escape hatches for the editor (refs and the ready callback). */
 export interface MarkdownEditorImperative {
-  sendRef?: (send: () => void) => void
+  sendRef?: (send: () => void | Promise<void>) => void
   focusRef?: (focus: () => void) => void
   contentRef?: (get: () => string, set: (text: string) => void) => void
   insertRef?: (insert: (text: string) => void) => void
@@ -223,20 +226,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }, { defer: true }))
 
-  const focusEditor = () => {
-    if (!editorInstance)
-      return
-    try {
-      editorInstance.action((ctx: Ctx) => {
-        const view = ctx.get(editorViewCtx)
-        view.focus()
-      })
-    }
-    catch {
-      // ignore
-    }
-  }
-
   const editorHasFocus = (): boolean => {
     if (!editorInstance)
       return false
@@ -253,21 +242,27 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   /**
-   * Put the caret where the send leaves it. See `decideSendFocus` for which of
-   * the three outcomes each send gets, and why.
+   * Keep or release the caret after a send. It never takes a caret back. See
+   * `decideSendFocus` for which of the three outcomes each send gets, and why.
    */
   const applySendFocus = (hadFocus: boolean, sent: boolean) => {
-    const action = decideSendFocus({ hadFocus, sent, softKeyboardVisible: isSoftKeyboardVisible() })
-    if (action === 'restore') {
-      // The editor may still hold the caret: keepFocusOnPress stopped the
-      // button from taking it, or Android hid the keyboard with Back without
-      // blurring. Focusing an already-focused view raises the keyboard again.
-      if (!editorHasFocus())
-        focusEditor()
-    }
-    else if (action === 'release') {
+    // Decide from the caret's CURRENT owner, not the one the send started with.
+    // A send now resolves after an await, and only the USER can move the caret
+    // while that request runs: keepFocusOnPress stops every send control from
+    // taking it, and `replaceAll` dispatches a transaction that keeps the
+    // contenteditable node and its focus. So a caret that left the editor left
+    // on purpose, and the send must leave it there -- taking it back raises the
+    // on-screen keyboard over the transcript the user just uncovered, which is
+    // the one thing this module must never do.
+    const action = decideSendFocus({
+      hadFocus: hadFocus && editorHasFocus(),
+      sent,
+      softKeyboardVisible: isSoftKeyboardVisible(),
+    })
+    // `restore` moves nothing: the editor already holds the caret. It stays a
+    // separate outcome because it must NOT release the keyboard.
+    if (action === 'release')
       dismissSoftKeyboard()
-    }
   }
 
   const handleSend = async () => {
@@ -343,16 +338,32 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       applySendFocus(hadFocus && sentContentIsCurrent(), false)
       return
     }
-    const clearSubmittedContent = sentContentIsCurrent()
-    if (clearSubmittedContent) {
-      editorInstance.action(replaceAll(''))
-      setMarkdown('')
-      onContentChangeRef?.(false)
+    // The send committed. Everything below runs AFTER the await, so a throw
+    // here becomes an unhandled rejection at every call site -- each one
+    // discards the promise this async handler answers with. Report it and keep
+    // it inside the handler.
+    //
+    // The caret repair stays LAST, after `replaceAll`, because `replaceAll` is
+    // what rebuilds the document under the selection. It cannot move before the
+    // await: iOS Safari refuses a programmatic `view.focus()` that raises the
+    // soft keyboard outside a user gesture, and the RPC ends the gesture -- but
+    // an earlier call repairs nothing, because focus is still on the editor
+    // there and `applySendFocus` skips a view that already holds it.
+    try {
+      const clearSubmittedContent = sentContentIsCurrent()
+      if (clearSubmittedContent) {
+        editorInstance.action(replaceAll(''))
+        setMarkdown('')
+        onContentChangeRef?.(false)
+      }
+      if (initialDraftKey && (!sentDraftIsCurrent() || clearSubmittedContent))
+        clearDraft(initialDraftKey)
+      props.onAfterSend?.()
+      applySendFocus(hadFocus && clearSubmittedContent, true)
     }
-    if (initialDraftKey && (!sentDraftIsCurrent() || clearSubmittedContent))
-      clearDraft(initialDraftKey)
-    props.onAfterSend?.()
-    applySendFocus(hadFocus && clearSubmittedContent, true)
+    catch (error) {
+      logger.warn('Failed to reset the composer after a send:', error)
+    }
   }
 
   // Enter key mode reference for ProseMirror plugin (closures capture signal)

@@ -514,14 +514,13 @@ func (a *zcodeAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 	return a.sendInput(content, attachments, "")
 }
 
+// SupportsSteering always reports true. The ZCode app-server accepts
+// session/send with requestedDelivery:"guide" during any turn, so the
+// capability needs no handshake discovery.
+func (a *zcodeAgent) SupportsSteering() bool { return true }
+
 func (a *zcodeAgent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(content, attachments, "guide")
-}
-
-func (a *zcodeAgent) InputReady() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return !a.stopped && a.sessionID != "" && !a.turnActive
 }
 
 func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, requestedDelivery string) error {
@@ -536,7 +535,7 @@ func (a *zcodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachme
 		return fmt.Errorf("agent has no ZCode session")
 	}
 	if requestedDelivery == "" && turnActive {
-		return ErrNoActiveTurn
+		return ErrAgentBusy
 	}
 	if requestedDelivery != "" && !turnActive {
 		return ErrNoActiveTurn

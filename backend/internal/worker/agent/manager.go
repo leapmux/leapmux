@@ -30,7 +30,12 @@ type Manager struct {
 	// restart's new provider is never registered (and so can never persist control requests)
 	// until the old process's onExit has run. See stopAndWait and startAgentWith.
 	exitDone map[Agent]chan struct{}
-	onExit   ExitHandler
+	// exiting holds each provider whose process exited and whose exit callback
+	// has not finished. The slot stays registered through that callback, so
+	// HasAgent alone cannot separate a live process from one that exited. A
+	// caller that is about to WRITE to the provider asks AgentAlive instead.
+	exiting map[Agent]struct{}
+	onExit  ExitHandler
 
 	// startupSlots caps how many BACKGROUND agent startups run at once: one
 	// token is held from just before the provider's start func spawns the
@@ -78,6 +83,7 @@ func NewManager(onExit ExitHandler) *Manager {
 		cachedOptionGroups: make(map[string]cachedCatalog),
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
 		exitDone:           make(map[Agent]chan struct{}),
+		exiting:            make(map[Agent]struct{}),
 		onExit:             onExit,
 		startupSlots:       newStartupSlots(config.ResolveStartupConcurrency(0)),
 	}
@@ -309,6 +315,11 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		}()
 
 		err := provider.Wait()
+		// The process ended. The slot stays registered until onExit finishes,
+		// so record the state that the slot no longer carries.
+		m.mu.Lock()
+		m.exiting[provider] = struct{}{}
+		m.mu.Unlock()
 		exitCode := 0
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -353,6 +364,9 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		}
 
 		m.mu.Lock()
+		// Delete outside the identity check below: a defensively replaced
+		// provider must leave no entry behind.
+		delete(m.exiting, provider)
 		// Release the slot only after onExit pauses durable input. A turn-end
 		// drain can otherwise see no provider and restart a process after a crash.
 		// Only remove entries that still point at this provider. The identity
@@ -415,6 +429,9 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	return steerer.SteerInput(content, attachments)
 }
 
+// SupportsSteering reports whether the running agent can steer its active turn.
+// It asks the provider and reports the answer. It answers false for an agent
+// that does not run, and for a provider that does not implement InputSteerer.
 func (m *Manager) SupportsSteering(agentID string) bool {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
@@ -422,25 +439,8 @@ func (m *Manager) SupportsSteering(agentID string) bool {
 	if !ok {
 		return false
 	}
-	_, ok = p.(InputSteerer)
-	if !ok {
-		return false
-	}
-	if capability, hasCapability := p.(SteeringCapability); hasCapability {
-		return capability.SupportsSteering()
-	}
-	return true
-}
-
-func (m *Manager) InputReady(agentID string) bool {
-	m.mu.RLock()
-	p, ok := m.agents[agentID]
-	m.mu.RUnlock()
-	if !ok {
-		return false
-	}
-	ready, ok := p.(InputReadiness)
-	return !ok || ready.InputReady()
+	steerer, ok := p.(InputSteerer)
+	return ok && steerer.SupportsSteering()
 }
 
 // providerAfterLifecycle resolves an agent's running provider, first waiting out
@@ -1098,6 +1098,25 @@ func (m *Manager) HasAgent(agentID string) bool {
 	defer m.mu.RUnlock()
 	_, ok := m.agents[agentID]
 	return ok
+}
+
+// AgentAlive reports whether a LIVE process serves the agent.
+//
+// HasAgent answers a different question: it keeps the slot registered through
+// the whole exit callback, so that the callback pauses durable input before a
+// drain can restart the process. Between the process exit and the end of that
+// callback the two answers differ, and the callback does several database
+// writes, so the window is wide enough to lose a race. A caller that is about
+// to WRITE to the provider must ask this one, or it writes to a closed pipe.
+func (m *Manager) AgentAlive(agentID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	provider, ok := m.agents[agentID]
+	if !ok {
+		return false
+	}
+	_, exiting := m.exiting[provider]
+	return !exiting
 }
 
 // ListAgentIDs returns the IDs of all currently tracked agents.

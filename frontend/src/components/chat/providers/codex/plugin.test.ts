@@ -180,6 +180,33 @@ describe('codex classify', () => {
     expect(result.kind).toBe('notification')
   })
 
+  it('classifies wrapped raw item/completed+contextCompaction as a notification thread', () => {
+    // The Worker persists the COMPLETION of a contextCompaction item as the
+    // compaction boundary. The thread that shows the compacting indicator must
+    // recognize the boundary that closes it.
+    const wrapper = {
+      old_seqs: [],
+      messages: [{
+        method: 'item/completed',
+        params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
+      }],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result.kind).toBe('notification')
+  })
+
+  it('does NOT classify wrapped item/completed for non-compaction items as a notification thread', () => {
+    const wrapper = {
+      old_seqs: [],
+      messages: [{
+        method: 'item/completed',
+        params: { item: { type: 'agentMessage', id: 'msg-1' } },
+      }],
+    }
+    const result = plugin.classify(input(undefined, wrapper))
+    expect(result.kind).not.toBe('notification')
+  })
+
   it('does NOT classify wrapped item/started for non-compaction items as a notification thread', () => {
     const wrapper = {
       old_seqs: [],
@@ -394,6 +421,23 @@ describe('codex classify', () => {
       ],
     }
     expect(plugin.classify(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a standalone thread/compacted notification', () => {
+    // Codex reports an automatic compaction with this method. The chat shows
+    // the boundary that item/completed carries, so this one renders nothing.
+    const parent = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
+    expect(plugin.classify(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides a thread/compacted consolidated into a notification thread', () => {
+    const compacted = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
+    const wrapper = { old_seqs: [7], messages: [compacted] }
+    expect(plugin.classify(input(compacted, wrapper))).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps thread/compacted out of the working-state heuristic', () => {
+    expect(plugin.nonProgressMethods?.has('thread/compacted')).toBe(true)
   })
 
   it('hides a standalone thread/settings/updated notification', () => {

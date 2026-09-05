@@ -10,11 +10,11 @@ export interface EditorRefHandlersOptions {
   editor: Editor
   setMarkdown: Setter<string>
   onContentChange?: (hasContent: boolean) => void
-  sendRef?: (send: () => void) => void
+  sendRef?: (send: () => void | Promise<void>) => void
   focusRef?: (focus: () => void) => void
   contentRef?: (get: () => string, set: (text: string) => void) => void
   insertRef?: (insert: (text: string) => void) => void
-  handleSend: () => void
+  handleSend: () => void | Promise<void>
 }
 
 /**

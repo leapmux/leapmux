@@ -11,11 +11,6 @@ export interface AgentInputEnqueuePayload {
   attachments: readonly FileAttachment[]
 }
 
-interface EnqueueAttempt {
-  inputId: string
-  fingerprint: string
-}
-
 function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
   const hash = blake2b.create({ dkLen: 32 })
   const encoder = new TextEncoder()
@@ -36,25 +31,53 @@ function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
   return bytesToHex(hash.digest())
 }
 
+/**
+ * How many pending attempts one browser tab keeps.
+ *
+ * A failed attempt stays until the user sends the same payload again, and
+ * nothing else removes it, so the map needs a cap: a fingerprint is small, but
+ * the map would otherwise grow for the whole life of the tab. Insertion order
+ * drives the eviction, oldest first.
+ */
+export const MAX_PENDING_ATTEMPTS = 20
+
 /** Keep one client input ID until the matching enqueue succeeds. */
 export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
-  const pendingByKind = new Map<string, EnqueueAttempt>()
+  // Keyed on the WHOLE payload, not on (agent, kind). A failed send leaves the
+  // text in the composer, and the user can abandon it and type a different
+  // message. Two pending attempts for one agent must coexist, so a later
+  // re-send of either recovers its own input ID. One ID for each (agent, kind)
+  // evicted the first attempt, and a re-send of it then minted a fresh ID --
+  // which duplicates the input when the first enqueue reached the Worker after
+  // all and only the answer was lost.
+  const pendingByFingerprint = new Map<string, string>()
+
+  function remember(key: string, inputId: string): void {
+    // delete-then-set moves the entry to the most recent insertion slot, so a
+    // repeated attempt for one payload does not age out early.
+    pendingByFingerprint.delete(key)
+    pendingByFingerprint.set(key, inputId)
+    while (pendingByFingerprint.size > MAX_PENDING_ATTEMPTS) {
+      const oldest = pendingByFingerprint.keys().next().value
+      if (oldest === undefined)
+        break
+      pendingByFingerprint.delete(oldest)
+    }
+  }
+
   return {
     inputIdFor(payload: AgentInputEnqueuePayload): string {
-      const key = `${payload.agentId}\0${payload.kind}`
-      const pending = pendingByKind.get(key)
-      const fingerprint = payloadFingerprint(payload)
-      if (pending?.fingerprint === fingerprint)
-        return pending.inputId
-      const inputId = mint()
-      pendingByKind.set(key, { inputId, fingerprint })
+      const key = `${payload.agentId}\0${payload.kind}\0${payloadFingerprint(payload)}`
+      const pending = pendingByFingerprint.get(key)
+      const inputId = pending ?? mint()
+      remember(key, inputId)
       return inputId
     },
 
     markAccepted(inputId: string): void {
-      for (const [key, pending] of pendingByKind) {
-        if (pending.inputId === inputId) {
-          pendingByKind.delete(key)
+      for (const [key, pendingInputId] of pendingByFingerprint) {
+        if (pendingInputId === inputId) {
+          pendingByFingerprint.delete(key)
           return
         }
       }

@@ -16,7 +16,6 @@ import type {
   EnqueueAgentInputResponse,
   GetAgentMessageResponse,
   InterruptAgentResponse,
-  ListAgentInputQueueResponse,
   ListAgentMessagesResponse,
   ListAgentSessionsResponse,
   ListAgentsResponse,
@@ -99,8 +98,6 @@ import {
   GetAgentMessageResponseSchema,
   InterruptAgentRequestSchema,
   InterruptAgentResponseSchema,
-  ListAgentInputQueueRequestSchema,
-  ListAgentInputQueueResponseSchema,
   ListAgentMessagesRequestSchema,
   ListAgentMessagesResponseSchema,
   ListAgentSessionsRequestSchema,
@@ -418,10 +415,6 @@ export function closeAgent(workerId: string, req: MessageInitShape<typeof CloseA
 
 export function enqueueAgentInput(workerId: string, req: MessageInitShape<typeof EnqueueAgentInputRequestSchema>): Promise<EnqueueAgentInputResponse> {
   return callWorker(workerId, 'EnqueueAgentInput', EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, req)
-}
-
-export function listAgentInputQueue(workerId: string, req: MessageInitShape<typeof ListAgentInputQueueRequestSchema>): Promise<ListAgentInputQueueResponse> {
-  return callWorker(workerId, 'ListAgentInputQueue', ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, req)
 }
 
 export function beginQueuedAgentInputEdit(workerId: string, req: MessageInitShape<typeof BeginQueuedAgentInputEditRequestSchema>): Promise<BeginQueuedAgentInputEditResponse> {

@@ -318,10 +318,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			content := r.GetContent()
 			isInterrupt := agent.IsInterruptRequest(dbAgent.AgentProvider, content)
 			if isInterrupt {
+				// The raw interrupt frame is the fallback stop path, so it
+				// continues past a failed pause for the same reason.
 				if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
 					slog.Warn("failed to pause agent input queue before raw interrupt", "agent_id", agentID, "error", err)
-					sendInternalError(sender, "failed to pause agent input queue")
-					return
 				}
 			}
 			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && isInterrupt {
@@ -777,10 +777,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGatedByID(d, "InterruptAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			// The interrupt must run even when the pause write fails. A stop
+			// that a database error or a stopping queue can refuse leaves a
+			// runaway agent with no way to stop it. The queue then possibly
+			// dispatches the next item after the interrupt, which the user
+			// can pause; an agent that ignores Stop, the user cannot.
 			if _, err := svc.InputQueue.Pause(bgCtx(), agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED); err != nil {
 				slog.Warn("failed to pause agent input queue before interrupt", "agent_id", agentID, "error", err)
-				sendInternalError(sender, "failed to pause agent input queue")
-				return
 			}
 			// A child agent: resolve its registry row, then interrupt the child
 			// conversation inside the owner process via ChildSteerer.
@@ -1364,7 +1367,7 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 		OptionGroups:     svc.optionGroupsForAgent(a),
 		StartupError:     startupError,
 		StartupMessage:   startupMessage,
-		SupportsSteering: isRunning && (&agentInputQueueAdapter{svc: svc}).SupportsSteering(a.ID),
+		SupportsSteering: isRunning && svc.agentSupportsSteering(a),
 	}
 
 	// Subagent linkage. parent_agent_id is set only for virtual child agents.
@@ -1809,7 +1812,7 @@ func buildAgentFailedStatus(dbAgent *db.Agent, errMsg string, gitStatus *leapmux
 func (svc *Service) buildAgentActiveStatus(dbAgent *db.Agent, gitStatus *leapmuxv1.GitRepoStatus) *leapmuxv1.AgentStatusChange {
 	sc := baseAgentStatusChange(dbAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, gitStatus)
 	sc.OptionGroups = svc.optionGroupsForAgent(dbAgent)
-	sc.SupportsSteering = (&agentInputQueueAdapter{svc: svc}).SupportsSteering(dbAgent.ID)
+	sc.SupportsSteering = svc.agentSupportsSteering(dbAgent)
 	return sc
 }
 
@@ -2664,15 +2667,6 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	return finish, nil
 }
 
-func (svc *Service) handleClearContext(agentID string) error {
-	finish, err := svc.prepareClearContext(agentID)
-	if err != nil {
-		return err
-	}
-	finish()
-	return nil
-}
-
 // resolveResumeSessionID returns the session ID to resume if the agent was
 // originally resumed or user messages have been exchanged, or empty string
 // otherwise. The agent assigns a session ID during startup, but no conversation
@@ -2852,7 +2846,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 
 	// Broadcast STARTING so the chat startup banner appears beneath any
 	// just-typed messages while the cold subprocess spins up. Symmetric
-	// with handleClearContext and runAgentStartup; without this, the
+	// with prepareClearContext and runAgentStartup; without this, the
 	// auto-start path (cold subprocess after worker/desktop restart) is
 	// silent — the bubble pulses but no progress affordance is shown.
 	startingMsg := agentStartupLabel("Starting", dbAgent.AgentProvider)
@@ -2886,7 +2880,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 
 	slog.Info("ensureAgentRunning: agent started", "agent_id", agentID)
 	// This function entered STARTING, so it must also leave it -- the same
-	// reason handleClearContext and runAgentStartup broadcast ACTIVE. The sink's
+	// reason prepareClearContext and runAgentStartup broadcast ACTIVE. The sink's
 	// own ACTIVE is not guaranteed: persistCatalogAndBuildStatus returns without
 	// broadcasting when its row read fails, and the resume sweep is the one
 	// caller with no follow-up traffic to correct the banner. A watcher already
@@ -3080,13 +3074,12 @@ func (svc *Service) setAgentPermissionModeWithAgent(dbAgent db.Agent, mode strin
 		applyOptionsSpec{live: false, notifyFirstSet: false})
 }
 
-// enqueueSyntheticUserInput enqueues input from a local plan-mode flow. A control
-// response uses a control-feedback item. Other text uses an auto-continue item.
-func (svc *Service) enqueueSyntheticUserInput(agentID, content string, markType leapmuxv1.MarkType) {
-	kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE
-	if markType == leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE {
-		kind = leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
-	}
+// enqueueSyntheticUserInput enqueues input that the Worker itself composes:
+// a control-feedback item for the user's answer to a control request, or an
+// auto-continue item for the plan-mode flow. Store.Accept derives the rail
+// mark from the kind, so the caller states the kind and nothing converts it
+// back and forth.
+func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leapmuxv1.AgentInputKind) {
 	if _, err := svc.InputQueue.Enqueue(bgCtx(), inputqueue.NewItem{
 		ID: id.Generate(), AgentID: agentID, Kind: kind, Text: content,
 	}); err != nil {
