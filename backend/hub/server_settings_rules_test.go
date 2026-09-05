@@ -29,14 +29,14 @@ import (
 // it reached the wiring it exists to pin. The helper also answers the reason
 // the hand-built path avoided t.TempDir(): it roots the socket in a short temp
 // directory, so the path stays inside macOS's 104-byte sun_path limit.
-func startTestServer(t *testing.T, cfg *config.Config) *Server {
+func startTestServer(t *testing.T, cfg *config.Config, opts ...ServerOption) *Server {
 	t.Helper()
 
 	cfg.DataDir = t.TempDir()
 	cfg.LocalListen = locallistentest.UniqueListenURL(t, "lmx-hub-test")
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeSQLite}
 
-	srv, err := NewServer(cfg)
+	srv, err := NewServer(cfg, opts...)
 	require.NoError(t, err)
 
 	serveCtx, cancel := context.WithCancel(context.Background())

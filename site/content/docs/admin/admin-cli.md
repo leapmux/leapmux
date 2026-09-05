@@ -104,7 +104,7 @@ The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys.
 | `login_anonymous` | Failed passwords at the sign-in form. | The client address. Enforced in solo mode too, which puts no captcha in front of sign-in. |
 | `oauth_anonymous` | The authorization server's anonymous endpoints — `/oauth/device-authorization`, `/oauth/token`, `/oauth/revoke`, `/oauth/register`, `/oauth/step-up`, and the app icons. | The client address. Enforced in solo mode too, because those endpoints are served there. |
 
-The two address-keyed budgets count the address the Hub itself sees, never a forwarded header, because a header is caller-controlled. A Hub behind a reverse proxy therefore sees the proxy for every client and shares one budget across all of them: ten failed sign-ins from anywhere pause sign-in for everybody behind that proxy. Raise `login_anonymous`, or limit sign-in at the proxy, which knows the real client address.
+The two address-keyed budgets use the verified client IP. By default, this is the direct TCP peer. The `trusted_proxy_ranges` setting lets a verified proxy supply `Forwarded` or X-Forwarded data. The Hub ignores those headers from every other peer. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
 
 ```bash
 leapmux control admin rate-limit list

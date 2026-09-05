@@ -18,7 +18,6 @@ import (
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/windowed"
@@ -99,8 +98,8 @@ const (
 	// package through AllowHTTP instead.
 	//
 	// It is keyed by CLIENT ADDRESS rather than by user, because there is no
-	// user. See clientAddressKey for what that costs behind a proxy, and why
-	// the budget is sized the way it is.
+	// user. See anonymousBudgetKey for which address that is, and why the
+	// budget is sized the way it is.
 	//
 	// The budget is deliberately generous: a device-code client polls every
 	// five seconds for up to ten minutes, which is 120 requests for ONE
@@ -143,14 +142,37 @@ const (
 	// window, so a person who mistypes twice and then signs in is not held
 	// against their next sign-in.
 	//
-	// The address is the one the hub itself sees, never a forwarded header;
-	// clientAddressKey states why. So a hub behind a reverse proxy shares ONE
-	// budget across every client behind it, and ten failures from anywhere
-	// pause sign-in for all of them. That is the cost of counting only what
-	// the hub can verify, and the operator's answer is the budget key an
-	// administrator can raise, or a sign-in limit in the proxy, which knows
-	// the real client address. The admin-cli chapter says so.
+	// The address is the VERIFIED one, and anonymousBudgetKey states how it is
+	// chosen. A hub that trusts no proxy sees the transport peer, so each
+	// client holds its own budget. A hub that trusts one reads the forwarding
+	// header from that peer alone, so each client behind the proxy still holds
+	// its own. A hub behind an UNCONFIGURED proxy shares one budget across
+	// every client behind it, and ten failures from anywhere pause sign-in for
+	// all of them: the operator's answer is `trusted_proxy_ranges`, a budget an
+	// administrator raises, or a sign-in limit in the proxy. The admin-cli
+	// chapter says so.
 	OpLoginAnonymous Operation = "login_anonymous"
+
+	// OpSoloPasswordSetup limits AuthService.SetInitialSoloPassword, keyed by
+	// CLIENT ADDRESS because the caller is unauthenticated by construction.
+	//
+	// The procedure is PUBLIC and it runs an Argon2 hash. Argon2id costs the
+	// hub 19 MiB and tens of milliseconds for each call. Nothing else stands
+	// in front of it: captcha is off in solo mode by construction, and the
+	// account-has-no-password test that ends the procedure refuses nothing
+	// until the first call succeeds. So the window before a password exists
+	// is a window in which an unauthenticated caller drives memory-hard
+	// hashing at request speed. That window is the exact state
+	// `leapmux solo -listen 0.0.0.0:4327` warns about.
+	//
+	// It counts ADMITTED REQUESTS rather than failures, like OpOAuthAnonymous.
+	// The cost here is the hash, not a wrong answer, and the caller CHOOSES
+	// the password rather than guessing one -- so there is no credential
+	// failure to count, and a failures-only window would never fill.
+	//
+	// It stays ENFORCED in solo mode, and its settings key stays visible
+	// there, because solo is the only mode that serves this procedure at all.
+	OpSoloPasswordSetup Operation = "solo_password_setup"
 )
 
 // Limits is one operation's effective budget.
@@ -303,6 +325,39 @@ var defaults = map[Operation]opSpec{
 		// pour user IDs and addresses into the same window.
 		keyByAddress: true,
 	},
+	OpSoloPasswordSetup: {
+		// Ten in fifteen minutes. An operator sets the first password once,
+		// and a mistyped confirmation costs nothing here, because the
+		// frontend compares the two fields before it calls. Ten leaves room
+		// for a reload and a retry; it caps an attacker at forty Argon2
+		// hashes an hour from one address instead of request speed.
+		limits: Limits{MaxAttempts: 10, WindowSeconds: 900},
+		// Nothing here verifies a secret. The caller CHOOSES the password,
+		// so no answer can be wrong and no failure window would ever fill.
+		isCredentialFailure: func(error) bool { return false },
+		// Counts every request that REACHED the hash, because the hash is
+		// what costs.
+		countsProceededRequests: true,
+		// The refusals that land BEFORE the hash cost nothing, and they must
+		// not consume the window: FailedPrecondition is "not a solo hub" and
+		// "the account already has a password", InvalidArgument is a password
+		// the validator rejects. If they counted, a caller could spend an
+		// operator's whole budget with garbage that never hashed, and the
+		// operator would meet a refusal on the one screen the hub offers
+		// them. Everything else -- a success, or a failure from the hash or
+		// the transaction -- paid the cost and counts.
+		proceedsToBudget: func(err error) bool {
+			code := connect.CodeOf(err)
+			return code != connect.CodeFailedPrecondition && code != connect.CodeInvalidArgument
+		},
+		// Keyed by ADDRESS: this caller has no user yet. It is also the one
+		// unauthenticated procedure a solo hub adds, so the address budget is
+		// the only budget that can hold it.
+		keyByAddress: true,
+		// Solo-only, so an operator who publishes a solo hub must be able to
+		// reach this key. Hiding it in solo would hide it everywhere.
+		hiddenInSolo: false,
+	},
 }
 
 // limitKeys holds one settings key per catalogued operation, derived from
@@ -433,6 +488,10 @@ var procedureOperations = map[string]procedureSpec{
 	// The one UNAUTHENTICATED procedure with a secret to guess. Keyed by
 	// address, counted on failure, cleared on success; see OpLoginAnonymous.
 	leapmuxv1connect.AuthServiceLoginProcedure: {op: OpLoginAnonymous, provesCredential: true},
+	// The other UNAUTHENTICATED procedure that runs an Argon2 hash. It proves
+	// no credential -- the caller chooses the password rather than guessing
+	// one -- so it counts admitted requests instead. See OpSoloPasswordSetup.
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure: {op: OpSoloPasswordSetup},
 }
 
 // effectiveLimit is the resolved per-operation policy.
@@ -771,7 +830,7 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 // this feature creates.
 func budgetKeyFor(ctx context.Context, m *Manager, spec procedureSpec) (string, bool) {
 	if defaults[spec.op].keyByAddress {
-		return AddressBudgetKey(peer.RemoteHost(ctx)), true
+		return anonymousBudgetKey(ctx), true
 	}
 	user := auth.GetUser(ctx)
 	if user == nil || user.SoloAuthenticated() {

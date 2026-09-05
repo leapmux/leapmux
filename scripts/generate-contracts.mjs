@@ -272,6 +272,25 @@ export function checkListen(l) {
 }
 
 // ---------------------------------------------------------------------------
+// trusted-proxies: selector limit and built-in provider catalogue
+// ---------------------------------------------------------------------------
+
+export function checkTrustedProxies(v) {
+  mustBe(Number.isInteger(v.maxSelectors) && v.maxSelectors >= 1, 'trusted-proxies.json', 'maxSelectors must be an integer >= 1')
+  const expected = ['cloudflare', 'cloudfront']
+  mustBe(Object.keys(v.providers).join(',') === expected.join(','), 'trusted-proxies.json', 'providers must contain cloudflare and cloudfront in that order')
+  const tokens = []
+  for (const [key, provider] of Object.entries(v.providers)) {
+    mustBe(provider.token === key, 'trusted-proxies.json', `providers.${key}.token must equal ${JSON.stringify(key)}`)
+    mustBe(provider.label.length > 0, 'trusted-proxies.json', `providers.${key}.label must not be empty`)
+    mustBe(provider.help.length > 0, 'trusted-proxies.json', `providers.${key}.help must not be empty`)
+    tokens.push(provider.token)
+  }
+  mustBe(new Set(tokens).size === tokens.length, 'trusted-proxies.json', 'provider tokens must be unique')
+  return {}
+}
+
+// ---------------------------------------------------------------------------
 // retry: cross-language retry policies
 // ---------------------------------------------------------------------------
 
@@ -2192,6 +2211,55 @@ ${sources.join('\n\n')}
 `
 }
 
+export function emitGoTrustedProxies(v) {
+  const entries = Object.values(v.providers).map(provider =>
+    `\t{Token: ${jsonString(provider.token)}, Label: ${jsonString(provider.label)}, Help: ${jsonString(provider.help)}},`).join('\n')
+  return `${GO_HEADER('trusted-proxies.json')}package contracts
+
+// TrustedProxyProvider describes one symbolic provider selector.
+type TrustedProxyProvider struct {
+\tToken string
+\tLabel string
+\tHelp  string
+}
+
+// MaxTrustedProxySelectors caps configured selectors. A provider token counts
+// once, independent of the number of bundled ranges it expands to.
+const MaxTrustedProxySelectors = ${v.maxSelectors}
+
+const (
+\tTrustedProxyProviderCloudflare = ${jsonString(v.providers.cloudflare.token)}
+\tTrustedProxyProviderCloudFront = ${jsonString(v.providers.cloudfront.token)}
+)
+
+// TrustedProxyProviders is the built-in provider catalogue.
+var TrustedProxyProviders = []TrustedProxyProvider{
+${entries}
+}
+`
+}
+
+export function emitTsTrustedProxies(v) {
+  const entries = Object.values(v.providers).map(provider =>
+    `  { token: ${jsonString(provider.token)}, label: ${jsonString(provider.label)}, help: ${jsonString(provider.help)} },`).join('\n')
+  return `${TS_HEADER('trusted-proxies.json')}
+/** A built-in trusted reverse-proxy provider. */
+export interface TrustedProxyProvider {
+  token: string
+  label: string
+  help: string
+}
+
+/** The most configured selectors. A provider token counts once. */
+export const MAX_TRUSTED_PROXY_SELECTORS = ${v.maxSelectors} as const
+
+/** The built-in provider catalogue. */
+export const TRUSTED_PROXY_PROVIDERS: readonly TrustedProxyProvider[] = [
+${entries}
+]
+`
+}
+
 export function emitGoRetry(r) {
   const blocks = Object.entries(r.policies).map(([name, p]) => {
     const prefix = RETRY_GO_NAMES[name]
@@ -2285,6 +2353,15 @@ const DOMAINS = [
       checkListen(l)
       out['backend/generated/contracts/listen.go'] = emitGoListen(l)
       out['frontend/src/generated/contracts/listen.ts'] = emitTsListen(l)
+    },
+  },
+  {
+    name: 'trusted-proxies',
+    emit(out, read) {
+      const v = read('trusted-proxies')
+      checkTrustedProxies(v)
+      out['backend/generated/contracts/trusted-proxies.go'] = emitGoTrustedProxies(v)
+      out['frontend/src/generated/contracts/trusted-proxies.ts'] = emitTsTrustedProxies(v)
     },
   },
   {

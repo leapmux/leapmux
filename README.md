@@ -58,7 +58,7 @@ The binary runs in several modes:
 
 | Command | Description |
 |---------|-------------|
-| `leapmux solo` | Hub + Worker on `127.0.0.1:4327`, no login, single-user |
+| `leapmux solo` | Hub + Worker, single-user; local IPC needs no credential and TCP starts with password setup |
 | `leapmux hub` | Central service only (auth, relay, database) |
 | `leapmux worker` | Connects to a remote Hub |
 | `leapmux dev` | Hub + Worker on all interfaces, login required |
@@ -179,7 +179,7 @@ Each `dev` target generates code and builds prerequisites, then launches `mprocs
 | Command | Processes | Description |
 |---------|-----------|-------------|
 | `task dev` | Go backend (`leapmux dev`) + Bun frontend dev server | Full-featured dev mode on all interfaces, login required |
-| `task dev-solo` | Go backend (`leapmux solo`) + Bun frontend dev server | Localhost-only, no login, single-user |
+| `task dev-solo` | Go backend (`leapmux solo`) + Bun frontend dev server | Localhost-only, single-user; the browser sets the first `solo` password |
 | `task dev-desktop` | Bun frontend dev server + Tauri desktop app | Desktop app development (builds sidecar first) |
 
 ## Development

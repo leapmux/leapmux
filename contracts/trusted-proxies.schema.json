@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "trusted-proxies.schema.json",
+  "title": "trusted reverse-proxy selector contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "maxSelectors", "providers"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "maxSelectors": { "type": "integer", "minimum": 1, "maximum": 256 },
+    "providers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cloudflare", "cloudfront"],
+      "properties": {
+        "cloudflare": { "$ref": "#/$defs/provider" },
+        "cloudfront": { "$ref": "#/$defs/provider" }
+      }
+    }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "label", "help"],
+      "properties": {
+        "token": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "label": { "type": "string", "minLength": 1 },
+        "help": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

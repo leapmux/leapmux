@@ -14,8 +14,8 @@ import (
 )
 
 // soloUserInfo is the shape auth.LoadSoloUser produces: an administrator with
-// NO credential row, because solo mode authenticates every request as one
-// bootstrapped account and holds no session and no bearer.
+// no credential row, because solo mode authenticates local IPC as one
+// bootstrapped account and holds no session or bearer.
 func soloUserInfo() *auth.UserInfo {
 	return &auth.UserInfo{
 		ID:              userid.MustNew("solo-user"),

@@ -2,6 +2,7 @@ import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 import { render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthGuard } from '~/components/common/AuthGuard'
+import { SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
 
 // Mock the auth context module
 const mockUser = vi.fn()
@@ -25,14 +26,12 @@ vi.mock('~/context/AuthContext', () => ({
 }))
 
 const mockIsSoloMode = vi.fn<() => boolean>(() => false)
-const mockIsAutoAuthenticated = vi.fn<() => boolean>(() => false)
-const mockPasswordSetupRequired = vi.fn<() => boolean>(() => false)
+const mockSoloAccess = vi.fn<() => SoloAccess>(() => SoloAccess.UNSPECIFIED)
 
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
-  isAutoAuthenticated: () => mockIsAutoAuthenticated(),
-  passwordSetupRequired: () => mockPasswordSetupRequired(),
-  isPasswordSetupGate: () => mockPasswordSetupRequired() && mockIsAutoAuthenticated(),
+  isAutoAuthenticated: () => mockSoloAccess() === SoloAccess.CREDENTIAL_FREE,
+  isPasswordSetupGate: () => mockSoloAccess() === SoloAccess.PASSWORD_SETUP,
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
 }))
@@ -76,8 +75,7 @@ function renderGuard(options: { path?: string } = {}) {
 describe('authGuard', () => {
   beforeEach(() => {
     mockIsSoloMode.mockReturnValue(false)
-    mockIsAutoAuthenticated.mockReturnValue(false)
-    mockPasswordSetupRequired.mockReturnValue(false)
+    mockSoloAccess.mockReturnValue(SoloAccess.UNSPECIFIED)
     mockBootstrapError.mockReturnValue(null)
     mockRetryBootstrap.mockClear()
   })
@@ -93,18 +91,11 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
-  // The gate branch sits BEFORE the authenticated one, and that order is the
-  // whole point: the visitor this screen exists for IS authenticated -- the hub
-  // let them in with no credentials, which is the problem. Ordering the branch
-  // after `isAuthenticated()` would render the app to exactly that visitor, and
-  // PasswordSetupGate's own tests would all still pass, because the component
-  // is never the thing that breaks.
-  it('replaces the app with the password-setup gate for a credential-free visitor', () => {
-    mockUser.mockReturnValue({ id: '1', isAdmin: true })
+  it('replaces the app with the password-setup gate for a restricted TCP visitor', () => {
+    mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
-    mockIsAuthenticated.mockReturnValue(true)
-    mockIsAutoAuthenticated.mockReturnValue(true)
-    mockPasswordSetupRequired.mockReturnValue(true)
+    mockIsAuthenticated.mockReturnValue(false)
+    mockSoloAccess.mockReturnValue(SoloAccess.PASSWORD_SETUP)
 
     const { navigations } = renderGuard()
 
@@ -114,16 +105,11 @@ describe('authGuard', () => {
     expect(navigations).toEqual([])
   })
 
-  // BOTH conditions are required. A visitor who signed in reached this hub over
-  // a credentialed connection, so the exposure the gate exists for is already
-  // closed for them -- and the gate would demand a password that the account
-  // already has.
-  it('leaves a signed-in visitor alone even while the hub reports setup required', () => {
+  it('leaves a signed-in TCP visitor alone after setup', () => {
     mockUser.mockReturnValue({ id: '1', isAdmin: true })
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(true)
-    mockIsAutoAuthenticated.mockReturnValue(false)
-    mockPasswordSetupRequired.mockReturnValue(true)
+    mockSoloAccess.mockReturnValue(SoloAccess.SIGN_IN_REQUIRED)
 
     renderGuard()
 
@@ -139,8 +125,7 @@ describe('authGuard', () => {
     mockUser.mockReturnValue({ id: '1', isAdmin: true })
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(true)
-    mockIsAutoAuthenticated.mockReturnValue(true)
-    mockPasswordSetupRequired.mockReturnValue(false)
+    mockSoloAccess.mockReturnValue(SoloAccess.CREDENTIAL_FREE)
 
     renderGuard()
 
@@ -205,7 +190,7 @@ describe('authGuard', () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
-    mockIsAutoAuthenticated.mockReturnValue(true)
+    mockSoloAccess.mockReturnValue(SoloAccess.CREDENTIAL_FREE)
 
     const { navigations } = renderGuard()
 
@@ -220,7 +205,7 @@ describe('authGuard', () => {
     mockUser.mockReturnValue(null)
     mockLoading.mockReturnValue(false)
     mockIsAuthenticated.mockReturnValue(false)
-    mockIsAutoAuthenticated.mockReturnValue(true)
+    mockSoloAccess.mockReturnValue(SoloAccess.CREDENTIAL_FREE)
 
     renderGuard()
 

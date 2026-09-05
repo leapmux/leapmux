@@ -36,7 +36,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { API_POLL_INTERVAL_MS, authedHeaders, getUserId, signUpViaAPI, TEST_ADMIN_DISPLAY_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
 import { stopProcesses } from './process'
-import { findFreePort, getGlobalState, waitForServer } from './server'
+import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './server'
 
 /** A single worker spawned by the harness. */
 export interface HarnessWorker {
@@ -98,7 +98,7 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
     hubDataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: hubSpawnEnv(),
   })
   hubProc.stdout?.resume()
   hubProc.stderr?.resume()

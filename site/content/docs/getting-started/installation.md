@@ -134,7 +134,7 @@ Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary de
 {{< /callout >}}
 
 {{< callout type="warning" >}}
-The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux control admin settings set`. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for reverse-proxy guidance.
+The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container. Set `public_url`, `secure_cookies`, and `trusted_proxy_ranges` with `leapmux control admin settings set`. See [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/) for reverse-proxy guidance.
 {{< /callout >}}
 
 ### Running a Worker container

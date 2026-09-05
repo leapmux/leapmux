@@ -245,9 +245,9 @@ func TestServer_StoredAddressesBindAgainOnTheNextStart(t *testing.T) {
 // password, and that refusal has to hold for every writer.
 //
 // `leapmux control admin settings set extra_listen_addresses` is a write like
-// any other, the key is HOT, and a credential-free solo caller is admitted to
-// make it -- so without a server-side rule one command published an
-// unauthenticated administrator on the LAN, with no refusal and no warning.
+// any other. Without a server-side rule, local IPC could publish the setup
+// flow on the LAN before it set a password. A remote caller could then claim
+// the account.
 func TestServer_RefusesAnExposingAddressWithNoPassword(t *testing.T) {
 	port := freePorts(t, 1)[0]
 	base := "127.0.0.1:" + strconv.Itoa(port)

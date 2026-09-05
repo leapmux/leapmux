@@ -90,7 +90,17 @@ export interface AuthState {
   loginWithPasskey: (username: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
   setVerificationResendAvailableAt: (at?: Timestamp) => void
   logout: () => Promise<void>
-  setAuth: (user: User) => void
+  /**
+   * Adopt a NEW identity. Clears the elevation, because a window proven by the
+   * previous identity must not survive the transition.
+   *
+   * `elevation` is for the one reply that GRANTS an elevation in the same
+   * transaction that creates the session: `SetInitialSoloPassword`. Passing it
+   * keeps the client's elevation state derived from the answer that created
+   * it, instead of from a following refresh whose failure would prompt the
+   * operator for the password they just chose.
+   */
+  setAuth: (user: User, elevation?: Timestamp) => void
   /**
    * Adopt a user the hub returned for the SESSION THAT IS ALREADY SIGNED IN.
    *
@@ -438,10 +448,10 @@ export const AuthProvider: ParentComponent = (props) => {
    * decision (solo vs. multi-user, setup-required) reads module getters that
    * are fabricated defaults until it succeeds. Continuing to the session
    * restore on a failed load is how the app treats a solo user as a multi-user
-   * one -- the restore succeeds (a solo hub authenticates every procedure), the
-   * code records nothing, and the app offers a "Log out" that strands them at
-   * /login. So a failed load aborts here with a
-   * `bootstrapError` for the guard's retry panel to render.
+   * one -- the restore succeeds (a solo hub authenticates the desktop app's
+   * local IPC connection with no credential), the code records nothing, and the
+   * app offers a "Log out" that strands them at /login. So a failed load aborts
+   * here with a `bootstrapError` for the guard's retry panel to render.
    *
    * Each stage also advances the boot splash's checklist (data-boot-phase on
    * <html>): system info, then the session restore, then either `ready`
@@ -466,8 +476,8 @@ export const AuthProvider: ParentComponent = (props) => {
     await restoreSession()
     if (bootstrapError())
       return
-    // Same gate AuthGuard uses: password-setup is authenticated but not the
-    // shell, so it must not reveal the workspaces/tabs rows.
+    // The restricted TCP setup state is not a session and not the shell, so it
+    // must not reveal the workspace rows.
     if (user() && !isPasswordSetupGate()) {
       setBootShell(true)
       setBootPhase('workspaces')
@@ -574,11 +584,17 @@ export const AuthProvider: ParentComponent = (props) => {
     }
   }
 
-  const setAuth = (u: User) => {
+  const setAuth = (u: User, elevation?: Timestamp) => {
     // The same identity transition runSignIn makes: /auth/idp/complete-signup
     // and the verify-email page both land a NEW user in a document that may
     // still hold the previous one's elevation.
     adoptSignedInUser(u)
+    // AFTER the adopt, which cleared it. The only caller that passes one is the
+    // reply that granted the elevation inside the same transaction as the
+    // session, so this restores a window this document owns rather than one it
+    // inherited.
+    if (elevation)
+      setElevationExpiresAt(elevation)
     setLoading(false)
   }
 

@@ -1,0 +1,16 @@
+{
+  "_readme": "Trusted reverse-proxy selectors cross the Go and TypeScript boundary. The selector cap controls backend validation and the editor Add control. The provider table keeps each stored token, menu label, and help text identical on both sides.",
+  "maxSelectors": 32,
+  "providers": {
+    "cloudflare": {
+      "token": "cloudflare",
+      "label": "Cloudflare",
+      "help": "Use the bundled Cloudflare IPv4 and IPv6 ranges."
+    },
+    "cloudfront": {
+      "token": "cloudfront",
+      "label": "AWS CloudFront",
+      "help": "Use the bundled AWS CloudFront IPv4 and IPv6 ranges."
+    }
+  }
+}

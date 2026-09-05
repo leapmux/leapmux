@@ -96,20 +96,22 @@ func defaultDeps() deps {
 // nonLoopbackListenWarnMsg is the security warning the solo launcher prints
 // when the hub answers on an address another machine can reach.
 //
-// Solo mode authenticates a caller with no credentials WHILE the account holds
-// no password (auth.SoloGate states the whole rule), so a non-loopback bind in
-// that state hands the administrator to anyone who can reach the port. Setting
-// a password closes it: every TCP address then asks for one, 127.0.0.1
-// included.
+// A caller that reaches a passwordless solo hub over TCP can claim the account
+// by setting its first password. Other protected RPCs stay closed. Setting a
+// password closes the setup procedure and makes every TCP address require a
+// sign-in.
 //
 // It is printed at STARTUP, once the hub has bound its sockets but before any
 // request, so it cannot know whether a password exists yet -- which is why it
 // states the condition rather than asserting the danger. The frontend makes
 // the same demand where it can be acted on: it blocks the whole app with a
-// password-setup screen while the hub is exposed and the account has none.
+// password-setup screen for every TCP connection while the account has no
+// password. That screen no longer depends on the listen address -- loopback
+// reaches it too -- because the rule is now the TRANSPORT: only the local IPC
+// socket is credential-free.
 const nonLoopbackListenWarnMsg = "solo mode binds a non-loopback address, so this hub is reachable from other machines. " +
-	"Until the \"solo\" account has a password, every request is authenticated as the administrator without credentials. " +
-	"Open the app and set one: it asks for a password before anything else while this address is served. " +
+	"Until the \"solo\" account has a password, the first TCP caller can claim it by setting that password. " +
+	"Other protected actions stay closed until setup completes. Open the app and set the password now. " +
 	"Restrict access externally as well (firewall, Tailscale/WireGuard, SSH tunnel) if the network is not one you trust."
 
 // Config configures the solo launcher.

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/requestsource"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/locallisten"
@@ -50,6 +52,65 @@ func listSettings(c leapmuxv1connect.AdminSettingsServiceClient) error {
 	return err
 }
 
+// A passwordless solo TCP connection can claim the account by setting its
+// first password. It must not receive the synthetic administrator before that
+// write. Otherwise, any caller that reaches the port can call every protected
+// RPC without first taking responsibility for the account.
+func TestServer_PasswordlessSoloTCPRejectsAdministratorRPC(t *testing.T) {
+	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
+	startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	requireAnswers(t, base)
+
+	err := listSettings(tcpClient(base))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
+	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
+	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
+	requireAnswers(t, base)
+	require.NoError(t, srv.settings.Update(context.Background(), requestsource.KeyTrustedProxyRanges,
+		json.RawMessage(`["127.0.0.1"]`)))
+
+	request := connect.NewRequest(&leapmuxv1.SetInitialSoloPasswordRequest{
+		Password: "correct-horse-battery-staple",
+	})
+	request.Header().Set("Forwarded", "for=198.51.100.7;proto=https")
+	request.Header().Set("User-Agent", "setup-browser")
+	response, err := tcpAuthClient(base).SetInitialSoloPassword(context.Background(), request)
+	require.NoError(t, err)
+	assert.Equal(t, usernames.Solo, response.Msg.GetUser().GetUsername())
+
+	setCookie := response.Header().Get("Set-Cookie")
+	// The trusted proxy verified HTTPS for this request, so the cookie is
+	// Secure and takes the __Host- name without anybody setting
+	// `secure_cookies`. The hub terminates no TLS itself, so the proxy's
+	// answer is the only way it can know -- and an operator who had to set the
+	// key by hand got a cookie with no Secure attribute until they did.
+	assert.Contains(t, setCookie, "; Secure",
+		"a trusted proxy that verified HTTPS turns the cookie policy on")
+	assert.Contains(t, setCookie, "__Host-",
+		"the secure policy also selects the __Host- prefixed name")
+	cookieResponse := &http.Response{Header: http.Header{"Set-Cookie": []string{setCookie}}}
+	cookies := cookieResponse.Cookies()
+	require.Len(t, cookies, 1)
+	session, err := srv.store.Sessions().GetByID(context.Background(), cookies[0].Value, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, "198.51.100.7", session.IPAddress)
+	assert.Equal(t, "setup-browser", session.UserAgent)
+
+	adminRequest := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
+	adminRequest.Header().Set("Cookie", cookies[0].Name+"="+cookies[0].Value)
+	_, err = tcpClient(base).ListSettings(context.Background(), adminRequest)
+	require.NoError(t, err, "the returned session must authorize the next protected RPC")
+
+	_, err = tcpAuthClient(base).SetInitialSoloPassword(context.Background(), connect.NewRequest(
+		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "another-correct-password"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
 // The local IPC socket is the ONE credential-free transport, and the desktop
 // app rests entirely on it: it reaches its own hub over that socket and has no
 // way to present a password, so a hub that asked it for one would be unusable
@@ -70,17 +131,19 @@ func TestServer_TheLocalSocketStaysCredentialFreeWhenTCPStopsBeing(t *testing.T)
 	srv := startTestServer(t, &config.Config{Listen: base, SoloMode: true})
 	requireAnswers(t, base)
 
-	// The bootstrap state: neither transport asks for anything.
+	// Local IPC receives the synthetic account before setup. TCP can call only
+	// the public initial-password procedure.
 	require.NoError(t, listSettings(localIPCClient(t, srv)),
 		"the local socket must admit the desktop app before a password exists")
-	require.NoError(t, listSettings(tcpClient(base)),
-		"TCP must stay credential-free while the account has no password, or the first password could never be set from a browser")
+	err := listSettings(tcpClient(base))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 
 	setSoloPasswordDirect(t, srv.store)
 
 	// TCP arms itself with no restart: the gate re-reads the account while its
 	// latch is false.
-	err := listSettings(tcpClient(base))
+	err = listSettings(tcpClient(base))
 	require.Error(t, err, "TCP must ask for a sign-in once the account holds a password")
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 

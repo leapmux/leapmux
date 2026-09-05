@@ -3,7 +3,7 @@ import type { BuildInfo } from '~/lib/buildEnv'
 import { createSignal } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
-import { CaptchaProvider as GenCaptchaProvider } from '~/generated/proto/leapmux/v1/auth_pb'
+import { CaptchaProvider as GenCaptchaProvider, SoloAccess as GenSoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
 import { frontendBuildInfo } from '~/lib/buildEnv'
 import { formatLocalDateTime } from './dateFormat'
 
@@ -19,8 +19,7 @@ export type CaptchaProvider = GenCaptchaProvider
 // states.
 interface SystemInfoSnapshot {
   soloMode: boolean
-  autoAuthenticated: boolean
-  passwordSetupRequired: boolean
+  soloAccess: GenSoloAccess
   soloPasswordSet: boolean
   signupEnabled: boolean
   setupRequired: boolean
@@ -39,8 +38,7 @@ interface SystemInfoSnapshot {
 // than flashing an affordance the hub may not support.
 const DEFAULTS: SystemInfoSnapshot = {
   soloMode: false,
-  autoAuthenticated: false,
-  passwordSetupRequired: false,
+  soloAccess: GenSoloAccess.UNSPECIFIED,
   soloPasswordSet: false,
   signupEnabled: false,
   setupRequired: false,
@@ -89,8 +87,7 @@ export async function loadSystemInfo(force = false): Promise<void> {
   const resp = await authClient.getSystemInfo({})
   setSnapshot({
     soloMode: resp.soloMode,
-    autoAuthenticated: resp.autoAuthenticated,
-    passwordSetupRequired: resp.passwordSetupRequired,
+    soloAccess: resp.soloAccess,
     soloPasswordSet: resp.soloPasswordSet,
     signupEnabled: resp.signupEnabled,
     setupRequired: resp.setupRequired,
@@ -116,7 +113,7 @@ export function isSoloMode(): boolean {
 }
 
 /**
- * Whether the hub authenticates THIS connection with no credentials.
+ * Whether this connection uses credential-free local IPC.
  *
  * Not a synonym for `isSoloMode`, and the two must not be swapped. `isSoloMode`
  * is a property of the HUB — one account, no sign-up — and decides which
@@ -129,28 +126,20 @@ export function isSoloMode(): boolean {
  * form rather than leaving it waiting for a session that never arrives.
  */
 export function isAutoAuthenticated(): boolean {
-  return current().autoAuthenticated
+  return current().soloAccess === GenSoloAccess.CREDENTIAL_FREE
 }
 
 /**
- * Whether the app must block itself with a password-setup screen.
+ * Whether this connection reaches the restricted first-password setup state:
+ * TCP, on a solo hub whose account holds no password.
  *
- * True only when the hub answers on an address another machine can reach AND
- * its one account has no password. In that state every affordance the app
- * offers is offered to whoever reaches the port, so the one useful thing left
- * is to ask for a password.
- */
-export function passwordSetupRequired(): boolean {
-  return current().passwordSetupRequired
-}
-
-/**
- * Whether AuthGuard and Auth bootstrap must take the password-setup path
- * instead of the shell. True only when the hub auto-authenticates AND still
- * requires a password to be set.
+ * `AuthGuard` renders the setup screen from it, and `AuthContext` declines to
+ * boot the shell for it. ONE predicate serves both, because both ask the same
+ * question. The two booleans this enum replaced could disagree, and a second
+ * spelling of one state is how they did.
  */
 export function isPasswordSetupGate(): boolean {
-  return passwordSetupRequired() && isAutoAuthenticated()
+  return current().soloAccess === GenSoloAccess.PASSWORD_SETUP
 }
 
 /**

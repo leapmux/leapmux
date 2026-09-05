@@ -90,10 +90,9 @@ export const AccountPassword: Component = () => {
       */}
       <Show when={isSoloMode() && !passwordSet()}>
         <Alert variant="warning">
-          This hub authenticates everyone who can reach it while the “solo”
-          account has no password. Setting one asks every network address for a
-          sign-in as “solo”, 127.0.0.1 included. The desktop app’s local socket
-          is the only exception.
+          TCP callers can only set the first “solo” password while none exists.
+          Setting one makes every TCP address require a sign-in as “solo”. The
+          desktop app’s local socket stays credential-free.
         </Alert>
       </Show>
       <PasswordFields

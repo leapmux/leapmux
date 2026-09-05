@@ -57,7 +57,7 @@ func NewChannelRelayHandler(
 	cMgr *channelmgr.Manager,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
-	secureCookie func() bool,
+	secureCookie func(context.Context) bool,
 	queuePool *sendq.Pool,
 ) *ChannelRelayHandler {
 	if queuePool == nil {

@@ -26,11 +26,9 @@ import { ANY_HOST, mergeNotes, newRow, portOf, rowFromAddress, rowIsLoopback, to
  * The Network access panel: which addresses this hub answers on, and the
  * password that guards them.
  *
- * The two belong in ONE form because they are one decision. Publishing an
- * address without a password would put the whole app behind nothing, and the
- * hub's rule says as much: once the account holds a password every network
- * address asks for it, so the panel refuses to apply an address until one
- * exists.
+ * The two belong in one form because they are one decision. A passwordless
+ * TCP caller can only set the first password. This panel stores that password
+ * before it publishes an address, so the new address can sign in immediately.
  *
  * It writes the address list through the row's BINDING -- the same admin
  * settings store the rest of the dialog uses -- so the list has one home and
@@ -188,8 +186,8 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       return 'Applying this asks every network address for a sign-in, 127.0.0.1 included. '
         + 'The desktop app’s local socket is the only exception. Set the password below first.'
     }
-    return 'While the “solo” account has no password, this hub authenticates everyone who can reach it. '
-      + 'An address other machines can reach demands one, and Apply asks for it then.'
+    return 'While the “solo” account has no password, TCP callers can only set its first password. '
+      + 'An address other machines can reach needs one, and Apply stores it first.'
   }
 
   const apply = async () => {
@@ -200,9 +198,12 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       work: async () => {
         // The password FIRST. A failure here leaves no address published, where
         // the reverse would publish an address nobody can authenticate against.
-        // The reply carries this browser's new session: storing the first
-        // password is what starts demanding one, so without it the page that
-        // made the write is signed out of the form it is standing in.
+        //
+        // The caller keeps working across the write, and no session changes
+        // hands. Only a credential-free connection reaches this panel while the
+        // account has no password. A TCP browser in that state meets the
+        // password-setup screen instead of the app. Local IPC stays
+        // credential-free whatever the account holds.
         //
         // LATCHED, and the fields are cleared only once the whole apply lands.
         // Clearing them beside this call left the operator with no way to retry

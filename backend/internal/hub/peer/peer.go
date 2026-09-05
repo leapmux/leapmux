@@ -2,11 +2,17 @@
 // answer two questions the request body cannot: did this arrive on the hub's
 // local IPC listener, and what address is it from?
 //
-// Both marks are placed once, by the http.Server, and every consumer reads
-// them from the context. That is what lets the ConnectRPC interceptor and the
-// WebSocket authenticator answer alike: a Connect handler holds a context and
-// a WebSocket handler holds an *http.Request whose context descends from the
-// same connection.
+// The package holds FOUR marks, and they have two writers. The http.Server
+// places the local-IPC mark and the transport address, one per listener and
+// one per connection. The request-source middleware places the verified client
+// IP and the verified protocol, per request, because both answers need the
+// forwarding headers and the trusted-proxy setting, which the server knows
+// nothing about.
+//
+// Every consumer reads them from the context. That is what lets the ConnectRPC
+// interceptor and the WebSocket authenticator answer alike: a Connect handler
+// holds a context and a WebSocket handler holds an *http.Request whose context
+// descends from the same connection.
 //
 // THE POLARITY IS DELIBERATE. An unmarked context reports "not local IPC" and
 // an empty address. Every mark is added by production wiring that a test can
@@ -18,12 +24,16 @@ package peer
 import (
 	"context"
 	"net"
-	"strings"
+	"net/netip"
 )
 
 type localIPCKey struct{}
 
-type remoteAddrKey struct{}
+type transportAddrKey struct{}
+
+type clientIPKey struct{}
+
+type httpsKey struct{}
 
 // WithLocalIPC marks the context as belonging to the local IPC listener --
 // the unix domain socket on Unix, the named pipe on Windows.
@@ -46,47 +56,62 @@ func IsLocalIPC(ctx context.Context) bool {
 	return v
 }
 
-// WithRemoteAddr records one connection's peer address, from the
-// http.Server's ConnContext.
-func WithRemoteAddr(ctx context.Context, addr net.Addr) context.Context {
+// WithTransportAddr records the unchanged address of the accepted connection.
+func WithTransportAddr(ctx context.Context, addr net.Addr) context.Context {
 	if addr == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, remoteAddrKey{}, addr)
+	return context.WithValue(ctx, transportAddrKey{}, addr)
 }
 
-// RemoteAddr returns the recorded peer address, and whether one was recorded.
-func RemoteAddr(ctx context.Context) (net.Addr, bool) {
-	addr, ok := ctx.Value(remoteAddrKey{}).(net.Addr)
+// TransportAddr returns the unchanged connection address.
+func TransportAddr(ctx context.Context) (net.Addr, bool) {
+	addr, ok := ctx.Value(transportAddrKey{}).(net.Addr)
 	return addr, ok
 }
 
-// RemoteHost returns the peer's host with the port removed, or "" when no
-// address was recorded.
-func RemoteHost(ctx context.Context) string {
-	addr, ok := RemoteAddr(ctx)
-	if !ok {
-		return ""
+// WithClientIP records the verified client IP. Invalid values become an
+// unknown client instead of entering request identity state.
+//
+// A ZONE is kept, and only the transport peer can supply one. Every
+// header-derived address is refused a zone by the parser that reads it, so a
+// zoned value here came from the accepted connection, where the zone is part
+// of the identity: two link-local peers on different interfaces carry the same
+// address, and dropping the zone would merge them. Refusing the whole address
+// instead put every link-local client into the shared unknown budget and wrote
+// an empty address on their session rows.
+func WithClientIP(ctx context.Context, value string) context.Context {
+	addr, err := netip.ParseAddr(value)
+	if err != nil || addr.IsUnspecified() {
+		return context.WithValue(ctx, clientIPKey{}, "")
 	}
-	return HostOf(addr.String())
+	return context.WithValue(ctx, clientIPKey{}, addr.Unmap().String())
 }
 
-// HostOf reduces one address to the host a budget is keyed on.
+// ClientIP returns the verified client IP, or an empty string when the request
+// source could not identify one.
+func ClientIP(ctx context.Context) string {
+	value, _ := ctx.Value(clientIPKey{}).(string)
+	return value
+}
+
+// WithHTTPS records that the request reached the hub over TLS.
 //
-// The port goes because a client picks a fresh one for every connection, so a
-// budget keyed on it would give each request a budget of its own. The brackets
-// go so one IPv6 peer reads as one host whichever way its address was
-// rendered.
+// The hub terminates no TLS itself, so the only way this is true is a trusted
+// reverse proxy that terminated it and said so. The request-source middleware
+// is the one writer, and it sets this only after the transport peer passed the
+// trust test -- a caller-controlled header can never reach it.
 //
-// It is exported because TWO entry points reach an address differently -- the
-// plain-HTTP door reads r.RemoteAddr, and the Connect interceptor reads the
-// peer the http.Server stamped on the context -- and they must reduce it the
-// same way or one caller holds two budgets. That invariant was stated in a
-// comment beside two identical copies of these three lines; it is one function
-// now.
-func HostOf(addr string) string {
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		addr = host
-	}
-	return strings.Trim(addr, "[]")
+// The POLARITY matches the rest of this package: an unmarked context reports
+// plain HTTP. A missed mark then costs a cookie its Secure attribute, which is
+// the direction that fails safe against a mark the wiring forgot.
+func WithHTTPS(ctx context.Context, https bool) context.Context {
+	return context.WithValue(ctx, httpsKey{}, https)
+}
+
+// IsHTTPS reports whether a trusted proxy verified that this request reached
+// the hub over TLS.
+func IsHTTPS(ctx context.Context) bool {
+	value, _ := ctx.Value(httpsKey{}).(bool)
+	return value
 }

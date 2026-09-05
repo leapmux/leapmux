@@ -13,6 +13,31 @@ export function hubDataDir(dataDir: string): string {
   return join(dataDir, 'hub')
 }
 
+/**
+ * The environment every hub this suite spawns must start from.
+ *
+ * `LEAPMUX_HUB_DEV_FRONTEND` is CLEARED. It points a hub at a Vite dev server
+ * instead of the frontend built into the binary under test. A developer who
+ * exports it for their own `leapmux solo`, or who runs `task dev-desktop`,
+ * exports it into this suite too. The hub then serves whatever checkout that
+ * Vite server runs from: a different worktree, or nothing at all. A spec then
+ * asserts against a frontend that nobody built from the code under test. It
+ * fails for a reason that is nowhere in the diff. Worse, it can PASS against
+ * code that was never built.
+ *
+ * Every spawn site layers its own variables on top of this, so a new one
+ * inherits the guard rather than restating it.
+ *
+ * The guard sits AFTER the spread, so a caller cannot override it by accident.
+ * The parameter type omits the key as well, so naming it does not compile --
+ * a silently dropped value would be the same defect one step later.
+ */
+export function hubSpawnEnv(
+  extra: Omit<Record<string, string | undefined>, 'LEAPMUX_HUB_DEV_FRONTEND'> = {},
+): NodeJS.ProcessEnv {
+  return { ...process.env, ...extra, LEAPMUX_HUB_DEV_FRONTEND: undefined }
+}
+
 // ──────────────────────────────────────────────
 // Global state (read from file written by global-setup)
 // ──────────────────────────────────────────────

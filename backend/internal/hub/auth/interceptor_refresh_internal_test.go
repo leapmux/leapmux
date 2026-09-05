@@ -26,7 +26,7 @@ func slidingInterceptor(t *testing.T, sessionDuration time.Duration) *authInterc
 	return &authInterceptor{
 		store:  sessionValidationOverrideStore{sessions: sessions},
 		state:  &authState{},
-		policy: func() Policy { return Policy{SessionDuration: sessionDuration} },
+		policy: func(context.Context) Policy { return Policy{SessionDuration: sessionDuration} },
 	}
 }
 
@@ -47,11 +47,11 @@ func TestTouchSession_StoreErrorIsThrottledLikeAnySlide(t *testing.T) {
 	a := &authInterceptor{
 		store:  sessionValidationOverrideStore{sessions: sessions},
 		state:  &authState{},
-		policy: func() Policy { return Policy{SessionDuration: 36 * time.Hour} },
+		policy: func(context.Context) Policy { return Policy{SessionDuration: 36 * time.Hour} },
 	}
 
-	first := a.touchSession(context.Background(), "session", nil, a.currentPolicy())
-	second := a.touchSession(context.Background(), "session", nil, a.currentPolicy())
+	first := a.touchSession(context.Background(), "session", nil, a.currentPolicy(context.Background()))
+	second := a.touchSession(context.Background(), "session", nil, a.currentPolicy(context.Background()))
 
 	assert.True(t, first.IsZero(), "a failed touch slid nothing")
 	assert.True(t, second.IsZero())
@@ -139,7 +139,9 @@ func TestWrapUnary_HandlerErrorStillCarriesRefresh(t *testing.T) {
 // deadline, for as long as the user kept being refused.
 func TestWrapUnary_EmailVerificationDenialCarriesRefresh(t *testing.T) {
 	a := slidingInterceptor(t, 36*time.Hour)
-	a.policy = func() Policy { return Policy{SessionDuration: 36 * time.Hour, EmailVerificationRequired: true} }
+	a.policy = func(context.Context) Policy {
+		return Policy{SessionDuration: 36 * time.Hour, EmailVerificationRequired: true}
+	}
 
 	resp, err := a.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		return nil, errors.New("the handler must not run")

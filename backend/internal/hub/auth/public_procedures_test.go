@@ -38,6 +38,7 @@ var publicProcedureRationale = map[string]string{
 	// Unauthenticated by design: these are how a caller ACQUIRES a credential,
 	// so requiring one would be circular.
 	leapmuxv1connect.AuthServiceLoginProcedure:                           "credential-acquiring: verifies username/password itself",
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:          "credential-acquiring: atomically claims a passwordless solo account and creates a session",
 	leapmuxv1connect.AuthServiceSignUpProcedure:                          "credential-acquiring: requires the signup-enabled config and the first-admin rules",
 	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:                   "discloses only pre-login system facts (auth modes, setup state)",
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:               "discloses only which OAuth providers are configured, pre-login",

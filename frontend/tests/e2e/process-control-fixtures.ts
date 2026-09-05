@@ -25,7 +25,7 @@ import {
   TEST_ADMIN_USERNAME,
   waitForNewOnlineWorkerViaAPI,
 } from './helpers/api'
-import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
+import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './helpers/server'
 import { createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -251,7 +251,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' },
+    env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' }),
   })
   hubProc.unref()
   // Track immediately so the fixture teardown / global-teardown sweep still
@@ -335,7 +335,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' },
+      env: hubSpawnEnv({ LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' }),
     })
     hubProc.unref()
     trackSpawnedPid(dataDir, hubProc.pid!)

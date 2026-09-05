@@ -4,7 +4,7 @@ import { createEffect, createSignal, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { postAuthNavigate } from '~/lib/postAuthNavigate'
 import { stringParam } from '~/lib/searchParam'
-import { isAutoAuthenticated } from '~/lib/systemInfo'
+import { isAutoAuthenticated, isPasswordSetupGate } from '~/lib/systemInfo'
 import { centeredFull, pageCard } from '~/styles/shared.css'
 
 /**
@@ -15,13 +15,16 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
  *
  * TWO rules, and both belong to every one of the five pages.
  *
- * A SOLO hub serves no credential endpoint at all: it authenticates every
- * request as the synthetic solo user, so there is nothing to sign in to, no
- * account to create, and no account to recover. Each page used to spell that
- * rule out, and it reached two of the five, so `/recover-account`,
- * `/recover-account/complete` and `/setup` each offered a form the hub answers nothing
- * for. It OUTRANKS `whenSignedIn`: an `explain` panel that offers to sign out
- * is the wrong answer on a hub where signing out is impossible.
+ * A SOLO hub offers no credential the visitor can use, in two of its three
+ * connection states. Local IPC needs none, so there is nothing to sign in to.
+ * A passwordless TCP connection has no password that could work. Either way
+ * there is no account to create and no account to recover. Each page used to
+ * spell that rule out, and it reached two of the five, so `/recover-account`,
+ * `/recover-account/complete` and `/setup` each offered a form the hub answers
+ * nothing for. It OUTRANKS `whenSignedIn`: an `explain` panel that offers to
+ * sign out is the wrong answer on a connection where signing out is
+ * impossible. A solo hub whose account HAS a password is the third state, and
+ * its network callers sign in like anybody else.
  *
  * `SetupGate` does not cover this. It asks whether the HUB still needs a first
  * administrator, which is a different question with a different answer.
@@ -103,11 +106,20 @@ export const SignedOutOnly: ParentComponent<{
       return
     const signedIn = auth.user() !== null
     setArrivedSignedIn(signedIn)
-    // The credential-free rule first: it holds whether or not somebody is
-    // signed in, and it outranks `whenSignedIn`, because a connection with no
-    // sign-out has nothing to explain. A solo hub reached at a network address
-    // DOES have one, so it falls through to the ordinary branches.
-    if (isAutoAuthenticated()) {
+    // The no-credential-to-offer rule first: it holds whether or not somebody
+    // is signed in, and it outranks `whenSignedIn`, because a connection with
+    // no sign-out has nothing to explain.
+    //
+    // TWO solo states qualify, and both send the visitor to `/`. Local IPC
+    // needs no credential, so there is nothing to sign in to. A passwordless
+    // TCP connection has a credential form that NO password can satisfy --
+    // the account holds none — so `/login` is a dead end that offers
+    // "invalid credentials" for every attempt and no route to the setup
+    // screen. `AuthGuard` renders that screen at `/`, which is the only
+    // useful destination for either state. A solo hub whose account HAS a
+    // password reports SIGN_IN_REQUIRED and falls through to the ordinary
+    // branches, because there the form works.
+    if (isAutoAuthenticated() || isPasswordSetupGate()) {
       navigate('/', { replace: true })
       return
     }

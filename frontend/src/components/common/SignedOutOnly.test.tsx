@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SignedOutOnly } from '~/components/common/SignedOutOnly'
+import { SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 vi.mock('~/lib/systemInfo', async () => {
@@ -252,7 +253,7 @@ describe('signedOutOnly', () => {
   // in". With a user present the ordinary signed-in redirect answers instead,
   // so the assertion would pass with this rule deleted.
   it('sends a credential-free visitor to the app, from every credential page', async () => {
-    setSystemInfoMock({ soloMode: true, autoAuthenticated: true })
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.CREDENTIAL_FREE })
     mockUser.mockReturnValue(null)
     const { navigations } = renderGate('/recover-account')
     await vi.waitFor(() => {
@@ -274,7 +275,7 @@ describe('signedOutOnly', () => {
     expect(screen.getByTestId('credential-form')).toBeInTheDocument()
     expect(navigations).toEqual([])
 
-    setSystemInfoMock({ soloMode: true, autoAuthenticated: true })
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.CREDENTIAL_FREE })
     mockLoading.mockReturnValue(false)
 
     await vi.waitFor(() => {
@@ -286,7 +287,7 @@ describe('signedOutOnly', () => {
   // the wrong answer on a connection where signing out is impossible, and
   // there is no password to reset either.
   it('redirects rather than explains on a credential-free connection', async () => {
-    setSystemInfoMock({ soloMode: true, autoAuthenticated: true })
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.CREDENTIAL_FREE })
     mockUser.mockReturnValue({ id: 'solo', username: 'solo' })
     const { navigations } = renderGate('/recover-account/complete?token=abc', 'explain')
 
@@ -296,12 +297,36 @@ describe('signedOutOnly', () => {
     expect(screen.queryByTestId('signed-out-only-explain')).not.toBeInTheDocument()
   })
 
+  // The PASSWORD_SETUP state, which is the other connection with no usable
+  // credential. The account holds no password, so this form can only ever
+  // answer "invalid credentials" -- and nothing on the page routes to `/`,
+  // where AuthGuard renders the setup screen. Without this rule `/login` is a
+  // dead end that a bookmark, a stale tab or a `?redirect=` bounce reaches on
+  // every fresh `leapmux solo`, loopback included.
+  it('sends a passwordless TCP visitor to the app, from every credential page', async () => {
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.PASSWORD_SETUP })
+    mockUser.mockReturnValue(null)
+    const { navigations } = renderGate('/login')
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+  })
+
+  it('sends a passwordless TCP visitor away from account recovery too', async () => {
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.PASSWORD_SETUP })
+    mockUser.mockReturnValue(null)
+    const { navigations } = renderGate('/recover-account')
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+  })
+
   // The other half of that rule, and the reason it reads the CONNECTION rather
   // than the hub: a solo hub whose account holds a password asks its network
   // callers to sign in, so those callers do have a sign-out and the ordinary
   // explanation applies to them.
   it('explains on a solo hub reached at a network address', async () => {
-    setSystemInfoMock({ soloMode: true, autoAuthenticated: false })
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.SIGN_IN_REQUIRED })
     mockUser.mockReturnValue({ id: 'solo', username: 'solo' })
     const { navigations } = renderGate('/recover-account/complete?token=abc', 'explain')
 

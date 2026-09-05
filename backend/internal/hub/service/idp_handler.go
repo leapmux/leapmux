@@ -770,7 +770,7 @@ func (h *IdPHandler) redirectBack(w http.ResponseWriter, r *http.Request, redire
 
 // secureCookies reports whether this hub writes __Host- prefixed cookies.
 func (h *IdPHandler) secureCookies(ctx context.Context) bool {
-	return settings.KeySecureCookies.Of(h.set.Snapshot(ctx))
+	return settings.SecureCookiesFor(ctx, h.set.Snapshot(ctx))
 }
 
 // loginOAuthUser stores tokens, creates a session, and redirects the user.
@@ -790,7 +790,6 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 	}
 	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
-		IPAddress: r.RemoteAddr,
 	})
 	if sessionErr != nil {
 		slog.Error("oauth: create session", "error", sessionErr)

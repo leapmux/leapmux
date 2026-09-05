@@ -82,7 +82,7 @@ func NewUserEventsHandler(
 	registry *crdt.Registry,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
-	secureCookie func() bool,
+	secureCookie func(context.Context) bool,
 	queuePool *sendq.Pool,
 ) *UserEventsHandler {
 	if queuePool == nil {

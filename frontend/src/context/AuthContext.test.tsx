@@ -16,6 +16,7 @@ import { AuthProvider, useAuth } from './AuthContext'
 
 const mockGetCurrentUser = vi.fn()
 const mockLogin = vi.fn()
+const mockPasswordSetupGate = vi.fn<() => boolean>(() => false)
 vi.mock('~/api/clients', () => ({
   authClient: {
     getCurrentUser: (...args: unknown[]) => mockGetCurrentUser(...args),
@@ -65,8 +66,7 @@ vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   // A multi-user hub: every caller signs in, and none of the solo facts hold.
   isAutoAuthenticated: () => false,
-  passwordSetupRequired: () => false,
-  isPasswordSetupGate: () => false,
+  isPasswordSetupGate: () => mockPasswordSetupGate(),
   soloPasswordSet: () => false,
   loadSystemInfo: () => mockLoadSystemInfo(),
   isSystemInfoLoaded: () => true,
@@ -115,6 +115,7 @@ describe('authContext', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockLoadSystemInfo.mockResolvedValue(undefined)
+    mockPasswordSetupGate.mockReturnValue(false)
   })
 
   // Bootstrap writes the boot splash's phase onto <html>; later tests in this
@@ -167,6 +168,17 @@ describe('authContext', () => {
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
     })
+  })
+
+  it('lands on ready without revealing the shell during TCP password setup', async () => {
+    mockPasswordSetupGate.mockReturnValue(true)
+    mockGetCurrentUser.mockRejectedValue(new ConnectError('unauthenticated', Code.Unauthenticated))
+    renderWithAuth()
+
+    await vi.waitFor(() => {
+      expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
+    })
+    expect(screen.getByTestId('authenticated')).toHaveTextContent('no')
   })
 
   // A failed system-info load aborts bootstrap; the checklist stays on the
@@ -223,10 +235,11 @@ describe('authContext', () => {
 
   // System info is a hard prerequisite, not an optional best-effort step: its
   // module getters are fabricated defaults until it succeeds. Discarding the
-  // failure leaves `isSoloMode()` at `false` while the session restore SUCCEEDS on a
-  // solo hub (which authenticates every procedure), so the app renders as
-  // multi-user and offers a "Log out" that strands the user at a login form
-  // no credentials can satisfy. Bootstrap must stop and report instead.
+  // failure leaves `isSoloMode()` at `false` while the session restore SUCCEEDS
+  // on a solo hub reached over local IPC (which needs no credential), so the app
+  // renders as multi-user and offers a "Log out" that strands the user at a
+  // login form no credentials can satisfy. Bootstrap must stop and report
+  // instead.
   it('records a bootstrap error when the system info load fails', async () => {
     mockLoadSystemInfo.mockRejectedValue(new Error('not connected'))
     mockGetCurrentUser.mockResolvedValue({
@@ -407,6 +420,27 @@ describe('authContext', () => {
 
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('bob'))
     expect(auth().elevationExpiresAt()).toBeUndefined()
+  })
+
+  // The one reply that GRANTS an elevation in the same transaction that creates
+  // the session: SetInitialSoloPassword. Passing the deadline keeps the client
+  // state derived from the answer that created it, rather than from a following
+  // refresh whose failure is swallowed -- which would prompt the operator for
+  // the password they chose a moment earlier.
+  it('keeps an elevation the same reply granted', async () => {
+    const inherited = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
+    const granted = timestampFromDate(new Date(Date.now() + 30 * 60 * 1000))
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+      elevationExpiresAt: inherited,
+    })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+
+    auth().setAuth({ id: 'solo', username: 'solo', isAdmin: true } as unknown as User, granted)
+
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('solo'))
+    expect(auth().elevationExpiresAt()).toBe(granted)
   })
 
   // One adoption site, so a refresh cannot leave one signal stale while

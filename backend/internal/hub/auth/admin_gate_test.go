@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -265,7 +267,11 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	adminPath, adminHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, interceptors)
 	mux.Handle(adminPath, adminHandler)
 
-	server := httptest.NewServer(mux)
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.BaseContext = func(net.Listener) context.Context {
+		return peer.WithLocalIPC(context.Background())
+	}
+	server.Start()
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL)

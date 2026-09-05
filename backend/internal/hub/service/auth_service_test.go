@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -139,6 +142,116 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) {
+	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
+	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+
+	request := connect.NewRequest(&leapmuxv1.SetInitialSoloPasswordRequest{
+		Password: "correct-horse-battery-staple",
+	})
+	request.Header().Set("User-Agent", "setup-test")
+	response, err := client.SetInitialSoloPassword(context.Background(), request)
+	require.NoError(t, err)
+	assert.Equal(t, usernames.Solo, response.Msg.GetUser().GetUsername())
+	assert.True(t, response.Msg.GetUser().GetPasswordSet())
+
+	sessionID := sessionFromCookie(t, response.Header().Get("Set-Cookie"))
+	info, err := auth.ValidateToken(context.Background(), st, sessionID)
+	require.NoError(t, err)
+	assert.True(t, info.Elevated(time.Now()))
+
+	// The deadline travels WITH the reply, so a client's elevation state comes
+	// from the answer that granted it rather than from a second round trip. A
+	// client that had to recover it from a following GetCurrentUser would show
+	// the operator an un-elevated session, and prompt for the password they
+	// just chose, whenever that call failed transiently.
+	reported := response.Msg.GetElevationExpiresAt()
+	require.NotNil(t, reported, "the reply must carry the elevation it granted")
+	assert.WithinDuration(t, time.Now().Add(auth.ElevationWindow), reported.AsTime(), time.Minute)
+	assert.True(t, info.Elevated(reported.AsTime().Add(-time.Second)),
+		"the reported deadline must fall inside the window the store recorded")
+	session, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, "setup-test", session.UserAgent)
+
+	user, err := st.Users().GetByUsername(context.Background(), usernames.Solo)
+	require.NoError(t, err)
+	matched, err := password.Verify(user.PasswordHash, "correct-horse-battery-staple")
+	require.NoError(t, err)
+	assert.True(t, matched)
+
+	_, err = client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
+		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "another-correct-password"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestAuthService_SetInitialSoloPasswordRefusesOtherModes(t *testing.T) {
+	t.Parallel()
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
+	_, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
+		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestAuthService_SetInitialSoloPasswordRejectsAnEmptyPasswordWithoutClaimingTheAccount(t *testing.T) {
+	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
+	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+
+	_, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
+		&leapmuxv1.SetInitialSoloPasswordRequest{}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	response, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
+		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, sessionFromCookie(t, response.Header().Get("Set-Cookie")))
+}
+
+func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
+	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
+	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+
+	const callers = 6
+	type result struct {
+		response *connect.Response[leapmuxv1.SetInitialSoloPasswordResponse]
+		err      error
+	}
+	results := make(chan result, callers)
+	var start sync.WaitGroup
+	start.Add(1)
+	var workers sync.WaitGroup
+	workers.Add(callers)
+	for index := range callers {
+		go func() {
+			defer workers.Done()
+			start.Wait()
+			response, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
+				&leapmuxv1.SetInitialSoloPasswordRequest{Password: fmt.Sprintf("correct-password-%d", index)}))
+			results <- result{response: response, err: err}
+		}()
+	}
+	start.Done()
+	workers.Wait()
+	close(results)
+
+	winners := 0
+	for result := range results {
+		if result.err != nil {
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(result.err))
+			continue
+		}
+		winners++
+		sessionID := sessionFromCookie(t, result.response.Header().Get("Set-Cookie"))
+		info, err := auth.ValidateToken(context.Background(), st, sessionID)
+		require.NoError(t, err)
+		assert.True(t, info.Elevated(time.Now()))
+	}
+	assert.Equal(t, 1, winners)
 }
 
 func TestAuthService_GetCurrentUser(t *testing.T) {
@@ -1570,9 +1683,9 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 }
 
 // The other half of the setup exemption, and the half that matters for
-// safety: `admin` becomes claimable in setup mode, `solo` never does. A user
-// The hub auto-authenticates a user by that name in a non-solo database for
-// every request, from the day somebody opens the same data-dir in solo mode.
+// safety: `admin` becomes claimable in setup mode, `solo` never does. The hub
+// uses a user by that name as the synthetic local IPC identity if somebody
+// opens the same data directory in solo mode.
 func TestSignUp_RejectsSoloInSetupMode(t *testing.T) {
 	t.Parallel()
 
@@ -1902,9 +2015,9 @@ func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyHonorsSignupDisabled(t *t
 }
 
 // `solo` carries a hazard that belongs to the DATABASE rather than to the
-// flow that wrote the row: opening a non-solo data-dir in solo mode
-// auto-authenticates every request as that user. Setup mode exempts `admin`
-// and nothing else.
+// flow that wrote the row: opening a non-solo data directory in solo mode
+// gives local IPC the synthetic account. Setup mode exempts `admin` and
+// nothing else.
 func TestBeginPasskeySignUp_SetupModeStillRejectsSoloUsername(t *testing.T) {
 	t.Parallel()
 

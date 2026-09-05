@@ -249,8 +249,7 @@ describe('networkAccessControl', () => {
 
     expect(await screen.findByRole('button', { name: 'Apply' })).toBeEnabled()
     expect(screen.queryByText(/Set the password below first/)).toBeNull()
-    // It still states the standing condition: this hub asks nobody for one yet.
-    expect(screen.getByText(/authenticates everyone who can reach it/)).toBeInTheDocument()
+    expect(screen.getByText(/TCP callers can only set its first password/)).toBeInTheDocument()
   })
 
   // The other half of the same rule: an address another machine can reach is

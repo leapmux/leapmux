@@ -101,7 +101,7 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
 }
 
-func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
+func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 
 	// Bootstrap in solo mode creates a user named "solo".
@@ -123,11 +123,9 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
 
-	// In solo mode, private endpoints should work without any cookie.
-	resp, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
-	require.NoError(t, err)
-	assert.Equal(t, "solo", resp.Msg.GetUser().GetUsername())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	_, err = client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
 // TestInterceptor_SoloMode_YieldsToAPresentedBearer pins the solo decision on

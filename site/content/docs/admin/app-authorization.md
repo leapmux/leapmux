@@ -129,7 +129,7 @@ Two registrations ship with the Hub — the control CLI and the service account 
 
 ## Solo mode
 
-A solo Hub authorizes apps like any other. Reaching the port is the authentication there, so a request with no credential is the solo account with no limits — but a request that presents a credential speaks for that app, and the Hub applies the credential's permissions instead.
+A solo Hub authorizes apps like any other. Over the local IPC socket a request with no credential is the solo account with no limits — but a request that presents a credential speaks for that app, and the Hub applies the credential's permissions instead. Over TCP the caller signs in as `solo` first, and the same rule then applies to it. See [Solo mode: a reduced threat model](/docs/admin/security/#solo-mode-a-reduced-threat-model).
 
 That is what makes the model useful on one machine: hand a local agent a credential with `file:read` and it reads files, nothing else, and the Worker enforces it inside the encrypted channel where the Hub cannot see.
 

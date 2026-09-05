@@ -31,6 +31,11 @@ func TestHiddenInSoloIsADeliberatePerOperationAnswer(t *testing.T) {
 		// would leave a published solo hub with no throttle an operator could
 		// even see.
 		OpLoginAnonymous: false,
+		// Solo is the ONLY mode that serves SetInitialSoloPassword at all, so
+		// hiding this key in solo would hide it everywhere. It is also the one
+		// throttle on an unauthenticated Argon2 hash: captcha is off in solo
+		// by construction.
+		OpSoloPasswordSetup: false,
 	}
 	for _, op := range KnownOperations() {
 		want, recorded := expected[op]

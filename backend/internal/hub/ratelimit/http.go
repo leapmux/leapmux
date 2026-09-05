@@ -3,7 +3,9 @@ package ratelimit
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 
 	"github.com/leapmux/leapmux/internal/hub/peer"
 )
@@ -39,7 +41,7 @@ func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) b
 	if m == nil {
 		return true
 	}
-	allowed, _, err := m.allowWindowed(ctx, op, clientAddressKey(r))
+	allowed, _, err := m.allowWindowed(ctx, op, anonymousBudgetKey(r.Context()))
 	if err != nil {
 		slog.WarnContext(ctx, "rate limit unavailable for an anonymous OAuth endpoint; admitting",
 			"operation", string(op), "err", err)
@@ -48,38 +50,76 @@ func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) b
 	return allowed
 }
 
-// clientAddressKey is the budget key for an anonymous caller: its IP address.
+// anonymousBudgetKey renders one anonymous caller's budget key.
 //
-// The REMOTE ADDRESS of the connection, never a forwarded header. A header is
-// caller-controlled, so keying on one would let an attacker mint a fresh budget
-// per request by varying it -- which is worse than no limit, because it also
-// lets them exhaust a victim's budget by claiming the victim's address.
+// It answers from the VERIFIED client IP when the request-source middleware
+// could name one, and from the unchanged TRANSPORT PEER when it could not.
+// Both entry points -- the plain-HTTP door and the Connect interceptor -- call
+// this one function, so a caller can never hold two budgets.
 //
-// A hub behind a reverse proxy therefore sees the proxy's address and shares
-// one budget across every client behind it. That is the honest reading of what
-// the hub can actually verify, and the budget is sized for it: these endpoints
-// are polled, not held open, so the default admits a large multiple of what one
-// real client needs.
+// The fallback is what keeps the shared bucket honest, and it is not a
+// weakening: the transport peer is the address the kernel accepted the
+// connection from, so no header can set it and no proxy can forge it. Without
+// the fallback, EVERY request the middleware refuses to name lands in one
+// bucket -- a malformed forwarding header from behind a trusted proxy, a
+// chain whose addresses are all trusted, a `for=unknown` node, and an IPv6
+// link-local peer, which needs no configuration at all. That bucket also
+// holds the local IPC socket, so a remote caller could spend the desktop
+// app's window: 600 requests in ten minutes exhausts OpOAuthAnonymous, and
+// `leapmux control` is then refused on the machine's own socket.
 //
-// The port is stripped, because a client picks a fresh one per connection and
-// keying on it would give every request its own budget.
-func clientAddressKey(r *http.Request) string {
-	addr := r.RemoteAddr
-	return AddressBudgetKey(peer.HostOf(addr))
+// The client IP stays the PREFERRED key, so a real proxy deployment still
+// budgets per client rather than per proxy.
+//
+// A caller with neither -- the local IPC socket, whose accepted connection
+// carries no IP address, and a test transport -- shares one budget. That is
+// the population the shared bucket was always for.
+func anonymousBudgetKey(ctx context.Context) string {
+	if clientIP := peer.ClientIP(ctx); clientIP != "" {
+		return AddressBudgetKey(clientIP)
+	}
+	return AddressBudgetKey(transportHost(ctx))
+}
+
+// transportHost is the host of the accepted connection's address, or an empty
+// string when it has none.
+//
+// A unix socket and a named pipe both reach this: the first carries no address
+// at all, and the second carries a pipe path rather than a host. Neither can
+// be reached from the network, which is why both belong in the shared bucket.
+func transportHost(ctx context.Context) string {
+	addr, ok := peer.TransportAddr(ctx)
+	if !ok {
+		return ""
+	}
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok || tcp.IP == nil {
+		return ""
+	}
+	host, err := netip.ParseAddr(tcp.IP.String())
+	if err != nil {
+		return ""
+	}
+	// The ZONE stays. On a link-local address it is part of the identity: two
+	// peers on different interfaces can carry the same address, and merging
+	// them would put them in one budget.
+	if tcp.Zone != "" {
+		host = host.WithZone(tcp.Zone)
+	}
+	return host.Unmap().String()
 }
 
 // AddressBudgetKey renders one anonymous caller's budget key from its host.
 //
-// It is exported because the two entry points reach the host differently: the
-// plain-HTTP door reads r.RemoteAddr, and the Connect interceptor reads the
-// peer the http.Server stamped on the context. Both must produce the SAME key,
-// or one caller would hold two budgets and neither would limit it. peer.HostOf
-// is the shared reduction that makes the two agree.
+// It is exported because `AllowHTTP`'s callers outside this package name the
+// unknown bucket in their own tests. Inside the package every budget goes
+// through anonymousBudgetKey, which is the one place that decides what a host
+// is.
 func AddressBudgetKey(host string) string {
 	if host == "" {
-		// An unaddressed caller (a test transport, a unix socket) shares one
-		// budget under a name no address can collide with, rather than each
-		// getting an unlimited one.
+		// An unaddressed caller (a test transport, a unix socket, a Windows
+		// named pipe) shares one budget under a name no address can collide
+		// with, rather than each getting an unlimited one.
 		return "anonymous:unknown"
 	}
 	return "anonymous:" + host

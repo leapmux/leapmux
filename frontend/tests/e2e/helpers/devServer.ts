@@ -10,7 +10,6 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import process from 'node:process'
 import {
   getUserId,
   getWorkerId,
@@ -20,7 +19,7 @@ import {
   TEST_ADMIN_USERNAME,
 } from './api'
 import { stopProcess } from './process'
-import { findFreePort, getGlobalState, waitForServer } from './server'
+import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './server'
 
 export interface DevServerHandle {
   hubUrl: string
@@ -71,7 +70,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 
   const proc = spawn(binaryPath, ['dev', '-listen', `:${port}`, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...opts.env },
+    env: hubSpawnEnv(opts.env),
   })
 
   if (opts.onStdio) {
@@ -122,8 +121,10 @@ export interface StartSoloServerOptions extends StartDevServerOptions {
  * changes. The shared fixture runs `leapmux dev`, which has real password
  * authentication from the start and therefore cannot exercise any of it.
  *
- * No admin registration: `bootstrap.Run` creates the account, and until it has
- * a password the hub authenticates every caller as it.
+ * No admin registration: `bootstrap.Run` creates the account. A spec that
+ * drives the hub over TCP reaches the password-setup screen first, because
+ * that transport holds no credential-free access — only the desktop app's
+ * local IPC socket does. Set the first password there before the app loads.
  */
 export async function startSoloServer(opts: StartSoloServerOptions = {}): Promise<SoloServerHandle> {
   const { binaryPath } = getGlobalState()
@@ -134,7 +135,7 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 
   const proc = spawn(binaryPath, ['solo', '-listen', listen, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...opts.env },
+    env: hubSpawnEnv(opts.env),
   })
 
   if (opts.onStdio) {

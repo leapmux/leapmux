@@ -24,7 +24,7 @@ import (
 type wsAuthenticator struct {
 	store          store.Store
 	soloUser       *auth.UserInfo
-	secureCookie   func() bool
+	secureCookie   func(context.Context) bool
 	tokenValidator *auth.TokenValidator
 	authLease      webSocketAuthLease
 	// keepalive is how often this endpoint probes its connections. Carried
@@ -70,7 +70,7 @@ func newWSAuthenticator(
 	st store.Store,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
-	secureCookie func() bool,
+	secureCookie func(context.Context) bool,
 	requiredScope leapmuxv1.Scope,
 ) wsAuthenticator {
 	if !authscope.IsGrantable(requiredScope) {
@@ -96,9 +96,13 @@ func newWSAuthenticator(
 // control CLI's own grant -- passes unconditionally, because a scope subtracts
 // from the account's authority and never adds to it.
 func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
+	// PER REQUEST, because the answer is: a trusted proxy that verified HTTPS
+	// for this connection turns the secure cookie name on whatever the setting
+	// says, and the handshake must read the same name the Connect procedures
+	// write.
 	secureCookie := false
 	if a.secureCookie != nil {
-		secureCookie = a.secureCookie()
+		secureCookie = a.secureCookie(r.Context())
 	}
 	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		Store:         a.store,

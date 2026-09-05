@@ -139,7 +139,7 @@ The persistent state of a running coding agent — its conversation history and 
 
 ### Solo mode
 
-The single-user, all-in-one mode (`leapmux solo`) that runs a Hub and a Worker in one process on `127.0.0.1:4327`. Its one account, `solo`, starts with **no password**, and until it has one every request is authenticated as the admin without credentials — so a fresh solo hub's security reduces to local-host trust: any local process that can reach the port has full access. Setting a password makes every network address ask for it, which is what lets solo mode serve more than loopback. Binding it to a non-loopback address without one triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+The single-user mode (`leapmux solo`) that runs a Hub and a Worker in one process. Its account, `solo`, starts without a password. Local IPC uses the account without a credential. TCP exposes only first-password setup until one caller claims the account. After setup, every TCP address requires sign-in. Binding a passwordless solo hub to a non-loopback address triggers a warning. Contrast with **distributed mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Step-up
 

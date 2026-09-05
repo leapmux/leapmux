@@ -42,13 +42,13 @@ func setSoloPassword(t *testing.T, st store.Store) {
 // tcpCtx is a request that arrived over TCP, whatever the address. Loopback is
 // included on purpose: it buys no exemption.
 func tcpCtx(ip string) context.Context {
-	return peer.WithRemoteAddr(context.Background(),
+	return peer.WithTransportAddr(context.Background(),
 		&net.TCPAddr{IP: net.ParseIP(ip), Port: 51234})
 }
 
 // ipcCtx is a request that arrived on the local IPC socket.
 func ipcCtx() context.Context {
-	return peer.WithRemoteAddr(peer.WithLocalIPC(context.Background()),
+	return peer.WithTransportAddr(peer.WithLocalIPC(context.Background()),
 		&net.UnixAddr{Name: "/tmp/hub.sock", Net: "unix"})
 }
 
@@ -68,11 +68,9 @@ func TestSoloGate_CredentialFree(t *testing.T) {
 		// can open.
 		{"local IPC, password set", true, ipcCtx(), true},
 
-		// The bootstrap state. A hub outside the desktop app is reached from a
-		// browser over TCP and nothing else, so refusing here would leave no
-		// way to set the first password.
-		{"TCP loopback, no password", false, tcpCtx("127.0.0.1"), true},
-		{"TCP LAN, no password", false, tcpCtx("192.168.1.24"), true},
+		// TCP can use only the public initial-password procedure before setup.
+		{"TCP loopback, no password", false, tcpCtx("127.0.0.1"), false},
+		{"TCP LAN, no password", false, tcpCtx("192.168.1.24"), false},
 
 		// Once a password exists, EVERY TCP address asks for it. Loopback is
 		// the case that changed, and it is the point: a merged `*:4327` socket
@@ -83,7 +81,7 @@ func TestSoloGate_CredentialFree(t *testing.T) {
 		{"TCP LAN, password set", true, tcpCtx("192.168.1.24"), false},
 
 		// An unmarked context is not local IPC, so it follows the TCP rows.
-		{"unmarked, no password", false, context.Background(), true},
+		{"unmarked, no password", false, context.Background(), false},
 		{"unmarked, password set", true, context.Background(), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,8 +107,8 @@ func TestSoloGate_ReadsTheHashAndNotTheColumn(t *testing.T) {
 	require.True(t, user.FirstCredentialExempt, "precondition: the bootstrap claims a password")
 	require.False(t, password.IsUsable(user.PasswordHash), "precondition: no hash backs the claim")
 
-	assert.True(t, auth.NewSoloGate(true, st).CredentialFree(tcpCtx("127.0.0.1")),
-		"a hub with no usable password must stay reachable, whatever the column says")
+	assert.False(t, auth.NewSoloGate(true, st).CredentialFree(tcpCtx("127.0.0.1")),
+		"a TCP caller must use the restricted setup procedure")
 	assert.False(t, auth.NewSoloGate(true, st).PasswordSet(context.Background()))
 }
 
@@ -121,7 +119,7 @@ func TestSoloGate_SeesAPasswordWrittenAfterItRead(t *testing.T) {
 	st := soloStore(t)
 	gate := auth.NewSoloGate(true, st)
 
-	require.True(t, gate.CredentialFree(tcpCtx("127.0.0.1")), "precondition: no password yet")
+	require.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")), "TCP never receives synthetic solo access")
 
 	setSoloPassword(t, st)
 	assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")),
@@ -167,13 +165,6 @@ func TestSoloGate_ThatCannotReadTheAccountAdmitsOnlyTheLocalSocket(t *testing.T)
 			assert.False(t, gate.PasswordSet(context.Background()),
 				"no password is what an unconfigured gate honestly knows")
 
-			free, set := gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
-			assert.False(t, free)
-			assert.False(t, set)
-			free, set = gate.CredentialFreeAndPasswordSet(ipcCtx())
-			assert.True(t, free)
-			assert.False(t, set)
-
 		})
 	}
 }
@@ -196,32 +187,8 @@ func TestSoloGate_AnAbsentAccountHoldsNoPassword(t *testing.T) {
 	gate := auth.NewSoloGate(true, st)
 	assert.False(t, gate.PasswordSet(context.Background()),
 		"an account that does not exist cannot hold a password")
-	assert.True(t, gate.CredentialFree(tcpCtx("127.0.0.1")),
-		"a missing account must not demand a password nobody can present")
-}
-
-// GetSystemInfo reports three solo facts that all rest on one row, so it reads
-// them together. The two answers must agree with the single-question methods,
-// or the app's view of the connection and the hub's own rule could differ.
-func TestSoloGate_CredentialFreeAndPasswordSet(t *testing.T) {
-	t.Parallel()
-	st := soloStore(t)
-
-	gate := auth.NewSoloGate(true, st)
-	free, set := gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
-	assert.True(t, free)
-	assert.False(t, set)
-
-	setSoloPassword(t, st)
-	free, set = gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
-	assert.False(t, free, "TCP asks for the password the account now holds")
-	assert.True(t, set)
-
-	// The local socket stays credential-free on the same answer.
-	free, set = gate.CredentialFreeAndPasswordSet(ipcCtx())
-	assert.True(t, free, "the desktop app cannot present a password and must not be asked")
-	assert.True(t, set)
-
+	assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")),
+		"a missing account does not grant synthetic access over TCP")
 }
 
 // A gate for a hub that is NOT solo answers no to everything, and reads
@@ -244,10 +211,6 @@ func TestSoloGate_OutsideSoloModeAnswersNoAndReadsNothing(t *testing.T) {
 		"a hub with no solo rung admits nobody through it, the local socket included")
 	assert.False(t, gate.PasswordSet(context.Background()),
 		"there is no solo account to hold a password")
-
-	free, set := gate.CredentialFreeAndPasswordSet(tcpCtx("127.0.0.1"))
-	assert.False(t, free)
-	assert.False(t, set)
 
 	assert.Zero(t, st.soloLookups.Load(), "a hub with no solo account must not look one up")
 }

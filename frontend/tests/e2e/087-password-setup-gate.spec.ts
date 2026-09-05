@@ -6,11 +6,14 @@ import { startSoloServer, stopSoloServer } from './helpers/devServer'
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
 
 /**
- * The password-setup screen, on a solo hub that answers beyond loopback.
+ * The password-setup screen, on a solo hub reached over TCP.
  *
- * `-listen 0.0.0.0` is what exposes it; the spec still reaches it over
- * loopback, because a wildcard bind answers there too. That matters for CI: a
- * runner may hold no address of its own, and this needs none.
+ * The LISTENER no longer decides it: every TCP address restricts a passwordless
+ * caller to the setup procedure, and the last test below pins that for
+ * loopback. `-listen 0.0.0.0` stays here because the exposed case is the one an
+ * operator meets first; the spec still reaches it over loopback, because a
+ * wildcard bind answers there too. That matters for CI: a runner may hold no
+ * address of its own, and this needs none.
  */
 test.describe('Password setup gate', () => {
   let solo: SoloServerHandle | undefined
@@ -26,11 +29,11 @@ test.describe('Password setup gate', () => {
   test('blocks the app until the account has a password', async ({ page }) => {
     await page.goto(`${solo!.hubUrl}/`)
 
-    // The whole app, not a dismissible notice: everything it offers is offered
-    // to whoever reaches the port, and no sign-in stands between them.
+    // The whole app, not a dismissible notice. This is the only protected
+    // setup action that a passwordless TCP caller can use.
     const gate = page.getByTestId('password-setup-gate')
     await expect(gate).toBeVisible()
-    await expect(gate).toContainText('This hub answers on an address other machines can reach')
+    await expect(gate).toContainText('TCP callers can only complete this setup')
 
     // Fixed to the single account: a free field could only be filled in with a
     // name that cannot sign in.
@@ -46,9 +49,10 @@ test.describe('Password setup gate', () => {
     await expect(submit).toBeEnabled()
     await submit.click()
 
-    // The app loads with NO further sign-in. Storing the password is what
-    // started demanding one, so the reply hands this browser a session; without
-    // it the page would be signed out of the form it just used.
+    // The app loads with NO further sign-in. This browser held no session at
+    // all -- the setup procedure is the one thing a passwordless TCP caller
+    // may call -- so the reply's cookie is what carries it into the app.
+    // Without it the operator would set a password and then sign in with it.
     await expect(gate).toBeHidden()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
 
@@ -64,13 +68,11 @@ test.describe('Password setup gate', () => {
     await expect(page.getByTestId('password-setup-gate')).toBeHidden()
   })
 
-  test('leaves a loopback-only hub alone', async ({ page }) => {
-    // A second hub, bound to loopback: it exposes nothing, so demanding a
-    // password would be friction with nothing behind it.
+  test('restricts loopback TCP to password setup too', async ({ page }) => {
     const loopbackOnly = await startSoloServer()
     try {
       await page.goto(`${loopbackOnly.hubUrl}/`)
-      await expect(page.getByTestId('password-setup-gate')).toBeHidden()
+      await expect(page.getByTestId('password-setup-gate')).toBeVisible()
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
     }
     finally {

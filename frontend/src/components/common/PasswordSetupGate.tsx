@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import { createSignal } from 'solid-js'
-import { userClient } from '~/api/clients'
+import { authClient } from '~/api/clients'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { passwordCanSubmit, PasswordFields } from '~/components/common/PasswordFields'
 import { StatusLine } from '~/components/common/StatusLine'
@@ -12,24 +12,15 @@ import { centeredFull, pageCard } from '~/styles/shared.css'
 import { fieldLabel } from '../settings/account/accountFields.css'
 
 /**
- * The screen that replaces the whole app while the hub is exposed and its one
- * account has no password.
+ * The screen that replaces the app on a passwordless solo TCP connection.
  *
- * In that state everything the app offers is offered to whoever can reach the
- * port, and no sign-in stands between them, so the one useful thing left is to
- * ask for a password. `AuthGuard` renders it instead of the app rather than
- * beside it, because a dismissible notice would leave the exposure standing.
+ * The only useful action in that state is to set the first password.
+ * `AuthGuard` renders this screen instead of the app because no other protected
+ * RPC accepts the caller.
  *
- * It is reachable only from a CREDENTIAL-FREE connection -- the hub reports
- * `password_setup_required` and `auto_authenticated` together, and a visitor
- * from a network address on such a hub is not signed in and never gets this
- * far. So the caller here is already the administrator, and asking it to prove
- * anything first would ask for the secret it is about to choose.
- *
- * ChangePassword hands this browser a session in its reply, so the app loads
- * straight after without a sign-in. That is not a convenience: storing the
- * password is what starts demanding one, and the page that made the write
- * would otherwise be signed out of the form it is standing in.
+ * It is reachable from the restricted PASSWORD_SETUP state. The public setup
+ * RPC stores the password and an elevated session in one transaction. No
+ * other protected RPC accepts the caller before that transaction commits.
  */
 export const PasswordSetupGate: Component = () => {
   const [password, setPassword] = createSignal('')
@@ -56,7 +47,15 @@ export const PasswordSetupGate: Component = () => {
     setBusy(true)
     setMessage(null)
     try {
-      await userClient.changePassword({ newPassword: password() })
+      const response = await authClient.setInitialSoloPassword({ password: password() })
+      if (!response.user)
+        throw new Error('The hub returned no solo user')
+      // The elevation travels WITH the reply. The transaction that stored the
+      // password created this session and elevated it, so the deadline is
+      // known here and needs no second round trip. `setAuth` clears the
+      // elevation on its own, which is right for every other caller and wrong
+      // for this one.
+      auth.setAuth(response.user, response.elevationExpiresAt)
     }
     catch (e) {
       setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to set the password') })
@@ -106,9 +105,9 @@ export const PasswordSetupGate: Component = () => {
           * Network access lists them exactly.
           */}
         <p>
-          This hub answers on an address other machines can reach, and it asks
-          nobody for a password. Set one now. Every network address then asks
-          for it, 127.0.0.1 included.
+          This connection uses TCP, and the “solo” account has no password.
+          Set one now. Until then, TCP callers can only complete this setup.
+          Every TCP address asks for the password after setup.
         </p>
         <div class="vstack gap-4">
           <label class={fieldLabel}>

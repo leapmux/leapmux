@@ -19,11 +19,12 @@ import (
 // CUSTOM_EDITORS table); a FieldCustom CustomID outside it would render
 // nothing in the preferences dialog.
 var knownCustomEditors = map[string]bool{
-	"keybindings":   true,
-	"terminalTheme": true,
-	"syntaxTheme":   true,
-	"theme":         true,
-	"networkAccess": true,
+	"keybindings":    true,
+	"terminalTheme":  true,
+	"syntaxTheme":    true,
+	"theme":          true,
+	"networkAccess":  true,
+	"trustedProxies": true,
 }
 
 // allDescriptors gathers BOTH descriptor sets the settings surface

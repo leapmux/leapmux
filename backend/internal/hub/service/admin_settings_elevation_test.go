@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -328,6 +330,9 @@ func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
 	mux.Handle(path, handler)
 
 	server := httptest.NewUnstartedServer(mux)
+	server.Config.BaseContext = func(net.Listener) context.Context {
+		return peer.WithLocalIPC(context.Background())
+	}
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)

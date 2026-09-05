@@ -131,6 +131,7 @@ var procedureScopes = map[string]ScopeRequirement{
 	// Almost all of it bootstraps a session, so it is public. The two that need
 	// a caller are classified on what they do WITH one.
 	leapmuxv1connect.AuthServiceLoginProcedure:                           ScopePublic,
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:          ScopePublic,
 	leapmuxv1connect.AuthServiceSignUpProcedure:                          ScopePublic,
 	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:                   ScopePublic,
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:               ScopePublic,

@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/listenset"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -29,6 +30,15 @@ import (
 type fakeListenReporter struct {
 	bound   []listenset.Bound
 	primary string
+}
+
+func tcpCtx(ip string) context.Context {
+	return peer.WithTransportAddr(context.Background(), &net.TCPAddr{IP: net.ParseIP(ip), Port: 51234})
+}
+
+func ipcCtxForTest() context.Context {
+	return peer.WithTransportAddr(peer.WithLocalIPC(context.Background()),
+		&net.UnixAddr{Name: "/tmp/hub.sock", Net: "unix"})
 }
 
 func (f fakeListenReporter) Bound() []listenset.Bound  { return f.bound }
@@ -191,38 +201,39 @@ func systemInfoForSolo(t *testing.T, listen service.ListenReporter, ctx context.
 	return resp.Msg
 }
 
-// auto_authenticated is the fact the app reads to decide whether to fall back
-// to the login form. It is per CONNECTION, so the whole rule table has to
-// reach it.
-func TestGetSystemInfo_AutoAuthenticatedFollowsTheTransportAndThePassword(t *testing.T) {
+// SoloAccess gives each connection one exclusive access state.
+func TestGetSystemInfo_SoloAccessFollowsTheTransportAndThePassword(t *testing.T) {
 	loopbackOnly := fakeListenReporter{primary: "127.0.0.1:4327"}
 
-	assert.True(t, systemInfoForSolo(t, loopbackOnly, tcpCtx("127.0.0.1"), false).GetAutoAuthenticated(),
-		"the bootstrap state: a browser reaches a solo hub over TCP and nothing else")
-	assert.True(t, systemInfoForSolo(t, loopbackOnly, ipcCtxForTest(), false).GetAutoAuthenticated())
-	assert.True(t, systemInfoForSolo(t, loopbackOnly, ipcCtxForTest(), true).GetAutoAuthenticated(),
-		"the desktop app is never asked for a password, whatever the account holds")
-	assert.False(t, systemInfoForSolo(t, loopbackOnly, tcpCtx("127.0.0.1"), true).GetAutoAuthenticated(),
-		"once a password exists every TCP address asks for it, 127.0.0.1 included")
-	assert.False(t, systemInfoForSolo(t, loopbackOnly, tcpCtx("192.168.1.24"), true).GetAutoAuthenticated())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_PASSWORD_SETUP,
+		systemInfoForSolo(t, loopbackOnly, tcpCtx("127.0.0.1"), false).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_CREDENTIAL_FREE,
+		systemInfoForSolo(t, loopbackOnly, ipcCtxForTest(), false).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_CREDENTIAL_FREE,
+		systemInfoForSolo(t, loopbackOnly, ipcCtxForTest(), true).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_SIGN_IN_REQUIRED,
+		systemInfoForSolo(t, loopbackOnly, tcpCtx("127.0.0.1"), true).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_SIGN_IN_REQUIRED,
+		systemInfoForSolo(t, loopbackOnly, tcpCtx("192.168.1.24"), true).GetSoloAccess())
 }
 
-// password_setup_required blocks the whole app, so its condition is EXPOSURE
-// without a credential and nothing weaker.
-func TestGetSystemInfo_PasswordSetupRequiredNeedsExposureAndNoPassword(t *testing.T) {
+// TCP setup is restricted even on loopback. The listener set does not change
+// the authentication rule.
+func TestGetSystemInfo_PasswordSetupDoesNotDependOnListenerExposure(t *testing.T) {
 	loopbackOnly := fakeListenReporter{primary: "127.0.0.1:4327"}
 	exposed := fakeListenReporter{primary: ":4327", bound: []listenset.Bound{
 		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},
 	}}
 	ctx := tcpCtx("127.0.0.1")
 
-	assert.True(t, systemInfoForSolo(t, exposed, ctx, false).GetPasswordSetupRequired(),
-		"reachable from another machine and nobody can sign in: the one useful thing left is to ask for a password")
-	assert.False(t, systemInfoForSolo(t, exposed, ctx, true).GetPasswordSetupRequired(),
-		"a password answers it")
-	assert.False(t, systemInfoForSolo(t, loopbackOnly, ctx, false).GetPasswordSetupRequired(),
-		"a loopback-only hub exposes nothing, so the demand would be friction with nothing behind it")
-	assert.False(t, systemInfoForSolo(t, loopbackOnly, ctx, true).GetPasswordSetupRequired())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_PASSWORD_SETUP,
+		systemInfoForSolo(t, exposed, ctx, false).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_SIGN_IN_REQUIRED,
+		systemInfoForSolo(t, exposed, ctx, true).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_PASSWORD_SETUP,
+		systemInfoForSolo(t, loopbackOnly, ctx, false).GetSoloAccess())
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_SIGN_IN_REQUIRED,
+		systemInfoForSolo(t, loopbackOnly, ctx, true).GetSoloAccess())
 }
 
 func TestGetSystemInfo_SoloPasswordSet(t *testing.T) {
@@ -254,9 +265,7 @@ func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 	resp, err := service.NewAuthService(deps).GetSystemInfo(tcpCtx("192.168.1.24"),
 		connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetAutoAuthenticated())
-	assert.False(t, resp.Msg.GetPasswordSetupRequired(),
-		"an exposed multi-user hub already asks every caller to sign in")
+	assert.Equal(t, leapmuxv1.SoloAccess_SOLO_ACCESS_UNSPECIFIED, resp.Msg.GetSoloAccess())
 	assert.False(t, resp.Msg.GetSoloPasswordSet())
 }
 

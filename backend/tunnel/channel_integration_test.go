@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -46,8 +47,9 @@ func uniqueTestListenURL(t *testing.T) string {
 const soloStopBudget = 8 * time.Second
 
 // startTestSolo starts a solo Hub+Worker instance for integration testing.
-// Returns the hub URL, local-listen URL, admin user ID, and worker ID.
-func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID string) {
+// Returns the hub addresses, account and worker IDs, and the authenticated
+// HTTP client that completed first-password setup.
+func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID string, httpClient *http.Client) {
 	t.Helper()
 
 	// Use a short path under /tmp to stay within the 104-byte macOS Unix
@@ -102,12 +104,14 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	// Wait for Hub to be ready.
 	require.NoError(t, waitForHTTP(hubURL, 30*time.Second))
 
-	// Solo mode auto-authenticates all requests — no login needed.
-	// Token is empty; the auth interceptor auto-attaches the solo user.
-
-	// Get user ID via auto-authenticated request.
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	authClient := leapmuxv1connect.NewAuthServiceClient(httpClient, hubURL)
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+	apiClient := &http.Client{Timeout: 10 * time.Second, Jar: jar}
+	authClient := leapmuxv1connect.NewAuthServiceClient(apiClient, hubURL)
+	setup, err := authClient.SetInitialSoloPassword(ctx, connect.NewRequest(
+		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"}))
+	require.NoError(t, err)
+	require.NotEmpty(t, setup.Header().Get("Set-Cookie"))
 
 	meResp, err := authClient.GetCurrentUser(ctx, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
 	require.NoError(t, err)
@@ -121,7 +125,7 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	// in tens of milliseconds, so a 500ms tick spent nearly all of its time
 	// asleep after the worker was already up -- twice, once here and once for
 	// the handshake params -- on every test in this file.
-	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(httpClient, hubURL)
+	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(apiClient, hubURL)
 	var wID string
 	require.Eventually(t, func() bool {
 		listResp, listErr := mgmtClient.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{}))
@@ -140,7 +144,7 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	// Wait for the worker to upload its public key. The key is sent over
 	// the bidi stream shortly after connect, so there is a brief window
 	// where the worker is online but has no public key yet.
-	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
+	channelClient := leapmuxv1connect.NewChannelServiceClient(apiClient, hubURL)
 	require.Eventually(t, func() bool {
 		resp, keyErr := channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
 			&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: wID},
@@ -148,7 +152,7 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 		return keyErr == nil && len(resp.Msg.GetPublicKey()) > 0
 	}, 30*time.Second, 10*time.Millisecond, "worker handshake params not available in time")
 
-	return hubURL, localListenURL, userID, wID
+	return hubURL, localListenURL, userID, wID, &http.Client{Jar: jar}
 }
 
 func waitForHTTP(url string, timeout time.Duration) error {
@@ -170,11 +174,15 @@ func TestChannelOpenAndCallRPC(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
 	// Open an E2EE channel.
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -196,13 +204,15 @@ func TestChannelLifetimeCanOutliveHandshakeContext(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	operationCtx, cancelOperation := context.WithCancel(context.Background())
 	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
 	t.Cleanup(cancelLifetime)
 
 	ch, err := tunnel.OpenChannel(operationCtx, hubURL, workerID, &tunnel.OpenChannelOptions{
-		LifetimeContext: lifetimeCtx,
+		LifetimeContext:     lifetimeCtx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
 	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
@@ -230,10 +240,14 @@ func TestChannelTunnelEchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -318,10 +332,14 @@ func TestChannelSocks5EchoFlow(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -529,10 +547,14 @@ func TestChannelMultipleRPCs(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -553,9 +575,13 @@ func TestChannelConcurrentRPCs(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 
@@ -597,10 +623,14 @@ func TestChannelLargeRPCDoesNotStallTunnelTraffic(t *testing.T) {
 	echoAddr := testutil.StartEchoServer(t)
 	echoHost, echoPort := testutil.ParseAddr(echoAddr)
 
-	hubURL, _, _, workerID := startTestSolo(t)
+	hubURL, _, _, workerID, httpClient := startTestSolo(t)
 	ctx := context.Background()
 
-	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{LifetimeContext: ctx})
+	ch, err := tunnel.OpenChannel(ctx, hubURL, workerID, &tunnel.OpenChannelOptions{
+		LifetimeContext:     ctx,
+		HTTPClient:          httpClient,
+		WebSocketHTTPClient: httpClient,
+	})
 	require.NoError(t, err)
 	t.Cleanup(ch.Close)
 

@@ -2,8 +2,6 @@ package service_test
 
 import (
 	"context"
-	"net"
-	"net/http"
 	"testing"
 	"time"
 
@@ -17,7 +15,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
-	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -25,17 +22,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
-
-// tcpCtx is a request that arrived over TCP, whatever the address.
-func tcpCtx(ip string) context.Context {
-	return peer.WithRemoteAddr(context.Background(), &net.TCPAddr{IP: net.ParseIP(ip), Port: 51234})
-}
-
-// ipcCtxForTest is a request that arrived on the local IPC socket.
-func ipcCtxForTest() context.Context {
-	return peer.WithRemoteAddr(peer.WithLocalIPC(context.Background()),
-		&net.UnixAddr{Name: "/tmp/hub.sock", Net: "unix"})
-}
 
 func mustUserID(t *testing.T, id string) userid.UserID {
 	t.Helper()
@@ -126,37 +112,24 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 		"the stored password must reach the row that offers to change it")
 }
 
-// The write that stores the first password is also the write that starts
-// demanding one. Without a session handed back, the browser that made it is
-// signed out of the form it is standing in.
-func TestChangePassword_HandsASoloCallerASession(t *testing.T) {
-	svc, st, gate, soloUser := soloUserService(t)
+// ChangePassword stays an authenticated account procedure. Local IPC already
+// keeps its synthetic identity, so this procedure must not mint another
+// session when it sets the first password.
+func TestChangePassword_DoesNotCreateASoloSession(t *testing.T) {
+	svc, _, _, soloUser := soloUserService(t)
 	ctx := auth.WithUser(context.Background(), soloUser)
 
 	resp, err := svc.ChangePassword(ctx, connect.NewRequest(
 		&leapmuxv1.ChangePasswordRequest{NewPassword: "correct-horse-battery-staple"}))
 	require.NoError(t, err)
 
-	cookie := resp.Header().Get("Set-Cookie")
-	require.NotEmpty(t, cookie, "the response must carry a session for the caller it just locked out")
-
-	sessionID := sessionIDFromSetCookie(t, cookie)
-	info, err := auth.ValidateToken(ctx, st, sessionID)
-	require.NoError(t, err, "the handed-over session must authenticate")
-	assert.Equal(t, soloUser.ID.String(), info.ID.String())
-
-	// Elevated, so the next hub-settings write from the same page is not
-	// refused for a factor the user proved one request ago.
-	assert.True(t, info.Elevated(time.Now()),
-		"the handed-over session must be elevated, or applying the addresses asks for the password just chosen")
-
-	// And the rule is armed: the gate now demands credentials over TCP.
-	assert.False(t, gate.CredentialFree(tcpCtx("127.0.0.1")))
+	assert.Empty(t, resp.Header().Get("Set-Cookie"))
 }
 
-// An ordinary session that changes its password must not be handed a second
-// one: it already holds a credential, and a new session would leave the old
-// cookie pointing at a session the change revoked.
+// The OTHER identity kind, beside the synthetic solo one above: a real
+// session, elevated so the step-up rule cannot be what produces the empty
+// header. It already holds a credential, and a second session would leave the
+// old cookie pointing at one the change revoked.
 func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
@@ -195,17 +168,7 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 		&leapmuxv1.ChangePasswordRequest{NewPassword: "another-good-password"}))
 	require.NoError(t, err)
 	assert.Empty(t, resp.Header().Get("Set-Cookie"),
-		"a caller that already holds a credential keeps it; only the solo rung's caller loses one")
-}
-
-// sessionIDFromSetCookie reads the session id out of a Set-Cookie line,
-// whichever name the hub's secure_cookies setting picked.
-func sessionIDFromSetCookie(t *testing.T, line string) string {
-	t.Helper()
-	resp := http.Response{Header: http.Header{"Set-Cookie": []string{line}}}
-	cookies := resp.Cookies()
-	require.Len(t, cookies, 1)
-	return cookies[0].Value
+		"ChangePassword mints no session for any caller; a caller that already holds one keeps it")
 }
 
 // The PASSKEY factor is refused by mode, unlike the elevation surface around

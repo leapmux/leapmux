@@ -43,11 +43,12 @@ import (
 // so a rename in the proto definition turns a typo here into a build
 // error instead of a silent auth bypass.
 var publicProcedures = map[string]bool{
-	leapmuxv1connect.AuthServiceLoginProcedure:               true,
-	leapmuxv1connect.AuthServiceSignUpProcedure:              true,
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:       true,
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure: true,
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:  true,
+	leapmuxv1connect.AuthServiceLoginProcedure:                  true,
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure: true,
+	leapmuxv1connect.AuthServiceSignUpProcedure:                 true,
+	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:          true,
+	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:    true,
+	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:     true,
 	// Same worker auth_token as Connect, on a plain unary RPC rather than the
 	// stream. The worker's orphan reconciler is the only caller, and it is what
 	// converges a worker after a close or a cross-workspace move that landed
@@ -296,9 +297,9 @@ type Policy struct {
 // snapshot. The hub's interceptor closure and the service tests share
 // this one mapping, so a new Policy field is wired in exactly one place
 // and a test cannot enforce a policy the hub computes differently.
-func PolicyFromSettings(snap *settings.Snapshot) Policy {
+func PolicyFromSettings(ctx context.Context, snap *settings.Snapshot) Policy {
 	return Policy{
-		SecureCookies:             settings.KeySecureCookies.Of(snap),
+		SecureCookies:             settings.SecureCookiesFor(ctx, snap),
 		EmailVerificationRequired: settings.EmailVerificationEffective(snap),
 		SessionDuration:           settings.SessionDuration(snap),
 	}
@@ -308,7 +309,7 @@ func PolicyFromSettings(snap *settings.Snapshot) Policy {
 // on both unary and streaming RPCs.
 type authInterceptor struct {
 	store          store.Store
-	policy         func() Policy
+	policy         func(context.Context) Policy
 	soloUser       *UserInfo
 	tokenValidator *TokenValidator
 	// state holds the shared caches, lease registry, and revocation ledger.
@@ -349,7 +350,7 @@ type InterceptorOptions struct {
 	// verification requirement, session duration). Nil keeps the zero Policy:
 	// plain cookie names, no verification requirement, and the default
 	// session duration.
-	Policy func() Policy
+	Policy func(context.Context) Policy
 	// SoloGate decides which solo callers may skip credentials. Nil builds one
 	// over Store, so the RULE never depends on the caller remembering to pass
 	// it -- only the latch does, and a hub shares one gate with
@@ -960,7 +961,7 @@ func (c *AuthContextRegistry) Stop() {
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		p := a.currentPolicy()
+		p := a.currentPolicy(ctx)
 		ctx, refresh, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"), p)
 		if err != nil {
 			// authenticate rejects an authenticated request too -- an unverified
@@ -994,7 +995,7 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		p := a.currentPolicy()
+		p := a.currentPolicy(ctx)
 		ctx, refresh, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"), p)
 		// Before the handler runs, not after: the response header of a stream
 		// goes out with the first message, and a long-lived stream sends that
@@ -1031,12 +1032,9 @@ func headerPresentsLeapMuxBearer(authHeader string) bool {
 func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string, p Policy) (context.Context, sessionRefresh, error) {
 	var noRefresh sessionRefresh
 
-	// Solo mode authenticates every procedure -- public or not -- as the
-	// synthetic user, and short-circuits the cookie path, for the callers
-	// SoloGate.CredentialFree admits: the local IPC socket, and any transport
-	// while the account holds no password. A TCP caller on a hub whose account
-	// HAS a password falls through to the ordinary cookie and bearer rungs
-	// below and signs in like any other account.
+	// Solo mode authenticates local IPC as the synthetic user and short-circuits
+	// the cookie path. Every TCP caller uses a public setup procedure or an
+	// ordinary cookie or bearer.
 	//
 	// It YIELDS to a presented lmx_ bearer, which is what makes the scope model
 	// work on a solo hub. The admitted caller carries an unscoped grant; a
@@ -1129,11 +1127,11 @@ func (a *authInterceptor) authorize(procedure string, userInfo *UserInfo, p Poli
 // zero value. The wrappers pass the result through the call chain, so
 // one request resolves the (mutex-guarded, snapshot-backed) policy
 // exactly once instead of re-reading it at every consumer.
-func (a *authInterceptor) currentPolicy() Policy {
+func (a *authInterceptor) currentPolicy(ctx context.Context) Policy {
 	if a.policy == nil {
 		return Policy{}
 	}
-	return a.policy()
+	return a.policy(ctx)
 }
 
 // enforceEmailVerification rejects a request from an unverified, non-admin user
@@ -1501,7 +1499,12 @@ const touchSweepInterval = 10 * time.Minute
 // delete is unconditional -- see below).
 func (a *authInterceptor) sweepCachesOnce() {
 	now := time.Now()
-	touchCutoff := now.Add(-a.touchThreshold(a.currentPolicy()))
+	// A BACKGROUND context, because this sweep serves no request. It reads the
+	// two session-duration fields only; the per-request half of the policy (the
+	// cookie name, which a trusted proxy's verified protocol can turn secure)
+	// has no meaning without a request and is not consulted here.
+	policy := a.currentPolicy(context.Background())
+	touchCutoff := now.Add(-a.touchThreshold(policy))
 	a.state.lastTouch.Range(func(key, value any) bool {
 		if value.(time.Time).Before(touchCutoff) {
 			a.state.deleteStaleLastTouch(key, value)
@@ -1564,7 +1567,7 @@ func (a *authInterceptor) sweepCachesOnce() {
 	// uses an unconditional Delete (no CAS), so a lock-free scan could drop a fresh
 	// re-revocation mark stored for the same key in the scan->delete gap -- a
 	// security regression. These maps are also far smaller than the caches.
-	revocationCutoff := now.Add(-a.slideDuration(a.currentPolicy()))
+	revocationCutoff := now.Add(-a.slideDuration(policy))
 	sweepRevocationMarks(&a.state.sessionRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userInvalidations, revocationCutoff)

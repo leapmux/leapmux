@@ -478,7 +478,7 @@ func TestIdentityStructTypes_ScopesToOptionsStructs(t *testing.T) {
 	assert.True(t, carries["HTTPAuthOpts"], "it declares SoloUser *UserInfo")
 	assert.True(t, carries["UserInfo"], "it declares ID userid.UserID")
 	assert.False(t, carries["AuthContextRegistry"], "it reaches a *UserInfo only through internal state")
-	assert.False(t, carries["SessionMeta"], "it carries a user agent and an IP address, no identity")
+	assert.False(t, carries["SessionMeta"], "it carries a user agent, no identity")
 }
 
 func TestCarriesNamedStruct(t *testing.T) {

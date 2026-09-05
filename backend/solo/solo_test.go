@@ -1301,12 +1301,9 @@ func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.
 // TestSoloStart_TheLocalWorkerDialsTheIPCSocket pins the property that keeps
 // the bundled Worker connected once the account holds a password.
 //
-// The solo hub authenticates a caller with no credentials only over the LOCAL
-// IPC socket, or while the account has no password (auth.SoloGate states the
-// rule). The Worker is a caller like any other, so if it dialled a TCP address
-// it would be signed out the moment an operator set that password -- and the
-// whole product would stop working in solo mode at exactly the step the
-// network-access feature asks the operator to take.
+// The solo hub authenticates a caller with no credentials only over local IPC.
+// The Worker uses that transport so it does not depend on a TCP setup or
+// sign-in state.
 //
 // It dials the IPC URL instead, which never asks. (It also presents an lmx_
 // bearer, which the solo rung yields to; this pins the transport, because that

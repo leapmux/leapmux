@@ -154,9 +154,8 @@ func isDefaultListenerInUse(err error) bool {
 
 // TestSoloStart_WarnsOnNonLoopbackListen confirms solo.Start emits a security
 // warning when the TCP listener is bound to a non-loopback address. The
-// warning matters because solo mode auto-authenticates every request as the
-// admin — exposing the port to anyone reachable on the network would otherwise
-// hand them passwordless admin access silently.
+// warning matters because the first TCP caller can claim a passwordless solo
+// account. The warning makes that setup race explicit.
 //
 // We assert by piping `os.Stderr` to a buffer before solo.Start runs, because
 // `logging.Setup` (invoked at the top of solo.Start) captures `os.Stderr` at

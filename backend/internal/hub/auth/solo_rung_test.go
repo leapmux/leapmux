@@ -107,17 +107,17 @@ func (f soloRungFixture) setSoloPassword(t *testing.T) {
 	}))
 }
 
-// The bootstrap state: TCP is credential-free, because a hub reached from a
-// browser over TCP and nothing else would otherwise have no way to set its
-// first password.
-func TestSoloRung_TCPIsCredentialFreeWhileTheAccountHasNoPassword(t *testing.T) {
+// A passwordless TCP caller can use only the public initial-password RPC. The
+// ordinary authentication ladders must not grant the synthetic administrator.
+func TestSoloRung_TCPNeedsCredentialsBeforeTheAccountHasAPassword(t *testing.T) {
 	f := newSoloRungFixture(t)
 
-	require.NoError(t, f.connectCall(nil), "the Connect ladder must admit a bare TCP caller")
+	err := f.connectCall(nil)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 
-	user, err := f.httpCall(nil)
-	require.NoError(t, err, "the HTTP ladder must admit the same caller")
-	assert.True(t, user.SoloAuthenticated())
+	_, httpErr := f.httpCall(nil)
+	require.Error(t, httpErr)
 }
 
 // The rule arms itself the moment the password lands, in both ladders and with

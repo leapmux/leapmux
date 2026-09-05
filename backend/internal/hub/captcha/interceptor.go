@@ -76,6 +76,22 @@ var protectedProcedures = map[string]protectedProcedure{
 	leapmuxv1connect.UserServiceResendVerificationEmailProcedure:     {action: contracts.CaptchaActionResendVerification},
 }
 
+// IsProtected reports whether a captcha guards this procedure.
+//
+// It exists for the rate-limit package's coverage tripwire, which walks the
+// proto descriptors for every procedure that carries a secret and demands that
+// SOMETHING limit each one. A captcha and a budget are the two answers, so the
+// walk must be able to ask this question. Restating the table there would give
+// the tripwire a second copy to drift from, which is the one thing a tripwire
+// must not have.
+//
+// The table is not exported itself, because a caller that ranged over it could
+// act on the action tokens, and those belong to the interceptor.
+func IsProtected(procedure string) bool {
+	_, ok := protectedProcedures[procedure]
+	return ok
+}
+
 // NewInterceptor returns a unary interceptor enforcing captcha + honeypot
 // verification on the protected procedures. It must run BEFORE the auth
 // interceptor's handler pass-through reaches the expensive handler logic.

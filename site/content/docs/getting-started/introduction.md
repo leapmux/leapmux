@@ -17,7 +17,7 @@ LeapMux exists to fix exactly that. It gives every agent its own git worktree an
 
 LeapMux is a workspace for running several coding agents and shell terminals at once, each in a git worktree and branch you pick, tiled or floating, on a local or remote machine. Agent sessions stay attached across restarts. Traffic to your agents is end-to-end encrypted. LeapMux runs in your browser or as a native desktop app.
 
-It is a single program (`leapmux`) you can run two ways. The simplest is **solo mode** (`leapmux solo`): one command on your own machine, with no login and nothing to configure — ideal for a laptop or dev box. For a team, a **distributed** setup runs a central **Hub** that several people sign in to, while the agents themselves run on one or more separate machines — including remote boxes behind a NAT or firewall. The native desktop app can do either.
+It is a single program (`leapmux`) you can run two ways. The simplest is **solo mode** (`leapmux solo`): one command for one account. The desktop app uses credential-free local IPC. A TCP browser sets the first password. For a team, a **distributed** setup runs a central **Hub** that several people sign in to, while the agents run on separate machines. The native desktop app can do either.
 
 Whichever way you run it, your work — agent transcripts, terminal output, and file contents — stays on the machine that runs the agents, never on the Hub. The Hub only relays encrypted traffic it cannot read. For exactly how the pieces fit together — the components, the two deployment shapes, and the trust boundaries — see [Concepts & Architecture](/docs/getting-started/concepts/).
 
