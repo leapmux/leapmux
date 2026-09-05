@@ -210,6 +210,26 @@ func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
 		"a subagent transcript owns no process, so it must never be a resume candidate")
 }
 
+// TestNewAgentResumer_IsOneSchedulerPerService pins what makes the drain above
+// cover the RPC path as well as the boot sweep.
+//
+// bootstrap holds the resumer it builds at startup and wires Shutdown to Stop
+// THAT one, while handleSetTabArchiveState asks for a resumer per unarchive
+// request. A fresh instance per call would give the RPC path a scheduler that
+// nothing stops: its goroutines would outlive Shutdown and read a database that
+// Shutdown closed. Nothing else in the wiring says the two must be the same
+// object, so it is stated here.
+func TestNewAgentResumer_IsOneSchedulerPerService(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	first := svc.NewAgentResumer()
+	t.Cleanup(first.Stop)
+
+	assert.Same(t, first, svc.NewAgentResumer(),
+		"bootstrap stops the resumer it built; a second instance would never be drained")
+}
+
 // TestAgentResume_StopDrainsScheduledWork pins the shutdown half of the
 // reusable scheduler.
 //
