@@ -20,6 +20,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/cenkalti/backoff/v7 v7.0.0](#githubcomcenkaltibackoffv7-v700)
 - [github.com/cespare/xxhash/v2 v2.3.0](#githubcomcesparexxhashv2-v230)
 - [github.com/cloudflare/circl v1.6.5](#githubcomcloudflarecircl-v165)
+- [github.com/coder/quartz v0.3.1](#githubcomcoderquartz-v031)
 - [github.com/coder/websocket v1.8.15](#githubcomcoderwebsocket-v1815)
 - [github.com/containerd/errdefs v1.0.0](#githubcomcontainerderrdefs-v100)
 - [github.com/containerd/errdefs/pkg v0.3.0](#githubcomcontainerderrdefspkg-v030)
@@ -1297,6 +1298,29 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### github.com/coder/quartz v0.3.1
+
+```
+MIT No Attribution
+
+Copyright (c) Coder Technologies, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### github.com/coder/websocket v1.8.15

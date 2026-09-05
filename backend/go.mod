@@ -9,6 +9,7 @@ require (
 	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/cenkalti/backoff/v7 v7.0.0
 	github.com/cloudflare/circl v1.6.5
+	github.com/coder/quartz v0.3.1
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/descope/virtualwebauthn v1.0.5

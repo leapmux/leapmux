@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // mockConnectorClient implements WorkerConnectorServiceClient for
@@ -30,6 +32,16 @@ func (m *mockConnectorClient) Register(ctx context.Context, req *connect.Request
 
 func (m *mockConnectorClient) Connect(_ context.Context) *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse] {
 	return nil
+}
+
+// fastRegisterRetry is the production registration policy with a tiny backoff
+// ladder and the clock the test drives, so a retry costs no wall time.
+func fastRegisterRetry(clock quartz.Clock) registerRetry {
+	return registerRetry{
+		backoff:        newFastBackoff(),
+		attemptTimeout: registerAttemptTimeout,
+		clock:          clock,
+	}
 }
 
 func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
@@ -51,15 +63,36 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, registerRetryTimerTag)
 
-	result, err := registerWithClient(ctx, mock, "key123", "0.0.1", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
-	require.NoError(t, err)
+	type outcome struct {
+		result *RegistrationResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := registerWithClient(t.Context(), mock, "key123", "0.0.1", nil, nil, nil, fastRegisterRetry(clock))
+		done <- outcome{result: result, err: err}
+	}()
+	for range failCount {
+		delay := testutil.WaitForTimer(t, testCtx, newTimer)
+		testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	}
 
+	var got outcome
+	select {
+	case got = <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "registration never returned after the hub came back")
+	}
+	require.NoError(t, got.err)
 	assert.Equal(t, int32(failCount+1), attempts.Load(), "Register call count")
-	assert.Equal(t, "worker-123", result.WorkerID)
-	assert.Equal(t, "auth-token-abc", result.AuthToken)
+	assert.Equal(t, "worker-123", got.result.WorkerID)
+	assert.Equal(t, "auth-token-abc", got.result.AuthToken)
+	_, running := clock.Peek()
+	assert.False(t, running, "the successful attempt must leave no retry armed")
 }
 
 func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
@@ -69,8 +102,11 @@ func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
 			return nil, nil
 		},
 	}
-	_, err := registerWithClient(context.Background(), mock, "", "v", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
+	clock := testutil.NewQuartzMock(t)
+	_, err := registerWithClient(t.Context(), mock, "", "v", nil, nil, nil, fastRegisterRetry(clock))
 	require.Error(t, err)
+	_, running := clock.Peek()
+	assert.False(t, running, "a missing key is permanent, so it must arm no retry")
 }
 
 func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
@@ -83,15 +119,35 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, registerRetryTimerTag)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	errCh := make(chan error, 1)
 	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
+		_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, fastRegisterRetry(clock))
+		errCh <- err
 	}()
 
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
-	assert.ErrorIs(t, err, context.Canceled)
-	assert.GreaterOrEqual(t, attempts.Load(), int32(1))
+	// The first attempt failed and its retry is armed. Cancelling HERE lands
+	// strictly inside the backoff window, which the sleep this replaces could
+	// only approximate -- and the exact attempt count below is what that
+	// certainty buys: the loop must stop without a second attempt.
+	_ = testutil.WaitForTimer(t, testCtx, newTimer)
+	cancel()
+	stopTimer.MustWait(testCtx).MustRelease(testCtx)
+
+	select {
+	case err := <-errCh:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-testCtx.Done():
+		require.FailNow(t, "registration ignored the cancelled context and waited out its backoff")
+	}
+	assert.Equal(t, int32(1), attempts.Load(), "cancellation must stop before a second attempt")
+	_, running := clock.Peek()
+	assert.False(t, running, "cancellation must release the retry timer")
 }
 
 func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
@@ -105,28 +161,23 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("nope"))
 		},
 	}
-	_, err := registerWithClient(context.Background(), mock, "k", "v", nil, nil, nil, newFastBackoff(), registerAttemptTimeout)
+	clock := testutil.NewQuartzMock(t)
+	_, err := registerWithClient(t.Context(), mock, "k", "v", nil, nil, nil, fastRegisterRetry(clock))
 	require.Error(t, err)
 	assert.Equal(t, int32(1), attempts.Load(), "Unauthenticated must not be retried")
+	_, running := clock.Peek()
+	assert.False(t, running, "a permanent rejection must arm no retry timer")
 }
 
-// recordingBackoff records each Next result so tests can assert
-// on the values requested rather than wall-clock elapsed time, which is
-// noisy on Windows where the scheduler tick (~15.6ms) dwarfs 10ms sleeps.
-type recordingBackoff struct {
-	inner     *backoffutil.Backoff
-	intervals []time.Duration
-}
-
-func (r *recordingBackoff) Next() time.Duration {
-	d := r.inner.Next()
-	r.intervals = append(r.intervals, d)
-	return d
-}
-
-func (r *recordingBackoff) Reset() { r.inner.Reset() }
-
-func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
+// TestRegisterWithClient_BackoffFollowsItsLadder pins the interval sequence the
+// retry policy asks for, rung by rung.
+//
+// The delays the code REQUESTED, never the gaps they produced: a measured gap
+// carries the host's timer granularity too, about 15.6ms on Windows, which
+// dwarfs the 10ms first rung. That is why this used to assert only that the
+// sequence never decreased -- an assertion a policy stuck at one interval also
+// satisfies.
+func TestRegisterWithClient_BackoffFollowsItsLadder(t *testing.T) {
 	var attempts atomic.Int32
 	failCount := 4
 
@@ -140,20 +191,40 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 		},
 	}
 
-	inner := backoffutil.NewBackoff(10*time.Millisecond, 100*time.Millisecond, 0)
-	rec := &recordingBackoff{inner: inner}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, rec, registerAttemptTimeout)
-	require.NoError(t, err)
-
-	require.Len(t, rec.intervals, failCount,
-		"expected one backoff interval per failed attempt")
-	for i := 1; i < len(rec.intervals); i++ {
-		assert.GreaterOrEqual(t, rec.intervals[i], rec.intervals[i-1])
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, registerRetryTimerTag)
+	// Zero jitter, so the ladder below is the one the policy states.
+	retry := registerRetry{
+		backoff:        backoffutil.NewBackoff(10*time.Millisecond, 100*time.Millisecond, 0),
+		attemptTimeout: registerAttemptTimeout,
+		clock:          clock,
 	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := registerWithClient(t.Context(), mock, "k", "0.0.1", nil, nil, nil, retry)
+		errCh <- err
+	}()
+	want := []time.Duration{
+		10 * time.Millisecond,
+		20 * time.Millisecond,
+		40 * time.Millisecond,
+		80 * time.Millisecond,
+	}
+	for i, expected := range want {
+		delay := testutil.WaitForTimer(t, testCtx, newTimer)
+		assert.Equal(t, expected, delay, "backoff interval %d", i+1)
+		testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	}
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-testCtx.Done():
+		require.FailNow(t, "registration never returned after its backoff ladder")
+	}
+	assert.Equal(t, int32(failCount+1), attempts.Load(), "one attempt per rung, then the success")
 }
 
 // TestRegisterWithClient_LimitsOneAttempt pins the limit that keeps a stalled
@@ -164,6 +235,10 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 // whose body ends only when the stream does. The retry loop sits BELOW the
 // call, so before this an attempt that never returned took the loop with it,
 // and `leapmux worker` hung at startup for ever with no retry and no log line.
+//
+// The attempt limit is a real 20ms here, not a mocked one: it is a context
+// deadline, and context.WithTimeout reads the real clock. Only the wait
+// BETWEEN attempts is on the test's clock.
 func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 	var attempts atomic.Int32
 	var sawDeadline atomic.Bool
@@ -185,12 +260,35 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	result, err := registerWithClient(ctx, mock, "key123", "0.0.1", nil, nil, nil, newFastBackoff(), 20*time.Millisecond)
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, registerRetryTimerTag)
+	retry := registerRetry{
+		backoff:        newFastBackoff(),
+		attemptTimeout: 20 * time.Millisecond,
+		clock:          clock,
+	}
 
-	require.NoError(t, err, "a stalled attempt must end and let the retry run")
-	assert.Equal(t, "w-1", result.WorkerID)
+	type outcome struct {
+		result *RegistrationResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := registerWithClient(t.Context(), mock, "key123", "0.0.1", nil, nil, nil, retry)
+		done <- outcome{result: result, err: err}
+	}()
+	delay := testutil.WaitForTimer(t, testCtx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the stalled attempt never ended")
+	}
+	require.NoError(t, got.err, "a stalled attempt must end and let the retry run")
+	assert.Equal(t, "w-1", got.result.WorkerID)
 	assert.True(t, sawDeadline.Load(), "each attempt must carry its own deadline")
 	assert.EqualValues(t, 2, attempts.Load(), "the stalled attempt is abandoned and retried exactly once")
 }
@@ -198,7 +296,7 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 // The per-attempt limit must not swallow the CALLER's cancellation: a worker
 // shutting down during registration still stops rather than retrying.
 func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	mock := &mockConnectorClient{
 		registerFn: func(ctx context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
 			cancel()
@@ -207,7 +305,15 @@ func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
 		},
 	}
 
-	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, newFastBackoff(), time.Minute)
+	clock := testutil.NewQuartzMock(t)
+	retry := registerRetry{
+		backoff:        newFastBackoff(),
+		attemptTimeout: time.Minute,
+		clock:          clock,
+	}
+	_, err := registerWithClient(ctx, mock, "k", "0.0.1", nil, nil, nil, retry)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+	_, running := clock.Peek()
+	assert.False(t, running, "a cancelled caller must not leave a retry armed")
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -294,6 +295,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 		UseLoginShell:       true,
 		WakeLock:            wakelock.NewActivityTracker(),
 		MaxMessageSize:      32 << 20,
+		Clock:               quartz.NewReal(),
 	}
 
 	v := reflect.ValueOf(cfg)
@@ -311,6 +313,7 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	assert.Same(t, cfg.Terminals, svc.Terminals)
 	assert.Same(t, cfg.Channels, svc.Channels)
 	assert.Same(t, cfg.WakeLock, svc.WakeLock)
+	assert.Equal(t, cfg.Clock, svc.Clock)
 	assert.Equal(t, "/home/x", svc.HomeDir)
 	assert.Equal(t, "/data/x", svc.DataDir)
 	assert.Equal(t, "worker-1", svc.WorkerID)

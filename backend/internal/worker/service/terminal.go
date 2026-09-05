@@ -664,7 +664,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// above (e.g. the frontend's fit() was unusually slow, or a second
 	// resize has since landed). The PTY is already the correct size for
 	// the pre-wait case; this handler covers the rare late-arriving dims.
-	if cols, rows, ok := svc.TerminalStartup.takePendingResize(terminalID); ok {
+	if cols, rows, ok := svc.TerminalStartup.takePendingResize(h); ok {
 		if err := svc.Terminals.Resize(terminalID, cols, rows); err != nil {
 			slog.Warn("apply pending resize after startup", "terminal_id", terminalID, "error", err)
 		}

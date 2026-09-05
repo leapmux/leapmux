@@ -11,10 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func TestHandleHubShuttingDown_StoresDelay(t *testing.T) {
-	c := &Client{}
+	c := newBareClient()
 
 	c.handleHubShuttingDown(&leapmuxv1.HubShuttingDownNotification{
 		RetryDelaySeconds: 15,
@@ -24,7 +25,7 @@ func TestHandleHubShuttingDown_StoresDelay(t *testing.T) {
 }
 
 func TestHandleHubShuttingDown_OverwritesPreviousDelay(t *testing.T) {
-	c := &Client{}
+	c := newBareClient()
 
 	c.handleHubShuttingDown(&leapmuxv1.HubShuttingDownNotification{
 		RetryDelaySeconds: 10,
@@ -38,10 +39,13 @@ func TestHandleHubShuttingDown_OverwritesPreviousDelay(t *testing.T) {
 
 func TestConnectWithReconnect_HubRetryDelayApplied(t *testing.T) {
 	var attempts atomic.Int32
-	var timestamps []time.Time
 
-	client := &Client{}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubRequestedRetryTimerTag)
 
 	// Simulate hub setting a retry delay of 100ms (scaled down for testing).
 	// We set the delay before the first connect call, as if the hub sent
@@ -50,7 +54,6 @@ func TestConnectWithReconnect_HubRetryDelayApplied(t *testing.T) {
 
 	mockConnect := func(_ context.Context, _ string) error {
 		n := attempts.Add(1)
-		timestamps = append(timestamps, time.Now())
 
 		if n == 1 {
 			// First connection: simulate hub sending shutdown notification.
@@ -64,30 +67,38 @@ func TestConnectWithReconnect_HubRetryDelayApplied(t *testing.T) {
 	}
 
 	bo := newFastBackoff()
-	client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
-
-	require.GreaterOrEqual(t, len(timestamps), 2, "expected at least 2 connect attempts")
-
-	// The gap between attempt 1 and 2 should be at least ~1 second (the retry delay),
-	// not just the fast backoff interval.
-	gap := timestamps[1].Sub(timestamps[0])
-	assert.GreaterOrEqual(t, gap, 900*time.Millisecond,
-		"gap should be at least ~1 second due to hub retry delay, got %v", gap)
+	done := make(chan struct{})
+	go func() {
+		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		close(done)
+	}()
+	delay := testutil.WaitForTimer(t, testCtx, newTimer)
+	assert.Equal(t, time.Second, delay)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the Hub retry delay did not lead to the second attempt")
+	}
+	assert.Equal(t, int32(2), attempts.Load())
 }
 
 func TestConnectWithReconnect_HubRetryDelayConsumedOnce(t *testing.T) {
 	var attempts atomic.Int32
-	var timestamps []time.Time
 
-	client := &Client{}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newHubTimer, stopHubTimer := testutil.NewTimerTraps(t, clock, hubRequestedRetryTimerTag)
+	newBackoffTimer, stopBackoffTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
 
 	// Pre-set the retry delay as if it was received during a previous connection.
 	client.hubRetryDelay.Store(1) // 1 second
 
 	mockConnect := func(_ context.Context, _ string) error {
 		n := attempts.Add(1)
-		timestamps = append(timestamps, time.Now())
 
 		if n >= 3 {
 			cancel()
@@ -96,31 +107,39 @@ func TestConnectWithReconnect_HubRetryDelayConsumedOnce(t *testing.T) {
 	}
 
 	bo := newFastBackoff()
-	client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
-
-	require.GreaterOrEqual(t, len(timestamps), 3, "expected at least 3 connect attempts")
-
-	// First gap: should include the 1-second retry delay.
-	gap1 := timestamps[1].Sub(timestamps[0])
-	assert.GreaterOrEqual(t, gap1, 900*time.Millisecond,
-		"first gap should include retry delay, got %v", gap1)
-
-	// Second gap: delay was consumed, so should fall back to fast backoff (< 100ms).
-	gap2 := timestamps[2].Sub(timestamps[1])
-	assert.Less(t, gap2, 100*time.Millisecond,
-		"second gap should use normal backoff (delay consumed), got %v", gap2)
+	done := make(chan struct{})
+	go func() {
+		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		close(done)
+	}()
+	hubDelay := testutil.WaitForTimer(t, testCtx, newHubTimer)
+	assert.Equal(t, time.Second, hubDelay)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, hubDelay, stopHubTimer)
+	backoffDelay := testutil.WaitForTimer(t, testCtx, newBackoffTimer)
+	assert.Equal(t, time.Millisecond, backoffDelay,
+		"the consumed Hub delay must give the next failure to normal backoff")
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, backoffDelay, stopBackoffTimer)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop did not consume the Hub delay once")
+	}
+	assert.Equal(t, int32(3), attempts.Load())
 }
 
 func TestConnectWithReconnect_HubRetryDelayResetsBackoff(t *testing.T) {
 	var attempts atomic.Int32
-	var timestamps []time.Time
 
-	client := &Client{}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newHubTimer, stopHubTimer := testutil.NewTimerTraps(t, clock, hubRequestedRetryTimerTag)
+	newBackoffTimer, stopBackoffTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
 
 	mockConnect := func(_ context.Context, _ string) error {
 		n := attempts.Add(1)
-		timestamps = append(timestamps, time.Now())
 
 		switch n {
 		case 1:
@@ -143,21 +162,40 @@ func TestConnectWithReconnect_HubRetryDelayResetsBackoff(t *testing.T) {
 	}
 
 	bo := newFastBackoff()
-	client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
-
-	require.GreaterOrEqual(t, len(timestamps), 6)
-
-	// Gap between 5 and 6 should be small (reset backoff), not escalated.
-	gap56 := timestamps[5].Sub(timestamps[4])
-	assert.Less(t, gap56, 50*time.Millisecond,
-		"backoff should be reset after hub retry delay, got %v", gap56)
+	done := make(chan struct{})
+	go func() {
+		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+		close(done)
+	}()
+	for i, expected := range []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond} {
+		delay := testutil.WaitForTimer(t, testCtx, newBackoffTimer)
+		assert.Equal(t, expected, delay, "backoff delay %d", i+1)
+		testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopBackoffTimer)
+	}
+	hubDelay := testutil.WaitForTimer(t, testCtx, newHubTimer)
+	assert.Equal(t, time.Second, hubDelay)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, hubDelay, stopHubTimer)
+	delayAfterReset := testutil.WaitForTimer(t, testCtx, newBackoffTimer)
+	assert.Equal(t, time.Millisecond, delayAfterReset,
+		"a Hub-requested delay must reset normal backoff")
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delayAfterReset, stopBackoffTimer)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop did not stop after the reset sequence")
+	}
+	assert.Equal(t, int32(6), attempts.Load())
 }
 
 func TestConnectWithReconnect_HubRetryDelayCancelledByContext(t *testing.T) {
 	var attempts atomic.Int32
 
-	client := &Client{}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubRequestedRetryTimerTag)
 
 	// Pre-set a large retry delay.
 	client.hubRetryDelay.Store(60) // 60 seconds -- should not actually wait this long
@@ -167,33 +205,27 @@ func TestConnectWithReconnect_HubRetryDelayCancelledByContext(t *testing.T) {
 		return fmt.Errorf("fail")
 	}
 
-	// Cancel after a short time.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
-
-	// Exiting on ctx cancel rather than the 60s reconnect delay, asserted as a
-	// COMPLETION against a generous guard: the failing case blocks for a full
-	// minute, so a guard catches it just as surely as a 2s budget and cannot be
-	// crossed by machine load. The attempt count below is the other half of the
-	// proof -- a run that waited out the delay would have retried.
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
 		bo := newFastBackoff()
 		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
 	}()
+	assert.Equal(t, 60*time.Second, testutil.WaitForTimer(t, testCtx, newTimer))
+	cancel()
+	stopTimer.MustWait(testCtx).MustRelease(testCtx)
 	select {
 	case <-returned:
-	case <-time.After(20 * time.Second):
+	case <-testCtx.Done():
 		t.Fatal("connectWithReconnect ignored the cancelled context and waited on its reconnect delay")
 	}
+	_, running := clock.Peek()
+	assert.False(t, running, "context cancellation must stop the Hub retry timer")
 	assert.Equal(t, int32(1), attempts.Load(), "expected exactly 1 attempt before cancel")
 }
 
 func TestHandleMessage_HubShuttingDown(t *testing.T) {
-	c := &Client{}
+	c := newBareClient()
 
 	msg := &leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_HubShuttingDown{

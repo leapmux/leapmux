@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -25,7 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Connect-stream queue bounds are sendq.Default* so Hub and worker stay on
+// Connect-stream queue limits are sendq.Default* so Hub and worker stay on
 // one definition. A wall-clock stall cutoff on a server-to-server connection
 // invites a reconnect storm under sustained load, so there is none -- the
 // byte budget alone disconnects a Hub that cannot keep up.
@@ -99,34 +100,34 @@ type Client struct {
 	// connectWithReconnect after the connection drops.
 	hubRetryDelay atomic.Int64
 
-	// now and after are the clock connectWithReconnect measures its
-	// long-connection threshold against and waits its backoff on. A test owns
-	// both, so a whole reconnect sequence runs with no sleep and no window to
-	// race.
-	//
-	// A real sleep does not measure a backoff. It measures the host's timer
-	// granularity too, which is about 15.6ms on Windows -- wide enough to
-	// swallow the difference between this policy's 10ms and 40ms intervals and
-	// report them in the wrong order. Nil means the real clock, so the zero
-	// value of Client keeps working.
-	now   func() time.Time
-	after func(time.Duration) <-chan time.Time
+	// clock supplies every instant, timer and ticker this client reads, so a
+	// test drives a whole reconnect sequence with no sleep and no window to
+	// race. New installs the real clock; WithClock replaces it.
+	clock quartz.Clock
 }
 
-// clockNow reads the clock, defaulting to the real one.
-func (c *Client) clockNow() time.Time {
-	if c.now != nil {
-		return c.now()
-	}
-	return time.Now()
-}
+const (
+	hubReconnectTimeTag       = "hub-reconnect-time"
+	hubReconnectTimerTag      = "hub-reconnect"
+	hubRequestedRetryTimerTag = "hub-requested-retry"
+	hubIdentityTimerTag       = "hub-identity-timeout"
+	hubHeartbeatTickerTag     = "hub-heartbeat"
+	hubHeartbeatIdleTag       = "hub-heartbeat-idle"
+	hubSendTimestampTag       = "hub-send-timestamp"
+	hubConnectTimestampTag    = "hub-connect-timestamp"
+)
 
-// clockAfter waits on the clock, defaulting to the real one.
-func (c *Client) clockAfter(d time.Duration) <-chan time.Time {
-	if c.after != nil {
-		return c.after(d)
+// ClientOption changes one New setting.
+type ClientOption func(*Client)
+
+// WithClock sets the clock that supplies client times, timers, and tickers.
+func WithClock(clock quartz.Clock) ClientOption {
+	if clock == nil {
+		panic("hub: clock must not be nil")
 	}
-	return time.After(d)
+	return func(c *Client) {
+		c.clock = clock
+	}
 }
 
 // New creates a new Hub client with integrated lifecycle management.
@@ -139,7 +140,7 @@ func (c *Client) clockAfter(d time.Duration) <-chan time.Time {
 // cannot express. Against a cleartext hub with no h2c this client fails with
 // hubtransport.ErrH2CUnsupported, which states the URL and the remedy, instead
 // of degrading to a protocol on which the worker could never connect.
-func New(endpoint *hubtransport.Endpoint) *Client {
+func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 	httpClient := endpoint.HTTP2OnlyClient()
 	connectURL := endpoint.BaseURL()
 	c := &Client{
@@ -152,9 +153,20 @@ func New(endpoint *hubtransport.Endpoint) *Client {
 			httpClient,
 			connectURL,
 		),
-		endpoint:  endpoint,
-		terminals: terminal.NewManager(),
+		endpoint: endpoint,
+		clock:    quartz.NewReal(),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	// After the options, because the terminal Manager takes the clock this
+	// client settled on. A test that gives the Client a mock clock therefore
+	// drives the reader-drain grace inside its terminals too, and MUST advance
+	// that clock, or a reader that never ends parks the exit goroutine for
+	// ever. bootstrap.Wire reads the same clock back through Clock() for the
+	// Service, so those three share one. The registration retry holds its own,
+	// because Register runs before any Client exists.
+	c.terminals = terminal.NewManager(terminal.WithClock(c.clock))
 	c.agents = agent.NewManager(func(agentID string, exitCode int, err error, _ bool) {
 		if err != nil {
 			slog.Info("agent exited with error", "agent_id", agentID, "exit_code", exitCode, "error", err)
@@ -195,6 +207,10 @@ func (c *Client) SetChannelMgr(mgr *channel.Manager) {
 func (c *Client) AgentManager() *agent.Manager {
 	return c.agents
 }
+
+// Clock returns the clock this client and its terminal manager share, so
+// anything wired behind the client runs on the same one.
+func (c *Client) Clock() quartz.Clock { return c.clock }
 
 // TerminalManager returns the terminal manager.
 func (c *Client) TerminalManager() *terminal.Manager {
@@ -253,14 +269,14 @@ func sendFailureLevel(err error) slog.Level {
 	return slog.LevelWarn
 }
 
-// ShutdownFlushTimeout bounds FlushSends. Generous relative to the work (a
+// ShutdownFlushTimeout limits FlushSends. It is generous relative to the work (a
 // handful of small frames onto an open socket) because the cost of waiting too
 // long is a slower exit, while the cost of not waiting long enough is a user
 // staring at a terminal that silently stopped.
 const ShutdownFlushTimeout = 5 * time.Second
 
 // FlushSends blocks until everything already enqueued has been handed to the
-// Connect stream, bounded by ShutdownFlushTimeout. A nil writer (never
+// Connect stream, with ShutdownFlushTimeout as its limit. A nil writer (never
 // connected, or already torn down) is nothing to wait for and returns
 // immediately.
 //
@@ -271,7 +287,7 @@ const ShutdownFlushTimeout = 5 * time.Second
 // needed them is a browser that will never get another chance to hear from this
 // process.
 //
-// The bound lives here rather than in a parameter because there is one policy
+// The limit lives here rather than in a parameter because there is one policy
 // and two entry points that would otherwise each restate it.
 func (c *Client) FlushSends() error {
 	w := c.currentWriter()
@@ -329,9 +345,22 @@ func (c *Client) currentWriter() *sendq.Writer[*leapmuxv1.ConnectRequest] {
 	return w
 }
 
+// markEnqueued stamps the instant of this enqueue, which heartbeatLoop reads to
+// decide whether the connection went idle.
+//
+// The clock read sits OUTSIDE c.mu, like the one in Connect. A quartz trap
+// parks the calling goroutine inside Now, and a park under c.mu blocks
+// currentWriter, cancelConn and the heartbeat's own idle read, so a test that
+// traps this stamp would deadlock the client rather than observe it. Two
+// concurrent enqueues can then read the clock in one order and reach the lock
+// in the other, so the write keeps the later instant instead of overwriting it
+// -- lastSendTime only ever moves forward.
 func (c *Client) markEnqueued() {
+	now := c.clock.Now(hubSendTimestampTag)
 	c.mu.Lock()
-	c.lastSendTime = time.Now()
+	if now.After(c.lastSendTime) {
+		c.lastSendTime = now
+	}
 	c.mu.Unlock()
 }
 
@@ -426,11 +455,12 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		},
 	})
 
+	connectedAt := c.clock.Now(hubConnectTimestampTag)
 	c.mu.Lock()
 	c.stream = stream
 	c.writer = writer
 	c.connCancel = connCancel
-	c.lastSendTime = time.Now()
+	c.lastSendTime = connectedAt
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
@@ -573,16 +603,15 @@ func resolveWorkingDir(path string) (string, error) {
 
 const heartbeatIdleTimeout = 5 * time.Second
 
-// workerIdentityTimeout bounds how long the worker waits for the Hub's
+// workerIdentityTimeout limits how long the worker waits for the Hub's
 // connect-time WorkerIdentity greeting before force-closing the stream. The
 // Hub sends it before publishing the connection, so its absence within this
 // budget signals a stripped/dropped greeting -- which would otherwise leave
 // requireWorkerOwner denying every machine-scoped RPC (file, git, sysinfo,
 // tunnel) for the connection's life, indistinguishable from a genuine
 // cross-tenant refusal. Force-closing triggers ConnectWithReconnect's
-// backoff, which re-runs the greeting on a fresh stream. A var so tests can
-// shorten it.
-var workerIdentityTimeout = 10 * time.Second
+// backoff, which re-runs the greeting on a fresh stream.
+const workerIdentityTimeout = 10 * time.Second
 
 // closeStreamOnCancel ends the bidi stream when ctx fires, because cancelling
 // it is NOT enough on its own. connect-go checks the context before each read,
@@ -616,8 +645,8 @@ func (c *Client) closeStreamOnCancel(
 // watchForIdentity force-closes the connection if the Hub does not deliver
 // WorkerIdentity within workerIdentityTimeout. See Client.identityReceived.
 func (c *Client) watchForIdentity(ctx context.Context) {
-	timer := time.NewTimer(workerIdentityTimeout)
-	defer timer.Stop()
+	timer := c.clock.NewTimer(workerIdentityTimeout, hubIdentityTimerTag)
+	defer timer.Stop(hubIdentityTimerTag)
 	select {
 	case <-ctx.Done():
 		return
@@ -643,8 +672,8 @@ func (c *Client) cancelConn() {
 }
 
 func (c *Client) heartbeatLoop(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	ticker := c.clock.NewTicker(2*time.Second, hubHeartbeatTickerTag)
+	defer ticker.Stop(hubHeartbeatTickerTag)
 
 	for {
 		select {
@@ -652,8 +681,10 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.mu.Lock()
-			idle := time.Since(c.lastSendTime)
+			lastSend := c.lastSendTime
 			c.mu.Unlock()
+			// Outside the lock, for the reason markEnqueued states.
+			idle := c.clock.Since(lastSend, hubHeartbeatIdleTag)
 
 			if idle >= heartbeatIdleTimeout {
 				if err := c.Send(&leapmuxv1.ConnectRequest{
@@ -680,15 +711,15 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 type connectFn func(ctx context.Context, authToken string) error
 
 // ConnectWithReconnect wraps Connect with automatic reconnection using
-// exponential backoff. Starts at 1s, doubles up to 60s, resets on
-// successful connection lasting longer than resetThreshold.
+// exponential backoff. Starts at 1s, doubles up to 180s, and resets after a
+// connection lasts longer than resetThreshold.
 func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) {
 	c.connectWithReconnect(ctx, authToken, c.Connect, newDefaultBackoff(), resetThreshold)
 }
 
 func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff, threshold time.Duration) {
 	for {
-		start := c.clockNow()
+		start := c.clock.Now(hubReconnectTimeTag)
 		err := connect(ctx, authToken)
 		if ctx.Err() != nil {
 			return
@@ -709,26 +740,22 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 		// so it only applies once.
 		if delay := c.hubRetryDelay.Swap(0); delay > 0 {
 			slog.Info("hub requested reconnect delay", "delay_seconds", delay)
-			select {
-			case <-ctx.Done():
+			if !waitOrCancel(ctx, c.clock, time.Duration(delay)*time.Second, hubRequestedRetryTimerTag) {
 				return
-			case <-c.clockAfter(time.Duration(delay) * time.Second):
 			}
 			bo.Reset()
 			continue
 		}
 
 		// If connection lasted long enough, reset backoff.
-		if c.clockNow().Sub(start) >= threshold {
+		if c.clock.Now(hubReconnectTimeTag).Sub(start) >= threshold {
 			bo.Reset()
 		}
 
 		interval := bo.Next()
 		slog.Warn("disconnected from hub, reconnecting...", "error", err, "backoff", interval)
-		select {
-		case <-ctx.Done():
+		if !waitOrCancel(ctx, c.clock, interval, hubReconnectTimerTag) {
 			return
-		case <-c.clockAfter(interval):
 		}
 	}
 }

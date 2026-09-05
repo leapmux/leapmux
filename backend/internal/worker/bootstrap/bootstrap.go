@@ -155,6 +155,7 @@ func Wire(p Params) *Wiring {
 		DB:                  p.DB,
 		Agents:              p.Client.AgentManager(),
 		Terminals:           p.Client.TerminalManager(),
+		Clock:               p.Client.Clock(),
 		HomeDir:             p.HomeDir,
 		DataDir:             p.DataDir,
 		WorkerID:            p.WorkerID,

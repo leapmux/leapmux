@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -710,18 +711,22 @@ func TestRemintControlIPC_AFailedMintStillReleasesTheDelegation(t *testing.T) {
 // PERMANENT startup failure. A message that lands in that window used to spawn a
 // second process for the same tab, and its begin() overwrote the open's registry
 // entry, so a later CloseAgent cancelled the wrong context. The claim is what
-// stops that; this test drives the wait past its bound to reach it.
+// stops that; this test drives the wait past its limit to reach it.
 func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T) {
 	t.Parallel()
 
-	svc, _, _ := setupTestService(t)
+	// Quartz makes the limit cost no wall time. Its trap also proves that the
+	// caller waits before it gives up.
+	clock := testutil.NewQuartzMock(t)
+	svc, _, _ := setupTestService(t, withClock(clock))
 	rec := newStartRecorder()
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
-	// A fake clock, so the give-up costs no wall time and the assertion below
-	// about the caller WAITING first cannot lose to a real timer.
-	clock := newFakeStartupClock()
-	svc.AgentStartup.clock = clock
+	ctx := testutil.DeadlineContext(t)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
 
 	// Stand in for the open path's in-flight startup.
 	openCtx, openCancel := context.WithCancel(context.Background())
@@ -738,8 +743,10 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	// at roughly 1.5x the API timeout -- so a wait armed for the five-minute
 	// startup timeout would report a send as failed that this worker goes on to
 	// deliver, under a Retry button that then sends it twice.
-	assert.Equal(t, svc.agentAPITimeout(), clock.waitArmed(t),
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, svc.agentAPITimeout(), call.Duration,
 		"the wait must end inside the budget the client gives the RPC that holds it")
+	call.MustRelease(ctx)
 	assert.Less(t, svc.agentAPITimeout(), svc.agentStartupTimeout(),
 		"a wait as long as the whole startup budget is the defect this assertion exists to prevent")
 	select {
@@ -748,12 +755,14 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	default:
 	}
 
-	clock.fire(t)
+	advance := clock.Advance(svc.agentAPITimeout())
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	advance.MustWait(ctx)
 	select {
 	case err := <-errCh:
 		require.Error(t, err,
 			"a cold start ran while another startup held the agent; that spawns a second process for one tab")
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		require.FailNow(t, "the wait outlived its own limit")
 	}
 	assert.Empty(t, rec.ids())
@@ -776,12 +785,16 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 	t.Parallel()
 
-	svc, _, _ := setupTestService(t)
+	clock := testutil.NewQuartzMock(t)
+	svc, _, _ := setupTestService(t, withClock(clock))
 	rec := newStartRecorder()
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
-	clock := newFakeStartupClock()
-	svc.AgentStartup.clock = clock
+	ctx := testutil.DeadlineContext(t)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
 
 	openHandle := svc.AgentStartup.begin("agent-1", func() {})
 	require.NotNil(t, openHandle)
@@ -789,17 +802,20 @@ func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
 
-	clock.waitArmed(t)
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, svc.agentAPITimeout(), call.Duration)
+	call.MustRelease(ctx)
 	assert.Empty(t, rec.ids(), "it must not spawn a second process for the tab that is already starting")
 
 	// The open path finishes.
-	svc.AgentStartup.succeed("agent-1", nil)
+	svc.AgentStartup.succeed("agent-1", openHandle)
 	svc.AgentStartup.finishEntry(openHandle)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
 
 	select {
 	case err := <-errCh:
 		require.NoError(t, err, "the startup it waited for finished, so the message has a process to reach")
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		require.FailNow(t, "the caller never resumed after the startup it waited for finished")
 	}
 	assert.Equal(t, []string{"agent-1"}, rec.ids(),
@@ -814,12 +830,11 @@ func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testing.T) {
 	t.Parallel()
 
-	svc, _, _ := setupTestService(t)
+	clock := testutil.NewQuartzMock(t)
+	svc, _, _ := setupTestService(t, withClock(clock))
 	rec := newStartRecorder()
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
-	clock := newFakeStartupClock()
-	svc.AgentStartup.clock = clock
 
 	openHandle := svc.AgentStartup.begin("agent-1", func() {})
 	require.NotNil(t, openHandle)
@@ -828,9 +843,8 @@ func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testi
 	require.Error(t, svc.ensureAgentRunning("agent-1", nil, backgroundStart))
 	assert.Empty(t, rec.ids())
 
-	clock.mu.Lock()
-	defer clock.mu.Unlock()
-	assert.Empty(t, clock.timers, "the sweep must not wait on a startup that is already doing its work")
+	_, running := clock.Peek()
+	assert.False(t, running, "the sweep must not wait on a startup that is already doing its work")
 }
 
 // TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor pins the
@@ -844,12 +858,16 @@ func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testi
 func TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor(t *testing.T) {
 	t.Parallel()
 
-	svc, _, _ := setupTestService(t)
+	clock := testutil.NewQuartzMock(t)
+	svc, _, _ := setupTestService(t, withClock(clock))
 	rec := newStartRecorder()
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
-	clock := newFakeStartupClock()
-	svc.AgentStartup.clock = clock
+	ctx := testutil.DeadlineContext(t)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
 
 	// Stand in for the open path's in-flight startup.
 	openHandle := svc.AgentStartup.begin("agent-1", func() {})
@@ -858,11 +876,14 @@ func TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor(t *testi
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
-	clock.waitArmed(t)
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, svc.agentAPITimeout(), call.Duration)
+	call.MustRelease(ctx)
 
 	// The user closes the tab. The row still reads OPEN at this point, exactly
 	// as it does for the whole of the close's own teardown.
 	svc.AgentStartup.cancelAndClear("agent-1", keepWorktreeOnClose)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
 	row := requireAgentRow(t, svc, "agent-1")
 	require.False(t, row.ClosedAt.Valid,
 		"the premise: the close has not stamped closed_at yet, so that guard cannot carry this")
@@ -870,7 +891,7 @@ func TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor(t *testi
 	select {
 	case err := <-errCh:
 		require.Error(t, err, "a close ended the startup, so there is no process to wait for and none to start")
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		require.FailNow(t, "the caller never resumed after the close released it")
 	}
 	assert.Empty(t, rec.ids(),

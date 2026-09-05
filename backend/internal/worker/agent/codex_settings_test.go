@@ -533,22 +533,30 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			a, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
+			// turn/start resolves only at turn end, so the ack comes from the
+			// turn/started notification. Release it when the request ARRIVES,
+			// which the harness records just before it calls this responder.
+			//
+			// Not on a sleep: sendTurnStart writes the request on a detached
+			// goroutine and returns as soon as the ack closes, so a fixed sleep
+			// can release it before that goroutine ran. The assertion below then
+			// reads an empty slice, which is how this test failed under a loaded
+			// suite while the wire shape it checks was correct.
+			var a *CodexAgent
+			var requests func() []codexRecordedRequest
+			a, _, requests = newCodexAgentForRPC(t, func(method string) json.RawMessage {
+				if method == "turn/start" {
+					a.mu.Lock()
+					ack := a.turnStartAck
+					a.turnStartAck = nil
+					a.mu.Unlock()
+					if ack != nil {
+						close(ack)
+					}
+				}
 				return json.RawMessage(`{}`)
 			})
 			a.threadID = "thread-1"
-			go func() {
-				// turn/start resolves only at turn end, so the ack comes from the
-				// turn/started notification. Release it so the send returns.
-				time.Sleep(10 * time.Millisecond)
-				a.mu.Lock()
-				ack := a.turnStartAck
-				a.turnStartAck = nil
-				a.mu.Unlock()
-				if ack != nil {
-					close(ack)
-				}
-			}()
 
 			err := a.sendTurnStart("thread-1", []map[string]interface{}{{"type": "text", "text": "hi"}}, turnSettings{
 				model:          test.model,

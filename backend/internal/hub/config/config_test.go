@@ -15,7 +15,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func unsetAmbientEnvPrefix(t *testing.T, prefix string) {
+	t.Helper()
+	// testing.T.Setenv cannot represent an absent variable. An empty value still
+	// overrides defaults and configuration files.
+	for _, entry := range os.Environ() {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		require.NoError(t, os.Unsetenv(key))
+		t.Cleanup(func() {
+			require.NoError(t, os.Setenv(key, value))
+		})
+	}
+}
+
 func TestLoad(t *testing.T) {
+	unsetAmbientEnvPrefix(t, "LEAPMUX_HUB_")
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 
@@ -130,6 +147,7 @@ log_level: "debug"
 }
 
 func TestLoadWithOptions(t *testing.T) {
+	unsetAmbientEnvPrefix(t, "LEAPMUX_HUB_")
 	t.Run("custom DefaultListen applied", func(t *testing.T) {
 		cfg, _, err := LoadWithOptions(nil, LoadOptions{
 			DefaultListen: "127.0.0.1:4327",

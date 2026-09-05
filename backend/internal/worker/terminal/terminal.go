@@ -13,6 +13,7 @@ import (
 	"time"
 
 	pty "github.com/aymanbagabas/go-pty"
+	"github.com/coder/quartz"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -20,6 +21,11 @@ import (
 )
 
 const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
+
+const (
+	terminalChildCloseTimerTag = "terminal-child-close"
+	terminalReadDrainTimerTag  = "terminal-read-drain"
+)
 
 // ScreenBuffer is a thread-safe ring buffer that stores recent PTY output.
 // It also tracks a cumulative byte counter so callers can resume from a
@@ -287,6 +293,15 @@ type Terminal struct {
 	cmd       *pty.Cmd
 	ptmx      pty.Pty
 	jobObject *procutil.JobObject
+	// clock supplies the two timers waitForReadDrainedWithin arms. The
+	// constructor requires it, so a Terminal cannot exist without one and a
+	// timer added later in this file finds the right clock already in scope.
+	// The alternative is a caller that forgets to thread it and falls back to
+	// the `time` package, which is the drift a mock clock cannot see.
+	//
+	// Respawn passes t.clock through, so a restarted terminal inherits it
+	// instead of depending on its caller to remember.
+	clock quartz.Clock
 	// outputFn is the internal dispatch for both live PTY reads and
 	// AppendOutput. It writes into screenBuf and forwards the resulting
 	// cumulative offset to the user-provided OutputHandler, through
@@ -391,14 +406,23 @@ func spawnEnv(environ, extraEnv []string) []string {
 // process the usual exec.CommandContext kill signal. The caller still
 // owns the long-running Terminal — its lifetime is independent of ctx
 // once Start returns successfully.
-func Start(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal, error) {
-	return startWithScreenBuffer(ctx, opts, NewScreenBuffer(), outputFn)
+func Start(ctx context.Context, opts Options, clock quartz.Clock, outputFn OutputHandler) (*Terminal, error) {
+	return startWithScreenBuffer(ctx, opts, clock, NewScreenBuffer(), outputFn)
 }
 
 // startWithScreenBuffer is the actual spawn implementation, parameterized
 // over the ScreenBuffer so RestartTerminal can carry the cumulative
 // offset (and any retained bytes) across PTY incarnations.
-func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenBuffer, outputFn OutputHandler) (*Terminal, error) {
+func startWithScreenBuffer(
+	ctx context.Context,
+	opts Options,
+	clock quartz.Clock,
+	screenBuf *ScreenBuffer,
+	outputFn OutputHandler,
+) (*Terminal, error) {
+	if clock == nil {
+		panic("terminal: clock must not be nil")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -463,6 +487,7 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 
 	t := &Terminal{
 		id:                opts.ID,
+		clock:             clock,
 		cmd:               cmd,
 		ptmx:              ptmx,
 		jobObject:         jobObject,
@@ -565,9 +590,56 @@ func (t *Terminal) Wait() int {
 	return t.exitCode
 }
 
-// waitForReadDrained blocks until readOutput returns, after which the screen
-// buffer's cumulative offset is stable, and reports whether the reader finished
-// inside `within`. A non-positive `within` waits with no limit.
+// waitForReadDone blocks with no limit until readOutput returns, after which
+// the screen buffer's cumulative offset is stable.
+//
+// Only a caller that already stopped the terminal uses this. Stop closes the
+// worker side of the pty, which ends the reader at once.
+// waitForReadDrainedWithin serves the caller that stopped nothing, where a
+// descendant that escaped the shell's kill group can hold the reader open for
+// ever.
+func (t *Terminal) waitForReadDone() {
+	<-t.readDoneCh
+}
+
+// childCloseOutcome says what ended the first stage of the drain wait.
+type childCloseOutcome int
+
+const (
+	// childSideClosed means the close that ends the reader finished. The
+	// reader-drain stage runs next.
+	childSideClosed childCloseOutcome = iota
+	// readerFinishedFirst means readOutput returned before the close, so the
+	// screen is already stable and no drain wait remains.
+	readerFinishedFirst
+	// childCloseGaveUp means the close did not finish inside the grace.
+	childCloseGaveUp
+)
+
+// waitForChildSideClose blocks until the natural-exit path closes the child
+// side of the pty -- the act that ends the reader -- or `within` runs out.
+//
+// A method of its own, so the deferred stop ends with THIS stage. A defer in
+// the caller runs when the caller returns. It would leave this timer armed for
+// the whole of the reader-drain stage, and the code would then hold two live
+// timers for one budget.
+func (t *Terminal) waitForChildSideClose(within time.Duration) childCloseOutcome {
+	timer := t.clock.NewTimer(within, terminalChildCloseTimerTag)
+	defer timer.Stop(terminalChildCloseTimerTag)
+	select {
+	case <-t.childSideClosedCh:
+		return childSideClosed
+	case <-t.readDoneCh:
+		// Already finished, by Stop's close or by the child's own EOF.
+		return readerFinishedFirst
+	case <-timer.C:
+		return childCloseGaveUp
+	}
+}
+
+// waitForReadDrainedWithin blocks until readOutput returns, after which the
+// screen buffer's cumulative offset is stable, and reports whether the reader
+// finished inside `within`.
 //
 // The limit exists for a pty this worker cannot end. The natural-exit path
 // closes the child side, and on a Unix tty that ends the reader only once the
@@ -583,11 +655,13 @@ func (t *Terminal) Wait() int {
 // for the reader itself. Measured as one budget from the exit, the flush would
 // consume the grace and it would expire before the reader was ever scheduled.
 // Stop never closes childSideClosedCh, so a caller that stopped the terminal
-// takes the direct path below -- it discards the unread output by design.
-func (t *Terminal) waitForReadDrained(within time.Duration) bool {
+// calls waitForReadDone instead -- it discards the unread output by design.
+//
+// `within` must be positive. A non-positive limit fires both timers at once on
+// the real clock and on a mock, which turns the grace into no wait at all.
+func (t *Terminal) waitForReadDrainedWithin(within time.Duration) bool {
 	if within <= 0 {
-		<-t.readDoneCh
-		return true
+		panic("terminal: waitForReadDrainedWithin needs a positive limit; use waitForReadDone")
 	}
 	// TWO waits, each with its OWN budget of `within`, because each can hang for
 	// a different reason and neither may spend the other's budget.
@@ -598,18 +672,16 @@ func (t *Terminal) waitForReadDrained(within time.Duration) bool {
 	// reader's grace and give up before the reader was ever scheduled -- on the
 	// one platform this whole path exists for. No timer at all would strand the
 	// caller there instead, which loses the exit outright.
-	closed := time.NewTimer(within)
-	defer closed.Stop()
-	select {
-	case <-t.childSideClosedCh:
-	case <-t.readDoneCh:
-		// Already finished, by Stop's close or by the child's own EOF.
+	switch t.waitForChildSideClose(within) {
+	case readerFinishedFirst:
 		return true
-	case <-closed.C:
+	case childCloseGaveUp:
 		return false
+	case childSideClosed:
+		// The reader is ending now. It gets its own budget below.
 	}
-	drained := time.NewTimer(within)
-	defer drained.Stop()
+	drained := t.clock.NewTimer(within, terminalReadDrainTimerTag)
+	defer drained.Stop(terminalReadDrainTimerTag)
 	select {
 	case <-t.readDoneCh:
 		return true
@@ -677,7 +749,7 @@ func (t *Terminal) ScreenSnapshot() ([]byte, int64) {
 // is no longer writing to t.screenBuf. Manager.RestartTerminal enforces
 // this under m.mu; external callers must do their own ordering.
 func (t *Terminal) Respawn(ctx context.Context, opts Options, outputFn OutputHandler) (*Terminal, error) {
-	return startWithScreenBuffer(ctx, opts, t.screenBuf, outputFn)
+	return startWithScreenBuffer(ctx, opts, t.clock, t.screenBuf, outputFn)
 }
 
 // ScreenSnapshotSince returns the bytes a subscriber needs to advance

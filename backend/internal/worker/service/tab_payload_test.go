@@ -168,15 +168,27 @@ func TestTabPayload_RevokeRemovesAndEmits(t *testing.T) {
 
 	// Subscribe as the owner; expect a Revoked event after revoke.
 	got := make(chan *leapmuxv1.WorkerPrivateEvent, 4)
-	subCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	subCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
+	// The snapshot callback is the SIGNAL that this subscriber is attached:
+	// SnapshotAndSubscribe registers the channel under the bus lock and calls
+	// this only afterwards, so every event published from here on lands in it.
+	// A sleep in its place is a guess at how long the goroutine needs, and a
+	// loaded machine makes the guess wrong -- the revoke then publishes to
+	// nobody and the wait below reports an event the bus never had to send.
+	subscribed := make(chan struct{})
 	go func() {
-		_ = bus.SnapshotAndSubscribe(subCtx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			got <- evt
-			return nil
-		})
+		_ = bus.SnapshotAndSubscribe(subCtx, userid.MustNew("user-1"),
+			func(userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
+				close(subscribed)
+				return nil
+			},
+			func(evt *leapmuxv1.WorkerPrivateEvent) error {
+				got <- evt
+				return nil
+			})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	<-subscribed
 
 	require.NoError(t, store.RevokeRow(ctx, "user-1", "t1"))
 
@@ -184,7 +196,7 @@ func TestTabPayload_RevokeRemovesAndEmits(t *testing.T) {
 	case evt := <-got:
 		require.NotNil(t, evt.GetTabPayloadRevoked(), "expected TabPayloadRevoked")
 		assert.Equal(t, "t1", evt.GetTabPayloadRevoked().GetTabId())
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("revoke did not produce a private event")
 	}
 
@@ -246,12 +258,19 @@ func TestTabPayload_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 	// subsequent live event. The atomicity guarantee is critical: an
 	// external Register that lands during the subscribe call must not be
 	// missed.
-	subCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	subCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	got := make(chan *leapmuxv1.WorkerPrivateEvent, 8)
+	// Closing at the TOP of the snapshot callback puts the live Register below
+	// strictly inside the subscribe call, which is the state this test is
+	// about. The sleep it replaces let the snapshot finish first on any
+	// unloaded machine, so the case never ran; on a loaded one the Register
+	// could instead beat the registration and be lost outright.
+	subscribed := make(chan struct{})
 	go func() {
 		_ = bus.SnapshotAndSubscribe(subCtx, userid.MustNew("user-1"),
 			func(owner userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
+				close(subscribed)
 				snap, err := store.SnapshotForOwner(subCtx, owner)
 				if err != nil {
 					return nil
@@ -263,7 +282,7 @@ func TestTabPayload_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 				return nil
 			})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	<-subscribed
 
 	// A live Register after subscribe should arrive after the bootstrap
 	// snapshot.
@@ -272,7 +291,7 @@ func TestTabPayload_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 	}))
 
 	collected := []*leapmuxv1.WorkerPrivateEvent{}
-	timeout := time.After(time.Second)
+	timeout := time.After(30 * time.Second)
 	for len(collected) < 2 {
 		select {
 		case evt := <-got:

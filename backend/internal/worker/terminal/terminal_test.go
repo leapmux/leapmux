@@ -8,9 +8,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
@@ -18,6 +20,143 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestManagerWithClockRejectsNil(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestNewManagerUsesRealClockByDefault(t *testing.T) {
+	t.Parallel()
+	m := NewManager()
+	require.IsType(t, quartz.NewReal(), m.clock,
+		"NewManager must wire the real clock, not a seeded mock a WithinDuration check would accept")
+}
+
+// TestStartRejectsNilClock pins the constructor guard. Start is the only route
+// to a Terminal that the drain path can reach, so refusing a nil clock here is
+// what makes "an installed terminal always has a clock" true by construction --
+// the alternative is a nil dereference inside the exit goroutine, far from the
+// call that omitted it.
+func TestStartRejectsNilClock(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		//nolint:errcheck // the panic is the assertion; Start never returns here.
+		_, _ = Start(t.Context(), Options{
+			ID:         "nil-clock",
+			Shell:      testutil.TestShell(),
+			WorkingDir: t.TempDir(),
+			Cols:       80,
+			Rows:       24,
+		}, nil, func([]byte, int64, []Signal) {})
+	})
+}
+
+// TestWaitForReadDrainedWithinRejectsANonPositiveLimit pins the other half of
+// the split. A non-positive limit fires both timers at once, on the real clock
+// and on a mock alike, so the "grace" becomes no wait at all and the caller
+// silently loses the shell's last output. waitForReadDone is the unlimited
+// wait; this method refuses to impersonate it.
+func TestWaitForReadDrainedWithinRejectsANonPositiveLimit(t *testing.T) {
+	t.Parallel()
+	for _, within := range []time.Duration{0, -time.Second} {
+		term := newDrainTestTerminal("nonpositive-limit", testutil.NewQuartzMock(t))
+		assert.Panicsf(t, func() { term.waitForReadDrainedWithin(within) },
+			"a limit of %s must be refused, not treated as an unlimited wait", within)
+	}
+}
+
+// armCountingClock is the Quartz mock plus a count of the drain timers armed on
+// it. Every other method routes to the embedded mock, so a test drives it
+// exactly as it drives a plain *quartz.Mock. It holds no time of its own, so it
+// is a decorator rather than a second fake clock.
+//
+// The count is what a trap cannot supply. A trap holds each NewTimer call until
+// the test collects it, and quartz matches the trap BEFORE it registers the
+// timer -- so an EXTRA arm parks inside the trap and registers no event, Peek
+// reports an empty clock, and every "both stages stopped their timers"
+// assertion passes on the very regression it exists to catch. arms counts the
+// call itself, before the trap sees it.
+type armCountingClock struct {
+	*quartz.Mock
+	arms sync.Map // tag -> *atomic.Int64
+}
+
+func (c *armCountingClock) NewTimer(d time.Duration, tags ...string) *quartz.Timer {
+	for _, tag := range tags {
+		counter, _ := c.arms.LoadOrStore(tag, &atomic.Int64{})
+		counter.(*atomic.Int64).Add(1)
+	}
+	return c.Mock.NewTimer(d, tags...)
+}
+
+// armCount reports how many timers carrying tag the code armed so far.
+func (c *armCountingClock) armCount(tag string) int {
+	counter, ok := c.arms.Load(tag)
+	if !ok {
+		return 0
+	}
+	return int(counter.(*atomic.Int64).Load())
+}
+
+type terminalDrainHarness struct {
+	clock      *armCountingClock
+	manager    *Manager
+	ctx        context.Context
+	childTimer *quartz.Trap
+	childStop  *quartz.Trap
+	drainTimer *quartz.Trap
+	drainStop  *quartz.Trap
+}
+
+func newTerminalDrainHarness(t *testing.T) terminalDrainHarness {
+	t.Helper()
+	clock := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	h := terminalDrainHarness{
+		clock:      clock,
+		manager:    NewManager(WithClock(clock)),
+		ctx:        testutil.DeadlineContext(t),
+		childTimer: clock.Trap().NewTimer(terminalChildCloseTimerTag),
+		childStop:  clock.Trap().TimerStop(terminalChildCloseTimerTag),
+		drainTimer: clock.Trap().NewTimer(terminalReadDrainTimerTag),
+		drainStop:  clock.Trap().TimerStop(terminalReadDrainTimerTag),
+	}
+	t.Cleanup(func() {
+		h.childTimer.Close()
+		h.childStop.Close()
+		h.drainTimer.Close()
+		h.drainStop.Close()
+	})
+	return h
+}
+
+// assertStagesArmed states BOTH halves of "the timers are accounted for": no
+// event is left on the clock, AND each stage armed exactly the number of timers
+// the code is supposed to arm. Peek alone cannot see an extra arm that is still
+// parked in a trap, so the counts are what make the negative real.
+func (h terminalDrainHarness) assertStagesArmed(t *testing.T, childArms, drainArms int, msg string) {
+	t.Helper()
+	_, running := h.clock.Peek()
+	assert.False(t, running, msg)
+	assert.Equal(t, childArms, h.clock.armCount(terminalChildCloseTimerTag),
+		"child-close stage arm count")
+	assert.Equal(t, drainArms, h.clock.armCount(terminalReadDrainTimerTag),
+		"reader-drain stage arm count")
+}
+
+// newDrainTestTerminal builds the bare Terminal the drain tests install. It
+// takes the harness clock because a Terminal built outside startWithScreenBuffer
+// skips the constructor's nil guard, and the drain path dereferences the clock.
+func newDrainTestTerminal(id string, clock quartz.Clock) *Terminal {
+	return &Terminal{
+		id:                id,
+		clock:             clock,
+		exitCh:            make(chan struct{}),
+		readDoneCh:        make(chan struct{}),
+		childSideClosedCh: make(chan struct{}),
+		screenBuf:         NewScreenBuffer(),
+	}
+}
 
 func TestTerminal_StartAndStop(t *testing.T) {
 	var mu sync.Mutex
@@ -29,7 +168,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64, _ []Signal) {
+	}, quartz.NewReal(), func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -82,7 +221,7 @@ func TestTerminal_AppImage_ScrubsEnv(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64, _ []Signal) {
+	}, quartz.NewReal(), func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		defer mu.Unlock()
 		output = append(output, data...)
@@ -146,7 +285,7 @@ func TestTerminal_Resize(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 	defer func() {
 		term.Stop()
@@ -161,7 +300,7 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 		ID:         "test-stopped",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 
 	term.Stop()
@@ -183,7 +322,7 @@ func TestTerminal_StopAfterANaturalExitIsSafe(t *testing.T) {
 		ID:         "test-natural-exit-stop",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 	t.Cleanup(term.Stop)
 
@@ -228,7 +367,7 @@ func TestTerminal_ResizeRacingANaturalExitIsSafe(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 	t.Cleanup(term.Stop)
 
@@ -276,7 +415,7 @@ func TestTerminal_IsExited(t *testing.T) {
 		ID:         "test-exited",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64, []Signal) {})
+	}, quartz.NewReal(), func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 
 	assert.False(t, term.IsExited(), "expected IsExited = false before stop")
@@ -389,41 +528,46 @@ func TestManager_ExitNotification(t *testing.T) {
 // is asserted rather than raced for. What ENDS a real reader is the subject of
 // TestManager_NaturalExitRunsTheExitHandler; this test covers only the wait.
 func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
-	m := NewManager()
+	h := newTerminalDrainHarness(t)
 	const id = "tm-exit-order"
 
 	// No PTY: only the channels installTerminal orders against.
-	term := &Terminal{
-		id:                id,
-		exitCh:            make(chan struct{}),
-		readDoneCh:        make(chan struct{}),
-		childSideClosedCh: make(chan struct{}),
-		screenBuf:         NewScreenBuffer(),
-	}
+	term := newDrainTestTerminal(id, h.clock)
 	ran := make(chan struct{})
-	m.installTerminal(id, term, func(string, int) { close(ran) },
+	h.manager.installTerminal(id, term, func(string, int) { close(ran) },
 		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
 
-	// The child is reaped and the child side of the pty is closed, in the order
-	// waitForExit performs them. The reader has not finished.
+	// waitForExit reaps the child. The handler first waits for the child side to close.
 	close(term.exitCh)
+	call := h.childTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
+	select {
+	case <-ran:
+		require.FailNow(t, "the exit handler ran before the child side closed")
+	default:
+	}
+
 	close(term.childSideClosedCh)
+	h.childStop.MustWait(h.ctx).MustRelease(h.ctx)
+	call = h.drainTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
 	select {
 	case <-ran:
 		require.Fail(t, "the exit handler ran while the reader could still write the screen it persists")
-	case <-time.After(100 * time.Millisecond):
-		// The window only limits a "has not happened yet" claim, so a slow
-		// machine can only make this case weaker, never make it fail wrongly.
-		// Without the wait the handler runs at once and this fails every run.
+	default:
 	}
 
 	close(term.readDoneCh)
+	h.drainStop.MustWait(h.ctx).MustRelease(h.ctx)
 	select {
 	case <-ran:
-	case <-time.After(10 * time.Second):
+	case <-h.ctx.Done():
 		require.Fail(t, "the exit handler never ran after the reader drained")
 	}
-	m.WaitForExit(id)
+	h.manager.WaitForExit(id)
+	h.assertStagesArmed(t, 1, 1, "both completed stages must stop their timers")
 }
 
 // TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains pins the limit
@@ -433,33 +577,34 @@ func TestInstallTerminal_ExitHandlerWaitsForTheReaderToDrain(t *testing.T) {
 // a natural exit performs, so waiting for ever would lose the exit code and the
 // screen outright. A screen one chunk short is the better answer.
 func TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains(t *testing.T) {
-	m := NewManager()
-	// A real grace would spend itself on every run of this test for nothing:
-	// the reader here is one that never drains, by construction.
-	m.readDrainGrace = 10 * time.Millisecond
+	h := newTerminalDrainHarness(t)
 	const id = "tm-exit-stuck-reader"
 
-	term := &Terminal{
-		id:                id,
-		exitCh:            make(chan struct{}),
-		readDoneCh:        make(chan struct{}),
-		childSideClosedCh: make(chan struct{}),
-		screenBuf:         NewScreenBuffer(),
-	}
+	term := newDrainTestTerminal(id, h.clock)
 	ran := make(chan struct{})
-	m.installTerminal(id, term, func(string, int) { close(ran) },
+	h.manager.installTerminal(id, term, func(string, int) { close(ran) },
 		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
 
-	// The child is reaped, the child side is closed, and the reader never
-	// finishes.
+	// waitForExit reaps the child, the child side closes, and the reader never finishes.
 	close(term.exitCh)
+	call := h.childTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
 	close(term.childSideClosedCh)
+	h.childStop.MustWait(h.ctx).MustRelease(h.ctx)
+	call = h.drainTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
+	advance := h.clock.Advance(defaultReadDrainGrace)
+	h.drainStop.MustWait(h.ctx).MustRelease(h.ctx)
+	advance.MustWait(h.ctx)
 	select {
 	case <-ran:
-	case <-time.After(10 * time.Second):
+	case <-h.ctx.Done():
 		require.Fail(t, "the exit handler never ran for a reader that never drained")
 	}
-	m.WaitForExit(id)
+	h.manager.WaitForExit(id)
+	h.assertStagesArmed(t, 1, 1, "the expired drain timer must leave no event")
 }
 
 // TestInstallTerminal_TheGraceStartsAtTheChildSideClose pins WHERE the drain
@@ -473,42 +618,93 @@ func TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains(t *testing.T
 // scheduled, losing the shell's last output on the one platform this whole path
 // exists for.
 func TestInstallTerminal_TheGraceStartsAtTheChildSideClose(t *testing.T) {
-	m := NewManager()
-	// Each phase below takes well under the grace on its own, and their SUM
-	// takes well over it -- so this passes only if the two phases hold separate
-	// budgets, and fails for one shared budget started at the exit.
-	m.readDrainGrace = 500 * time.Millisecond
-	const phase = 300 * time.Millisecond
+	h := newTerminalDrainHarness(t)
 	const id = "tm-exit-late-child-close"
 
-	term := &Terminal{
-		id:                id,
-		exitCh:            make(chan struct{}),
-		readDoneCh:        make(chan struct{}),
-		childSideClosedCh: make(chan struct{}),
-		screenBuf:         NewScreenBuffer(),
-	}
+	term := newDrainTestTerminal(id, h.clock)
 	drained := make(chan bool, 1)
-	m.installTerminal(id, term, func(string, int) { drained <- readerEnded(m, id) },
+	h.manager.installTerminal(id, term, func(string, int) { drained <- readerEnded(h.manager, id) },
 		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
 
-	// The child is reaped. The close that ends the reader takes a while --
+	// waitForExit reaps the child. The close that ends the reader takes a while --
 	// stand in for the console-host flush.
 	close(term.exitCh)
-	time.Sleep(phase)
+	call := h.childTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
+	h.clock.Advance(defaultReadDrainGrace - 1).MustWait(h.ctx)
 	close(term.childSideClosedCh)
-	// Only NOW does the reader wake, and it takes a while of its own.
-	time.Sleep(phase)
+	h.childStop.MustWait(h.ctx).MustRelease(h.ctx)
+	call = h.drainTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
+
+	// The second stage receives a full grace period from its own start.
+	h.clock.Advance(defaultReadDrainGrace - 1).MustWait(h.ctx)
+	select {
+	case <-drained:
+		require.FailNow(t, "the first stage consumed the reader-drain grace")
+	default:
+	}
 	close(term.readDoneCh)
+	h.drainStop.MustWait(h.ctx).MustRelease(h.ctx)
 
 	select {
 	case ok := <-drained:
 		assert.True(t, ok,
 			"the flush before the child-side close spent the reader's own grace; the two need separate budgets")
-	case <-time.After(10 * time.Second):
+	case <-h.ctx.Done():
 		require.Fail(t, "the exit handler never ran")
 	}
-	m.WaitForExit(id)
+	h.manager.WaitForExit(id)
+	h.assertStagesArmed(t, 1, 1, "both stage timers must stop after early completion")
+}
+
+func TestInstallTerminal_ExitHandlerGivesUpWhenChildSideNeverCloses(t *testing.T) {
+	h := newTerminalDrainHarness(t)
+	const id = "tm-exit-stuck-child-close"
+	term := newDrainTestTerminal(id, h.clock)
+	ran := make(chan struct{})
+	h.manager.installTerminal(id, term, func(string, int) { close(ran) },
+		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
+
+	close(term.exitCh)
+	call := h.childTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
+	advance := h.clock.Advance(defaultReadDrainGrace)
+	h.childStop.MustWait(h.ctx).MustRelease(h.ctx)
+	advance.MustWait(h.ctx)
+	select {
+	case <-ran:
+	case <-h.ctx.Done():
+		require.FailNow(t, "the exit handler waited past the child-close grace")
+	}
+	h.manager.WaitForExit(id)
+	h.assertStagesArmed(t, 1, 0, "the expired child-close timer must leave no event")
+}
+
+func TestInstallTerminal_EarlyReaderCompletionSkipsDrainStage(t *testing.T) {
+	h := newTerminalDrainHarness(t)
+	const id = "tm-exit-reader-already-done"
+	term := newDrainTestTerminal(id, h.clock)
+	ran := make(chan struct{})
+	h.manager.installTerminal(id, term, func(string, int) { close(ran) },
+		func(TerminalMeta) TerminalMeta { return TerminalMeta{} })
+
+	close(term.exitCh)
+	call := h.childTimer.MustWait(h.ctx)
+	assert.Equal(t, defaultReadDrainGrace, call.Duration)
+	call.MustRelease(h.ctx)
+	close(term.readDoneCh)
+	h.childStop.MustWait(h.ctx).MustRelease(h.ctx)
+	select {
+	case <-ran:
+	case <-h.ctx.Done():
+		require.FailNow(t, "the exit handler did not observe the completed reader")
+	}
+	h.manager.WaitForExit(id)
+	h.assertStagesArmed(t, 1, 0, "early reader completion must stop the child-close timer")
 }
 
 // readerEnded reports whether the terminal's read goroutine returned. It
@@ -541,20 +737,24 @@ func readerEnded(m *Manager, id string) bool {
 // is what ends it. Darwin is the one platform that hides the defect, because it
 // revokes the tty when the session leader exits.
 func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
-	m := NewManager()
-	// A LONGER grace than production's, because this test asserts that the
-	// reader drained and the production value is what decides that on a loaded
-	// runner. Shortening it would make the flake worse, and zero would remove
-	// the limit entirely, which turns `drained` into a tautology.
-	m.readDrainGrace = 30 * time.Second
+	// A Quartz mock this test NEVER advances, so neither drain stage can expire.
+	// That makes the give-up path unreachable. Reaching the exit handler at all
+	// is therefore the proof that the child-side close ended the reader. The
+	// defect this test covers now fails as the deadline below. The shell and its
+	// pty are real, so nothing else here is mocked.
+	//
+	// The production grace is 2s, and a real timer would decide this test on a
+	// loaded runner rather than on the code. That is why the test used to raise
+	// the grace by hand. TestInstallTerminal_ExitHandlerGivesUpOnAReaderThatNeverDrains
+	// asserts the exact grace each stage arms.
+	m := NewManager(WithClock(testutil.NewQuartzMock(t)))
 	const id = "tm-natural-exit"
 	const marker = "natural_exit_marker"
 	const lastMarker = "natural_exit_last_write"
 
 	type exitReport struct {
-		code    int
-		screen  []byte
-		drained bool
+		code   int
+		screen []byte
 	}
 	exited := make(chan exitReport, 1)
 	require.NoError(t, m.StartTerminal(context.Background(), Options{
@@ -568,11 +768,7 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 		// persist a natural exit performs, so what is on the screen HERE is
 		// what the tab keeps.
 		screen, _, _ := m.ScreenSnapshotSince(tid, 0)
-		// Read the drain signal HERE, not after: the handler runs either
-		// because the reader ended or because the grace expired, and only this
-		// point tells the two apart. Asserting on the handler alone would pass
-		// on the give-up path and hide the very defect this test covers.
-		exited <- exitReport{code: code, screen: screen, drained: readerEnded(m, tid)}
+		exited <- exitReport{code: code, screen: screen}
 	}))
 	t.Cleanup(func() { m.RemoveTerminal(id) })
 
@@ -605,11 +801,9 @@ func TestManager_NaturalExitRunsTheExitHandler(t *testing.T) {
 	select {
 	case got = <-exited:
 	case <-time.After(30 * time.Second):
-		require.Fail(t, "the exit handler never ran for a shell that exited on its own")
+		require.Fail(t, "the exit handler never ran for a shell that exited on its own; "+
+			"no grace can expire on this clock, so the reader never ended")
 	}
-
-	require.True(t, got.drained,
-		"the natural exit must end the reader; the handler only ran because the grace expired")
 
 	if runtime.GOOS != "windows" {
 		assert.Equal(t, 7, got.code, "the handler must carry the shell's own exit code")
@@ -980,7 +1174,7 @@ func TestTerminal_AppendOutputCannotOvertakeLiveOutput(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, endOffset int64, _ []Signal) {
+	}, quartz.NewReal(), func(data []byte, endOffset int64, _ []Signal) {
 		mu.Lock()
 		defer mu.Unlock()
 		if !bytes.Equal(data, notice) {

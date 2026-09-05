@@ -31,7 +31,8 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 	dbAgent := db.Agent{ID: "agent-1"}
 
 	// 1. Runtime ACTIVE: isRunning=true wins over everything.
-	svc.AgentStartup.begin("agent-1", func() {})
+	agentHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, agentHandle)
 	dbAgent.StartupError = "stale error"
 	status, errStr, _ := svc.deriveAgentStatus(&dbAgent, true)
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status)
@@ -45,7 +46,7 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 
 	// 3. Registry STARTUP_FAILED: fail() wins over DB column.
 	dbAgent.StartupError = "stale db error"
-	svc.AgentStartup.fail("agent-1", "registry error")
+	svc.AgentStartup.fail(agentHandle, "registry error")
 	status, errStr, _ = svc.deriveAgentStatus(&dbAgent, false)
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "registry error", errStr)
@@ -74,14 +75,15 @@ func TestDeriveTerminalStatus_AllBranches(t *testing.T) {
 	term := db.Terminal{ID: "term-1"}
 
 	// 1. Registry STARTING.
-	svc.TerminalStartup.begin("term-1", func() {})
+	terminalHandle := svc.TerminalStartup.begin("term-1", func() {})
+	require.NotNil(t, terminalHandle)
 	status, errStr, _ := svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, status)
 	assert.Empty(t, errStr)
 
 	// 2. Registry STARTUP_FAILED wins over DB column.
 	term.StartupError = "stale db error"
-	svc.TerminalStartup.fail("term-1", "registry error")
+	svc.TerminalStartup.fail(terminalHandle, "registry error")
 	status, errStr, _ = svc.deriveTerminalStatus(&term)
 	assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "registry error", errStr)
@@ -209,7 +211,7 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 
 	// Simulate worker restart: wipe the in-memory registry while the DB
 	// column remains populated.
-	svc.AgentStartup = newAgentStartupRegistry()
+	svc.AgentStartup = newAgentStartupRegistry(testutil.NewQuartzMock(t))
 
 	listW := newTestWriter()
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, listW)
@@ -282,7 +284,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 	waitForStartupFailure(t, svc, agentID)
 
 	// Simulate worker restart: wipe the in-memory registry.
-	svc.AgentStartup = newAgentStartupRegistry()
+	svc.AgentStartup = newAgentStartupRegistry(testutil.NewQuartzMock(t))
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -370,7 +372,7 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 	waitForStartupFailure(t, svc, terminalID)
 
 	// Simulate worker restart.
-	svc.TerminalStartup = newTerminalStartupRegistry()
+	svc.TerminalStartup = newTerminalStartupRegistry(testutil.NewQuartzMock(t))
 
 	listW := newTestWriter()
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{TabIds: []string{terminalID}}, listW)

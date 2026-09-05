@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -365,12 +366,16 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, d, w := setupTestService(t)
-	// A fake clock, so the assertion that the handler WAITS cannot lose to a
-	// real timer, and a regression that refuses again fails in milliseconds
+	// Quartz controls the timer, so the assertion that the handler waits cannot
+	// lose to real time. A regression that refuses again fails immediately
 	// rather than after the whole startup budget.
-	clock := newFakeStartupClock()
-	svc.AgentStartup.clock = clock
+	clock := testutil.NewQuartzMock(t)
+	svc, d, w := setupTestService(t, withClock(clock))
+	testCtx := testutil.DeadlineContext(t)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
 
 	// A start that REGISTERS in the manager, not a stub that returns success and
 	// leaves it empty: the delivery this test is about is the SendInput that
@@ -397,7 +402,9 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 		}, w)
 	}()
 
-	clock.waitArmed(t)
+	call := newTimer.MustWait(testCtx)
+	assert.Equal(t, svc.agentAPITimeout(), call.Duration)
+	call.MustRelease(testCtx)
 	select {
 	case <-sent:
 		require.FailNow(t, "the send answered while the tab's own startup was still running")
@@ -405,12 +412,13 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	}
 
 	// The open path finishes and hands over its process.
-	svc.AgentStartup.succeed("agent-1", nil)
+	svc.AgentStartup.succeed("agent-1", openHandle)
 	svc.AgentStartup.finishEntry(openHandle)
+	stopTimer.MustWait(testCtx).MustRelease(testCtx)
 
 	select {
 	case <-sent:
-	case <-time.After(10 * time.Second):
+	case <-testCtx.Done():
 		require.FailNow(t, "the send never resumed after the startup it waited for finished")
 	}
 	require.Empty(t, w.errors)

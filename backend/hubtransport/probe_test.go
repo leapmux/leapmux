@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -67,37 +68,14 @@ func TestVerdictIsCachedForTheLifeOfTheEndpoint(t *testing.T) {
 	}
 }
 
-// fakeClock is the seam undecidedCooldown is measured against. A test advances
-// it by hand, so the cooldown is exercised with no sleep and no window to race.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock() *fakeClock {
-	// A fixed instant, not time.Now(): the zero value of undecidedUntil must be
-	// strictly BEFORE it, so a prober that has never probed is not suppressed.
-	return &fakeClock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
 // newTestProber is newProber on a clock the test owns.
-func newTestProber(t *testing.T) (*prober, *fakeClock) {
+func newTestProber(t *testing.T) (*prober, *quartz.Mock) {
 	t.Helper()
-	clock := newFakeClock()
+	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	// The zero value of undecidedUntil must be before the first reading.
+	clock.Set(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
 	p := newProber("http://hub.invalid", nil)
-	p.now = clock.Now
+	p.now = func() time.Time { return clock.Now() }
 	return p, clock
 }
 

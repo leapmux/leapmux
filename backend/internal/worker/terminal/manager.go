@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -50,7 +51,7 @@ type TerminalSnapshot struct {
 // not change that.
 //
 // The value only has to cover the scheduling of a reader the kernel already
-// woke, because waitForReadDrained starts it only after the child side of the
+// woke, because waitForReadDrainedWithin starts it only after the child side of the
 // pty is closed -- the act that wakes that reader. Measured from the exit
 // instead, this grace would also have to absorb the Windows console-host
 // flush, which happens between the two.
@@ -62,26 +63,39 @@ type Manager struct {
 	terminals map[string]*Terminal     // terminalID -> Terminal
 	meta      map[string]TerminalMeta  // terminalID -> metadata
 	exitDone  map[string]chan struct{} // terminalID -> closed once the exit-handler goroutine returned
-	// readDrainGrace limits the exit goroutine's wait for the reader. A field
-	// rather than a constant so a test can drive the give-up path without
-	// spending the real grace on it. Written only at construction -- by
-	// NewManager, or by a test before it installs a terminal -- so no lock
-	// guards it.
-	//
-	// A test reaching into an unexported field, and a REAL timer deciding what
-	// a deterministic clock should: startupCore.clock does the same job the
-	// other way. See https://github.com/leapmux/leapmux/issues/437.
-	readDrainGrace time.Duration
+	// clock is the one this Manager stamps on every Terminal it spawns, which
+	// makes "an installed terminal runs on the Manager's clock" hold by
+	// construction. The exit goroutine's two drain timers are armed from it, so
+	// a test drives the give-up path on this clock and spends no real time.
+	// NewManager installs the real clock; WithClock replaces it.
+	clock quartz.Clock
+}
+
+// ManagerOption changes one NewManager setting.
+type ManagerOption func(*Manager)
+
+// WithClock sets the clock that supplies reader-drain timers.
+func WithClock(clock quartz.Clock) ManagerOption {
+	if clock == nil {
+		panic("terminal: clock must not be nil")
+	}
+	return func(m *Manager) {
+		m.clock = clock
+	}
 }
 
 // NewManager creates a new terminal Manager.
-func NewManager() *Manager {
-	return &Manager{
-		terminals:      make(map[string]*Terminal),
-		meta:           make(map[string]TerminalMeta),
-		exitDone:       make(map[string]chan struct{}),
-		readDrainGrace: defaultReadDrainGrace,
+func NewManager(opts ...ManagerOption) *Manager {
+	m := &Manager{
+		terminals: make(map[string]*Terminal),
+		meta:      make(map[string]TerminalMeta),
+		exitDone:  make(map[string]chan struct{}),
+		clock:     quartz.NewReal(),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // ExitHandler is called when a terminal process exits.
@@ -101,7 +115,7 @@ func (m *Manager) StartTerminal(ctx context.Context, opts Options, outputFn Outp
 	}
 	m.mu.Unlock()
 
-	t, err := Start(ctx, opts, outputFn)
+	t, err := Start(ctx, opts, m.clock, outputFn)
 	if err != nil {
 		return err
 	}
@@ -158,13 +172,14 @@ func (m *Manager) installTerminal(id string, t *Terminal, exitFn ExitHandler, co
 		// end it: this process holds the child side too, and on Linux a master
 		// read ends only when the last descriptor for the tty is gone. The
 		// grace covers the holders this worker cannot reach -- see
-		// Terminal.waitForReadDrained, which starts it only once that close
-		// finished. A shell that leaves no such holder behind never reaches it.
-		if !t.waitForReadDrained(m.readDrainGrace) {
+		// Terminal.waitForReadDrainedWithin, which starts it only once that
+		// close finished. A shell that leaves no such holder behind never
+		// reaches it.
+		if !t.waitForReadDrainedWithin(defaultReadDrainGrace) {
 			slog.Warn("terminal reader did not drain after the shell exited; "+
 				"persisting the screen without its last output",
 				"terminal_id", id,
-				"grace", m.readDrainGrace,
+				"grace", defaultReadDrainGrace,
 			)
 		}
 		if exitFn != nil {
@@ -278,7 +293,7 @@ func (m *Manager) RestartTerminal(
 		prev.Stop()
 		t, err = prev.Respawn(ctx, opts, outputFn)
 	} else {
-		t, err = startWithScreenBuffer(ctx, opts, NewScreenBufferWithOffset(fallbackOffset), outputFn)
+		t, err = startWithScreenBuffer(ctx, opts, m.clock, NewScreenBufferWithOffset(fallbackOffset), outputFn)
 	}
 	if err != nil {
 		return err
@@ -369,11 +384,11 @@ func (m *Manager) IsExited(terminalID string) bool {
 }
 
 // WaitForReadDrained blocks until the terminal's read goroutine drained (see
-// Terminal.waitForReadDrained). Returns false if the terminal is unknown.
+// Terminal.waitForReadDone). Returns false if the terminal is unknown.
 //
 // It waits with NO limit, which is why it is a test-only entry point: every
 // caller of it stops the terminal first, so the reader is already ending.
-// Production waits through installTerminal, which passes the manager's grace.
+// Production waits through installTerminal, which passes defaultReadDrainGrace.
 func (m *Manager) WaitForReadDrained(terminalID string) bool {
 	m.mu.RLock()
 	t, ok := m.terminals[terminalID]
@@ -382,7 +397,7 @@ func (m *Manager) WaitForReadDrained(terminalID string) bool {
 	if !ok {
 		return false
 	}
-	t.waitForReadDrained(0)
+	t.waitForReadDone()
 	return true
 }
 
