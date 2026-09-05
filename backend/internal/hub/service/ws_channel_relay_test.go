@@ -43,7 +43,7 @@ func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 // insecureCookies is the secure-cookie answer these relay tests run
 // under: plain HTTP test servers, where the __Host- cookie name would be
 // wrong.
-func insecureCookies() bool { return false }
+func insecureCookies(context.Context) bool { return false }
 
 func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 	t.Parallel()

@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"fmt"
 	"net/mail"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/listenset"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
@@ -799,6 +801,42 @@ func BaseURL(s *Snapshot, listen string) string {
 	}
 	scheme := "http"
 	if KeySecureCookies.Of(s) {
+		scheme = "https"
+	}
+	return scheme + "://" + browserHostForListen(listen)
+}
+
+// SecureCookiesFor reports the effective secure-cookie policy for ONE request.
+//
+// It is the configured key, OR the protocol a trusted reverse proxy verified
+// for this request. The setting stays the operator's control; the verified
+// protocol only ever turns the policy ON, and never off.
+//
+// The one-way direction is what makes this safe to derive per request. A
+// `__Host-` cookie is readable whatever the setting says, because
+// SessionIDFromCookieHeader tries the secure name first and unconditionally;
+// only the plain name depends on the key. So a session minted through the
+// proxy stays readable, and a hub reachable both ways cannot strand one.
+//
+// It exists because the hub terminates no TLS itself. Before this, an operator
+// who put a solo hub behind a TLS proxy had to KNOW to set `secure_cookies`
+// by hand, and a hub that answered every request over verified HTTPS still
+// wrote a cookie with no Secure attribute until they did. The proxy already
+// told the hub the answer; this reads it.
+func SecureCookiesFor(ctx context.Context, s *Snapshot) bool {
+	return KeySecureCookies.Of(s) || peer.IsHTTPS(ctx)
+}
+
+// BaseURLFor is BaseURL with the same per-request protocol rule.
+//
+// public_url still wins whenever it is set, so an operator who stated the
+// address the browser really uses keeps that answer.
+func BaseURLFor(ctx context.Context, s *Snapshot, listen string) string {
+	if u := KeyPublicURL.Of(s); u != "" {
+		return u
+	}
+	scheme := "http"
+	if SecureCookiesFor(ctx, s) {
 		scheme = "https"
 	}
 	return scheme + "://" + browserHostForListen(listen)

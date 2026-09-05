@@ -77,8 +77,8 @@ export const AuthGuard: ParentComponent = (props) => {
 
     // Before the authenticated branch, and before the redirect below. This
     // caller holds no session, so the redirect would send it to a login form
-    // that no password can satisfy; and a caller that DID sign in never
-    // reaches this state, because a stored password ends it.
+    // that no password can satisfy. A caller that DID sign in never reaches
+    // this state, because a stored password ends it.
     if (isPasswordSetupGate())
       return { kind: 'password-setup' }
 

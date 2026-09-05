@@ -422,6 +422,27 @@ describe('authContext', () => {
     expect(auth().elevationExpiresAt()).toBeUndefined()
   })
 
+  // The one reply that GRANTS an elevation in the same transaction that creates
+  // the session: SetInitialSoloPassword. Passing the deadline keeps the client
+  // state derived from the answer that created it, rather than from a following
+  // refresh whose failure is swallowed -- which would prompt the operator for
+  // the password they chose a moment earlier.
+  it('keeps an elevation the same reply granted', async () => {
+    const inherited = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
+    const granted = timestampFromDate(new Date(Date.now() + 30 * 60 * 1000))
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+      elevationExpiresAt: inherited,
+    })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+
+    auth().setAuth({ id: 'solo', username: 'solo', isAdmin: true } as unknown as User, granted)
+
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('solo'))
+    expect(auth().elevationExpiresAt()).toBe(granted)
+  })
+
   // One adoption site, so a refresh cannot leave one signal stale while
   // another moves. The verification cooldown was the one that drifted:
   // refreshUser dropped it, and /verify-email then counted from zero against

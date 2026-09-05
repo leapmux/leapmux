@@ -7,6 +7,9 @@ import { PasswordSetupGate } from './PasswordSetupGate'
 const mockSetInitialSoloPassword = vi.fn()
 const mockRefreshUser = vi.fn()
 const mockSetAuth = vi.fn()
+// A stand-in for the protobuf Timestamp the hub returns; the gate only passes
+// it through, so its shape does not matter here.
+const soloElevation = { seconds: 1700000000n, nanos: 0 }
 
 vi.mock('~/api/clients', () => ({
   authClient: { setInitialSoloPassword: (...args: unknown[]) => mockSetInitialSoloPassword(...args) },
@@ -30,7 +33,10 @@ function fillPassword(pw = 'correct-horse-battery-staple') {
 describe('passwordSetupGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockSetInitialSoloPassword.mockResolvedValue({ user: { id: 'solo-id', username: 'solo' } })
+    mockSetInitialSoloPassword.mockResolvedValue({
+      user: { id: 'solo-id', username: 'solo' },
+      elevationExpiresAt: soloElevation,
+    })
     // Restated, not merely cleared: `clearAllMocks` forgets the CALLS and
     // keeps the implementation, so one test's `mockRejectedValue` would
     // otherwise reject in every test after it.
@@ -68,7 +74,11 @@ describe('passwordSetupGate', () => {
 
     await vi.waitFor(() => {
       expect(mockSetInitialSoloPassword).toHaveBeenCalledWith({ password: 'correct-horse-battery-staple' })
-      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'solo-id', username: 'solo' })
+      // The elevation the SAME reply granted travels with the user, so the
+      // client's elevation state never depends on the follow-up refresh. That
+      // refresh swallows its own failure, so recovering the window from it
+      // would prompt the operator for the password they just chose.
+      expect(mockSetAuth).toHaveBeenCalledWith({ id: 'solo-id', username: 'solo' }, soloElevation)
       // FORCED, because the gate reads exactly this snapshot: without it the
       // screen stays up over a hub that no longer needs it.
       expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)

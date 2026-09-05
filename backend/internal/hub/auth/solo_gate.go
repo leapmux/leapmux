@@ -61,11 +61,10 @@ type SoloGate struct {
 	//
 	// While it is false, GetSystemInfo reads the store for each request, and
 	// SetInitialSoloPassword is the path that ends that state. The read is one
-	// indexed read of a table with one row, in the process that owns the
-	// database, and it is what makes a password set through any other path arm
-	// the rule on the very next request. A caller that needs the answer
-	// SEVERAL times in one request reads it once and passes it down;
-	// GetSystemInfo does.
+	// indexed read of a table with one row. It runs in the process that owns
+	// the database. Thus a password set through any other path arms the rule on
+	// the very next request. A caller that needs the answer SEVERAL times in
+	// one request reads it once and passes it down; GetSystemInfo does.
 	passwordSet atomic.Bool
 }
 
@@ -80,13 +79,26 @@ func NewSoloGate(solo bool, st store.Store) *SoloGate {
 	return &SoloGate{solo: solo, store: st}
 }
 
+// SoloMode reports whether this hub runs in solo mode.
+//
+// It exists so no caller has to spell `cfg.SoloMode` beside a gate answer.
+// That is the whole reason the mode lives on this type: a second spelling of
+// the rule is a second thing to keep in step, and GetSystemInfo is where the
+// two drifted apart before.
+func (g *SoloGate) SoloMode() bool {
+	return g != nil && g.solo
+}
+
 // CredentialFree reports whether the request arrived through local IPC on a
 // solo hub. The password state does not affect this decision.
+//
+// A NIL gate counts as solo, because a nil gate is a test that wired none and
+// the local IPC marker is then the whole rule. PasswordSet answers false for
+// the same nil gate, which is the opposite polarity and deliberate: an absent
+// gate can admit the socket it can see, but it must never claim a password it
+// cannot read.
 func (g *SoloGate) CredentialFree(ctx context.Context) bool {
-	if g == nil {
-		return peer.IsLocalIPC(ctx)
-	}
-	if !g.solo {
+	if g != nil && !g.solo {
 		return false
 	}
 	return peer.IsLocalIPC(ctx)

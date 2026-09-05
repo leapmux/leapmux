@@ -104,6 +104,17 @@ message SetInitialSoloPasswordRequest {
 
 message SetInitialSoloPasswordResponse {
   User user = 1;
+  // When the elevation this call granted lapses.
+  //
+  // The transaction that stores the password also creates the session AND
+  // elevates it, so this caller is elevated the moment it reads the reply. The
+  // deadline travels WITH that reply because the client's elevation state must
+  // derive from the answer that created it. Recovering it from a following
+  // GetCurrentUser makes the one-transaction design depend on a second round
+  // trip: a client that adopts this user clears its elevation mirror, and a
+  // transient failure on that second call then prompts the operator for the
+  // password they typed a moment earlier.
+  google.protobuf.Timestamp elevation_expires_at = 2;
 }
 
 message LogoutRequest {}

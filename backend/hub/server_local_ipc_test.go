@@ -83,8 +83,15 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	assert.Equal(t, usernames.Solo, response.Msg.GetUser().GetUsername())
 
 	setCookie := response.Header().Get("Set-Cookie")
-	assert.NotContains(t, setCookie, "; Secure",
-		"forwarded HTTPS must not change the explicit secure_cookies setting")
+	// The trusted proxy verified HTTPS for this request, so the cookie is
+	// Secure and takes the __Host- name without anybody setting
+	// `secure_cookies`. The hub terminates no TLS itself, so the proxy's
+	// answer is the only way it can know -- and an operator who had to set the
+	// key by hand got a cookie with no Secure attribute until they did.
+	assert.Contains(t, setCookie, "; Secure",
+		"a trusted proxy that verified HTTPS turns the cookie policy on")
+	assert.Contains(t, setCookie, "__Host-",
+		"the secure policy also selects the __Host- prefixed name")
 	cookieResponse := &http.Response{Header: http.Header{"Set-Cookie": []string{setCookie}}}
 	cookies := cookieResponse.Cookies()
 	require.Len(t, cookies, 1)

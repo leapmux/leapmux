@@ -90,7 +90,17 @@ export interface AuthState {
   loginWithPasskey: (username: string, captcha?: CaptchaRequestFields) => Promise<AuthLoginResult>
   setVerificationResendAvailableAt: (at?: Timestamp) => void
   logout: () => Promise<void>
-  setAuth: (user: User) => void
+  /**
+   * Adopt a NEW identity. Clears the elevation, because a window proven by the
+   * previous identity must not survive the transition.
+   *
+   * `elevation` is for the one reply that GRANTS an elevation in the same
+   * transaction that creates the session: `SetInitialSoloPassword`. Passing it
+   * keeps the client's elevation state derived from the answer that created
+   * it, instead of from a following refresh whose failure would prompt the
+   * operator for the password they just chose.
+   */
+  setAuth: (user: User, elevation?: Timestamp) => void
   /**
    * Adopt a user the hub returned for the SESSION THAT IS ALREADY SIGNED IN.
    *
@@ -574,11 +584,17 @@ export const AuthProvider: ParentComponent = (props) => {
     }
   }
 
-  const setAuth = (u: User) => {
+  const setAuth = (u: User, elevation?: Timestamp) => {
     // The same identity transition runSignIn makes: /auth/idp/complete-signup
     // and the verify-email page both land a NEW user in a document that may
     // still hold the previous one's elevation.
     adoptSignedInUser(u)
+    // AFTER the adopt, which cleared it. The only caller that passes one is the
+    // reply that granted the elevation inside the same transaction as the
+    // session, so this restores a window this document owns rather than one it
+    // inherited.
+    if (elevation)
+      setElevationExpiresAt(elevation)
     setLoading(false)
   }
 

@@ -135,7 +135,7 @@ export function isAutoAuthenticated(): boolean {
  *
  * `AuthGuard` renders the setup screen from it, and `AuthContext` declines to
  * boot the shell for it. ONE predicate serves both, because both ask the same
- * question — the two booleans this enum replaced could disagree, and a second
+ * question. The two booleans this enum replaced could disagree, and a second
  * spelling of one state is how they did.
  */
 export function isPasswordSetupGate(): boolean {

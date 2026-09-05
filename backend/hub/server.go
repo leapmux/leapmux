@@ -454,8 +454,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// The auth policy (cookie name, verification gate, session
 		// duration) is DB-backed and hot: re-resolved per use so an admin
 		// change applies to the next request.
-		Policy: func() auth.Policy {
-			return auth.PolicyFromSettings(setMgr.Snapshot(context.Background()))
+		Policy: func(ctx context.Context) auth.Policy {
+			return auth.PolicyFromSettings(ctx, setMgr.Snapshot(ctx))
 		},
 	})
 	acquired.authContexts = authContexts
@@ -611,8 +611,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// The cookie-name policy resolves per connection, so a secure_cookies
 	// change applies to the next socket (existing sockets keep the name
 	// they authenticated under).
-	secureCookies := func() bool {
-		return settings.KeySecureCookies.Of(setMgr.Snapshot(context.Background()))
+	secureCookies := func(ctx context.Context) bool {
+		return settings.SecureCookiesFor(ctx, setMgr.Snapshot(ctx))
 	}
 	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, secureCookies, relayQueuePool).
 		WithTokenValidator(tokenValidator).
@@ -818,7 +818,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// and Referrer-Policy protect every response, and the hub renders HTML
 		// outside the frontend handler (the device-code and PKCE callback
 		// pages), which deserve the same treatment as the app document.
-		Handler: requestsource.Middleware(setMgr,
+		Handler: requestsource.Middleware(requestsource.RangesFromSettings(setMgr),
 			logging.HTTPMiddleware(metrics.HTTPMiddleware(httpsec.Middleware(csp, mux)))),
 		// Limits reading request HEADERS on HTTP/1.1 connections (the
 		// slowloris guard). It must NOT govern h2c connections, whose streams
@@ -846,9 +846,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			}
 			return handlerCtx
 		},
-		// The peer address, for the address-keyed budgets that guard the
-		// unauthenticated endpoints. ConnContext derives from BaseContext, so
-		// a local IPC connection carries both marks.
+		// The UNCHANGED address of the accepted connection. It is the fallback
+		// key for the address-keyed budgets that guard the unauthenticated
+		// endpoints: the request-source middleware prefers the verified client
+		// IP, and this is what the budget uses when no header could name one.
+		// No header can set it, so a caller cannot move itself between
+		// budgets. ConnContext derives from BaseContext, so a local IPC
+		// connection carries this mark and the local-IPC one.
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			return peer.WithTransportAddr(ctx, c.RemoteAddr())
 		},

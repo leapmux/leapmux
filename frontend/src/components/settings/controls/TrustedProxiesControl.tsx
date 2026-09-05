@@ -1,7 +1,7 @@
 import type { CustomEditorComponent } from '../types'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import X from 'lucide-solid/icons/x'
-import { createEffect, For, Show, untrack } from 'solid-js'
+import { createEffect, createSignal, For, Show, untrack } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Alert } from '~/components/common/Alert'
@@ -19,6 +19,10 @@ interface SelectorRow {
 
 let nextSelectorRowID = 1
 
+// The address forms are spelled out; the PROVIDER tokens come from the
+// generated catalogue, which is the same list the Add menu renders. Repeating
+// them here let a new contract entry appear in the menu and be missing from
+// the examples four lines below it.
 const selectorExamples = [
   '192.0.2.10',
   '2001:db8::10',
@@ -27,9 +31,8 @@ const selectorExamples = [
   '2001:db8::1-2001:db8::ffff',
   '192.168.0.0/24',
   '2001:db8::/64',
-  'cloudflare',
-  'cloudfront',
-] as const
+  ...TRUSTED_PROXY_PROVIDERS.map(provider => provider.token),
+]
 
 function row(value: string): SelectorRow {
   return { id: nextSelectorRowID++, value }
@@ -38,7 +41,7 @@ function row(value: string): SelectorRow {
 /** Edits the trusted reverse-proxy selector list as one staged value. */
 export const TrustedProxiesControl: CustomEditorComponent = (props) => {
   const [state, setState] = createStore<{ rows: SelectorRow[] }>({ rows: [] })
-  const [dirty, setDirty] = createStore({ value: false })
+  const [dirty, setDirty] = createSignal(false)
   const action = createAccountAction()
 
   const storedSelectors = (): string[] => {
@@ -48,7 +51,7 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
 
   createEffect(() => {
     const stored = storedSelectors()
-    if (!untrack(() => dirty.value))
+    if (!untrack(dirty))
       setState('rows', stored.map(row))
   })
 
@@ -60,35 +63,35 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
   const add = (value: string) => {
     if (!canAdd())
       return
-    setDirty('value', true)
+    setDirty(true)
     setState('rows', state.rows.length, row(value))
   }
 
   const update = (id: number, value: string) => {
-    setDirty('value', true)
+    setDirty(true)
     setState('rows', item => item.id === id, 'value', value)
   }
 
   const remove = (id: number) => {
-    setDirty('value', true)
+    setDirty(true)
     setState('rows', items => items.filter(item => item.id !== id))
   }
 
   const cancel = () => {
-    setDirty('value', false)
+    setDirty(false)
     setState('rows', storedSelectors().map(row))
     action.clear()
   }
 
   const apply = async () => {
-    if (!dirty.value || action.running())
+    if (!dirty() || action.running())
       return
     await action.run({
       fallback: 'Failed to update trusted reverse proxies',
       work: async () => {
         await props.binding.set(state.rows.map(item => item.value))
         setState('rows', storedSelectors().map(row))
-        setDirty('value', false)
+        setDirty(false)
         return 'Trusted reverse proxies updated.'
       },
     })
@@ -160,7 +163,7 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
             * An ACTION, so a plain menuitem: it stages a blank row every time
             * it is chosen. The provider entries below are checkable because
             * each one is either configured or not, and the menu reports that
-            * state -- a checkbox that never checks would announce a state this
+            * state. A checkbox that never checks would announce a state this
             * item does not have.
             */}
           <button type="button" role="menuitem" onClick={() => add('')}>
@@ -187,7 +190,7 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
       <StatusLine message={action.message()} />
       <div class={actionsFooter}>
         <button type="button" class="outline" disabled={action.running()} onClick={cancel}>Cancel</button>
-        <button type="button" disabled={!dirty.value || action.running()} onClick={() => void apply()}>
+        <button type="button" disabled={!dirty() || action.running()} onClick={() => void apply()}>
           {action.running() ? 'Applying...' : 'Apply'}
         </button>
       </div>

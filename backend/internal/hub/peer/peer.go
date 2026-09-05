@@ -2,11 +2,17 @@
 // answer two questions the request body cannot: did this arrive on the hub's
 // local IPC listener, and what address is it from?
 //
-// Both marks are placed once, by the http.Server, and every consumer reads
-// them from the context. That is what lets the ConnectRPC interceptor and the
-// WebSocket authenticator answer alike: a Connect handler holds a context and
-// a WebSocket handler holds an *http.Request whose context descends from the
-// same connection.
+// The package holds FOUR marks, and they have two writers. The http.Server
+// places the local-IPC mark and the transport address, one per listener and
+// one per connection. The request-source middleware places the verified client
+// IP and the verified protocol, per request, because both answers need the
+// forwarding headers and the trusted-proxy setting, which the server knows
+// nothing about.
+//
+// Every consumer reads them from the context. That is what lets the ConnectRPC
+// interceptor and the WebSocket authenticator answer alike: a Connect handler
+// holds a context and a WebSocket handler holds an *http.Request whose context
+// descends from the same connection.
 //
 // THE POLARITY IS DELIBERATE. An unmarked context reports "not local IPC" and
 // an empty address. Every mark is added by production wiring that a test can
@@ -26,6 +32,8 @@ type localIPCKey struct{}
 type transportAddrKey struct{}
 
 type clientIPKey struct{}
+
+type httpsKey struct{}
 
 // WithLocalIPC marks the context as belonging to the local IPC listener --
 // the unix domain socket on Unix, the named pipe on Windows.
@@ -64,9 +72,17 @@ func TransportAddr(ctx context.Context) (net.Addr, bool) {
 
 // WithClientIP records the verified client IP. Invalid values become an
 // unknown client instead of entering request identity state.
+//
+// A ZONE is kept, and only the transport peer can supply one. Every
+// header-derived address is refused a zone by the parser that reads it, so a
+// zoned value here came from the accepted connection, where the zone is part
+// of the identity: two link-local peers on different interfaces carry the same
+// address, and dropping the zone would merge them. Refusing the whole address
+// instead put every link-local client into the shared unknown budget and wrote
+// an empty address on their session rows.
 func WithClientIP(ctx context.Context, value string) context.Context {
 	addr, err := netip.ParseAddr(value)
-	if err != nil || addr.Zone() != "" || addr.IsUnspecified() {
+	if err != nil || addr.IsUnspecified() {
 		return context.WithValue(ctx, clientIPKey{}, "")
 	}
 	return context.WithValue(ctx, clientIPKey{}, addr.Unmap().String())
@@ -76,5 +92,26 @@ func WithClientIP(ctx context.Context, value string) context.Context {
 // source could not identify one.
 func ClientIP(ctx context.Context) string {
 	value, _ := ctx.Value(clientIPKey{}).(string)
+	return value
+}
+
+// WithHTTPS records that the request reached the hub over TLS.
+//
+// The hub terminates no TLS itself, so the only way this is true is a trusted
+// reverse proxy that terminated it and said so. The request-source middleware
+// is the one writer, and it sets this only after the transport peer passed the
+// trust test -- a caller-controlled header can never reach it.
+//
+// The POLARITY matches the rest of this package: an unmarked context reports
+// plain HTTP. A missed mark then costs a cookie its Secure attribute, which is
+// the direction that fails safe against a mark the wiring forgot.
+func WithHTTPS(ctx context.Context, https bool) context.Context {
+	return context.WithValue(ctx, httpsKey{}, https)
+}
+
+// IsHTTPS reports whether a trusted proxy verified that this request reached
+// the hub over TLS.
+func IsHTTPS(ctx context.Context) bool {
+	value, _ := ctx.Value(httpsKey{}).(bool)
 	return value
 }

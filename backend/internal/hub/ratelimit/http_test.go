@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -99,14 +100,59 @@ func TestAllowHTTPWindowActuallyResets(t *testing.T) {
 		"one window later the budget starts over")
 }
 
-// The verified value is already a canonical IP without a port.
-func TestClientAddressKeyUsesVerifiedClientIP(t *testing.T) {
+// The verified value is already a canonical IP without a port, and it is the
+// PREFERRED key: a request that carries one never falls back.
+func TestAnonymousBudgetKeyUsesVerifiedClientIP(t *testing.T) {
 	for clientIP, want := range map[string]string{
 		"203.0.113.7": "anonymous:203.0.113.7",
 		"2001:db8::1": "anonymous:2001:db8::1",
-		"":            "anonymous:unknown",
 	} {
 		req := requestWithClientIP(http.MethodPost, "/oauth/token", clientIP)
-		assert.Equalf(t, want, clientAddressKey(req), "client IP %q", clientIP)
+		assert.Equalf(t, want, anonymousBudgetKey(req.Context()), "client IP %q", clientIP)
 	}
+}
+
+// The FALLBACK, and the property that makes the shared bucket safe: when the
+// middleware could name no client, the budget keys on the address the kernel
+// accepted the connection from. Without it every request the middleware
+// refuses to name shares ONE bucket with the local IPC socket, so a remote
+// caller could spend the desktop app's window.
+func TestAnonymousBudgetKeyFallsBackToTheTransportPeer(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		addr net.Addr
+		want string
+	}{
+		{"an IPv4 peer", &net.TCPAddr{IP: net.ParseIP("198.51.100.9"), Port: 51234}, "anonymous:198.51.100.9"},
+		{"an IPv6 peer", &net.TCPAddr{IP: net.ParseIP("2001:db8::9"), Port: 51234}, "anonymous:2001:db8::9"},
+		// The zone stays: two link-local peers on different interfaces are
+		// different callers and must not share one budget.
+		{"a link-local peer", &net.TCPAddr{IP: net.ParseIP("fe80::1"), Zone: "en0", Port: 51234}, "anonymous:fe80::1%en0"},
+		// The local IPC socket carries no address, so it stays in the shared
+		// bucket, which is the population that bucket was always for.
+		{"a unix socket", &net.UnixAddr{Net: "unix"}, "anonymous:unknown"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := peer.WithClientIP(peer.WithTransportAddr(context.Background(), test.addr), "")
+			assert.Equal(t, test.want, anonymousBudgetKey(ctx))
+		})
+	}
+}
+
+// A request with NEITHER mark shares the unknown bucket. A test transport is
+// the reachable case.
+func TestAnonymousBudgetKeyWithNoMarksIsUnknown(t *testing.T) {
+	assert.Equal(t, "anonymous:unknown", anonymousBudgetKey(context.Background()))
+}
+
+// The fallback must not be reachable from a header. A caller that could move
+// itself between budgets would defeat both of them.
+func TestAnonymousBudgetKeyIgnoresHeaders(t *testing.T) {
+	addr := &net.TCPAddr{IP: net.ParseIP("198.51.100.9"), Port: 51234}
+	ctx := peer.WithClientIP(peer.WithTransportAddr(context.Background(), addr), "")
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", nil).WithContext(ctx)
+	req.Header.Set("X-Forwarded-For", "10.0.0.1")
+	req.Header.Set("Forwarded", "for=10.0.0.2")
+	assert.Equal(t, "anonymous:198.51.100.9", anonymousBudgetKey(req.Context()),
+		"a forwarding header must not reach the fallback key")
 }

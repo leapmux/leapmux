@@ -2,7 +2,7 @@ import type { SettingBinding } from '../types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MAX_TRUSTED_PROXY_SELECTORS } from '~/generated/contracts/trusted-proxies'
+import { MAX_TRUSTED_PROXY_SELECTORS, TRUSTED_PROXY_PROVIDERS } from '~/generated/contracts/trusted-proxies'
 import { TrustedProxiesControl } from './TrustedProxiesControl'
 
 function binding(initial: string[], write = vi.fn()) {
@@ -40,8 +40,14 @@ describe('trustedProxiesControl', () => {
     vi.clearAllMocks()
   })
 
+  // The address forms are LITERAL here on purpose: they are what the parser
+  // accepts, and restating them is how this test would catch a form dropped
+  // from the list. The provider tokens are DERIVED, because they and the Add
+  // menu are two renderings of one generated catalogue -- listing them twice
+  // is how a new contract entry reaches the menu and misses the examples.
   it('shows every supported manual example and provider token', () => {
     render(() => <TrustedProxiesControl binding={binding([]).model} />)
+    expect(TRUSTED_PROXY_PROVIDERS.length).toBeGreaterThan(0)
     for (const example of [
       '192.0.2.10',
       '2001:db8::10',
@@ -50,8 +56,7 @@ describe('trustedProxiesControl', () => {
       '2001:db8::1-2001:db8::ffff',
       '192.168.0.0/24',
       '2001:db8::/64',
-      'cloudflare',
-      'cloudfront',
+      ...TRUSTED_PROXY_PROVIDERS.map(provider => provider.token),
     ]) {
       expect(screen.getByText(example)).toBeInTheDocument()
     }

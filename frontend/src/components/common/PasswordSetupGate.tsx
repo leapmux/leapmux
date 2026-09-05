@@ -50,7 +50,12 @@ export const PasswordSetupGate: Component = () => {
       const response = await authClient.setInitialSoloPassword({ password: password() })
       if (!response.user)
         throw new Error('The hub returned no solo user')
-      auth.setAuth(response.user)
+      // The elevation travels WITH the reply. The transaction that stored the
+      // password created this session and elevated it, so the deadline is
+      // known here and needs no second round trip. `setAuth` clears the
+      // elevation on its own, which is right for every other caller and wrong
+      // for this one.
+      auth.setAuth(response.user, response.elevationExpiresAt)
     }
     catch (e) {
       setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to set the password') })

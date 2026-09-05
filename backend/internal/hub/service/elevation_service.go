@@ -861,28 +861,30 @@ func requireElevatableSession(userInfo *auth.UserInfo) (string, error) {
 // an RPC answers Unauthenticated, the OAuth leg answers 401.
 var errElevationSessionEnded = errors.New("your session ended; sign in again")
 
-// grantSessionElevation stamps a fresh window on one session and reports the
-// new deadline. It is the ONE place that grants an elevation, because three
-// factor paths grant one -- a password, a passkey, and the OAuth
-// re-authentication leg -- and the third lives in an HTTP handler rather
-// than an RPC. A change to the window, to the zero-row refusal, or to the
-// cache invalidation must reach all three by construction.
+// elevateSessionRow stamps a fresh window on one session and reports the new
+// deadline. It is the ONE place that writes an elevation, so the window, the
+// parameter set and the zero-row refusal cannot drift between the callers.
 //
 // The write requires a live session, so a zero row count means the session
 // expired or a revoke ended it between the factor check and here. This
 // function reports that as a refusal rather than a silent success: the
 // caller would otherwise read that it may proceed while nothing was recorded.
+// It returns a BARE error, and each caller supplies the message its own state
+// deserves -- "your session ended" is right after a factor check and wrong
+// inside a transaction that created the session two statements earlier.
+//
+// It takes a store rather than a *Server so a caller inside a transaction can
+// pass its tx, which is what keeps the solo first-password write atomic.
 //
 // now is a parameter so each caller passes its own clock seam, rather than
-// this function inventing a fourth notion of the current instant.
-func grantSessionElevation(
+// this function inventing another notion of the current instant.
+func elevateSessionRow(
 	ctx context.Context,
 	st store.Store,
-	lifecycle *auth.CredentialLifecycleEffects,
 	sessionID string,
 	userID userid.UserID,
 	now time.Time,
-) (time.Time, error) {
+) (time.Time, bool, error) {
 	until := now.Add(auth.ElevationWindow)
 	n, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
 		SessionID:          sessionID,
@@ -891,9 +893,36 @@ func grantSessionElevation(
 		ElevationExpiresAt: until,
 	}, now)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("record session elevation: %w", err)
+		return time.Time{}, false, fmt.Errorf("record session elevation: %w", err)
 	}
-	if n == 0 {
+	return until, n > 0, nil
+}
+
+// grantSessionElevation elevates one session and drops the cached UserInfo.
+//
+// It is the path every FACTOR takes -- a password, a passkey, and the OAuth
+// re-authentication leg, the third of which lives in an HTTP handler rather
+// than an RPC -- so a change to the invalidation lane reaches all of them.
+//
+// AuthService.SetInitialSoloPassword does not use it, and cannot: that write
+// runs inside a transaction, and the invalidation below must not fire before
+// the transaction commits, or a concurrent reader refills the cache from the
+// pre-commit row. It calls elevateSessionRow directly and invalidates after
+// the commit. Both spellings share the row write, which is where the rule
+// lives.
+func grantSessionElevation(
+	ctx context.Context,
+	st store.Store,
+	lifecycle *auth.CredentialLifecycleEffects,
+	sessionID string,
+	userID userid.UserID,
+	now time.Time,
+) (time.Time, error) {
+	until, live, err := elevateSessionRow(ctx, st, sessionID, userID, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !live {
 		return time.Time{}, errElevationSessionEnded
 	}
 	// The cached UserInfo still carries the OLD deadline, and this process

@@ -34,7 +34,7 @@ import (
 // its registry. Pinning either of those here would make this test fail for a
 // reason that has nothing to do with the grant.
 //
-// A test whose caller carries NO credential names 401 as well, because there
+// A test whose caller carries NO credential gives 401 as well, because there
 // "not 403" is what an unauthenticated answer gives: the request would never
 // reach the scope rung, and the test would report a pass for a door it never
 // opened.
@@ -87,7 +87,7 @@ func newWSScopeEnv(t *testing.T, soloUser *auth.UserInfo) wsScopeEnv {
 // hub" and refuses every caller. A solo test built on that gate reached no
 // solo rung at all: an absent credential answered 401, which satisfied an
 // assertion written as "not the 403 refusal", so the test passed without the
-// behavior it names.
+// behavior it specifies.
 func wsScopeAuthContexts(t *testing.T, st store.Store, soloUser *auth.UserInfo) *auth.AuthContextRegistry {
 	t.Helper()
 	if soloUser == nil {
@@ -119,16 +119,16 @@ func unreachableCRDTRegistry() *crdt.Registry {
 // the tests that assert the refusal.
 func serveWithBearer(t *testing.T, handler http.Handler, path, bearer string) int {
 	t.Helper()
-	return serveWS(t, handler, path, bearer, peer.WithLocalIPC(context.Background()))
+	return serveWS(peer.WithLocalIPC(context.Background()), t, handler, path, bearer)
 }
 
 // serveOverTCP is the same request on a TCP connection.
 func serveOverTCP(t *testing.T, handler http.Handler, path, bearer string) int {
 	t.Helper()
-	return serveWS(t, handler, path, bearer, context.Background())
+	return serveWS(context.Background(), t, handler, path, bearer)
 }
 
-func serveWS(t *testing.T, handler http.Handler, path, bearer string, ctx context.Context) int {
+func serveWS(ctx context.Context, t *testing.T, handler http.Handler, path, bearer string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 	if bearer != "" {
@@ -222,7 +222,7 @@ func TestUnscopedCredentialPassesTheWebSocketScopeRung(t *testing.T) {
 		// 401 too, and this is the assertion that makes the test real. The
 		// admission is asserted as "not the refusal" because what an admitted
 		// request does next is the endpoint's business -- but an
-		// UNAUTHENTICATED answer is also "not 403", so a test that named only
+		// UNAUTHENTICATED answer is also "not 403", so a test that checked only
 		// the 403 passed without ever reaching the scope rung.
 		assert.NotEqualf(t, http.StatusUnauthorized, status,
 			"%s must admit the solo caller before the scope rung answers", door.name)

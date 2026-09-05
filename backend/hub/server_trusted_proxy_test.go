@@ -20,7 +20,13 @@ func TestServer_AppliesTrustedProxyIdentityOutsideTheHandlerStack(t *testing.T) 
 	base := "127.0.0.1:" + strconv.Itoa(freePorts(t, 1)[0])
 	frontend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Test-Client-IP", peer.ClientIP(r.Context()))
-		w.Header().Set("X-Test-Scheme", r.URL.Scheme)
+		// The CONTEXT, not r.URL.Scheme: the middleware records the verified
+		// protocol where every consumer reads it and leaves the URL alone.
+		scheme := "http"
+		if peer.IsHTTPS(r.Context()) {
+			scheme = "https"
+		}
+		w.Header().Set("X-Test-Scheme", scheme)
 		w.Header().Set("X-Test-Remote-Addr", r.RemoteAddr)
 		w.WriteHeader(http.StatusNoContent)
 	})

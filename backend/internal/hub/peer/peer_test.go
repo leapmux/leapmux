@@ -75,7 +75,33 @@ func TestClientIP_IsSeparateAndCanonical(t *testing.T) {
 
 func TestClientIP_RejectsInvalidValues(t *testing.T) {
 	t.Parallel()
-	for _, value := range []string{"", "unknown", "192.0.2.1:443", "fe80::1%en0", "0.0.0.0", "::"} {
+	for _, value := range []string{"", "unknown", "192.0.2.1:443", "0.0.0.0", "::"} {
 		assert.Empty(t, peer.ClientIP(peer.WithClientIP(context.Background(), value)), value)
 	}
+}
+
+// A ZONE is kept, and only the transport peer can supply one: every
+// header-derived address is refused a zone by the parser that reads it. On a
+// link-local address the zone is part of the identity, so dropping it would
+// merge two peers on different interfaces into one budget -- and refusing the
+// address outright, which this used to do, put every link-local client into
+// the shared unknown budget and wrote an empty address on their session rows.
+func TestClientIP_KeepsAZone(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "fe80::1%en0",
+		peer.ClientIP(peer.WithClientIP(context.Background(), "fe80::1%en0")))
+	assert.NotEqual(t,
+		peer.ClientIP(peer.WithClientIP(context.Background(), "fe80::1%en0")),
+		peer.ClientIP(peer.WithClientIP(context.Background(), "fe80::1%en1")),
+		"two interfaces must not share one budget")
+}
+
+// The POLARITY, which is the whole reason this mark is safe to derive from a
+// header. An unmarked context reports plain HTTP, so wiring that forgets the
+// middleware costs a cookie its Secure attribute rather than granting one.
+func TestIsHTTPS_DefaultsToPlain(t *testing.T) {
+	t.Parallel()
+	assert.False(t, peer.IsHTTPS(context.Background()), "an unmarked context is not HTTPS")
+	assert.False(t, peer.IsHTTPS(peer.WithHTTPS(context.Background(), false)))
+	assert.True(t, peer.IsHTTPS(peer.WithHTTPS(context.Background(), true)))
 }

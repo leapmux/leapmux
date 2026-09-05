@@ -89,12 +89,12 @@ type OAuthServerDeps struct {
 	// there.
 	//
 	// The consent endpoints need it because the desktop app holds no browser
-	// session: it reaches its own hub over that socket and has no password to
-	// present, so without this rung it could never reach a consent screen and
-	// could never authorize an app. The scope model would then be unreachable
-	// on exactly the deployment that most wants it -- one machine, one account,
-	// an agent that should hold file:read and nothing more. A solo TCP caller
-	// signs in and reaches the same screens through the cookie rung.
+	// session. The app reaches its own hub over the local IPC socket and has no
+	// password to present. Without this rung it could never reach a consent
+	// screen and could never authorize an app. The scope model would then be
+	// unreachable on the deployment that most wants it: one machine, one
+	// account, an agent that should hold file:read and nothing more. A solo TCP
+	// caller signs in and reaches the same screens through the cookie rung.
 	//
 	// The BEARER rung stays off here whatever this is set to; see
 	// requireSession. An app credential must not be able to consent on its own
@@ -235,8 +235,10 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 	// endpoint exists beside these precisely because that is not allowed.
 	//
 	// SoloUser is nil on an ordinary hub, so the rung is off there. On a solo
-	// hub it is the only rung that can answer, because solo authenticates by
-	// having the port rather than by a cookie.
+	// hub it is the only rung that can answer for the LOCAL IPC socket, which
+	// carries no cookie and has no password to present. A solo TCP caller
+	// holds an ordinary session and reaches these screens through the cookie
+	// rung below.
 	//
 	// The hub's own secure_cookies setting decides which cookie spelling the
 	// handler reads; see AuthenticateHTTP for why the fallback direction is
@@ -275,7 +277,7 @@ func settingsSnapshotOf(m *settings.Manager, ctx context.Context) *settings.Snap
 // secureCookies reports whether this hub writes __Host- prefixed cookies.
 // A handler wired with no settings manager reads false; see OAuthServerDeps.
 func (h *OAuthServerHandler) secureCookies(ctx context.Context) bool {
-	return settings.KeySecureCookies.Of(h.snapshot(ctx))
+	return settings.SecureCookiesFor(ctx, h.snapshot(ctx))
 }
 
 // gateMode says how an endpoint answers a caller that is not signed in or not
@@ -415,8 +417,11 @@ func (h *OAuthServerHandler) requireElevatedSession(w http.ResponseWriter, r *ht
 	// making app authorization impossible on exactly the deployment the scope
 	// model most helps, where one agent should hold file:read and nothing more.
 	//
-	// Authentication is not weakened by this: reaching a solo hub at all is the
-	// authentication, and there is no second factor for a check to demand.
+	// Authentication is not weakened by this. The exemption reads
+	// SoloAuthenticated, which is the LOCAL IPC identity alone: that caller
+	// presented no credential, so it has no ceremony to step up from. A solo
+	// TCP caller signed in with a password, holds a real session, and meets
+	// the elevation check like anybody else.
 	if user.SoloAuthenticated() || user.Elevated(h.now()) {
 		return user
 	}

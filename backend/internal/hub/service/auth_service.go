@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -126,9 +127,10 @@ func (s *AuthService) snap(ctx context.Context) *settings.Snapshot {
 	return s.set.Snapshot(ctx)
 }
 
-// secureCookies reads the cookie-name policy for the current request.
+// secureCookies reads the cookie-name policy for the current request. A
+// trusted proxy that verified HTTPS turns it on whatever the setting says.
 func (s *AuthService) secureCookies(ctx context.Context) bool {
-	return settings.KeySecureCookies.Of(s.snap(ctx))
+	return settings.SecureCookiesFor(ctx, s.snap(ctx))
 }
 
 // sessionDuration reads the sliding session lifetime.
@@ -150,15 +152,20 @@ func (s *AuthService) emailVerificationRequired(ctx context.Context) bool {
 	return settings.EmailVerificationEffective(s.snap(ctx))
 }
 
-// baseURL derives the hub's public base URL for deep-links.
+// baseURL derives the hub's public base URL for deep-links. public_url wins
+// when set; otherwise the scheme follows the same rule the cookies do, so a
+// hub behind a TLS proxy builds https links without a second setting.
 func (s *AuthService) baseURL(ctx context.Context) string {
-	return settings.BaseURL(s.snap(ctx), s.listenAddr())
+	return settings.BaseURLFor(ctx, s.snap(ctx), s.listenAddr())
 }
 
 // soloAccess reports how this connection reaches a solo hub. The enum makes
 // local IPC, restricted TCP setup, and TCP sign-in exclusive states.
 func (s *AuthService) soloAccess(ctx context.Context, passwordSet bool) leapmuxv1.SoloAccess {
-	if !s.cfg.SoloMode {
+	// The GATE answers the mode, not `s.cfg`. One object owns the whole solo
+	// rule, which is what stops "the solo facts are false on a multi-user hub"
+	// from becoming several call sites that must stay in step.
+	if !s.soloGate.SoloMode() {
 		return leapmuxv1.SoloAccess_SOLO_ACCESS_UNSPECIFIED
 	}
 	if s.soloGate.CredentialFree(ctx) {
@@ -236,6 +243,16 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 	}
 
 	user, err := s.store.Users().GetByUsername(ctx, usernames.Solo)
+	// NOT FOUND is a precondition, not an internal fault, and the gate routes
+	// a caller here in exactly that state: SoloGate.accountHasPassword treats
+	// an absent row as "no password", so a hub whose row an administrator
+	// deleted reports SOLO_ACCESS_PASSWORD_SETUP and the browser renders the
+	// setup screen. Answering Internal there gives the operator a 500 from the
+	// one screen the hub offers them, for a condition the hub can state.
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("the %q account does not exist; restart the hub in solo mode to create it", usernames.Solo))
+	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get the solo account: %w", err))
 	}
@@ -258,6 +275,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 	now := s.now().UTC()
 	var sessionID string
 	var expiresAt time.Time
+	var elevationExpiresAt time.Time
 	var storedUser *store.User
 	err = s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
 		lockedUser, err := tx.Users().GetByID(ctx, uid.String())
@@ -267,6 +285,23 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 		if lockedUser.HasUsablePassword() {
 			return errInitialSoloPasswordAlreadySet
 		}
+		// A BARE password write. UserService.ChangePassword calls
+		// revokeOtherCredentialsPreservingActingCredential here, which bumps
+		// the auth generation and tears down every other session, bearer and
+		// channel. This path deliberately does not, and the difference is not
+		// an oversight.
+		//
+		// Nothing exists yet that a revoke would protect against. This
+		// procedure is reachable only while the account holds NO password, and
+		// in that state a TCP caller can reach no other protected RPC, so
+		// every credential that can exist was minted over the local IPC
+		// socket. That socket stays credential-free after this write -- the
+		// gate reads the transport, not the password -- so revoking would sign
+		// the operator's own agents out of a hub they keep full access to, and
+		// buy nothing.
+		//
+		// An operator who believes somebody else won the race to this
+		// procedure runs ChangePassword over local IPC, which does revoke.
 		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{
 			ID: lockedUser.ID, PasswordHash: hashed,
 		}); err != nil {
@@ -278,18 +313,23 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 		if err != nil {
 			return err
 		}
-		affected, err := tx.Sessions().Elevate(ctx, store.ElevateSessionParams{
-			SessionID:          sessionID,
-			UserID:             uid,
-			ElevationProvenAt:  now,
-			ElevationExpiresAt: now.Add(auth.ElevationWindow),
-		}, now)
+		// The same row write every factor path takes, so the window, the
+		// parameters and the zero-row refusal have one home. The cache
+		// invalidation is NOT taken here: it must fire after the commit, or a
+		// concurrent reader refills the cache from the pre-commit row. See
+		// grantSessionElevation, which is that half.
+		//
+		// The session was created two statements above, inside this
+		// transaction, so a zero row count is an internal inconsistency rather
+		// than the ordinary "your session ended" the factor paths report.
+		elevatedUntil, live, err := elevateSessionRow(ctx, tx, sessionID, uid, now)
 		if err != nil {
 			return fmt.Errorf("elevate the initial solo session: %w", err)
 		}
-		if affected != 1 {
-			return fmt.Errorf("elevate the initial solo session: session is not active")
+		if !live {
+			return fmt.Errorf("elevate the initial solo session: the session this transaction created is not active")
 		}
+		elevationExpiresAt = elevatedUntil
 		userCopy := *lockedUser
 		userCopy.PasswordHash = hashed
 		storedUser = &userCopy
@@ -305,9 +345,13 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *connect.R
 	s.lifecycle.UserInfoInvalidated(uid.String())
 	resp := connect.NewResponse(&leapmuxv1.SetInitialSoloPasswordResponse{
 		User: userToProto(storedUser, 0),
+		// The deadline the transaction above stamped, so the client's
+		// elevation state comes from the reply that granted it rather than
+		// from a second round trip that can fail.
+		ElevationExpiresAt: timestamppb.New(elevationExpiresAt),
 	})
 	resp.Header().Set("Set-Cookie", auth.BuildSessionCookie(
-		sessionID, expiresAt, settings.KeySecureCookies.Of(snap)).String())
+		sessionID, expiresAt, settings.SecureCookiesFor(ctx, snap)).String())
 	return resp, nil
 }
 

@@ -19,8 +19,11 @@ import (
 )
 
 type observedRequest struct {
-	clientIP  string
-	remote    string
+	clientIP string
+	remote   string
+	// scheme is the VERIFIED protocol, read from the context where the
+	// middleware records it. It is not `r.URL.Scheme`: the middleware leaves
+	// the URL alone, because nothing in the hub read the scheme there.
 	scheme    string
 	tlsActive bool
 }
@@ -28,29 +31,31 @@ type observedRequest struct {
 func observeRequest(t *testing.T, trusted requestsource.TrustedRanges, configure func(*http.Request)) observedRequest {
 	t.Helper()
 	var observed observedRequest
-	// A NIL manager trusts nothing, which is the default the hub ships and
-	// the state the direct-peer tests need. A manager appears only when a
-	// test configures selectors, because each one costs a store.
-	var manager *settings.Manager
-	if len(trusted.Selectors()) > 0 {
-		manager = settings.NewManager(hubtestutil.OpenTestStore(t), nil, requestsource.SettingsDescriptors())
-		require.NoError(t, manager.Load(context.Background()))
-		encoded, err := json.Marshal(trusted)
-		require.NoError(t, err)
-		require.NoError(t, manager.Update(context.Background(), requestsource.KeyTrustedProxyRanges, encoded))
-	}
+	// The trust set is stated DIRECTLY. The middleware takes the one value it
+	// reads rather than a settings manager, so a test that only needs a trust
+	// set does not open a store to say so. TestMiddleware_AppliesHotSettingChanges
+	// covers the settings-backed path.
+	ranges := func(context.Context) requestsource.TrustedRanges { return trusted }
 
 	request := httptest.NewRequest(http.MethodGet, "http://hub.example.test/", nil)
 	configure(request)
-	requestsource.Middleware(manager, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	requestsource.Middleware(ranges, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		observed = observedRequest{
 			clientIP:  peer.ClientIP(r.Context()),
 			remote:    r.RemoteAddr,
-			scheme:    r.URL.Scheme,
+			scheme:    observedScheme(r),
 			tlsActive: r.TLS != nil,
 		}
 	})).ServeHTTP(httptest.NewRecorder(), request)
 	return observed
+}
+
+// observedScheme renders the recorded protocol the way these tests spell it.
+func observedScheme(r *http.Request) string {
+	if peer.IsHTTPS(r.Context()) {
+		return "https"
+	}
+	return "http"
 }
 
 func mustTrusted(t *testing.T, selectors ...string) requestsource.TrustedRanges {
@@ -239,6 +244,13 @@ func TestMiddleware_AllTrustedChainProducesUnknownClient(t *testing.T) {
 	assert.Empty(t, observed.clientIP)
 }
 
+// absentProtocol marks the subtest that sends NO X-Forwarded-Proto. An empty
+// string cannot mark it, because an empty string is itself an input this table
+// exercises.
+const absentProtocol = "\x00absent"
+
+const xForwardedProtocolHeaderName = "X-Forwarded-Proto"
+
 func TestMiddleware_XForwardedProtocolAlignment(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -250,15 +262,21 @@ func TestMiddleware_XForwardedProtocolAlignment(t *testing.T) {
 		{"aligned", "https, http", "https"},
 		{"misaligned", "https, http, https", "http"},
 		{"invalid", "ssh", "http"},
-		{"empty", "", "http"},
+		// PRESENT and empty, which is not the same input as absent: the
+		// present one reaches splitElements, whose "empty header element"
+		// refusal is what produces the fallback. Setting the header through
+		// the map is the only way to send it, because Header.Set with an
+		// empty value would be indistinguishable from the absent case.
+		{"present but empty", "", "http"},
+		{"absent", absentProtocol, "http"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
 				r.RemoteAddr = "10.0.0.3:4327"
 				r.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.2")
-				if test.protocol != "" {
-					r.Header.Set("X-Forwarded-Proto", test.protocol)
+				if test.protocol != absentProtocol {
+					r.Header[xForwardedProtocolHeaderName] = []string{test.protocol}
 				}
 			})
 			assert.Equal(t, "198.51.100.7", observed.clientIP)
@@ -280,17 +298,22 @@ func TestMiddleware_LeavesTheCallersRequestAlone(t *testing.T) {
 	originalScheme := request.URL.Scheme
 
 	var seen *http.Request
-	requestsource.Middleware(nil, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	requestsource.Middleware(requestsource.RangesFromSettings(nil), http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = r
 	})).ServeHTTP(httptest.NewRecorder(), request)
 
 	require.NotNil(t, seen)
-	assert.Equal(t, "https", seen.URL.Scheme, "the handler reads the effective scheme")
-	assert.Equal(t, "/path", seen.URL.Path, "the copied URL keeps every other field")
+	// The URL is UNCHANGED and unshared-by-nobody: the middleware no longer
+	// rewrites it. The verified protocol lives on the context, which is where
+	// the cookie policy and the base-URL builder read it, so there is no
+	// per-request URL copy to make and no field of the request to write.
+	assert.Same(t, originalURL, seen.URL, "the middleware leaves the URL alone")
+	assert.Equal(t, originalScheme, seen.URL.Scheme, "the URL scheme is not the hub's answer")
+	assert.Equal(t, "/path", seen.URL.Path)
 	assert.Equal(t, "q=1", seen.URL.RawQuery)
-	assert.NotSame(t, originalURL, seen.URL, "the handler must not share the caller's URL")
-	assert.Equal(t, originalScheme, request.URL.Scheme, "the caller's scheme is untouched")
+	assert.True(t, peer.IsHTTPS(seen.Context()), "the handler reads the effective protocol from the context")
 	assert.Equal(t, "203.0.113.9:4327", seen.RemoteAddr, "RemoteAddr stays the physical peer")
+	assert.NotNil(t, seen.TLS, "Request.TLS is untouched")
 }
 
 func TestMiddleware_PreservesActualTLS(t *testing.T) {
@@ -325,7 +348,7 @@ func TestMiddleware_AppliesHotSettingChanges(t *testing.T) {
 	require.NoError(t, manager.Load(context.Background()))
 
 	var clientIP string
-	handler := requestsource.Middleware(manager, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := requestsource.Middleware(requestsource.RangesFromSettings(manager), http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		clientIP = peer.ClientIP(r.Context())
 	}))
 	request := func() *http.Request {
@@ -342,4 +365,131 @@ func TestMiddleware_AppliesHotSettingChanges(t *testing.T) {
 		json.RawMessage(`["10.0.0.0/8"]`)))
 	handler.ServeHTTP(httptest.NewRecorder(), request())
 	assert.Equal(t, "198.51.100.7", clientIP)
+}
+
+// The chain walk is this package's own, so these pin the rule it implements
+// rather than the library's behaviour it used to delegate to.
+func TestMiddleware_RightmostUntrustedSelection(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		header   string
+		clientIP string
+	}{
+		// The rightmost address that is NOT a trusted proxy. Everything to its
+		// right is infrastructure the operator vouched for.
+		{"stops at the first untrusted hop", "203.0.113.1, 198.51.100.9, 10.0.0.2", "198.51.100.9"},
+		{"a single untrusted hop", "198.51.100.9, 10.0.0.2", "198.51.100.9"},
+		// A REPEATED address cannot move the answer: every element to the
+		// right of the pick is trusted, so a trusted element can never hold
+		// the untrusted address.
+		{"a repeated address", "198.51.100.9, 10.0.0.5, 198.51.100.9, 10.0.0.2", "198.51.100.9"},
+		// Trusted end to end names no client. Reporting the leftmost proxy
+		// would report infrastructure as a person.
+		{"an all-trusted chain", "10.0.0.9, 10.0.0.2", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+				r.RemoteAddr = "10.0.0.3:4327"
+				r.Header.Set("X-Forwarded-For", test.header)
+			})
+			assert.Equal(t, test.clientIP, observed.clientIP)
+		})
+	}
+}
+
+// An OBFUSCATED node stops the walk with no client, rather than letting the
+// search continue leftward.
+//
+// The node hides the address the hub would report, so the chain names no
+// client. Continuing left would let whichever proxy wrote the obfuscated entry
+// nominate any address to its left as the client, which is the substitution
+// the trust test exists to prevent.
+func TestMiddleware_ObfuscatedNodeStopsTheWalk(t *testing.T) {
+	t.Parallel()
+	for _, node := range []string{"unknown", "_hidden"} {
+		t.Run(node, func(t *testing.T) {
+			t.Parallel()
+			observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+				r.RemoteAddr = "10.0.0.3:4327"
+				r.Header.Set("Forwarded", "for=198.51.100.7, for="+node+", for=10.0.0.2")
+			})
+			assert.Empty(t, observed.clientIP,
+				"an obfuscated node hides the client; the chain names none")
+		})
+	}
+}
+
+// A quoted-pair escape inside a `for` node is legal RFC 7230 syntax, and the
+// parser has always unescaped it. The selection now reads that parsed address
+// directly, so the escaped form and the plain form name the same client.
+func TestMiddleware_AcceptsAQuotedPairEscapeInAForNode(t *testing.T) {
+	t.Parallel()
+	observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+		r.RemoteAddr = "10.0.0.3:4327"
+		r.Header.Set("Forwarded", `for="\1\9\8.51.100.7", for=10.0.0.2`)
+	})
+	assert.Equal(t, "198.51.100.7", observed.clientIP)
+}
+
+// The verified protocol reaches the CONTEXT, which is where the cookie policy
+// and the base-URL builder read it. It used to be written to `URL.Scheme`,
+// where nothing read it at all.
+func TestMiddleware_RecordsTheVerifiedProtocolOnTheContext(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		trusted   []string
+		configure func(*http.Request)
+		wantHTTPS bool
+	}{
+		{
+			name:    "a trusted proxy that verified TLS",
+			trusted: []string{"10.0.0.0/8"},
+			configure: func(r *http.Request) {
+				r.RemoteAddr = "10.0.0.3:4327"
+				r.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.2")
+				r.Header.Set("X-Forwarded-Proto", "https")
+			},
+			wantHTTPS: true,
+		},
+		{
+			name:    "a trusted proxy that reports plain HTTP",
+			trusted: []string{"10.0.0.0/8"},
+			configure: func(r *http.Request) {
+				r.RemoteAddr = "10.0.0.3:4327"
+				r.Header.Set("X-Forwarded-For", "198.51.100.7, 10.0.0.2")
+				r.Header.Set("X-Forwarded-Proto", "http")
+			},
+		},
+		{
+			// The header is caller-controlled here, so it must not be read.
+			// This is the case that would hand any caller a Secure cookie.
+			name:    "an UNTRUSTED peer claiming https",
+			trusted: nil,
+			configure: func(r *http.Request) {
+				r.RemoteAddr = "198.51.100.7:4327"
+				r.Header.Set("X-Forwarded-Proto", "https")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var https bool
+			trusted := requestsource.TrustedRanges{}
+			if len(test.trusted) > 0 {
+				trusted = mustTrusted(t, test.trusted...)
+			}
+			request := httptest.NewRequest(http.MethodGet, "http://hub.example.test/", nil)
+			test.configure(request)
+			requestsource.Middleware(
+				func(context.Context) requestsource.TrustedRanges { return trusted },
+				http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					https = peer.IsHTTPS(r.Context())
+				}),
+			).ServeHTTP(httptest.NewRecorder(), request)
+			assert.Equal(t, test.wantHTTPS, https)
+		})
+	}
 }

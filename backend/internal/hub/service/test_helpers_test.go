@@ -72,7 +72,7 @@ func sessionFromCookie(t *testing.T, setCookie string) string {
 
 // insecureCookies answers the secure-cookie policy these plain-HTTP test
 // servers run under.
-func insecureCookies() bool { return false }
+func insecureCookies(context.Context) bool { return false }
 
 func testConfig() *config.Config {
 	return &config.Config{}

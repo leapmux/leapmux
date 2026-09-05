@@ -3,7 +3,9 @@ package ratelimit
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 
 	"github.com/leapmux/leapmux/internal/hub/peer"
 )
@@ -39,7 +41,7 @@ func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) b
 	if m == nil {
 		return true
 	}
-	allowed, _, err := m.allowWindowed(ctx, op, clientAddressKey(r))
+	allowed, _, err := m.allowWindowed(ctx, op, anonymousBudgetKey(r.Context()))
 	if err != nil {
 		slog.WarnContext(ctx, "rate limit unavailable for an anonymous OAuth endpoint; admitting",
 			"operation", string(op), "err", err)
@@ -48,23 +50,76 @@ func AllowHTTP(ctx context.Context, m *Manager, op Operation, r *http.Request) b
 	return allowed
 }
 
-// clientAddressKey is the budget key for an anonymous caller: its IP address.
+// anonymousBudgetKey renders one anonymous caller's budget key.
 //
-// The request-source middleware verifies this value against the unchanged
-// transport peer before it records it. An unknown client shares one budget.
-func clientAddressKey(r *http.Request) string {
-	return AddressBudgetKey(peer.ClientIP(r.Context()))
+// It answers from the VERIFIED client IP when the request-source middleware
+// could name one, and from the unchanged TRANSPORT PEER when it could not.
+// Both entry points -- the plain-HTTP door and the Connect interceptor -- call
+// this one function, so a caller can never hold two budgets.
+//
+// The fallback is what keeps the shared bucket honest, and it is not a
+// weakening: the transport peer is the address the kernel accepted the
+// connection from, so no header can set it and no proxy can forge it. Without
+// the fallback, EVERY request the middleware refuses to name lands in one
+// bucket -- a malformed forwarding header from behind a trusted proxy, a
+// chain whose addresses are all trusted, a `for=unknown` node, and an IPv6
+// link-local peer, which needs no configuration at all. That bucket also
+// holds the local IPC socket, so a remote caller could spend the desktop
+// app's window: 600 requests in ten minutes exhausts OpOAuthAnonymous, and
+// `leapmux control` is then refused on the machine's own socket.
+//
+// The client IP stays the PREFERRED key, so a real proxy deployment still
+// budgets per client rather than per proxy.
+//
+// A caller with neither -- the local IPC socket, whose accepted connection
+// carries no IP address, and a test transport -- shares one budget. That is
+// the population the shared bucket was always for.
+func anonymousBudgetKey(ctx context.Context) string {
+	if clientIP := peer.ClientIP(ctx); clientIP != "" {
+		return AddressBudgetKey(clientIP)
+	}
+	return AddressBudgetKey(transportHost(ctx))
+}
+
+// transportHost is the host of the accepted connection's address, or an empty
+// string when it has none.
+//
+// A unix socket and a named pipe both reach this: the first carries no address
+// at all, and the second carries a pipe path rather than a host. Neither can
+// be reached from the network, which is why both belong in the shared bucket.
+func transportHost(ctx context.Context) string {
+	addr, ok := peer.TransportAddr(ctx)
+	if !ok {
+		return ""
+	}
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok || tcp.IP == nil {
+		return ""
+	}
+	host, err := netip.ParseAddr(tcp.IP.String())
+	if err != nil {
+		return ""
+	}
+	// The ZONE stays. On a link-local address it is part of the identity: two
+	// peers on different interfaces can carry the same address, and merging
+	// them would put them in one budget.
+	if tcp.Zone != "" {
+		host = host.WithZone(tcp.Zone)
+	}
+	return host.Unmap().String()
 }
 
 // AddressBudgetKey renders one anonymous caller's budget key from its host.
 //
-// It is exported because the HTTP and Connect entry points must render the
-// same verified client IP as the same key.
+// It is exported because `AllowHTTP`'s callers outside this package name the
+// unknown bucket in their own tests. Inside the package every budget goes
+// through anonymousBudgetKey, which is the one place that decides what a host
+// is.
 func AddressBudgetKey(host string) string {
 	if host == "" {
-		// An unaddressed caller (a test transport, a unix socket) shares one
-		// budget under a name no address can collide with, rather than each
-		// getting an unlimited one.
+		// An unaddressed caller (a test transport, a unix socket, a Windows
+		// named pipe) shares one budget under a name no address can collide
+		// with, rather than each getting an unlimited one.
 		return "anonymous:unknown"
 	}
 	return "anonymous:" + host

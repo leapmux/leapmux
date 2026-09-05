@@ -1,6 +1,7 @@
 package requestsource
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,28 +21,47 @@ const (
 	xForwardedProtocolHeader = "X-Forwarded-Proto"
 )
 
-// Middleware records the verified client IP and effective URL scheme. It
-// leaves Request.RemoteAddr and Request.TLS unchanged.
-func Middleware(manager *settings.Manager, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		trusted := TrustedRanges{}
-		if manager != nil {
-			trusted = KeyTrustedProxyRanges.Of(manager.Snapshot(r.Context()))
-		}
-		clientIP, scheme := resolve(r, trusted)
-		ctx := peer.WithClientIP(r.Context(), clientIP)
+// TrustedRangesFunc supplies the configured trusted proxies for one request.
+//
+// It is a function rather than the settings manager itself so the middleware
+// depends on the ONE value it reads instead of the whole settings surface, and
+// so a test can state a trust set without opening a store. RangesFromSettings
+// is the production spelling.
+type TrustedRangesFunc func(context.Context) TrustedRanges
 
-		// A SHALLOW copy plus a copy of the URL, not r.Clone. This runs on
-		// every request the hub serves, and Clone deep-copies the header map,
-		// the trailer, the transfer encoding and the parsed forms -- a slice
-		// allocation per header to change one string. The only field this
-		// middleware writes is URL.Scheme, so the URL is the one value that
-		// must not stay shared with the caller's request.
-		request := r.WithContext(ctx)
-		url := *r.URL
-		url.Scheme = scheme
-		request.URL = &url
-		next.ServeHTTP(w, request)
+// RangesFromSettings reads the configured trusted proxies from a settings
+// manager. A nil manager trusts nothing, which is the shipped default.
+func RangesFromSettings(manager *settings.Manager) TrustedRangesFunc {
+	if manager == nil {
+		return func(context.Context) TrustedRanges { return TrustedRanges{} }
+	}
+	return func(ctx context.Context) TrustedRanges {
+		return KeyTrustedProxyRanges.Of(manager.Snapshot(ctx))
+	}
+}
+
+// Middleware records the verified client IP and protocol on the request
+// context. It leaves Request.RemoteAddr, Request.TLS and Request.URL
+// unchanged.
+//
+// Both answers go in the CONTEXT rather than onto the request, and the
+// protocol used to be written to `URL.Scheme` instead. Nothing read it there:
+// `URL.RequestURI()` ignores the scheme for a server request, and no handler
+// in this hub consults it. The context is where every consumer that needs the
+// answer already looks -- a Connect interceptor holds one, and a WebSocket
+// handler holds a request whose context descends from the same connection --
+// so one home for the fact is also the only home a caller can reach.
+//
+// A SHALLOW copy, not r.Clone. This runs on every request the hub serves, and
+// Clone deep-copies the header map, the trailer, the transfer encoding and the
+// parsed forms. Nothing here writes a field of the request itself, so
+// `r.WithContext` is the whole copy that is needed.
+func Middleware(trustedRanges TrustedRangesFunc, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trusted := trustedRanges(r.Context())
+		clientIP, scheme := resolve(r, trusted)
+		ctx := peer.WithHTTPS(peer.WithClientIP(r.Context(), clientIP), scheme == "https")
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -59,7 +79,19 @@ func resolve(r *http.Request, trusted TrustedRanges) (string, string) {
 	if err != nil {
 		return "", directScheme
 	}
-	if !trusted.Contains(peerAddr) {
+	// The ZONE is dropped for the TRUST TEST alone. An accepted link-local
+	// IPv6 connection carries one (`fe80::1%en0`), and netipx refuses a zoned
+	// address outright -- `IPSet.Contains` returns false before it compares
+	// anything. So a trusted range would never match a link-local proxy, and
+	// the operator would see their configured proxy's headers ignored with no
+	// error and no log line. A zone identifies the INTERFACE the address is
+	// reachable on; the range is a set of addresses, and the two are separate
+	// questions.
+	//
+	// The zone stays on peerIP, which is what the caller reports as the
+	// client, because there it IS part of the identity: two peers on different
+	// interfaces can carry the same link-local address.
+	if !trusted.Contains(peerAddr.WithZone("")) {
 		// Every forwarding header is caller-controlled here, so the peer
 		// itself is the rightmost untrusted address and the connection states
 		// its own protocol.
@@ -81,19 +113,11 @@ func resolveForwarded(r *http.Request, trusted TrustedRanges) (string, string) {
 	if err != nil {
 		return "", "http"
 	}
-	// A REBUILT header carrying the `for` values alone. The library splits the
-	// raw header on every comma, quoted or not, so a quoted comma inside any
-	// other parameter (`host="edge,one"`) would split one element into two
-	// there. The local parser above respects the quoting, and this hands the
-	// library a form that cannot be split wrongly.
-	clientIP := trusted.forwarded.ClientIP(forwardedIPHeader(elements), r.RemoteAddr)
-	// An empty clientIP parses to no address, so this ALSO covers the "no
-	// client address in the chain" case.
-	index := rightmostAddressIndex(elements, clientIP)
-	if index < 0 {
+	index, ok := rightmostUntrusted(elements, trusted)
+	if !ok {
 		return "", "http"
 	}
-	return clientIP, validProtocol(elements[index].protocol)
+	return elements[index].address.Unmap().String(), validProtocol(elements[index].protocol)
 }
 
 // resolveXForwarded answers from X-Forwarded-For and X-Forwarded-Proto, which
@@ -104,18 +128,50 @@ func resolveXForwarded(r *http.Request, trusted TrustedRanges) (string, string) 
 	if err != nil {
 		return "", "http"
 	}
-	clientIP := trusted.xForwardedFor.ClientIP(r.Header, r.RemoteAddr)
-	index := rightmostAddressIndex(addresses, clientIP)
-	if index < 0 {
+	index, ok := rightmostUntrusted(addresses, trusted)
+	if !ok {
 		return "", "http"
 	}
-	return clientIP, xForwardedProtocol(r.Header[xForwardedProtocolHeader], index, len(addresses))
+	return addresses[index].address.Unmap().String(),
+		xForwardedProtocol(r.Header[xForwardedProtocolHeader], index, len(addresses))
+}
+
+// rightmostUntrusted walks the chain from the right and reports the first
+// element that is not a trusted proxy: the client, as far as the trusted
+// infrastructure can vouch for it.
+//
+// It walks the elements THIS package parsed, rather than handing a rebuilt
+// header back to the IP library and then finding the chosen element again by
+// matching its address as a string. That round trip needed two parsers to keep
+// agreeing about where one element ends and the next begins, re-parsed every
+// address, and re-tested every hop against a linear scan of the same range set
+// this package already holds as a sorted set.
+//
+// The rule is the library's, unchanged. Skip an element whose address is valid
+// AND trusted. Stop at the first element that is not skipped. An element with
+// NO usable address stops the walk with no answer, because an obfuscated or
+// `unknown` node hides exactly the address the caller would report -- so the
+// chain names no client, and inventing one from further left would let a proxy
+// nominate any address it liked. A chain that is empty, or trusted end to end,
+// also names no client.
+//
+// The caller reaching here already proved the transport peer is trusted, so
+// the library's own "untrusted peer, answer with the peer" branch is
+// unreachable from this package and has no counterpart here.
+func rightmostUntrusted(elements []forwardedElement, trusted TrustedRanges) (int, bool) {
+	for index := len(elements) - 1; index >= 0; index-- {
+		address := elements[index].address
+		if address.IsValid() && trusted.Contains(address) {
+			continue
+		}
+		return index, address.IsValid()
+	}
+	return 0, false
 }
 
 type forwardedElement struct {
 	address  netip.Addr
 	protocol string
-	forValue string
 }
 
 func parseForwarded(values []string) ([]forwardedElement, error) {
@@ -155,7 +211,6 @@ func parseForwarded(values []string) ([]forwardedElement, error) {
 			}
 			switch name {
 			case "for":
-				element.forValue = rawValue
 				addr, present, err := parseForwardedNode(value, quoted)
 				if err != nil {
 					return nil, err
@@ -170,18 +225,6 @@ func parseForwarded(values []string) ([]forwardedElement, error) {
 		elements = append(elements, element)
 	}
 	return elements, nil
-}
-
-func forwardedIPHeader(elements []forwardedElement) http.Header {
-	values := make([]string, len(elements))
-	for index, element := range elements {
-		value := element.forValue
-		if value == "" {
-			value = "unknown"
-		}
-		values[index] = "for=" + value
-	}
-	return http.Header{forwardedHeader: []string{strings.Join(values, ", ")}}
 }
 
 func parseXForwardedFor(values []string) ([]forwardedElement, error) {
@@ -204,11 +247,12 @@ func parseXForwardedFor(values []string) ([]forwardedElement, error) {
 //
 // net/http keeps one entry per header line, and RFC 9110 says that repeated
 // lines carry the same meaning as one comma-joined line. So each line supplies
-// its own elements, and a quoted string never crosses a line: joining the
-// lines into one string first would make the joining comma part of an element
-// instead of a separator, and a two-line chain would parse as one malformed
-// address. Splitting per line also matches how the IP library walks the same
-// header, so the index this package selects addresses the same element.
+// its own elements. A quoted string never crosses a line. If the code joined
+// the lines into one string first, the joining comma would become part of an
+// element instead of a separator, and a two-line chain would parse as one
+// malformed address. Splitting per line also matches how the IP library walks
+// the same header, so the index this package selects addresses the same
+// element.
 func splitElements(values []string) ([]string, error) {
 	var items []string
 	for _, value := range values {
@@ -375,20 +419,19 @@ func parseHeaderAddress(value string) (netip.Addr, error) {
 	return addr.Unmap(), nil
 }
 
-func rightmostAddressIndex(elements []forwardedElement, clientIP string) int {
-	wanted, err := netip.ParseAddr(clientIP)
-	if err != nil {
-		return -1
-	}
-	wanted = wanted.Unmap()
-	for index := len(elements) - 1; index >= 0; index-- {
-		if elements[index].address.IsValid() && elements[index].address.Unmap() == wanted {
-			return index
-		}
-	}
-	return -1
-}
-
+// xForwardedProtocol reads the protocol that belongs to the selected address.
+//
+// X-Forwarded-Proto carries no element metadata, so the two lists are matched
+// by POSITION. One value states the protocol for the whole chain. A list as
+// long as the address list is per-hop, and the selected index picks from it.
+// Any other length is a chain the hub cannot align, and an unaligned protocol
+// is not a protocol -- reading one at the wrong index would report a hop's
+// answer as the client's.
+//
+// `selected` is an index into the address list, which the caller obtained from
+// the chain walk, so it is always in range for a list of equal length. No guard
+// restates that here, because a guard on a state the caller excluded reads as
+// though the state can occur.
 func xForwardedProtocol(values []string, selected, addressCount int) string {
 	items, err := splitElements(values)
 	if err != nil {
@@ -397,7 +440,7 @@ func xForwardedProtocol(values []string, selected, addressCount int) string {
 	if len(items) == 1 {
 		return validProtocol(items[0])
 	}
-	if len(items) == addressCount && selected >= 0 && selected < len(items) {
+	if len(items) == addressCount {
 		return validProtocol(items[selected])
 	}
 	return "http"

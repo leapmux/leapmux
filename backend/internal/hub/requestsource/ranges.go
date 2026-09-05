@@ -6,13 +6,12 @@ package requestsource
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
-	"github.com/realclientip/realclientip-go"
 	providerranges "github.com/realclientip/realclientip-go/ranges"
 	"go4.org/netipx"
 
@@ -23,11 +22,27 @@ import (
 // TrustedRanges is the stored selector list and its decoded address set. JSON
 // contains only the canonical selectors. Provider ranges stay symbolic there.
 type TrustedRanges struct {
-	selectors     []string
-	prefixes      []netip.Prefix
-	set           *netipx.IPSet
-	forwarded     realclientip.RightmostTrustedRangeStrategy
-	xForwardedFor realclientip.RightmostTrustedRangeStrategy
+	selectors []string
+	prefixes  []netip.Prefix
+	set       *netipx.IPSet
+	// invalid records why a STORED selector list could not expand.
+	//
+	// UnmarshalJSON keeps the list and sets this instead of returning an
+	// error, because the settings framework treats a decode failure and a
+	// validation failure differently. A decode failure is a HARD refusal in
+	// mergeForUpdate, so it would refuse every later write to this key and
+	// leave `Reset` -- which discards the operator's whole list -- as the only
+	// way out. A validation failure degrades the write's base to the default
+	// and logs, which is the recovery every other setting has.
+	//
+	// The trigger is realistic: the bundled provider ranges are a generated
+	// snapshot, so a dependency bump that widens a Cloudflare prefix over an
+	// operator's manual selector makes the stored pair overlap, and the row
+	// stops expanding. Lowering MaxTrustedProxySelectors does the same.
+	//
+	// A degraded value trusts NOBODY -- Contains guards a nil set -- so the
+	// recovery is fail-closed.
+	invalid error
 }
 
 // NewTrustedRanges validates and canonicalizes configured selectors.
@@ -40,10 +55,21 @@ func NewTrustedRanges(selectors []string) (TrustedRanges, error) {
 	canonical := make([]string, 0, len(selectors))
 	seen := make(map[string]struct{}, len(selectors))
 	var combinedBuilder netipx.IPSetBuilder
-	combined, err := combinedBuilder.IPSet()
-	if err != nil {
-		return TrustedRanges{}, fmt.Errorf("create the trusted proxy set: %w", err)
-	}
+	// The ACCEPTED selectors' own sets, and the overlap test runs against
+	// them rather than against a combined set rebuilt on each step.
+	//
+	// `IPSetBuilder.IPSet()` sorts and merges every accumulated range and
+	// copies the whole list into a fresh slice, so calling it inside the loop
+	// made an O(n) selector list cost O(n^2 log n). That is not a startup
+	// cost: the settings snapshot re-decodes this key on every cache refresh,
+	// so a hub with `cloudfront` configured -- 241 bundled prefixes -- redid
+	// the whole rebuild every refresh, for ever, although the stored value
+	// never changed.
+	//
+	// `IPSet.Overlaps` is itself a nested walk over two range lists, so asking
+	// each accepted set separately answers the same question over the same
+	// ranges. The combined set is built ONCE, after the loop.
+	accepted := make([]*netipx.IPSet, 0, len(selectors))
 	for index, raw := range selectors {
 		selector, selectorSet, err := parseSelector(raw)
 		if err != nil {
@@ -52,37 +78,24 @@ func NewTrustedRanges(selectors []string) (TrustedRanges, error) {
 		if _, ok := seen[selector]; ok {
 			return TrustedRanges{}, fmt.Errorf("trusted proxy selector %d (%q) duplicates %q", index+1, raw, selector)
 		}
-		if combined.Overlaps(selectorSet) {
+		// EVERY earlier selector, not the previous one.
+		if slices.ContainsFunc(accepted, func(earlier *netipx.IPSet) bool { return earlier.Overlaps(selectorSet) }) {
 			return TrustedRanges{}, fmt.Errorf("trusted proxy selector %d (%q) overlaps an earlier selector", index+1, raw)
 		}
 		seen[selector] = struct{}{}
 		canonical = append(canonical, selector)
+		accepted = append(accepted, selectorSet)
 		combinedBuilder.AddSet(selectorSet)
-		combined, err = combinedBuilder.IPSet()
-		if err != nil {
-			return TrustedRanges{}, fmt.Errorf("combine trusted proxy selector %d: %w", index+1, err)
-		}
+	}
+	combined, err := combinedBuilder.IPSet()
+	if err != nil {
+		return TrustedRanges{}, fmt.Errorf("combine the trusted proxy selectors: %w", err)
 	}
 
-	prefixes := combined.Prefixes()
-	ipNets := make([]net.IPNet, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		ipNets = append(ipNets, *netipx.PrefixIPNet(prefix))
-	}
-	forwarded, err := realclientip.NewRightmostTrustedRangeStrategy("Forwarded", ipNets)
-	if err != nil {
-		return TrustedRanges{}, fmt.Errorf("create the Forwarded strategy: %w", err)
-	}
-	xForwardedFor, err := realclientip.NewRightmostTrustedRangeStrategy("X-Forwarded-For", ipNets)
-	if err != nil {
-		return TrustedRanges{}, fmt.Errorf("create the X-Forwarded-For strategy: %w", err)
-	}
 	return TrustedRanges{
-		selectors:     slices.Clone(canonical),
-		prefixes:      prefixes,
-		set:           combined,
-		forwarded:     forwarded,
-		xForwardedFor: xForwardedFor,
+		selectors: slices.Clone(canonical),
+		prefixes:  combined.Prefixes(),
+		set:       combined,
 	}, nil
 }
 
@@ -110,8 +123,13 @@ func (r TrustedRanges) MarshalJSON() ([]byte, error) {
 	return json.Marshal(selectors)
 }
 
-// UnmarshalJSON validates and expands the stored selector list during snapshot
-// decode. The snapshot then carries a ready-to-use address set.
+// UnmarshalJSON expands the stored selector list during snapshot decode. The
+// snapshot then carries a ready-to-use address set.
+//
+// The SHAPE is a decode error, because a value that is not a list of strings
+// is not a selector list at all and no later write could merge onto it. A list
+// that will not EXPAND is a validation failure instead: see TrustedRanges.
+// invalid for why the two must not share an answer.
 func (r *TrustedRanges) UnmarshalJSON(data []byte) error {
 	var selectors []string
 	if err := json.Unmarshal(data, &selectors); err != nil {
@@ -122,16 +140,25 @@ func (r *TrustedRanges) UnmarshalJSON(data []byte) error {
 	}
 	decoded, err := NewTrustedRanges(selectors)
 	if err != nil {
-		return err
+		// The raw selectors are kept so the admin surface can still SHOW the
+		// operator what the stored row says while it refuses to use it.
+		*r = TrustedRanges{selectors: slices.Clone(selectors), invalid: err}
+		return nil
 	}
 	*r = decoded
 	return nil
+}
+
+// Validate reports why a stored selector list could not expand.
+func (r TrustedRanges) Validate() error {
+	return r.invalid
 }
 
 // KeyTrustedProxyRanges controls which transport peers can supply forwarding
 // headers. It is hot because the middleware reads a settings snapshot for each
 // request.
 var KeyTrustedProxyRanges = settings.NewKey[TrustedRanges]("trusted_proxy_ranges").
+	WithValidate(TrustedRanges.Validate).
 	WithUI(settings.UIMeta{
 		Category: "network",
 		Title:    "Trusted reverse proxies",
@@ -154,11 +181,7 @@ func parseSelector(raw string) (string, *netipx.IPSet, error) {
 		return "", nil, fmt.Errorf("the selector is empty")
 	}
 	lower := strings.ToLower(value)
-	if providerValues, ok := providerRanges(lower); ok {
-		set, err := prefixSet(providerValues)
-		if err != nil {
-			return "", nil, fmt.Errorf("expand provider %q: %w", lower, err)
-		}
+	if set, ok := providerRanges(lower); ok {
 		return lower, set, nil
 	}
 	if strings.Contains(value, "/") {
@@ -188,15 +211,41 @@ func parseSelector(raw string) (string, *netipx.IPSet, error) {
 	return addr.String(), set, err
 }
 
-func providerRanges(token string) ([]string, bool) {
-	switch token {
-	case contracts.TrustedProxyProviderCloudflare:
-		return providerranges.Cloudflare, true
-	case contracts.TrustedProxyProviderCloudFront:
-		return providerranges.CloudFront, true
-	default:
-		return nil, false
+// providerTables binds every token in the generated catalogue to its bundled
+// prefixes.
+//
+// It is DERIVED from `contracts.TrustedProxyProviders` rather than written
+// beside it, so a token the contract adds and this map does not bind fails
+// TestProviderCatalogueIsBound instead of failing an operator at write time
+// with "unknown provider" for a token the settings editor offered them.
+//
+// Each table is parsed ONCE. The tables are compile-time constants -- 22
+// prefixes for Cloudflare and 241 for CloudFront -- and the settings snapshot
+// re-decodes this key on every cache refresh, so parsing them per decode
+// re-did the same work for ever.
+var providerTables = sync.OnceValue(func() map[string]*netipx.IPSet {
+	sources := map[string][]string{
+		contracts.TrustedProxyProviderCloudflare: providerranges.Cloudflare,
+		contracts.TrustedProxyProviderCloudFront: providerranges.CloudFront,
 	}
+	tables := make(map[string]*netipx.IPSet, len(sources))
+	for token, values := range sources {
+		set, err := prefixSet(values)
+		if err != nil {
+			// A bundled table that will not parse is a build-time fault in a
+			// vendored constant, not an operator's input, and the selector
+			// would silently stop matching. TestProviderCatalogueIsBound
+			// exercises every token, so this cannot reach a release.
+			panic(fmt.Sprintf("bundled provider ranges for %q do not parse: %v", token, err))
+		}
+		tables[token] = set
+	}
+	return tables
+})
+
+func providerRanges(token string) (*netipx.IPSet, bool) {
+	set, ok := providerTables()[token]
+	return set, ok
 }
 
 func parseInclusiveRange(value string) (string, *netipx.IPSet, error) {

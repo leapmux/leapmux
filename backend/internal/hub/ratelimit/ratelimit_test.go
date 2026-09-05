@@ -18,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -490,8 +491,9 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 		leapmuxv1connect.UserServiceDeletePasskeyProcedure:             false,
 		leapmuxv1connect.UserServiceDeactivatePasskeyAuthProcedure:     false,
 	}
-	// +2: the mail RPC and Login, each asserted on its own below.
-	assert.Len(t, procedureOperations, len(proving)+2,
+	// +3: the mail RPC, Login, and the solo first-password setup, each
+	// asserted on its own below.
+	assert.Len(t, procedureOperations, len(proving)+3,
 		"a procedure added to or removed from the routing map must be reflected here")
 	for procedure, provesCredential := range proving {
 		spec, ok := procedureOperations[procedure]
@@ -523,6 +525,33 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 	assert.True(t, defaults[OpLoginAnonymous].keyByAddress, "an unauthenticated caller has no user to key on")
 	assert.False(t, defaults[OpLoginAnonymous].hiddenInSolo,
 		"a solo hub has no captcha in front of Login, so this budget is the only thing limiting it")
+
+	// The other UNAUTHENTICATED procedure that runs an Argon2 hash. It proves
+	// nothing -- the caller chooses the password -- so a failures window would
+	// never fill and only a proceeded-request count caps it.
+	setupSpec, routed := procedureOperations[leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure]
+	require.True(t, routed,
+		"SetInitialSoloPassword is public and runs Argon2; unrouted it hashes at request speed")
+	assert.Equal(t, OpSoloPasswordSetup, setupSpec.op)
+	assert.False(t, setupSpec.provesCredential, "the caller chooses this password rather than guessing it")
+	assert.True(t, defaults[OpSoloPasswordSetup].keyByAddress, "an unauthenticated caller has no user to key on")
+	assert.True(t, defaults[OpSoloPasswordSetup].countsProceededRequests,
+		"no answer here can be wrong, so a failures window would never fill")
+	require.NotNil(t, defaults[OpSoloPasswordSetup].proceedsToBudget,
+		"a proceeded-counting operation must classify its outcomes")
+	assert.False(t, defaults[OpSoloPasswordSetup].hiddenInSolo,
+		"solo is the only mode that serves this procedure, so hiding the key in solo hides it everywhere")
+	// The pre-hash refusals cost nothing and must not spend the window, or a
+	// caller could exhaust the operator's budget with garbage that never
+	// hashed.
+	proceeds := defaults[OpSoloPasswordSetup].proceedsToBudget
+	assert.False(t, proceeds(connect.NewError(connect.CodeFailedPrecondition, errors.New("already set"))),
+		"a refusal before the hash costs nothing")
+	assert.False(t, proceeds(connect.NewError(connect.CodeInvalidArgument, errors.New("weak password"))),
+		"a password the validator rejects never reaches the hash")
+	assert.True(t, proceeds(nil), "a success ran the hash")
+	assert.True(t, proceeds(connect.NewError(connect.CodeInternal, errors.New("store failed"))),
+		"a failure after the hash still paid for it")
 
 	// The negative half, and it is the half OpElevation's doc has to keep
 	// true. UnlinkOAuthProvider is an elevation-admitted mutation, so a
@@ -574,7 +603,7 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
-	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpLoginAnonymous, OpOAuthAnonymous}, KnownOperations())
+	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpLoginAnonymous, OpOAuthAnonymous, OpSoloPasswordSetup}, KnownOperations())
 
 	// No row: defaults, enabled.
 	m := newTestManager(t)
@@ -739,9 +768,39 @@ func TestElevationBudgetIsSharedByBothFactorPaths(t *testing.T) {
 // finishes with, and every passkey procedure carries it. Without that entry
 // the walk covers ElevateSession alone -- and it would say so silently,
 // because a shorter walk still passes.
+//
+// `password` and `new_password` are on the list because a procedure that
+// ACCEPTS a password hashes it, and an Argon2 hash is expensive to repeat
+// whether or not the caller had to guess the value. SetInitialSoloPassword
+// shipped unrouted because the walk covered `user.proto` alone and matched
+// neither name.
 var credentialBearingFields = map[string]bool{
 	"current_password": true,
 	"credential_json":  true,
+	"password":         true,
+	"new_password":     true,
+}
+
+// credentialWalkFiles are the proto files the walk covers. Both carry
+// procedures that verify or hash a secret, and a file left out of this list
+// is a whole service the tripwire cannot see. `auth.proto` was missing, which
+// is how SetInitialSoloPassword shipped unrouted.
+var credentialWalkFiles = []string{"leapmux/v1/user.proto", "leapmux/v1/auth.proto"}
+
+// ceremonyFinishExemptions are the credential-bearing procedures that neither
+// a budget nor a captcha guards, and the reason each one needs neither.
+//
+// All of them are the FINISH stage of a ceremony. A Finish can only spend a
+// short-lived session that its own Begin minted, and the Begin carries the
+// captcha, so the toll is already paid upstream and a Finish an attacker
+// repeats has nothing to spend. The captcha package states the same
+// exemptions in captchaExemptRationale; this map is the rate-limit side of
+// the same decision, and a NEW credential-bearing procedure still fails the
+// walk unless somebody adds it here on purpose.
+var ceremonyFinishExemptions = map[string]string{
+	leapmuxv1connect.AuthServiceFinishPasskeyLoginProcedure:           "consumes a short-lived ceremony session; the captcha'd Begin did the expensive work",
+	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:          "consumes a short-lived ceremony session; the captcha'd Begin did the expensive work",
+	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure: "consumes a short-lived ceremony session the captcha'd Begin minted",
 }
 
 // TestCredentialConsumingProceduresAreRouted walks the live user.proto
@@ -751,36 +810,44 @@ var credentialBearingFields = map[string]bool{
 // unlimited retries while its siblings are capped, and only a descriptor
 // walk catches the forgotten direction.
 func TestCredentialConsumingProceduresAreRouted(t *testing.T) {
-	fd, err := protoregistry.GlobalFiles.FindFileByPath("leapmux/v1/user.proto")
-	require.NoError(t, err, "user.proto descriptor must be registered; import the generated pb package")
-	services := fd.Services()
-	require.Equal(t, 1, services.Len(), "expected exactly the UserService in user.proto")
-	methods := services.Get(0).Methods()
 	covered := 0
-	for i := 0; i < methods.Len(); i++ {
-		method := methods.Get(i)
-		consumesSecret := false
-		fields := method.Input().Fields()
-		for j := 0; j < fields.Len(); j++ {
-			if credentialBearingFields[string(fields.Get(j).Name())] {
-				consumesSecret = true
-				break
+	for _, path := range credentialWalkFiles {
+		fd, err := protoregistry.GlobalFiles.FindFileByPath(path)
+		require.NoErrorf(t, err, "%s descriptor must be registered; import the generated pb package", path)
+		services := fd.Services()
+		require.Equalf(t, 1, services.Len(), "expected exactly one service in %s", path)
+		service := services.Get(0)
+		methods := service.Methods()
+		for i := 0; i < methods.Len(); i++ {
+			method := methods.Get(i)
+			consumesSecret := false
+			fields := method.Input().Fields()
+			for j := 0; j < fields.Len(); j++ {
+				if credentialBearingFields[string(fields.Get(j).Name())] {
+					consumesSecret = true
+					break
+				}
 			}
+			if !consumesSecret {
+				continue
+			}
+			covered++
+			procedure := "/" + string(service.FullName()) + "/" + string(method.Name())
+			_, routed := procedureOperations[procedure]
+			// A BUDGET, a CAPTCHA, or a written ceremony-Finish exemption.
+			// The first two stop a caller repeating the work; the third
+			// records why repeating it costs nothing. Demanding a budget
+			// alone would report every captcha'd procedure.
+			_, exempt := ceremonyFinishExemptions[procedure]
+			assert.Truef(t, routed || captcha.IsProtected(procedure) || exempt,
+				"%s.%s carries a credential but has no procedureOperations entry, no captcha, and no written exemption; it ships with unlimited retries (procedure %q)",
+				service.Name(), method.Name(), procedure)
 		}
-		if !consumesSecret {
-			continue
-		}
-		covered++
-		procedure := "/" + string(services.Get(0).FullName()) + "/" + string(method.Name())
-		_, routed := procedureOperations[procedure]
-		assert.Truef(t, routed,
-			"UserService.%s carries a credential but has no procedureOperations entry; it ships with unlimited retries (procedure %q)",
-			method.Name(), procedure)
 	}
 	// Non-vacuity: a walk that matched nothing would pass while covering
 	// nothing, which is what a renamed field would silently produce.
-	assert.GreaterOrEqual(t, covered, 3,
-		"the walk found fewer credential-bearing procedures than exist; check credentialBearingFields against user.proto")
+	assert.GreaterOrEqual(t, covered, 8,
+		"the walk found fewer credential-bearing procedures than exist; check credentialBearingFields and credentialWalkFiles against the protos")
 }
 
 func TestValidateLimits(t *testing.T) {
@@ -910,8 +977,8 @@ func TestSpentFailureWindowStillAdmitsTheProceduresThatVerifyNothing(t *testing.
 			"%s verifies no secret, so a wrong-password burst must not deny it", procedure)
 		m.complete(a, nil)
 	}
-	require.Equal(t, 8, nonProving,
-		"the routing map must still carry the seven mutations an elevation admits, plus email change")
+	require.Equal(t, 9, nonProving,
+		"the routing map must still carry the seven mutations an elevation admits, plus email change and the solo first-password setup")
 
 	// And the window is untouched by those admissions: a procedure that
 	// proves nothing must neither spend the budget nor clear it.

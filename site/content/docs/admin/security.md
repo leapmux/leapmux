@@ -248,7 +248,7 @@ LeapMux trusts no forwarding header by default. The `trusted_proxy_ranges` setti
 
 Provider presets such as `cloudflare` and `cloudfront` are broad trust decisions. They identify shared provider infrastructure, not your account. Another customer can target your origin unless you restrict it to your distribution or require authenticated origin requests. Each proxy must remove client-supplied forwarding headers or append only verified values. LeapMux bundles provider snapshots and does not refresh them automatically.
 
-The verified client IP controls address-keyed rate limits and new session records. Forwarded protocol data changes request URL metadata, but it never changes `secure_cookies`. Configure that setting explicitly. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
+The verified client IP controls address-keyed rate limits and new session records. The verified protocol turns `secure_cookies` on for that request, so a Hub behind a TLS-terminating proxy writes `__Host-` cookies without a second setting. Only a trusted peer's protocol is read, and the rule is one-way: it never turns the policy off. See [Trusted reverse proxies](/docs/admin/configuration/#trusted-reverse-proxies).
 
 ## Session elevation
 

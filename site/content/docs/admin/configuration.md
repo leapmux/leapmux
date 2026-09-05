@@ -198,7 +198,9 @@ LeapMux reads forwarding headers only when the unchanged TCP peer matches the ex
 
 For `Forwarded`, LeapMux uses the `proto` value on the selected element. For X-Forwarded headers, one protocol value applies globally. Equal-length protocol and address lists align by position. LeapMux accepts only `http` and `https`; absent, empty, invalid, or misaligned protocol data becomes `http`.
 
-The verified client IP controls address-keyed rate limits and new session records. LeapMux keeps `RemoteAddr` as the physical peer. It sets the effective request URL scheme but does not change the TLS state. Set `secure_cookies` explicitly; forwarded protocol data never changes the cookie policy.
+The verified client IP controls address-keyed rate limits and new session records. LeapMux keeps `RemoteAddr` as the physical peer and does not change the TLS state.
+
+The verified protocol turns `secure_cookies` on for that request. A trusted proxy that reports `https` gets `__Host-` prefixed cookies, and base URLs the Hub builds use `https`, without a second setting. The rule is one-way: the verified protocol only ever turns the policy on, and the `secure_cookies` setting turns it on for every request whatever a proxy reports. An untrusted peer's protocol header is ignored, so no caller can give itself a secure cookie.
 
 ### Local IPC listen (`local_listen`)
 
@@ -280,7 +282,7 @@ Solo mode omits the settings a single-user Hub has no use for, from `settings li
 
 `public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker. `open_app_registration` stays because a solo Hub authorizes apps like any other — see [App Authorization](/docs/admin/app-authorization/).
 
-The rest stay because a solo Hub whose account holds a password serves a real sign-in. `session_duration_seconds` and `secure_cookies` govern the session and the cookie that sign-in issues, so a Hub published behind a TLS proxy sets `secure_cookies` there like any other. `rate_limit.login_anonymous` and `rate_limit.oauth_anonymous` are keyed by client ADDRESS on surfaces a solo Hub also serves, and because solo runs no captcha, `login_anonymous` is the only thing that limits guesses at the sign-in form.
+The rest stay because a solo Hub whose account holds a password serves a real sign-in. `session_duration_seconds` and `secure_cookies` govern the session and the cookie that sign-in issues. A Hub published behind a trusted TLS proxy already gets secure cookies from the verified protocol; the setting is for a Hub that serves HTTPS through infrastructure it does not trust as a proxy. `rate_limit.login_anonymous` and `rate_limit.oauth_anonymous` are keyed by client ADDRESS on surfaces a solo Hub also serves, and because solo runs no captcha, `login_anonymous` is the only thing that limits guesses at the sign-in form.
 
 See [Accounts & Authentication](/docs/using/accounts/) for sign-up, passkeys, verification, and account-recovery flows, and [Sign-in Providers](/docs/admin/sign-in-providers/) for OAuth/OIDC.
 
@@ -673,7 +675,7 @@ leapmux hub --config /etc/leapmux/hub.yaml
 # survive and can change under the running Hub:
 leapmux control admin settings set public_url "https://hub.example.com"
 leapmux control admin settings set secure_cookies true
-leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1"]'
+leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'
 leapmux control admin settings set signup_enabled true
 leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
 leapmux control admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager

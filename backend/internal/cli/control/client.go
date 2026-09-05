@@ -198,12 +198,12 @@ func NewClient(hubURL string) (*Client, error) {
 }
 
 // NewClientOrAnonymous constructs a hub client that falls back to an
-// EMPTY credential when none is STORED. The hub — not the CLI — enforces
-// authentication: against a solo hub the interceptor authenticates every
-// request as the solo user regardless of headers, so `control admin`
-// works there with no login (solo cannot complete a login flow at all);
-// against any other hub the credential-less request simply answers
-// unauthenticated.
+// EMPTY credential when none is STORED. The hub -- not the CLI -- enforces
+// authentication. A solo hub authenticates its LOCAL IPC socket as the solo
+// user with no credential, so `control admin` works there with no login.
+// Every other connection, a solo hub's TCP addresses included, answers
+// unauthenticated to a credential-less request; run
+// `leapmux control auth login --hub <url>` first.
 //
 // Only ErrNotLoggedIn takes that fallback. A credential file that exists
 // but cannot be read or parsed is a fault the operator must see: running

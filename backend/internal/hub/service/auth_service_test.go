@@ -161,6 +161,17 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	info, err := auth.ValidateToken(context.Background(), st, sessionID)
 	require.NoError(t, err)
 	assert.True(t, info.Elevated(time.Now()))
+
+	// The deadline travels WITH the reply, so a client's elevation state comes
+	// from the answer that granted it rather than from a second round trip. A
+	// client that had to recover it from a following GetCurrentUser would show
+	// the operator an un-elevated session, and prompt for the password they
+	// just chose, whenever that call failed transiently.
+	reported := response.Msg.GetElevationExpiresAt()
+	require.NotNil(t, reported, "the reply must carry the elevation it granted")
+	assert.WithinDuration(t, time.Now().Add(auth.ElevationWindow), reported.AsTime(), time.Minute)
+	assert.True(t, info.Elevated(reported.AsTime().Add(-time.Second)),
+		"the reported deadline must fall inside the window the store recorded")
 	session, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Equal(t, "setup-test", session.UserAgent)
@@ -1672,9 +1683,9 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 }
 
 // The other half of the setup exemption, and the half that matters for
-// safety: `admin` becomes claimable in setup mode, `solo` never does. A user
-// The hub uses a user by that name as the synthetic local IPC identity if
-// somebody opens the same data directory in solo mode.
+// safety: `admin` becomes claimable in setup mode, `solo` never does. The hub
+// uses a user by that name as the synthetic local IPC identity if somebody
+// opens the same data directory in solo mode.
 func TestSignUp_RejectsSoloInSetupMode(t *testing.T) {
 	t.Parallel()
 

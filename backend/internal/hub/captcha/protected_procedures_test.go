@@ -44,7 +44,7 @@ var protectedAuthenticatedRationale = map[string]string{
 // passes the auth package's rationale test, and ships the procedure
 // unprotected.
 var captchaExemptRationale = map[string]string{
-	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:             "solo disables captcha, and the first successful write closes this procedure",
+	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:             "solo disables captcha; ratelimit.OpSoloPasswordSetup caps its Argon2 hash by address instead",
 	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:                      "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              "read keyed by a single-use pending id; no expensive action",

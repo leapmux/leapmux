@@ -50,9 +50,9 @@ func NewSettingsManager(t *testing.T, st store.Store, ks *keystore.Keystore) *se
 // settings key. PolicyFromSettings is the same mapping the hub's own
 // closure uses, so a test cannot enforce a policy the hub computes
 // differently.
-func AuthPolicy(set *settings.Manager) func() auth.Policy {
-	return func() auth.Policy {
-		return auth.PolicyFromSettings(set.Snapshot(context.Background()))
+func AuthPolicy(set *settings.Manager) func(context.Context) auth.Policy {
+	return func(ctx context.Context) auth.Policy {
+		return auth.PolicyFromSettings(ctx, set.Snapshot(ctx))
 	}
 }
 

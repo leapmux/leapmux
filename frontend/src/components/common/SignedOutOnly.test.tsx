@@ -297,6 +297,30 @@ describe('signedOutOnly', () => {
     expect(screen.queryByTestId('signed-out-only-explain')).not.toBeInTheDocument()
   })
 
+  // The PASSWORD_SETUP state, which is the other connection with no usable
+  // credential. The account holds no password, so this form can only ever
+  // answer "invalid credentials" -- and nothing on the page routes to `/`,
+  // where AuthGuard renders the setup screen. Without this rule `/login` is a
+  // dead end that a bookmark, a stale tab or a `?redirect=` bounce reaches on
+  // every fresh `leapmux solo`, loopback included.
+  it('sends a passwordless TCP visitor to the app, from every credential page', async () => {
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.PASSWORD_SETUP })
+    mockUser.mockReturnValue(null)
+    const { navigations } = renderGate('/login')
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+  })
+
+  it('sends a passwordless TCP visitor away from account recovery too', async () => {
+    setSystemInfoMock({ soloMode: true, soloAccess: SoloAccess.PASSWORD_SETUP })
+    mockUser.mockReturnValue(null)
+    const { navigations } = renderGate('/recover-account')
+    await vi.waitFor(() => {
+      expect(navigations).toEqual(['/'])
+    })
+  })
+
   // The other half of that rule, and the reason it reads the CONNECTION rather
   // than the hub: a solo hub whose account holds a password asks its network
   // callers to sign in, so those callers do have a sign-out and the ordinary

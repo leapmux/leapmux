@@ -520,8 +520,9 @@ func TestAdminSettingsService_SoloSectionsGeneralSurvivesWithPublicURL(t *testin
 	assert.Equal(t, []string{
 		ratelimit.SettingKeyPrefix + string(ratelimit.OpLoginAnonymous),
 		ratelimit.SettingKeyPrefix + string(ratelimit.OpOAuthAnonymous),
+		ratelimit.SettingKeyPrefix + string(ratelimit.OpSoloPasswordSetup),
 	}, solo["rate-limits"],
-		"solo keeps the two address-keyed limits and drops the per-user ones")
+		"solo keeps every address-keyed limit and drops the per-user ones; the first-password setup budget is solo-only, so hiding it here would hide it everywhere")
 
 	// The sections that solo keeps whole. Without this, hiding every
 	// remaining key would still satisfy the assertions above.

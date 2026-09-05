@@ -201,8 +201,8 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
         //
         // The caller keeps working across the write, and no session changes
         // hands. Only a credential-free connection reaches this panel while the
-        // account has no password -- a TCP browser in that state meets the
-        // password-setup screen instead of the app -- and local IPC stays
+        // account has no password. A TCP browser in that state meets the
+        // password-setup screen instead of the app. Local IPC stays
         // credential-free whatever the account holds.
         //
         // LATCHED, and the fields are cleared only once the whole apply lands.

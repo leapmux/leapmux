@@ -200,10 +200,10 @@ func TestTouchThresholdAlwaysLeavesRoomToSlide(t *testing.T) {
 // end the session before the configured duration passed since the last request.
 func TestSlideDurationCoversTouchThrottle(t *testing.T) {
 	for _, configured := range []time.Duration{0, -time.Hour, MinSessionDuration, time.Hour, 30 * 24 * time.Hour} {
-		a := &authInterceptor{policy: func() Policy { return Policy{SessionDuration: configured} }}
-		assert.Equal(t, sessionLifetime(configured)+touchThreshold(configured), a.slideDuration(a.currentPolicy()),
+		a := &authInterceptor{policy: func(context.Context) Policy { return Policy{SessionDuration: configured} }}
+		assert.Equal(t, sessionLifetime(configured)+touchThreshold(configured), a.slideDuration(a.currentPolicy(context.Background())),
 			"configured=%s", configured)
-		assert.Greater(t, a.slideDuration(a.currentPolicy()), sessionLifetime(configured), "configured=%s", configured)
+		assert.Greater(t, a.slideDuration(a.currentPolicy(context.Background())), sessionLifetime(configured), "configured=%s", configured)
 	}
 }
 
@@ -213,8 +213,8 @@ func TestSlideDurationCoversTouchThrottle(t *testing.T) {
 func TestSessionExpiryMatchesTheSlide(t *testing.T) {
 	for _, configured := range []time.Duration{0, MinSessionDuration, DefaultSessionDuration} {
 		now := time.Now()
-		a := &authInterceptor{policy: func() Policy { return Policy{SessionDuration: configured} }}
-		assert.Equal(t, now.Add(a.slideDuration(a.currentPolicy())).UTC(), sessionExpiry(now, configured),
+		a := &authInterceptor{policy: func(context.Context) Policy { return Policy{SessionDuration: configured} }}
+		assert.Equal(t, now.Add(a.slideDuration(a.currentPolicy(context.Background()))).UTC(), sessionExpiry(now, configured),
 			"configured=%s", configured)
 	}
 }
@@ -239,10 +239,10 @@ func TestMinSessionDurationBoundsTheOvershoot(t *testing.T) {
 // configured otherwise.
 func TestSweepDropsLastTouchOnceTheThrottleWindowPassed(t *testing.T) {
 	a := &authInterceptor{
-		policy: func() Policy { return Policy{SessionDuration: DefaultSessionDuration} },
+		policy: func(context.Context) Policy { return Policy{SessionDuration: DefaultSessionDuration} },
 		state:  &authState{},
 	}
-	threshold := a.touchThreshold(a.currentPolicy())
+	threshold := a.touchThreshold(a.currentPolicy(context.Background()))
 
 	a.state.lastTouch.Store("fresh", time.Now())
 	a.state.lastTouch.Store("stale", time.Now().Add(-threshold-time.Minute))
@@ -270,18 +270,18 @@ func TestValidateSessionDuration(t *testing.T) {
 // alone) would sign every user out through the day.
 func TestSlideDurationFallsBackToDefault(t *testing.T) {
 	a := &authInterceptor{}
-	assert.Equal(t, DefaultSessionDuration+sessionTouchThreshold, a.slideDuration(a.currentPolicy()))
+	assert.Equal(t, DefaultSessionDuration+sessionTouchThreshold, a.slideDuration(a.currentPolicy(context.Background())))
 }
 
 // The configured duration, not the default, is what a slide writes.
 func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 	configured := 36 * time.Hour
 	interceptor, registry := NewInterceptor(InterceptorOptions{
-		Policy: func() Policy { return Policy{SessionDuration: configured} },
+		Policy: func(context.Context) Policy { return Policy{SessionDuration: configured} },
 	})
 	t.Cleanup(registry.Stop)
 
-	assert.Equal(t, configured+sessionTouchThreshold, interceptor.(*authInterceptor).slideDuration(interceptor.(*authInterceptor).currentPolicy()))
+	assert.Equal(t, configured+sessionTouchThreshold, interceptor.(*authInterceptor).slideDuration(interceptor.(*authInterceptor).currentPolicy(context.Background())))
 }
 
 // TestPolicyResolvedOncePerRequest pins the request-path cost contract:
@@ -292,7 +292,7 @@ func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 func TestPolicyResolvedOncePerRequest(t *testing.T) {
 	var calls int
 	inc := &authInterceptor{
-		policy: func() Policy {
+		policy: func(context.Context) Policy {
 			calls++
 			return Policy{}
 		},

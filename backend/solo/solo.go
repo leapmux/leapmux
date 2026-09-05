@@ -105,7 +105,10 @@ func defaultDeps() deps {
 // request, so it cannot know whether a password exists yet -- which is why it
 // states the condition rather than asserting the danger. The frontend makes
 // the same demand where it can be acted on: it blocks the whole app with a
-// password-setup screen while the hub is exposed and the account has none.
+// password-setup screen for every TCP connection while the account has no
+// password. That screen no longer depends on the listen address -- loopback
+// reaches it too -- because the rule is now the TRANSPORT: only the local IPC
+// socket is credential-free.
 const nonLoopbackListenWarnMsg = "solo mode binds a non-loopback address, so this hub is reachable from other machines. " +
 	"Until the \"solo\" account has a password, the first TCP caller can claim it by setting that password. " +
 	"Other protected actions stay closed until setup completes. Open the app and set the password now. " +

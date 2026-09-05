@@ -245,7 +245,7 @@ The Hub never terminates TLS on its own. To serve LeapMux over HTTPS, put a reve
 
 1. Set `public_url` to the external HTTPS URL: `leapmux control admin settings set public_url "https://hub.example.com"`.
 2. Enable secure cookies so they are `__Host-` prefixed and the derived base URL uses `https`: `leapmux control admin settings set secure_cookies true`. (This changes the cookie name, which signs every current session out — do it once, at setup.)
-3. Configure the direct proxy peer: `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1"]'`. Use the actual proxy address or range when it runs on another host.
+3. Configure the direct proxy peer: `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. Both loopback forms are listed because `proxy_pass http://localhost:4327` reaches the Hub over IPv6 on a dual-stack host, and an untrusted peer has its forwarding headers ignored with no error. Use the actual proxy address or range when the proxy runs on another host.
 4. Point each Worker's `-hub` URL at the same external `https://` address. Workers always initiate outbound connections, so they need no inbound ports of their own.
 
 All three settings are hot. A running Hub applies them within about 30 seconds, with no restart.
