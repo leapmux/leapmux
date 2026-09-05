@@ -137,3 +137,24 @@ export const taskSecondary = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
 })
+
+// The box shown in place of the rows when the selected kind has none. Without
+// it a kind with no rows renders an empty area that reads as a rendering fault.
+//
+// `emptyState` is the BOX; the text inside it is the host's `emptyMessage`
+// prop, because only the host knows which tab is showing. The two carry
+// different names so a reader of BackgroundTaskList never has to decide which
+// `emptyMessage` a line means.
+export const emptyState = style({
+  padding: 'var(--space-4) var(--space-2)',
+  color: 'var(--faint-foreground)',
+  fontSize: 'var(--text-7)',
+  textAlign: 'center',
+})
+
+// The same box when the registry could not be LOADED. Carries the danger colour
+// because it reports a fault rather than an absence, and the two otherwise read
+// identically.
+export const emptyStateFailed = style({
+  color: 'var(--danger)',
+})
