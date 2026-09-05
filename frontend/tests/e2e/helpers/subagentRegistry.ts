@@ -9,9 +9,9 @@
  */
 import type { Locator, Page } from '@playwright/test'
 import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { decompressContentToString } from '../../../src/lib/decompress'
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
+import { countGoalTransitionsInMessages } from './goalTransitions'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
 
@@ -339,15 +339,7 @@ export async function countGoalTransitions(
       ListAgentMessagesResponseSchema,
       { agentId, limit: 200 },
     )
-    let count = 0
-    for (const message of resp.messages ?? []) {
-      // Every persisted message is zstd-compressed unconditionally (see
-      // msgcodec.Compress), so the bytes must go through the same decoder the
-      // browser uses. Reading them as text finds nothing, silently.
-      const body = decompressContentToString(message.content, message.contentCompression)
-      count += body?.match(/"goal_(?:updated|cleared)"/g)?.length ?? 0
-    }
-    return count
+    return countGoalTransitionsInMessages(resp.messages ?? [])
   }
   catch {
     return null
