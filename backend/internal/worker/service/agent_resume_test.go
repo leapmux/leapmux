@@ -210,6 +210,50 @@ func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
 		"a subagent transcript owns no process, so it must never be a resume candidate")
 }
 
+// TestAgentResume_StopDrainsScheduledWork pins the shutdown half of the
+// reusable scheduler.
+//
+// Shutdown stops the resumer and then closes the worker database. A Stop that
+// returned while a scheduled resume was still in its handshake would leave that
+// goroutine reading a closed handle -- the same hazard the boot sweep joins its
+// errgroup for. Schedule therefore increments the wait counter BEFORE it starts
+// the goroutine, under the same lock that refuses a candidate once stopped, so
+// no job can slip in after Wait begins.
+func TestAgentResume_StopDrainsScheduledWork(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.block = make(chan struct{})
+	recorder.install(svc)
+	seedOpenAgent(t, svc, "agent-scheduled", true)
+
+	resumer := svc.NewAgentResumer()
+	resumer.Schedule(t.Context(), []string{"agent-scheduled"})
+	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 },
+		"the scheduled resume reached the start")
+
+	stopped := make(chan struct{})
+	go func() {
+		resumer.Stop()
+		close(stopped)
+	}()
+	// A window that is too SHORT can only miss a regression here, never invent
+	// one: a correct Stop blocks until the release below, whatever the machine.
+	select {
+	case <-stopped:
+		require.FailNow(t, "Stop returned while a scheduled resume was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(recorder.block)
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "Stop never returned after the scheduled resume finished")
+	}
+}
+
 // TestAgentResume_UsesTheBackgroundStartPath pins which manager entry point the
 // sweep reaches, which the shared recorder cannot see because it stubs both.
 //

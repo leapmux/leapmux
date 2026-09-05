@@ -49,6 +49,7 @@ const restartTerminalMock = workerRpc.restartTerminal as unknown as ReturnType<t
 const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
 const closeTerminalMock = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
 const listAvailableShellsMock = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
+const resizeTerminalMock = workerRpc.resizeTerminal as unknown as ReturnType<typeof vi.fn>
 const showWarnToastMock = showWarnToast as unknown as ReturnType<typeof vi.fn>
 
 /**
@@ -585,6 +586,20 @@ describe('useterminaloperations.handleterminalinput', () => {
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
     expect(sendInputMock).not.toHaveBeenCalled()
     expect(restartTerminalMock).not.toHaveBeenCalled()
+  })
+
+  // Archival suppresses INPUT and nothing else. Reading a dead terminal is the
+  // point of keeping the tab, and reflow is what makes a resized window show
+  // the buffer correctly -- so the metadata patch that drives it must survive.
+  // The guard belongs on input alone; a copy of it here would freeze the
+  // archived screen at whatever width it had when the workspace was archived.
+  it('still records a resize while archived, and sends no RPC to the dead PTY', async () => {
+    const { ops, view } = setup(TerminalStatus.EXITED, {}, false)
+
+    await ops.handleTerminalResize('tid-1', 120, 40)
+
+    expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 120, rows: 40 })
+    expect(resizeTerminalMock).not.toHaveBeenCalled()
   })
 
   it('ignores non-Enter input on an EXITED terminal', async () => {
