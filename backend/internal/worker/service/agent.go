@@ -2773,10 +2773,10 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// Serialize this cold-start against any concurrent auto-start or restart for the same
 	// agent. The HasAgent check above and startAgent below otherwise straddle no lock, so two
 	// concurrent dispatches to a cold agent would both pass the check and spawn duplicate
-	// subprocesses. The second process could
-	// overwriting (and orphaning) the first in the manager's agent map. LockAgent is the same
-	// per-agent lifecycle mutex restart/clear use (see RestartAgent); re-check HasAgent under
-	// it (double-checked locking) so a start that won the race is observed rather than repeated.
+	// subprocesses. The second process would then overwrite the first in the manager's agent
+	// map, and orphan it. LockAgent is the same per-agent lifecycle mutex restart/clear use
+	// (see RestartAgent); re-check HasAgent under it (double-checked locking) so a start that
+	// won the race is observed rather than repeated.
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
 	if svc.Agents.HasAgent(agentID) {

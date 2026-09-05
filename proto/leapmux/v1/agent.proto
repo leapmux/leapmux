@@ -595,9 +595,9 @@ message ListAgentMessagesResponse {
   // content: when page 1 comes back empty it resumes after latest_seq instead of seq 0,
   // so a transient empty page on a populated agent can no longer collapse to the
   // "drain the entire history from OLDEST" path. Explicit presence (the shared convention
-  // with CatchUpStart/Complete.latest_seq): UNSET =
-  // the worker couldn't determine it (a DB error) and the consumer skips reconciliation /
-  // falls back to its loaded cursor; present 0 = the agent genuinely has no messages;
+  // with CatchUpStart/Complete.latest_seq): UNSET = the worker couldn't determine it
+  // (a DB error) and the consumer skips reconciliation / falls back to its loaded
+  // cursor; present 0 = the agent genuinely has no messages;
   // present >0 = the authoritative MAX(seq).
   optional int64 latest_seq = 5;
   // Authoritative provider-agnostic background-task registry at the time the
