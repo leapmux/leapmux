@@ -355,7 +355,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// Respawn the agent processes the previous worker process left behind. It
 	// runs once, in the background, and only after the reconciler reports a
 	// CONVERGED pass -- see the OnConverged hook below for the reason.
-	resumer := svc.NewAgentResumer()
+	resumer := svc.AgentResumer()
 
 	// Periodic reconciler: applies authoritative archive state and drops local
 	// rows that the Hub no longer owns. It runs once at startup and every hour
@@ -372,7 +372,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 			// worktree dir.
 			ReapWorktree:      svc.ReapOrphanWorktree,
 			CloseTab:          svc.CloseTabForReconcile,
-			ApplyArchiveState: svc.ApplyTabArchiveStateForReconcile,
+			ApplyArchiveState: svc.ApplyTabArchiveState,
 			ResumeAgents:      func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
 			// The resume sweep's start signal, and the reason it is this and not
 			// "the worker finished wiring". A converged pass is the first moment

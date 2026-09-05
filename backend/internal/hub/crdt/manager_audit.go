@@ -29,6 +29,67 @@ func containsTombstoneTab(batch *leapmuxv1.OpBatch) bool {
 	return false
 }
 
+// movedTabWorkerIDs resolves, for each op that MOVES an existing tab, the
+// worker id that hosts it after the batch.
+//
+// A move changes the tab's workspace, and with it the archive state the Hub
+// answers for that tab. The Worker caches that answer per row
+// (agents.workspace_archived, terminals.workspace_archived), so without a nudge
+// the cache is repaired only at the hourly tick. The visible failure is a tab
+// moved OUT of an archived workspace: its row keeps the flag, so every message
+// the user sends it answers "agent belongs to an archived workspace" for up to
+// an hour, on a tab the sidebar shows as live.
+//
+// It deliberately does NOT report a tab the batch CREATED. A fresh row is born
+// ACTIVE, which is right for every workspace except an archived one, and
+// nudging on each open would put a reconcile pass on the most common tab
+// operation there is -- the cost the "adding a tab has no local state to
+// release" tests pin. A tab created directly into an archived workspace is
+// reachable only from the CLI (the browser blocks it) and converges on the
+// next pass.
+//
+// tile_id is the workspace proxy: a tile belongs to one root, so a
+// cross-workspace move necessarily rewrites it. A ReviveTab always counts,
+// because it re-materializes a tab whose workspace nothing tracked while it
+// was shelled out.
+func movedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre, post *leapmuxv1.UserCrdtState) map[string]string {
+	out := make(map[string]string)
+	for _, op := range batch.GetOps() {
+		var tabID string
+		alwaysNudge := false
+		switch body := op.GetBody().(type) {
+		case *leapmuxv1.CrdtOp_SetTabRegister:
+			tabID = body.SetTabRegister.GetTabId()
+		case *leapmuxv1.CrdtOp_ReviveTab:
+			tabID = body.ReviveTab.GetTab().GetTabId()
+			alwaysNudge = true
+		default:
+			continue
+		}
+		if tabID == "" {
+			continue
+		}
+		after := post.GetTabs()[tabID]
+		if after == nil {
+			continue
+		}
+		if !alwaysNudge {
+			before := pre.GetTabs()[tabID]
+			if before == nil {
+				// A create, not a move.
+				continue
+			}
+			if before.GetTileId().GetValue() == after.GetTileId().GetValue() {
+				continue
+			}
+		}
+		if wid := after.GetWorkerId().GetValue(); wid != "" {
+			out[tabID] = wid
+		}
+	}
+	return out
+}
+
 // tombstonedTabWorkerIDs resolves, for each TombstoneTab op in batch, the worker
 // id the tab was pinned to in the pre-commit state. It runs SYNCHRONOUSLY at the
 // spawn site (processBatch, before the audit goroutine is launched) so the

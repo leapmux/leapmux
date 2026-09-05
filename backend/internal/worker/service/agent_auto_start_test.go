@@ -405,7 +405,7 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	}
 
 	// The open path finishes and hands over its process.
-	svc.AgentStartup.succeed("agent-1")
+	svc.AgentStartup.succeed("agent-1", nil)
 	svc.AgentStartup.finishEntry(openHandle)
 
 	select {

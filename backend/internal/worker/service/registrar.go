@@ -231,17 +231,52 @@ func decodeInto[T any, PT decodedRequest[T]](
 	}
 }
 
+// refuseArchivedWrite answers a write RPC that names a row in an archived
+// workspace, and reports whether it answered. Read it as the one place the rule
+// "an archived workspace takes no mutation" lives on this side of the wire.
+//
+// The registrars call it rather than the handlers, so a new write handler is
+// refused by construction. A per-handler guard covered four of the thirteen
+// agent and terminal write RPCs, and the nine it missed included every one that
+// writes state outliving the archive: RenameAgent, DeleteAgentMessage,
+// UpdateTerminalTitle, and both closes.
+//
+// It keys on the SCOPE, not on the method, because the scope already states
+// whether a handler mutates. A read handler stays reachable, which is what
+// makes an archived workspace browsable rather than merely frozen.
+//
+// OpenAgent and OpenTerminal are deliberately NOT covered, and cannot be: they
+// create the row this guard reads, and a Worker stores no workspace id (see
+// OpenAgentRequest in agent.proto). The reconciler applies the Hub's
+// authoritative state to such a row on its next pass.
+func refuseArchivedWrite(sender channel.ResponseWriter, scope leapmuxv1.Scope, archived int64, subject string) bool {
+	if archived == 0 {
+		return false
+	}
+	switch scope {
+	case leapmuxv1.Scope_SCOPE_AGENT_WRITE, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE:
+		sendFailedPrecondition(sender, subject+" belongs to an archived workspace")
+		return true
+	default:
+		return false
+	}
+}
+
 // agentGatedHandler builds the unmarshal → requireAgent → fn wrapper used by
 // registerAgentGated. Explicit type args sidestep constraint-inference edge
 // cases in nested generic calls (mirroring Dispatcher / ownerOnlyRegistrar
 // style).
 func agentGatedHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
+	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
 	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		row, ok := svc.requireAgent(sender, decoded.GetAgentId())
 		if !ok {
+			return
+		}
+		if refuseArchivedWrite(sender, scope, row.WorkspaceArchived, "agent") {
 			return
 		}
 		fn(ctx, caller, decoded, row, sender)
@@ -256,7 +291,7 @@ func registerAgentGated[T any, PT agentScopedRequest[T]](
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Agent, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().Register(method, scope, agentGatedHandler[T, PT](r.svc, fn))
+	r.ownerOnly().Register(method, scope, agentGatedHandler[T, PT](r.svc, scope, fn))
 }
 
 // agentGatedByIDHandler builds the unmarshal → requireAgentID → fn wrapper
@@ -266,10 +301,15 @@ func registerAgentGated[T any, PT agentScopedRequest[T]](
 // the loaded row.
 func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 	svc *Service,
+	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
 	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
-		if !svc.requireAgentID(sender, decoded.GetAgentId()) {
+		archived, ok := svc.requireAgentID(sender, decoded.GetAgentId())
+		if !ok {
+			return
+		}
+		if refuseArchivedWrite(sender, scope, archived, "agent") {
 			return
 		}
 		fn(ctx, caller, decoded, sender)
@@ -286,18 +326,22 @@ func registerAgentGatedByID[T any, PT agentScopedRequest[T]](
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, agentGatedByIDHandler[T, PT](r.svc, fn))
+	r.ownerOnly().RegisterMode(method, scope, mode, agentGatedByIDHandler[T, PT](r.svc, scope, fn))
 }
 
 // terminalGatedHandler builds the unmarshal → requireTerminal → fn wrapper
 // used by registerTerminalGated.
 func terminalGatedHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
+	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
 	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
 		row, ok := svc.requireTerminal(sender, decoded.GetTerminalId())
 		if !ok {
+			return
+		}
+		if refuseArchivedWrite(sender, scope, row.WorkspaceArchived, "terminal") {
 			return
 		}
 		fn(ctx, caller, decoded, row, sender)
@@ -312,7 +356,7 @@ func registerTerminalGated[T any, PT terminalScopedRequest[T]](
 	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, row db.Terminal, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().Register(method, scope, terminalGatedHandler[T, PT](r.svc, fn))
+	r.ownerOnly().Register(method, scope, terminalGatedHandler[T, PT](r.svc, scope, fn))
 }
 
 // terminalGatedByIDHandler builds the unmarshal → requireTerminalID → fn
@@ -321,10 +365,15 @@ func registerTerminalGated[T any, PT terminalScopedRequest[T]](
 // handlers that never read the row.
 func terminalGatedByIDHandler[T any, PT terminalScopedRequest[T]](
 	svc *Service,
+	scope leapmuxv1.Scope,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) channel.HandlerFunc {
 	return decodeInto[T, PT](func(ctx context.Context, caller channel.Caller, decoded PT, sender channel.ResponseWriter) {
-		if !svc.requireTerminalID(sender, decoded.GetTerminalId()) {
+		archived, ok := svc.requireTerminalID(sender, decoded.GetTerminalId())
+		if !ok {
+			return
+		}
+		if refuseArchivedWrite(sender, scope, archived, "terminal") {
 			return
 		}
 		fn(ctx, caller, decoded, sender)
@@ -342,7 +391,7 @@ func registerTerminalGatedByID[T any, PT terminalScopedRequest[T]](
 	mode dispatchMode,
 	fn func(ctx context.Context, caller channel.Caller, req PT, sender channel.ResponseWriter),
 ) {
-	r.ownerOnly().RegisterMode(method, scope, mode, terminalGatedByIDHandler[T, PT](r.svc, fn))
+	r.ownerOnly().RegisterMode(method, scope, mode, terminalGatedByIDHandler[T, PT](r.svc, scope, fn))
 }
 
 // registerTerminalForRestartGated is the sole user of
@@ -357,6 +406,9 @@ func registerTerminalForRestartGated(
 	registerOwnerGated(r, method, scope, dispatchPlain, func(ctx context.Context, caller channel.Caller, decoded *leapmuxv1.RestartTerminalRequest, sender channel.ResponseWriter) {
 		row, ok := r.svc.requireTerminalForRestart(sender, decoded.GetTerminalId())
 		if !ok {
+			return
+		}
+		if refuseArchivedWrite(sender, scope, row.WorkspaceArchived, "terminal") {
 			return
 		}
 		fn(ctx, caller, decoded, row, sender)

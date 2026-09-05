@@ -33,7 +33,7 @@ func TestStartupCore_ArchiveCancellationIsDistinctFromCloseAndFailure(t *testing
 
 	archivedHandle := core.cancelForArchive("archive-tab")
 	require.Same(t, handle, archivedHandle)
-	archived, phase0Complete := core.archiveDisposition(handle)
+	archived, phase0Complete := core.archiveStopped(handle), core.phase0Complete(handle)
 	assert.True(t, archived)
 	assert.True(t, phase0Complete)
 	assert.True(t, cancelled)
@@ -61,7 +61,7 @@ func TestStartupCore_ArchiveFindsNoHandleOnceTheStartupFinished(t *testing.T) {
 	core := newStartupCore()
 	handle := core.begin("finished-tab", func() {})
 	require.NotNil(t, handle)
-	core.succeed("finished-tab")
+	core.succeed("finished-tab", nil)
 	core.finishEntry(handle)
 
 	assert.Nil(t, core.cancelForArchive("finished-tab"),
@@ -364,7 +364,7 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 		end  func(core *startupCore)
 		want startupWait
 	}{
-		{"succeed", func(core *startupCore) { core.succeed("tab-1") }, startupWait{settled: true}},
+		{"succeed", func(core *startupCore) { core.succeed("tab-1", nil) }, startupWait{settled: true}},
 		{"fail", func(core *startupCore) { core.fail("tab-1", "boom") }, startupWait{settled: true}},
 		{
 			"cancelAndClear",
@@ -453,7 +453,7 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	}
 	clock.waitArmed(t)
 
-	core.succeed("tab-1")
+	core.succeed("tab-1", nil)
 	for range waiters {
 		select {
 		case got := <-done:
@@ -480,17 +480,17 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 		then  func(core *startupCore)
 	}{
 		{"succeed then succeed",
-			func(c *startupCore) { c.succeed("tab-1") },
-			func(c *startupCore) { c.succeed("tab-1") }},
+			func(c *startupCore) { c.succeed("tab-1", nil) },
+			func(c *startupCore) { c.succeed("tab-1", nil) }},
 		{"succeed then cancelAndClear",
-			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.succeed("tab-1", nil) },
 			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) }},
 		{"succeed then fail",
-			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.succeed("tab-1", nil) },
 			func(c *startupCore) { c.fail("tab-1", "boom") }},
 		{"cancelAndClear then succeed",
 			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) },
-			func(c *startupCore) { c.succeed("tab-1") }},
+			func(c *startupCore) { c.succeed("tab-1", nil) }},
 		{"fail then fail",
 			func(c *startupCore) { c.fail("tab-1", "boom") },
 			func(c *startupCore) { c.fail("tab-1", "boom again") }},

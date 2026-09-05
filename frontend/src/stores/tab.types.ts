@@ -185,9 +185,14 @@ export function isImageTab(t: Tab): t is ImageTab {
  * register / replay / re-read / revoke path -- and every consumer of that path
  * asks this question rather than listing the two types again.
  *
- * The user-facing rename rule follows from the same property: such a tab has no
- * server-side name to rename because its title comes from the payload. Archive
- * state still blocks closing every tab type.
+ * Two user-facing rules follow from the same property. Such a tab has no
+ * server-side name to rename, because its title comes from the payload. And it
+ * owns no process, so a close drops a viewer and stops nothing -- which is why
+ * `LastTabCloseDialog` reads `willStop` from this predicate.
+ *
+ * A close is NOT merely a row delete, though: `useTabOperations` also revokes
+ * the payload, and that RPC can remove the worktree from disk. Archive state
+ * blocks the close of every tab type, this one included.
  */
 export function isPayloadBackedTabType(type: TabType): boolean {
   return type === TabType.FILE || type === TabType.IMAGE

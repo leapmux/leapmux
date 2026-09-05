@@ -130,9 +130,20 @@ function putNode(mgr: PendingOpsManager, nodeId: string, position: string): void
 }
 
 /** Let the queued microtask flush and its IDB write settle. */
-async function settle(): Promise<void> {
+/**
+ * Let the recorder's queued flush run, then wait for the WORK it started.
+ *
+ * The ticks are what let a debounced flush fire at all; `whenSettled` is what
+ * ends the state. Counting ticks alone could not: a case where one write's
+ * success re-issues another needs the second cycle to both start and finish,
+ * and on a loaded runner it had not started when the assertions ran. Pass the
+ * recorder wherever a case chains writes.
+ */
+async function settle(recorder?: { whenSettled: () => Promise<void> }): Promise<void> {
   for (let i = 0; i < 5; i++)
     await new Promise(resolve => setTimeout(resolve, 0))
+  if (recorder)
+    await recorder.whenSettled()
 }
 
 /** Seed a checkpoint so reads return `ok` rather than `miss`. */
@@ -165,7 +176,7 @@ describe('createCheckpointRecorder', () => {
     recorder.record(frame('a'))
     recorder.record(frame('b'))
     recorder.record(frame('c'))
-    await settle()
+    await settle(recorder)
 
     const read = await readCheckpoint(USER, CLIENT)
     expect(read.status).toBe('ok')
@@ -188,7 +199,7 @@ describe('createCheckpointRecorder', () => {
     })
     recorder.record(frame('a'))
     recorder.record(frame('b'))
-    await settle()
+    await settle(recorder)
 
     const read = await readCheckpoint(USER, CLIENT)
     expect(read.status).toBe('ok')
@@ -215,7 +226,7 @@ describe('createCheckpointRecorder', () => {
     expect(recorder.opLogCount).toBe(9)
 
     recorder.record(frame('one-more'))
-    await settle()
+    await settle(recorder)
 
     expect(recorder.opLogCount).toBe(0)
     await recorder.dispose()
@@ -229,12 +240,12 @@ describe('createCheckpointRecorder', () => {
     const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, threshold: 1 })
 
     recorder.record(frame('a'))
-    await settle()
+    await settle(recorder)
     expect(recorder.opLogCount).toBe(1)
 
     // The next flush must NOT retry -- the retry point moved out by a threshold.
     recorder.record(frame('b'))
-    await settle()
+    await settle(recorder)
     expect(recorder.opLogCount).toBe(2)
     await recorder.dispose()
   })
@@ -268,7 +279,7 @@ describe('createCheckpointRecorder', () => {
     await recorder.dispose()
 
     recorder.record(frame('after-dispose'))
-    await settle()
+    await settle(recorder)
 
     const read = await readCheckpoint(USER, CLIENT)
     expect(read.status).toBe('ok')
@@ -319,7 +330,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     })
     putNode(mgr, 'edited', 'changed')
     recorder.record(nodeFrame('b1', 'edited'))
-    await settle()
+    await settle(recorder)
 
     // The write ASKED for is the observation: a full rewrite would leave
     // byte-identical rows behind, so the persisted result cannot tell the two
@@ -350,7 +361,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     })
     putNode(mgr, 'bulk-3', 'v2')
     recorder.record(nodeFrame('b1', 'bulk-3'))
-    await settle()
+    await settle(recorder)
 
     expect(lastDelta().upserts).toHaveLength(1)
     await recorder.dispose()
@@ -383,7 +394,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     putNode(mgr, 'n1', 'v1')
     recorder.record(nodeFrame('b1', 'n1'))
     expect(recorder.dirtyKeys.has('node:n1')).toBe(true)
-    await settle()
+    await settle(recorder)
     expect([...recorder.dirtyKeys]).toEqual([])
     await recorder.dispose()
   })
@@ -403,7 +414,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     })
     delete confirmed(mgr).nodes.doomed
     recorder.record(nodeFrame('b1', 'doomed'))
-    await settle()
+    await settle(recorder)
 
     expect(keysOf(lastDelta().deletes)).toEqual(['node:doomed'])
     expect((await persistedChunks()).has('node:doomed')).toBe(false)
@@ -435,7 +446,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     // watermark (physical 10) is past the tombstone (physical 2), so
     // compactTombstones collects it inside the rewrite.
     recorder.record(nodeFrame('b1', 'alive'))
-    await settle()
+    await settle(recorder)
 
     expect(keysOf(lastDelta().deletes)).toEqual(['node:tombstoned'])
     const chunks = await persistedChunks()
@@ -467,7 +478,9 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     await Promise.resolve()
     putNode(mgr, 'second', 'v1')
     recorder.record(nodeFrame('b2', 'second'))
-    await settle()
+    // Chains two writes: the in-flight one, then the rewrite its success
+    // re-issues. Wait for the work, not for a tick count.
+    await settle(recorder)
 
     expect(recorder.dirtyKeys.has('node:first')).toBe(false)
     expect(recorder.dirtyKeys.has('node:second')).toBe(false)
@@ -486,7 +499,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     expect(recorder.needsFullRewrite).toBe(true)
 
     recorder.record(nodeFrame('b1', 'a'))
-    await settle()
+    await settle(recorder)
 
     expect(lastDelta().full).toBe(true)
     expect([...(await persistedChunks()).keys()].sort()).toEqual(['node:a', 'node:b'])
@@ -538,11 +551,11 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       })
       putNode(mgr, 'a', 'v1')
       recorder.record(nodeFrame('b1', 'a'))
-      await settle()
+      await settle(recorder)
       expect(storeSpy.appends).toBe(0)
 
       base.settle({ frames: [], nextOrdinal: 7 })
-      await settle()
+      await settle(recorder)
 
       // Released, not dropped -- and at the base's ordinal, not at 0.
       expect(storeSpy.appends).toBe(1)
@@ -564,11 +577,11 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       })
       putNode(mgr, 'held', 'v1')
       recorder.record(nodeFrame('b1', 'held'))
-      await settle()
+      await settle(recorder)
       expect([...recorder.dirtyKeys]).toEqual(['node:held'])
 
       base.settle({ frames: [], nextOrdinal: 0 })
-      await settle()
+      await settle(recorder)
       expect(storeSpy.appends).toBe(1)
       await recorder.dispose()
     })
@@ -587,7 +600,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         threshold: 1,
       })
       recorder.rewriteNow()
-      await settle()
+      await settle(recorder)
       expect(storeSpy.deltas).toHaveLength(0)
 
       // DEFERRED, not dropped: the base landing re-issues it with no second
@@ -596,7 +609,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       // ALWAYS lands inside this hold on the seed path, so a dropped request
       // meant a seeded tab never performed that repair at all.
       base.settle(undefined)
-      await settle()
+      await settle(recorder)
       expect(storeSpy.deltas).toHaveLength(1)
       await recorder.dispose()
     })
@@ -614,7 +627,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         hydratedFrom: base.promise,
       })
       base.settle({ frames: [], nextOrdinal: 0 })
-      await settle()
+      await settle(recorder)
       expect(storeSpy.deltas).toHaveLength(0)
       await recorder.dispose()
     })
@@ -637,16 +650,16 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         hydratedFrom: base.promise,
       })
       recorder.record(nodeFrame('pre-bootstrap', 'a'))
-      await settle()
+      await settle(recorder)
       expect(storeSpy.appends).toBe(0)
 
       recorder.onCheckpointReset()
-      await settle()
+      await settle(recorder)
       base.settle(undefined)
-      await settle()
+      await settle(recorder)
 
       recorder.record(nodeFrame('post-bootstrap', 'a'))
-      await settle()
+      await settle(recorder)
 
       const read = await readCheckpoint(USER, CLIENT)
       expect(read.status).toBe('ok')
@@ -673,17 +686,17 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         hydratedFrom: base.promise,
       })
       recorder.record(nodeFrame('held', 'a'))
-      await settle()
+      await settle(recorder)
 
       // Invalidate, so the settle below takes adoptBase's refusal arm...
       recorder.onCheckpointReset()
-      await settle()
+      await settle(recorder)
       base.settle({ frames: [], nextOrdinal: 4 })
-      await settle()
+      await settle(recorder)
 
       // ...and nothing is left queued: no later frame can carry it onto disk.
       recorder.record(nodeFrame('after', 'a'))
-      await settle()
+      await settle(recorder)
       const read = await readCheckpoint(USER, CLIENT)
       expect(read.status).toBe('ok')
       if (read.status !== 'ok')
@@ -707,7 +720,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       expect(recorder.needsFullRewrite).toBe(true)
 
       base.settle({ frames: [], nextOrdinal: 0 })
-      await settle()
+      await settle(recorder)
       expect(recorder.needsFullRewrite).toBe(false)
       await recorder.dispose()
     })
@@ -727,11 +740,11 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         threshold: 1,
       })
       base.settle(undefined)
-      await settle()
+      await settle(recorder)
       expect(recorder.needsFullRewrite).toBe(true)
 
       recorder.record(nodeFrame('b1', 'a'))
-      await settle()
+      await settle(recorder)
       expect(lastDelta().full).toBe(true)
       await recorder.dispose()
     })
@@ -749,11 +762,11 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         threshold: 1,
       })
       base.reject(new Error('adopt blew up'))
-      await settle()
+      await settle(recorder)
       expect(recorder.needsFullRewrite).toBe(true)
 
       recorder.record(nodeFrame('b1', 'a'))
-      await settle()
+      await settle(recorder)
       expect(lastDelta().full).toBe(true)
       await recorder.dispose()
     })
@@ -773,10 +786,10 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         threshold: 1,
       })
       recorder.onCheckpointReset()
-      await settle()
+      await settle(recorder)
 
       base.settle({ frames: [nodeFrame('r1', 'stale')], nextOrdinal: 9 })
-      await settle()
+      await settle(recorder)
 
       expect(recorder.dirtyKeys.has('node:stale')).toBe(false)
       // The bootstrap's own FULL rewrite is what re-establishes the base.
@@ -794,7 +807,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       })
       await recorder.dispose()
       base.settle({ frames: [nodeFrame('r1', 'late')], nextOrdinal: 3 })
-      await settle()
+      await settle(recorder)
 
       expect(recorder.dirtyKeys.has('node:late')).toBe(false)
       expect(storeSpy.appends).toBe(0)
@@ -842,7 +855,7 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       = create(UserCrdtStateSchema, { userId: USER, currentEpoch: 1n })
     putNode(mgr, 'from-new-lineage', 'v1')
     recorder.onCheckpointReset()
-    await settle()
+    await settle(recorder)
 
     expect(lastDelta().full).toBe(true)
     expect([...(await persistedChunks()).keys()]).toEqual(['node:from-new-lineage'])
@@ -874,7 +887,7 @@ describe('createCheckpointRecorder write-side bounds', () => {
 
     recorder.record(frame('a'))
     recorder.record(frame('b'))
-    await settle()
+    await settle(recorder)
 
     // The rewrite ran (it truncates, so the log is empty either way) -- what
     // must NOT have happened is the segment write that preceded it.
@@ -903,7 +916,7 @@ describe('createCheckpointRecorder write-side bounds', () => {
     })
 
     recorder.record(frame('a'))
-    await settle()
+    await settle(recorder)
 
     const read = await readCheckpoint(USER, CLIENT)
     expect(read.status).toBe('ok')
@@ -924,7 +937,7 @@ describe('createCheckpointRecorder rebase gating', () => {
     await writeBase()
 
     recorder.record(frame('before'))
-    await settle()
+    await settle(recorder)
     const afterFirst = await readCheckpoint(USER, CLIENT)
     if (afterFirst.status !== 'ok')
       throw new Error('expected a readable checkpoint')
@@ -932,11 +945,11 @@ describe('createCheckpointRecorder rebase gating', () => {
 
     // A frame that cannot be serialized: the oneof value is not a valid message.
     recorder.record({ event: { case: 'batch', value: { batchId: 1 } } } as never)
-    await settle()
+    await settle(recorder)
 
     recorder.record(frame('after-1'))
     recorder.record(frame('after-2'))
-    await settle()
+    await settle(recorder)
 
     const read = await readCheckpoint(USER, CLIENT)
     expect(read.status).toBe('ok')
@@ -973,7 +986,7 @@ describe('createCheckpointRecorder rebase gating', () => {
     recorder.record(frame('queued-2'))
     // Same synchronous turn: the microtask flush has not run yet.
     recorder.onCheckpointReset()
-    await settle()
+    await settle(recorder)
 
     const read = await readCheckpoint(USER, CLIENT)
     expect(read.status).toBe('ok')
@@ -1009,12 +1022,12 @@ describe('createCheckpointRecorder rebase gating', () => {
     recorder.onCheckpointReset()
     putNode(mgr, 'N', 'P1')
     recorder.record(nodeFrame('during-rebase', 'N'))
-    await settle()
+    await settle(recorder)
 
     // Trip one more rewrite so the dirty set is drained to disk.
     putNode(mgr, 'M', 'Q0')
     recorder.record(nodeFrame('after', 'M'))
-    await settle()
+    await settle(recorder)
 
     expect(storeSpy.deltas.some(delta => keysOf(delta.upserts).includes('node:N'))).toBe(true)
     expect((await persistedChunks()).get('node:N')).not.toBe(before)
@@ -1041,7 +1054,7 @@ describe('createCheckpointRecorder rebase gating', () => {
     // Arm the flush + rewrite, then invalidate before the IDB write settles.
     await Promise.resolve()
     recorder.onCheckpointReset()
-    await settle()
+    await settle(recorder)
 
     // The stale incremental write cannot clear the reset. Its deferred
     // successor must run as a full rewrite before the recorder becomes ready.

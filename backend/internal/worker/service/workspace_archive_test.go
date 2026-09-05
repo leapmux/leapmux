@@ -20,12 +20,18 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func archiveRequest(state leapmuxv1.WorkspaceArchiveState, tabs ...*leapmuxv1.TabRef) *leapmuxv1.SetTabArchiveStateRequest {
-	return &leapmuxv1.SetTabArchiveStateRequest{ArchiveState: state, Tabs: tabs}
+// applyArchive drives the lifecycle operation the way its one production
+// caller does -- the orphan reconciler, through the ApplyArchiveState hook.
+// There is no RPC for it: the Hub nudges, and the reconcile pass applies.
+func applyArchive(t *testing.T, svc *Service, state leapmuxv1.WorkspaceArchiveState, tabs ...*leapmuxv1.TabRef) []string {
+	t.Helper()
+	resumeAgentIDs, err := svc.ApplyTabArchiveState(context.Background(), state, tabs)
+	require.NoError(t, err)
+	return resumeAgentIDs
 }
 
 // agentStatuses collects the statuses broadcast for one agent from a writer
-// that a WatchEvents dispatch is streaming into. Duplicates are kept: "how many
+// that a WatchEvents dispatch streams into. Duplicates are kept: "how many
 // times" is exactly what the duplicate-request test asks.
 func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmuxv1.AgentStatus {
 	t.Helper()
@@ -69,7 +75,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
+	svc, _, _ := setupTestService(t)
 	const agentID = "archive-agent"
 	const terminalID = "archive-terminal"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -134,16 +140,12 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 	svc.agentCleanups.register(agentID, func() { agentCleanup.Store(true) })
 	svc.terminalCleanups.register(terminalID, func() { terminalCleanup.Store(true) })
 
-	w := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", archiveRequest(
+	applyArchive(t, svc,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
 		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
 		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "archive-file"},
-	), w)
+		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "archive-file"})
 
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
 	assert.False(t, svc.Agents.HasAgent(agentID))
 	assert.False(t, svc.Terminals.IsRunning(terminalID))
 	agentRow, err := svc.Queries.GetAgentByID(ctx, agentID)
@@ -193,13 +195,10 @@ func TestWorkspaceArchive_StopsAnAgentThatOwnsNoProcess(t *testing.T) {
 	require.False(t, svc.Agents.HasAgent(agentID))
 	watcher := watchAgent(t, dispatcher, agentID)
 
-	w := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", archiveRequest(
+	applyArchive(t, svc,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
-	), w)
+		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 
-	require.Empty(t, w.errors)
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), row.WorkspaceArchived)
@@ -223,7 +222,7 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
+	svc, _, _ := setupTestService(t)
 	agentIDs := []string{"multi-agent-1", "multi-agent-2", "multi-agent-3"}
 	terminalIDs := []string{"multi-terminal-1", "multi-terminal-2"}
 	tabs := make([]*leapmuxv1.TabRef, 0, len(agentIDs)+len(terminalIDs))
@@ -254,11 +253,8 @@ func TestWorkspaceArchive_StopsEveryTabInTheRequest(t *testing.T) {
 		tabs = append(tabs, &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID})
 	}
 
-	w := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", archiveRequest(
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs...), w)
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs...)
 
-	require.Empty(t, w.errors)
 	for _, agentID := range agentIDs {
 		assert.False(t, svc.Agents.HasAgent(agentID), "agent %s must stop", agentID)
 		row, err := svc.Queries.GetAgentByID(ctx, agentID)
@@ -282,7 +278,7 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
+	svc, _, _ := setupTestService(t)
 	const agentID = "archive-twice"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
@@ -291,13 +287,8 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	var firstCleanup atomic.Bool
 	svc.agentCleanups.register(agentID, func() { firstCleanup.Store(true) })
 
-	request := archiveRequest(
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
-	)
-	first := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", request, first)
-	require.Empty(t, first.errors)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 	require.True(t, firstCleanup.Load(), "the first archive runs the teardown")
 
 	// A fresh cleanup under the same id: the second request must leave it
@@ -306,11 +297,8 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	var secondCleanup atomic.Bool
 	svc.agentCleanups.register(agentID, func() { secondCleanup.Store(true) })
 
-	second := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", request, second)
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 
-	require.Empty(t, second.errors)
-	require.Len(t, second.responses, 1)
 	assert.False(t, secondCleanup.Load(), "an archive that changes no row runs no teardown")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
@@ -329,7 +317,7 @@ func TestWorkspaceArchive_CancelsAnInFlightStartup(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
+	svc, _, _ := setupTestService(t)
 	const agentID = "archive-starting"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
@@ -349,20 +337,16 @@ func TestWorkspaceArchive_CancelsAnInFlightStartup(t *testing.T) {
 		svc.AgentStartup.finishEntry(handle)
 	}()
 
-	w := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", archiveRequest(
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
-	), w)
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID})
 
-	require.Empty(t, w.errors)
 	select {
 	case <-settled:
 	default:
 		require.FailNow(t, "the archive answered while the startup it cancelled was still running")
 	}
-	archived, _ := svc.AgentStartup.archiveDisposition(handle)
-	assert.True(t, archived, "the startup must read the stop as an archive")
+	assert.True(t, svc.AgentStartup.archiveStopped(handle),
+		"the startup must read the stop as an archive")
 	_, closeRaced := svc.AgentStartup.dispositionOf(handle)
 	assert.False(t, closeRaced, "archival is not a tab close, so no worktree decision is recorded")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
@@ -379,7 +363,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	recorder := newStartRecorder()
 	recorder.install(svc)
-	resumer := svc.NewAgentResumer()
+	resumer := svc.AgentResumer()
 	t.Cleanup(resumer.Stop)
 
 	for _, testAgent := range []struct {
@@ -433,7 +417,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "closed"},
 		{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: "terminal-exited"},
 	}
-	resumeAgentIDs, err := svc.applyTabArchiveState(ctx,
+	resumeAgentIDs, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
 	require.NoError(t, err)
 	resumer.Schedule(ctx, resumeAgentIDs)
@@ -441,7 +425,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 	assert.Equal(t, []string{"eligible"}, recorder.ids())
 	assert.False(t, svc.Terminals.HasTerminal("terminal-exited"), "unarchive never restarts a terminal shell")
 
-	resumeAgentIDs, err = svc.applyTabArchiveState(ctx,
+	resumeAgentIDs, err = svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
 	require.NoError(t, err)
 	resumer.Schedule(ctx, resumeAgentIDs)
@@ -454,7 +438,7 @@ func TestWorkspaceArchive_DatabaseFailureStopsNoProcess(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	svc, dispatcher, _ := setupTestService(t)
+	svc, _, _ := setupTestService(t)
 	const agentID = "archive-db-failure"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
@@ -474,35 +458,246 @@ BEGIN
 END`)
 	require.NoError(t, err)
 
-	w := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", archiveRequest(
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
-	), w)
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}})
 
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, int32(codes.Internal), w.errors[0].code)
-	assert.True(t, svc.Agents.HasAgent(agentID))
+	require.Error(t, err)
+	assert.True(t, svc.Agents.HasAgent(agentID),
+		"a failed flag write must stop no process: the teardown runs only after the commit")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Zero(t, row.WorkspaceArchived)
 }
 
-func TestWorkspaceArchive_InvalidStateChangesNothing(t *testing.T) {
+func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
 	t.Parallel()
 
-	svc, dispatcher, _ := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-1", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	w := newTestWriter()
-	dispatch(dispatcher, "SetTabArchiveState", archiveRequest(
-		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED,
-		&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"},
-	), w)
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codeInvalidArgument, w.errors[0].code)
-	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
+
+	// The reconciler drops an unclassifiable row through archivableTabType
+	// BEFORE it calls, so these refusals are a backstop for a future caller
+	// that forgets that filter. Each must refuse before it writes anything.
+	_, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED,
+		[]*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "archive_state must be ACTIVE or ARCHIVED")
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, TabId: "agent-1"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unspecified type")
+
+	row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Zero(t, row.WorkspaceArchived)
+	assert.Zero(t, row.WorkspaceArchived, "a refused request writes nothing")
+}
+
+// TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab pins the rule that
+// moved from four hand-written per-handler guards into the registrars.
+//
+// The four handlers that carried a guard were the four the browser happened to
+// call. Every OTHER write RPC ran, and three of them wrote state that outlives
+// the archive: RenameAgent stored a title, DeleteAgentMessage removed a
+// transcript row, UpdateTerminalTitle stored a title. A second client, the CLI,
+// or any holder of the write scope reached all of them.
+//
+// It also asserts the other half of the rule: a READ stays reachable, which is
+// what makes an archived workspace browsable rather than merely frozen.
+func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, dispatcher, _ := setupTestService(t)
+	const agentID = "archived-agent"
+	const terminalID = "archived-terminal"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Title: "before",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
+		ID: terminalID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), Title: "before",
+		Shell: testutil.TestShell(), Cols: 80, Rows: 24, Screen: []byte{},
+	}))
+	_, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		[]*leapmuxv1.TabRef{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID},
+			{TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabId: terminalID},
+		})
+	require.NoError(t, err)
+
+	refused := []struct {
+		method string
+		req    proto.Message
+	}{
+		{"RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: agentID, Title: "after"}},
+		{"DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{AgentId: agentID, MessageId: "m-1"}},
+		{"CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}},
+		{"InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID}},
+		{"SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{AgentId: agentID, Content: "hi"}},
+		{"UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: "after"}},
+		{"CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: terminalID}},
+		{"SendInput", &leapmuxv1.SendInputRequest{TerminalId: terminalID, Data: []byte("x")}},
+		{"ResizeTerminal", &leapmuxv1.ResizeTerminalRequest{TerminalId: terminalID, Cols: 10, Rows: 10}},
+		{"RestartTerminal", &leapmuxv1.RestartTerminalRequest{TerminalId: terminalID}},
+	}
+	for _, tc := range refused {
+		t.Run(tc.method, func(t *testing.T) {
+			w := newTestWriter()
+			dispatch(dispatcher, tc.method, tc.req, w)
+			require.Len(t, w.errors, 1, "%s must answer an error while archived", tc.method)
+			assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code,
+				"%s must name the archive as the reason, not fail for some other cause", tc.method)
+		})
+	}
+
+	// Nothing above stored anything.
+	agentRow, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, "before", agentRow.Title, "a refused rename must not store a title")
+	assert.False(t, agentRow.ClosedAt.Valid, "a refused close must not stamp closed_at")
+	terminalRow, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, "before", terminalRow.Title, "a refused rename must not store a title")
+	assert.False(t, terminalRow.ClosedAt.Valid, "a refused close must not stamp closed_at")
+
+	// A READ stays reachable: the archive freezes mutation, not visibility.
+	w := newTestWriter()
+	dispatch(dispatcher, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{AgentId: agentID}, w)
+	assert.Empty(t, w.errors, "an archived workspace must stay readable")
+}
+
+// TestWorkspaceArchive_SkipsAClosedRow pins the closed_at predicate on both
+// archive UPDATEs.
+//
+// A closed row stays in these tables for the whole 7-day cleanup retention, and
+// the caller treats every row the UPDATE changed as a tab to stop and broadcast
+// for. Without the predicate an archive that races a close re-ran the full
+// teardown for a tab the worker already tore down -- the same reason the orphan
+// reconciler reads ListAllOpenRootAgentIDs -- and the matching unarchive spent
+// a resume permit on it.
+func TestWorkspaceArchive_SkipsAClosedRow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const closedAgent = "closed-agent"
+	const openAgent = "open-agent"
+	for _, id := range []string{closedAgent, openAgent} {
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}))
+	}
+	_, err := svc.Queries.CloseAgent(ctx, closedAgent)
+	require.NoError(t, err)
+
+	tabs := []*leapmuxv1.TabRef{
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: closedAgent},
+		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: openAgent},
+	}
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs)
+	require.NoError(t, err)
+
+	closedRow, err := svc.Queries.GetAgentByID(ctx, closedAgent)
+	require.NoError(t, err)
+	assert.Zero(t, closedRow.WorkspaceArchived, "a closed row takes no archive flag and no teardown")
+	openRow, err := svc.Queries.GetAgentByID(ctx, openAgent)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), openRow.WorkspaceArchived)
+
+	// The unarchive must not offer the closed row as a resume candidate.
+	resumeAgentIDs, err := svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
+	require.NoError(t, err)
+	assert.Equal(t, []string{openAgent}, resumeAgentIDs,
+		"a closed row must not spend a resume permit only to be skipped")
+}
+
+// TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain pins the atomicity of
+// one tab's lifecycle: the flag write and the teardown that follows it are ONE
+// operation, not two.
+//
+// The failure it excludes: archive A commits workspace_archived=1 and starts
+// draining. Unarchive B commits 0 and hands its agent id back for a resume. A's
+// drain -- which re-reads nothing after its own commit -- then stops the
+// process the resume just started, clears its runtime state, and broadcasts
+// INACTIVE for a row that says active. The user watches an agent they just
+// unarchived go inactive again, with no error anywhere.
+//
+// LockAgent is the seam that makes this deterministic. The archive drain takes
+// it per agent, so holding it here parks A precisely mid-drain, with its flag
+// already committed. B must then WAIT. Without the per-tab lock B runs straight
+// through and answers with a resume id while A is still tearing that agent
+// down, which is the race in one step.
+func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "archive-drain-race"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, Resumed: 1,
+	}))
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID: agentID, WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
+	require.NoError(t, err)
+
+	tabs := []*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}}
+
+	// Park the archive inside its drain, holding the agent's lifecycle lock.
+	releaseAgent := svc.Agents.LockAgent(agentID)
+	archiveDone := make(chan struct{})
+	go func() {
+		defer close(archiveDone)
+		_, archiveErr := svc.ApplyTabArchiveState(ctx,
+			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tabs)
+		assert.NoError(t, archiveErr)
+	}()
+
+	// The archive committed its flag and is now blocked in the drain.
+	testutil.AssertEventually(t, func() bool {
+		row, rowErr := svc.Queries.GetAgentByID(ctx, agentID)
+		return rowErr == nil && row.WorkspaceArchived == 1
+	}, "the archive commits its flag before it drains")
+
+	unarchiveDone := make(chan []string, 1)
+	go func() {
+		resumeIDs, unarchiveErr := svc.ApplyTabArchiveState(ctx,
+			leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, tabs)
+		assert.NoError(t, unarchiveErr)
+		unarchiveDone <- resumeIDs
+	}()
+
+	select {
+	case <-unarchiveDone:
+		require.FailNow(t, "the unarchive answered while the archive was still draining that same tab; "+
+			"its resume would be stopped by the drain that is still running")
+	case <-time.After(150 * time.Millisecond):
+	}
+	row, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), row.WorkspaceArchived,
+		"the unarchive must not commit its flag while the archive still owns the tab")
+
+	// Let the drain finish; the unarchive then proceeds in full.
+	releaseAgent()
+	<-archiveDone
+	select {
+	case resumeIDs := <-unarchiveDone:
+		assert.Equal(t, []string{agentID}, resumeIDs,
+			"the unarchive that ran after the drain must offer the resume")
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "the unarchive never completed after the archive drain returned")
+	}
+	settled, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	assert.Zero(t, settled.WorkspaceArchived)
+	assert.False(t, settled.ClosedAt.Valid, "neither operation may close the tab")
+	assert.Empty(t, settled.StartupError, "neither operation may mark the tab failed")
 }

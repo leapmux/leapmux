@@ -793,7 +793,7 @@ func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 	assert.Empty(t, rec.ids(), "it must not spawn a second process for the tab that is already starting")
 
 	// The open path finishes.
-	svc.AgentStartup.succeed("agent-1")
+	svc.AgentStartup.succeed("agent-1", nil)
 	svc.AgentStartup.finishEntry(openHandle)
 
 	select {

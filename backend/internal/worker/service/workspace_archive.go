@@ -6,15 +6,32 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// applyTabArchiveState applies both direct Hub fan-out and reconciled archive
-// state through one lifecycle implementation. It returns agents whose state
-// changed to active. The caller schedules them at its safe convergence point.
-func (svc *Service) applyTabArchiveState(
+// archiveTabSet holds the tab ids one archive request touches, split by the
+// table that stores them. It is a named record rather than two `[]string`
+// results, because two same-typed slices can be swapped at a call site and the
+// compiler cannot tell.
+type archiveTabSet struct {
+	agents    []string
+	terminals []string
+}
+
+// ApplyTabArchiveState applies the Hub's authoritative archive state to this
+// Worker's local rows. It returns the agents whose state changed to active, so
+// the caller can schedule their resume.
+//
+// The orphan reconciler is the only caller. There is deliberately no RPC for
+// this: the Hub nudges a Worker whenever a workspace's archive state or a tab's
+// workspace membership changes, and the reconcile pass that follows reads the
+// Hub's own answer. A client-driven variant would be a second delivery path
+// for one effect, and it would apply only while that client was connected.
+func (svc *Service) ApplyTabArchiveState(
 	ctx context.Context,
 	state leapmuxv1.WorkspaceArchiveState,
 	tabs []*leapmuxv1.TabRef,
@@ -23,17 +40,64 @@ func (svc *Service) applyTabArchiveState(
 	if err != nil {
 		return nil, err
 	}
-	agentIDs, terminalIDs, err := archiveTabIDs(tabs)
+	requested, err := archiveTabIDs(tabs)
 	if err != nil {
 		return nil, err
 	}
 
-	svc.archiveStateMu.Lock()
-	defer svc.archiveStateMu.Unlock()
+	// Held across the flag write AND the teardown below: see archiveTabLocks
+	// for why the pair must be atomic per tab.
+	unlock := svc.lockArchiveTabs(requested)
+	defer unlock()
 
+	changed, err := svc.persistArchiveFlags(ctx, flag, requested)
+	if err != nil {
+		return nil, err
+	}
+
+	if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+		svc.stopArchivedTabs(changed)
+		return nil, nil
+	}
+	return changed.agents, nil
+}
+
+// lockArchiveTabs takes every lock this request needs and returns their
+// release. It locks in SORTED order, which is what makes two overlapping
+// requests over intersecting tab sets unable to deadlock: both walk the same
+// global order, so neither can hold a lock the other wants next.
+func (svc *Service) lockArchiveTabs(tabs archiveTabSet) func() {
+	keys := make([]string, 0, len(tabs.agents)+len(tabs.terminals))
+	for _, id := range tabs.agents {
+		keys = append(keys, "agent:"+id)
+	}
+	for _, id := range tabs.terminals {
+		keys = append(keys, "terminal:"+id)
+	}
+	sort.Strings(keys)
+	locks := make([]*sync.Mutex, 0, len(keys))
+	for _, key := range keys {
+		v, _ := svc.archiveTabLocks.LoadOrStore(key, &sync.Mutex{})
+		mu := v.(*sync.Mutex)
+		mu.Lock()
+		locks = append(locks, mu)
+	}
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].Unlock()
+		}
+	}
+}
+
+// persistArchiveFlags writes the flag for every requested tab in one
+// transaction, and reports the tabs whose stored value actually changed.
+//
+// The caller holds this request's per-tab locks, so no other archive operation
+// can write these rows between the read and the write.
+func (svc *Service) persistArchiveFlags(ctx context.Context, flag int64, requested archiveTabSet) (archiveTabSet, error) {
 	tx, err := svc.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("start archive-state transaction: %w", err)
+		return archiveTabSet{}, fmt.Errorf("start archive-state transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -42,52 +106,47 @@ func (svc *Service) applyTabArchiveState(
 		}
 	}()
 	queries := svc.Queries.WithTx(tx)
-	changedAgents := make([]string, 0, len(agentIDs))
-	changedTerminals := make([]string, 0, len(terminalIDs))
-	for _, agentID := range agentIDs {
-		rows, updateErr := queries.SetAgentWorkspaceArchived(ctx, db.SetAgentWorkspaceArchivedParams{
+
+	changedAgents, err := applyArchiveFlag(ctx, requested.agents, "agent", func(ctx context.Context, id string) (int64, error) {
+		return queries.SetAgentWorkspaceArchived(ctx, db.SetAgentWorkspaceArchivedParams{
 			WorkspaceArchived: flag,
-			ID:                agentID,
+			ID:                id,
 		})
-		if updateErr != nil {
-			return nil, fmt.Errorf("set agent %s archive state: %w", agentID, updateErr)
-		}
-		if rows > 0 {
-			changedAgents = append(changedAgents, agentID)
-		}
+	})
+	if err != nil {
+		return archiveTabSet{}, err
 	}
-	for _, terminalID := range terminalIDs {
-		rows, updateErr := queries.SetTerminalWorkspaceArchived(ctx, db.SetTerminalWorkspaceArchivedParams{
+	changedTerminals, err := applyArchiveFlag(ctx, requested.terminals, "terminal", func(ctx context.Context, id string) (int64, error) {
+		return queries.SetTerminalWorkspaceArchived(ctx, db.SetTerminalWorkspaceArchivedParams{
 			WorkspaceArchived: flag,
-			ID:                terminalID,
+			ID:                id,
 		})
-		if updateErr != nil {
-			return nil, fmt.Errorf("set terminal %s archive state: %w", terminalID, updateErr)
-		}
-		if rows > 0 {
-			changedTerminals = append(changedTerminals, terminalID)
-		}
+	})
+	if err != nil {
+		return archiveTabSet{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit archive state: %w", err)
+		return archiveTabSet{}, fmt.Errorf("commit archive state: %w", err)
 	}
 	committed = true
-
-	if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
-		svc.stopArchivedTabs(changedAgents, changedTerminals)
-		return nil, nil
-	}
-	return changedAgents, nil
+	return archiveTabSet{agents: changedAgents, terminals: changedTerminals}, nil
 }
 
-// ApplyTabArchiveStateForReconcile exposes the shared lifecycle operation to
-// bootstrap without exposing it as another RPC surface.
-func (svc *Service) ApplyTabArchiveStateForReconcile(
-	ctx context.Context,
-	state leapmuxv1.WorkspaceArchiveState,
-	tabs []*leapmuxv1.TabRef,
-) ([]string, error) {
-	return svc.applyTabArchiveState(ctx, state, tabs)
+// applyArchiveFlag runs one table's update loop and returns the ids whose row
+// changed. The statements skip a closed row, so an id that names one is absent
+// from the result and takes no teardown.
+func applyArchiveFlag(ctx context.Context, ids []string, kind string, set func(context.Context, string) (int64, error)) ([]string, error) {
+	changed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		rows, err := set(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("set %s %s archive state: %w", kind, id, err)
+		}
+		if rows > 0 {
+			changed = append(changed, id)
+		}
+	}
+	return changed, nil
 }
 
 func workspaceArchiveFlag(state leapmuxv1.WorkspaceArchiveState) (int64, error) {
@@ -101,10 +160,18 @@ func workspaceArchiveFlag(state leapmuxv1.WorkspaceArchiveState) (int64, error) 
 	}
 }
 
-func archiveTabIDs(tabs []*leapmuxv1.TabRef) ([]string, []string, error) {
+// archiveTabIDs sorts the requested tabs by the table that stores them, and
+// REFUSES a tab whose type it cannot classify.
+//
+// The refusal is correct here and belongs to the RPC alone. A caller that
+// reads the Hub's tab list instead — the orphan reconciler — must drop such a
+// row and converge over the rest, because one row it cannot classify would
+// otherwise stop every reap and every resume on this worker. The reconciler
+// therefore filters before it calls, and this function stays strict.
+func archiveTabIDs(tabs []*leapmuxv1.TabRef) (archiveTabSet, error) {
 	agentSeen := make(map[string]struct{})
 	terminalSeen := make(map[string]struct{})
-	var agentIDs, terminalIDs []string
+	var set archiveTabSet
 	for _, tab := range tabs {
 		if tab == nil || tab.GetTabId() == "" {
 			continue
@@ -113,67 +180,102 @@ func archiveTabIDs(tabs []*leapmuxv1.TabRef) ([]string, []string, error) {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
 			if _, exists := agentSeen[tab.GetTabId()]; !exists {
 				agentSeen[tab.GetTabId()] = struct{}{}
-				agentIDs = append(agentIDs, tab.GetTabId())
+				set.agents = append(set.agents, tab.GetTabId())
 			}
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 			if _, exists := terminalSeen[tab.GetTabId()]; !exists {
 				terminalSeen[tab.GetTabId()] = struct{}{}
-				terminalIDs = append(terminalIDs, tab.GetTabId())
+				set.terminals = append(set.terminals, tab.GetTabId())
 			}
 		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
 			// Payload-backed tabs own no process and have no archive-state row.
 		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
-			return nil, nil, fmt.Errorf("tab %q has an unspecified type", tab.GetTabId())
+			return archiveTabSet{}, fmt.Errorf("tab %q has an unspecified type", tab.GetTabId())
 		default:
-			return nil, nil, fmt.Errorf("tab %q has unsupported type %s", tab.GetTabId(), tab.GetTabType())
+			return archiveTabSet{}, fmt.Errorf("tab %q has unsupported type %s", tab.GetTabId(), tab.GetTabType())
 		}
 	}
-	return agentIDs, terminalIDs, nil
+	return set, nil
 }
 
-func (svc *Service) stopArchivedTabs(agentIDs, terminalIDs []string) {
-	agentStarts := make(map[string]*startupEntry, len(agentIDs))
-	for _, agentID := range agentIDs {
+// archivableTabType reports whether archiveTabIDs accepts this type. The
+// orphan reconciler asks before it builds a TabRef, so a row the Hub sends
+// with a type this Worker does not know drops out of one pass instead of
+// failing it.
+func archivableTabType(tabType leapmuxv1.TabType) bool {
+	switch tabType {
+	case leapmuxv1.TabType_TAB_TYPE_AGENT,
+		leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		leapmuxv1.TabType_TAB_TYPE_FILE,
+		leapmuxv1.TabType_TAB_TYPE_IMAGE:
+		return true
+	case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
+		return false
+	default:
+		return false
+	}
+}
+
+func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
+	agentStarts := make(map[string]*startupEntry, len(changed.agents))
+	for _, agentID := range changed.agents {
 		agentStarts[agentID] = svc.AgentStartup.cancelForArchive(agentID)
 	}
-	terminalStarts := make(map[string]*startupEntry, len(terminalIDs))
-	for _, terminalID := range terminalIDs {
+	terminalStarts := make(map[string]*startupEntry, len(changed.terminals))
+	for _, terminalID := range changed.terminals {
 		terminalStarts[terminalID] = svc.TerminalStartup.cancelForArchive(terminalID)
 	}
-	// Signal all running processes before any one process drain can block.
-	for _, agentID := range agentIDs {
-		svc.Agents.StopAgent(agentID)
+	// Signal every process before any one drain can block. StopAgent waits for
+	// the subprocess to answer its stop signal, so these run concurrently:
+	// serially, N agents that ignore the signal cost N times that wait before
+	// the first drain even starts.
+	var signalled sync.WaitGroup
+	for _, agentID := range changed.agents {
+		signalled.Add(1)
+		go func() {
+			defer signalled.Done()
+			svc.Agents.StopAgent(agentID)
+		}()
 	}
-	for _, terminalID := range terminalIDs {
-		svc.Terminals.StopTerminal(terminalID)
+	for _, terminalID := range changed.terminals {
+		signalled.Add(1)
+		go func() {
+			defer signalled.Done()
+			svc.Terminals.StopTerminal(terminalID)
+		}()
 	}
+	signalled.Wait()
 
 	// Iterate the SLICE, not the map: the broadcasts below reach every watcher
 	// in the order the caller listed the tabs, rather than in Go's randomized
 	// map order.
-	for _, agentID := range agentIDs {
+	for _, agentID := range changed.agents {
 		svc.AgentStartup.waitForFinished(agentStarts[agentID])
 		unlock := svc.Agents.LockAgent(agentID)
 		svc.Agents.StopAndWaitAgent(agentID)
 		unlock()
 		svc.Output.ClearAgentRuntimeState(agentID)
 		svc.agentCleanups.retire(agentID)
-		row, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+		row, err := svc.Queries.GetAgentForInactiveBroadcast(bgCtx(), agentID)
 		if err == nil {
-			svc.broadcastAgentInactive(&row)
+			svc.broadcastAgentInactive(&db.Agent{
+				ID:             row.ID,
+				AgentSessionID: row.AgentSessionID,
+				AgentProvider:  row.AgentProvider,
+			})
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			slog.Warn("archive: read agent for inactive broadcast", "agent_id", agentID, "error", err)
 		}
 	}
 
-	for _, terminalID := range terminalIDs {
+	for _, terminalID := range changed.terminals {
 		svc.TerminalStartup.waitForFinished(terminalStarts[terminalID])
 	}
-	for _, terminalID := range terminalIDs {
+	for _, terminalID := range changed.terminals {
 		svc.Terminals.WaitForExit(terminalID)
 		svc.terminalCleanups.retire(terminalID)
 		svc.clearTerminalBellCoalesce(terminalID)
-		row, err := svc.Queries.GetTerminal(bgCtx(), terminalID)
+		exitCode, err := svc.Queries.GetTerminalExitCode(bgCtx(), terminalID)
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				slog.Warn("archive: read terminal for exited broadcast", "terminal_id", terminalID, "error", err)
@@ -190,7 +292,7 @@ func (svc *Service) stopArchivedTabs(agentIDs, terminalIDs []string) {
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Closed{Closed: &leapmuxv1.TerminalClosed{
-				ExitCode: int32(row.ExitCode),
+				ExitCode: int32(exitCode),
 			}},
 		})
 	}

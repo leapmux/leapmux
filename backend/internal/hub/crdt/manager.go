@@ -1295,13 +1295,24 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	// m.state's history it's immutable, so the goroutine can safely
 	// read from it after the manager mutex is released. auditWG
 	// drains on Stop() so log breadcrumbs always make it out.
+	// The nudge set is the union of two resolutions, and they read DIFFERENT
+	// generations on purpose: a tombstone's worker id is what the batch just
+	// removed (preState), and a move's is what it just wrote (working).
+	//
+	// Both are resolved NOW, before any goroutine spawns, so a background
+	// goroutine captures only these small maps instead of the whole
+	// (potentially multi-MB) UserCrdtState. After m.state = working below,
+	// preState is otherwise GC-eligible; capturing it in the goroutine would
+	// pin the old generation for the CanUseWorker DB lookup.
+	workerIDs := tombstonedTabWorkerIDs(batch, preState)
+	nudgeWorkerIDs := make([]string, 0, len(workerIDs))
+	for _, workerID := range workerIDs {
+		nudgeWorkerIDs = append(nudgeWorkerIDs, workerID)
+	}
+	for _, workerID := range movedTabWorkerIDs(batch, preState, working) {
+		nudgeWorkerIDs = append(nudgeWorkerIDs, workerID)
+	}
 	if containsTombstoneTab(batch) {
-		// Resolve the tombstoned tabs' worker ids from preState NOW, before
-		// spawning, so the audit goroutine captures only this small map instead
-		// of the whole (potentially multi-MB) UserCrdtState. After m.state =
-		// working below, preState is otherwise GC-eligible; capturing it in the
-		// goroutine would pin the old generation for the CanUseWorker DB lookup.
-		workerIDs := tombstonedTabWorkerIDs(batch, preState)
 		if !in.Internal {
 			m.auditWG.Add(1)
 			go func() {
@@ -1322,10 +1333,20 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 				m.auditOrphanTabTombstones(in, batch, res, workerIDs)
 			}()
 		}
+	}
+	{
 		// Nudge each affected worker to reconcile now rather than on its hourly
-		// tick. Reuses the map the audit already computed -- the tombstoned tabs'
-		// hosting workers ARE the set that has local state to release -- so this
-		// costs no extra query.
+		// tick.
+		//
+		// The set spans TOMBSTONES and MOVES, because both change what the Hub
+		// answers about a tab and the Worker caches that answer. A tombstone
+		// leaves local state to release. A move changes the tab's workspace, and
+		// with it the archive state the Worker stores per row -- so without
+		// this, a tab moved OUT of an archived workspace keeps refusing the
+		// user's messages until the hourly tick, on a tab the sidebar shows as
+		// live. Creating a tab is deliberately absent: see movedTabWorkerIDs.
+		// Neither map costs an extra query; both come from state already in
+		// hand.
 		//
 		// NOT gated on !in.Internal the way the audit is, and the gate now sits
 		// on the audit alone so that is actually true: an internal batch is
@@ -1346,10 +1367,10 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 		// lock and, on a refused control frame, fences the connection. Keeping
 		// all of that off the submit path costs one goroutine. Mirrors the
 		// audit's rationale above.
-		if m.reconcileNudger != nil {
-			seen := make(map[string]struct{}, len(workerIDs))
-			targets := make([]string, 0, len(workerIDs))
-			for _, workerID := range workerIDs {
+		if m.reconcileNudger != nil && len(nudgeWorkerIDs) > 0 {
+			seen := make(map[string]struct{}, len(nudgeWorkerIDs))
+			targets := make([]string, 0, len(nudgeWorkerIDs))
+			for _, workerID := range nudgeWorkerIDs {
 				if workerID == "" {
 					continue
 				}

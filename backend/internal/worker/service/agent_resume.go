@@ -53,8 +53,17 @@ type AgentResumer struct {
 	resumeSlots chan struct{}
 }
 
-// NewAgentResumer returns the service's shared resume scheduler.
-func (svc *Service) NewAgentResumer() *AgentResumer {
+// AgentResumer returns the service's shared resume scheduler, building it on
+// the first call. It is an accessor, not a constructor: bootstrap and the
+// unarchive RPC must reach the SAME scheduler, because a second one would
+// carry its own dedup set and its own stop channel, and nothing would ever
+// drain it.
+//
+// The concurrency read stays lazy on purpose. bootstrap calls
+// SetStartupConcurrency after service.New and before it starts the background
+// loops, so a resumer built in service.New would size its semaphore from the
+// manager's default pool instead of the configured value.
+func (svc *Service) AgentResumer() *AgentResumer {
 	svc.resumeSchedulerMu.Lock()
 	defer svc.resumeSchedulerMu.Unlock()
 	if svc.agentResumer == nil {
@@ -73,31 +82,62 @@ func (svc *Service) NewAgentResumer() *AgentResumer {
 	return svc.agentResumer
 }
 
+// claim reserves one agent id against concurrent resume work, and reports
+// whether the caller got it. Both producers -- Schedule and the boot sweep --
+// claim through this one set, so an id that one is already working on is never
+// started twice.
+//
+// It refuses every id once Stop latched, so a claim also answers "may I still
+// start work?".
+//
+// wg, when set, is joined UNDER the same lock that reads r.stopped. That
+// pairing is the whole reason the caller does not add to the group itself:
+// Stop latches r.stopped and then waits on the group, so an Add issued after
+// the lock was released could land after that Wait began -- the WaitGroup
+// misuse that reuse-after-Wait panics on, and, before it panics, a resume the
+// drain does not cover.
+func (r *AgentResumer) claim(agentID string, wg *sync.WaitGroup) bool {
+	if agentID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return false
+	}
+	if _, exists := r.scheduled[agentID]; exists {
+		return false
+	}
+	r.scheduled[agentID] = struct{}{}
+	if wg != nil {
+		wg.Add(1)
+	}
+	return true
+}
+
+func (r *AgentResumer) releaseClaim(agentID string) {
+	r.mu.Lock()
+	delete(r.scheduled, agentID)
+	r.mu.Unlock()
+}
+
 // Schedule queues eligible agent rows for a reusable background resume pass.
 // It deduplicates one agent while a prior resume remains in flight.
+//
+// It does NOT block, and it cannot: its callers are the orphan reconciler's
+// single goroutine and an RPC handler, and neither may wait for a provider
+// handshake. resumeSlots is therefore the cap, and one goroutine per claimed
+// id parks on it. The boot sweep wants the opposite -- ordered admission with
+// backpressure at the loop -- so it keeps its own errgroup and shares only the
+// claim.
 func (r *AgentResumer) Schedule(ctx context.Context, agentIDs []string) {
 	for _, agentID := range agentIDs {
-		if agentID == "" || r.stopping() {
+		if !r.claim(agentID, &r.scheduledWG) {
 			continue
 		}
-		r.mu.Lock()
-		if r.stopped {
-			r.mu.Unlock()
-			return
-		}
-		if _, exists := r.scheduled[agentID]; exists {
-			r.mu.Unlock()
-			continue
-		}
-		r.scheduled[agentID] = struct{}{}
-		r.scheduledWG.Add(1)
-		r.mu.Unlock()
-
 		go func() {
 			defer func() {
-				r.mu.Lock()
-				delete(r.scheduled, agentID)
-				r.mu.Unlock()
+				r.releaseClaim(agentID)
 				r.scheduledWG.Done()
 			}()
 			select {
@@ -153,19 +193,17 @@ func (r *AgentResumer) Start(ctx context.Context) {
 // Stop tells the scheduler to accept no more candidates. It waits for the
 // initial sweep and all reusable jobs. A later Start schedules nothing.
 //
-// It DOES wait for the resumes the launcher already handed off, because the
-// sweep joins its own group on every exit. Two facts make that the correct
-// design rather than an expensive one. errgroup.Go blocks the launcher once the
-// fan-out limit is full, so a Stop could never return promptly anyway while a
-// handshake was in flight. And Service.Shutdown waits for exactly the same
-// startups a few lines later through AgentStartup.WaitForInFlight, so joining
-// here costs no additional time -- it only moves the wait earlier, to the point
-// where the sweep can still be observed as running.
+// It DOES wait for the resumes it already accepted -- scheduledWG covers every
+// job from both producers, and the sweep joins its own batch on every exit.
+// Service.Shutdown waits for exactly the same startups a few lines later
+// through AgentStartup.WaitForInFlight, so joining here costs no additional
+// time; it only moves the wait earlier, to the point where the scheduler can
+// still be observed as running.
 //
-// Not joining is what made WaitForInFlight unsafe. The launcher hands a
-// candidate to errgroup.Go, the runtime does not schedule it yet, and it is
-// therefore short of AgentStartup.begin. The drain then saw a zero count and
-// returned, and the straggler read a database the caller was about to close.
+// Not joining is what made WaitForInFlight unsafe. schedule accepts a
+// candidate, the runtime does not start its goroutine yet, and it is therefore
+// short of AgentStartup.begin. The drain then saw a zero count and returned,
+// and the straggler read a database the caller was about to close.
 func (r *AgentResumer) Stop() {
 	r.mu.Lock()
 	if !r.stopped {
@@ -269,6 +307,19 @@ func (r *AgentResumer) sweep(ctx context.Context) {
 		default:
 		}
 		g.Go(func() error {
+			// Claim through the SAME set Schedule uses. The two producers
+			// overlap in production: a pass that unarchives a workspace calls
+			// Schedule for those agents and then reports convergence, which
+			// starts this sweep, whose query selects the rows that pass just
+			// marked active. Without one shared claim each of those agents got
+			// two goroutines, and the loser parked on the per-agent lifecycle
+			// lock for the length of the winner's provider handshake while
+			// holding a permit -- halving the effective resume concurrency on
+			// exactly the boot that needed it most.
+			if !r.claim(id, nil) {
+				return nil
+			}
+			defer r.releaseClaim(id)
 			counts.record(r.resumeOne(ctx, id))
 			return nil
 		})
@@ -424,7 +475,7 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 		return resumeSkipSubagent
 	}
 	// The candidate list is a SNAPSHOT: ListRootAgentIDsForResume ran once, and a
-	// candidate at the back of a throttled queue is reached much later -- minutes,
+	// the sweep reaches a candidate at the back of a throttled queue much later -- minutes,
 	// on a machine with many tabs and a concurrency of 1. A CloseAgent in between
 	// already ran that tab's whole teardown, so a process started for it now is
 	// one nothing will ever stop: it holds a CLI and its memory for the life of

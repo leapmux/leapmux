@@ -257,7 +257,13 @@ type Workspace struct {
 }
 
 // WorkspaceTabRow is a stored row from workspace_tab_owned or
-// workspace_tab_rendered. The two tables have the same stored columns.
+// workspace_tab_rendered. The two tables hold the same stored columns; the
+// distinction is WHICH table a row came from, and which reader it serves.
+//
+// The client tab RPCs read `_rendered`. The worker delegation handler reads
+// `_owned` to find a tab's owning Worker. Worker reconciliation also reads
+// `_owned`, but through WorkerTabStateRow below, which carries the workspace's
+// archive state as well.
 type WorkspaceTabRow struct {
 	UserID      string
 	WorkspaceID string

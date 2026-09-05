@@ -200,10 +200,24 @@ type Service struct {
 	// contend. Entries are never deleted (bounded by the worker's
 	// distinct-worktree count over its lifetime).
 	worktreeRemovalLocks sync.Map
-	// archiveStateMu serializes archive and unarchive effects. The database
-	// state and process state must change in the same order when two lifecycle
-	// requests overlap.
-	archiveStateMu sync.Mutex
+	// archiveTabLocks serializes one tab's whole archive lifecycle -- the flag
+	// write AND the process teardown or resume that follows it -- keyed by tab.
+	//
+	// It must span both, not the write alone. The teardown reads no state after
+	// the transaction commits, so an unarchive that committed in between would
+	// have its freshly resumed process stopped by the earlier archive's still
+	// running drain, its runtime state cleared, and an INACTIVE broadcast sent
+	// for a tab whose row says active. The user sees an agent they just
+	// unarchived go inactive again, with no error.
+	//
+	// Keyed by tab rather than one process-wide mutex, because the drain has no
+	// upper time limit: StopAndWaitAgent and WaitForExit both wait for a
+	// subprocess. A global lock made every archive on the worker -- and the
+	// orphan reconciler's whole loop, which runs this teardown inline -- queue
+	// behind one agent that ignores its stop signal. Different tabs never
+	// contend. Entries are never deleted, bounded by the worker's distinct-tab
+	// count over its lifetime, exactly like worktreeRemovalLocks above.
+	archiveTabLocks sync.Map
 
 	// gitIndexLocks serializes INDEX-MUTATING git commands per repository:
 	// `worktree add`/`remove`, `checkout`, `checkout -b`, `branch -D`, `add -A`,

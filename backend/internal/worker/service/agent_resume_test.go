@@ -133,7 +133,7 @@ func seedOpenAgent(t *testing.T, svc *Service, agentID string, used bool) {
 // runSweep starts the resumer and waits for its one sweep to finish.
 func runSweep(t *testing.T, svc *Service) *AgentResumer {
 	t.Helper()
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
 	return r
@@ -201,7 +201,7 @@ func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	resumer := svc.NewAgentResumer()
+	resumer := svc.AgentResumer()
 	t.Cleanup(resumer.Stop)
 	resumer.Schedule(t.Context(), []string{"agent-child", "agent-root"})
 
@@ -210,23 +210,22 @@ func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
 		"a subagent transcript owns no process, so it must never be a resume candidate")
 }
 
-// TestNewAgentResumer_IsOneSchedulerPerService pins what makes the drain above
-// cover the RPC path as well as the boot sweep.
+// TestAgentResumer_IsOneSchedulerPerService pins what makes the drain above
+// cover every producer, not just the boot sweep.
 //
 // bootstrap holds the resumer it builds at startup and wires Shutdown to Stop
-// THAT one, while handleSetTabArchiveState asks for a resumer per unarchive
-// request. A fresh instance per call would give the RPC path a scheduler that
-// nothing stops: its goroutines would outlive Shutdown and read a database that
-// Shutdown closed. Nothing else in the wiring says the two must be the same
-// object, so it is stated here.
-func TestNewAgentResumer_IsOneSchedulerPerService(t *testing.T) {
+// THAT one. A fresh instance per call would give a later caller a scheduler
+// that nothing stops: its goroutines would outlive Shutdown and read a database
+// that Shutdown closed. Nothing else in the wiring says every caller must get
+// the same object, so it is stated here.
+func TestAgentResumer_IsOneSchedulerPerService(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	first := svc.NewAgentResumer()
+	first := svc.AgentResumer()
 	t.Cleanup(first.Stop)
 
-	assert.Same(t, first, svc.NewAgentResumer(),
+	assert.Same(t, first, svc.AgentResumer(),
 		"bootstrap stops the resumer it built; a second instance would never be drained")
 }
 
@@ -248,7 +247,7 @@ func TestAgentResume_StopDrainsScheduledWork(t *testing.T) {
 	recorder.install(svc)
 	seedOpenAgent(t, svc, "agent-scheduled", true)
 
-	resumer := svc.NewAgentResumer()
+	resumer := svc.AgentResumer()
 	resumer.Schedule(t.Context(), []string{"agent-scheduled"})
 	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 },
 		"the scheduled resume reached the start")
@@ -416,7 +415,7 @@ func TestAgentResume_RootsTheProcessContextOutsideTheSweep(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-1", true)
 
 	sweepCtx, cancelSweep := context.WithCancel(context.Background())
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(sweepCtx)
 	r.WaitForSweepForTest()
 	require.Equal(t, []string{"agent-1"}, rec.ids())
@@ -604,7 +603,7 @@ func TestAgentResume_ACloseCancelsAnInFlightResume(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	require.Eventually(t, func() bool { return rec.inFlight.Load() == 1 }, 5*time.Second, 5*time.Millisecond,
 		"the resume never reached its start")
@@ -800,7 +799,7 @@ func TestAgentResume_WaitsForAWorkerOwner(t *testing.T) {
 	// setupTestService seeds an owner; clear it to model a worker whose Hub has
 	// not delivered WorkerIdentity yet.
 	svc.registeredBy.Store(&userid.UserID{})
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
 	require.Empty(t, rec.ids(), "no owner means no control socket, so no resume")
@@ -842,7 +841,7 @@ func TestAgentResume_SweepsOnlyOnce(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
@@ -869,7 +868,7 @@ func TestAgentResume_LimitsItsOwnFanOut(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-a", true)
 	seedOpenAgent(t, svc, "agent-b", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 
 	// Wait for the first resume to park inside its start, then prove no second
@@ -944,7 +943,7 @@ func TestAgentResume_StopAbandonsTheRemainingCandidates(t *testing.T) {
 		seedOpenAgent(t, svc, id, true)
 	}
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	// Wait until the first resume is parked inside its start, so the launcher is
 	// definitely past the loop's stop check for that candidate and blocked on the
@@ -1005,7 +1004,7 @@ func TestAgentResume_SweepDoesNotReturnWhileAResumeIsInFlight(t *testing.T) {
 		return fetch(ctx, agentID)
 	}
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	require.Equal(t, "agent-a", <-entered, "the sweep never reached its first candidate")
 
@@ -1042,7 +1041,7 @@ func TestAgentResume_AResumeAdmittedBeforeStopDoesNoWorkAfterIt(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	reads := 0
 	fetch := svc.getAgentByIDFn
 	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
@@ -1093,7 +1092,7 @@ func TestAgentResume_ACancelledSweepReportsItsOutcome(t *testing.T) {
 	}
 
 	sweepCtx, cancelSweep := context.WithCancel(context.Background())
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(sweepCtx)
 	// Both slots are taken. Which two candidates got them does not matter; that
 	// the launcher is parked handing off the third does.
@@ -1128,7 +1127,7 @@ func TestAgentResume_StartAfterStopLaunchesNoSweep(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Stop()
 	r.Start(t.Context())
 
@@ -1147,7 +1146,7 @@ func TestAgentResume_StopBeforeTheSweepIsRunNeverBlocks(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	done := make(chan struct{})
 	go func() { defer close(done); r.Stop(); r.Stop() }()
 	select {

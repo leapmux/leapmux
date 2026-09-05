@@ -66,7 +66,6 @@ import type {
 } from '~/generated/proto/leapmux/v1/worker_private_pb'
 import type {
   CleanupWorkspaceResponse,
-  SetTabArchiveStateResponse,
   WatchEventsResponse,
 } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
@@ -179,8 +178,6 @@ import {
 import {
   CleanupWorkspaceRequestSchema,
   CleanupWorkspaceResponseSchema,
-  SetTabArchiveStateRequestSchema,
-  SetTabArchiveStateResponseSchema,
   WatchEventsRequestSchema,
   WatchEventsResponseSchema,
 } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -354,10 +351,6 @@ export function getWorkerSystemInfo(workerId: string): Promise<GetWorkerSystemIn
 
 export function cleanupWorkspace(workerId: string, req: MessageInitShape<typeof CleanupWorkspaceRequestSchema>): Promise<CleanupWorkspaceResponse> {
   return callWorker(workerId, 'CleanupWorkspace', CleanupWorkspaceRequestSchema, CleanupWorkspaceResponseSchema, req)
-}
-
-export function setTabArchiveState(workerId: string, req: MessageInitShape<typeof SetTabArchiveStateRequestSchema>): Promise<SetTabArchiveStateResponse> {
-  return callWorker(workerId, 'SetTabArchiveState', SetTabArchiveStateRequestSchema, SetTabArchiveStateResponseSchema, req)
 }
 
 // ---------------------------------------------------------------------------

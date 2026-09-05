@@ -387,7 +387,20 @@ func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing
 	assert.Empty(t, teardown.agents)
 }
 
-func TestOrphanReconciler_DefersUnarchiveResumeUntilThePassConverges(t *testing.T) {
+// TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence
+// pins the resume timing, and it is the INVERSE of what this pass first did.
+//
+// The resume used to be held until the whole pass converged, so that it could
+// not race an orphan close from that same pass. It cannot race one: the resume
+// list and the reap set are disjoint by construction. Both derive from ONE hub
+// response -- a resumed id comes from a tab the hub LISTED, and reconcileAgents
+// reaps only ids the hub OMITTED.
+//
+// The hold cost a real delay. Any unrelated tab sitting inside its orphan grace
+// window keeps the pass non-converged, so an unarchive the user just asked for
+// waited on a countdown that had nothing to do with it -- which is exactly the
+// state this test sets up.
+func TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -417,12 +430,17 @@ func TestOrphanReconciler_DefersUnarchiveResumeUntilThePassConverges(t *testing.
 		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
 	}}, nil)
 
+	// agent-stale is absent from the hub list, so this pass starts its grace
+	// clock and reports NON-converged. The resume must not wait on that.
 	assert.False(t, runOnce(t.Context(), rec), "the stale tab still waits for its close grace")
-	assert.Empty(t, resumed, "unarchive must not resume before orphan deletion finishes")
+	assert.Equal(t, []string{"agent-active"}, resumed,
+		"an unarchived agent resumes on the pass that unarchived it, whatever an unrelated tab's grace is doing")
 
+	// The edge does not repeat: the second pass reports no changed row, so the
+	// agent is not scheduled twice.
 	now = now.Add(11 * time.Second)
 	assert.True(t, runOnce(t.Context(), rec))
-	assert.Equal(t, []string{"agent-active"}, resumed)
+	assert.Equal(t, []string{"agent-active"}, resumed, "a converged pass must not resume the same agent again")
 }
 
 func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) {

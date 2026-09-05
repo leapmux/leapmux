@@ -63,14 +63,6 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 	}
 }
 
-func refuseArchivedAgent(sender channel.ResponseWriter, row db.Agent) bool {
-	if row.WorkspaceArchived == 0 {
-		return false
-	}
-	sendFailedPrecondition(sender, "agent belongs to an archived workspace")
-	return true
-}
-
 // registerAgentHandlers registers all agent-related inner RPC handlers.
 func registerAgentHandlers(d registrar, svc *Service) {
 	registerOwnerGated(d, "OpenAgent", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
@@ -322,9 +314,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendAgentMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendAgentMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
-			if refuseArchivedAgent(sender, dbAgent) {
-				return
-			}
 
 			// Reject sends only on permanent startup failure — STARTING
 			// messages are queued on the frontend and dispatched on the
@@ -544,9 +533,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendAgentRawMessage", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
-			if refuseArchivedAgent(sender, dbAgent) {
-				return
-			}
 			// A child agent has no process and no raw-control surface; reject.
 			if dbAgent.ParentAgentID.Valid {
 				sendFailedPrecondition(sender, "this subagent cannot be messaged")
@@ -993,9 +979,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "UpdateAgentSettings", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateAgentSettingsRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
-			if refuseArchivedAgent(sender, dbAgent) {
-				return
-			}
 
 			// A virtual child agent has no process and no settings of its own
 			// (it inherits the owner's). Reject before the optimistic DB write
@@ -1068,9 +1051,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendControlResponse", leapmuxv1.Scope_SCOPE_AGENT_WRITE,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.SendControlResponseRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
-			if refuseArchivedAgent(sender, dbAgent) {
-				return
-			}
 
 			// The claim/dedup/plan-mode/forward orchestration lives in processControlResponse (dispatcher-
 			// free, unit-testable); the handler is just transport. It reports the bytes to forward, or
@@ -1927,21 +1907,28 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if fetchErr == nil {
 		dbAgent = latest
 	}
-	_, closeRaced := svc.AgentStartup.dispositionOf(h)
-	if closeRaced || (fetchErr == nil && dbAgent.ClosedAt.Valid) {
+	switch svc.AgentStartup.interruptionOf(h, fetchErr == nil && dbAgent.ClosedAt.Valid, fetchErr == nil && dbAgent.WorkspaceArchived != 0) {
+	case interruptionClosed:
 		if startErr == nil {
 			svc.Agents.StopAgent(agentID)
 		}
 		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
 		return
-	}
-	archiveStopped, _ := svc.AgentStartup.archiveDisposition(h)
-	if archiveStopped || (fetchErr == nil && dbAgent.WorkspaceArchived != 0) {
+	case interruptionArchived:
 		if startErr == nil {
 			svc.Agents.StopAndWaitAgent(agentID)
 		}
-		svc.AgentStartup.succeed(agentID)
+		// succeed, not fail, even when startErr is non-nil: archival is not a
+		// startup failure, and STARTUP_FAILED would refuse the user's next
+		// message after the unarchive and make the resume sweep skip the tab.
+		// Log it, because otherwise a real provider failure inside the archive
+		// window leaves no evidence anywhere.
+		if startErr != nil {
+			slog.Warn("agent startup stopped by workspace archival", "agent_id", agentID, "error", startErr)
+		}
+		svc.AgentStartup.succeed(agentID, h)
 		return
+	case interruptionNone:
 	}
 	if startErr != nil {
 		slog.Error("failed to start agent", "agent_id", agentID, "error", startErr)
@@ -1955,7 +1942,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// arrives inside startAgent) is not rejected by the SendAgentMessage
 	// startup-gate. The subprocess is up and ready for input at this
 	// point; settings persistence is a best-effort DB write.
-	svc.AgentStartup.succeed(agentID)
+	svc.AgentStartup.succeed(agentID, h)
 	if dbAgent.StartupError != "" {
 		svc.persistAgentStartupError(agentID, "")
 	}
@@ -2010,23 +1997,25 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if relaunch {
 		activeDbAgent, running = svc.relaunchForStartupSettingsChange(agentID, dbAgent.AgentProvider, latestOpts, activeDbAgent)
 	}
-	archiveStopped, _ = svc.AgentStartup.archiveDisposition(h)
 	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
 		activeDbAgent = latest
 	}
-	_, closeRaced = svc.AgentStartup.dispositionOf(h)
-	if closeRaced || activeDbAgent.ClosedAt.Valid {
+	switch svc.AgentStartup.interruptionOf(h, activeDbAgent.ClosedAt.Valid, activeDbAgent.WorkspaceArchived != 0) {
+	case interruptionClosed:
 		if running {
 			svc.Agents.StopAndWaitAgent(agentID)
 		}
 		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
 		return
-	}
-	if archiveStopped || activeDbAgent.WorkspaceArchived != 0 {
+	case interruptionArchived:
 		if running {
 			svc.Agents.StopAndWaitAgent(agentID)
 		}
+		// No broadcast here: succeed already ran above, so the client saw
+		// ACTIVE, and stopArchivedTabs broadcasts INACTIVE for every tab whose
+		// flag it changed once waitForFinished returns.
 		return
+	case interruptionNone:
 	}
 
 	activeOptions := loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider)
@@ -3205,7 +3194,7 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// STARTUP_FAILED, which refuses the user's next message for the whole
 	// failed-entry TTL; this path deliberately stays retryable, and the failure
 	// reaches the user as the caller's per-message delivery error.
-	defer svc.AgentStartup.succeed(agentID)
+	defer svc.AgentStartup.succeed(agentID, handle)
 
 	// Broadcast STARTING so the chat startup banner appears beneath any
 	// just-typed messages while the cold subprocess spins up. Symmetric

@@ -599,7 +599,28 @@ describe('useterminaloperations.handleterminalinput', () => {
     await ops.handleTerminalResize('tid-1', 120, 40)
 
     expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 120, rows: 40 })
+    // An EXITED terminal sends no resize RPC whatever the archive state, so
+    // this half is about the dead PTY, not about archival. The READY case
+    // below is what pins archival's own reach.
     expect(resizeTerminalMock).not.toHaveBeenCalled()
+  })
+
+  // The assertion the EXITED fixture above CANNOT make: with a live PTY, the
+  // resize RPC must still go out while archived. A copy of the input guard at
+  // the top of `handleTerminalResize` fails this and passes the EXITED case,
+  // which is exactly the regression the pair exists to catch.
+  it('still resizes a live terminal while archived', async () => {
+    const { ops, view } = setup(TerminalStatus.READY, {}, false)
+
+    await ops.handleTerminalResize('tid-1', 120, 40)
+
+    expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 120, rows: 40 })
+    expect(resizeTerminalMock).toHaveBeenCalledTimes(1)
+    expect(resizeTerminalMock.mock.calls[0][1]).toMatchObject({
+      terminalId: 'tid-1',
+      cols: 120,
+      rows: 40,
+    })
   })
 
   it('ignores non-Enter input on an EXITED terminal', async () => {

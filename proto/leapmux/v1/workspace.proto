@@ -35,9 +35,14 @@ service WorkspaceService {
   rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc RenameWorkspace(RenameWorkspaceRequest) returns (RenameWorkspaceResponse);
-  // SetWorkspaceArchiveState moves a workspace across the archive boundary.
-  // The Hub computes its destination and returns the Worker fan-out from the
-  // same transaction. An idempotent request returns no Worker groups.
+  // SetWorkspaceArchiveState moves a workspace across the archive boundary and
+  // tells every Worker that hosts one of its tabs to reconcile now.
+  //
+  // The Worker fan-out is the Hub's, not the caller's. The Hub already holds
+  // the authoritative tab list and already nudges each affected Worker inside
+  // this call, and the Worker applies the state through the same code path a
+  // reconcile pass uses. A second delivery path from the client would be a
+  // duplicate of that one, reachable only from a browser session.
   rpc SetWorkspaceArchiveState(SetWorkspaceArchiveStateRequest) returns (SetWorkspaceArchiveStateResponse);
   rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
   // ListTabs returns the materialized tab list across one or more
@@ -109,10 +114,22 @@ message RenameWorkspaceResponse {}
 message SetWorkspaceArchiveStateRequest {
   string workspace_id = 1;
   WorkspaceArchiveState archive_state = 2;
+  // Where the workspace lands, for the ACTIVE direction. Empty means the
+  // built-in In progress section.
+  //
+  // It exists so that "Move to <custom section>" on an archived workspace is
+  // ONE transaction. Without it the client had to unarchive first and move
+  // second, which left the workspace resting in In progress whenever the
+  // second call failed, and threw away the position the user dropped it at.
+  // The Hub refuses a destination whose archived side disagrees with
+  // archive_state, so this cannot become a second way to archive.
+  string destination_section_id = 3;
+  // Lexorank inside destination_section_id. Empty appends at the end.
+  string position = 4;
 }
 
 message SetWorkspaceArchiveStateResponse {
-  repeated WorkerTabs worker_tabs = 1;
+  // Empty on purpose. The Hub owns the Worker fan-out; see the rpc comment.
 }
 
 message DeleteWorkspaceRequest {
@@ -207,16 +224,6 @@ message CleanupWorkspaceResponse {
   // Worktree reclamation happens through the orphan reconciler, which reports
   // nothing back on this call.
 }
-
-// SetTabArchiveStateRequest applies the Hub's workspace state to the local
-// rows for the listed tabs. A Worker stores no workspace identifier, so the
-// Hub supplies the authoritative tab set.
-message SetTabArchiveStateRequest {
-  repeated TabRef tabs = 1;
-  WorkspaceArchiveState archive_state = 2;
-}
-
-message SetTabArchiveStateResponse {}
 
 // --- Event Streaming (per-agent / per-terminal) ---
 

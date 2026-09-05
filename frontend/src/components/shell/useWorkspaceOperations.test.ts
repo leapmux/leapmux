@@ -20,17 +20,24 @@ interface WorkerTabsLike { workerId: string, tabs: TabRefLike[] }
 
 const mockDeleteWorkspace = vi.fn<(req: { workspaceId: string }) => Promise<{ workerTabs: WorkerTabsLike[] }>>()
 const mockRenameWorkspace = vi.fn<(req: { workspaceId: string, title: string }) => Promise<unknown>>()
-const mockSetWorkspaceArchiveState = vi.fn<(req: { workspaceId: string, archiveState: WorkspaceArchiveState }) => Promise<{ workerTabs: WorkerTabsLike[] }>>()
+const mockSetWorkspaceArchiveState = vi.fn<(req: ArchiveStateRequest) => Promise<{ workerTabs: WorkerTabsLike[] }>>()
 const mockCleanupWorkspace = vi.fn<(workerId: string, req: { tabs: TabRefLike[] }) => Promise<unknown>>()
+interface ArchiveStateRequest {
+  workspaceId: string
+  archiveState: WorkspaceArchiveState
+  destinationSectionId: string
+  position: string
+}
 const mockSetTabArchiveState = vi.fn<(workerId: string, req: { tabs: TabRefLike[], archiveState: WorkspaceArchiveState }) => Promise<unknown>>()
 const mockMoveWorkspace = vi.fn<(req: { workspaceId: string, sectionId: string, position: string }) => Promise<unknown>>()
 const mockShowWarnToast = vi.fn()
+const mockShowStickyWarnToast = vi.fn()
 
 vi.mock('~/api/clients', () => ({
   workspaceClient: {
     deleteWorkspace: (...args: unknown[]) => mockDeleteWorkspace(...args as [{ workspaceId: string }]),
     renameWorkspace: (...args: unknown[]) => mockRenameWorkspace(...args as [{ workspaceId: string, title: string }]),
-    setWorkspaceArchiveState: (...args: unknown[]) => mockSetWorkspaceArchiveState(...args as [{ workspaceId: string, archiveState: WorkspaceArchiveState }]),
+    setWorkspaceArchiveState: (...args: unknown[]) => mockSetWorkspaceArchiveState(...args as [ArchiveStateRequest]),
   },
   sectionClient: {
     // Stubbed, and its ABSENCE used to hide a bug: `moveWorkspace` threw on
@@ -50,6 +57,7 @@ vi.mock('~/api/workerRpc', () => ({
 
 vi.mock('~/components/common/Toast', () => ({
   showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
+  showStickyWarnToast: (...args: unknown[]) => mockShowStickyWarnToast(...args),
 }))
 
 interface HarnessOpts {
@@ -422,72 +430,56 @@ function bulkHarness(archivedIds: readonly string[], opts: {
 describe('useWorkspaceOperations archive lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockSetTabArchiveState.mockResolvedValue({})
   })
 
-  it('marks the local workspace archived before the authoritative Worker fan-out', async () => {
-    const order: string[] = []
-    mockSetWorkspaceArchiveState.mockResolvedValue({
-      workerTabs: [
-        { workerId: 'worker-1', tabs: [{ tabType: TabType.AGENT, tabId: 'agent-1' }] },
-        { workerId: 'worker-2', tabs: [{ tabType: TabType.TERMINAL, tabId: 'terminal-1' }] },
-      ],
-    })
-    mockSetTabArchiveState.mockImplementation(async (workerId) => {
-      order.push(workerId)
-      return {}
-    })
-    const h = bulkHarness([], {
-      loadSections: async () => { order.push('sections') },
-      onPostArchiveWorkspace: () => { order.push('local-cleanup') },
-    })
-
-    await h.ops.archiveWorkspace('workspace-1')
-
-    expect(order.slice(0, 2)).toEqual(['sections', 'local-cleanup'])
-    expect(new Set(order.slice(2))).toEqual(new Set(['worker-1', 'worker-2']))
-    expect(mockSetTabArchiveState).toHaveBeenCalledWith('worker-1', {
-      archiveState: WorkspaceArchiveState.ARCHIVED,
-      tabs: [{ tabType: TabType.AGENT, tabId: 'agent-1' }],
-    })
-    expect(mockMoveWorkspace).not.toHaveBeenCalled()
-    h.dispose()
-  })
-
-  it('clears Worker state before the local workspace becomes writable', async () => {
-    const order: string[] = []
-    mockSetWorkspaceArchiveState.mockResolvedValue({
-      workerTabs: [{ workerId: 'worker-1', tabs: [{ tabType: TabType.AGENT, tabId: 'agent-1' }] }],
-    })
-    mockSetTabArchiveState.mockImplementation(async () => {
-      order.push('worker')
-    })
-    const h = bulkHarness(['workspace-1'], {
-      loadSections: async () => {
-        order.push('sections')
-      },
-    })
-
-    await h.ops.unarchiveWorkspace('workspace-1')
-
-    expect(order).toEqual(['worker', 'sections'])
-    h.dispose()
-  })
-
-  it('keeps the Hub transition and warns when a Worker call fails', async () => {
-    mockSetWorkspaceArchiveState.mockResolvedValue({
-      workerTabs: [{ workerId: 'worker-1', tabs: [{ tabType: TabType.AGENT, tabId: 'agent-1' }] }],
-    })
-    mockSetTabArchiveState.mockRejectedValue(new Error('worker offline'))
+  // The Worker fan-out belongs to the HUB. SetWorkspaceArchiveState nudges
+  // every Worker that hosts one of this workspace's tabs inside the call, and
+  // the Worker applies the state through the same path its reconcile pass uses.
+  // A second fan-out from the browser would deliver the same effect over a
+  // path that exists only while this tab is open, and that an archive from any
+  // other client would skip entirely.
+  it('leaves the Worker fan-out to the Hub', async () => {
     const h = bulkHarness([])
 
     await h.ops.archiveWorkspace('workspace-1')
 
-    expect(mockSetWorkspaceArchiveState).toHaveBeenCalledOnce()
-    expect(mockShowWarnToast).toHaveBeenCalledWith(
-      'Workspace archived, but a Worker did not stop its tabs',
-      expect.any(Error),
-    )
+    expect(mockSetWorkspaceArchiveState).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      archiveState: WorkspaceArchiveState.ARCHIVED,
+      destinationSectionId: '',
+      position: '',
+    })
+    expect(mockSetTabArchiveState).not.toHaveBeenCalled()
+    expect(mockMoveWorkspace).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('applies the local archived state after the Hub call, then refreshes', async () => {
+    const order: string[] = []
+    const h = bulkHarness([], {
+      loadSections: async () => {
+        order.push('sections')
+      },
+      onPostArchiveWorkspace: () => {
+        order.push('local-cleanup')
+      },
+    })
+
+    await h.ops.archiveWorkspace('workspace-1')
+
+    expect(order).toEqual(['sections', 'local-cleanup'])
+    h.dispose()
+  })
+
+  it('reports the Hub call failing and applies no local state', async () => {
+    mockSetWorkspaceArchiveState.mockRejectedValue(new Error('hub offline'))
+    const cleanups: string[] = []
+    const h = bulkHarness([], { onPostArchiveWorkspace: () => cleanups.push('local-cleanup') })
+
+    await h.ops.archiveWorkspace('workspace-1')
+
+    expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to archive workspace', expect.any(Error))
+    expect(cleanups).toEqual([])
     h.dispose()
   })
 })
@@ -501,7 +493,6 @@ describe('useWorkspaceOperations moveWorkspace across the archive boundary', () 
   beforeEach(() => {
     vi.clearAllMocks()
     mockSetWorkspaceArchiveState.mockResolvedValue({ workerTabs: [] })
-    mockSetTabArchiveState.mockResolvedValue({})
     mockMoveWorkspace.mockResolvedValue({})
   })
 
@@ -521,12 +512,17 @@ describe('useWorkspaceOperations moveWorkspace across the archive boundary', () 
 
     await h.ops.moveWorkspace('w1', 's-custom')
 
+    // ONE call: the lifecycle RPC carries the destination, so the workspace
+    // lands in the custom section directly. It used to unarchive into In
+    // progress and then issue a second move, which left the workspace in the
+    // wrong section whenever that second call failed.
     expect(mockSetWorkspaceArchiveState).toHaveBeenCalledWith({
       workspaceId: 'w1',
       archiveState: WorkspaceArchiveState.ACTIVE,
+      destinationSectionId: 's-custom',
+      position: expect.any(String),
     })
-    expect(mockMoveWorkspace).toHaveBeenCalledOnce()
-    expect(mockMoveWorkspace.mock.calls[0][0]).toMatchObject({ workspaceId: 'w1', sectionId: 's-custom' })
+    expect(mockMoveWorkspace).not.toHaveBeenCalled()
     h.dispose()
   })
 
@@ -564,6 +560,8 @@ describe('useWorkspaceOperations moveWorkspace across the archive boundary', () 
     expect(mockSetWorkspaceArchiveState).toHaveBeenCalledWith({
       workspaceId: 'w1',
       archiveState: WorkspaceArchiveState.ARCHIVED,
+      destinationSectionId: 's-archived',
+      position: expect.any(String),
     })
     expect(mockMoveWorkspace).not.toHaveBeenCalled()
     h.dispose()
@@ -571,7 +569,7 @@ describe('useWorkspaceOperations moveWorkspace across the archive boundary', () 
 
   // Both sides are the archive, so nothing crosses. Reading the DESTINATION
   // alone would archive an already-archived workspace, which asks the user to
-  // confirm an operation that has already happened.
+  // confirm an operation that already happened.
   it('reorders inside the archive with the plain section move', async () => {
     const h = harnessWithCustomSection(['w1'])
 
@@ -600,16 +598,15 @@ describe('useWorkspaceOperations unarchiveAll', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSetWorkspaceArchiveState.mockResolvedValue({ workerTabs: [] })
-    mockSetTabArchiveState.mockResolvedValue({})
   })
 
   it('sets every archived workspace active through the lifecycle RPC', async () => {
     const h = bulkHarness(['w1', 'w2', 'w3'])
     await h.ops.unarchiveAll()
     expect(mockSetWorkspaceArchiveState.mock.calls.map(c => c[0])).toEqual([
-      { workspaceId: 'w1', archiveState: WorkspaceArchiveState.ACTIVE },
-      { workspaceId: 'w2', archiveState: WorkspaceArchiveState.ACTIVE },
-      { workspaceId: 'w3', archiveState: WorkspaceArchiveState.ACTIVE },
+      { workspaceId: 'w1', archiveState: WorkspaceArchiveState.ACTIVE, destinationSectionId: '', position: '' },
+      { workspaceId: 'w2', archiveState: WorkspaceArchiveState.ACTIVE, destinationSectionId: '', position: '' },
+      { workspaceId: 'w3', archiveState: WorkspaceArchiveState.ACTIVE, destinationSectionId: '', position: '' },
     ])
     h.dispose()
   })
@@ -625,6 +622,65 @@ describe('useWorkspaceOperations unarchiveAll', () => {
     const h = bulkHarness([])
     await h.ops.unarchiveAll()
     expect(mockSetWorkspaceArchiveState).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  // The loop must stay SEQUENTIAL. The hub computes each stored rank inside
+  // SetWorkspaceArchiveState by reading the destination's tail, so a
+  // Promise.all rewrite would hand overlapping transactions the same tail. The
+  // hub's own tie-break makes the resulting rank unique either way, but the
+  // ORDER the user sees should be the order they archived in, and nothing else
+  // in this file would fail if the loop stopped being ordered.
+  it('issues one lifecycle RPC at a time, never overlapping them', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    const releases: Array<() => void> = []
+    mockSetWorkspaceArchiveState.mockImplementation(async () => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise<void>((resolve) => {
+        releases.push(resolve)
+      })
+      inFlight -= 1
+      return { workerTabs: [] }
+    })
+    const h = bulkHarness(['w1', 'w2', 'w3'])
+    const done = h.ops.unarchiveAll()
+    // Drain one call at a time. If the loop fanned out, all three would already
+    // be in flight before the first release.
+    for (let i = 0; i < 3; i++) {
+      await vi.waitFor(() => expect(releases).toHaveLength(i + 1))
+      releases[i]()
+    }
+    await done
+    expect(maxInFlight).toBe(1)
+    h.dispose()
+  })
+
+  // One reload at the end, not one per workspace. A per-item refresh costs N
+  // round trips to fetch N-1 states nobody sees; performDelete already takes
+  // the same parameter for the same reason.
+  it('reloads the sections once for the whole batch', async () => {
+    let reloads = 0
+    const h = bulkHarness(['w1', 'w2', 'w3'], {
+      loadSections: async () => {
+        reloads += 1
+      },
+    })
+    await h.ops.unarchiveAll()
+    expect(reloads).toBe(1)
+    h.dispose()
+  })
+
+  it('reloads nothing when the archive is empty', async () => {
+    let reloads = 0
+    const h = bulkHarness([], {
+      loadSections: async () => {
+        reloads += 1
+      },
+    })
+    await h.ops.unarchiveAll()
+    expect(reloads).toBe(0)
     h.dispose()
   })
 
@@ -916,7 +972,6 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     vi.clearAllMocks()
     mockMoveWorkspace.mockResolvedValue({})
     mockSetWorkspaceArchiveState.mockResolvedValue({ workerTabs: [] })
-    mockSetTabArchiveState.mockResolvedValue({})
     localStorageClearForTests()
     setStorageAccount('u-1')
     resetWorkspaceListStateForTests()
@@ -1016,9 +1071,13 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     const h = dragHarness()
     drop(h, 'd', 's-archived', 'a', 's-progress')
     await Promise.resolve()
+    // The drop POSITION rides along, so the row lands where the user dropped
+    // it instead of at the destination's end.
     expect(mockSetWorkspaceArchiveState).toHaveBeenCalledWith({
       workspaceId: 'd',
       archiveState: WorkspaceArchiveState.ACTIVE,
+      destinationSectionId: 's-progress',
+      position: expect.any(String),
     })
     h.dispose()
   })
@@ -1030,6 +1089,8 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     expect(mockSetWorkspaceArchiveState).toHaveBeenCalledWith({
       workspaceId: 'a',
       archiveState: WorkspaceArchiveState.ARCHIVED,
+      destinationSectionId: 's-archived',
+      position: expect.any(String),
     })
     h.dispose()
   })

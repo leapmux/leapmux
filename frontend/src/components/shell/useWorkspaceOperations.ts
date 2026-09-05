@@ -47,6 +47,12 @@ export interface UseWorkspaceOperationsProps {
   onPostArchiveWorkspace?: (workspaceId: string) => void
 }
 
+/** Where a lifecycle move lands: a section, and a lexorank inside it. */
+interface MoveTarget {
+  sectionId: string
+  position: string
+}
+
 export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
   const store = props.sectionStore
 
@@ -243,8 +249,10 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     cancelRename()
   }
 
-  const archiveWorkspace = async (workspaceId: string) => {
-    const archivedSection = store.getArchivedSection()
+  const archiveWorkspace = async (workspaceId: string, target?: MoveTarget, refresh = true) => {
+    const archivedSection = target?.sectionId
+      ? store.state.sections.find(section => section.id === target.sectionId)
+      : store.getArchivedSection()
     if (!archivedSection)
       return
     if (props.onConfirmArchive) {
@@ -254,24 +262,20 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
     const done = startWorkspaceLoading(workspaceId)
     try {
-      const resp = await workspaceClient.setWorkspaceArchiveState({
+      await workspaceClient.setWorkspaceArchiveState({
         workspaceId,
         archiveState: WorkspaceArchiveState.ARCHIVED,
+        destinationSectionId: target?.sectionId ?? '',
+        position: target?.position ?? '',
       })
-      // Apply the Hub state before any Worker fan-out. Every local surface now
-      // treats the workspace as read-only while its processes stop.
-      store.moveWorkspace(workspaceId, archivedSection.id, appendPosition(store.getItemsForSection(archivedSection.id)))
-      await props.loadSections()
+      // The Hub nudged every Worker that hosts one of this workspace's tabs
+      // inside the call above, so those processes are already stopping. Apply
+      // the local state now: every surface treats the workspace as read-only
+      // while that happens.
+      store.moveWorkspace(workspaceId, archivedSection.id, target?.position ?? appendPosition(store.getItemsForSection(archivedSection.id)))
+      if (refresh)
+        await props.loadSections()
       props.onPostArchiveWorkspace?.(workspaceId)
-      const results = await Promise.allSettled(resp.workerTabs.map(workerTabs =>
-        workerRpc.setTabArchiveState(workerTabs.workerId, {
-          tabs: workerTabs.tabs,
-          archiveState: WorkspaceArchiveState.ARCHIVED,
-        }),
-      ))
-      const failure = results.find(result => result.status === 'rejected')
-      if (failure?.status === 'rejected')
-        showWarnToast('Workspace archived, but a Worker did not stop its tabs', failure.reason)
     }
     catch (err) {
       showWarnToast('Failed to archive workspace', err)
@@ -281,29 +285,23 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
   }
 
-  const unarchiveWorkspace = async (workspaceId: string) => {
-    const inProgressSection = store.getInProgressSection()
+  const unarchiveWorkspace = async (workspaceId: string, target?: MoveTarget, refresh = true) => {
+    const inProgressSection = target?.sectionId
+      ? store.state.sections.find(section => section.id === target.sectionId)
+      : store.getInProgressSection()
     if (!inProgressSection)
       return
     const done = startWorkspaceLoading(workspaceId)
     try {
-      const resp = await workspaceClient.setWorkspaceArchiveState({
+      await workspaceClient.setWorkspaceArchiveState({
         workspaceId,
         archiveState: WorkspaceArchiveState.ACTIVE,
+        destinationSectionId: target?.sectionId ?? '',
+        position: target?.position ?? '',
       })
-      // Clear the Worker cache before the section refresh makes the workspace
-      // writable again. The Hub state stays active if a Worker call fails.
-      const results = await Promise.allSettled(resp.workerTabs.map(workerTabs =>
-        workerRpc.setTabArchiveState(workerTabs.workerId, {
-          tabs: workerTabs.tabs,
-          archiveState: WorkspaceArchiveState.ACTIVE,
-        }),
-      ))
-      store.moveWorkspace(workspaceId, inProgressSection.id, appendPosition(store.getItemsForSection(inProgressSection.id)))
-      await props.loadSections()
-      const failure = results.find(result => result.status === 'rejected')
-      if (failure?.status === 'rejected')
-        showWarnToast('Workspace unarchived, but a Worker did not update its tabs', failure.reason)
+      store.moveWorkspace(workspaceId, inProgressSection.id, target?.position ?? appendPosition(store.getItemsForSection(inProgressSection.id)))
+      if (refresh)
+        await props.loadSections()
     }
     catch (err) {
       showWarnToast('Failed to unarchive workspace', err)
@@ -319,36 +317,33 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
    * Crossing that boundary is a LIFECYCLE change, not a sidebar move, and the
    * hub enforces it: `SectionService.MoveWorkspace` answers FailedPrecondition
    * for a destination on the other side, because stopping or restarting a
-   * workspace's processes must not ride on a generic reorder. So a crossing is
-   * routed through archive/unarchive here, and the plain move below runs only
-   * when both sides agree.
+   * workspace's processes must not ride on a generic reorder. So this function
+   * routes a crossing through archive/unarchive, and runs the plain move below
+   * only when both sides agree.
    *
-   * Unarchiving lands the workspace in In progress, so a destination that is
-   * neither Archived nor In progress takes the second, now same-side, move.
-   * That two-step is what keeps "Move to" working on an archived workspace,
-   * which is the only way to unarchive into a specific CUSTOM section.
+   * The crossing carries its DESTINATION, so it stays one hub transaction. It
+   * used to unarchive into In progress and then issue a second move, which
+   * left the workspace resting in In progress whenever that second call
+   * failed, and needed a "still archived?" branch to tell the two failures
+   * apart. `SetWorkspaceArchiveState` refuses a destination on the wrong side,
+   * so the parameter cannot become a second way to archive.
    */
-  const moveWorkspace = async (workspaceId: string, sectionId: string) => {
+  const moveWorkspace = async (workspaceId: string, sectionId: string, dropPosition?: string) => {
     const destination = store.state.sections.find(section => section.id === sectionId)
     const destinationArchived = destination?.sectionType === SectionType.WORKSPACES_ARCHIVED
-    // The two sides COMPARED, not the destination alone: a reorder inside the
-    // archive is a move within one side, and treating it as a crossing would
-    // ask the user to confirm archiving a workspace that is already archived.
+    // This code COMPARES the two sides, not the destination alone: a reorder
+    // inside the archive is a move within one side, and treating it as a
+    // crossing would ask the user to confirm archiving a workspace that is
+    // already archived.
     if (destinationArchived !== isWorkspaceArchived(workspaceId)) {
-      if (destinationArchived) {
-        await archiveWorkspace(workspaceId)
-        return
-      }
-      await unarchiveWorkspace(workspaceId)
-      // Still archived means the unarchive failed and already raised its own
-      // toast. A plain move now would fail again for the same reason and report
-      // it a second time, so stop here.
-      if (isWorkspaceArchived(workspaceId) || sectionId === store.getInProgressSection()?.id)
-        return
+      const target: MoveTarget = { sectionId, position: dropPosition ?? appendPosition(store.getItemsForSection(sectionId)) }
+      if (destinationArchived)
+        await archiveWorkspace(workspaceId, target)
+      else
+        await unarchiveWorkspace(workspaceId, target)
+      return
     }
-    // Read the destination AFTER any unarchive above, which appends a row to
-    // In progress and can therefore move what "the last position" is.
-    const position = appendPosition(store.getItemsForSection(sectionId))
+    const position = dropPosition ?? appendPosition(store.getItemsForSection(sectionId))
     const done = startWorkspaceLoading(workspaceId)
     try {
       await sectionClient.moveWorkspace({ workspaceId, sectionId, position })
@@ -454,13 +449,37 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     return store.getItemsForSection(archivedSection.id).map(i => i.workspaceId)
   }
 
-  /** Move every archived workspace back to In progress, in order. */
+  /**
+   * Move every archived workspace back to In progress.
+   *
+   * SEQUENTIAL, and that is still the whole implementation note, though the
+   * reason moved. The local `appendPosition` no longer collides -- it is
+   * computed beside the store write now -- but the HUB computes the stored rank
+   * inside `SetWorkspaceArchiveState`, reading the destination's tail and
+   * writing `After(tail)`. Two of these overlapping at READ COMMITTED read the
+   * same tail. `appendPositionAfter` on the hub makes that collision
+   * impossible, so this loop is no longer the only thing standing between the
+   * user and a sidebar that reshuffles on every refresh; it stays sequential
+   * because the order the user sees should be the order they archived in.
+   *
+   * There is no transaction: each workspace is its own pair of RPCs, so a
+   * failure part way through leaves the archive partly emptied. Each failed one
+   * raises its own toast, which is the whole safety story.
+   *
+   * ONE refresh at the end, not one per workspace: a per-item reload costs N
+   * round trips to fetch N-1 states nobody sees. `performDelete` takes the same
+   * parameter for the same reason.
+   */
   const unarchiveAll = async () => {
     const inProgressSection = store.getInProgressSection()
     if (!inProgressSection)
       return
-    for (const workspaceId of archivedWorkspaceIds())
-      await unarchiveWorkspace(workspaceId)
+    const ids = archivedWorkspaceIds()
+    if (ids.length === 0)
+      return
+    for (const workspaceId of ids)
+      await unarchiveWorkspace(workspaceId, undefined, false)
+    await props.loadSections()
   }
 
   /**
@@ -592,13 +611,14 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     // A drop that CROSSES the archive boundary -- in either direction -- is a
     // lifecycle change, and `moveWorkspace` owns what that means: the archive
     // confirmation on the way in, the unarchive on the way out, and the hub
-    // call that a plain `MoveWorkspace` would have been refused for. The drop
-    // POSITION is dropped with it, because both lifecycle calls append at the
-    // destination's end; a same-side drop keeps the optimistic path below.
+    // call that a plain `MoveWorkspace` refuses. The drop POSITION goes with
+    // it, because the lifecycle RPC takes a destination and a rank, so the
+    // workspace lands exactly where the user dropped it; a same-side drop
+    // keeps the optimistic path below.
     const resolvedTargetSection = store.state.sections.find(s => s.id === targetSectionId)
     const targetArchived = resolvedTargetSection?.sectionType === SectionType.WORKSPACES_ARCHIVED
     if (targetArchived !== isWorkspaceArchived(wsId)) {
-      void moveWorkspace(wsId, targetSectionId)
+      void moveWorkspace(wsId, targetSectionId, position)
       return
     }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -355,40 +356,189 @@ func TestWorkspaceService_SetWorkspaceArchiveState_TransitionsAndGroupsWorkers(t
 	nudges := &nudgeRecorder{}
 	svc := service.NewWorkspaceService(st, nil, nudges)
 	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
-	archive := func(state leapmuxv1.WorkspaceArchiveState) *leapmuxv1.SetWorkspaceArchiveStateResponse {
-		resp, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+	archive := func(state leapmuxv1.WorkspaceArchiveState) {
+		_, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
 			WorkspaceId: workspaceID, ArchiveState: state,
 		}))
 		require.NoError(t, err)
-		return resp.Msg
 	}
 
-	archived := archive(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED)
-	require.Len(t, archived.GetWorkerTabs(), 2)
-	tabsByWorker := make(map[string][]string)
-	for _, group := range archived.GetWorkerTabs() {
-		for _, tab := range group.GetTabs() {
-			tabsByWorker[group.GetWorkerId()] = append(tabsByWorker[group.GetWorkerId()], tab.GetTabId())
-		}
-	}
-	assert.ElementsMatch(t, []string{"agent-a", "file-a"}, tabsByWorker[workerA.ID])
-	assert.Equal(t, []string{"terminal-b"}, tabsByWorker[workerB.ID])
+	archive(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED)
+	// The Hub owns the Worker delivery, so the nudge set IS the observable.
+	// Every worker hosting one of this workspace's tabs must be told once,
+	// including the one that hosts only a payload-backed tab.
 	item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
 	require.NoError(t, err)
 	assert.Equal(t, archivedID, item.SectionID)
-	assert.Equal(t, "xn", item.Position, "the Hub appends after the current destination tail")
+	// The rank sorts after the destination's tail; its exact spelling carries a
+	// per-workspace tie-break, so assert the ORDER rather than the literal.
+	archivedPosition := item.Position
+	assert.Greater(t, archivedPosition, "x", "the Hub appends after the current destination tail")
 	assert.ElementsMatch(t, []string{workerA.ID, workerB.ID}, nudges.snapshot())
 
-	idempotent := archive(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED)
-	assert.Empty(t, idempotent.GetWorkerTabs())
-	assert.Len(t, nudges.snapshot(), 2, "an idempotent request has no affected Worker")
+	// A repeat is the caller's remedy after a Worker missed its nudge, so it
+	// must nudge every one again. Only the section move is skipped.
+	archive(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED)
+	assert.Len(t, nudges.snapshot(), 4, "a repeat nudges every affected Worker again")
+	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
+	require.NoError(t, err)
+	assert.Equal(t, archivedPosition, item.Position,
+		"a repeat must not move the workspace again, or every retry would reorder the sidebar")
 
-	unarchived := archive(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE)
-	require.Len(t, unarchived.GetWorkerTabs(), 2)
+	archive(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE)
+	assert.Len(t, nudges.snapshot(), 6, "the unarchive nudges every affected Worker too")
 	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
 	require.NoError(t, err)
 	assert.Equal(t, inProgressID, item.SectionID)
-	assert.Equal(t, "yn", item.Position)
+	assert.Greater(t, item.Position, "y")
+}
+
+// TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination
+// pins the parameter that made a boundary-crossing move ONE transaction.
+//
+// "Move to <custom section>" on an archived workspace used to unarchive into In
+// progress and then issue a second MoveWorkspace. When the second call failed
+// the workspace came to rest in a section the user never chose, and the drag
+// position was thrown away because the lifecycle call always appended.
+//
+// The guard matters as much as the feature: a destination on the wrong side of
+// the boundary must be REFUSED, or this parameter becomes a second way to
+// archive a workspace, bypassing everything the lifecycle call does.
+func TestWorkspaceService_SetWorkspaceArchiveState_HonorsAnExplicitDestination(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := hubtestutil.OpenTestStore(t)
+	user := seedUserWithSections(t, st, "archive-destination")
+	owner := userid.MustNew(user.ID)
+	inProgressID := sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+	archivedID := sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED)
+	customID := id.Generate()
+	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID: customID, UserID: owner, Name: "Later", Position: "z",
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}))
+
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "target")
+	placeWorkspaceInSection(t, st, user.ID, workspaceID, archivedID)
+
+	svc := service.NewWorkspaceService(st, nil, &nudgeRecorder{})
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+	// Unarchive straight into the custom section, at a chosen rank.
+	_, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		WorkspaceId:          workspaceID,
+		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+		DestinationSectionId: customID,
+		Position:             "q",
+	}))
+	require.NoError(t, err)
+	item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
+	require.NoError(t, err)
+	assert.Equal(t, customID, item.SectionID, "the workspace lands where the caller asked, not in In progress")
+	assert.Equal(t, "q", item.Position, "an explicit rank is used verbatim, so a drop keeps its place")
+
+	// A destination on the WRONG side is refused, and nothing moves.
+	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		WorkspaceId:          workspaceID,
+		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+		DestinationSectionId: archivedID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
+	require.NoError(t, err)
+	assert.Equal(t, customID, item.SectionID, "a refused destination moves nothing")
+
+	// A destination that CANNOT hold a workspace is refused. The archive move
+	// and the sidebar move share requireWorkspaceSection, so neither can start
+	// accepting a section type the other refuses.
+	filesID := sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_FILES)
+	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		WorkspaceId:          workspaceID,
+		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+		DestinationSectionId: filesID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	// A destination belonging to ANOTHER user is refused, and as NotFound, so
+	// the parameter cannot be used to probe which section ids exist.
+	stranger := seedUserWithSections(t, st, "archive-destination-stranger")
+	strangerSection := sectionIDOfType(t, st, stranger.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		WorkspaceId:          workspaceID,
+		ArchiveState:         leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE,
+		DestinationSectionId: strangerSection,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
+	require.NoError(t, err)
+	assert.Equal(t, customID, item.SectionID, "no refused destination moves the workspace")
+
+	// No destination keeps the built-in behaviour.
+	_, err = svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+		WorkspaceId:  workspaceID,
+		ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+	}))
+	require.NoError(t, err)
+	item, err = st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{UserID: owner, WorkspaceID: workspaceID})
+	require.NoError(t, err)
+	assert.Equal(t, archivedID, item.SectionID)
+	assert.NotEqual(t, inProgressID, item.SectionID)
+}
+
+// TestWorkspaceService_SetWorkspaceArchiveState_ConcurrentMovesGetDistinctRanks
+// pins the rank tie-break. Two workspaces that cross the boundary against the
+// same destination tail must not land on the same lexorank: two items in a tie
+// come back in planner-defined order, which the user sees as the sidebar
+// reshuffling the whole set on every refresh. Sequencing the calls client-side
+// does not fix it, because a second browser or a second device defeats that.
+func TestWorkspaceService_SetWorkspaceArchiveState_ConcurrentMovesGetDistinctRanks(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := hubtestutil.OpenTestStore(t)
+	user := seedUserWithSections(t, st, "archive-rank-owner")
+	owner := userid.MustNew(user.ID)
+	inProgressID := sectionIDOfType(t, st, user.ID, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+
+	svc := service.NewWorkspaceService(st, nil, &nudgeRecorder{})
+	authCtx := auth.WithUser(ctx, &auth.UserInfo{ID: owner})
+
+	// Every workspace here archives out of an EMPTY destination, so all three
+	// read the same tail ("") and compute their rank from it -- which is what
+	// two overlapping transactions observe at READ COMMITTED, without needing
+	// real concurrency to reproduce it.
+	positions := make(map[string]string)
+	for _, name := range []string{"ws-one", "ws-two", "ws-three"} {
+		workspaceID := storetest.SeedWorkspace(t, st, user.ID, name)
+		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: owner, WorkspaceID: workspaceID, SectionID: inProgressID, Position: "n",
+		}))
+		_, err := svc.SetWorkspaceArchiveState(authCtx, connect.NewRequest(&leapmuxv1.SetWorkspaceArchiveStateRequest{
+			WorkspaceId:  workspaceID,
+			ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		}))
+		require.NoError(t, err)
+		item, err := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
+			UserID: owner, WorkspaceID: workspaceID,
+		})
+		require.NoError(t, err)
+		// Delete the row again, so the next workspace reads the same empty
+		// tail this one did instead of appending after it.
+		require.NoError(t, st.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
+			UserID: owner, WorkspaceID: workspaceID,
+		}))
+		for other, position := range positions {
+			assert.NotEqual(t, position, item.Position,
+				"%s and %s must not share a rank in the destination section", other, name)
+		}
+		positions[name] = item.Position
+	}
+	assert.Len(t, positions, 3)
 }
 
 func TestWorkspaceService_SetWorkspaceArchiveState_RefusesForeignWorkspace(t *testing.T) {
