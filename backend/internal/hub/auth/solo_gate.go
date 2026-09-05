@@ -59,13 +59,13 @@ type SoloGate struct {
 	// request. A setter beside that read would be a second way in for a value
 	// with one source, and it could save at most the one read that sets it.
 	//
-	// While it is false, GetSystemInfo reads the store for each request. The
-	// first-password procedure changes this state. It is one indexed read of a
-	// table with one row, in
-	// the process that owns the database, and it is what makes a password set
-	// through any other path arm the rule on the very next request. A caller
-	// that needs the answer SEVERAL times in one request reads it once and
-	// passes it down; GetSystemInfo does.
+	// While it is false, GetSystemInfo reads the store for each request, and
+	// SetInitialSoloPassword is the path that ends that state. The read is one
+	// indexed read of a table with one row, in the process that owns the
+	// database, and it is what makes a password set through any other path arm
+	// the rule on the very next request. A caller that needs the answer
+	// SEVERAL times in one request reads it once and passes it down;
+	// GetSystemInfo does.
 	passwordSet atomic.Bool
 }
 

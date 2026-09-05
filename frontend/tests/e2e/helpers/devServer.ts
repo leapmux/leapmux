@@ -122,8 +122,10 @@ export interface StartSoloServerOptions extends StartDevServerOptions {
  * changes. The shared fixture runs `leapmux dev`, which has real password
  * authentication from the start and therefore cannot exercise any of it.
  *
- * No admin registration: `bootstrap.Run` creates the account, and until it has
- * a password the hub authenticates every caller as it.
+ * No admin registration: `bootstrap.Run` creates the account. A spec that
+ * drives the hub over TCP reaches the password-setup screen first, because
+ * that transport holds no credential-free access — only the desktop app's
+ * local IPC socket does. Set the first password there before the app loads.
  */
 export async function startSoloServer(opts: StartSoloServerOptions = {}): Promise<SoloServerHandle> {
   const { binaryPath } = getGlobalState()
@@ -134,7 +136,13 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 
   const proc = spawn(binaryPath, ['solo', '-listen', listen, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...opts.env },
+    // LEAPMUX_HUB_DEV_FRONTEND is CLEARED, and a caller may set it again
+    // through `opts.env`. The variable points the hub at a Vite dev server
+    // instead of the frontend built into `binaryPath`, and a developer who
+    // exports it for their own `leapmux solo` exports it into this suite too:
+    // the spec then drives a hub that proxies to a server nobody started, and
+    // every page it opens fails for a reason that is not in the spec.
+    env: { ...process.env, LEAPMUX_HUB_DEV_FRONTEND: undefined, ...opts.env },
   })
 
   if (opts.onStdio) {

@@ -31,7 +31,6 @@ const mockSoloAccess = vi.fn<() => SoloAccess>(() => SoloAccess.UNSPECIFIED)
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
   isAutoAuthenticated: () => mockSoloAccess() === SoloAccess.CREDENTIAL_FREE,
-  passwordSetupRequired: () => mockSoloAccess() === SoloAccess.PASSWORD_SETUP,
   isPasswordSetupGate: () => mockSoloAccess() === SoloAccess.PASSWORD_SETUP,
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,

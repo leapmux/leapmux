@@ -4,20 +4,22 @@ import { startSoloServer, stopSoloServer } from './helpers/devServer'
 
 /** A password the hub's own validator accepts. */
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
-const SOLO_ENV = { LEAPMUX_HUB_DEV_FRONTEND: undefined }
 
 /**
- * The password-setup screen, on a solo hub that answers beyond loopback.
+ * The password-setup screen, on a solo hub reached over TCP.
  *
- * `-listen 0.0.0.0` is what exposes it; the spec still reaches it over
- * loopback, because a wildcard bind answers there too. That matters for CI: a
- * runner may hold no address of its own, and this needs none.
+ * The LISTENER no longer decides it: every TCP address restricts a passwordless
+ * caller to the setup procedure, and the last test below pins that for
+ * loopback. `-listen 0.0.0.0` stays here because the exposed case is the one an
+ * operator meets first; the spec still reaches it over loopback, because a
+ * wildcard bind answers there too. That matters for CI: a runner may hold no
+ * address of its own, and this needs none.
  */
 test.describe('Password setup gate', () => {
   let solo: SoloServerHandle | undefined
 
   test.beforeEach(async () => {
-    solo = await startSoloServer({ listenHost: '0.0.0.0', env: SOLO_ENV })
+    solo = await startSoloServer({ listenHost: '0.0.0.0' })
   })
 
   test.afterEach(async () => {
@@ -66,7 +68,7 @@ test.describe('Password setup gate', () => {
   })
 
   test('restricts loopback TCP to password setup too', async ({ page }) => {
-    const loopbackOnly = await startSoloServer({ env: SOLO_ENV })
+    const loopbackOnly = await startSoloServer()
     try {
       await page.goto(`${loopbackOnly.hubUrl}/`)
       await expect(page.getByTestId('password-setup-gate')).toBeVisible()

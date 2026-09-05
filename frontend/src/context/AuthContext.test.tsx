@@ -66,7 +66,6 @@ vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   // A multi-user hub: every caller signs in, and none of the solo facts hold.
   isAutoAuthenticated: () => false,
-  passwordSetupRequired: () => false,
   isPasswordSetupGate: () => mockPasswordSetupGate(),
   soloPasswordSet: () => false,
   loadSystemInfo: () => mockLoadSystemInfo(),

@@ -8,7 +8,6 @@ import { logoutViaUI, openSettingsAt } from './helpers/ui'
 
 /** A password the hub's own validator accepts. */
 const SOLO_PASSWORD = 'correct-horse-battery-staple'
-const SOLO_ENV = { LEAPMUX_HUB_DEV_FRONTEND: undefined }
 
 async function completeSoloSetup(page: Page) {
   const gate = page.getByTestId('password-setup-gate')
@@ -54,7 +53,7 @@ test.describe('Network access', () => {
   let solo: SoloServerHandle | undefined
 
   test.beforeEach(async () => {
-    solo = await startSoloServer({ env: SOLO_ENV })
+    solo = await startSoloServer()
   })
 
   test.afterEach(async () => {
@@ -89,8 +88,9 @@ test.describe('Network access', () => {
     // The hub answers on the new address straight away -- no restart.
     expect(await accepts(port)).toBe(true)
 
-    // The write that stored the password is what started demanding one, and
-    // the page that made it must NOT be signed out of the form it is in.
+    // The panel offers no password field: `completeSoloSetup` stored one, and
+    // the session it returned is what carried this Apply. A panel that still
+    // asked for a first password would mean the setup reply never reached it.
     await expect(row.getByText(/Change it in Account → Password/)).toBeVisible()
 
     // Account → Password is where it changes from here. It is the one Account
@@ -175,6 +175,8 @@ test.describe('Network access', () => {
     await expect(row).toBeVisible()
     await expect(row.getByRole('alert')).toContainText('shared provider infrastructure')
     await row.getByRole('button', { name: /^Add/ }).click()
+    // A checkable item, not a plain one: the menu reports which providers the
+    // list already holds, and refuses a second copy of one.
     await page.getByRole('menuitemcheckbox', { name: /AWS CloudFront/ }).click()
     await expect(row.getByLabel('Trusted proxy selector')).toHaveValue('cloudfront')
     await row.getByRole('button', { name: 'Apply' }).click()

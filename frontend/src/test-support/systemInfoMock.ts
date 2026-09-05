@@ -85,7 +85,6 @@ export const mockLoadOAuthProviders = vi.fn((): Promise<unknown[]> => Promise.re
 export const systemInfoMock = {
   isSoloMode: () => state().soloMode,
   isAutoAuthenticated: () => state().soloAccess === SoloAccess.CREDENTIAL_FREE,
-  passwordSetupRequired: () => state().soloAccess === SoloAccess.PASSWORD_SETUP,
   isPasswordSetupGate: () => state().soloAccess === SoloAccess.PASSWORD_SETUP,
   soloPasswordSet: () => state().soloPasswordSet,
   isSignupEnabled: () => state().signupEnabled,

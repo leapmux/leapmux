@@ -28,9 +28,10 @@ type GuardState
     | { kind: 'failed', title: string, detail: string }
     | { kind: 'redirect', to: string }
     /**
-     * The hub is reachable from another machine and its one account has no
-     * password, so nothing stands between a stranger and the whole app. The
-     * gate replaces the app until one exists.
+     * A TCP connection to a solo hub whose account holds no password. The
+     * caller has no session and reaches exactly one protected action: the
+     * public first-password procedure. The gate replaces the app with that
+     * one form, because every other affordance would refuse this caller.
      */
     | { kind: 'password-setup' }
 
@@ -74,8 +75,10 @@ export const AuthGuard: ParentComponent = (props) => {
       }
     }
 
-    // Before the authenticated branch because password setup is the only RPC
-    // that this unauthenticated TCP caller can use.
+    // Before the authenticated branch, and before the redirect below. This
+    // caller holds no session, so the redirect would send it to a login form
+    // that no password can satisfy; and a caller that DID sign in never
+    // reaches this state, because a stored password ends it.
     if (isPasswordSetupGate())
       return { kind: 'password-setup' }
 

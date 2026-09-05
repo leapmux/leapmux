@@ -130,14 +130,13 @@ export function isAutoAuthenticated(): boolean {
 }
 
 /**
- * Whether a TCP caller must set the first solo password before it can sign in.
- */
-export function passwordSetupRequired(): boolean {
-  return current().soloAccess === GenSoloAccess.PASSWORD_SETUP
-}
-
-/**
- * Whether AuthGuard must take the restricted password-setup path.
+ * Whether this connection reaches the restricted first-password setup state:
+ * TCP, on a solo hub whose account holds no password.
+ *
+ * `AuthGuard` renders the setup screen from it, and `AuthContext` declines to
+ * boot the shell for it. ONE predicate serves both, because both ask the same
+ * question — the two booleans this enum replaced could disagree, and a second
+ * spelling of one state is how they did.
  */
 export function isPasswordSetupGate(): boolean {
   return current().soloAccess === GenSoloAccess.PASSWORD_SETUP

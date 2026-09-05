@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CaptchaProvider, SoloAccess } from '~/generated/proto/leapmux/v1/auth_pb'
-import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, passwordSetupRequired, refreshSnapshot, soloPasswordSet } from './systemInfo'
+import { captchaProviderNeedsSecureContext, getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isAutoAuthenticated, isCaptchaEnabled, isCaptchaUnsolvableHere, isPasswordSetupGate, isSignupEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo, passkeyBlocker, passkeysUsableHere, refreshSnapshot, soloPasswordSet } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
@@ -397,7 +397,7 @@ describe('the solo connection facts', () => {
     await loadSystemInfo(true)
 
     expect(isAutoAuthenticated()).toBe(false)
-    expect(passwordSetupRequired()).toBe(false)
+    expect(isPasswordSetupGate()).toBe(false)
     expect(soloPasswordSet()).toBe(false)
   })
 
@@ -424,7 +424,7 @@ describe('the solo connection facts', () => {
     }))
     await loadSystemInfo(true)
 
-    expect(passwordSetupRequired()).toBe(true)
+    expect(isPasswordSetupGate()).toBe(true)
     expect(soloPasswordSet()).toBe(false)
   })
 

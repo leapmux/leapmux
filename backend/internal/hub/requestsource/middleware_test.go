@@ -28,30 +28,20 @@ type observedRequest struct {
 func observeRequest(t *testing.T, trusted requestsource.TrustedRanges, configure func(*http.Request)) observedRequest {
 	t.Helper()
 	var observed observedRequest
-	handler := requestsource.Middleware(nil, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		observed = observedRequest{
-			clientIP:  peer.ClientIP(r.Context()),
-			remote:    r.RemoteAddr,
-			scheme:    r.URL.Scheme,
-			tlsActive: r.TLS != nil,
-		}
-	}))
+	// A NIL manager trusts nothing, which is the default the hub ships and
+	// the state the direct-peer tests need. A manager appears only when a
+	// test configures selectors, because each one costs a store.
+	var manager *settings.Manager
+	if len(trusted.Selectors()) > 0 {
+		manager = settings.NewManager(hubtestutil.OpenTestStore(t), nil, requestsource.SettingsDescriptors())
+		require.NoError(t, manager.Load(context.Background()))
+		encoded, err := json.Marshal(trusted)
+		require.NoError(t, err)
+		require.NoError(t, manager.Update(context.Background(), requestsource.KeyTrustedProxyRanges, encoded))
+	}
 
 	request := httptest.NewRequest(http.MethodGet, "http://hub.example.test/", nil)
 	configure(request)
-	// A manager-less middleware uses no trusted ranges. To test explicit
-	// ranges, exercise the same request through a manager below.
-	if len(trusted.Selectors()) == 0 {
-		handler.ServeHTTP(httptest.NewRecorder(), request)
-		return observed
-	}
-
-	store := hubtestutil.OpenTestStore(t)
-	manager := settings.NewManager(store, nil, requestsource.SettingsDescriptors())
-	require.NoError(t, manager.Load(context.Background()))
-	encoded, err := json.Marshal(trusted)
-	require.NoError(t, err)
-	require.NoError(t, manager.Update(context.Background(), requestsource.KeyTrustedProxyRanges, encoded))
 	requestsource.Middleware(manager, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		observed = observedRequest{
 			clientIP:  peer.ClientIP(r.Context()),
@@ -146,6 +136,37 @@ func TestMiddleware_ForwardedParserKeepsQuotedDelimitersInsideAnElement(t *testi
 	assert.Equal(t, "https", observed.scheme)
 }
 
+// Each proxy in a chain may append its OWN header line rather than extend the
+// one before it. net/http keeps those lines apart, and RFC 9110 says the two
+// forms mean the same thing, so the chain must read the same either way.
+func TestMiddleware_ReadsRepeatedHeaderLinesAsOneChain(t *testing.T) {
+	t.Parallel()
+	t.Run("X-Forwarded-For and X-Forwarded-Proto", func(t *testing.T) {
+		t.Parallel()
+		observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+			r.RemoteAddr = "10.0.0.3:4327"
+			r.Header.Add("X-Forwarded-For", "198.51.100.7")
+			r.Header.Add("X-Forwarded-For", "10.0.0.1, 10.0.0.2")
+			r.Header.Add("X-Forwarded-Proto", "https")
+			r.Header.Add("X-Forwarded-Proto", "http, http")
+		})
+		assert.Equal(t, "198.51.100.7", observed.clientIP)
+		assert.Equal(t, "https", observed.scheme,
+			"three protocols align with three addresses, and the client sits first")
+	})
+
+	t.Run("Forwarded", func(t *testing.T) {
+		t.Parallel()
+		observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+			r.RemoteAddr = "10.0.0.3:4327"
+			r.Header.Add("Forwarded", "for=198.51.100.7;proto=https")
+			r.Header.Add("Forwarded", "for=10.0.0.2;proto=http")
+		})
+		assert.Equal(t, "198.51.100.7", observed.clientIP)
+		assert.Equal(t, "https", observed.scheme)
+	})
+}
+
 func TestMiddleware_PrefersForwardedWithoutFallback(t *testing.T) {
 	t.Parallel()
 	observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
@@ -160,12 +181,28 @@ func TestMiddleware_PrefersForwardedWithoutFallback(t *testing.T) {
 
 func TestMiddleware_MalformedXForwardedForProducesUnknownClient(t *testing.T) {
 	t.Parallel()
-	observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
-		r.RemoteAddr = "10.0.0.3:4327"
-		r.Header.Set("X-Forwarded-For", "198.51.100.7, not-an-address")
-	})
-	assert.Empty(t, observed.clientIP)
-	assert.Equal(t, "http", observed.scheme)
+	for _, test := range []struct {
+		name  string
+		lines []string
+	}{
+		{"a value that is not an address", []string{"198.51.100.7, not-an-address"}},
+		{"an empty element", []string{"198.51.100.7, , 10.0.0.1"}},
+		// One EMPTY line among several. Each line is its own list, so an empty
+		// one is an empty list and not a separator that the join swallows.
+		{"an empty repeated line", []string{"198.51.100.7", "", "10.0.0.1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+				r.RemoteAddr = "10.0.0.3:4327"
+				for _, line := range test.lines {
+					r.Header.Add("X-Forwarded-For", line)
+				}
+			})
+			assert.Empty(t, observed.clientIP)
+			assert.Equal(t, "http", observed.scheme)
+		})
+	}
 }
 
 func TestMiddleware_AllTrustedChainProducesUnknownClient(t *testing.T) {

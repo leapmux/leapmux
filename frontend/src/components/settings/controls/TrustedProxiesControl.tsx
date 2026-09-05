@@ -5,7 +5,7 @@ import { createEffect, For, Show, untrack } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { Alert } from '~/components/common/Alert'
-import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
+import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { StatusLine } from '~/components/common/StatusLine'
 import { MAX_TRUSTED_PROXY_SELECTORS, TRUSTED_PROXY_PROVIDERS } from '~/generated/contracts/trusted-proxies'
@@ -145,7 +145,7 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
         </ul>
       </div>
 
-      <div>
+      <div class={styles.addRow}>
         <DropdownMenu
           aria-label="Add trusted proxy"
           trigger={triggerProps => (
@@ -156,13 +156,16 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
             </button>
           )}
         >
-          <DropdownMenuCheckableItem
-            kind="checkbox"
-            label="IP address or range"
-            checked={false}
-            disabled={!canAdd()}
-            onSelect={() => add('')}
-          />
+          {/*
+            * An ACTION, so a plain menuitem: it stages a blank row every time
+            * it is chosen. The provider entries below are checkable because
+            * each one is either configured or not, and the menu reports that
+            * state -- a checkbox that never checks would announce a state this
+            * item does not have.
+            */}
+          <button type="button" role="menuitem" onClick={() => add('')}>
+            <DropdownMenuItemContent label="IP address or range" />
+          </button>
           <For each={TRUSTED_PROXY_PROVIDERS}>
             {provider => (
               <DropdownMenuCheckableItem
@@ -170,14 +173,14 @@ export const TrustedProxiesControl: CustomEditorComponent = (props) => {
                 label={provider.label}
                 detail={() => provider.help}
                 checked={configuredProvider(provider.token)}
-                disabled={!canAdd() || configuredProvider(provider.token)}
+                disabled={configuredProvider(provider.token)}
                 onSelect={() => add(provider.token)}
               />
             )}
           </For>
         </DropdownMenu>
         <Show when={!canAdd()}>
-          <span class={styles.note}>{` At most ${MAX_TRUSTED_PROXY_SELECTORS} selectors.`}</span>
+          <span class={styles.note}>{`At most ${MAX_TRUSTED_PROXY_SELECTORS} selectors.`}</span>
         </Show>
       </div>
 

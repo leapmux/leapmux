@@ -37,6 +37,12 @@ export const exampleList = style({
   listStyle: 'none',
 })
 
+export const addRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+})
+
 export const note = style({
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-8)',

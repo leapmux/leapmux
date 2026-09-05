@@ -24,7 +24,13 @@ function openAddMenu() {
   fireEvent.click(screen.getByRole('button', { name: /^Add/ }))
 }
 
-function chooseAddOption(label: string) {
+/** The manual entry is a plain action; each provider is a checkable state. */
+function chooseManualAdd() {
+  openAddMenu()
+  fireEvent.click(screen.getByRole('menuitem', { name: /IP address or range/, hidden: true }))
+}
+
+function chooseProvider(label: string) {
   openAddMenu()
   fireEvent.click(screen.getByRole('menuitemcheckbox', { name: new RegExp(label), hidden: true }))
 }
@@ -63,7 +69,7 @@ describe('trustedProxiesControl', () => {
   it('adds and edits a manual selector before apply', () => {
     const current = binding([])
     render(() => <TrustedProxiesControl binding={current.model} />)
-    chooseAddOption('IP address or range')
+    chooseManualAdd()
 
     const input = screen.getByLabelText('Trusted proxy selector')
     fireEvent.input(input, { target: { value: '192.0.2.10' } })
@@ -72,10 +78,28 @@ describe('trustedProxiesControl', () => {
     expect(current.write).toHaveBeenCalledWith(['192.0.2.10'])
   })
 
+  // The manual entry is an ACTION, so choosing it twice stages two rows. A
+  // checkable item could not express that: the second choice would read as
+  // unchecking the first.
+  it('stages one row for each manual add', () => {
+    const current = binding([])
+    render(() => <TrustedProxiesControl binding={current.model} />)
+    chooseManualAdd()
+    chooseManualAdd()
+
+    const inputs = screen.getAllByLabelText('Trusted proxy selector')
+    expect(inputs).toHaveLength(2)
+    fireEvent.input(inputs[0], { target: { value: '192.0.2.10' } })
+    fireEvent.input(inputs[1], { target: { value: '2001:db8::/64' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    expect(current.write).toHaveBeenCalledWith(['192.0.2.10', '2001:db8::/64'])
+  })
+
   it('adds providers symbolically and disables a duplicate provider', () => {
     const current = binding([])
     render(() => <TrustedProxiesControl binding={current.model} />)
-    chooseAddOption('Cloudflare')
+    chooseProvider('Cloudflare')
 
     expect(screen.getByDisplayValue('cloudflare')).toBeInTheDocument()
     openAddMenu()
