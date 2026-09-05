@@ -159,6 +159,42 @@ describe('agentEditorPanel control request lifecycle', () => {
     expect(clearContext()).toBeChecked()
   })
 
+  // A cancel and re-ask of the SAME request id is a new INSTANCE with a fresh
+  // claim token, and the store admits it as one. The footer has to come back
+  // empty and answer with the new token. Carrying the switches over would
+  // approve a plan the user never saw, with a setting they chose for the
+  // instance that went away. (The identity semantics that decide this live in
+  // `controlResponseHandling.test.ts`. Here the queue empties between the two
+  // writes, so the footer is rebuilt whatever the owner keys on.)
+  it('empties the plan switches for a re-ask of the same request id', () => {
+    const controlStore = createControlStore()
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const plan = (claimToken: string) => ({
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken,
+    })
+    addControlRequest(controlStore, plan('claim-1'))
+    renderPanel({ controlStore, onControlResponse })
+
+    const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
+    fireEvent.click(clearContext())
+    expect(clearContext()).toBeChecked()
+
+    controlStore.removeRequest('a1', 'plan-1')
+    addControlRequest(controlStore, plan('claim-2'))
+
+    expect(clearContext()).not.toBeChecked()
+
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
+
+    const [, , content, claimToken] = onControlResponse.mock.calls[0]
+    expect(claimToken).toBe('claim-2')
+    // `buildAllowResponse` adds the key only for a checked switch, so its
+    // absence is what proves the cancelled instance's choice did not carry.
+    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).not.toHaveProperty('clearContext')
+  })
+
   // The footer answers with the request instance it RENDERED, so the worker's
   // idempotency claim keys on the answered instance. Reading the store again at
   // click time would lose both values as soon as the store moved on.
