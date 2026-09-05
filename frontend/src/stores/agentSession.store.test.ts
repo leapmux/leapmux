@@ -1,7 +1,12 @@
 import { createRoot } from 'solid-js'
-import { beforeEach, describe, expect, it } from 'vitest'
-import { localStorageGet, PREFIX_AGENT_SESSION, storedKeyFor } from '~/lib/browserStorage'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { compactionContextUsage, createAgentSessionStore } from './agentSession.store'
+
+// The asynchronous storage tier has no in-memory mirror, so these round-trips
+// need a database to round-trip through.
+useTestStorage()
 
 // Isolate every test: unique-ID tests are unaffected (each does its own setup),
 // while the reused-'agent-1' tests rely on a clean slate. Reload tests drive
@@ -62,30 +67,31 @@ describe('createAgentSessionStore', () => {
     })
   })
 
-  it('should persist to localStorage after updateInfo', () => {
+  it('should persist after updateInfo', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', { totalCostUsd: 1.5 })
-      const raw = localStorage.getItem(storedKeyFor(`${PREFIX_AGENT_SESSION}agent-1`)!)
-      expect(raw).not.toBeNull()
-      const wrapped = JSON.parse(raw!)
-      expect(wrapped.v.totalCostUsd).toBe(1.5)
-      expect(typeof wrapped.e).toBe('number')
       dispose()
+    })
+    // Polled: the store defers a write until the agent's stored row has been
+    // read and merged, so the value lands an IndexedDB round trip later.
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad<{ totalCostUsd: number }>(`${PREFIX_AGENT_SESSION}agent-1`))
+        .toEqual({ totalCostUsd: 1.5 })
     })
   })
 
-  it('should load from localStorage on first getInfo call', () => {
-    // Pre-seed localStorage with wrapped format before creating the store
-    const preseeded = { totalCostUsd: 3.0 }
-    localStorage.setItem(storedKeyFor(`${PREFIX_AGENT_SESSION}agent-1`)!, JSON.stringify({ v: preseeded, e: Date.now() + 7 * 24 * 60 * 60 * 1000 }))
+  it('should load persisted info on first getInfo call', async () => {
+    localStorageStore(`${PREFIX_AGENT_SESSION}agent-1`, { totalCostUsd: 3.0 })
 
-    createRoot((dispose) => {
-      const store = createAgentSessionStore()
-      const info = store.getInfo('agent-1')
-      expect(info.totalCostUsd).toBe(3.0)
-      dispose()
-    })
+    const dispose = createRoot(d => d)
+    const store = createAgentSessionStore()
+    // `getInfo` stays synchronous, so the FIRST read answers before the row
+    // arrives -- it is the store's reactive update that carries it. Polling is
+    // what a component does by re-rendering.
+    store.getInfo('agent-1')
+    await vi.waitFor(() => expect(store.getInfo('agent-1').totalCostUsd).toBe(3.0))
+    dispose()
   })
 
   it('should deep-merge rateLimits without overwriting other types', () => {
@@ -224,7 +230,7 @@ describe('agentSessionStore thinkingTokens', () => {
     })
   })
 
-  it('persists the cleared state so a reload does not resurrect the count', () => {
+  it('persists the cleared state so a reload does not resurrect the count', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-persist', { totalCostUsd: 0.5, thinkingTokens: 230 })
@@ -232,32 +238,29 @@ describe('agentSessionStore thinkingTokens', () => {
       dispose()
     })
 
-    // A fresh store rehydrates 'a-persist' from localStorage; the cleared
-    // estimate must not come back while the surviving keys do.
-    createRoot((dispose) => {
-      const reloaded = createAgentSessionStore()
-      const info = reloaded.getInfo('a-persist')
-      expect(info.thinkingTokens).toBeUndefined()
-      expect(info.totalCostUsd).toBe(0.5)
-      dispose()
+    // What a fresh store rehydrates: the cleared estimate must not come back
+    // while the surviving keys do.
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-persist`))
+        .toEqual({ totalCostUsd: 0.5 })
     })
   })
 
-  it('writes nothing to localStorage for an estimate-only update', () => {
+  it('writes nothing at all for an estimate-only update', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-eph-only', { thinkingTokens: 500 })
 
       // The estimate is live in the reactive store...
       expect(store.getInfo('a-eph-only').thinkingTokens).toBe(500)
-      // ...but an estimate-only update skips the write entirely (no entry is
-      // even created), so the per-delta stream never thrashes localStorage.
-      expect(localStorageGet(`${PREFIX_AGENT_SESSION}a-eph-only`)).toBeUndefined()
       dispose()
     })
+    // ...but an estimate-only update skips the write entirely (no entry is even
+    // created), so the per-delta stream never thrashes storage.
+    expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-eph-only`)).toBeUndefined()
   })
 
-  it('never persists thinkingTokens, even when set alongside a persisted key', () => {
+  it('never persists thinkingTokens, even when set alongside a persisted key', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       // A single update carrying both a persisted key and the ephemeral
@@ -267,18 +270,18 @@ describe('agentSessionStore thinkingTokens', () => {
       dispose()
     })
 
-    createRoot((dispose) => {
-      const reloaded = createAgentSessionStore()
-      const info = reloaded.getInfo('a-ephemeral')
-      expect(info.thinkingTokens).toBeUndefined() // ephemeral: never written
-      expect(info.totalCostUsd).toBe(0.5) // the persisted sibling survived
-      dispose()
+    // Asserted against the STORED ROW rather than a second store: a store reads
+    // an agent's row exactly once, so polling `getInfo` on one could never
+    // observe a write that landed after that read.
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-ephemeral`))
+        .toEqual({ totalCostUsd: 0.5 })
     })
   })
 })
 
 describe('agentSessionStore clearContextUsage', () => {
-  it('should clear contextUsage and totalCostUsd without affecting other fields', () => {
+  it('should clear contextUsage and totalCostUsd without affecting other fields', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', {
@@ -291,19 +294,24 @@ describe('agentSessionStore clearContextUsage', () => {
         },
       })
       store.clearContextUsage('agent-1')
+      dispose()
+    })
+    await vi.waitFor(() => {
+      const store = createAgentSessionStore()
       const info = store.getInfo('agent-1')
       expect(info.contextUsage).toBeUndefined()
       expect(info.totalCostUsd).toBeUndefined()
-      // localStorage should also not contain contextUsage or totalCostUsd
-      const raw = localStorage.getItem(storedKeyFor(`${PREFIX_AGENT_SESSION}agent-1`)!)
-      const wrapped = JSON.parse(raw!)
-      expect(wrapped.v.contextUsage).toBeUndefined()
-      expect(wrapped.v.totalCostUsd).toBeUndefined()
-      dispose()
+    })
+    // The stored row must not carry them either.
+    await vi.waitFor(async () => {
+      const stored = await localStorageLoad<Record<string, unknown>>(`${PREFIX_AGENT_SESSION}agent-1`)
+      expect(stored).toBeDefined()
+      expect(stored?.contextUsage).toBeUndefined()
+      expect(stored?.totalCostUsd).toBeUndefined()
     })
   })
 
-  it('preserves sibling keys when clearing a not-yet-loaded agent', () => {
+  it('preserves sibling keys when clearing a not-yet-loaded agent', async () => {
     // Persist an agent with context usage AND unrelated keys.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
@@ -319,6 +327,14 @@ describe('agentSessionStore clearContextUsage', () => {
       dispose()
     })
 
+    // Let the first store's write reach disk before the second store opens.
+    // A reload -- which is what the second store stands for -- necessarily
+    // happens after it, and without the wait the second store reads an empty
+    // row and there is nothing for the clear to act on.
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-unhydrated`)).toBeDefined()
+    })
+
     // A fresh store has 'a-unhydrated' on disk but not in memory. Clearing
     // context usage before any getInfo/updateInfo must hydrate first, so it
     // does not persist a bare object over the stored rateLimits.
@@ -328,22 +344,24 @@ describe('agentSessionStore clearContextUsage', () => {
       dispose()
     })
 
-    createRoot((dispose) => {
-      const reloaded = createAgentSessionStore()
-      const info = reloaded.getInfo('a-unhydrated')
-      expect(info.contextUsage).toBeUndefined()
-      expect(info.totalCostUsd).toBeUndefined() // clearContextUsage clears cost too
-      expect(info.rateLimits).toEqual({ five_hour: { status: 'allowed' } }) // survived
-      dispose()
+    // The stored row is what a later reload would read, and one equality states
+    // the whole invariant: context usage and cost gone, rateLimits intact.
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-unhydrated`))
+        .toEqual({ rateLimits: { five_hour: { status: 'allowed' } } })
     })
   })
 
-  it('is a no-op that preserves siblings when there is no context usage to clear', () => {
+  it('is a no-op that preserves siblings when there is no context usage to clear', async () => {
     // Persist an agent that never carried contextUsage/cost, only rateLimits.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-nocontext', { rateLimits: { five_hour: { status: 'allowed' } } })
       dispose()
+    })
+
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-nocontext`)).toBeDefined()
     })
 
     // Clearing context usage when neither key is present must short-circuit
@@ -354,10 +372,9 @@ describe('agentSessionStore clearContextUsage', () => {
       dispose()
     })
 
-    createRoot((dispose) => {
-      const reloaded = createAgentSessionStore()
-      expect(reloaded.getInfo('a-nocontext').rateLimits).toEqual({ five_hour: { status: 'allowed' } })
-      dispose()
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-nocontext`))
+        .toEqual({ rateLimits: { five_hour: { status: 'allowed' } } })
     })
   })
 })

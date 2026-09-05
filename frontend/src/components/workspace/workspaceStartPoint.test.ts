@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { GitMode } from '~/hooks/useGitModeState'
-import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccount } from '~/lib/browserStorage'
+import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccountForTests } from '~/lib/browserStorage'
 import {
   gitModeStickyKey,
   readStickyGitMode,
@@ -99,7 +99,7 @@ describe('startPointDialogSetup', () => {
 describe('sticky git mode', () => {
   beforeEach(() => {
     localStorageClearForTests()
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
   })
 
   it('round-trips a mode under its repository key', () => {

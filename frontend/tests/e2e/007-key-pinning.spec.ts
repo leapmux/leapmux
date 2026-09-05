@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { accountStorageKey, KEY_KEY_PINS } from '../../src/lib/browserStorage'
 import { expect, test } from './fixtures'
+import { readEntry, writeEntry } from './helpers/storage'
 import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
 
 /**
@@ -14,34 +15,32 @@ function keyPinsStorageKey(userId: string): string {
   return accountStorageKey(userId, KEY_KEY_PINS)
 }
 
-/** Read a worker's key pin from the consolidated key-pins map. */
-async function getKeyPin(page: Page, userId: string, workerId: string) {
-  return page.evaluate(([key, wid]) => {
-    const raw = localStorage.getItem(key)
-    if (!raw)
-      return null
-    const pins = JSON.parse(raw).v
-    return pins[wid] ?? null
-  }, [keyPinsStorageKey(userId), workerId] as const)
+/** One pinned worker key, as the store holds it. */
+interface StoredKeyPin {
+  publicKeyHex: string
+  firstSeen: number
 }
 
-/** Replace one pin while preserving the browser-storage expiry envelope. */
+/** One worker's key pin, out of the consolidated key-pins map. */
+async function getKeyPin(page: Page, userId: string, workerId: string): Promise<StoredKeyPin | null> {
+  const row = await readEntry(page, keyPinsStorageKey(userId))
+  const pins = row?.v as Record<string, StoredKeyPin> | undefined
+  return pins?.[workerId] ?? null
+}
+
+/** Replace one pin, preserving the row's expiration. */
 async function replaceKeyPin(page: Page, userId: string, workerId: string, publicKeyHex: string) {
-  await page.evaluate(([key, wid, replacement]) => {
-    const raw = localStorage.getItem(key)
-    if (!raw)
-      throw new Error('key-pin storage was not initialized')
-    const wrapped = JSON.parse(raw)
-    wrapped.v[wid] = {
-      publicKeyHex: replacement,
-      firstSeen: Date.now() - 86400000,
-    }
-    localStorage.setItem(key, JSON.stringify(wrapped))
-  }, [keyPinsStorageKey(userId), workerId, publicKeyHex] as const)
+  const storedKey = keyPinsStorageKey(userId)
+  const row = await readEntry(page, storedKey)
+  if (row === null)
+    throw new Error('key-pin storage was not initialized')
+  const pins = { ...row.v as Record<string, unknown> }
+  pins[workerId] = { publicKeyHex, firstSeen: Date.now() - 86400000 }
+  await writeEntry(page, storedKey, pins, row.e)
 }
 
 test.describe('Key Pinning', () => {
-  test('first connection pins the worker public key in localStorage', async ({
+  test('first connection pins the worker public key in browser storage', async ({
     page,
     workspace,
     leapmuxServer,
@@ -56,11 +55,11 @@ test.describe('Key Pinning', () => {
     const pin = await getKeyPin(page, adminUserId, workerId)
 
     expect(pin).not.toBeNull()
-    expect(pin.publicKeyHex).toBeTruthy()
-    expect(typeof pin.publicKeyHex).toBe('string')
+    expect(pin!.publicKeyHex).toBeTruthy()
+    expect(typeof pin!.publicKeyHex).toBe('string')
     // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
-    expect(pin.publicKeyHex.length).toBe(3328)
-    expect(pin.firstSeen).toBeGreaterThan(0)
+    expect(pin!.publicKeyHex.length).toBe(3328)
+    expect(pin!.firstSeen).toBeGreaterThan(0)
   })
 
   test('accept: key mismatch dialog appears, user accepts, workspace loads', async ({
@@ -120,7 +119,7 @@ test.describe('Key Pinning', () => {
     const updatedPin = await getKeyPin(page, adminUserId, workerId)
     expect(updatedPin).not.toBeNull()
     // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
-    expect(updatedPin.publicKeyHex.length).toBe(3328)
+    expect(updatedPin!.publicKeyHex.length).toBe(3328)
   })
 
   test('reject: key mismatch dialog appears, user rejects, channel not opened', async ({
@@ -154,6 +153,6 @@ test.describe('Key Pinning', () => {
     // The pin should NOT be updated (still the fake key).
     const unchangedPin = await getKeyPin(page, adminUserId, workerId)
     expect(unchangedPin).not.toBeNull()
-    expect(unchangedPin.publicKeyHex).toBe('bb'.repeat(32))
+    expect(unchangedPin!.publicKeyHex).toBe('bb'.repeat(32))
   })
 })

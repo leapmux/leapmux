@@ -1,5 +1,6 @@
-import type { IdbSchema } from './idb'
-import { createIdbConnection, forEachCursor, isIndexedDbAvailable, requestToPromise, selectSweepVictims } from './idb'
+import type { Table } from 'dexie'
+import type Dexie from 'dexie'
+import { createIdbConnection, isIndexedDbAvailable, selectSweepVictims } from './idb'
 import { fnv1a32Hex } from './stringDigest'
 
 // ---------------------------------------------------------------------------
@@ -77,12 +78,9 @@ export const ARTIFACT_TOUCH_INTERVAL_MS = 60 * 60 * 1000
 export const ARTIFACT_MAX_ENTRIES = 2000
 
 const DB_NAME = 'leapmux-render-cache'
-// A CONSTANT. Schema changes land by editing SCHEMA below, not by bumping this:
-// the scaffold rebuilds any database that does not match the declaration. See
-// ~/lib/idb's header for why recreating rather than migrating is the policy --
-// this store is a cache over artifacts the app can always re-render.
-const DB_VERSION = 1
 const STORE_NAME = 'artifacts'
+// Dexie names an index by its key path, so this constant is the index name and
+// the key path at once.
 const AT_INDEX = 'at'
 
 interface ArtifactRecord {
@@ -93,6 +91,10 @@ interface ArtifactRecord {
   value: unknown
   /** Last-used timestamp (refreshed on read), the sweep's recency key. */
   at: number
+}
+
+type ArtifactDb = Dexie & {
+  artifacts: Table<ArtifactRecord, string>
 }
 
 /** Whether persistence can work here at all — callers short-circuit synchronously on false. */
@@ -110,31 +112,26 @@ function artifactKey(ns: string, source: string): string {
 }
 
 /**
- * The database's shape, in one place. Builds the store on creation and is
- * checked against every opened database, which is rebuilt if it does not match
- * -- see ~/lib/idb's header. `AT_INDEX` carries the sweep's recency ordering,
- * so a database missing it would throw on first use rather than degrade.
+ * The database's shape, in one place. Dexie builds the store from it, and the
+ * scaffold checks every opened database against it and rebuilds one that does
+ * not match -- see ~/lib/idb's header for why recreating rather than migrating
+ * is the policy. This store is a cache over artifacts the app can always
+ * re-render, so a rebuild costs one cold render.
+ *
+ * `k` is the primary key. `AT_INDEX` carries the sweep's recency ordering, so a
+ * database missing it would throw on first use rather than degrade.
  */
-const SCHEMA: IdbSchema = {
-  [STORE_NAME]: {
-    keyPath: 'k',
-    indexes: { [AT_INDEX]: 'at' },
-  },
+const STORES = {
+  [STORE_NAME]: `k, ${AT_INDEX}`,
 }
 
-const connection = createIdbConnection(DB_NAME, DB_VERSION, SCHEMA)
+const connection = createIdbConnection<ArtifactDb>(DB_NAME, STORES)
 
 const openDb = connection.open
 
 /** Visible for testing: forget the cached connection (e.g. after swapping the IDBFactory). */
 export function _resetArtifactStoreForTest(): void {
   connection.reset()
-}
-
-function putRecord(db: IDBDatabase, record: ArtifactRecord): Promise<void> {
-  return requestToPromise(
-    db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(record),
-  ).then(() => {})
 }
 
 /**
@@ -154,9 +151,7 @@ export async function getArtifact<V>(
     return undefined
   try {
     const db = await openDb()
-    const record = await requestToPromise<ArtifactRecord | undefined>(
-      db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(artifactKey(ns, source)),
-    )
+    const record = await db.artifacts.get(artifactKey(ns, source))
     // Digest collision or corruption: the stored source must match EXACTLY,
     // or the artifact belongs to some other input — a miss, never a serve.
     if (record === undefined || record.source !== source)
@@ -171,7 +166,7 @@ export async function getArtifact<V>(
     // aging out sooner.)
     if (now - record.at >= touchIntervalMs) {
       try {
-        await putRecord(db, { ...record, at: now })
+        await db.artifacts.put({ ...record, at: now })
       }
       catch {
         // Recency refresh is best-effort; the artifact was already read successfully.
@@ -190,7 +185,7 @@ export async function putArtifact(ns: string, source: string, value: unknown, no
     return
   try {
     const db = await openDb()
-    await putRecord(db, { k: artifactKey(ns, source), source, value, at: now })
+    await db.artifacts.put({ k: artifactKey(ns, source), source, value, at: now })
   }
   catch {
     // Quota/private-browsing failures: persistence is an optimization only.
@@ -210,13 +205,15 @@ export async function sweepArtifacts(opts: { ttlMs?: number, maxEntries?: number
   const now = opts.now ?? Date.now()
   try {
     const db = await openDb()
-    // Key-only cursor over the recency index (ascending = oldest first):
-    // collect [primaryKey, at] without materializing values.
-    const entries: Array<{ key: IDBValidKey, at: number }> = []
-    await forEachCursor(
-      db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).index(AT_INDEX).openKeyCursor(),
-      cursor => entries.push({ key: cursor.primaryKey, at: cursor.key as number }),
-    )
+    // Key-only walk of the recency index (ascending = oldest first): collect
+    // [primaryKey, at] without materializing values. `eachKey` is what keeps it
+    // key-only -- adding a `.filter()` or an `.and()` to this chain sets Dexie's
+    // isMatch flag, which silently switches it to a value cursor and fetches
+    // every payload.
+    const entries: Array<{ key: string, at: number }> = []
+    await db.artifacts.orderBy(AT_INDEX).eachKey((at, cursor) => {
+      entries.push({ key: cursor.primaryKey, at: at as number })
+    })
     // `entries` is at-ascending (the index cursor's order), which is the
     // precondition selectSweepVictims is written against. No entry is reserved
     // here: unlike the checkpoint store, this cache has no "current" row that a
@@ -224,8 +221,7 @@ export async function sweepArtifacts(opts: { ttlMs?: number, maxEntries?: number
     const victims = selectSweepVictims(entries, { now, ttlMs, maxEntries })
     if (victims.length === 0)
       return 0
-    const store = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME)
-    await Promise.all(victims.map(e => requestToPromise(store.delete(e.key))))
+    await db.artifacts.bulkDelete(victims.map(e => e.key))
     return victims.length
   }
   catch {

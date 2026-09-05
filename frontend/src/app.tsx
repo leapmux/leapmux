@@ -19,7 +19,7 @@ import { TAURI_EVENT_MENU_SHOW_ABOUT, TAURI_EVENT_MENU_SHOW_PREFERENCES } from '
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
 import { useDesktopWindowBehavior } from '~/hooks/useDesktopWindowBehavior'
 import { usePreferencesForIdentity } from '~/hooks/usePreferencesForIdentity'
-import { initStorageCleanup } from '~/lib/browserStorage'
+import { flushStorageWrites, initStorageCleanup } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
 import { resolveSyntaxPair, resolveSyntaxVariant, setSyntaxTheme } from '~/lib/syntaxThemeStore'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
@@ -168,6 +168,23 @@ const DesktopFadeIn: ParentComponent = (props) => {
 export default function App() {
   const disposeStorageCleanup = initStorageCleanup()
   onCleanup(disposeStorageCleanup)
+
+  // Browser storage writes behind, so a write issued in the last moments before
+  // a reload has not reached disk yet. `pagehide` starts that transaction
+  // synchronously in the handler, which browsers generally let finish.
+  //
+  // It narrows the window rather than closing it: a write issued after this
+  // fires is still lost, where the synchronous `setItem` it replaces could not
+  // be. The one place that mattered in practice -- the editor draft before a
+  // reload -- is covered, because the draft is written on a debounce that ends
+  // well before an unload.
+  onMount(() => {
+    const flush = () => {
+      void flushStorageWrites()
+    }
+    window.addEventListener('pagehide', flush)
+    onCleanup(() => window.removeEventListener('pagehide', flush))
+  })
 
   useCoreShortcuts()
 

@@ -5,7 +5,7 @@ import {
   localStorageClearForTests,
   localStorageGet,
   localStorageSet,
-  setStorageAccount,
+  setStorageAccountForTests,
 } from '~/lib/browserStorage'
 import { DEFAULT_WORKSPACE_SORT_ORDER } from '~/lib/workspaceSort'
 import {
@@ -38,7 +38,7 @@ function reader() {
 describe('workspaceListState', () => {
   beforeEach(() => {
     localStorageClearForTests()
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     resetWorkspaceListStateForTests()
   })
 
@@ -157,16 +157,16 @@ describe('workspaceListState', () => {
   // drops that write -- a reader that only re-read on notification stayed on
   // the previous account's order.
   it('re-reads the sort order under the new account', () => {
-    setStorageAccount('u-2')
+    setStorageAccountForTests('u-2')
     localStorageSet(KEY_WORKSPACE_SORT, { key: 'created', direction: 'asc' })
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     localStorageSet(KEY_WORKSPACE_SORT, { key: 'name', direction: 'desc' })
     resetWorkspaceListStateForTests()
 
     const r = reader()
     expect(r.order()).toEqual({ key: 'name', direction: 'desc' })
 
-    setStorageAccount('u-2')
+    setStorageAccountForTests('u-2')
 
     expect(r.order()).toEqual({ key: 'created', direction: 'asc' })
     r.dispose()
@@ -175,13 +175,13 @@ describe('workspaceListState', () => {
   // The filter is NOT persisted, so a switch must leave the incoming account
   // with none -- its section ids are not the outgoing account's.
   it('drops every section filter when the account moves', () => {
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     resetWorkspaceListStateForTests()
     toggleSectionFilter('sec-1')
     setSectionFilterQuery('sec-1', 'infra')
     expect(isSectionFilterShown('sec-1')).toBe(true)
 
-    setStorageAccount('u-2')
+    setStorageAccountForTests('u-2')
 
     expect(isSectionFilterShown('sec-1')).toBe(false)
     expect(sectionFilterQuery('sec-1')).toBeUndefined()

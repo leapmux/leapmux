@@ -39,6 +39,12 @@ function userEventsUrls(page: Page): string[] {
  * interactive before its checkpoint lands. Polling the store beats a sleep: it
  * waits for the actual precondition (a sibling row exists to seed FROM) rather
  * than for a guess at how long that takes.
+ *
+ * The open takes NO VERSION, which is what keeps this probe out of the app's
+ * business: a versionless open attaches to whatever version exists, so it can
+ * neither trigger the schema repair nor need updating when the stored version
+ * changes. Dexie records the declared version times ten, so this database is at
+ * native 10 -- and this probe never has to know that.
  */
 async function waitForCheckpointOwners(page: Page, n: number): Promise<void> {
   await expect.poll(async () => page.evaluate(async () => {

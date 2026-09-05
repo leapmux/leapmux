@@ -162,12 +162,19 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
       return
     queueEditRequests.add(requestKey)
     const request = beginEdit(item, takeover)
-    void request.then((response) => {
+    void request.then(async (response) => {
       if (untrack(opts.agentId) !== editAgentId)
         return
       const edited = response.snapshot?.items.find(candidate => candidate.id === inputId) ?? item
       const queueDraftKey = queueEditDraftKey(editAgentId, inputId)
-      pendingQueueEditText = restoreDraft && loadDraft(queueDraftKey).content
+      // The draft read is asynchronous (drafts are an unbounded family on the
+      // unmirrored storage tier), so the agent is CHECKED AGAIN below: this
+      // await is a second window in which the panel can move to another agent,
+      // and everything after it writes this session's state.
+      const savedDraft = restoreDraft ? await loadDraft(queueDraftKey) : undefined
+      if (untrack(opts.agentId) !== editAgentId)
+        return
+      pendingQueueEditText = savedDraft?.content
         ? undefined
         : (response.text ?? edited.text)
       pendingQueueEditAttachments = response.attachments.map(attachment => ({

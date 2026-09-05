@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet, storedKeyFor } from './browserStorage'
+import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
@@ -196,26 +196,37 @@ describe('createPersistedSeq', () => {
     expect(mark).toBe(1)
   })
 
-  // A stored NaN/Infinity (or any value JSON coerces to null) reaches the
-  // allocator as `null`, not as the original value -- JSON has no NaN/Infinity
-  // literal, so JSON.stringify({v: NaN}) writes `{"v":null}`. The allocator must
-  // reject `null` (via `typeof === 'number'`) exactly as it rejects a non-number,
-  // re-seeding from 0. This pins the arrival-as-null reality the JSON path
-  // produces, distinct from the real-number corruptions above.
-  it('rejects a NaN that JSON coerced to null and re-seeds from 0', () => {
+  // A stored NaN reaches the allocator AS NaN. Values are structured-cloned
+  // rather than serialized as JSON, and structured clone carries NaN and
+  // Infinity where JSON had no literal for either and wrote `null` instead. So
+  // the guard that catches this is `Number.isSafeInteger`, not the
+  // `typeof === 'number'` test that used to catch the null -- and a change that
+  // dropped it would now let NaN poison the sequence for the install's life.
+  it('rejects a stored NaN and re-seeds from 0', () => {
     installCryptoMock()
     localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.NaN)
-    // Sanity-check the arrival path the test depends on: JSON serialized NaN
-    // to null, so the cell the allocator reads holds null, not NaN. (KEY_*
-    // is a logical name, so the stored key has to be composed.)
-    const raw = localStorage.getItem(storedKeyFor(KEY_CHANNEL_RELAY_SEQ)!)
-    expect(raw).toContain('"v":null')
+    // Sanity-check the arrival path the test depends on: the value survives as
+    // NaN, so it is a number and only the range guard rejects it.
+    const stored = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
+    expect(typeof stored).toBe('number')
+    expect(Number.isNaN(stored)).toBe(true)
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const first = next()
     expect(Number.isSafeInteger(first)).toBe(true)
     expect(first).toBeGreaterThan(0)
     const persisted = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
     expect(persisted).toBe(1)
+  })
+
+  // Infinity is the other value JSON flattened to null and structured clone
+  // keeps. Same guard, same outcome.
+  it('rejects a stored Infinity and re-seeds from 0', () => {
+    installCryptoMock()
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.POSITIVE_INFINITY)
+    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(Number.POSITIVE_INFINITY)
+    const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+    expect(next()).toBeGreaterThan(0)
+    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(1)
   })
 
   // The mark is a plain monotonic counter, NOT derived from the wall clock. This

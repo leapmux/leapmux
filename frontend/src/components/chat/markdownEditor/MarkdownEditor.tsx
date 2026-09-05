@@ -451,7 +451,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     layout.observe()
 
     const initialDraftKey = getDraftKey()
-    const initialDraft = initialDraftKey ? loadDraft(initialDraftKey) : { content: '', cursor: -1 }
+    // Awaited here, ahead of `buildEditor`, so the editor is still constructed
+    // with its content in hand. The draft read is asynchronous now, and this
+    // `onMount` already awaits `buildEditor`, so it costs no extra round trip.
+    const initialDraft = initialDraftKey ? await loadDraft(initialDraftKey) : { content: '', cursor: -1 }
 
     const editor = await buildEditor({
       editorRoot: editorRef,
@@ -498,7 +501,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     const draftKeyChangedDuringStart = readyDraftKey !== initialDraftKey
     let readyDraft = initialDraft
     if (draftKeyChangedDuringStart) {
-      readyDraft = readyDraftKey ? loadDraft(readyDraftKey) : { content: '', cursor: -1 }
+      // Awaited: the draft read is asynchronous now, so the unawaited form
+      // assigned a Promise and replaced the document with "[object Promise]".
+      readyDraft = readyDraftKey ? await loadDraft(readyDraftKey) : { content: '', cursor: -1 }
       editor.action(replaceAll(readyDraft.content))
       setMarkdown(readyDraft.content)
       props.onContentChange?.(readyDraft.content.trim().length > 0)
@@ -646,6 +651,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   // Swap editor content when the effective draft key changes. This covers
   // agent switches, control-request switches, and per-question draft scopes.
+
+  // Bumped per draft-key swap. The load below is asynchronous, so a swap that
+  // starts while an earlier one is still reading must be able to say so -- the
+  // earlier read would otherwise replace the document with an older key's prose.
+  let draftSwapToken = 0
   createEffect(on(
     getDraftKey,
     (newDraftKeyRaw) => {
@@ -678,18 +688,34 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       setCodeLangPopoverOpen(false)
       setCodeLangNodePos(-1)
 
-      // Load draft for the new key and replace editor content.
-      const draft = newDraftKey ? loadDraft(newDraftKey) : { content: '', cursor: -1 }
-      try {
-        editorInstance.action(replaceAll(draft.content))
-        restoreCursor(editorInstance, draft.cursor)
-        setMarkdown(draft.content)
-        props.onContentChange?.(draft.content.trim().length > 0)
-      }
-      catch { /* editor may not be ready */ }
-
+      // Load the draft for the new key and replace the editor content.
+      //
+      // The read is asynchronous, so `prevDraftKey` moves NOW rather than after
+      // it: the save above has already run for the outgoing key, and leaving the
+      // pointer behind would make a second swap arriving during this read save
+      // the incoming document under the outgoing key.
       prevDraftKey = newDraftKey
       props.onDraftKeyChanged?.(newDraftKey)
+      const swapToken = ++draftSwapToken
+      const swapTarget = editorInstance
+      // Captured before the await. `props` is reactive, and reading a prop off
+      // it inside the callback below would read it outside any tracked scope --
+      // which is what solid/reactivity flags, and it is right: the handler this
+      // swap belongs to is the one that was installed when the swap started.
+      const notifyContentChange = props.onContentChange
+      void (newDraftKey ? loadDraft(newDraftKey) : Promise.resolve({ content: '', cursor: -1 })).then((draft) => {
+        // A later swap won. Replacing the document now would install an older
+        // key's prose over the one the user is looking at.
+        if (swapToken !== draftSwapToken)
+          return
+        try {
+          swapTarget.action(replaceAll(draft.content))
+          restoreCursor(swapTarget, draft.cursor)
+          setMarkdown(draft.content)
+          notifyContentChange?.(draft.content.trim().length > 0)
+        }
+        catch { /* editor may not be ready */ }
+      })
     },
   ))
 

@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { DirectoryTreeHandle } from './DirectoryTree'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
+import type { SyncLocalKey } from '~/lib/browserStorage'
 import type { FileSortFields, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
@@ -189,9 +190,9 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   // Both preferences are scoped to (workerId, workingDir), so the key changes
   // whenever the active tab does. createPersistedSignal owns the two rules that
   // go with that: re-read on a key change, and never write on mount.
-  const showHiddenStorageKey = () => `${PREFIX_FILES_SHOW_HIDDEN}${props.workerId}:${props.workingDir}`
+  const showHiddenStorageKey = (): SyncLocalKey => `${PREFIX_FILES_SHOW_HIDDEN}${props.workerId}:${props.workingDir}`
   const [showHiddenFiles, setShowHiddenFiles] = createPersistedSignal(showHiddenStorageKey, persistedBoolean(true))
-  const sortOrderStorageKey = () => `${PREFIX_FILES_SORT_ORDER}${props.workerId}:${props.workingDir}`
+  const sortOrderStorageKey = (): SyncLocalKey => `${PREFIX_FILES_SORT_ORDER}${props.workerId}:${props.workingDir}`
   const [sortOrder, setSortOrder] = createPersistedSignal(sortOrderStorageKey, parseFileSortOrder)
   let treeHandle: DirectoryTreeHandle | undefined
 

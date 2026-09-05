@@ -75,39 +75,82 @@ export interface WorkerInfoStore {
  */
 export function createWorkerInfoStore(): WorkerInfoStore {
   const [infoMap, setInfoMap] = createSignal<InfoMap>({})
-  // Non-reactive memoization of the localStorage lookup: skips the
+  // Non-reactive memoization of the persisted lookup: skips the
   // `getWorkerInfo` round trip for workers we've already seen. Only
-  // POSITIVE hits are cached — negative reads always re-check localStorage
+  // POSITIVE hits are cached — negative reads always re-check storage
   // because a sibling store's `fetchWorkerInfo` may have written a fresh
   // value via `setWorkerInfo` between the first lookup and now. Caching
   // `null` poisoned this store's read forever and made the
-  // cross-store sharing the comment advertises a lie. The cost: one
-  // synchronous getItem per `workerInfo()` call for as-yet-unfetched
-  // workers, paid until that worker's first successful fetch lands.
+  // cross-store sharing the comment advertises a lie.
   const hydrated = new Map<string, WorkerInfo>()
+  // Workers whose read is in flight, so a column of rows asking for the same
+  // id in one render issues ONE read rather than one each.
+  const reading = new Set<string>()
+  // A revision signal PER WORKER, bumped when that worker's persisted row
+  // lands. `workerInfo` reads the one it was asked about, so a hydration
+  // notifies only the readers of that worker.
+  //
+  // This is why the persisted read does not publish through `infoMap`, which is
+  // one signal holding every worker: writing it would re-run every consumer of
+  // every OTHER id. That cascade is the reason the hydration path was kept out
+  // of `infoMap` when it was synchronous, and making it asynchronous made the
+  // cascade worse rather than better -- every tab's first render now triggers
+  // a read, so a workspace full of them would notify each other N times.
+  const revisions = new Map<string, ReturnType<typeof createSignal<number>>>()
 
-  function readLocalStorage(workerId: string): WorkerInfo | null {
-    const cached = hydrated.get(workerId)
-    if (cached)
-      return cached
-    const fromStorage = getWorkerInfo(workerId) ?? null
-    if (fromStorage)
-      hydrated.set(workerId, fromStorage)
-    return fromStorage
+  function revisionOf(workerId: string): ReturnType<typeof createSignal<number>> {
+    let signal = revisions.get(workerId)
+    if (signal === undefined) {
+      signal = createSignal(0)
+      revisions.set(workerId, signal)
+    }
+    return signal
   }
 
   /**
-   * Reactive read of cached info. On a miss we hydrate from
-   * localStorage via the shared cache; the reactive `infoMap` is only
-   * ever written from `fetchWorkerInfo` so a workspace full of tabs
-   * reading `workerInfo(id)` for distinct ids does not cascade-notify
+   * Start a persisted read for `workerId` and publish it when it lands.
+   *
+   * The read is asynchronous (worker info is an unbounded family on the
+   * unmirrored storage tier), so a cached name appears one microtask after the
+   * first render rather than during it. It is published through `infoMap`, the
+   * store's reactive channel, so the rows that already rendered without it
+   * re-render when it arrives.
+   */
+  function startPersistedRead(workerId: string): void {
+    if (reading.has(workerId))
+      return
+    reading.add(workerId)
+    void getWorkerInfo(workerId).then((fromStorage) => {
+      reading.delete(workerId)
+      if (!fromStorage)
+        return
+      // A FETCH may have landed while the read was in flight, and it is newer
+      // than anything on disk by construction, so it wins.
+      if (untrack(infoMap)[workerId])
+        return
+      hydrated.set(workerId, fromStorage)
+      revisionOf(workerId)[1](v => v + 1)
+    })
+  }
+
+  /**
+   * Reactive read of cached info. On a miss it starts a persisted read through
+   * the shared cache and answers null for now; the reactive `infoMap` is only
+   * ever written from `fetchWorkerInfo` and that read, so a workspace full of
+   * tabs reading `workerInfo(id)` for distinct ids does not cascade-notify
    * every other consumer of `infoMap()`.
    */
   function workerInfo(workerId: string): WorkerInfo | null {
     const map = infoMap()
     if (map[workerId])
       return map[workerId]
-    return readLocalStorage(workerId)
+    // Subscribe to THIS worker's hydration, and nothing else's.
+    revisionOf(workerId)[0]()
+    const cached = hydrated.get(workerId)
+    if (cached)
+      return cached
+    startPersistedRead(workerId)
+    return null
   }
 
   async function fetchWorkerInfo(workerId: string): Promise<WorkerInfo | null> {
@@ -122,14 +165,19 @@ export function createWorkerInfoStore(): WorkerInfoStore {
     const inMem = untrack(infoMap)[workerId]
     if (inMem && Date.now() - inMem.updatedAt < FRESH_TTL_MS)
       return inMem
-    const cached = readLocalStorage(workerId)
+    // This one AWAITS the persisted read rather than starting it and moving
+    // on: it is already an async function, and its answer decides whether to
+    // spend a worker round trip.
+    const cached = hydrated.get(workerId) ?? await getWorkerInfo(workerId)
+    if (cached)
+      hydrated.set(workerId, cached)
     if (cached && Date.now() - cached.updatedAt < FRESH_TTL_MS) {
       if (inMem !== cached)
         setInfoMap(prev => ({ ...prev, [workerId]: cached }))
       return cached
     }
     // `pending.run` lives at module scope; the body runs once even
-    // when multiple stores call in parallel. The localStorage write +
+    // when multiple stores call in parallel. The persisted write +
     // hydrated cache update happen inside the body (process-wide
     // side effects); the reactive map update happens outside so each
     // store's own `infoMap` signal is notified — the body closes over

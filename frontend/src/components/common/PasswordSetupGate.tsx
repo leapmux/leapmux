@@ -55,7 +55,7 @@ export const PasswordSetupGate: Component = () => {
       // known here and needs no second round trip. `setAuth` clears the
       // elevation on its own, which is right for every other caller and wrong
       // for this one.
-      auth.setAuth(response.user, response.elevationExpiresAt)
+      await auth.setAuth(response.user, response.elevationExpiresAt)
     }
     catch (e) {
       setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to set the password') })

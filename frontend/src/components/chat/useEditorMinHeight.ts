@@ -47,14 +47,30 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
   let detachFinish: (() => void) | null = null
   onCleanup(() => detachFinish?.())
 
-  // Load per-agent height when agentId changes.
+  // Load the per-agent height when agentId changes.
+  //
+  // The cache is what keeps this synchronous in the common case: an agent seen
+  // before answers immediately, so switching back to it does not flash the
+  // default height. Only the FIRST visit to an agent pays a read, and the guard
+  // on `opts.agentId()` after it stops a slow read from applying an older
+  // agent's height to the one now on screen.
   createEffect(on(opts.agentId, (agentId) => {
     if (!agentId)
       return
-    if (!editorMinHeightCache.has(agentId)) {
-      editorMinHeightCache.set(agentId, getStoredEditorMinHeight(agentId))
+    if (editorMinHeightCache.has(agentId)) {
+      setEditorMinHeightSignal(editorMinHeightCache.get(agentId))
+      return
     }
-    setEditorMinHeightSignal(editorMinHeightCache.get(agentId))
+    setEditorMinHeightSignal(undefined)
+    void getStoredEditorMinHeight(agentId).then((stored) => {
+      // A write may have landed for this agent while the read was in flight
+      // (a resize drag ends in `setEditorMinHeight` below), and it is newer
+      // than what the disk held.
+      if (!editorMinHeightCache.has(agentId))
+        editorMinHeightCache.set(agentId, stored)
+      if (opts.agentId() === agentId)
+        setEditorMinHeightSignal(editorMinHeightCache.get(agentId))
+    })
   }))
 
   const setEditorMinHeight = (val: number | undefined) => {

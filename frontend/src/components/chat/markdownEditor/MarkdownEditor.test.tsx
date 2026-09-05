@@ -39,7 +39,7 @@ describe('markdownEditor send', () => {
     await expect(send?.()).resolves.toBeUndefined()
 
     // The steps before the throw still ran, so the composer is empty.
-    expect(loadDraft(DRAFT_KEY).content).toBe('')
+    expect((await loadDraft(DRAFT_KEY)).content).toBe('')
     expect(warn).toHaveBeenCalledWith('[MarkdownEditor]', 'Failed to reset the composer after a send:', resetFailure)
   })
 

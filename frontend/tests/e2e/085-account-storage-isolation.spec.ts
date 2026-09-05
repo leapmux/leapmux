@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { accountStorageKeyPrefix, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ } from '../../src/lib/browserStorage'
 import { expect, test } from './fixtures'
+import { storageKeys } from './helpers/storage'
 import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
 
 /**
@@ -20,16 +21,8 @@ import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
  */
 
 /** Every `leapmux:` key in the page, so the assertions can talk about namespaces. */
-async function storageKeys(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
-    const keys: string[] = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key?.startsWith('leapmux:'))
-        keys.push(key)
-    }
-    return keys.sort()
-  })
+async function leapmuxKeys(page: Page): Promise<string[]> {
+  return (await storageKeys(page)).filter(key => key.startsWith('leapmux:'))
 }
 
 /** Pin the theme to a device override and set the palette, through the dialog. */
@@ -57,8 +50,11 @@ test.describe('account storage isolation', () => {
     await overrideThemeOnThisDevice(page, 'nord')
 
     const adminPrefix = accountStorageKeyPrefix(leapmuxServer.adminUserId)
-    const adminKeys = await storageKeys(page)
-    expect(adminKeys.some(k => k.startsWith(adminPrefix))).toBe(true)
+    // POLLED. Storage writes behind, so the rows the sign-in produced reach the
+    // database a moment after the UI settles.
+    await expect.poll(async () => (await leapmuxKeys(page)).some(k => k.startsWith(adminPrefix)))
+      .toBe(true)
+    const adminKeys = await leapmuxKeys(page)
     // Nothing of the app's own lives outside a namespace except the two
     // device-wide relay marks, which fence a process-wide sidecar and cannot be
     // partitioned. Both names come from the registry, so a rename cannot leave
@@ -93,7 +89,7 @@ test.describe('account storage isolation', () => {
     // its own. It changed nothing, and the device tier stores only what
     // DIFFERS from the default, so a user who accepts the defaults writes no
     // key at all -- the isolation is in the keys that stayed put.
-    const afterSecondSignIn = await storageKeys(page)
+    const afterSecondSignIn = await leapmuxKeys(page)
     const adminOwned = adminKeys.filter(k => k.startsWith(adminPrefix))
     expect(adminOwned.length).toBeGreaterThan(0)
     expect(afterSecondSignIn).toEqual(expect.arrayContaining(adminOwned))

@@ -8,7 +8,7 @@ import { Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
-import { hasStorageAccount, KEY_BROWSER_PREFS, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
+import { hasStorageAccount, KEY_BROWSER_PREFS, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
@@ -539,7 +539,7 @@ describe('authContext', () => {
       mockGetCurrentUser.mockReturnValue(inFlight.promise)
       const refreshing = auth().refreshUser()
 
-      auth().adoptSameIdentityUser(
+      await auth().adoptSameIdentityUser(
         { id: 'u1', username: 'alice', emailVerified: true } as unknown as User,
       )
       expect(auth().user()?.emailVerified).toBe(true)
@@ -798,7 +798,7 @@ describe('authContext', () => {
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
-    auth().adoptSameIdentityUser({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
+    await auth().adoptSameIdentityUser({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
 
     expect(auth().user()?.emailVerified).toBe(true)
     expect(auth().elevationExpiresAt()).toBe(deadline)
@@ -843,7 +843,7 @@ describe('authContext storage namespace', () => {
 
   afterEach(() => {
     resetStorageAccountForTests()
-    setStorageAccount(TEST_USER_ID)
+    setStorageAccountForTests(TEST_USER_ID)
   })
 
   it('points storage at the account before anything can render for it', async () => {
@@ -853,7 +853,7 @@ describe('authContext storage namespace', () => {
     // `AuthGuard` has. `Show` is a render effect, so this body runs ahead of
     // every user effect in the flush that publishes the identity: it is the
     // earliest moment any consumer exists, and the one an effect-based
-    // `setStorageAccount` would lose to.
+    // `setStorageAccountForTests` would lose to.
     let seenWhileRendering: string | null | undefined
     function Guarded() {
       seenWhileRendering = storedKeyFor(KEY_BROWSER_PREFS)
@@ -884,7 +884,7 @@ describe('authContext storage namespace', () => {
   })
 
   // A User the app cannot key storage by is not an identity. Letting
-  // `setStorageAccount`'s refusal escape would land in `restoreSession`'s
+  // `setStorageAccountForTests`'s refusal escape would land in `restoreSession`'s
   // network catch and report a client-side data fault as "Could not reach the
   // hub.", with a Retry that hits the identical throw every time.
   it('treats a user with no id as signed out, not as a failed bootstrap', async () => {

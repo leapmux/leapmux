@@ -1,9 +1,13 @@
 /**
- * localStorage cache for worker system info fetched via E2EE.
- * Persists across page reloads so offline workers still show last-known info.
+ * Persistent cache for worker system info fetched via E2EE.
+ * Survives page reloads so offline workers still show last-known info.
+ *
+ * Reads are ASYNCHRONOUS: this is an unbounded family (one row per worker the
+ * user has ever reached) on the unmirrored storage tier. `workerInfo.store`
+ * holds the synchronous view its reactive readers need.
  */
 
-import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_WORKER_INFO } from './browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_WORKER_INFO } from './browserStorage'
 
 export interface WorkerInfo {
   name: string
@@ -16,14 +20,14 @@ export interface WorkerInfo {
   updatedAt: number // Date.now()
 }
 
-export function getWorkerInfo(workerId: string): WorkerInfo | null {
-  return localStorageGet<WorkerInfo>(PREFIX_WORKER_INFO + workerId) ?? null
+export async function getWorkerInfo(workerId: string): Promise<WorkerInfo | null> {
+  return (await localStorageLoad<WorkerInfo>(`${PREFIX_WORKER_INFO}${workerId}`)) ?? null
 }
 
 export function setWorkerInfo(workerId: string, info: WorkerInfo): void {
-  localStorageSet(PREFIX_WORKER_INFO + workerId, info)
+  localStorageStore(`${PREFIX_WORKER_INFO}${workerId}`, info)
 }
 
 export function clearWorkerInfo(workerId: string): void {
-  localStorageRemove(PREFIX_WORKER_INFO + workerId)
+  localStorageDrop(`${PREFIX_WORKER_INFO}${workerId}`)
 }

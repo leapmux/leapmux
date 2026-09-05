@@ -4,7 +4,21 @@ import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
-import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
+import {
+  accountStorageKey,
+  deliverStorageChangeForTests,
+  KEY_BROWSER_PREFS,
+  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
+  KEY_PREFERRED_EXTERNAL_APP,
+  loadBrowserPrefs,
+  localStorageClearForTests,
+  localStorageGet,
+  localStorageRemove,
+  localStorageSet,
+  resetStorageAccountForTests,
+  setStorageAccountForTests,
+  storedKeyFor,
+} from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
 import { goldenAccountSchema } from '~/test-support/accountSchema'
@@ -1312,9 +1326,16 @@ function deferred<T>() {
 // cross-tab shape of the leak account scoping exists to close. Here it also
 // covers every dual preference rather than the theme alone.
 describe('preferencesContext — cross-tab sync', () => {
-  /** Announce that another tab rewrote this account's prefs document. */
+  /**
+   * Announce that another tab rewrote this account's prefs document.
+   *
+   * Delivered through the gateway's test hook rather than a real
+   * BroadcastChannel: the subject here is what `syncFromOtherTabs` does with a
+   * change set, and the transport that produces one is covered in
+   * `browserStorage.test.ts`. A `null` set is the whole-store case.
+   */
   function announceWrite(key: string | null = storedKeyFor(KEY_BROWSER_PREFS)) {
-    window.dispatchEvent(new StorageEvent('storage', { key }))
+    deliverStorageChangeForTests(key === null ? null : new Set([key]))
   }
 
   it('re-reads the stored value when another tab rewrites the prefs document', async () => {
@@ -1388,19 +1409,19 @@ describe('preferencesContext — cross-tab sync', () => {
     writes.mockRestore()
   })
 
-  it('reads the value back through the store rather than off the event', async () => {
-    // `newValue` carries the raw `{ v, e }` TTL envelope that localStorageSet
-    // writes, so parsing it directly reads `undefined` for every field. That
-    // bug made cross-tab theme sync silently do nothing.
+  // The match is on the key AS STORED, which carries the account. Another
+  // account's document changing next door says nothing about this one, and
+  // acting on it would put one user's palette on another user's screen.
+  it('ignores a change set naming another account\'s stored key', async () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
     localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: storedKeyFor(KEY_BROWSER_PREFS),
-      newValue: JSON.stringify({ theme: { name: 'nord', mode: 'dark' } }),
-    }))
+    announceWrite()
+    expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
 
+    // The same logical key, under a different account.
+    deliverStorageChangeForTests(new Set([accountStorageKey('someoneelse', KEY_BROWSER_PREFS)]))
     expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
   })
 
@@ -1463,7 +1484,9 @@ describe('preferencesContext — cross-tab sync', () => {
     announceWrite()
     expect(ctx.get().theme()).toEqual({ name: 'nord', mode: 'dark' })
 
-    localStorageClearForTests()
+    // A whole-store change next door -- a clear, or a database the scaffold had
+    // to rebuild. It names no key, so every entry has to answer for it.
+    localStorageRemove(KEY_BROWSER_PREFS)
     announceWrite(null)
 
     expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
@@ -1481,7 +1504,7 @@ describe('preferencesContext — cross-tab sync', () => {
     resetStorageAccountForTests()
     expect(() => announceWrite('leapmux:channel-relay-seq')).not.toThrow()
     expect(() => announceWrite(null)).not.toThrow()
-    setStorageAccount(TEST_USER_ID)
+    setStorageAccountForTests(TEST_USER_ID)
     expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
   })
 })
@@ -1490,7 +1513,7 @@ describe('preferencesContext — the device tier follows the account', () => {
   const OTHER = 'otheraccount'
 
   afterEach(() => {
-    setStorageAccount(TEST_USER_ID)
+    setStorageAccountForTests(TEST_USER_ID)
   })
 
   it('seeds every device-tier family from the signed-in account', async () => {
@@ -1539,7 +1562,7 @@ describe('preferencesContext — the device tier follows the account', () => {
     // No manual re-seed: moving the namespace is what drives it, through the
     // provider's `onStorageAccountChange` subscription. A test that called a
     // re-seed by hand would pass with that subscription deleted.
-    setStorageAccount(OTHER)
+    setStorageAccountForTests(OTHER)
 
     // Every family is back at its built-in default, holding nothing of the
     // account that just left.
@@ -1557,11 +1580,11 @@ describe('preferencesContext — the device tier follows the account', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    setStorageAccount(OTHER)
+    setStorageAccountForTests(OTHER)
     ctx.get().dual.theme.setBrowser({ name: 'ayu', mode: 'light' })
 
     expect(loadBrowserPrefs().theme).toEqual({ name: 'ayu', mode: 'light' })
-    setStorageAccount(TEST_USER_ID)
+    setStorageAccountForTests(TEST_USER_ID)
     expect(loadBrowserPrefs().theme).toEqual({ name: 'nord', mode: 'dark' })
   })
 })

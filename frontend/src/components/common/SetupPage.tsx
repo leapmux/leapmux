@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { SignupResult } from './SignupForm'
 
 import { useNavigate } from '@solidjs/router'
 import { useAuth } from '~/context/AuthContext'
@@ -28,6 +29,29 @@ export const SetupPage: Component = () => {
   const navigate = useNavigate()
   const auth = useAuth()
 
+  /**
+   * Adopt the new session, then route.
+   *
+   * A named handler rather than an inline arrow, because it is asynchronous
+   * now: `setAuth` reads the account's stored preferences before it publishes
+   * the identity, and an async arrow written directly into JSX reads to
+   * solid/reactivity as an async tracked scope.
+   */
+  const handleSetupComplete = async (resp: SignupResult) => {
+    // Fire-and-forget refresh of `setupRequired`: the account now
+    // exists, so a stale `true` here only means a later /setup visit
+    // redirects once it re-reads. Nothing on this path may block or
+    // fail on it, so this discards the rejection.
+    //
+    // Nothing races it either. `setAuth` below is awaited before the
+    // navigate, and SetupGate lets an authenticated visitor through
+    // whatever the snapshot still says — a session proves an account
+    // exists.
+    void loadSystemInfo(true).catch(() => {})
+    await auth.setAuth(resp.user)
+    navigate('/', { replace: true })
+  }
+
   return (
     <div class={styles.container}>
       <div class={pageCard}>
@@ -38,20 +62,7 @@ export const SetupPage: Component = () => {
           errorPrefix="Setup failed"
           allowAdminUsername
           header={<p>Create the first administrator account.</p>}
-          onSuccess={(resp) => {
-            // Fire-and-forget refresh of `setupRequired`: the account now
-            // exists, so a stale `true` here only means a later /setup visit
-            // redirects once it re-reads. Nothing on this path may block or
-            // fail on it, so this discards the rejection.
-            //
-            // Nothing races it either. `setAuth` below runs first and
-            // synchronously, and SetupGate lets an authenticated visitor
-            // through whatever the snapshot still says — a session proves an
-            // account exists.
-            void loadSystemInfo(true).catch(() => {})
-            auth.setAuth(resp.user)
-            navigate('/', { replace: true })
-          }}
+          onSuccess={handleSetupComplete}
         />
       </div>
     </div>

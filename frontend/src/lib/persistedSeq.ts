@@ -43,6 +43,7 @@
 // one and silently miss the other; each caller keeps its own storage key and
 // therefore its own id space.
 
+import type { SyncLocalKey } from './browserStorage'
 import { localStorageGet, localStorageSet } from './browserStorage'
 import { createLogger } from './logger'
 
@@ -86,7 +87,7 @@ function randomLowBits(): number {
  * cannot mint the same id. The key must be registered in browserStorage's TTL
  * tables.
  */
-export function createPersistedSeq(key: string): () => number {
+export function createPersistedSeq(key: SyncLocalKey): () => number {
   let mark: number | null = null
   // Generated once per allocator (per relay type, per process) so every id a
   // single process mints shares the same fingerprint and advances monotonically
@@ -97,10 +98,10 @@ export function createPersistedSeq(key: string): () => number {
       const persisted = localStorageGet<number>(key)
       // The seed must be (a) a real integer, not NaN/Infinity/a non-number, and
       // (b) within the composition range so the id `mark * stride + processBits`
-      // stays an exact integer under MAX_SAFE_INTEGER. localStorageGet unwraps
-      // the `{v, e}` cell via JSON.parse, so NaN/Infinity cannot actually arrive
-      // (JSON has no such literals -- they surface as null, rejected by `typeof
-      // === 'number'`); but a fractional, negative, or oversized value can. Once
+      // stays an exact integer under MAX_SAFE_INTEGER. Values are
+      // structured-cloned rather than serialized as JSON, so NaN and Infinity
+      // CAN arrive now where JSON had no literal for either; a fractional,
+      // negative, or oversized value always could. Once
       // a bad value reaches the mark it poisons the sequence for the install's
       // life: NaN makes the relay owner-fence (claimId > ownerId) always false,
       // so every open refuses itself; an oversized mark composes to an inexact
@@ -118,20 +119,32 @@ export function createPersistedSeq(key: string): () => number {
         : 0
     }
     mark++
-    localStorageSet(key, mark)
-    // localStorageSet swallows write errors (e.g. quota exceeded) silently, so
-    // verify the mark landed: within this process the in-memory `mark` is
-    // authoritative and only advances, so the ids minted this session are
-    // correct regardless. The hazard is the NEXT reload, which reads the stale
-    // lower persisted value and could mint an id below the owner the still-live
-    // sidecar holds (the relay then refuses every open as superseded until an
-    // app restart). The old clock-seeded scheme masked this with a clock floor
-    // -- but at the cost of a clock-regression hole (a backward NTP step
-    // between reloads seeded below the stale owner), so re-introducing the
-    // clock is not a fix. Loud-logging makes the rare failure diagnosable.
-    if (localStorageGet<number>(key) !== mark) {
-      log.warn('relay-seq mark did not persist; reload after this session may wedge the relay until restart', { key })
-    }
+    // The durability of the write, not a read-back of it. A read-back would
+    // only re-read the in-memory mirror the line above just updated, and would
+    // therefore pass for a mark that never reached disk -- a tautology, where
+    // the localStorage version it replaces was a real check because `setItem`
+    // either threw or committed.
+    //
+    // ASYNCHRONOUS, and that is the honest shape rather than a compromise. The
+    // hazard was never this session: the in-memory `mark` is authoritative and
+    // only advances, so the ids minted here are correct regardless. It is the
+    // NEXT reload, which reads a stale lower persisted value and can mint an id
+    // below the owner the still-live sidecar holds -- the relay then refuses
+    // every open as superseded until an app restart. A report that lands a
+    // microtask later says exactly the same thing about exactly that reload.
+    //
+    // The queue coalesces per key, which makes this EXACT for a high-water
+    // mark: three ids minted in one tick collapse to one write of the largest,
+    // and all three durability promises settle on that one commit.
+    //
+    // (The old clock-seeded scheme masked a lost write with a clock floor, at
+    // the cost of a clock-regression hole -- a backward NTP step between
+    // reloads seeded below the stale owner -- so re-introducing the clock is
+    // not a fix. Loud-logging makes the rare failure diagnosable.)
+    void localStorageSet(key, mark).durable.then((ok) => {
+      if (!ok)
+        log.warn('relay-seq mark did not persist; reload after this session may wedge the relay until restart', { key })
+    })
     // High bits = monotonic mark (reload-safe, shared across processes via
     // localStorage); low bits = per-process random (distinguishes concurrent
     // processes that read the same mark). Multiplication, not <<, because the

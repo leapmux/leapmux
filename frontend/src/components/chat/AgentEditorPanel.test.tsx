@@ -7,16 +7,21 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { localStorageGet, localStorageSet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { AgentEditorPanel } from './AgentEditorPanel'
 import { clearAttachments, getAttachments, queueEditDraftKey, setAttachments } from './attachments'
 import '~/components/chat/providers'
+
+// The asynchronous storage tier has no in-memory mirror, so these round-trips
+// need a database to round-trip through.
+useTestStorage()
 
 const HOME = '/home/dev'
 const WORKTREE_DIR = '/home/dev/Workspaces/r-worktrees/feature'
@@ -40,7 +45,11 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  vi.useFakeTimers()
+  // `setImmediate` stays REAL. fake-indexeddb schedules its request callbacks on
+  // it, and the saved-answer record these cases exercise lives in IndexedDB, so
+  // freezing it would leave every read pending for the length of the test.
+  // Everything the component itself schedules is still under the fake clock.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
 })
 
 afterEach(() => {
@@ -142,7 +151,7 @@ function addControlRequest(
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
 describe('agentEditorPanel control request lifecycle', () => {
-  it('removes the active control request without reading a null request', () => {
+  it('removes the active control request without reading a null request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
     renderPanel({ controlStore })
@@ -158,7 +167,7 @@ describe('agentEditorPanel control request lifecycle', () => {
     expect(screen.getByTestId('composer-footer-slot')).not.toHaveAttribute('data-full-width')
   })
 
-  it('renders the next queued control request after removing the active request', () => {
+  it('renders the next queued control request after removing the active request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
     addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
@@ -177,7 +186,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   // silently unchecks them. The slot compares the request by IDENTITY, and a
   // queued sibling does not change the answered request's identity. A plain
   // read of the store list would instead rebuild the footer on every write.
-  it('keeps the active plan switches checked when a request queues behind it', () => {
+  it('keeps the active plan switches checked when a request queues behind it', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
     renderPanel({ controlStore })
@@ -199,7 +208,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   // instance that went away. (The identity semantics that decide this live in
   // `controlResponseHandling.test.ts`. Here the queue empties between the two
   // writes, so the panel rebuilds the footer whatever the slot keys on.)
-  it('empties the plan switches for a re-ask of the same request id', () => {
+  it('empties the plan switches for a re-ask of the same request id', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     const plan = (claimToken: string) => ({
@@ -232,7 +241,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   // The footer answers with the request instance it RENDERED, so the worker's
   // idempotency claim keys on the answered instance. Reading the store again at
   // click time would lose both values as soon as the store changed.
-  it('answers with the rendered request id and its per-instance claim token', () => {
+  it('answers with the rendered request id and its per-instance claim token', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     addControlRequest(controlStore, {
@@ -257,7 +266,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   // A request that predates the worker's per-instance token carries none. The
   // store then keys its responded mark on the payload instead, so the footer
   // must pass the absent token through rather than substitute a placeholder.
-  it('answers with no claim token when the rendered request carries none', () => {
+  it('answers with no claim token when the rendered request carries none', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
@@ -273,7 +282,7 @@ describe('agentEditorPanel control request lifecycle', () => {
 
   // The panel's `onControlResponse` is optional, and the chat views that omit it
   // still render the footer. Answering there must resolve rather than throw.
-  it('answers without a response handler and still clears the draft', () => {
+  it('answers without a response handler and still clears the draft', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
     saveDraft('a1-ctrl-plan-1', 'no handler', 0)
@@ -281,14 +290,14 @@ describe('agentEditorPanel control request lifecycle', () => {
 
     expect(() => fireEvent.click(screen.getByTestId('plan-approve-btn'))).not.toThrow()
 
-    expect(loadDraft('a1-ctrl-plan-1').content).toBe('')
+    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
   })
 
   // Answering discards the drafts of the ANSWERED request only: its editor text
   // and its saved selection state. A draft belonging to a queued sibling must
   // survive. That pins the cleanup to the rendered request's id and not to a
   // wider key.
-  it('clears only the answered request drafts and ask state', () => {
+  it('clears only the answered request drafts and ask state', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
@@ -299,24 +308,24 @@ describe('agentEditorPanel control request lifecycle', () => {
     // for it. The cleanup derives the page count from the request, so it must
     // leave this key alone rather than sweep a guessed range of page indices.
     saveDraft('a1-ctrl-plan-1-q-3', 'not a key this request can write', 0)
-    localStorageSet(`${PREFIX_CONTROL_STATE}a1:plan-1`, { selections: { 0: ['Postgres'] } })
-    localStorageSet(`${PREFIX_CONTROL_STATE}a1:bash-1`, { selections: { 0: ['MySQL'] } })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:plan-1`, { selections: { 0: ['Postgres'] } })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:bash-1`, { selections: { 0: ['MySQL'] } })
     renderPanel({ controlStore, onControlResponse })
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect(loadDraft('a1-ctrl-plan-1').content).toBe('')
-    expect(loadDraft('a1-ctrl-plan-1-q-3').content).toBe('not a key this request can write')
-    expect(localStorageGet(`${PREFIX_CONTROL_STATE}a1:plan-1`)).toBeUndefined()
-    expect(loadDraft('a1-ctrl-bash-1').content).toBe('queued sibling reason')
-    expect(localStorageGet(`${PREFIX_CONTROL_STATE}a1:bash-1`)).toEqual({ selections: { 0: ['MySQL'] } })
+    expect((await loadDraft('a1-ctrl-plan-1')).content).toBe('')
+    expect((await loadDraft('a1-ctrl-plan-1-q-3')).content).toBe('not a key this request can write')
+    expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:plan-1`)).toBeUndefined()
+    expect((await loadDraft('a1-ctrl-bash-1')).content).toBe('queued sibling reason')
+    expect(await localStorageLoad(`${PREFIX_CONTROL_STATE}a1:bash-1`)).toEqual({ selections: { 0: ['MySQL'] } })
   })
 
   // The per-page keys are derived from the question set, not from a fixed range,
   // so the cleanup clears exactly the pages the editor could have written. A
   // plan request has no questions and therefore no page keys at all -- a draft
   // under a page key it could never write must not be swept away with it.
-  it('clears every per-page draft of the answered question set', () => {
+  it('clears every per-page draft of the answered question set', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     addControlRequest(controlStore, { requestId: 'ask-1', payload: questionRequestPayload() })
@@ -332,9 +341,9 @@ describe('agentEditorPanel control request lifecycle', () => {
     fireEvent.click(screen.getByTestId('control-submit-btn'))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
-    expect(loadDraft('a1-ctrl-ask-1-q-0').content).toBe('')
-    expect(loadDraft('a1-ctrl-ask-1-q-1').content).toBe('')
-    expect(loadDraft('a1-ctrl-bash-1').content).toBe('queued sibling reason')
+    expect((await loadDraft('a1-ctrl-ask-1-q-0')).content).toBe('')
+    expect((await loadDraft('a1-ctrl-ask-1-q-1')).content).toBe('')
+    expect((await loadDraft('a1-ctrl-bash-1')).content).toBe('queued sibling reason')
   })
 
   // A remount is routine: the composer is rebuilt whenever the focused agent
@@ -342,7 +351,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   // The switch belongs to the request INSTANCE, not to the component that drew
   // it, so it must come back checked -- otherwise Approve silently omits the
   // choice the user made.
-  it('restores the plan switches of the rendered request instance after a remount', () => {
+  it('restores the plan switches of the rendered request instance after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
     const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
@@ -354,13 +363,14 @@ describe('agentEditorPanel control request lifecycle', () => {
     first.unmount()
     renderPanel({ controlStore })
 
-    expect(clearContext()).toBeChecked()
+    // Polled: the saved record is read after the remount, not during it.
+    await waitFor(() => expect(clearContext()).toBeChecked())
   })
 
   // The same record covers every control's switches, not the plan pair alone.
   // A Codex permission prompt draws Remember from it, so one mechanism serves
   // both and a new switch needs no further work.
-  it('restores a Codex permission prompt switch after a remount', () => {
+  it('restores a Codex permission prompt switch after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, {
       requestId: 'perm-1',
@@ -376,14 +386,15 @@ describe('agentEditorPanel control request lifecycle', () => {
     first.unmount()
     renderPanel({ controlStore, agentProvider: AgentProvider.CODEX })
 
-    expect(remember()).toBeChecked()
+    // Polled: the saved record is read after the remount, not during it.
+    await waitFor(() => expect(remember()).toBeChecked())
   })
 
   // The record is written for EVERY control request now, not only a question,
   // because a permission prompt and a plan approval carry switches. Answering
   // must therefore discard it: a record that outlived its request would be
   // storage that nothing can ever read again.
-  it('discards the persisted switches of the answered request', () => {
+  it('discards the persisted switches of the answered request', async () => {
     const controlStore = createControlStore()
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
@@ -391,12 +402,14 @@ describe('agentEditorPanel control request lifecycle', () => {
     const key = `${PREFIX_CONTROL_STATE}a1:plan-1:claim-1`
 
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!)
-    expect(localStorageGet<{ switches?: Record<string, boolean> }>(key)?.switches)
-      .toEqual({ 'plan-clear-context-checkbox': true })
+    await waitFor(async () => {
+      expect((await localStorageLoad<{ switches?: Record<string, boolean> }>(key))?.switches)
+        .toEqual({ 'plan-clear-context-checkbox': true })
+    })
 
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    expect(localStorageGet(key)).toBeUndefined()
+    expect(await localStorageLoad(key)).toBeUndefined()
     // The choice still reached the response; only the saved copy is gone.
     const [, content] = onControlResponse.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toHaveProperty('clearContext', true)
@@ -409,7 +422,7 @@ describe('agentEditorPanel control request lifecycle', () => {
   // those answers are saved under. An id alone leaves the new question already
   // answered, and one Submit click then sends what the user chose for the
   // instance that went away.
-  it('empties the answers for a question that reuses the request id', () => {
+  it('empties the answers for a question that reuses the request id', async () => {
     const controlStore = createControlStore()
     const revised = questionRequestPayload()
     ;(revised.request as { input: { questions: { question: string }[] } }).input.questions[0].question = 'Which cache?'
@@ -429,14 +442,15 @@ describe('agentEditorPanel control request lifecycle', () => {
   // The saved answers follow the instance too, not only the reset. A remount
   // must restore the instance's OWN page and selections -- that is what the
   // saved copy is for -- and must not restore a sibling instance's.
-  it('restores the saved answers of the rendered request instance only', () => {
+  it('restores the saved answers of the rendered request instance only', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'ask-1', payload: questionRequestPayload(), claimToken: 'claim-1' })
-    localStorageSet(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-1`, { selections: { 0: ['MySQL'] }, currentPage: 1 })
-    localStorageSet(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-2`, { selections: { 0: ['Postgres'] }, currentPage: 0 })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-1`, { selections: { 0: ['MySQL'] }, currentPage: 1 })
+    localStorageStore(`${PREFIX_CONTROL_STATE}a1:ask-1:claim-2`, { selections: { 0: ['Postgres'] }, currentPage: 0 })
     renderPanel({ controlStore })
 
-    expect(screen.getByTestId('control-question-group')).toHaveTextContent('Which runtime?')
+    await waitFor(() =>
+      expect(screen.getByTestId('control-question-group')).toHaveTextContent('Which runtime?'))
   })
 })
 
@@ -580,11 +594,11 @@ describe('agent editor panel', () => {
     // Wait on the draft that the send clears, not on the composer re-opening:
     // the attachment paths open one microtask before the editor clears its
     // submitted draft.
-    await waitFor(() => expect(loadDraft('a1').content).toBe(''))
+    await waitFor(async () => expect((await loadDraft('a1')).content).toBe(''))
 
     expect(screen.getByTestId('file-input')).not.toBeDisabled()
     expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b')
-    expect(loadDraft('a2').content).toBe('draft b')
+    expect((await loadDraft('a2')).content).toBe('draft b')
     expect(getAttachments('a1')).toEqual([])
     expect(getAttachments('a2')).toEqual([attachmentB])
   })
@@ -733,7 +747,7 @@ describe('agent editor panel', () => {
     await Promise.resolve()
 
     expect(onDeleteQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'queued-1' }))
-    expect(loadDraft(draftKey).content).toBe('')
+    expect((await loadDraft(draftKey)).content).toBe('')
   })
 
   it('requires confirmation before it retries uncertain delivery', async () => {
@@ -841,7 +855,7 @@ describe('agent editor panel', () => {
   // The defect this pins: the chip printed an absolute path while the sidebar
   // row for the SAME checkout printed a tilde one, because the panel read the
   // home dir off a field nothing populates.
-  it('shortens the chip tooltip directory against the worker home dir', () => {
+  it('shortens the chip tooltip directory against the worker home dir', async () => {
     renderPanel()
 
     const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))
@@ -850,7 +864,7 @@ describe('agent editor panel', () => {
       .toBe('~/Workspaces/r-worktrees/feature')
   })
 
-  it('shows the checkout kind on the chip', () => {
+  it('shows the checkout kind on the chip', async () => {
     renderPanel()
 
     expect(screen.getByTestId('composer-branch-trigger').querySelector('[data-testid="worktree-icon"]'))
@@ -860,7 +874,7 @@ describe('agent editor panel', () => {
 
   // A worker the store knows nothing about reports no home dir. The absolute
   // path is correct there; a guessed short one would not be.
-  it('leaves the directory absolute for a worker with no system info', () => {
+  it('leaves the directory absolute for a worker with no system info', async () => {
     renderPanel({ workerId: 'w-unknown' })
 
     const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))

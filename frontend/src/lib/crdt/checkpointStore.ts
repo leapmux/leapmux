@@ -1,13 +1,11 @@
+import type { Table } from 'dexie'
+import type Dexie from 'dexie'
 import type { HlcShape } from './hlc'
-import type { IdbSchema } from '~/lib/idb'
 import {
   createIdbConnection,
-  forEachCursor,
-  forEachCursorWhile,
   isIndexedDbAvailable,
-  requestToPromise,
   selectSweepVictims,
-  txToPromise,
+  stopWalk,
 } from '~/lib/idb'
 import { createLogger } from '~/lib/logger'
 
@@ -96,38 +94,47 @@ import { createLogger } from '~/lib/logger'
 // Every operation is best-effort and no-throw: without indexedDB (jsdom, SSR,
 // private browsing) or when it fails (quota), reads miss and writes drop. A
 // miss always degrades to a full snapshot — the correct fallback. The open /
-// cache / upgrade / test-reset scaffold is shared with the app's other IDB
-// store via `~/lib/idb` (no `idb` dependency).
+// cache / schema-check / test-reset scaffold is shared with the app's other IDB
+// store via `~/lib/idb`, which wraps Dexie.
+//
+// EVERY `await` INSIDE A `db.transaction(...)` SCOPE BELOW MUST RESOLVE A DEXIE
+// PROMISE. Awaiting a plain native promise (a fetch, a timer, a helper from
+// another module that is not itself all-Dexie) drops Dexie's zone; the IDB
+// transaction then has no outstanding request at the microtask checkpoint,
+// auto-commits, and the next call in the scope fails with PrematureCommitError.
+// `Dexie.waitFor` is the escape hatch, and nothing here needs it.
 // ---------------------------------------------------------------------------
 
 const log = createLogger('checkpointStore')
 
 const DB_NAME = 'leapmux-crdt-state'
-// A CONSTANT. Schema changes land by editing SCHEMA below, not by bumping this:
-// the scaffold checks every opened database against that declaration and
-// rebuilds any that does not match. See ~/lib/idb's header for why recreating
-// rather than migrating is the permanent policy -- these stores are a cache
-// over state the hub owns and re-syncs, so a rebuild costs one cold start.
-const DB_VERSION = 1
 const CHECKPOINT_STORE = 'checkpoints'
 const CHUNK_STORE = 'checkpointChunks'
 const OPLOG_STORE = 'opLog'
-/** Index over the owning (user, client) pair — the replay and truncate path. */
-const BY_OWNER_INDEX = 'byOwner'
+/**
+ * The owner tuple's key path.
+ *
+ * Dexie names an index by its key path, so each of these three constants is the
+ * index name and the key path at once, and `.where(...)` resolves by key path
+ * regardless. On `checkpoints` this same text is the PRIMARY key rather than an
+ * index, which is why an owner-scoped read or delete there needs no index at
+ * all.
+ */
+const BY_OWNER_INDEX = '[userId+clientId]'
 /** Index over the user alone — the logout wipe, which spans every client. */
-const BY_USER_INDEX = 'byUserId'
+const BY_USER_INDEX = 'userId'
 /**
  * Index over `lastSeenAt` — the abandoned-owner sweep.
  *
  * Indexed rather than read off the records because the sweep must NOT
  * materialize what it is deciding about: a checkpoint row carries the state
  * header, so walking the rows to read a timestamp would deserialize every
- * abandoned tab's payload just to decide to delete it. An index key cursor
- * yields (lastSeenAt, [userId, clientId]) and touches no value at all. That
- * matters less than it did when the row held the WHOLE state, but the sweep is
- * still the one caller with no reason to read a value at all.
+ * abandoned tab's payload just to decide to delete it. A key-only walk yields
+ * (lastSeenAt, [userId, clientId]) and touches no value at all. That matters
+ * less than it did when the row held the WHOLE state, but the sweep is still
+ * the one caller with no reason to read a value at all.
  */
-const BY_LAST_SEEN_INDEX = 'byLastSeenAt'
+const BY_LAST_SEEN_INDEX = 'lastSeenAt'
 
 /**
  * Owners whose checkpoint has not been rewritten within this window are swept.
@@ -298,7 +305,7 @@ export interface CheckpointDelta {
 /** On-disk shape of one op-log SEGMENT row (one per flush since checkpoint). */
 interface OpLogRecord {
   /**
-   * Generator-assigned, store-wide monotonic sequence. It does NOT need to be
+   * Store-assigned, store-wide monotonic sequence. It does NOT need to be
    * per-owner contiguous: replay walks the byOwner index, and an index cursor
    * yields equal-index-key records in PRIMARY-KEY order, so a globally
    * increasing seq still orders one owner's segments by append time. Letting
@@ -306,7 +313,7 @@ interface OpLogRecord {
    * the current max) that the append path used to pay on every flush, and with
    * it the prose argument for why that read and its write were atomic.
    */
-  seq?: number
+  seq: number
   userId: string
   clientId: string
   /**
@@ -331,6 +338,15 @@ interface OpLogRecord {
   /** The batch of confirmed frame byte-blobs appended in one flush, in order. */
   framesBytes: Uint8Array[]
 }
+
+/**
+ * What an append supplies: everything but `seq`, which the store assigns.
+ *
+ * A separate insert type rather than `seq?: number` on the record, so a READ
+ * never has to treat the sequence as possibly-absent while a WRITE still cannot
+ * supply one.
+ */
+type OpLogInsert = Omit<OpLogRecord, 'seq'>
 
 /**
  * Result of reading an owner's persisted pair.
@@ -381,51 +397,40 @@ export function isCheckpointStoreAvailable(): boolean {
   return isIndexedDbAvailable()
 }
 
+type CheckpointDb = Dexie & {
+  checkpoints: Table<CheckpointRecord, [string, string]>
+  checkpointChunks: Table<CheckpointChunkRecord, [string, string, string, string]>
+  opLog: Table<OpLogRecord, number, OpLogInsert>
+}
+
 /**
  * The database's shape, in one place.
  *
- * Both halves of the scaffold's schema handling derive from this: it builds the
- * stores on creation, and an opened database that does not match it is deleted
+ * Both halves of the scaffold's schema handling derive from this: Dexie builds
+ * the stores from it, and an opened database that does not match it is deleted
  * and rebuilt. Add an index here and existing local databases repair themselves
  * on the next open -- there is no second list to remember to update, and no
  * version to bump.
+ *
+ * The first term of each entry is the PRIMARY key; the rest are indexes.
+ *   - `checkpoints`: the owner tuple IS the primary key, so an owner-scoped
+ *     read or delete needs no index.
+ *   - `checkpointChunks`: (owner, kind, entityId), so a single chunk is
+ *     addressed by primary key and an incremental rewrite needs no index at all
+ *     for its puts and deletes. The two index-driven walks mirror the op-log's
+ *     exactly -- an owner-scoped drop (a FULL rewrite, corruption recovery, the
+ *     sweep) and a user-scoped drop (logout).
+ *   - `opLog`: `++seq` is store-assigned, so an append is a single `add` and
+ *     segment ordering is a property the store guarantees rather than one the
+ *     append path has to argue for.
  */
-const SCHEMA: IdbSchema = {
-  [CHECKPOINT_STORE]: {
-    // The owner tuple IS the primary key, so an owner-scoped read or delete
-    // needs no index.
-    keyPath: ['userId', 'clientId'],
-    indexes: {
-      [BY_USER_INDEX]: 'userId',
-      [BY_LAST_SEEN_INDEX]: 'lastSeenAt',
-    },
-  },
-  [CHUNK_STORE]: {
-    // (owner, kind, entityId): a single chunk is addressed by primary key, so
-    // an incremental rewrite needs no index at all for its puts and deletes.
-    // The two index-driven walks below mirror the op-log's exactly -- an
-    // owner-scoped drop (a FULL rewrite, corruption recovery, the sweep) and a
-    // user-scoped drop (logout).
-    keyPath: ['userId', 'clientId', 'kind', 'entityId'],
-    indexes: {
-      [BY_OWNER_INDEX]: ['userId', 'clientId'],
-      [BY_USER_INDEX]: 'userId',
-    },
-  },
-  [OPLOG_STORE]: {
-    // autoIncrement: the store assigns seq, so append is a single `add` and
-    // segment ordering is a property the store guarantees rather than one the
-    // append path has to argue for.
-    keyPath: 'seq',
-    autoIncrement: true,
-    indexes: {
-      [BY_OWNER_INDEX]: ['userId', 'clientId'],
-      [BY_USER_INDEX]: 'userId',
-    },
-  },
+const STORES = {
+  [CHECKPOINT_STORE]: `${BY_OWNER_INDEX}, ${BY_USER_INDEX}, ${BY_LAST_SEEN_INDEX}`,
+  [CHUNK_STORE]: `[userId+clientId+kind+entityId], ${BY_OWNER_INDEX}, ${BY_USER_INDEX}`,
+  [OPLOG_STORE]: `++seq, ${BY_OWNER_INDEX}, ${BY_USER_INDEX}`,
 }
 
-const connection = createIdbConnection(DB_NAME, DB_VERSION, SCHEMA)
+const connection = createIdbConnection<CheckpointDb>(DB_NAME, STORES)
 
 const openDb = connection.open
 
@@ -442,53 +447,42 @@ export function _resetCheckpointStoreForTest(): void {
 export async function readCheckpoint(userId: string, clientId: string): Promise<CheckpointRead> {
   if (!isCheckpointStoreAvailable())
     return { status: 'miss' }
-  let db: IDBDatabase
-  let checkpoint: CheckpointRecord | undefined
-  let chunks: CheckpointChunkRecord[]
-  let tx: IDBTransaction
   try {
-    db = await openDb()
+    const db = await openDb()
     // Read the metadata row, its chunks and the op-log in ONE transaction so
     // the three stay consistent: a concurrent writeCheckpointAndTruncateOpLog
     // cannot land between the reads and leave a header describing chunks that
     // have moved, or a checkpoint whose op-log was just truncated.
-    //
-    // Every await below is on a request belonging to THIS transaction, which is
-    // what keeps it active across the microtask checkpoint (a transaction stays
-    // active while its own requests are outstanding). Do NOT introduce an await
-    // on anything else between here and the op-log read: that would let the
-    // transaction auto-commit, and the next objectStore() call would throw.
-    tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readonly')
-    checkpoint = await requestToPromise<CheckpointRecord | undefined>(
-      tx.objectStore(CHECKPOINT_STORE).get([userId, clientId]),
-    )
-    if (checkpoint === undefined)
-      return { status: 'miss' }
-    // The chunks are the other half of the BASE, so an unreadable one is fatal
-    // in exactly the way an unreadable header is: a partial entity set is a
-    // state that silently lost records the resume cursor claims are present.
-    chunks = []
-    await forEachCursor(
-      tx.objectStore(CHUNK_STORE).index(BY_OWNER_INDEX).openCursor(IDBKeyRange.only([userId, clientId])),
-      cursor => chunks.push(cursor.value as CheckpointChunkRecord),
-    )
+    return await db.transaction('r', db.checkpoints, db.checkpointChunks, db.opLog, async (): Promise<CheckpointRead> => {
+      const checkpoint = await db.checkpoints.get([userId, clientId])
+      if (checkpoint === undefined)
+        return { status: 'miss' }
+      // The chunks are the other half of the BASE, so an unreadable one is fatal
+      // in exactly the way an unreadable header is: a partial entity set is a
+      // state that silently lost records the resume cursor claims are present.
+      // Left uncaught, so it aborts this scope and takes the `failed` arm below.
+      const chunks = await db.checkpointChunks.where(BY_OWNER_INDEX).equals([userId, clientId]).toArray()
+      // The op-log is a separate failure domain: it is a rebuildable tail over a
+      // checkpoint that has already been read successfully, so a failure here
+      // truncates the replay instead of discarding the base.
+      //
+      // Catching INSIDE the transaction is safe because Dexie calls
+      // preventDefault on a failed request's event, so the failure never bubbles
+      // to the transaction and this scope goes on to commit normally.
+      try {
+        const { frames, truncated, nextOrdinal } = await readOpLogFrames(db, userId, clientId)
+        if (truncated)
+          log.warn('op-log read stopped early; replaying the prefix and rewriting the checkpoint')
+        return { status: 'ok', checkpoint, chunks, opLogFrames: frames, opLogTruncated: truncated, opLogNextOrdinal: nextOrdinal }
+      }
+      catch {
+        log.warn('op-log unreadable; replaying nothing onto the checkpoint and rewriting it')
+        return { status: 'ok', checkpoint, chunks, opLogFrames: [], opLogTruncated: true, opLogNextOrdinal: 0 }
+      }
+    })
   }
   catch {
     return { status: 'failed' }
-  }
-
-  // The op-log is a separate failure domain: it is a rebuildable tail over a
-  // checkpoint that has already been read successfully, so a failure here
-  // truncates the replay instead of discarding the base.
-  try {
-    const { frames, truncated, nextOrdinal } = await readOpLogFrames(tx.objectStore(OPLOG_STORE), userId, clientId)
-    if (truncated)
-      log.warn('op-log read stopped early; replaying the prefix and rewriting the checkpoint')
-    return { status: 'ok', checkpoint, chunks, opLogFrames: frames, opLogTruncated: truncated, opLogNextOrdinal: nextOrdinal }
-  }
-  catch {
-    log.warn('op-log unreadable; replaying nothing onto the checkpoint and rewriting it')
-    return { status: 'ok', checkpoint, chunks, opLogFrames: [], opLogTruncated: true, opLogNextOrdinal: 0 }
   }
 }
 
@@ -501,9 +495,10 @@ interface OpLogRead {
   nextOrdinal: number
 }
 
-async function readOpLogFrames(store: IDBObjectStore, userId: string, clientId: string): Promise<OpLogRead> {
-  // Cursor over the byOwner index for this (user, client). The index yields
-  // equal-key records in primary-key (seq) order = append order.
+async function readOpLogFrames(db: CheckpointDb, userId: string, clientId: string): Promise<OpLogRead> {
+  // Walk the byOwner index for this (user, client). The index yields equal-key
+  // records in primary-key (seq) order = append order, and Dexie does not
+  // re-sort a `.where(...).equals(...)` walk.
   //
   // The walk STOPS at the first segment that breaks the read, rather than
   // collecting every segment and deciding afterwards: the caps exist to bound
@@ -513,52 +508,50 @@ async function readOpLogFrames(store: IDBObjectStore, userId: string, clientId: 
   let bytes = 0
   let truncated = false
   let nextOrdinal = 0
-  await forEachCursorWhile(
-    store.index(BY_OWNER_INDEX).openCursor(IDBKeyRange.only([userId, clientId])),
-    (cursor) => {
-      const seg = cursor.value as OpLogRecord
-      // STOP at the first ordinal that is not the one expected next. This is the
-      // hole check, and it is the only one that catches an append that never
-      // landed: a swallowed write failure, or two tabs that ended up sharing one
-      // clientId and interleaved segments into a single owner's log. Everything
-      // below is built on a strict PREFIX, so stopping here (rather than
-      // skipping the row) keeps the contract and routes the bad tail to the
-      // caller's rewrite.
-      if (seg?.ordinal !== nextOrdinal) {
+  await db.opLog.where(BY_OWNER_INDEX).equals([userId, clientId]).each((seg, cursor) => {
+    // STOP at the first ordinal that is not the one expected next. This is the
+    // hole check, and it is the only one that catches an append that never
+    // landed: a swallowed write failure, or two tabs that ended up sharing one
+    // clientId and interleaved segments into a single owner's log. Everything
+    // below is built on a strict PREFIX, so stopping here (rather than
+    // skipping the row) keeps the contract and routes the bad tail to the
+    // caller's rewrite.
+    if (seg?.ordinal !== nextOrdinal) {
+      truncated = true
+      stopWalk(cursor)
+      return
+    }
+    // STOP at a malformed row -- do not skip it and keep reading. Everything
+    // downstream is built on a strict-PREFIX contract: hydrate replays the
+    // frames in order and the `batchEnd` frames among them advance the resume
+    // cursor, so returning frames from BOTH sides of a gap would push the
+    // cursor past the ops in the hole. The hub ships only what is strictly
+    // after the cursor, so those ops would never be re-sent -- the same
+    // silent, permanent divergence the per-(user, client) re-key above exists
+    // to prevent, reached from the read side. A prefix plus `truncated`
+    // routes to the caller's rewrite, which drops the bad tail from disk.
+    if (!Array.isArray(seg?.framesBytes)) {
+      truncated = true
+      stopWalk(cursor)
+      return
+    }
+    for (const frame of seg.framesBytes) {
+      // A segment may straddle a cap, so the cut is per FRAME: a prefix of a
+      // segment is still a prefix of the log.
+      const size = frame?.byteLength ?? 0
+      if (frames.length >= MAX_OPLOG_READ_FRAMES || bytes + size > MAX_OPLOG_READ_BYTES) {
         truncated = true
-        return false
+        stopWalk(cursor)
+        return
       }
-      // STOP at a malformed row -- do not skip it and keep reading. Everything
-      // downstream is built on a strict-PREFIX contract: hydrate replays the
-      // frames in order and the `batchEnd` frames among them advance the resume
-      // cursor, so returning frames from BOTH sides of a gap would push the
-      // cursor past the ops in the hole. The hub ships only what is strictly
-      // after the cursor, so those ops would never be re-sent -- the same
-      // silent, permanent divergence the per-(user, client) re-key above exists
-      // to prevent, reached from the read side. A prefix plus `truncated`
-      // routes to the caller's rewrite, which drops the bad tail from disk.
-      if (!Array.isArray(seg?.framesBytes)) {
-        truncated = true
-        return false
-      }
-      for (const frame of seg.framesBytes) {
-        // A segment may straddle a cap, so the cut is per FRAME: a prefix of a
-        // segment is still a prefix of the log.
-        const size = frame?.byteLength ?? 0
-        if (frames.length >= MAX_OPLOG_READ_FRAMES || bytes + size > MAX_OPLOG_READ_BYTES) {
-          truncated = true
-          return false
-        }
-        frames.push(frame)
-        bytes += size
-      }
-      // Advanced only for a segment accepted WHOLE. A segment cut short by a cap
-      // is a prefix, and the caller rewrites rather than appending after it, so
-      // claiming its ordinal was consumed would be wrong.
-      nextOrdinal++
-      return true
-    },
-  )
+      frames.push(frame)
+      bytes += size
+    }
+    // Advanced only for a segment accepted WHOLE. A segment cut short by a cap
+    // is a prefix, and the caller rewrites rather than appending after it, so
+    // claiming its ordinal was consumed would be wrong.
+    nextOrdinal++
+  })
   return { frames, truncated, nextOrdinal }
 }
 
@@ -584,11 +577,9 @@ export async function appendOpLogSegment(userId: string, clientId: string, frame
     return
   try {
     const db = await openDb()
-    const tx = db.transaction(OPLOG_STORE, 'readwrite')
-    // `add`, not `put`: the key is generator-assigned, so a duplicate is
-    // impossible by construction and an accidental overwrite should fail loud.
-    tx.objectStore(OPLOG_STORE).add({ userId, clientId, ordinal, framesBytes } satisfies OpLogRecord)
-    await txToPromise(tx, 'appendOpLogSegment')
+    // `add`, not `put`: the key is store-assigned, so a duplicate is impossible
+    // by construction and an accidental overwrite should fail loud.
+    await db.opLog.add({ userId, clientId, ordinal, framesBytes })
   }
   catch {
     // Quota/private-browsing failures: persistence is an optimization only.
@@ -621,13 +612,9 @@ export async function writeCheckpointAndTruncateOpLog(
     return false
   try {
     const db = await openDb()
-    const tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readwrite')
-    // Registered in the same task that created the transaction, per txToPromise.
-    const settled = txToPromise(tx, 'writeCheckpoint')
-    const writes = writeDeltaInto(tx, userId, clientId, delta, watermark, currentEpoch, now)
-    // Both are passed to Promise.all so neither can reject unobserved when the
-    // other fails first.
-    await Promise.all([writes, settled])
+    await db.transaction('rw', db.checkpoints, db.checkpointChunks, db.opLog, async () => {
+      await writeDeltaInto(db, userId, clientId, delta, watermark, currentEpoch, now)
+    })
     return true
   }
   catch {
@@ -644,12 +631,9 @@ export async function writeCheckpointAndTruncateOpLog(
  * drift on the ORDERING rule below, which is the part that is easy to get
  * wrong and impossible to notice: both writers do delete-then-upsert against
  * the same three stores, and only one of them is exercised on the hot path.
- *
- * Resolves once every write has been ISSUED; the caller awaits the transaction
- * for durability.
  */
 async function writeDeltaInto(
-  tx: IDBTransaction,
+  db: CheckpointDb,
   userId: string,
   clientId: string,
   delta: CheckpointDelta,
@@ -657,30 +641,26 @@ async function writeDeltaInto(
   currentEpoch: bigint,
   now: number,
 ): Promise<void> {
-  const chunks = tx.objectStore(CHUNK_STORE)
   const owner: [string, string] = [userId, clientId]
   if (delta.full) {
-    // AWAITED before the upserts below. A cursor sees writes made in its
-    // own transaction, so a chunk `put` issued while this walk is still
-    // advancing would be deleted again the moment the cursor reached its
-    // key. Awaiting a request of THIS transaction keeps it active across
-    // the microtask checkpoint (see readCheckpoint).
-    await deleteIndexRange(chunks, BY_OWNER_INDEX, IDBKeyRange.only(owner))
+    // AWAITED before the upserts below. A `Collection.delete()` over a
+    // SECONDARY index resolves to a modify that snapshots the matching primary
+    // keys FIRST and deletes them in chunks afterwards, so a chunk put issued
+    // before this settles could still be inside that snapshot and be deleted
+    // again the moment the deletion reached its key.
+    await db.checkpointChunks.where(BY_OWNER_INDEX).equals(owner).delete()
   }
-  for (const chunk of delta.upserts) {
-    chunks.put({
-      userId,
-      clientId,
-      kind: chunk.kind,
-      entityId: chunk.entityId,
-      bytes: chunk.bytes,
-    } satisfies CheckpointChunkRecord)
-  }
-  // Keyed deletes: the owner tuple is part of the primary key, so an
-  // entity that left the state needs no index walk.
-  for (const ref of delta.deletes)
-    chunks.delete([userId, clientId, ref.kind, ref.entityId])
-  tx.objectStore(CHECKPOINT_STORE).put({
+  await db.checkpointChunks.bulkPut(delta.upserts.map(chunk => ({
+    userId,
+    clientId,
+    kind: chunk.kind,
+    entityId: chunk.entityId,
+    bytes: chunk.bytes,
+  })))
+  // Keyed deletes: the owner tuple is part of the primary key, so an entity
+  // that left the state needs no index walk.
+  await db.checkpointChunks.bulkDelete(delta.deletes.map(ref => [userId, clientId, ref.kind, ref.entityId] as [string, string, string, string]))
+  await db.checkpoints.put({
     userId,
     clientId,
     headerBytes: delta.headerBytes,
@@ -688,11 +668,9 @@ async function writeDeltaInto(
     currentEpoch,
     writtenAt: now,
     lastSeenAt: now,
-  } satisfies CheckpointRecord)
-  // Truncate only THIS owner's log. The walk's own promise settles when it
-  // has issued every delete; the caller's `settled` waits for durability, and a
-  // cursor error aborts the transaction, which rejects it.
-  await deleteIndexRange(tx.objectStore(OPLOG_STORE), BY_OWNER_INDEX, IDBKeyRange.only(owner))
+  })
+  // Truncate only THIS owner's log.
+  await db.opLog.where(BY_OWNER_INDEX).equals(owner).delete()
 }
 
 /** One sibling owner as the seed scan sees it: identity plus recency, no payload. */
@@ -725,6 +703,10 @@ export interface SeedCandidateOptions {
  * which is exactly the header materialization BY_LAST_SEEN_INDEX exists to
  * avoid.
  *
+ * `eachKey` is what keeps the walk key-only. Adding a `.filter()` or an `.and()`
+ * to this chain sets Dexie's isMatch flag, which silently switches it back to a
+ * value cursor and fetches every header this exists not to read.
+ *
  * `lastSeenAt`, not the checkpoint's watermark, is the ranking key, and not
  * merely because it is the free one: a LIVE sibling's watermark is pinned at
  * its last rewrite (once per CHECKPOINT_OP_LOG_THRESHOLD frames) while its
@@ -732,9 +714,20 @@ export interface SeedCandidateOptions {
  * exactly the candidates worth having. Recency of the TAB is the better proxy
  * for recency of its log.
  *
- * Because the walk is globally descending, the age cutoff is a STOP, not a
- * filter: the first row past it is followed only by older ones, for every
- * account.
+ * BOTH AGE BOUNDS ARE KEY-RANGE FACTS, not in-memory tests:
+ *   - the OPEN lower bound is the age cutoff. Because the walk is globally
+ *     descending, that cutoff was always a STOP rather than a filter -- the
+ *     first row past it is followed only by older ones, for every account -- so
+ *     expressing it as a range is the same rule, enforced one level down.
+ *   - the CLOSED upper bound at `now` excludes rows stamped in the FUTURE.
+ *     `lastSeenAt` is wall-clock, so a session that ran while the device clock
+ *     was ahead (or one corrected backwards afterwards) leaves such rows. Their
+ *     age is NEGATIVE, so they would clear an age cutoff, sort FIRST in a
+ *     descending walk, and consume every one of the `limit` slots -- and if they
+ *     are also stale, every new tab in that profile reads three checkpoints,
+ *     copies one, presents a cursor the hub refuses, and takes the full snapshot
+ *     anyway. As a range bound they are never visited at all, where the
+ *     in-memory test had to visit and skip each one.
  *
  * Excludes `excludeClientId` -- after a wipe that FAILED
  * (clearOwnerCheckpointAndOpLog can return false), this tab's own poison row is
@@ -757,39 +750,19 @@ export async function listSeedCandidates(
     return []
   try {
     const db = await openDb()
-    const tx = db.transaction(CHECKPOINT_STORE, 'readonly')
     const out: SeedCandidate[] = []
-    await forEachCursorWhile(
-      tx.objectStore(CHECKPOINT_STORE).index(BY_LAST_SEEN_INDEX).openKeyCursor(null, 'prev'),
-      (cursor) => {
-        const lastSeenAt = cursor.key as number
-        const age = now - lastSeenAt
-        // SKIP a row stamped in the FUTURE, and keep walking.
-        //
-        // `lastSeenAt` is wall-clock, so a session that ran while the device
-        // clock was ahead (or one corrected backwards afterwards) leaves rows
-        // dated after `now`. Their age is NEGATIVE, so without this they clear
-        // the cutoff below, sort FIRST in a descending walk, and consume every
-        // one of the `limit` slots -- and if they are also stale, every new tab
-        // in that profile reads three checkpoints, copies one, presents a cursor
-        // the hub refuses, and takes the full snapshot anyway. Seeding would be
-        // silently dead for the profile until the sweep's TTL reclaimed them.
-        //
-        // Skipping, not stopping: they sort ABOVE the usable rows, so stopping
-        // here would discard the very candidates the walk is for.
-        if (age < 0)
-          return true
-        // STOP, not skip: the walk is descending over EVERY account's rows, so
-        // everything after this point is older still.
-        if (age >= maxAgeMs)
-          return false
+    await db.checkpoints
+      .where(BY_LAST_SEEN_INDEX)
+      .between(now - maxAgeMs, now, false, true)
+      .reverse()
+      .eachKey((lastSeenAt, cursor) => {
         const [rowUser, rowClient] = cursor.primaryKey as [string, string]
         if (rowUser !== userId || rowClient === excludeClientId)
-          return true
-        out.push({ clientId: rowClient, lastSeenAt })
-        return out.length < limit
-      },
-    )
+          return
+        out.push({ clientId: rowClient, lastSeenAt: lastSeenAt as number })
+        if (out.length >= limit)
+          stopWalk(cursor)
+      })
     return out
   }
   catch {
@@ -861,10 +834,11 @@ export interface CheckpointSnapshot {
  * which is the point the caller's own supersession check cannot reach. That
  * check runs before this call, and the `await openDb()` below is a no-op
  * microtask only while the cached connection is live -- a peer tab's
- * schema-repair `deleteDatabase()` nulls it (see idb.ts's `onversionchange`),
- * and the reopen that follows is a whole task, long enough for the caller's
- * deadline to fire, its run to cold-start, and its recorder to begin numbering
- * a log this replace would then truncate underneath it.
+ * schema-repair delete nulls it (see idb.ts, which drops the cached promise on
+ * Dexie's `close` event), and the reopen that follows is a whole task, long
+ * enough for the caller's deadline to fire, its run to cold-start, and its
+ * recorder to begin numbering a log this replace would then truncate underneath
+ * it.
  */
 export async function adoptCheckpoint(
   userId: string,
@@ -879,13 +853,11 @@ export async function adoptCheckpoint(
     const db = await openDb()
     if (abort?.())
       return null
-    const tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readwrite')
-    const settled = txToPromise(tx, 'adoptCheckpoint')
-    const writes = (async () => {
+    await db.transaction('rw', db.checkpoints, db.checkpointChunks, db.opLog, async () => {
       // `full: true` is what makes this a replace: writeDeltaInto clears this
       // owner's chunk range first, and truncates its op-log last.
       await writeDeltaInto(
-        tx,
+        db,
         userId,
         clientId,
         { headerBytes: snapshot.headerBytes, upserts: snapshot.chunks, deletes: [], full: true },
@@ -893,19 +865,17 @@ export async function adoptCheckpoint(
         snapshot.currentEpoch,
         now,
       )
-      // AFTER writeDeltaInto's truncate walk has been awaited -- a cursor sees
-      // writes made in its own transaction, so a segment added first would be
-      // deleted the moment that walk reached it.
+      // AFTER writeDeltaInto's truncate has been awaited -- a segment added
+      // first would be inside that deletion's key snapshot and be removed again.
       if (snapshot.opLogFrames.length > 0) {
-        tx.objectStore(OPLOG_STORE).add({
+        await db.opLog.add({
           userId,
           clientId,
           ordinal: 0,
           framesBytes: [...snapshot.opLogFrames],
-        } satisfies OpLogRecord)
+        })
       }
-    })()
-    await Promise.all([writes, settled])
+    })
     return snapshot.opLogFrames.length > 0 ? 1 : 0
   }
   catch {
@@ -932,20 +902,13 @@ export async function touchOwner(userId: string, clientId: string, now = Date.no
     return false
   try {
     const db = await openDb()
-    const tx = db.transaction(CHECKPOINT_STORE, 'readwrite')
-    const settled = txToPromise(tx, 'touchOwner')
-    const store = tx.objectStore(CHECKPOINT_STORE)
-    const existing = await requestToPromise<CheckpointRecord | undefined>(
-      store.get([userId, clientId]) as IDBRequest<CheckpointRecord | undefined>,
-    )
-    if (existing === undefined) {
-      // Nothing to touch. Let the transaction finish rather than abandoning it.
-      await settled
-      return false
-    }
-    store.put({ ...existing, lastSeenAt: now } satisfies CheckpointRecord)
-    await settled
-    return true
+    return await db.transaction('rw', db.checkpoints, async () => {
+      const existing = await db.checkpoints.get([userId, clientId])
+      if (existing === undefined)
+        return false
+      await db.checkpoints.put({ ...existing, lastSeenAt: now })
+      return true
+    })
   }
   catch {
     return false
@@ -971,36 +934,28 @@ async function clearScope(scope: ClearScope): Promise<boolean> {
     return false
   try {
     const db = await openDb()
-    const tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readwrite')
-    const settled = txToPromise(tx, 'clearCheckpoint')
-    const checkpoints = tx.objectStore(CHECKPOINT_STORE)
-    const chunks = tx.objectStore(CHUNK_STORE)
-    const opLog = tx.objectStore(OPLOG_STORE)
-    // The checkpoint store's PRIMARY KEY is the owner tuple, so an owner-scoped
-    // metadata clear is a single keyed delete and needs no index. The chunk and
-    // op-log keys carry more than the owner (kind + entity id; a
-    // generator-assigned `seq`), so both always walk an index.
-    let walks: Promise<unknown>
-    if (scope.kind === 'owner') {
-      const owner: [string, string] = [scope.userId, scope.clientId]
-      checkpoints.delete(owner)
-      walks = Promise.all([
-        deleteIndexRange(chunks, BY_OWNER_INDEX, IDBKeyRange.only(owner)),
-        deleteIndexRange(opLog, BY_OWNER_INDEX, IDBKeyRange.only(owner)),
-      ])
-    }
-    else {
-      const range = IDBKeyRange.only(scope.userId)
-      walks = Promise.all([
-        forEachCursor(
-          checkpoints.index(BY_USER_INDEX).openKeyCursor(range),
-          cursor => checkpoints.delete(cursor.primaryKey),
-        ),
-        deleteIndexRange(chunks, BY_USER_INDEX, range),
-        deleteIndexRange(opLog, BY_USER_INDEX, range),
-      ])
-    }
-    await Promise.all([walks, settled])
+    await db.transaction('rw', db.checkpoints, db.checkpointChunks, db.opLog, async () => {
+      // The checkpoint store's PRIMARY KEY is the owner tuple, so an
+      // owner-scoped metadata clear is a single keyed delete and needs no
+      // index. The chunk and op-log keys carry more than the owner (kind +
+      // entity id; a store-assigned `seq`), so both always walk an index.
+      //
+      // Sequential rather than Promise.all: inside a transaction scope, a
+      // Promise.all of Dexie promises is safe only because Dexie patches the
+      // global Promise while its zone is entered, and correctness should not
+      // rest on where in the microtask queue the call lands.
+      if (scope.kind === 'owner') {
+        const owner: [string, string] = [scope.userId, scope.clientId]
+        await db.checkpoints.delete(owner)
+        await db.checkpointChunks.where(BY_OWNER_INDEX).equals(owner).delete()
+        await db.opLog.where(BY_OWNER_INDEX).equals(owner).delete()
+      }
+      else {
+        await db.checkpoints.where(BY_USER_INDEX).equals(scope.userId).delete()
+        await db.checkpointChunks.where(BY_USER_INDEX).equals(scope.userId).delete()
+        await db.opLog.where(BY_USER_INDEX).equals(scope.userId).delete()
+      }
+    })
     return true
   }
   catch {
@@ -1130,17 +1085,17 @@ export async function sweepAbandonedCheckpoints(
     // the ones nothing else can reach, so making them cheap to skip would make
     // them permanently unreclaimable. The population this walks is capped at
     // ~maxOwners per account by this very sweep. (listSeedCandidates walks the
-    // same unranged index, filtering to one user in memory, for the same
-    // reason: the population is small and bounded by this sweep.)
+    // same index, ranged only by age, for the same reason: the population is
+    // small and bounded by this sweep.)
+    //
+    // `orderBy(...).eachKey(...)` is the key-only form; a `.filter()` or an
+    // `.and()` here would set Dexie's isMatch flag and silently fetch every
+    // header.
     const rows: SweepCandidate[] = []
-    const readTx = db.transaction(CHECKPOINT_STORE, 'readonly')
-    await forEachCursor(
-      readTx.objectStore(CHECKPOINT_STORE).index(BY_LAST_SEEN_INDEX).openKeyCursor(),
-      (cursor) => {
-        const [rowUser, rowClient] = cursor.primaryKey as [string, string]
-        rows.push({ userId: rowUser, clientId: rowClient, at: cursor.key as number })
-      },
-    )
+    await db.checkpoints.orderBy(BY_LAST_SEEN_INDEX).eachKey((at, cursor) => {
+      const [rowUser, rowClient] = cursor.primaryKey as [string, string]
+      rows.push({ userId: rowUser, clientId: rowClient, at: at as number })
+    })
     if (rows.length === 0)
       return 0
 
@@ -1165,45 +1120,21 @@ export async function sweepAbandonedCheckpoints(
     if (victims.length === 0)
       return 0
 
-    const tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readwrite')
-    const settled = txToPromise(tx, 'sweepAbandonedCheckpoints')
-    const checkpoints = tx.objectStore(CHECKPOINT_STORE)
-    const chunks = tx.objectStore(CHUNK_STORE)
-    const opLog = tx.objectStore(OPLOG_STORE)
-    const walks = victims.flatMap((victim) => {
-      // Keyed off the VICTIM's user, not the sweeping one: the TTL arm reaches
-      // across accounts, so the closure's `userId` is the wrong key for a
-      // foreign row and would delete some other owner entirely.
-      const owner: [string, string] = [victim.userId, victim.clientId]
-      checkpoints.delete(owner)
-      return [
-        deleteIndexRange(chunks, BY_OWNER_INDEX, IDBKeyRange.only(owner)),
-        deleteIndexRange(opLog, BY_OWNER_INDEX, IDBKeyRange.only(owner)),
-      ]
+    await db.transaction('rw', db.checkpoints, db.checkpointChunks, db.opLog, async () => {
+      for (const victim of victims) {
+        // Keyed off the VICTIM's user, not the sweeping one: the TTL arm reaches
+        // across accounts, so the closure's `userId` is the wrong key for a
+        // foreign row and would delete some other owner entirely.
+        const owner: [string, string] = [victim.userId, victim.clientId]
+        await db.checkpoints.delete(owner)
+        await db.checkpointChunks.where(BY_OWNER_INDEX).equals(owner).delete()
+        await db.opLog.where(BY_OWNER_INDEX).equals(owner).delete()
+      }
     })
-    await Promise.all([Promise.all(walks), settled])
     return victims.length
   }
   catch {
     // Best-effort: a failed sweep just leaves the rows for the next attempt.
     return 0
   }
-}
-
-/**
- * Delete every row of `store` matching `range` on `indexName`, by walking the
- * index and deleting each primary key. Runs within the caller's readwrite
- * transaction; resolves once the walk has issued every delete (the caller
- * awaits tx.oncomplete for durability).
- *
- * Index-driven rather than a primary-key range because neither store this
- * serves is keyed by the owner alone: the op-log's key is the
- * generator-assigned `seq`, which carries no owner information at all, and a
- * chunk's key carries the owner plus a kind and an entity id.
- */
-function deleteIndexRange(store: IDBObjectStore, indexName: string, range: IDBKeyRange): Promise<void> {
-  return forEachCursor(
-    store.index(indexName).openKeyCursor(range),
-    cursor => store.delete(cursor.primaryKey),
-  )
 }

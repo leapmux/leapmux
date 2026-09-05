@@ -1,9 +1,51 @@
 import type { PersistableRowHeight, VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_DEBOUNCE_MS, STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
+
+// Row heights are on the ASYNCHRONOUS storage tier -- a stored payload is tens
+// of KB per chat, so the family is deliberately not mirrored in memory -- which
+// means these round-trips need a database to round-trip through.
+//
+// The fake timers below drive fake-indexeddb's request queue as well as the
+// save debounce, so `settle()` advances them rather than awaiting real time.
+useTestStorage()
+
+/**
+ * Let the storage queue and the IndexedDB requests behind it run to completion.
+ *
+ * Under fake timers a bare `await` is not enough: fake-indexeddb schedules its
+ * request callbacks on `setImmediate`, which the fake clock owns, so the clock
+ * has to be advanced for a read or a write to finish at all.
+ */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 12; i++)
+    await vi.advanceTimersByTimeAsync(0)
+}
+
+/**
+ * Read the stored payload, advancing the fake clock WHILE the read is pending.
+ *
+ * A bare `await localStorageLoad(...)` deadlocks here: the request it issues
+ * needs the clock to move to complete, and nothing moves it while the test is
+ * parked on the await. Interleaving is the only way round.
+ */
+async function readStored(): Promise<StoredShape | undefined> {
+  const pending = localStorageLoad<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+  let settled = false
+  void pending.finally(() => {
+    settled = true
+  })
+  for (let i = 0; i < 400; i++) {
+    await vi.advanceTimersByTimeAsync(1)
+    if (settled)
+      break
+  }
+  return pending
+}
 
 interface StoredShape {
   v: typeof STORED_ROW_HEIGHTS_VERSION
@@ -21,12 +63,12 @@ function storedRow(id: string, heightKey: string, height: number): [string, stri
 describe('chatrowheightpersistence', () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    localStorageRemove(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+    localStorageDrop(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
   })
 
   afterEach(() => {
     vi.useRealTimers()
-    localStorageRemove(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+    localStorageDrop(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
   })
 
   function makeHarness(opts: {
@@ -69,8 +111,8 @@ describe('chatrowheightpersistence', () => {
     return { setItems, setGeomVersion, setStorageId, primed, snapshot, measured, pending, dispose }
   }
 
-  it('hydrates stored rows whose key digest matches the live heightKey', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('hydrates stored rows whose key digest matches the live heightKey', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120), storedRow('b', 'k-b-old', 80)],
     })
@@ -78,26 +120,28 @@ describe('chatrowheightpersistence', () => {
       storageId: 'agent-1',
       items: [item('a', 'k-a'), item('b', 'k-b-new')],
     })
+    await settle()
     // 'a' matches and hydrates; 'b' was measured under a different layout
     // epoch and must NOT be adopted.
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
     h.dispose()
   })
 
-  it('adopts a pending row later, when its live key changes to match (width settles)', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('adopts a pending row later, when its live key changes to match (width settles)', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a|w800', 120)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a|w360')] })
+    await settle()
     expect(h.primed).toEqual([])
     h.setItems([item('a', 'k-a|w800')])
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a|w800', height: 120 }]])
     h.dispose()
   })
 
-  it('keeps a pending row when the virtualizer defers prime-height adoption', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('keeps a pending row when the virtualizer defers prime-height adoption', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
@@ -115,18 +159,20 @@ describe('chatrowheightpersistence', () => {
         return 0
       },
     })
+    await settle()
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
 
     h.snapshot.push({ id: 'b', heightKey: 'k-b', height: 80 })
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+    await settle()
 
-    expect(localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)?.rows)
+    expect((await readStored())?.rows)
       .toEqual([storedRow('a', 'k-a', 120), storedRow('b', 'k-b', 80)])
     h.dispose()
   })
 
-  it('re-attempts a deferred prime after the fling settles and the key still matches', () => {
+  it('re-attempts a deferred prime after the fling settles and the key still matches', async () => {
     // A momentum fling is in flight when the row's warm-start is first
     // attempted: the virtualizer DEFERS the prime (queues it, commits nothing,
     // returns 0). The row's live heightKey then drifts (a transient UI/chrome
@@ -134,7 +180,7 @@ describe('chatrowheightpersistence', () => {
     // commit was rejected at flush time (key had drifted), the warm-start height
     // is still not in the cache -- so the persistence layer MUST re-attempt the
     // prime when the key matches again. It must not permanently bar the row.
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
@@ -160,6 +206,7 @@ describe('chatrowheightpersistence', () => {
         return entries.length
       },
     })
+    await settle()
     // First attempt on load: deferred (commits nothing, row stays unmeasured).
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
 
@@ -182,14 +229,14 @@ describe('chatrowheightpersistence', () => {
     h.dispose()
   })
 
-  it('re-attempts a deferred prime that was DROPPED under the same key, but not while it is still queued', () => {
+  it('re-attempts a deferred prime that was DROPPED under the same key, but not while it is still queued', async () => {
     // A momentum fling defers the prime (queues it behind the gate, commits
     // nothing). The row is then trimmed out of the window before the deferral
     // flush can commit it, so the queued prime is DROPPED -- neither measured nor
     // still pending. Under the SAME digest-matching key (no key drift to clear the
     // attempt marker), the persistence layer must re-attempt when the row returns,
     // or the stale marker bars its warm-start height for the component's life.
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
@@ -212,6 +259,7 @@ describe('chatrowheightpersistence', () => {
         return entries.length
       },
     })
+    await settle()
     // First attempt on load: deferred (queued as pending, nothing committed).
     expect(h.primed).toHaveLength(1)
 
@@ -233,30 +281,33 @@ describe('chatrowheightpersistence', () => {
     h.dispose()
   })
 
-  it('retires a pending row once a real measurement supersedes it', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('retires a pending row once a real measurement supersedes it', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const measured = new Set(['a'])
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')], measured })
+    await settle()
     expect(h.primed).toEqual([])
     h.dispose()
   })
 
-  it('saves a debounced digest snapshot merged with still-pending rows', () => {
+  it('saves a debounced digest snapshot merged with still-pending rows', async () => {
     // 'old' is a stored row for history that has not paginated in — it must
     // survive the save instead of being clobbered by the fresh snapshot.
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('old', 'k-old', 300)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [] })
+    await settle()
     h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 120.256 })
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+    await settle()
 
-    const stored = localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+    const stored = await readStored()
     expect(stored?.rows).toEqual([
       ['old', fnv1a32Hex('k-old'), 300],
       ['a', fnv1a32Hex('k-a'), 120.26], // rounded to 2dp
@@ -264,103 +315,118 @@ describe('chatrowheightpersistence', () => {
     h.dispose()
   })
 
-  it('coalesces a measurement burst into one save', () => {
+  it('coalesces a measurement burst into one save', async () => {
     const h = makeHarness({ storageId: 'agent-1', items: [] })
+    await settle()
     h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS - 1)
+    await settle()
     h.setGeomVersion(2)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS - 1)
-    expect(localStorageGet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)).toBeUndefined()
+    await settle()
+    expect(await readStored()).toBeUndefined()
     vi.advanceTimersByTime(1)
-    expect(localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)?.rows).toHaveLength(1)
+    await settle()
+    expect((await readStored())?.rows).toHaveLength(1)
     h.dispose()
   })
 
-  it('never replaces stored data with an empty snapshot', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('never replaces stored data with an empty snapshot', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a|w800', 120)],
     })
     // Live key never matches (different width), so nothing adopts and the
     // snapshot is empty — the stored rows must survive the save tick.
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a|w360')] })
+    await settle()
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
-    expect(localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)?.rows)
+    await settle()
+    expect((await readStored())?.rows)
       .toEqual([storedRow('a', 'k-a|w800', 120)])
     h.dispose()
   })
 
-  it('flushes an owed save on cleanup', () => {
+  it('flushes an owed save on cleanup', async () => {
     const h = makeHarness({ storageId: 'agent-1', items: [] })
+    await settle()
     h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
     h.setGeomVersion(1)
     h.dispose() // debounce still pending — cleanup must write
-    expect(localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)?.rows).toHaveLength(1)
+    expect((await readStored())?.rows).toHaveLength(1)
   })
 
-  it('is inert without a storage id', () => {
+  it('is inert without a storage id', async () => {
     const h = makeHarness({ items: [item('a', 'k-a')] })
+    await settle()
     h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+    await settle()
     expect(h.primed).toEqual([])
-    expect(localStorageGet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)).toBeUndefined()
+    expect(await readStored()).toBeUndefined()
     h.dispose()
   })
 
-  it('loads and hydrates once the storage id arrives late', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('loads and hydrates once the storage id arrives late', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const h = makeHarness({ items: [item('a', 'k-a')] }) // no id yet
+    await settle()
     expect(h.primed).toEqual([])
     h.setStorageId('agent-1')
+    await settle()
     expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
     h.dispose()
   })
 
-  it('caps the stored snapshot at the ceiling, dropping pending entries before fresh measurements', () => {
+  it('caps the stored snapshot at the ceiling, dropping pending entries before fresh measurements', async () => {
     // A never-matching pending row (different layout epoch) plus a full
     // ceiling's worth of fresh measurements: the cap must keep every fresh
     // row and shed the pending one first.
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('stale', 'k-stale|w999', 50)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('stale', 'k-live')] })
+    await settle()
     for (let i = 0; i < PERSISTED_ROW_HEIGHTS_MAX; i++)
       h.snapshot.push({ id: `r${i}`, heightKey: `k-${i}`, height: 10 + i })
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+    await settle()
 
-    const stored = localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+    const stored = await readStored()
     expect(stored?.rows).toHaveLength(PERSISTED_ROW_HEIGHTS_MAX)
     expect(stored?.rows[0][0]).toBe('r0') // 'stale' (inserted first) was shed
     expect(stored?.rows.some(([id]) => id === 'stale')).toBe(false)
     h.dispose()
   })
 
-  it('places a still-pending row that got measured at the fresh (most-recent) end', () => {
+  it('places a still-pending row that got measured at the fresh (most-recent) end', async () => {
     // 'a' loads as pending under an OLD layout epoch (digest mismatch keeps it
     // pending), then gets measured under its live key before the item-list
     // change that would retire it. When the save fires it is in BOTH pending and
     // the snapshot -- and its fresh measurement must land at the recent end, not
     // inherit 'a's early pending slot (which the cap would shed first).
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a-old', 120)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a-new')] })
+    await settle()
     // snapshotHeights is LRU-ordered oldest-first: 'z' measured before 'a'.
     h.snapshot.push({ id: 'z', heightKey: 'k-z', height: 40 })
     h.snapshot.push({ id: 'a', heightKey: 'k-a-new', height: 200 })
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+    await settle()
 
-    const stored = localStorageGet<StoredShape>(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
+    const stored = await readStored()
     // 'a' at the END (freshly-measured position), carrying its measured height +
     // live-key digest -- not stranded at the front where the over-cap slice bites.
     expect(stored?.rows).toEqual([
@@ -370,25 +436,26 @@ describe('chatrowheightpersistence', () => {
     h.dispose()
   })
 
-  it('discards a payload written by an older layout version', () => {
+  it('discards a payload written by an older layout version', async () => {
     // A heightKey never encodes the stylesheet, so an older payload's digests
     // still match while every height in it is wrong. The version guard is the
     // only thing that stops those heights from jumping the offset map.
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION - 1,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')] })
+    await settle()
     expect(h.primed).toEqual([])
     // And it is DELETED, not merely ignored. The read that returned it also refreshed its
     // expiry, so a chat the reader opens and leaves -- one that commits no height, and so
     // never overwrites the key -- would keep tens of KB of dead rows alive indefinitely.
-    expect(localStorageGet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)).toBeUndefined()
+    expect(await readStored()).toBeUndefined()
     h.dispose()
   })
 
-  it('ignores malformed stored payloads', () => {
-    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+  it('ignores malformed stored payloads', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [
         ['a', fnv1a32Hex('k-a')], // missing height
@@ -402,6 +469,7 @@ describe('chatrowheightpersistence', () => {
       storageId: 'agent-1',
       items: [item('a', 'k-a'), item('b', 'k-b'), item('c', 'k-c'), item('d', 'k-d')],
     })
+    await settle()
     expect(h.primed).toEqual([[{ id: 'd', heightKey: 'k-d', height: 40 }]])
     h.dispose()
   })

@@ -1,10 +1,12 @@
+import { IDBKeyRange as FakeIDBKeyRange } from 'fake-indexeddb'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach } from 'vitest'
 import {
   localStorageClearForTests,
+  resetBrowserStorageForTests,
   resetStorageAccountForTests,
   sessionStorageClearForTests,
-  setStorageAccount,
+  setStorageAccountForTests,
 } from './src/lib/browserStorage'
 import { setCRDTBridge } from './src/lib/crdt'
 import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
@@ -43,6 +45,9 @@ beforeEach(() => {
   // stores safe to construct anywhere.
   sessionStorageClearForTests()
   localStorageClearForTests()
+  // Drop the mirror, discard the write queue and forget the cached connection,
+  // so nothing the previous test stored is visible to this one.
+  resetBrowserStorageForTests()
   // Sign the suite in. Every `leapmux:` key is scoped to an account, and a read
   // or write with none set throws, so without this every test that touches
   // storage -- directly or through a store that seeds itself -- would fail on
@@ -50,7 +55,16 @@ beforeEach(() => {
   // different account, or none, calls `setStorageAccount` /
   // `resetStorageAccountForTests` itself.
   resetStorageAccountForTests()
-  setStorageAccount(TEST_USER_ID)
+  // The TEST prime, which installs an empty mirror without opening a database.
+  //
+  // No IndexedDB is stubbed globally, deliberately. The synchronous storage
+  // tier answers entirely from the mirror, so a test that writes a preference
+  // and reads it back needs no database at all -- and installing one for every
+  // test would (a) hang under fake timers, because fake-indexeddb's requests
+  // never complete when their timer source is frozen, and (b) flip
+  // `isIndexedDbAvailable`, which the render-artifact tests assert on. A test
+  // that genuinely needs persistence stubs its own `IDBFactory`.
+  setStorageAccountForTests(TEST_USER_ID)
 })
 
 afterEach(() => {
@@ -60,6 +74,21 @@ afterEach(() => {
   }
   setCRDTBridge(null)
 })
+
+// Dexie computes `Dexie.maxKey = getMaxKey(Dexie.dependencies.IDBKeyRange)` at
+// MODULE EVALUATION, and `getMaxKey` is a SELF-REPLACING closure: with no global
+// IDBKeyRange it throws inside its own try and permanently rebinds itself to a
+// string fallback. Every later call gets that fallback -- including the Dexie
+// constructor's own `this._maxKey` and DBCore's MAX_KEY -- so passing
+// `IDBKeyRange` in the constructor options does NOT undo it. The suite would
+// then pad compound-index prefix ranges differently from a browser, where
+// IDBKeyRange is a global before anything imports dexie.
+//
+// The `indexedDB` FACTORY is installed per test instead (see `beforeEach`), so
+// each one gets a universe of its own. This is only the key-range class, whose
+// presence says nothing about whether persistence is available --
+// `isIndexedDbAvailable` reads `indexedDB` alone.
+globalThis.IDBKeyRange ??= FakeIDBKeyRange as unknown as typeof globalThis.IDBKeyRange
 
 // Node.js 25+ exposes a broken localStorage/sessionStorage stub on globalThis
 // (bare object with no Storage methods). Vitest's jsdom environment uses

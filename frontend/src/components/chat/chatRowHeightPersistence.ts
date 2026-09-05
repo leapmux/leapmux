@@ -1,7 +1,8 @@
 import type { Accessor } from 'solid-js'
 import type { PersistableRowHeight, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
+import type { AsyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, onCleanup, untrack } from 'solid-js'
-import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
@@ -61,7 +62,7 @@ export const PERSISTED_ROW_HEIGHTS_MAX = MAX_LOADED_CHAT_MESSAGES_CEILING
 
 /**
  * Save debounce. Measurements arrive in bursts (a premeasure band, a resize
- * re-measure sweep); one write per quiet second keeps localStorage traffic
+ * re-measure sweep); one write per quiet second keeps storage traffic
  * negligible while staying well inside "toggle the sidebar then reload".
  */
 export const ROW_HEIGHT_SAVE_DEBOUNCE_MS = 1000
@@ -118,7 +119,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   let loaded = false
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
-  const storageKey = (id: string) => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
+  const storageKey = (id: string): AsyncLocalKey => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
   const adoptionAttemptKey = (id: string, digest: string) => `${id}\0${digest}`
 
   const tryAdopt = (items: readonly VirtualItem[]): void => {
@@ -205,28 +206,37 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
     // measurements -- and the eviction bound can't drift from the render/token caches'.
     capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
-    localStorageSet(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
+    localStorageStore(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
   }
 
   // Load once, as soon as the storage identity is available.
+  //
+  // The read is ASYNCHRONOUS -- a stored payload is tens of KB, so this family
+  // is on the unmirrored tier -- and `id` is captured BEFORE the await so the
+  // rows cannot be adopted under a chat the effect has since moved off. The
+  // `loaded` latch already prevents a second entry, so no further guard is
+  // needed for re-entry, only for identity.
   createEffect(() => {
     const id = deps.storageId()
     if (id === undefined || loaded)
       return
     loaded = true
-    const stored = localStorageGet<StoredRowHeights>(storageKey(id))
-    if (stored !== undefined) {
-      const rows = parseStoredRows(stored)
-      // A payload from an older version parses to nothing. Drop it now rather
-      // than leaving it: the read that just returned it also refreshed its
-      // expiry, so a chat that never commits a height (one the reader opens and
-      // leaves) would keep tens of KB of dead rows alive indefinitely.
-      if (rows.size === 0)
-        localStorageRemove(storageKey(id))
-      for (const [rowId, entry] of rows)
-        pending.set(rowId, entry)
-    }
-    tryAdopt(untrack(deps.virtualItems))
+    void localStorageLoad<StoredRowHeights>(storageKey(id)).then((stored) => {
+      if (deps.storageId() !== id)
+        return
+      if (stored !== undefined) {
+        const rows = parseStoredRows(stored)
+        // A payload from an older version parses to nothing. Drop it now rather
+        // than leaving it: the read that just returned it also refreshed its
+        // expiry, so a chat that never commits a height (one the reader opens and
+        // leaves) would keep tens of KB of dead rows alive indefinitely.
+        if (rows.size === 0)
+          localStorageDrop(storageKey(id))
+        for (const [rowId, entry] of rows)
+          pending.set(rowId, entry)
+      }
+      tryAdopt(untrack(deps.virtualItems))
+    })
   })
 
   // Retry hydration whenever the item list changes (pagination brings older

@@ -7,7 +7,7 @@ import { gitModeStickyKey, rememberStickyGitMode } from '~/components/workspace/
 import { SectionSchema, SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
-import { localStorageClearForTests, setStorageAccount } from '~/lib/browserStorage'
+import { localStorageClearForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { WorkspaceSectionMenu } from './WorkspaceSectionMenu'
@@ -91,7 +91,7 @@ function inProgressItems(): string[] {
 describe('workspaceSectionMenu', () => {
   beforeEach(() => {
     localStorageClearForTests()
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     resetWorkspaceListStateForTests()
   })
 

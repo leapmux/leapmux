@@ -4,8 +4,13 @@ import { createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { queueEditDraftKey } from './attachments'
 import { createQueueEditSession } from './queueEditSession'
+
+// The queue edit reads and writes a DRAFT, which is an unbounded family on the
+// unmirrored storage tier, so these cases need a database to round-trip through.
+useTestStorage()
 
 const AGENT_ID = 'a1'
 const INPUT_ID = 'queued-1'
@@ -87,8 +92,10 @@ describe('createQueueEditSession ownership loss', () => {
   async function openOwnedEdit() {
     const created = createHarness()
     harness = created
-    await flushMicrotasks()
-    expect(created.session.activeEditingInput()).toBeDefined()
+    // POLLED, not a fixed tick count. Opening an owned edit reads the saved
+    // draft, and that read is asynchronous -- a counted microtask flush is a
+    // guess at how many ticks the storage layer takes today.
+    await vi.waitFor(() => expect(created.session.activeEditingInput()).toBeDefined())
     // The composer switched to the edit's own attachment bucket, so the queue
     // edit cannot write into the agent's normal attachments.
     expect(created.session.attachmentDraftKey()).toBe(EDIT_DRAFT_KEY)
@@ -110,7 +117,7 @@ describe('createQueueEditSession ownership loss', () => {
     expect(session.activeEditingInput()).toBeDefined()
     expect(session.attachmentDraftKey()).toBe(EDIT_DRAFT_KEY)
     expect(clearAllAttachments).not.toHaveBeenCalled()
-    expect(loadDraft(EDIT_DRAFT_KEY).content).toBe('edit in progress')
+    expect((await loadDraft(EDIT_DRAFT_KEY)).content).toBe('edit in progress')
   })
 
   // The contrast that makes the test above a real one: with no update in
@@ -125,7 +132,7 @@ describe('createQueueEditSession ownership loss', () => {
     expect(session.activeEditingInput()).toBeUndefined()
     expect(session.attachmentDraftKey()).toBe(AGENT_ID)
     expect(clearAllAttachments).toHaveBeenCalledTimes(1)
-    expect(loadDraft(EDIT_DRAFT_KEY).content).toBe('')
+    expect((await loadDraft(EDIT_DRAFT_KEY)).content).toBe('')
   })
 
   // A failed update clears the flag, so the next snapshot that shows lost

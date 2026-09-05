@@ -1,5 +1,5 @@
 import type { CheckpointDelta, ChunkRef, ChunkUpsert } from './checkpointStore'
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { IDBFactory, IDBIndex, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createOpLogAppender } from '~/test-support/opLog'
 import {
@@ -787,6 +787,25 @@ describe('sweepAbandonedCheckpoints', () => {
     expect(await sweepAbandonedCheckpoints('', 'tab', { now: 2_000 })).toBe(0)
     expect((await readCheckpoint('u', 'tab')).status).toBe('ok')
   })
+
+  // The sweep decides what to DELETE, so it must not materialize what it is
+  // deciding about: every checkpoint row carries a state header, and a value
+  // cursor would deserialize each abandoned tab's payload just to read a
+  // timestamp off it. A stray `.filter()` or `.and()` on the walk sets Dexie's
+  // isMatch flag and silently switches it back to a value cursor.
+  it('decides what to collect without ever opening a value cursor', async () => {
+    await seedOwner('u', 'stale', 1_000)
+    await seedOwner('u', 'fresher', 2_000)
+    const valueCursor = vi.spyOn(IDBIndex.prototype, 'openCursor')
+    const keyCursor = vi.spyOn(IDBIndex.prototype, 'openKeyCursor')
+
+    await sweepAbandonedCheckpoints('u', 'my-tab', { now: 3_000, ttlMs: 500 })
+
+    expect(keyCursor).toHaveBeenCalled()
+    expect(valueCursor).not.toHaveBeenCalled()
+    valueCursor.mockRestore()
+    keyCursor.mockRestore()
+  })
 })
 
 /** Open the raw IDB for direct row manipulation / counting in tests. */
@@ -920,6 +939,50 @@ describe('listSeedCandidates', () => {
   it('returns an empty list when the store is unavailable', async () => {
     vi.unstubAllGlobals()
     expect(await listSeedCandidates('u', 'me', { now })).toEqual([])
+  })
+
+  // Both age bounds are KEY-RANGE facts now, not in-memory tests, so the
+  // boundaries are worth stating as their own cases: an off-by-one in an
+  // inclusive/exclusive flag is silent and only shows up as a seed that stops
+  // working.
+  describe('the age bounds', () => {
+    it('accepts an owner seen at exactly `now`', async () => {
+      await owner('u', 'exactly-now', now)
+      expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
+        .toEqual([{ clientId: 'exactly-now', lastSeenAt: now }])
+    })
+
+    it('rejects an owner seen at exactly the cutoff', async () => {
+      // `age >= maxAgeMs` is out, so the lower bound is OPEN.
+      await owner('u', 'exactly-stale', now - 5000)
+      expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 })).toEqual([])
+    })
+
+    it('accepts an owner one millisecond inside the cutoff', async () => {
+      await owner('u', 'just-inside', now - 4999)
+      expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
+        .toEqual([{ clientId: 'just-inside', lastSeenAt: now - 4999 }])
+    })
+  })
+
+  // The walk reads (lastSeenAt, [userId, clientId]) off the index and touches
+  // no value at all: a checkpoint row carries the state header, so ranking
+  // eight owners through a value cursor would deserialize every abandoned tab's
+  // payload just to sort them. A stray `.filter()` or `.and()` on the chain
+  // sets Dexie's isMatch flag and silently switches it back to a value cursor,
+  // which nothing else here would notice.
+  it('ranks candidates without ever opening a value cursor', async () => {
+    await owner('u', 'a', now - 1000)
+    await owner('u', 'b', now - 2000)
+    const valueCursor = vi.spyOn(IDBIndex.prototype, 'openCursor')
+    const keyCursor = vi.spyOn(IDBIndex.prototype, 'openKeyCursor')
+
+    await listSeedCandidates('u', 'me', { now })
+
+    expect(keyCursor).toHaveBeenCalled()
+    expect(valueCursor).not.toHaveBeenCalled()
+    valueCursor.mockRestore()
+    keyCursor.mockRestore()
   })
 })
 

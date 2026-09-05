@@ -19,10 +19,15 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
 import { createMobileOverlayState } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { createTileRenderer } from './TileRenderer'
+
+// The composer loads its DRAFT from the unmirrored storage tier, so these cases
+// need a database for the write to land in and be read back from.
+useTestStorage()
 
 vi.mock('~/context/PreferencesContext', () => ({
   usePreferences: () => ({

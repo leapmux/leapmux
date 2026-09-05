@@ -1,6 +1,6 @@
 import type { Accessor, ParentComponent } from 'solid-js'
 import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
-import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
+import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, SyncLocalKey, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { batch, createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
@@ -25,6 +25,7 @@ import {
   localStorageRemove,
   localStorageSet,
   onStorageAccountChange,
+  onStorageChanged,
   storedKeyFor,
   updateBrowserPref,
 } from '~/lib/browserStorage'
@@ -493,11 +494,11 @@ export const PreferencesProvider: ParentComponent = (props) => {
   /**
    * Follow the device-tier writes another tab made under `stored`.
    *
-   * `stored` is the key AS STORED, so the match carries the account: another
+   * `stored` holds keys AS STORED, so the match carries the account: another
    * account's document changing next door says nothing about this one. A null
-   * key is a whole-store clear, which every entry has to answer for.
+   * set is a whole-store change, which every entry has to answer for.
    */
-  const syncFromOtherTab = (stored: string | null) => {
+  const syncFromOtherTabs = (stored: ReadonlySet<string> | null) => {
     // No account, no document to read: every account-scoped read throws, and
     // nothing another tab wrote can belong to a page that has no identity.
     if (!hasStorageAccount())
@@ -505,13 +506,12 @@ export const PreferencesProvider: ParentComponent = (props) => {
     const prefs = loadBrowserPrefs()
     batch(() => {
       for (const entry of deviceTier) {
-        if (stored !== null && storedKeyFor(entry.storageName) !== stored)
+        if (stored !== null && !stored.has(storedKeyFor(entry.storageName) ?? ''))
           continue
         entry.seed(prefs)
         // The applier, WITHOUT the write that a `set` performs. Echoing the
-        // value back to storage would raise a `storage` event in the tab that
-        // wrote it, and the two tabs would write to each other for as long as
-        // both are open.
+        // value back would publish it again from the tab that received it, and
+        // the two tabs would write to each other for as long as both are open.
         entry.apply?.()
       }
     })
@@ -554,7 +554,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * `"true"` read as truthy everywhere except the toggle bound to it,
    * which compares against `true` and rendered OFF.
    */
-  function createOwnKeyToggle(storageKey: string, defaultOn: boolean) {
+  function createOwnKeyToggle(storageKey: SyncLocalKey, defaultOn: boolean) {
     const [value, setSignal] = createSignal(defaultOn)
     deviceTier.push({
       storageName: storageKey,
@@ -1128,24 +1128,29 @@ export const PreferencesProvider: ParentComponent = (props) => {
 
   // Follow a device-tier write made in another tab.
   //
-  // The event says only WHICH key changed; the value is read back through
-  // `loadBrowserPrefs`, so the reader unwraps the `{ v, e }` TTL envelope
-  // exactly as every other read does. `event.newValue` carries the raw envelope,
-  // so a field read straight off it is always `undefined`.
+  // The notification says only WHICH keys changed; the value is read back
+  // through `loadBrowserPrefs`, so the reader takes it from the same mirror
+  // every other read here does. The transport already updated that mirror with
+  // the committed value before it called, so the read is not a second trip.
   //
   // It matches the key AS STORED, which carries the account: another account's
   // document changing in another tab says nothing about this one. Before an
-  // identity resolves `storedKeyFor` answers null, which matches no event -- the
+  // identity resolves `storedKeyFor` answers null, which matches no key -- the
   // right answer, and the reason it does not throw here.
   //
-  // A null `event.key` is a whole-store `clear()` next door, and it identifies
-  // no key, so every entry answers for it. Dropping it left the signals showing
-  // values whose document was gone, and the next write in this tab merged onto
-  // an empty one and silently discarded them.
+  // A null set is a whole-store change next door -- a clear, or a database the
+  // scaffold had to rebuild -- and it identifies no key, so every entry answers
+  // for it. Dropping it left the signals showing values whose document was
+  // gone, and the next write in this tab merged onto an empty one and silently
+  // discarded them.
+  // Follow another tab's preference writes.
+  //
+  // `onStorageChanged` rather than a `storage` listener: the document lives in
+  // IndexedDB now, which raises no event of its own, so `~/lib/browserStorage`
+  // carries committed changes over a BroadcastChannel and reports them here as
+  // the set of keys that moved.
   onMount(() => {
-    const onStorage = (event: StorageEvent) => syncFromOtherTab(event.key)
-    window.addEventListener('storage', onStorage)
-    onCleanup(() => window.removeEventListener('storage', onStorage))
+    onCleanup(onStorageChanged(syncFromOtherTabs))
   })
 
   onMount(() => {

@@ -2,7 +2,7 @@ import { MemoryRouter, Route } from '@solidjs/router'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { sessionStorageClearForTests, setStorageAccount } from '~/lib/browserStorage'
+import { sessionStorageClearForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
 import { resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { AccountEmail } from './AccountEmail'
@@ -163,7 +163,7 @@ describe('accountEmail draft', () => {
     mockRefreshUser.mockResolvedValue(undefined)
     mockRequestEmailChange.mockResolvedValue({ verificationRequired: false })
     sessionStorageClearForTests()
-    setStorageAccount('user-1')
+    setStorageAccountForTests('user-1')
   })
 
   it('restores the address the user typed before the round trip', async () => {
@@ -206,7 +206,7 @@ describe('accountEmail draft', () => {
     fireEvent.input(await screen.findByLabelText('New Email'), { target: { value: 'new@example.com' } })
     cleanup()
 
-    setStorageAccount('user-2')
+    setStorageAccountForTests('user-2')
     renderRouted()
     expect(await screen.findByLabelText('New Email')).toHaveValue('')
   })

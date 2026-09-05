@@ -5,7 +5,7 @@ import {
   sessionStorageClearForTests,
   sessionStorageGet,
   sessionStorageSet,
-  setStorageAccount,
+  setStorageAccountForTests,
 } from '~/lib/browserStorage'
 import {
   isWorkspaceExpanded,
@@ -44,7 +44,7 @@ function reader() {
 describe('expandedWorkspaces', () => {
   beforeEach(() => {
     sessionStorageClearForTests()
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     resetExpandedWorkspacesForTests()
   })
 
@@ -138,16 +138,16 @@ describe('expandedWorkspaces', () => {
     // Both accounts' documents are written first, so the switch has something
     // to find. The key is account-scoped, so each write lands under whichever
     // account is current.
-    setStorageAccount('u-2')
+    setStorageAccountForTests('u-2')
     sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['ws-owned-by-2'])
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     sessionStorageSet(KEY_EXPANDED_WORKSPACES, ['ws-owned-by-1'])
     resetExpandedWorkspacesForTests()
 
     const r = reader()
     expect(r.sees('ws-owned-by-1')).toBe(true)
 
-    setStorageAccount('u-2')
+    setStorageAccountForTests('u-2')
 
     expect(r.sees('ws-owned-by-1')).toBe(false)
     expect(r.sees('ws-owned-by-2')).toBe(true)
@@ -157,12 +157,12 @@ describe('expandedWorkspaces', () => {
   // The mirror must not carry one account's rows into another's sidebar, even
   // when the second account has nothing stored.
   it('does not leak one account\'s expanded rows into an account with none', () => {
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     const r = reader()
     r.toggle('ws-1')
     expect(r.sees('ws-1')).toBe(true)
 
-    setStorageAccount('u-2')
+    setStorageAccountForTests('u-2')
 
     expect(r.sees('ws-1')).toBe(false)
     r.dispose()

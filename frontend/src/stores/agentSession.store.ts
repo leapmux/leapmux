@@ -1,5 +1,5 @@
 import { createStore } from 'solid-js/store'
-import { localStorageGet, localStorageSet, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
+import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
 import { shallowEqual } from '~/lib/shallowEqual'
 
 export interface ContextUsageInfo {
@@ -61,22 +61,22 @@ export function compactionContextUsage(
 
 // Keys that live in the reactive store for the UI but must never be persisted.
 // thinkingTokens is a per-turn running estimate that streams many deltas per
-// turn: persisting it would thrash localStorage with a synchronous write per
+// turn: persisting it would thrash storage with a write per
 // delta AND rehydrate a stale count on reload (the indicator would show the
 // pre-reload total until a fresh broadcast or turn-end clear corrects it).
 // Stripped from every write, so the store mutates reactively but the value
 // never reaches disk.
 const EPHEMERAL_KEYS = ['thinkingTokens'] as const satisfies readonly (keyof AgentSessionInfo)[]
 
-function loadFromStorage(agentId: string): AgentSessionInfo {
-  return localStorageGet<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`) ?? {}
+async function loadFromStorage(agentId: string): Promise<AgentSessionInfo> {
+  return (await localStorageLoad<AgentSessionInfo>(`${PREFIX_AGENT_SESSION}${agentId}`)) ?? {}
 }
 
 function saveToStorage(agentId: string, info: AgentSessionInfo) {
   const persisted = { ...info }
   for (const key of EPHEMERAL_KEYS)
     delete persisted[key]
-  localStorageSet(`${PREFIX_AGENT_SESSION}${agentId}`, persisted)
+  localStorageStore(`${PREFIX_AGENT_SESSION}${agentId}`, persisted)
 }
 
 interface AgentSessionStoreState {
@@ -88,21 +88,75 @@ export function createAgentSessionStore() {
     infoByAgent: {},
   })
 
-  // Track which agents have been loaded from localStorage.
+  // Track which agents have had their persisted info requested.
   const loaded = new Set<string>()
+  // The in-flight read per agent, dropped once it settles. `persist` waits on
+  // it; see there for why a write may not overtake a read.
+  const loading = new Map<string, Promise<void>>()
 
   // Hydrate an agent's persisted info into the reactive store on first touch.
   // Every mutator must call this before reading/clearing keys: otherwise a
   // clear on a not-yet-loaded agent would see an empty in-memory entry and
   // could overwrite real persisted data (e.g. clearContextUsage saving a bare
   // `rest` over stored rateLimits/cost).
+  //
+  // `loaded` is marked SYNCHRONOUSLY and the read runs behind it, so `getInfo`
+  // stays synchronous for the render path that calls it and the store notifies
+  // when the row arrives, one microtask later. Marking it up front is what
+  // keeps a burst of touches to one read.
   const ensureLoaded = (agentId: string) => {
     if (loaded.has(agentId))
       return
     loaded.add(agentId)
-    const stored = loadFromStorage(agentId)
-    if (Object.keys(stored).length > 0)
-      setState('infoByAgent', agentId, stored)
+    const read = loadFromStorage(agentId).then((stored) => {
+      if (Object.keys(stored).length === 0)
+        return
+      // `prev` LAST. A live update can land while the read is in flight -- a
+      // token count from the socket, a clear -- and the stored snapshot is
+      // older than any of them by construction, so it must fill gaps rather
+      // than overwrite. The synchronous read this replaces could not race.
+      setState('infoByAgent', agentId, (prev = {}) => ({ ...stored, ...prev }))
+    })
+    loading.set(agentId, read)
+    void read.finally(() => {
+      if (loading.get(agentId) === read)
+        loading.delete(agentId)
+    })
+  }
+
+  /**
+   * Run `body` once `agentId`'s stored row has been merged into the store,
+   * immediately when there is nothing in flight.
+   *
+   * WAITING ON THE READ IS THE WHOLE POINT, for reads and writes alike. A
+   * mutator runs synchronously against the in-memory entry, and until the read
+   * lands that entry is empty -- so `clearContextUsage` on an agent nobody has
+   * touched yet would either find nothing to clear and drop the clear, or write
+   * a bare object OVER the stored rateLimits and cost. That is exactly the
+   * clobber `ensureLoaded` was written to prevent, and making the read
+   * asynchronous re-opened it.
+   */
+  const whenLoaded = (agentId: string, body: () => void) => {
+    const read = loading.get(agentId)
+    if (read === undefined)
+      body()
+    else
+      void read.then(body)
+  }
+
+  /**
+   * Persist whatever the store holds for `agentId`, once its row has merged in.
+   *
+   * It reads the state at WRITE time rather than taking a snapshot, so what it
+   * stores is the merged value the read produced, not the pre-merge one the
+   * mutator saw.
+   */
+  const persist = (agentId: string) => {
+    whenLoaded(agentId, () => {
+      const info = state.infoByAgent[agentId]
+      if (info !== undefined)
+        saveToStorage(agentId, info)
+    })
   }
 
   return {
@@ -115,12 +169,15 @@ export function createAgentSessionStore() {
 
     updateInfo(agentId: string, partial: Partial<AgentSessionInfo>) {
       ensureLoaded(agentId)
+      // Set by the updater, acted on AFTER it: `persist` reads the store, and
+      // inside the updater the store still holds the pre-update value.
+      let shouldPersist = false
       setState('infoByAgent', agentId, (prev = {}) => {
         const merged = { ...prev }
         let changed = false
         // Tracks whether a *persisted* (non-ephemeral) key changed. A
         // thinkingTokens-only update mutates the reactive store but must not
-        // hit localStorage -- it streams many deltas per turn, so writing on
+        // hit storage -- it streams many deltas per turn, so writing on
         // each would thrash disk for a value that is never persisted anyway.
         let persistedChanged = false
         for (const [key, value] of Object.entries(partial)) {
@@ -155,30 +212,33 @@ export function createAgentSessionStore() {
         }
         if (!changed)
           return prev
-        if (persistedChanged)
-          saveToStorage(agentId, merged)
+        shouldPersist = persistedChanged
         return merged
       })
+      if (shouldPersist)
+        persist(agentId)
     },
 
     clearContextUsage(agentId: string) {
-      // Hydrate first: without it, clearing a not-yet-loaded agent would build
-      // `rest` from an empty in-memory entry and persist a bare object over the
-      // agent's stored rateLimits/planFilePath/etc., silently wiping them.
+      // Hydrate first, and act only once the row has landed: without that,
+      // clearing a not-yet-loaded agent either finds an empty in-memory entry
+      // and drops the clear, or persists a bare object over the agent's stored
+      // rateLimits/planFilePath/etc. and silently wipes them.
       ensureLoaded(agentId)
-      const info = state.infoByAgent[agentId]
-      // Nothing tracked to drop and nothing on disk to scrub when neither key is
-      // present -- skip the setState churn and the redundant localStorage write.
-      if (!info || (info.contextUsage === undefined && info.totalCostUsd === undefined))
-        return
-      // Explicitly set properties to undefined so that Solid's store proxy
-      // drops the tracked values. A functional updater that simply omits the
-      // keys does NOT work because setState merges the returned object,
-      // leaving the old properties on the proxy.
-      setState('infoByAgent', agentId, 'contextUsage', undefined)
-      setState('infoByAgent', agentId, 'totalCostUsd', undefined)
-      const { contextUsage: _, totalCostUsd: __, ...rest } = info
-      saveToStorage(agentId, rest as AgentSessionInfo)
+      whenLoaded(agentId, () => {
+        const info = state.infoByAgent[agentId]
+        // Nothing tracked to drop and nothing on disk to scrub when neither key
+        // is present -- skip the setState churn and the redundant write.
+        if (!info || (info.contextUsage === undefined && info.totalCostUsd === undefined))
+          return
+        // Explicitly set properties to undefined so that Solid's store proxy
+        // drops the tracked values. A functional updater that simply omits the
+        // keys does NOT work because setState merges the returned object,
+        // leaving the old properties on the proxy.
+        setState('infoByAgent', agentId, 'contextUsage', undefined)
+        setState('infoByAgent', agentId, 'totalCostUsd', undefined)
+        persist(agentId)
+      })
     },
 
     clearThinkingTokens(agentId: string) {
@@ -186,7 +246,7 @@ export function createAgentSessionStore() {
       // the property to undefined (rather than omitting it from a merged
       // object) is required so Solid's store proxy actually removes the
       // tracked value — see clearContextUsage for the same rationale. No
-      // localStorage write: thinkingTokens is an EPHEMERAL_KEY that is never
+      // storage write: thinkingTokens is an EPHEMERAL_KEY that is never
       // persisted, so there is nothing on disk to scrub.
       if (state.infoByAgent[agentId]?.thinkingTokens === undefined)
         return
