@@ -422,19 +422,19 @@ const piPlugin: Provider = {
     isRequest: payload => payload.type === PI_EVENT.ExtensionUIRequest
       && (payload.method === PI_DIALOG_METHOD.Input || payload.method === PI_DIALOG_METHOD.Select),
     extractQuestions: piQuestionsFromPayload,
-    async sendAnswer(agentId, sendControlResponse, requestId, _questions, askState, payload) {
-      const method = pickString(payload, 'method')
+    async sendAnswer(request, sendControlResponse, _questions, answerState) {
+      const method = pickString(request.payload, 'method')
       if (method === PI_DIALOG_METHOD.Select) {
-        const value = piAskAnswerValue(askState)
-        const response = value.trim() ? piValueResponse(requestId, value) : piCancelResponse(requestId)
-        await sendPiExtensionResponse(agentId, sendControlResponse, response)
+        const value = piAskAnswerValue(answerState)
+        const response = value.trim() ? piValueResponse(request.requestId, value) : piCancelResponse(request.requestId)
+        await sendPiExtensionResponse(sendControlResponse, response)
         return
       }
-      const text = askState.customTexts()[0] ?? ''
-      await sendPiExtensionResponse(agentId, sendControlResponse, piValueResponse(requestId, text))
+      const text = answerState.customTexts()[0] ?? ''
+      await sendPiExtensionResponse(sendControlResponse, piValueResponse(request.requestId, text))
     },
-    sendReject: (agentId, sendControlResponse, requestId) =>
-      sendPiExtensionResponse(agentId, sendControlResponse, piCancelResponse(requestId)),
+    sendReject: (request, sendControlResponse) =>
+      sendPiExtensionResponse(sendControlResponse, piCancelResponse(request.requestId)),
   },
 
   buildControlResponse(payload, content, requestId) {

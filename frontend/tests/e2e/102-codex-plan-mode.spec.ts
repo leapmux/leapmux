@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import { codexTest, expect } from './codex-fixtures'
 import { expectSettingsChip, openSettingsMenu, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
@@ -71,6 +72,10 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expectSettingsChip(page, 'Default')
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
-    expect(pageErrors.join('\n')).not.toMatch(/props\.request\.payload|Cannot read properties of null.*payload/)
+    // Every uncaught page error, not one known message. A narrow regex passes
+    // for a crash whose wording changed, and for every unrelated crash in this
+    // flow. `ignorableErrorEvents` owns which messages are browser-inherent, so
+    // this asks it rather than spelling its regex a second time.
+    expect(pageErrors.filter(message => !isResizeObserverLoopError(message))).toEqual([])
   })
 })

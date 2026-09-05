@@ -3,8 +3,8 @@ import { render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createAskQuestionState } from '~/test-support/askQuestionState'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
+import { createControlAnswerState } from './controls/types'
 import './providers'
 
 function planRequest(): ControlRequest {
@@ -35,25 +35,28 @@ function questionRequest(): ControlRequest {
 /**
  * Both components detect an AskUserQuestion payload in a memo in their BODY,
  * beside the `<Show when={props.request}>` that renders the rest. A memo there
- * is not a descendant of that Show, so the Show cannot dispose it first: a
+ * is not a descendant of that Show, so the Show cannot dispose it first. A
  * caller that passes `request` as a REACTIVE prop re-runs the memo with the
- * removed request still in place, and the memo dereferences it.
+ * removed request. `controlQuestion` returns nothing for that request rather
+ * than dereferencing it.
  *
  * These tests own that hazard because they render the component as the ROOT.
- * The same removal through `AgentEditorPanel` cannot reach the memo -- the
- * render effect that inserts the component is a stale ancestor there, so Solid
- * disposes the whole component before the pure phase reaches its body. The
- * panel is why the `!` below is a deliberate contract violation and not an
- * oversight: it passes a non-null `request` by keying the owner on it, and
- * these tests state what the components do for a caller that does not.
+ * The same removal through `AgentEditorPanel` cannot reach the memo, because
+ * the panel keys its owner on the request: `request` arrives there as a plain
+ * value, so the memo has no reactive source and never re-runs.
+ *
+ * `BannerContentProps` and `BannerActionsProps` are what let these tests pass
+ * `null` at all. The shared `ContentProps` / `ActionsProps` that a provider
+ * plugin takes keep the request non-null, because the banner renders a plugin
+ * only inside a `<Show>` that already proved it.
  */
 describe('controlRequestBanner reactive request removal', () => {
   it('removes the content after its reactive request becomes null', () => {
     const [request, setRequest] = createSignal<ControlRequest | null>(planRequest())
     render(() => (
       <ControlRequestContent
-        request={request()!}
-        askState={createAskQuestionState()}
+        request={request()}
+        answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
       />
     ))
@@ -67,8 +70,8 @@ describe('controlRequestBanner reactive request removal', () => {
     const [request, setRequest] = createSignal<ControlRequest | null>(planRequest())
     render(() => (
       <ControlRequestActions
-        request={request()!}
-        askState={createAskQuestionState()}
+        request={request()}
+        answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
@@ -82,14 +85,15 @@ describe('controlRequestBanner reactive request removal', () => {
   })
 
   // The question memo returns a value for one payload shape and nothing for the
-  // other, so a swap between them exercises both of its branches -- and the
-  // removal in between makes it run once with no request at all.
+  // other. A swap between the two shapes therefore exercises both of its
+  // branches. The removal between the two writes also makes the memo run once
+  // with no request at all.
   it('switches the content between a question and a plan across a removal', () => {
     const [request, setRequest] = createSignal<ControlRequest | null>(questionRequest())
     render(() => (
       <ControlRequestContent
-        request={request()!}
-        askState={createAskQuestionState()}
+        request={request()}
+        answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
       />
     ))
@@ -109,8 +113,8 @@ describe('controlRequestBanner reactive request removal', () => {
     const [request, setRequest] = createSignal<ControlRequest | null>(planRequest())
     render(() => (
       <ControlRequestActions
-        request={request()!}
-        askState={createAskQuestionState()}
+        request={request()}
+        answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}

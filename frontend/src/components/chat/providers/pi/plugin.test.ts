@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createControlAnswerState } from '../../controls/types'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -476,23 +477,14 @@ describe('pi extension UI integration', () => {
   it('sends Pi select AskUserQuestion responses as extension_ui_response values', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     await plugin.askUserQuestion!.sendAnswer(
-      'agent-1',
+      { requestId: 'req-1', agentId: 'agent-1', payload: { type: 'extension_ui_request', method: 'select' } },
       onRespond,
-      'req-1',
       [{ id: 'req-1', question: 'Pick one', options: [{ label: 'Allow' }, { label: 'Block' }] }],
-      {
-        selections: () => ({ 0: ['Block'] }),
-        setSelections: vi.fn(),
-        customTexts: () => ({}),
-        setCustomTexts: vi.fn(),
-        currentPage: () => 0,
-        setCurrentPage: vi.fn(),
-      },
-      { type: 'extension_ui_request', method: 'select' },
+      createControlAnswerState({ selections: { 0: ['Block'] } }),
     )
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-1',

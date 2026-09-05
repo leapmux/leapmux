@@ -6,7 +6,7 @@ import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
-import type { createControlStore } from '~/stores/control.store'
+import type { ControlRequest, createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
@@ -271,27 +271,28 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Handle control responses (permission grant/deny) for agent prompts. answeredClaimToken is the
-  // per-instance token captured from the ACTIVE control request at the answer site (AgentEditorPanel /
-  // controlResponseHandling), threaded through so it is always the answered instance's token -- even
-  // once the request has left the store (a double-submit / answer-after-cancel race).
-  const handleControlResponse = async (agentId: string, requestId: string, content: Uint8Array, answeredClaimToken?: string) => {
+  // Answers ONE control request INSTANCE: the one the caller captured before it
+  // acted (AgentEditorPanel / controlResponseHandling). The request carries the
+  // agent id, the request id and the per-instance claim token together, so the
+  // answer cannot pair an id from one instance with a token from another. It
+  // still carries all three after the request leaves the store, which is what a
+  // double-submit or an answer-after-cancel race needs.
+  const handleControlResponse = async (request: ControlRequest, content: Uint8Array) => {
     props.forceScrollToBottom?.()
+    const { agentId, requestId } = request
     try {
       const workerId = getAgentWorkerId(agentId)
-      // Echo the per-instance claimToken the worker minted for THIS request so its idempotency claim
-      // dedups per instance -- a reused request_id gets a fresh token (see AgentControlRequest.claim_token).
-      // Prefer the token threaded from the answer site (authoritative even after the request left the
-      // store); fall back to a store lookup for any caller that doesn't thread one, then to '' (which
-      // degrades to request_id-only dedup on the worker rather than dropping the answer).
-      const claimToken = answeredClaimToken
-        ?? (requestId ? props.controlStore.getRequest(agentId, requestId)?.claimToken : undefined)
-        ?? ''
-
+      // Echo the per-instance claimToken the worker minted for THIS instance, so its
+      // idempotency claim dedups per instance -- a reused request_id gets a fresh token
+      // (see AgentControlRequest.claim_token). A synthetic request carries none, and the
+      // worker then degrades to request_id-only dedup rather than dropping the answer.
+      //
+      // Never read the token back from the store. A reused request_id can hold a SECOND
+      // instance there, and that instance's token would claim the wrong answer.
       await workerRpc.sendControlResponse(workerId, {
         agentId,
         content,
-        claimToken,
+        claimToken: request.claimToken ?? '',
       })
 
       if (requestId)

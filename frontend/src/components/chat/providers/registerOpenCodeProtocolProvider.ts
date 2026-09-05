@@ -34,10 +34,10 @@ export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions):
     questionHandling: {
       isRequest: payload => payload?.type === 'question.asked',
       extractQuestions: extractOpenCodeQuestions,
-      sendAnswer: (agentId, sendControlResponse, requestId, questions, askState) =>
-        sendOpenCodeQuestionResponse(agentId, sendControlResponse, requestId, questions, askState),
-      sendReject: (agentId, sendControlResponse, requestId) =>
-        sendOpenCodeQuestionRejectResponse(agentId, sendControlResponse, requestId),
+      sendAnswer: (request, sendControlResponse, questions, answerState) =>
+        sendOpenCodeQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
+      sendReject: (request, sendControlResponse) =>
+        sendOpenCodeQuestionRejectResponse(sendControlResponse, request.requestId),
     },
   })
 }

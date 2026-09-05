@@ -11,6 +11,23 @@ export interface ControlRequest {
   claimToken?: string
 }
 
+/**
+ * The request id, made unique per INSTANCE by the worker's claim token.
+ *
+ * A request_id alone is not unique: the agent reuses one across a restart, and
+ * Claude reuses one for a revised prompt after feedback, so this store can hold
+ * two instances of one id at the same time (see `respondedKeys` below). Any
+ * per-request state that outlives its request -- a saved draft, a saved answer
+ * -- must key on this value. A key on the id alone hands the second instance
+ * what the user already answered for the first, and one Submit sends it.
+ *
+ * A synthetic or pre-token request carries no token and keeps the bare id,
+ * which is the key it had before the token existed.
+ */
+export function requestInstanceId(request: ControlRequest): string {
+  return request.claimToken ? `${request.requestId}:${request.claimToken}` : request.requestId
+}
+
 interface ControlStoreState {
   pendingByAgent: Record<string, ControlRequest[]>
 }
@@ -105,12 +122,6 @@ export function createControlStore() {
 
     getRequests(agentId: string): ControlRequest[] {
       return state.pendingByAgent[agentId] ?? []
-    },
-
-    // The pending request for (agentId, requestId), or undefined. Used at answer time to recover the
-    // per-instance claimToken to echo back to the worker.
-    getRequest(agentId: string, requestId: string): ControlRequest | undefined {
-      return state.pendingByAgent[agentId]?.find(r => r.requestId === requestId)
     },
 
     clearAgent(agentId: string) {

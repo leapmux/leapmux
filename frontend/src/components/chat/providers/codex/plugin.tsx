@@ -545,10 +545,10 @@ const codexPlugin: Provider = {
       const params = pickObject(payload, 'params')
       return Array.isArray(params?.questions) ? params.questions as Question[] : []
     },
-    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState) =>
-      sendCodexUserInputResponse(agentId, sendControlResponse, requestId, questions, askState),
-    sendReject: (agentId, sendControlResponse, requestId) =>
-      sendCodexUserInputRejectResponse(agentId, sendControlResponse, requestId),
+    sendAnswer: (request, sendControlResponse, questions, answerState) =>
+      sendCodexUserInputResponse(sendControlResponse, request.requestId, questions, answerState),
+    sendReject: (request, sendControlResponse) =>
+      sendCodexUserInputRejectResponse(sendControlResponse, request.requestId),
   },
 
   buildControlResponse(payload, content, requestId) {

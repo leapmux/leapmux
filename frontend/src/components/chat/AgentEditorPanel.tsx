@@ -25,6 +25,7 @@ import { keepFocusOnPress } from '~/lib/focusRetention'
 import { flavorFromOs } from '~/lib/paths'
 import { formatResetTimestamp, getResetsAt } from '~/lib/rateLimitUtils'
 import { dismissSoftKeyboard } from '~/lib/softKeyboard'
+import { requestInstanceId } from '~/stores/control.store'
 import { registerEditorRef, unregisterEditorRef } from '~/stores/editorRef.store'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
 import { repoGitView } from '~/stores/repoGit'
@@ -38,6 +39,7 @@ import { ComposerPlusMenu } from './composer/ComposerPlusMenu'
 import { ComposerStatusBar } from './composer/ComposerStatusBar'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { useControlResponseHandling } from './controlResponseHandling'
+import { createControlAnswerState } from './controls/types'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { providerFor } from './providers/registry'
 import { permissionPresetAvailable } from './providerSettings'
@@ -64,7 +66,7 @@ export interface AgentEditorPanelProps {
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
-  onControlResponse?: (agentId: string, requestId: string, content: Uint8Array, claimToken?: string) => Promise<void>
+  onControlResponse?: (request: ControlRequest, content: Uint8Array) => Promise<void>
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: ProviderSettingChangeHandler
   onInterrupt?: () => void
@@ -153,18 +155,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const handleResizeStart = editorHeight.handleResizeStart
   const resetEditorHeight = editorHeight.resetEditorHeight
 
-  // Shared state for AskUserQuestion selections
-  const [askSelections, setAskSelections] = createSignal<Record<number, string[]>>({})
-  const [askCustomTexts, setAskCustomTexts] = createSignal<Record<number, string>>({})
-  const [askCurrentPage, setAskCurrentPage] = createSignal(0)
-  const askState = {
-    selections: askSelections,
-    setSelections: setAskSelections,
-    customTexts: askCustomTexts,
-    setCustomTexts: setAskCustomTexts,
-    currentPage: askCurrentPage,
-    setCurrentPage: setAskCurrentPage,
-  }
+  // The user's in-progress answer to the active control request. It lives HERE,
+  // above both control slots, so a rebuild of a control component cannot discard
+  // it; `controlResponseHandling` saves and restores it per request instance.
+  const answerState = createControlAnswerState()
 
   // Editor content ref for programmatic get/set of editor markdown.
   let editorContentRef: EditorContentRef | undefined
@@ -254,7 +248,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       get agentWorking() { return props.agentWorking },
       get canInterrupt() { return props.canInterrupt },
     },
-    askState,
+    answerState,
     () => editorContentRef,
     editorHeight.resetEditorHeight,
     () => attachments(),
@@ -277,18 +271,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // eslint-disable-next-line solid/reactivity -- one-time ref registration, handler is stable
   props.addDropDataTransferRef?.(att.addDroppedDataTransfer)
 
-  const handlePasteFiles = (files: File[]) => {
-    if (ctrl.activeControlRequest())
-      return
-    addFiles(files, true)
-  }
-
-  const handleDropDataTransfer = (dataTransfer: DataTransfer) => {
-    if (ctrl.activeControlRequest())
-      return
-    void att.addDroppedDataTransfer(dataTransfer)
-  }
-
   const branchGitView = createMemo(() => {
     const tab = props.gitTab ?? {}
     return repoGitView(tab, props.repoGitStore, tab)
@@ -307,7 +289,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
    */
   const workerHomeDir = () => workerInfoStore.getHomeDir(props.agent?.workerId ?? '')
   /**
-   * The checkout that the branch chip and the `[+]` menu's branch row name.
+   * The checkout that the branch chip and the `[+]` menu's branch row identify.
    *
    * ONE value for both, because a user switches between the two surfaces with
    * one preference toggle and must not read two different answers. It is
@@ -344,8 +326,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     const request = ctrl.activeControlRequest()
     if (!request)
       return props.agentId
-    const pageSuffix = ctrl.isAskUserQuestion() ? `-q-${askCurrentPage()}` : ''
-    return `${props.agentId}-ctrl-${request.requestId}${pageSuffix}`
+    // Keyed on the request INSTANCE, so a re-ask that reuses the id opens an
+    // empty editor rather than the text the user typed for the instance that
+    // went away. `cleanupControlRequestDrafts` composes the same key.
+    const pageSuffix = ctrl.isAskUserQuestion() ? `-q-${answerState.currentPage()}` : ''
+    return `${props.agentId}-ctrl-${requestInstanceId(request)}${pageSuffix}`
   })
 
   let triggerSend: (() => void) | undefined
@@ -451,9 +436,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 editorHeight.resetEditorHeight()
             }
             if (has && ctrl.isAskUserQuestion()) {
-              // eslint-disable-next-line solid/reactivity -- event handler: askCurrentPage() reads at invocation time, and the setAskSelections updater runs synchronously
-              const page = askCurrentPage()
-              setAskSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
+              const page = answerState.currentPage()
+              answerState.setSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
             }
           }}
           imperative={{
@@ -478,28 +462,34 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               tryRegisterEditorRef(props.agentId)
             },
           }}
+          // The ONE place that decides whether a control request blocks an
+          // attachment. `MarkdownEditor` reads these handlers at event time, so
+          // an absent `attachments` refuses the paste and the drop by itself.
+          // `addFiles`'s second argument marks a pasted image, which renames it.
           attachments={!ctrl.activeControlRequest()
             ? {
-                onPaste: handlePasteFiles,
-                onDrop: handleDropDataTransfer,
+                onPaste: files => addFiles(files, true),
+                onDrop: dataTransfer => void att.addDroppedDataTransfer(dataTransfer),
               }
             : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
-          // Both control slots key their owner on the request, so each rendered
-          // control component holds ONE request instance for its whole life and
-          // Solid disposes it when the store drops that instance. A plain
-          // conditional passes `request` as a reactive prop instead, and every
-          // memo in the component's body -- the question detection here, a
-          // provider plugin's payload parsing below it -- then re-runs against
-          // the removed request unless a stale ancestor happens to dispose the
-          // component first. The keyed owner removes that "happens to".
+          // The keyed owner is what reacts in this slot. `createComponent`
+          // untracks the element that this prop getter builds, so the editor's
+          // inserting effect never observes the request. The `<Show>` alone
+          // rebuilds the banner, and it hands the component ONE request instance
+          // for its whole life.
+          //
+          // A plain conditional passes `request` as a reactive prop instead.
+          // Every memo in the component's body then re-runs against the removed
+          // request. The question detection is one such memo, and a provider
+          // plugin's payload parsing is another.
           banner={(
             <Show when={ctrl.activeControlRequest()} keyed>
               {request => (
                 <ControlRequestContent
                   request={request}
-                  askState={askState}
+                  answerState={answerState}
                   optionsDisabled={hasContent()}
                   agentProvider={props.agent?.agentProvider}
                 />
@@ -536,37 +526,38 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // One action row, carrying its own layout: a control request takes the
           // whole width for its two-zone [secondary | primary] row, while the
           // composer's own cluster hugs the corner.
-          actions={
-            ctrl.activeControlRequest()
+          // ONE read of the active request decides both halves of this slot.
+          // `MarkdownEditor` reads this getter inside the effect that owns the
+          // row, so a new head rebuilds the whole slot; a second read inside
+          // `node` would let the layout flag and the rendered row disagree,
+          // which is exactly what the prop's own doc forbids. The captured
+          // `request` is a plain value, so it stays the instance the user
+          // answers even after the store drops it.
+          actions={(() => {
+            const request = ctrl.activeControlRequest()
+            return request
               ? {
-                  layout: 'fullWidth',
+                  layout: 'fullWidth' as const,
                   node: () => (
-                    <Show when={ctrl.activeControlRequest()} keyed>
-                      {request => (
-                        <ControlRequestActions
-                          request={request}
-                          askState={askState}
-                          agentProvider={props.agent?.agentProvider}
-                          onRespond={(agentId, content) => {
-                            // The keyed owner keeps this request instance stable after the store
-                            // removes it, so the response retains its request ID and claim token.
-                            ctrl.cleanupControlRequestDrafts(request.requestId)
-                            editorHeight.resetEditorHeight()
-                            return props.onControlResponse?.(agentId, request.requestId, content, request.claimToken) ?? Promise.resolve()
-                          }}
-                          hasEditorContent={hasContent()}
-                          onTriggerSend={() => triggerSend?.()}
-                          editorContentRef={() => editorContentRef}
-                          bypass={bypass()}
-                          contextUsage={props.agentSessionInfo?.contextUsage}
-                          modelContextWindow={modelContextWindow()}
-                        />
-                      )}
-                    </Show>
+                    <ControlRequestActions
+                      request={request}
+                      answerState={answerState}
+                      agentProvider={props.agent?.agentProvider}
+                      onRespond={(content) => {
+                        ctrl.finishAnswer(request)
+                        return ctrl.respondTo(request)(content)
+                      }}
+                      hasEditorContent={hasContent()}
+                      onTriggerSend={() => triggerSend?.()}
+                      editorContentRef={() => editorContentRef}
+                      bypass={bypass()}
+                      contextUsage={props.agentSessionInfo?.contextUsage}
+                      modelContextWindow={modelContextWindow()}
+                    />
                   ),
                 }
               : {
-                  layout: 'corner',
+                  layout: 'corner' as const,
                   node: () => (
                     <div class={styles.actionCluster} data-testid="composer-actions">
                       <Show when={ctrl.showInterrupt()}>
@@ -612,7 +603,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     </div>
                   ),
                 }
-          }
+          })()}
         />
       </div>
       <Show when={preferences.showComposerStatusBar()}>

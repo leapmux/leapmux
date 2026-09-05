@@ -2,12 +2,12 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createAskQuestionState } from '~/test-support/askQuestionState'
 import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
+import { createControlAnswerState } from '../../controls/types'
 import { PiControlActions, PiControlContent } from './controls'
 import './plugin'
 
-const makeAskState = createAskQuestionState
+const makeAskState = createControlAnswerState
 
 function makeSelectRequest(): ControlRequest {
   return {
@@ -26,7 +26,7 @@ function makeSelectRequest(): ControlRequest {
 describe('pi select control requests', () => {
   it('renders select options through the shared AskUserQuestion content', () => {
     const { container, getByTestId } = render(() => (
-      <ControlRequestContent request={makeSelectRequest()} askState={makeAskState()} agentProvider={AgentProvider.PI} />
+      <ControlRequestContent request={makeSelectRequest()} answerState={makeAskState()} agentProvider={AgentProvider.PI} />
     ))
 
     expect(container.textContent ?? '').toContain('Agent Question')
@@ -47,7 +47,7 @@ describe('pi select control requests', () => {
       },
     }
     const { container } = render(() => (
-      <ControlRequestContent request={req} askState={makeAskState()} agentProvider={AgentProvider.PI} />
+      <ControlRequestContent request={req} answerState={makeAskState()} agentProvider={AgentProvider.PI} />
     ))
     expect(container.textContent ?? '').toContain('Choose an option')
   })
@@ -65,7 +65,7 @@ describe('pi select control requests', () => {
       },
     }
     const { queryByTestId } = render(() => (
-      <ControlRequestContent request={req} askState={makeAskState()} agentProvider={AgentProvider.PI} />
+      <ControlRequestContent request={req} answerState={makeAskState()} agentProvider={AgentProvider.PI} />
     ))
     expect(queryByTestId('question-option-Real')).toBeInTheDocument()
     expect(queryByTestId('question-option-Other')).toBeInTheDocument()
@@ -77,7 +77,7 @@ describe('pi select control requests', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         request={makeSelectRequest()}
-        askState={makeAskState({ selections: { 0: ['Block'] } })}
+        answerState={makeAskState({ selections: { 0: ['Block'] } })}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -88,7 +88,7 @@ describe('pi select control requests', () => {
     fireEvent.click(getByTestId('control-submit-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-1',
@@ -101,7 +101,7 @@ describe('pi select control requests', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         request={makeSelectRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -112,7 +112,7 @@ describe('pi select control requests', () => {
     fireEvent.click(getByTestId('control-stop-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-1',
@@ -169,14 +169,14 @@ describe('pi confirm control requests', () => {
     const { container } = render(() => (
       <PiControlActions
         request={makeConfirmRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={vi.fn()}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
       />
     ))
     const { container: contentContainer } = render(() => (
-      <PiControlContent request={makeConfirmRequest()} askState={makeAskState()} />
+      <PiControlContent request={makeConfirmRequest()} answerState={makeAskState()} />
     ))
     expect(contentContainer.textContent ?? '').toContain('Continue?')
     expect(contentContainer.textContent ?? '').toContain('About to delete files.')
@@ -192,7 +192,7 @@ describe('pi confirm control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeConfirmRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -201,7 +201,7 @@ describe('pi confirm control requests', () => {
 
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-c',
@@ -214,7 +214,7 @@ describe('pi confirm control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeConfirmRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -223,7 +223,7 @@ describe('pi confirm control requests', () => {
 
     fireEvent.click(getByTestId('control-deny-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-c',
@@ -237,7 +237,7 @@ describe('pi input control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeInputRequest('initial')}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={vi.fn()}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -252,7 +252,7 @@ describe('pi input control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeInputRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -263,7 +263,7 @@ describe('pi input control requests', () => {
     fireEvent.click(getByTestId('control-allow-btn'))
 
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-i',
@@ -276,7 +276,7 @@ describe('pi input control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeInputRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -286,7 +286,7 @@ describe('pi input control requests', () => {
     fireEvent.input(input, { target: { value: 'enterval' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({ value: 'enterval' })
   })
 
@@ -295,7 +295,7 @@ describe('pi input control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeInputRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -303,7 +303,7 @@ describe('pi input control requests', () => {
     ))
     fireEvent.click(getByTestId('control-deny-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-i',
@@ -317,7 +317,7 @@ describe('pi editor control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeEditorRequest('first\nsecond')}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={vi.fn()}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -332,7 +332,7 @@ describe('pi editor control requests', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={makeEditorRequest()}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -342,7 +342,7 @@ describe('pi editor control requests', () => {
     fireEvent.input(textarea, { target: { value: 'multi\nline' } })
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       type: 'extension_ui_response',
       id: 'req-e',
@@ -367,7 +367,7 @@ describe('pi unknown method fallback', () => {
     const { getByTestId } = render(() => (
       <PiControlActions
         request={req}
-        askState={makeAskState()}
+        answerState={makeAskState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -376,7 +376,7 @@ describe('pi unknown method fallback', () => {
     expect((getByTestId('control-allow-btn') as HTMLButtonElement).textContent).toContain('Acknowledge')
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toMatchObject({
       id: 'req-u',
       confirmed: true,

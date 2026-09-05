@@ -14,7 +14,7 @@
  * trailing newline before forwarding to Pi's stdin.
  */
 
-import type { AskQuestionState } from '../../controls/types'
+import type { ControlAnswerState } from '../../controls/types'
 import type { ControlResponseDisplay, PersistedControlResponse } from '../../persistedControlResponse'
 import { PI_DIALOG_METHOD, PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
@@ -56,14 +56,14 @@ export function piCancelResponse(requestId: string): PiCancelledResponse {
 }
 
 /**
- * Resolve the current answer value from a shared AskQuestionState — prefers
+ * Resolve the current answer value from a shared ControlAnswerState — prefers
  * the first selected option, falling back to the first custom-text entry.
  */
-export function piAskAnswerValue(askState: AskQuestionState): string {
-  const selection = askState.selections()[0]?.[0]
+export function piAskAnswerValue(answerState: ControlAnswerState): string {
+  const selection = answerState.selections()[0]?.[0]
   if (selection)
     return selection
-  return askState.customTexts()[0] ?? ''
+  return answerState.customTexts()[0] ?? ''
 }
 
 /**
@@ -72,11 +72,10 @@ export function piAskAnswerValue(askState: AskQuestionState): string {
  * calls workerRpc.sendControlResponse.
  */
 export function sendPiExtensionResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   response: PiExtensionResponse,
 ): Promise<void> {
-  return sendResponse(agentId, onRespond, response)
+  return sendResponse(onRespond, response)
 }
 
 /**

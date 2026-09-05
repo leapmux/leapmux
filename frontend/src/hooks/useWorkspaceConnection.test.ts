@@ -2260,7 +2260,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
         handleControlRequest('a1', withToken, 'live', s, undefined)
         // The per-instance token from AgentControlRequest.claim_token must reach the store, since the
         // answer (handleControlResponse) echoes it back so the worker dedups the answer per instance.
-        expect(s.controlStore.getRequest('a1', 'r1')?.claimToken).toBe('instance-token-1')
+        expect(s.controlStore.getRequests('a1').find(r => r.requestId === 'r1')?.claimToken).toBe('instance-token-1')
         dispose()
       })
     })

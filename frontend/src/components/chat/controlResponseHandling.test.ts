@@ -1,12 +1,13 @@
 import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
-import type { AskQuestionState } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
-import { createRenderEffect, createRoot, createSignal } from 'solid-js'
+import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { localStorageGet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
+import { createControlAnswerState } from './controls/types'
 
 // The no-plugin bail surfaces a toast; mock the module so it doesn't reach the
 // runtime `window.ot` global (absent in jsdom) and we can assert it fired.
@@ -15,13 +16,6 @@ vi.mock('~/components/common/Toast', () => ({
   showInfoToast: vi.fn(),
   showErrorToast: vi.fn(),
 }))
-
-function createMinimalAskState(): AskQuestionState {
-  const [selections, setSelections] = createSignal<Record<number, string[]>>({})
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-}
 
 function setup(overrides?: Partial<ControlResponseHandlingProps>) {
   const onSendMessage = vi.fn()
@@ -33,7 +27,7 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
   const resetEditorHeight = vi.fn()
   const result = useControlResponseHandling(
     props,
-    createMinimalAskState(),
+    createControlAnswerState(),
     () => undefined,
     resetEditorHeight,
   )
@@ -53,7 +47,7 @@ function setupWithAttachments(
   const resetEditorHeight = vi.fn()
   const result = useControlResponseHandling(
     props,
-    createMinimalAskState(),
+    createControlAnswerState(),
     () => undefined,
     resetEditorHeight,
     () => attachments,
@@ -90,7 +84,7 @@ describe('handleSend', () => {
     expect(onSendMessage).not.toHaveBeenCalled()
   })
 
-  it('does not reset hasContent when activeRequestId changes due to tab switch', () =>
+  it('does not reset hasContent when the active control request changes on a tab switch', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -106,7 +100,7 @@ describe('handleSend', () => {
 
           useControlResponseHandling(
             props,
-            createMinimalAskState(),
+            createControlAnswerState(),
             () => undefined,
             vi.fn(),
           )
@@ -120,12 +114,12 @@ describe('handleSend', () => {
 
           // Simulate switching to tab B (no control requests).
           setControlRequests([])
-          // Let the activeRequestId effect run.
+          // Let the active-request effect run.
           await Promise.resolve()
 
           // Simulate switching back to tab A (control request reappears).
           setControlRequests([reqA])
-          // Let the activeRequestId effect run.
+          // Let the active-request effect run.
           await Promise.resolve()
 
           // hasContent must NOT have been reset to false by the effect.
@@ -187,11 +181,60 @@ describe('handleSend', () => {
 })
 
 describe('handleControlSend', () => {
+  // Answering discards the saved answers of the answered instance, and the
+  // outcome must not depend on whether a caller batches.
+  //
+  // `trySubmitAskUserQuestion` writes the answers on its way in. Unbatched, the
+  // persist effect runs at once, before the cleanup deletes the key. Inside a
+  // batch it runs at the END, after the cleanup, and re-writes the key that the
+  // cleanup just deleted. The answers of an instance the user already answered
+  // would then outlive it. The cleanup therefore releases the ownership too, so
+  // the effect writes nothing back in either arrangement.
+  it('leaves no saved answers behind after answering a question', () => {
+    const answerState = createControlAnswerState({ selections: { 0: ['Build'] } })
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    const key = `${PREFIX_CONTROL_STATE}test-agent:ask-1:tok-1`
+    const props: ControlResponseHandlingProps = {
+      agentId: 'test-agent',
+      agent: { agentProvider: AgentProvider.CLAUDE_CODE },
+      controlRequests: [{
+        requestId: 'ask-1',
+        agentId: 'test-agent',
+        claimToken: 'tok-1',
+        payload: {
+          request: {
+            tool_name: 'AskUserQuestion',
+            input: { questions: [{ header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] }] },
+          },
+        },
+      }],
+      onControlResponse,
+      onSendMessage: vi.fn(),
+    }
+    let result!: ReturnType<typeof useControlResponseHandling>
+    const dispose = createRoot((disposeRoot) => {
+      result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
+      return disposeRoot
+    })
+
+    // OUTSIDE the root, so the restore effect has already claimed the request as
+    // the owner of the answers -- which is the state a real session answers in.
+    answerState.setSelections({ 0: ['Build'] })
+    expect(localStorageGet(key)).toBeDefined()
+
+    batch(() => result.handleControlSend(''))
+
+    expect(onControlResponse).toHaveBeenCalledOnce()
+    expect(localStorageGet(key)).toBeUndefined()
+
+    dispose()
+  })
+
   it('uses Claude AskUserQuestion response format keyed by question text', () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const askState = createMinimalAskState()
-      askState.setSelections({ 0: ['Build'] })
+      const answerState = createControlAnswerState()
+      answerState.setSelections({ 0: ['Build'] })
       const props: ControlResponseHandlingProps = {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CLAUDE_CODE },
@@ -208,12 +251,12 @@ describe('handleControlSend', () => {
         onControlResponse,
         onSendMessage: vi.fn(),
       }
-      const result = useControlResponseHandling(props, askState, () => undefined, vi.fn())
+      const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
 
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, , bytes] = onControlResponse.mock.calls[0]
+      const [, bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'control_response',
@@ -244,14 +287,15 @@ describe('handleControlSend', () => {
         onControlResponse,
         onSendMessage: vi.fn(),
       }
-      const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+      const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
 
       result.handleControlSend('please stop')
 
-      // The 3rd arg is the answered instance's claim token, captured from the active request so the
-      // worker's idempotency claim keys on THIS instance (not a store re-derivation that can miss).
+      // The answer carries the whole request, so its claim token is the answered
+      // instance's own. The worker's idempotency claim then keys on THIS instance,
+      // and no store re-derivation can pair it with a sibling that reuses the id.
       expect(onControlResponse).toHaveBeenCalledOnce()
-      expect(onControlResponse.mock.calls[0][3]).toBe('instance-token-7')
+      expect(onControlResponse.mock.calls[0][0].claimToken).toBe('instance-token-7')
       dispose()
     })
   })
@@ -274,11 +318,11 @@ describe('handleControlSend', () => {
           onControlResponse,
           onSendMessage,
         }
-        const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+        const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
 
         result.handleControlSend('Use a safer command')
 
-        const [, , bytes] = onControlResponse.mock.calls[0]
+        const [, bytes] = onControlResponse.mock.calls[0]
         expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({ result: { decision: 'cancel' } })
         expect(onSendMessage).not.toHaveBeenCalled()
         finishResponse()
@@ -303,7 +347,7 @@ describe('handleControlSend', () => {
         onControlResponse,
         onSendMessage,
       }
-      const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+      const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
 
       result.handleControlSend('Revise the plan')
 
@@ -327,7 +371,7 @@ describe('handleControlSend', () => {
     const resetEditorHeight = vi.fn()
     const result = useControlResponseHandling(
       props,
-      createMinimalAskState(),
+      createControlAnswerState(),
       () => undefined,
       resetEditorHeight,
       () => attachments,
@@ -353,7 +397,7 @@ describe('handleControlSend', () => {
       onControlResponse,
       onSendMessage: vi.fn(),
     }
-    const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+    const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
     expect(result.handleControlSend('')).toBe(false)
     expect(onControlResponse).not.toHaveBeenCalled()
     expect(showWarnToast).toHaveBeenCalledWith(expect.stringContaining('unsupported agent provider'))
@@ -362,8 +406,8 @@ describe('handleControlSend', () => {
   it('uses Pi-native extension_ui_response values for select prompts', () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const askState = createMinimalAskState()
-      askState.setSelections({ 0: ['Block'] })
+      const answerState = createControlAnswerState()
+      answerState.setSelections({ 0: ['Block'] })
       const props: ControlResponseHandlingProps = {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.PI },
@@ -377,12 +421,12 @@ describe('handleControlSend', () => {
         onControlResponse,
         onSendMessage: vi.fn(),
       }
-      const result = useControlResponseHandling(props, askState, () => undefined, vi.fn())
+      const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
 
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, , bytes] = onControlResponse.mock.calls[0]
+      const [, bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         type: 'extension_ui_response',
@@ -396,8 +440,8 @@ describe('handleControlSend', () => {
   it('uses Codex-native request_user_input responses', () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const askState = createMinimalAskState()
-      askState.setSelections({ 0: ['Build'] })
+      const answerState = createControlAnswerState()
+      answerState.setSelections({ 0: ['Build'] })
       const props: ControlResponseHandlingProps = {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.CODEX },
@@ -414,7 +458,7 @@ describe('handleControlSend', () => {
       }
       const result = useControlResponseHandling(
         props,
-        askState,
+        answerState,
         () => undefined,
         vi.fn(),
       )
@@ -422,7 +466,7 @@ describe('handleControlSend', () => {
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, , bytes] = onControlResponse.mock.calls[0]
+      const [, bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
@@ -440,7 +484,7 @@ describe('handleControlSend', () => {
   it('advances Codex multi-question requests instead of submitting incomplete answers', () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const askState = createMinimalAskState()
+      const answerState = createControlAnswerState()
       const editorContentRef = {
         get: () => 'Build',
         set: vi.fn(),
@@ -462,7 +506,7 @@ describe('handleControlSend', () => {
       }
       const result = useControlResponseHandling(
         props,
-        askState,
+        answerState,
         () => editorContentRef,
         vi.fn(),
       )
@@ -470,7 +514,7 @@ describe('handleControlSend', () => {
       const submitted = result.handleControlSend('Build')
 
       expect(submitted).toBe(false)
-      expect(askState.currentPage()).toBe(1)
+      expect(answerState.currentPage()).toBe(1)
       expect(editorContentRef.set).toHaveBeenCalledWith('')
       expect(onControlResponse).not.toHaveBeenCalled()
       dispose()
@@ -480,9 +524,9 @@ describe('handleControlSend', () => {
   it('uses OpenCode-native question responses', () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const askState = createMinimalAskState()
-      askState.setSelections({ 0: ['Build'] })
-      askState.setCustomTexts({ 1: 'Dev' })
+      const answerState = createControlAnswerState()
+      answerState.setSelections({ 0: ['Build'] })
+      answerState.setCustomTexts({ 1: 'Dev' })
       const props: ControlResponseHandlingProps = {
         agentId: 'test-agent',
         agent: { agentProvider: AgentProvider.OPENCODE },
@@ -498,12 +542,12 @@ describe('handleControlSend', () => {
         onControlResponse,
         onSendMessage: vi.fn(),
       }
-      const result = useControlResponseHandling(props, askState, () => undefined, vi.fn())
+      const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
 
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
-      const [, , bytes] = onControlResponse.mock.calls[0]
+      const [, bytes] = onControlResponse.mock.calls[0]
       const parsed = JSON.parse(new TextDecoder().decode(bytes as Uint8Array))
       expect(parsed).toMatchObject({
         jsonrpc: '2.0',
@@ -519,7 +563,7 @@ describe('handleControlSend', () => {
   it('advances OpenCode multi-question requests instead of submitting incomplete answers', () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
-      const askState = createMinimalAskState()
+      const answerState = createControlAnswerState()
       const editorContentRef = {
         get: () => 'Build',
         set: vi.fn(),
@@ -539,12 +583,12 @@ describe('handleControlSend', () => {
         onControlResponse,
         onSendMessage: vi.fn(),
       }
-      const result = useControlResponseHandling(props, askState, () => editorContentRef, vi.fn())
+      const result = useControlResponseHandling(props, answerState, () => editorContentRef, vi.fn())
 
       const submitted = result.handleControlSend('Build')
 
       expect(submitted).toBe(false)
-      expect(askState.currentPage()).toBe(1)
+      expect(answerState.currentPage()).toBe(1)
       expect(editorContentRef.set).toHaveBeenCalledWith('')
       expect(onControlResponse).not.toHaveBeenCalled()
       dispose()
@@ -603,7 +647,7 @@ describe('showInterrupt', () => {
 
 describe('activeControlRequest', () => {
   // `setup` spreads its overrides, which reads a getter once and freezes it, so
-  // a reactive `controlRequests` has to be built inline here.
+  // this suite builds a reactive `controlRequests` inline here.
   function reactiveController(initial: ControlRequest[] | undefined) {
     const [controlRequests, setControlRequests] = createSignal(initial)
     const props: ControlResponseHandlingProps = {
@@ -611,21 +655,23 @@ describe('activeControlRequest', () => {
       get controlRequests() { return controlRequests() },
       onSendMessage: vi.fn(),
     }
-    const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+    const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
     return { result, setControlRequests }
   }
 
-  // The store hands out a fresh array for every write, and the composer keys its
-  // control owners on this value. A plain read would therefore rebuild the
-  // banner and the footer -- discarding the plan switches a user already
-  // checked -- each time an unrelated request joins or leaves the queue.
+  // Each write to the list notifies every reader of it, and the composer keys
+  // its control slots on this value. A plain thunk would therefore rebuild the
+  // banner and the footer each time an unrelated request joins or leaves the
+  // queue. That rebuild discards the plan switches that the user already
+  // checked.
   it('notifies on a new head only, not on every write to the list', () => {
     const head = makeControlRequest('req-head', 'agent-A')
     // A RENDER effect, because that is how the composer subscribes: `insert()`
-    // builds one, and it runs in the same phase as a memo. The writes stay
-    // OUTSIDE the root: `createRoot` runs its callback inside `runUpdates`, so
-    // a write in there is batched and the effect flushes only after the
-    // callback returns -- after every assertion.
+    // builds one. Solid queues it in `Effects`, and `completeUpdates` drains
+    // `Effects` before `runUpdates` returns, so each assertion reads the runs of
+    // the write above it. The writes stay OUTSIDE the root, because
+    // `createRoot` runs its callback inside `runUpdates`: it batches a write
+    // made in there, and the effect then flushes only after every assertion.
     const runs: Array<ControlRequest | null> = []
     let setControlRequests!: (reqs: ControlRequest[]) => void
     const dispose = createRoot((disposeRoot) => {
@@ -646,6 +692,43 @@ describe('activeControlRequest', () => {
     const next = makeControlRequest('req-next', 'agent-A')
     setControlRequests([next])
     expect(runs).toEqual([head, next])
+
+    dispose()
+  })
+
+  // A cancel and re-ask reuses the request_id with a FRESH claim token, so the
+  // store holds two instances of one id (`control.store.ts` addRequest). The
+  // reset must key on the INSTANCE: an id dependency does not notify for that
+  // swap, and the new prompt then opens with the answers the user gave for the
+  // instance that went away.
+  it('resets the ask state for a sibling that reuses the request id', () => {
+    const first = makeControlRequest('req-1', 'agent-A', { tool_name: 'AskUserQuestion', tool_input: {} })
+    first.claimToken = 'claim-1'
+    const second = makeControlRequest('req-1', 'agent-A', { tool_name: 'AskUserQuestion', tool_input: {} })
+    second.claimToken = 'claim-2'
+    const answerState = createControlAnswerState()
+    let setControlRequests!: (reqs: ControlRequest[]) => void
+    const dispose = createRoot((disposeRoot) => {
+      const [controlRequests, setter] = createSignal<ControlRequest[]>([first, second])
+      setControlRequests = setter
+      const props: ControlResponseHandlingProps = {
+        agentId: 'agent-A',
+        get controlRequests() { return controlRequests() },
+        onSendMessage: vi.fn(),
+      }
+      useControlResponseHandling(props, answerState, () => undefined, vi.fn())
+      return disposeRoot
+    })
+
+    answerState.setSelections({ 0: ['Postgres'] })
+    answerState.setCustomTexts({ 0: 'my own answer' })
+    answerState.setCurrentPage(1)
+
+    setControlRequests([second])
+
+    expect(answerState.selections()).toEqual({})
+    expect(answerState.customTexts()).toEqual({})
+    expect(answerState.currentPage()).toBe(0)
 
     dispose()
   })

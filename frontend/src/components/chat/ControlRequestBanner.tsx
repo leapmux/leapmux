@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, ContentProps } from './controls/types'
+import type { BannerActionsProps, BannerContentProps } from './controls/types'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import { createMemo, Show } from 'solid-js'
@@ -8,29 +8,21 @@ import { IconButton } from '~/components/common/IconButton'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { prettifyJson } from '~/lib/jsonFormat'
 import * as styles from './ControlRequestBanner.css'
-import { AskUserQuestionActions, AskUserQuestionContent } from './controls/AskUserQuestionControl'
+import { AskUserQuestionActions, AskUserQuestionContent, controlQuestion } from './controls/AskUserQuestionControl'
 import { pluginFor } from './providers/registry'
 
-function createControlQuestion(props: Pick<ContentProps, 'request' | 'agentProvider'>) {
-  return createMemo(() => {
-    // This memo is a SIBLING of the `<Show when={props.request}>` below, never a
-    // descendant, so that Show cannot dispose it first. A caller that passes
-    // `request` as a reactive prop therefore re-runs this memo with the removed
-    // request, and an unguarded read raises a TypeError inside a memo instead of
-    // leaving an element behind. `AgentEditorPanel` keys its owner on the request
-    // and never does that, but the prop is public.
-    const request = props.request
-    if (!request)
-      return undefined
-    const capability = pluginFor(props.agentProvider)?.askUserQuestion
-    return capability?.isRequest(request.payload)
-      ? { capability, questions: capability.extractQuestions(request.payload) }
-      : undefined
-  })
+function createControlQuestion(props: Pick<BannerContentProps, 'request' | 'agentProvider'>) {
+  // This memo is a SIBLING of the `<Show when={props.request}>` below, never a
+  // descendant, so that Show cannot dispose it first. A caller that passes
+  // `request` as a reactive prop therefore re-runs this memo with the removed
+  // request. `controlQuestion` accepts an absent request for that reason.
+  // `AgentEditorPanel` keys its owner on the request and never does that, but
+  // the prop is public.
+  return createMemo(() => controlQuestion(props.request, props.agentProvider))
 }
 
 /** Renders control request content only (title + details), for the banner slot. */
-export const ControlRequestContent: Component<ContentProps> = (props) => {
+export const ControlRequestContent: Component<BannerContentProps> = (props) => {
   const plugin = () => pluginFor(props.agentProvider)
   const pluginContent = () => plugin()?.ControlContent
   const question = createControlQuestion(props)
@@ -38,62 +30,57 @@ export const ControlRequestContent: Component<ContentProps> = (props) => {
 
   return (
     <Show when={props.request}>
-      <div class={styles.controlBanner} data-testid="control-banner">
-        <div class={styles.controlBannerActions} data-testid="control-banner-actions">
-          <IconButton
-            icon={copied() ? Check : Braces}
-            size="sm"
-            onClick={copy}
-            title={copied() ? 'Copied' : 'Copy Raw JSON'}
-            data-testid="control-copy-json"
-          />
-        </div>
-        <Show when={question()} fallback={<Dynamic component={pluginContent()} {...props} />}>
-          {question => (
-            <AskUserQuestionContent
-              request={props.request}
-              askState={props.askState}
-              optionsDisabled={props.optionsDisabled}
-              agentProvider={props.agentProvider}
-              questions={question().questions}
+      {request => (
+        <div class={styles.controlBanner} data-testid="control-banner">
+          <div class={styles.controlBannerActions} data-testid="control-banner-actions">
+            <IconButton
+              icon={copied() ? Check : Braces}
+              size="sm"
+              onClick={copy}
+              title={copied() ? 'Copied' : 'Copy Raw JSON'}
+              data-testid="control-copy-json"
             />
-          )}
-        </Show>
-      </div>
+          </div>
+          <Show when={question()} fallback={<Dynamic component={pluginContent()} {...props} request={request()} />}>
+            {question => (
+              <AskUserQuestionContent
+                {...props}
+                request={request()}
+                questions={question().questions}
+              />
+            )}
+          </Show>
+        </div>
+      )}
     </Show>
   )
 }
 
 /** Renders control request action buttons only, for the footer slot. */
-export const ControlRequestActions: Component<ActionsProps> = (props) => {
+export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
   const plugin = () => pluginFor(props.agentProvider)
   const pluginActions = () => plugin()?.ControlActions
   const question = createControlQuestion(props)
   return (
     <Show when={props.request}>
-      <Show when={question()} fallback={<Dynamic component={pluginActions()} {...props} />}>
-        {question => (
-          <AskUserQuestionActions
-            {...props}
-            questions={question().questions}
-            onSubmitAnswers={() => question().capability.sendAnswer(
-              props.request.agentId,
-              props.onRespond,
-              props.request.requestId,
-              question().questions,
-              props.askState,
-              props.request.payload,
-            )}
-            onReject={message => question().capability.sendReject(
-              props.request.agentId,
-              props.onRespond,
-              props.request.requestId,
-              message,
-              props.request.payload,
-            )}
-          />
-        )}
-      </Show>
+      {request => (
+        <Show when={question()} fallback={<Dynamic component={pluginActions()} {...props} request={request()} />}>
+          {question => (
+            <AskUserQuestionActions
+              {...props}
+              request={request()}
+              questions={question().questions}
+              onSubmitAnswers={() => question().capability.sendAnswer(
+                request(),
+                props.onRespond,
+                question().questions,
+                props.answerState,
+              )}
+              onReject={message => question().capability.sendReject(request(), props.onRespond, message)}
+            />
+          )}
+        </Show>
+      )}
     </Show>
   )
 }

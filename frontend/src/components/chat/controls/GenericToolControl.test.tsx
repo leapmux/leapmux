@@ -2,7 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { GenericToolActions } from '~/components/chat/controls/GenericToolControl'
-import { createAskQuestionState } from '~/test-support/askQuestionState'
+import { createControlAnswerState } from './types'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
@@ -29,7 +29,7 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -47,7 +47,7 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
@@ -68,7 +68,7 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={request}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -79,8 +79,7 @@ describe('genericToolActions', () => {
     fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [agentId, bytes] = onRespond.mock.calls[0]
-    expect(agentId).toBe('agent-3')
+    const [bytes] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-10')
     expect(decoded.response.response.behavior).toBe('allow')
@@ -92,7 +91,7 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest('req-deny', 'agent-deny')}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -102,8 +101,7 @@ describe('genericToolActions', () => {
     fireEvent.click(screen.getByTestId('control-deny-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [agentId, bytes] = onRespond.mock.calls[0]
-    expect(agentId).toBe('agent-deny')
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       response: { request_id: 'req-deny', response: { behavior: 'deny' } },
     })
@@ -117,7 +115,7 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={request}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -132,8 +130,7 @@ describe('genericToolActions', () => {
 
     // Verify allow response was sent
     expect(onRespond).toHaveBeenCalledOnce()
-    const [agentId, bytes] = onRespond.mock.calls[0]
-    expect(agentId).toBe('agent-7')
+    const [bytes] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-42')
     expect(decoded.response.response.behavior).toBe('allow')
@@ -147,7 +144,7 @@ describe('genericToolActions', () => {
     render(() => (
       <GenericToolActions
         request={makeRequest()}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}

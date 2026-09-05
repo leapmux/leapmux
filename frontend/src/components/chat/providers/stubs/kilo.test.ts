@@ -1,12 +1,13 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/renderers'
 import { sendOpenCodePermissionResponse, sendOpenCodeQuestionResponse } from '../opencode/OpenCodeControlRequest'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { describeACPStubBasics } from './stubBasics'
 
+import { describeACPStubBasics } from './stubBasics'
 // Side-effect import to register the Kilo plugin.
 import './kilo'
 
@@ -392,11 +393,11 @@ describe('kilo sendOpenCodePermissionResponse', () => {
 
   it('sends allow_once outcome with numeric id', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
-    await sendOpenCodePermissionResponse('agent1', onRespond, '5', 'once')
+    await sendOpenCodePermissionResponse(onRespond, '5', 'once')
 
     expect(onRespond).toHaveBeenCalledOnce()
     const parsed = decode(captured!)
@@ -413,27 +414,16 @@ describe('kilo sendOpenCodeQuestionResponse', () => {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
 
-  function makeAskState() {
-    return {
-      selections: () => ({ 0: ['Build'], 1: [] }),
-      setSelections: vi.fn(),
-      customTexts: () => ({ 1: 'Dev' }),
-      setCustomTexts: vi.fn(),
-      currentPage: () => 0,
-      setCurrentPage: vi.fn(),
-    }
-  }
-
   it('sends ordered answer arrays for each question', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
-    await sendOpenCodeQuestionResponse('agent1', onRespond, 'que_1', [
+    await sendOpenCodeQuestionResponse(onRespond, 'que_1', [
       { question: 'Action?', options: [{ label: 'Build' }] },
       { question: 'Env?', options: [{ label: 'Dev' }] },
-    ], makeAskState())
+    ], createControlAnswerState({ selections: { 0: ['Build'], 1: [] }, customTexts: { 1: 'Dev' } }))
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
