@@ -4,17 +4,17 @@ import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, handleTurnEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -328,6 +328,7 @@ describe('background agent history trimming', () => {
       stores: {
         controlStore: createControlStore(),
         agentSessionStore: createAgentSessionStore(),
+        agentActivityStore: createAgentActivityStore(),
         chatStore: createChatStore(),
         view: tabs.view,
         metadata: tabs.metadata,
@@ -360,7 +361,7 @@ describe('background agent history trimming', () => {
   ) {
     stores.chatStore.setMessages(agentId, Array.from({ length: cap }, (_, i) =>
       makeUserMessage(`m${i + 1}`, BigInt(i + 1))))
-    handleAgentMessage(agentId, makeUserMessage(`m${cap + 1}`, BigInt(cap + 1)) as never, stores as never, undefined, 'live')
+    handleAgentMessage(agentId, makeUserMessage(`m${cap + 1}`, BigInt(cap + 1)) as never, stores as never, 'live')
   }
 
   it('trims an agent the user is not looking at', () => {
@@ -498,44 +499,6 @@ describe('agent tab notification keys', () => {
   })
 })
 
-describe('codex result replay handling', () => {
-  it('clears stale codexTurnId when a persisted turn/completed result is replayed', () => {
-    createRoot((dispose) => {
-      const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('agent-1', { codexTurnId: 'turn-stale' })
-
-      const msg = {
-        id: 'm1',
-        source: MessageSource.AGENT,
-        content: new TextEncoder().encode(JSON.stringify({
-          num_tool_uses: 2,
-          threadId: 'thread-1',
-          turn: {
-            id: 'turn-1',
-            items: [],
-            status: 'completed',
-            error: null,
-          },
-        })),
-        contentCompression: ContentCompression.NONE,
-        seq: 1n,
-        agentProvider: AgentProvider.CODEX,
-      } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-
-      const meta = extractResultMetadata(
-        parseMessageContent(msg),
-        undefined,
-        p => providerFor(AgentProvider.CODEX)?.resultSubtype?.(p),
-      )
-      if (meta && msg.agentProvider === AgentProvider.CODEX && meta.subtype === 'turn_completed')
-        agentSessionStore.updateInfo('agent-1', { codexTurnId: '' })
-
-      expect(agentSessionStore.getInfo('agent-1').codexTurnId).toBe('')
-      dispose()
-    })
-  })
-})
-
 describe('context usage refresh on compaction boundary', () => {
   // Mirrors the compaction branch in useWorkspaceConnection's message handler:
   // a completed boundary refreshes the grid from its post-compaction token
@@ -645,7 +608,7 @@ describe('applyNotificationMetadata usage folding', () => {
   // while the shared wrapper owns the neutral guards (subagent skip, prefer-normalized, cost).
   function stores() {
     const { view, metadata, selection } = makeTabStores()
-    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), view, metadata, selection, getActiveWorkspaceId: () => WS }
+    return { agentSessionStore: createAgentSessionStore(), agentActivityStore: createAgentActivityStore(), chatStore: createChatStore(), view, metadata, selection, getActiveWorkspaceId: () => WS }
   }
   function msgOf(content: unknown, agentProvider: AgentProvider) {
     return {
@@ -1218,6 +1181,7 @@ describe('handleAgentInactive', () => {
     return {
       controlStore,
       agentSessionStore: createAgentSessionStore(),
+      agentActivityStore: createAgentActivityStore(),
       chatStore: createChatStore(),
       view: tabs.view,
       metadata: tabs.metadata,
@@ -1227,27 +1191,27 @@ describe('handleAgentInactive', () => {
     }
   }
 
-  it('clears control requests and signals turn-end while LIVE', () => {
+  it('clears control requests when an agent goes INACTIVE', () => {
     createRoot((dispose) => {
       const stores = makeStores()
-      const turnEnds: string[] = []
-      handleAgentInactive('agent-1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', stores, id => turnEnds.push(id))
+      handleAgentInactive('agent-1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', stores)
       expect(stores.controlStore.getRequests('agent-1')).toHaveLength(0)
-      expect(turnEnds).toEqual(['agent-1']) // live + sessionId + tab present -> turn end
       dispose()
     })
   })
 
-  it('clears control requests but does NOT signal turn-end during catch-up', () => {
+  it('clears control requests during catch-up too', () => {
     createRoot((dispose) => {
       const stores = makeStores()
-      const turnEnds: string[] = []
-      handleAgentInactive('agent-1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'catchingUp', stores, id => turnEnds.push(id))
-      expect(stores.controlStore.getRequests('agent-1')).toHaveLength(0) // still cleared
-      expect(turnEnds).toEqual([]) // catchUpComplete sweep owns turn-end during catch-up
+      handleAgentInactive('agent-1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'catchingUp', stores)
+      expect(stores.controlStore.getRequests('agent-1')).toHaveLength(0)
       dispose()
     })
   })
+
+  // The alert an INACTIVE used to raise now rides the Worker's busy -> idle
+  // edge instead, so it is asserted against handleAgentSettled rather than here:
+  // a process exit drives that edge, and routing both would ring twice.
 })
 
 describe('workerOnline handling in agent statusChange', () => {
@@ -1471,7 +1435,7 @@ describe('applyTerminalStatusChange', () => {
 /**
  * agent_session_info wire-shape handling. The worker broadcasts
  * snake_case keys exclusively (`total_cost_usd`, `context_usage`,
- * `rate_limits`, `codex_turn_id`, `streaming_type`, `pi_*`); these tests
+ * `rate_limits`, `streaming_type`, `pi_*`); these tests
  * reproduce the unwrap-and-merge logic in useWorkspaceConnection that
  * translates wire keys back to the frontend store's camelCase shape.
  */
@@ -1536,7 +1500,7 @@ describe('agentMessage sub-handlers', () => {
 
   /** The two stores handleAgentSessionInfo writes to. */
   function sessionInfoStores() {
-    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore() }
+    return { agentSessionStore: createAgentSessionStore(), agentActivityStore: createAgentActivityStore(), chatStore: createChatStore() }
   }
 
   it('handleAgentSessionInfo consumes an agent_session_info message and applies its updates', () => {
@@ -1591,6 +1555,7 @@ describe('agentMessage sub-handlers', () => {
       const tabs = makeTabStores()
       const stores = {
         agentSessionStore: createAgentSessionStore(),
+        agentActivityStore: createAgentActivityStore(),
         chatStore: createChatStore(),
         view: tabs.view,
         metadata: tabs.metadata,
@@ -1658,6 +1623,7 @@ describe('agentMessage sub-handlers', () => {
       const tabs = makeTabStores()
       const stores = {
         agentSessionStore: createAgentSessionStore(),
+        agentActivityStore: createAgentActivityStore(),
         chatStore: createChatStore(),
         view: tabs.view,
         metadata: tabs.metadata,
@@ -1677,7 +1643,7 @@ describe('agentMessage sub-handlers', () => {
         seq: 60n,
       }
 
-      handleAgentMessage('a1', dropped, stores, undefined, 'live')
+      handleAgentMessage('a1', dropped, stores, 'live')
 
       expect(stores.chatStore.getMessages('a1').some(m => m.id === 'dropped-complete')).toBe(false)
       expect(stores.chatStore.getCommandStream('a1', 'span1')).toHaveLength(1)
@@ -1685,29 +1651,27 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('applyAgentLifecycle clears a stale Codex turn id on thread/started', () => {
+  it('applyAgentLifecycle skips a non-AGENT message (the source gate)', () => {
     createRoot((dispose) => {
       const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('a1', { codexTurnId: 'turn-123' })
-      const msg = agentMessage({ method: 'thread/started' }, AgentProvider.CODEX)
+      agentSessionStore.updateInfo('a1', { streamingType: 'plan' })
+      // A USER-source message carrying a lifecycle item must be ignored, so the
+      // streaming marker survives -- the gate that keeps a hidden-classified
+      // lifecycle item from being processed off a non-AGENT row.
+      const msg = { ...agentMessage({ item: { type: 'plan' } }, AgentProvider.CODEX), source: MessageSource.USER }
       applyAgentLifecycle('a1', msg, parseMessageContent(msg), agentSessionStore)
-      // A new thread starts idle: the stale turn id is cleared so the chat shows its
-      // empty state instead of a phantom thinking indicator.
-      expect(agentSessionStore.getInfo('a1').codexTurnId).toBe('')
+      expect(agentSessionStore.getInfo('a1').streamingType).toBe('plan')
       dispose()
     })
   })
 
-  it('applyAgentLifecycle skips a non-AGENT message (the source gate)', () => {
+  it('applyAgentLifecycle clears the plan streaming marker on an AGENT lifecycle item', () => {
     createRoot((dispose) => {
       const agentSessionStore = createAgentSessionStore()
-      agentSessionStore.updateInfo('a1', { codexTurnId: 'turn-123' })
-      // A USER-source message carrying a thread/started method must be ignored, so the
-      // turn id survives -- the gate that keeps a hidden-classified lifecycle item from
-      // being processed off a non-AGENT row.
-      const msg = { ...agentMessage({ method: 'thread/started' }), source: MessageSource.USER }
+      agentSessionStore.updateInfo('a1', { streamingType: 'plan' })
+      const msg = agentMessage({ item: { type: 'plan' } }, AgentProvider.CODEX)
       applyAgentLifecycle('a1', msg, parseMessageContent(msg), agentSessionStore)
-      expect(agentSessionStore.getInfo('a1').codexTurnId).toBe('turn-123')
+      expect(agentSessionStore.getInfo('a1').streamingType).toBe('')
       dispose()
     })
   })
@@ -1843,6 +1807,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
     const tabs = makeTabStores()
     return {
       agentSessionStore: createAgentSessionStore(),
+      agentActivityStore: createAgentActivityStore(),
       chatStore: createChatStore(),
       view: tabs.view,
       metadata: tabs.metadata,
@@ -1923,17 +1888,27 @@ describe('extracted handleAgentEvent arm handlers', () => {
     })
   })
 
-  describe('handleTurnEnd', () => {
-    it('fires onTurnEnd with and without numToolUses', () => {
+  describe('handleAgentSettled', () => {
+    const settledStores = (tabs: ReturnType<typeof makeTabStores>, onTurnEnd?: (id: string, uses?: number) => void) => ({
+      metadata: tabs.metadata,
+      selection: tabs.selection,
+      getActiveWorkspaceId: () => WS,
+      view: tabs.view,
+      onTurnEnd,
+    })
+
+    it('alerts with and without a tool count, and badges only an off-screen tab', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
         tabs.addAgent('a1')
         tabs.addAgent('a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
         const ended: Array<{ id: string, uses?: number }> = []
-        const stores = { metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS, view: tabs.view }
-        handleTurnEnd('a1', {}, stores, (id, uses) => ended.push({ id, uses }))
-        handleTurnEnd('a2', { numToolUses: 3 }, stores, (id, uses) => ended.push({ id, uses }))
+        const push = (id: string, uses?: number) => ended.push({ id, uses })
+        handleAgentSettled('a1', undefined, settledStores(tabs, push), 'live')
+        handleAgentSettled('a2', 3, settledStores(tabs, push), 'live')
+        // undefined is not zero: a settle that no turn end caused carries no
+        // count and must still alert.
         expect(ended).toEqual([{ id: 'a1', uses: undefined }, { id: 'a2', uses: 3 }])
         expect(tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
         expect(tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
@@ -1949,9 +1924,33 @@ describe('extracted handleAgentEvent arm handlers', () => {
         tabs.addAgent('a2', {}, { tileId: secondTile, activate: false })
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a1')
-        const stores = { metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS, view: tabs.view }
-        handleTurnEnd('a2', {}, stores, undefined)
+        handleAgentSettled('a2', undefined, settledStores(tabs), 'live')
         expect(tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
+        dispose()
+      })
+    })
+
+    it('stays silent during catch-up', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addAgent('a1')
+        tabs.selection.setActiveById(TabType.AGENT, 'a1')
+        const ended: string[] = []
+        // A reconnect replays the activity of every agent that settled while the
+        // tab was closed. Ringing for each would greet the user with a burst.
+        handleAgentSettled('a1', undefined, settledStores(tabs, id => ended.push(id)), 'catchingUp')
+        expect(ended).toEqual([])
+        expect(tabs.view.getAgentTab('a1')?.hasNotification).not.toBe(true)
+        dispose()
+      })
+    })
+
+    it('ignores an agent whose tab is gone', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        const ended: string[] = []
+        handleAgentSettled('never-existed', undefined, settledStores(tabs, id => ended.push(id)), 'live')
+        expect(ended).toEqual([])
         dispose()
       })
     })
@@ -2087,23 +2086,25 @@ describe('extracted handleAgentEvent arm handlers', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.INACTIVE })
-        handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s, undefined)
+        handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s)
         expect(s.controlStore.getRequests('a1')).toHaveLength(0)
         dispose()
       })
     })
 
-    it('adds a live request, badges a backgrounded tab, and ends the turn', () => {
+    // The ALERT a control request used to raise here now rides the Worker's
+    // busy -> idle edge: a pending prompt drives the agent idle, so
+    // handleAgentSettled owns it and raising it in both places rang twice for
+    // one pause. This handler keeps the request and the badge.
+    it('adds a live request and badges a backgrounded tab', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         s.tabs.addAgent('a2')
         s.tabs.selection.setActiveById(TabType.AGENT, 'a2')
-        let ended = ''
-        handleControlRequest('a1', req('a1'), 'live', s, id => void (ended = id))
+        handleControlRequest('a1', req('a1'), 'live', s)
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
         expect(s.tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
-        expect(ended).toBe('a1')
         dispose()
       })
     })
@@ -2116,21 +2117,20 @@ describe('extracted handleAgentEvent arm handlers', () => {
         s.tabs.addAgent('a2', {}, { tileId: secondTile, activate: false })
         s.tabs.selection.setActiveById(TabType.AGENT, 'a2')
         s.tabs.selection.setActiveById(TabType.AGENT, 'a1')
-        handleControlRequest('a2', req('a2'), 'live', s, undefined)
+        handleControlRequest('a2', req('a2'), 'live', s)
         expect(s.controlStore.getRequests('a2')).toHaveLength(1)
         expect(s.tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
         dispose()
       })
     })
 
-    it('adds a catch-up request for an ACTIVE agent but does NOT run the live-only turn-end', () => {
+    it('adds a catch-up request for an ACTIVE agent but does NOT badge it', () => {
       createRoot((dispose) => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
-        let ended = ''
-        handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s, id => void (ended = id))
+        handleControlRequest('a1', req('a1'), simulatePhase('catchingUp'), s)
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
-        expect(ended).toBe('') // onTurnEnd gated to live
+        expect(s.tabs.view.getAgentTab('a1')?.hasNotification).not.toBe(true)
         dispose()
       })
     })
@@ -2140,7 +2140,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const s = argStores()
         s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
         const malformed = { requestId: 'r1', agentId: 'a1', payload: enc('{not json') } as unknown as AgentControlRequest
-        expect(() => handleControlRequest('a1', malformed, 'live', s, undefined)).not.toThrow()
+        expect(() => handleControlRequest('a1', malformed, 'live', s)).not.toThrow()
         expect(s.controlStore.getRequests('a1')).toHaveLength(0)
         dispose()
       })
@@ -2156,7 +2156,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
           payload: enc(JSON.stringify({ method: 'item/commandExecution/requestApproval' })),
           claimToken: 'instance-token-1',
         } as unknown as AgentControlRequest
-        handleControlRequest('a1', withToken, 'live', s, undefined)
+        handleControlRequest('a1', withToken, 'live', s)
         // The per-instance token from AgentControlRequest.claim_token must reach the store, since the
         // answer (handleControlResponse) echoes it back so the worker dedups the answer per instance.
         expect(s.controlStore.getRequests('a1').find(r => r.requestId === 'r1')?.claimToken).toBe('instance-token-1')
@@ -2248,12 +2248,10 @@ describe('wireSessionInfoToUpdates', () => {
     const updates = wireSessionInfoToUpdates({
       total_cost_usd: 1.5,
       context_usage: { input_tokens: 100 },
-      codex_turn_id: 'turn-7',
       streaming_type: 'plan',
     })
     expect(updates.totalCostUsd).toBe(1.5)
     expect(updates.contextUsage).toMatchObject({ inputTokens: 100 })
-    expect(updates.codexTurnId).toBe('turn-7')
     expect(updates.streamingType).toBe('plan')
   })
 
@@ -2550,6 +2548,7 @@ describe('useWorkspaceConnection chat history load', () => {
         selection: tabs.selection,
         controlStore: createControlStore(),
         agentSessionStore: createAgentSessionStore(),
+        agentActivityStore: createAgentActivityStore(),
         repoGitStore: createRepoGitStore(),
         settingsLoading: createLoadingSignal(),
         getActiveWorkspaceId: () => WS,

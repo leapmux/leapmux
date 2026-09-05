@@ -250,7 +250,6 @@ function zcodeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsag
 const zcodePlugin: Provider = {
   spanRole: zcodeSpanRole,
   contextUsageFromMessage: zcodeContextUsageFromMessage,
-  nonProgressTypes: ZCODE_NOTIFICATION_TYPES,
 
   // Text is inlined into the prompt and an image rides `session/send.attachments`.
   // A PDF is refused: the app-server's normalizer knows image, video, file and audio

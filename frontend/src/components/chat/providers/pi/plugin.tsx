@@ -281,12 +281,6 @@ const piPlugin: Provider = {
     pdf: false,
     binary: false,
   },
-  // Pi's wire format dispatches via top-level `type`. Lifecycle / status /
-  // extension events here are visible-but-non-progress: they thread into
-  // the chat as notifications but must not register as agent activity for
-  // the working-state heuristic. Same set the thread classifier recognizes.
-  nonProgressTypes: PI_NOTIFICATION_SURFACE_TYPES,
-
   classify(input: ClassificationInput): MessageCategory {
     const parent = input.parentObject
     const wrapper = input.wrapper

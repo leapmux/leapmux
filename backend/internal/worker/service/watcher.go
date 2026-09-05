@@ -249,7 +249,8 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 		*leapmuxv1.AgentEvent_ControlCancel,
 		*leapmuxv1.AgentEvent_TurnEnd,
 		*leapmuxv1.AgentEvent_TodosChanged,
-		*leapmuxv1.AgentEvent_BackgroundTasksChanged:
+		*leapmuxv1.AgentEvent_BackgroundTasksChanged,
+		*leapmuxv1.AgentEvent_ActivityChanged:
 		return classNotify
 	// A queue snapshot carries every item with a text preview, so it is content
 	// and not a notification: a NOTIFY watcher renders no composer and reads

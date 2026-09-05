@@ -96,11 +96,12 @@ func RunTileSplit(rawCtx any, args []string) error {
 func RunTileClose(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, withTabs string
-	var force, recursive bool
+	var force, recursive, allowBusy bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "close even if the calling tab sits on the target tile (would kill the caller's own PTY)")
+	fs.BoolVar(&allowBusy, "allow-busy", false, allowBusyFlagHelp)
 	fs.StringVar(&withTabs, "with-tabs", "", `policy for live tabs on the closing tile (or subtree): "close" tombstones them; "move" migrates them to the heir tile. Required when the target has tabs.`)
 	fs.BoolVar(&recursive, "recursive", false, "required to close a SPLIT or GRID tile; cascades the close to every descendant in one batch")
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
@@ -183,6 +184,12 @@ func RunTileClose(rawCtx any, args []string) error {
 	// the tab (and its PTY) survive.
 	if policy != withTabsMove {
 		if err := guardTileClose(cc.bs.State, tileID, force); err != nil {
+			return err
+		}
+		// Running work, for the same reason and in the same place. Skipped for
+		// --with-tabs=move as well: migrating a tab keeps its agent and its PTY
+		// alive, so there is nothing to interrupt.
+		if err := guardTabsBusy(cc, tabsAffected, allowBusy); err != nil {
 			return err
 		}
 	}
@@ -610,11 +617,12 @@ func RunTileMakeGrid(rawCtx any, args []string) error {
 func RunTileRemoveGrid(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, withTabs string
-	var force bool
+	var force, allowBusy bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "remove even if the calling tab sits inside the target grid (would kill the caller's own PTY)")
+	fs.BoolVar(&allowBusy, "allow-busy", false, allowBusyFlagHelp)
 	fs.StringVar(&withTabs, "with-tabs", "", `policy for live tabs in the grid: "close" tombstones them; "move" collapses the grid to a single leaf (in the grid's old slot) and migrates the tabs onto it. Required when the grid has tabs.`)
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
@@ -654,6 +662,9 @@ func RunTileRemoveGrid(rawCtx any, args []string) error {
 	// (or the root for a root grid), so the tab and its PTY survive.
 	if policy != withTabsMove {
 		if err := guardTileRemoveGrid(cc.bs.State, descendants, force); err != nil {
+			return err
+		}
+		if err := guardTabsBusy(cc, tabsInSubtree, allowBusy); err != nil {
 			return err
 		}
 	}

@@ -6,6 +6,7 @@ import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -115,6 +116,7 @@ function mountConnection() {
       selection,
       controlStore: createControlStore(),
       agentSessionStore: createAgentSessionStore(),
+      agentActivityStore: createAgentActivityStore(),
       repoGitStore,
       settingsLoading: createLoadingSignal(),
       getActiveWorkspaceId: () => WS,

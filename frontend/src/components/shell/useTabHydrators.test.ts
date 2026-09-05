@@ -6,6 +6,7 @@ import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { isFileTab, isImageTab } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
@@ -110,6 +111,7 @@ function setup(workspaceId = 'ws-test') {
         view: stores.view,
         metadata: stores.metadata,
         repoGitStore,
+        agentActivityStore: createAgentActivityStore(),
         onlineWorkerIds,
         settingsPendingAxes,
       }),

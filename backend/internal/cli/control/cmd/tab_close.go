@@ -46,12 +46,13 @@ import (
 func RunTabClose(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, worktree string
-	var force bool
+	var force, allowBusy bool
 	var in resolve.Inputs
 	fs := flagSet(cmd, &hub)
 	resolve.BindEntityFlags(fs, &in, resolve.FlagOptions{})
 	fs.BoolVar(&force, "force", false, "close even if the target is the calling tab (would kill the caller's own PTY)")
 	fs.StringVar(&worktree, "worktree", "", `worktree disposition: "keep" / "push" / "discard". Required when this is the last tab for a worktree, or the last tab on a non-worktree branch with uncommitted / unpushed changes.`)
+	fs.BoolVar(&allowBusy, "allow-busy", false, allowBusyFlagHelp)
 	if err := parseFlags(fs, args, cmd.Description()); err != nil {
 		return err
 	}
@@ -115,7 +116,30 @@ func RunTabClose(rawCtx any, args []string) error {
 			if !isWorkerUnreachable(ierr) {
 				return control.EmitErrorWith("inspect_failed", ierr)
 			}
-		} else if inspected.GetShouldPrompt() {
+		}
+
+		// Busy-tab gate, BEFORE the tombstone for the same reason the discard
+		// refusal is: after the tab is destroyed a refusal has nowhere to go.
+		//
+		// Only when the worktree gate did NOT fire. The two prompts are mutually
+		// exclusive, and the worktree one wins: its forced --worktree choice
+		// already makes the user state an intent for this close, and stacking a
+		// second required flag on the same command would send them back twice for
+		// one close. The browser splits the same two dialogs on the same rule.
+		busyOverridden := false
+		// Skipped entirely when the inspect failed: the worker is unreachable, so
+		// the busy probe would only spend two more round trips to learn the same
+		// thing, and it fails open regardless.
+		if ierr == nil && !inspected.GetShouldPrompt() {
+			if busy := inspectTabsBusy(callWorker, []tabRef{{tabType: tt, tabID: got.TabID}}); len(busy) > 0 {
+				if !allowBusy {
+					return errTabBusyRefused(busy)
+				}
+				busyOverridden = true
+			}
+		}
+
+		if inspected.GetShouldPrompt() {
 			if wt == closeWorktreeUnspecified {
 				return control.EmitError("invalid_request", lastTabPromptMessage(inspected))
 			}
@@ -189,6 +213,11 @@ func RunTabClose(rawCtx any, args []string) error {
 		}
 		if wt != closeWorktreeUnspecified {
 			out["worktree"] = string(wt)
+		}
+		// Reported only when the flag actually suppressed a refusal, so a script
+		// can tell "closed an idle tab" from "closed over running work".
+		if busyOverridden {
+			out["busy_override"] = true
 		}
 		if inspectHint != "" {
 			out["inspect_hint"] = inspectHint

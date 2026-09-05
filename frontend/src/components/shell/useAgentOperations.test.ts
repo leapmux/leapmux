@@ -520,14 +520,13 @@ describe('useAgentOperations', () => {
           })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockResolvedValue({})
-          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
+          agentSessionStore.updateInfo('codex-1', { thinkingTokens: 100 })
 
           await ops.handleInterrupt('codex-1')
 
           expect(mockInterruptAgent).toHaveBeenCalledWith('w-1', {
             agentId: 'codex-1',
           })
-          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
           expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
           expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
           expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
@@ -550,11 +549,10 @@ describe('useAgentOperations', () => {
           })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockRejectedValue(new Error('interrupt failed'))
-          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
+          agentSessionStore.updateInfo('codex-1', { thinkingTokens: 100 })
 
           await ops.handleInterrupt('codex-1')
 
-          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
           expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
           expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
           expect(chatStore.clearToolProgress).not.toHaveBeenCalled()

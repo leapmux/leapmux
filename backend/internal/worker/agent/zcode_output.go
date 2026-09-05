@@ -185,6 +185,26 @@ type zcodeTurnStarted struct {
 // background task reporting back, a subagent's reply being folded in, a todo
 // reminder. Such a turn is armed as a background turn, so its completion does not
 // end the user's turn and its transcript rows still land.
+// publishTurnActive republishes the Worker-visible turn state from turnActive,
+// the single source. Call it after EVERY critical section that writes that
+// field.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and a missing call is the only way the two can drift.
+// Never called with a.mu held: the sink broadcasts, and a broadcast can block on
+// a slow transport.
+//
+// A BACKGROUND turn counts as active here, deliberately. It persists no divider
+// and closes none of the user's spans, but the agent IS processing, and
+// turnActive is already what Interrupt and Stop read to decide the session is
+// live.
+func (a *zcodeAgent) publishTurnActive() {
+	a.mu.Lock()
+	active := a.turnActive
+	a.mu.Unlock()
+	publishTurnActiveTo(a.sink, active)
+}
+
 func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	var payload zcodeTurnStarted
 	if len(event.Payload) > 0 {
@@ -201,6 +221,7 @@ func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 		a.turnToolUses = 0
 	}
 	a.mu.Unlock()
+	a.publishTurnActive()
 
 	if !background {
 		// A fresh user turn begins: restart the thinking-token estimate from zero.
@@ -293,6 +314,10 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	}
 	a.backgroundTurn = false
 	a.mu.Unlock()
+	// Before the early returns below. A background turn, and a turn whose event
+	// carries no persistable content, both leave through them -- and a turn that
+	// published no clear would latch the agent busy for the life of the process.
+	a.publishTurnActive()
 
 	content := event.persistBytes()
 	if content == nil {

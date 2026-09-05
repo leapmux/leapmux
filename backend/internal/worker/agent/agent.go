@@ -244,6 +244,21 @@ func scheduleOrCancelAPIErrorAutoContinue(sink OutputSink, retry bool, payload [
 	})
 }
 
+// publishTurnActiveTo reports a provider's turn flag to its sink.
+//
+// A NIL sink publishes nowhere. This package's tests construct bare agents by
+// long-standing convention -- `&ClaudeCodeAgent{turnActive: true}` and its like
+// appear dozens of times -- and a turn flag is read on paths those tests drive.
+// The jsonrpcBase hook takes the same stance for the same reason: nobody is
+// listening, so there is nothing to say. Every agent the Worker builds has a
+// sink, so this is never nil in production.
+func publishTurnActiveTo(sink OutputSink, active bool) {
+	if sink == nil {
+		return
+	}
+	sink.SetTurnActive(active)
+}
+
 // OutputSink provides generic primitives for persisting and broadcasting
 // agent output. Implemented by the service layer and injected into providers.
 type OutputSink interface {
@@ -261,6 +276,17 @@ type OutputSink interface {
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
+	// SetTurnActive publishes whether a turn is in flight, so the Worker can
+	// answer "is this agent busy" without a client re-deriving it from the
+	// transcript. Providers already keep this flag for their own control flow;
+	// call this from the SAME site that mutates it, so the published state
+	// cannot drift from the private one.
+	//
+	// Report the turn as active for as long as the agent owes the user a reply,
+	// which is not always the same as "between one envelope and the next": a
+	// provider that retries a failed attempt itself stays active across the
+	// backoff, where nothing streams and no envelope arrives.
+	SetTurnActive(active bool)
 	OpenSpan(spanID string, parentSpanID string)
 	// CloseSpan frees a span's column. The recorded span type SURVIVES it (only
 	// ResetSpans clears types), because a provider's closing message reads that

@@ -1,3 +1,4 @@
+import type { TabBusyReason } from '~/components/shell/tabBusyProbe'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -94,7 +95,9 @@ function setup(
   workerOnlineState: (workerId: string) => boolean | undefined = () => true,
   // `unbootstrapped` keys the stores at a workspace the bridge never
   // delivered, so placement has no projected tree to resolve to.
-  opts: { unbootstrapped?: boolean } = {},
+  // `busyReason` is what the busy probe reports for every tab; null (the
+  // default) means nothing is running, which is the normal case.
+  opts: { unbootstrapped?: boolean, busyReason?: TabBusyReason | null } = {},
 ) {
   // Override the global test bridge with a known tile id so the
   // projection's root leaf is the tile these tests address.
@@ -138,6 +141,10 @@ function setup(
     getScrollState,
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
+    busyProbe: {
+      probe: async () => opts.busyReason ?? null,
+      probeMany: async () => [],
+    },
     workerOnlineState,
     repoGitStore: createRepoGitStore(),
   })
@@ -521,6 +528,123 @@ describe('useTabOperations', () => {
           expect(workerId).toBe('w-1')
           expect((req as { tabId: string }).tabId).toBe('file-1')
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.KEEP)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    const RUNNING_PROCESS: TabBusyReason = {
+      kind: 'terminal-processes',
+      processes: [{ pid: 51234, name: 'node' }] as TabBusyReason extends { processes: infer P } ? P : never,
+      totalCount: 1,
+    }
+
+    it('asks before closing a tab that is running work, and cancel leaves it open', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, addTerminal, handleTerminalClose } = setup(undefined, undefined, { busyReason: RUNNING_PROCESS })
+          addTerminal('term-busy')
+          const tab = view.getById(TabType.TERMINAL, 'term-busy')!
+          mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+
+          const closePromise = ops.handleTabClose(tab)
+          await flush()
+          const dlg = ops.busyTabConfirmDialog.value()
+          expect(dlg).not.toBeNull()
+          expect(dlg!.reason).toEqual(RUNNING_PROCESS)
+          dlg!.resolve(false)
+
+          expect(await closePromise).toBe(false)
+          await flush()
+          expect(view.all().some(t => t.id === 'term-busy')).toBe(true)
+          expect(handleTerminalClose).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('closes the tab when the user confirms', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, addTerminal, handleTerminalClose } = setup(undefined, undefined, { busyReason: RUNNING_PROCESS })
+          addTerminal('term-confirm')
+          const tab = view.getById(TabType.TERMINAL, 'term-confirm')!
+          mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+
+          const closePromise = ops.handleTabClose(tab)
+          await flush()
+          ops.busyTabConfirmDialog.value()!.resolve(true)
+
+          expect(await closePromise).toBe(true)
+          // The commit phase is deferred to a microtask, so the teardown lands
+          // after handleTabClose resolves.
+          await flush()
+          expect(handleTerminalClose).toHaveBeenCalledWith('term-confirm', WorktreeAction.KEEP)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('closes an idle tab with no prompt at all', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, addTerminal } = setup()
+          addTerminal('term-idle')
+          const tab = view.getById(TabType.TERMINAL, 'term-idle')!
+          mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+
+          expect(await ops.handleTabClose(tab)).toBe(true)
+          expect(ops.busyTabConfirmDialog.value()).toBeNull()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('raises only the worktree prompt when the busy tab is also the last one', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, addTerminal, view } = setup(undefined, undefined, { busyReason: RUNNING_PROCESS })
+          addTerminal('term-last-busy')
+          const tab = view.getById(TabType.TERMINAL, 'term-last-busy')!
+          mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true })
+
+          const closePromise = ops.handleTabClose(tab)
+          await flush()
+          // The two prompts are mutually exclusive and the worktree one wins:
+          // its "Close anyway" already covers this, and raising both would make
+          // one click answer two dialogs.
+          expect(ops.busyTabConfirmDialog.value()).toBeNull()
+          expect(ops.lastTabConfirmDialog.value()).not.toBeNull()
+          ops.lastTabConfirmDialog.value()!.resolve('cancel')
+          expect(await closePromise).toBe(false)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('skips the busy prompt when the caller already asked', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, addTerminal } = setup(undefined, undefined, { busyReason: RUNNING_PROCESS })
+          addTerminal('term-bulk')
+          const tab = view.getById(TabType.TERMINAL, 'term-bulk')!
+          mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+
+          // The bulk close listed every busy tab up front and the user answered
+          // for all of them; asking again per tab would ask the same question
+          // twice.
+          expect(await ops.handleTabClose(tab, { skipBusyConfirm: true })).toBe(true)
+          expect(ops.busyTabConfirmDialog.value()).toBeNull()
         }
         finally {
           dispose()
@@ -1213,6 +1337,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       setFileTreePath: vi.fn(),
       // The client is on ws-active; the seeded tab is on ws-other.
       getActiveWorkspaceId: () => 'ws-active',
+      busyProbe: { probe: async () => null, probeMany: async () => [] },
       workerOnlineState: () => true,
       repoGitStore: createRepoGitStore(),
     })
@@ -1341,6 +1466,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getActiveWorkspaceId: () => 'ws-test',
+        busyProbe: { probe: async () => null, probeMany: async () => [] },
         workerOnlineState: () => true,
         repoGitStore: createRepoGitStore(),
       })
@@ -1389,6 +1515,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         setFileTreePath: vi.fn(),
         getActiveWorkspaceId: () => 'ws-test',
+        busyProbe: { probe: async () => null, probeMany: async () => [] },
         workerOnlineState: () => true,
         repoGitStore: createRepoGitStore(),
       })
@@ -1438,6 +1565,7 @@ function setupWithFloatingWindow() {
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
+    busyProbe: { probe: async () => null, probeMany: async () => [] },
     workerOnlineState: () => true,
     repoGitStore: createRepoGitStore(),
   })
@@ -1780,6 +1908,7 @@ describe('useTabOperations.closeTabWithAction', () => {
       getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
       setFileTreePath: vi.fn(),
       getActiveWorkspaceId: () => 'ws-active',
+      busyProbe: { probe: async () => null, probeMany: async () => [] },
       workerOnlineState: () => true,
       repoGitStore: createRepoGitStore(),
     })
@@ -1868,6 +1997,7 @@ function setupForFocusMigration() {
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     setFileTreePath: vi.fn(),
     getActiveWorkspaceId: () => 'ws-test',
+    busyProbe: { probe: async () => null, probeMany: async () => [] },
     workerOnlineState: () => true,
     repoGitStore: createRepoGitStore(),
   })

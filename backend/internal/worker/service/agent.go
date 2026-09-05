@@ -1378,6 +1378,23 @@ func (svc *Service) replayAgentCatchUp(
 		}
 	}
 
+	// Replay the derived activity, so a tab that just promoted to FULL renders
+	// the right spinner and the right Interrupt button BEFORE the message burst
+	// rather than after it. Under this agent's OWN id, not the root's: a child
+	// tab's answer is its own registry row, which differs from its root's.
+	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_ActivityChanged{
+			ActivityChanged: &leapmuxv1.AgentActivityChanged{
+				Busy: svc.Output.AgentBusy(agentID, rootID),
+			},
+		},
+	})
+
+	if !sink.alive() {
+		return
+	}
+
 	// Send a statusChange marker (signals end of message replay).
 	// A child tab derives ACTIVE from its feeding (root) process rather than
 	// its own (a virtual child never owns a process). Reuse the root resolved
@@ -1521,6 +1538,13 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 		info.AcceptsMessages = true
 		info.RootAgentId = a.ID
 	}
+
+	// The hydration leg of the activity state AgentActivityChanged pushes. A tab
+	// watching in NOTIFY mode gets no catch-up replay at all, so a list read is
+	// the only place it can learn the current value -- and the close guards in
+	// the browser and the CLI both start from a list read.
+	info.Busy = svc.Output.AgentBusy(a.ID, info.RootAgentId)
+	info.ActiveBackgroundTasks = svc.Output.ActiveBackgroundTaskCount(a.ID, info.RootAgentId)
 
 	if a.ClosedAt.Valid {
 		info.ClosedAt = timefmt.Format(a.ClosedAt.Time)

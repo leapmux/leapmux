@@ -175,18 +175,19 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// can't leak across turns (e.g. a reasoning item left open by an abort).
 		clear(a.reasoningStreamKind)
 		a.mu.Unlock()
+		a.publishTurnActive()
 		// A fresh turn begins: restart the thinking-token estimate from zero. The
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
 		a.thinkingTokens.reset()
-		// The queue normally marks a turn active before delivery. This callback
-		// repairs that state when a delayed acceptance follows an uncertain result.
-		notifyInputStarted(a.sink)
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
 			contracts.SessionInfoKeyCodexTurnId: notif.Turn.ID,
 		})
+		// The queue normally marks a turn active before delivery. This callback
+		// repairs that state when a delayed acceptance follows an uncertain result.
+		notifyInputStarted(a.sink)
 	}
 }
 
@@ -653,7 +654,13 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	a.mu.Unlock()
+	a.publishTurnActive()
 	a.clearInterruptCallsForThread(notif.ThreadID)
+
+	// Clear the turn ID in session info.
+	a.sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyCodexTurnId: "",
+	})
 
 	// Persist as a result divider.
 	if err := a.sink.PersistTurnEnd(params, SpanInfo{}); err != nil {
@@ -690,11 +697,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			}
 		}
 	}
-
-	// Clear the turn ID in session info.
-	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyCodexTurnId: "",
-	})
 	// The app-server submits compaction before it sends the RPC response. A
 	// fast compaction turn can end while CompactContext's caller holds the
 	// queue coordinator. Keep this reader free to deliver the RPC response.

@@ -78,6 +78,13 @@ type jsonrpcBase struct {
 	// promptActive is true while the provider processes one ACP prompt. The
 	// Worker-owned durable queue holds later input.
 	promptActive bool
+
+	// publishTurnActive, when set, reports promptActive transitions to the
+	// Worker's activity state. ONLY the ACP family sets it: CodexAgent embeds
+	// this base for its JSON-RPC plumbing but drives its turn from turnID and
+	// never writes promptActive, so a nil hook is what stops this base from
+	// publishing a flag Codex does not use.
+	publishTurnActive func(active bool)
 	steerMethod  string
 	steerRunID   string
 }
@@ -1269,6 +1276,33 @@ func (b *jsonrpcBase) readOutputLoop(scanner *bufio.Scanner, handle outputHandle
 	b.readOutput(scanner, b.handleJSONRPCResponse, handle)
 }
 
+// wireTurnActive points the base's turn-state hook at the sink.
+//
+// Called once in acpStart, so a new ACP provider cannot forget it: every one of
+// the six reaches that constructor, and none of them wires this itself. The
+// tests that pin the behavior call this too rather than building a hook of
+// their own, so a test cannot pass against wiring the constructor does not do.
+func (b *jsonrpcBase) wireTurnActive(sink OutputSink) {
+	b.publishTurnActive = func(active bool) { publishTurnActiveTo(sink, active) }
+}
+
+// notePromptActive republishes the turn state from promptActive, the single
+// source. Call it after EVERY critical section that writes promptActive.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and a missing call is the only way the two can drift.
+// Never called with b.mu held: the hook broadcasts, and a broadcast can block on
+// a slow transport.
+func (b *jsonrpcBase) notePromptActive() {
+	if b.publishTurnActive == nil {
+		return
+	}
+	b.mu.Lock()
+	active := b.promptActive
+	b.mu.Unlock()
+	b.publishTurnActive(active)
+}
+
 // SendInput starts one prompt. The Worker queue holds later input until this
 // prompt ends.
 func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
@@ -1287,6 +1321,7 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	}
 	b.promptActive = true
 	b.mu.Unlock()
+	b.notePromptActive()
 	err := b.sendACPPromptDetached(content, attachments, func(resp json.RawMessage, err error) {
 		if err != nil {
 			if !b.IsStopped() {
@@ -1300,6 +1335,7 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 		b.promptActive = false
 		b.steerRunID = ""
 		b.mu.Unlock()
+		b.notePromptActive()
 		notifyInputReady(b.sink)
 	})
 	if err != nil {
@@ -1307,6 +1343,7 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 		b.promptActive = false
 		b.steerRunID = ""
 		b.mu.Unlock()
+		b.notePromptActive()
 	}
 	return err
 }
@@ -1398,6 +1435,7 @@ func (b *jsonrpcBase) clearActivePrompt() {
 	b.promptActive = false
 	b.steerRunID = ""
 	b.mu.Unlock()
+	b.notePromptActive()
 }
 
 // extractACPChunkText pulls the `text` field from an ACP content envelope.
@@ -2272,6 +2310,7 @@ func acpStart[T any](ctx context.Context, opts Options, sink OutputSink, spec ac
 	// so assigning it to the embedded processBase doesn't copy a held lock.
 	b.processBase = newProcessBase(opts, spec.providerName, cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix)
 	b.sink = sink
+	b.wireTurnActive(sink)
 	b.model = opts.Model()
 	// Default settings-lifecycle hooks shared by every mode-bearing ACP provider:
 	// reapply on relaunch/ClearContext and refresh from a session response both derive

@@ -607,9 +607,17 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	if msgType == claudeMsgTypeResult {
+		// The turn is over. Main thread only: a subagent's `result` carries a
+		// parent_tool_use_id and left through routeSubagentMessage far above, so
+		// a child finishing can never clear the root's turn.
+		//
+		// After PersistTurnEnd, which records this turn's tool-call count for the
+		// settle the clear is about to produce. An interrupted or errored turn
+		// ends with a `result` too, so this one site covers those paths as well.
 		a.mu.Lock()
 		a.turnActive = false
 		a.mu.Unlock()
+		a.publishTurnActive()
 		scheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.

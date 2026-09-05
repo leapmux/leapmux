@@ -12,6 +12,29 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
+// DescendantProcesses reports the processes running beneath one terminal's
+// login shell, excluding the shell. The second return is the total found, which
+// exceeds len(procs) when the cap dropped some.
+//
+// An id the manager does not hold answers empty with no error. That is routine,
+// not exceptional: registerTerminalGatedByID gates on the DB row, which exists
+// for the whole async-startup window before the PTY does, and after a worker
+// restart. A close-confirmation dialog must not fail because the PTY is 200ms
+// from existing.
+//
+// The lock is RELEASED before the walk, mirroring ScreenSnapshotSince rather
+// than SnapshotTerminal: a process-table scan is milliseconds of syscalls, and
+// holding m.mu across it would freeze SendInput and Resize for every OTHER tab.
+func (m *Manager) DescendantProcesses(ctx context.Context, terminalID string) ([]ProcessInfo, int, error) {
+	m.mu.RLock()
+	t, ok := m.terminals[terminalID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, 0, nil
+	}
+	return t.DescendantProcesses(ctx)
+}
+
 // ErrTerminalNotFound is returned when a terminal operation targets an ID
 // the Manager does not know about. Callers distinguish this from other
 // failures with errors.Is so they can decide whether to retry or stash —

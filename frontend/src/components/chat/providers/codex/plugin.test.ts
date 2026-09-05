@@ -22,12 +22,6 @@ describe('codex provider capabilities', () => {
   it('preserves an option selection alongside the free-text note', () => {
     expect(plugin.preservesSelectionNotes).toBe(true)
   })
-
-  it('treats a turn_completed result divider as ending the active turn', () => {
-    expect(plugin.resultDividerEndsActiveTurn?.('turn_completed')).toBe(true)
-    expect(plugin.resultDividerEndsActiveTurn?.('error')).toBe(false)
-    expect(plugin.resultDividerEndsActiveTurn?.(undefined)).toBe(false)
-  })
 })
 
 describe('codex extractQuotableText', () => {
@@ -434,10 +428,6 @@ describe('codex classify', () => {
     const compacted = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
     const wrapper = { old_seqs: [7], messages: [compacted] }
     expect(plugin.classify(input(compacted, wrapper))).toEqual({ kind: 'hidden' })
-  })
-
-  it('keeps thread/compacted out of the working-state heuristic', () => {
-    expect(plugin.nonProgressMethods?.has('thread/compacted')).toBe(true)
   })
 
   it('hides a standalone thread/settings/updated notification', () => {
@@ -1029,10 +1019,6 @@ describe('codex resultSubtype', () => {
 
 describe('codex lifecycleSessionInfo', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
-
-  it('clears the live turn id on thread/started', () => {
-    expect(plugin.lifecycleSessionInfo!(parsed({ method: 'thread/started' }))).toEqual({ codexTurnId: '' })
-  })
 
   it('clears the plan streaming indicator on a plan item', () => {
     expect(plugin.lifecycleSessionInfo!(parsed({ item: { type: 'plan' } }))).toEqual({ streamingType: '' })

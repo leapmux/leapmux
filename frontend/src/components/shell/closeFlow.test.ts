@@ -13,13 +13,14 @@ function tab(id: string): Tab {
 }
 
 describe('createCloseFlow', () => {
-  it('request opens the dialog when the plan reports tabs', () => createRoot((dispose) => {
+  it('request opens the dialog when the plan reports tabs', async () => createRoot(async (dispose) => {
     const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
       plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
     })
     expect(flow.signal()).toBeNull()
-    flow.request({ tileId: 't1' })
+    await flow.request({ tileId: 't1' })
     expect(flow.signal()).toEqual({ tileId: 't1' })
     expect(flow.busy()).toBe(false)
     flow.cancel()
@@ -27,37 +28,40 @@ describe('createCloseFlow', () => {
     dispose()
   }))
 
-  it('request short-circuits to finalize when the plan reports no tabs', () => createRoot((dispose) => {
+  it('request short-circuits to finalize when the plan reports no tabs', async () => createRoot(async (dispose) => {
     const finalize = vi.fn()
     const preserve = vi.fn()
     const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
       plan: () => ({ tabs: [], preserve, finalize }),
     })
-    flow.request({ tileId: 't1' })
+    await flow.request({ tileId: 't1' })
     expect(finalize).toHaveBeenCalledTimes(1)
     expect(preserve).not.toHaveBeenCalled()
     expect(flow.signal()).toBeNull()
     dispose()
   }))
 
-  it('primary fires preserve once and clears the signal', () => createRoot((dispose) => {
+  it('primary fires preserve once and clears the signal', async () => createRoot(async (dispose) => {
     const preserve = vi.fn()
     const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
       plan: () => ({ tabs: [tab('a1')], preserve, finalize: () => {} }),
     })
-    flow.request({ tileId: 't1' })
+    await flow.request({ tileId: 't1' })
     flow.primary()
     expect(preserve).toHaveBeenCalledTimes(1)
     expect(flow.signal()).toBeNull()
     dispose()
   }))
 
-  it('primary bails when busy is true', () => createRoot((dispose) => {
+  it('primary bails when busy is true', async () => createRoot(async (dispose) => {
     const preserve = vi.fn()
     let observedBusy = false
     const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [],
       handleTabClose: async () => {
         observedBusy = flow.busy()
         // Hold the loop so the test can observe busy=true.
@@ -65,7 +69,7 @@ describe('createCloseFlow', () => {
       },
       plan: () => ({ tabs: [tab('a1')], preserve, finalize: () => {} }),
     })
-    flow.request({ tileId: 't1' })
+    await flow.request({ tileId: 't1' })
     void flow.closeAll()
     flow.primary()
     expect(preserve).not.toHaveBeenCalled()
@@ -74,14 +78,90 @@ describe('createCloseFlow', () => {
     dispose()
   }))
 
-  it('primary is a no-op when no ctx is open', () => createRoot((dispose) => {
+  it('primary is a no-op when no ctx is open', async () => createRoot(async (dispose) => {
     const preserve = vi.fn()
     const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [],
       handleTabClose: () => Promise.resolve(true),
       plan: () => ({ tabs: [], preserve, finalize: () => {} }),
     })
     flow.primary()
     expect(preserve).not.toHaveBeenCalled()
+    dispose()
+  }))
+
+  it('scans for busy tabs BEFORE opening, so the dialog is complete on first paint', async () => createRoot(async (dispose) => {
+    const order: string[] = []
+    const busy = [{ tab: tab('a1'), title: 'a1', reason: { kind: 'agent-turn' as const, activeTasks: [] } }]
+    const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => {
+        order.push('probe')
+        return busy
+      },
+      handleTabClose: () => Promise.resolve(true),
+      plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+    })
+
+    await flow.request({ tileId: 't1' })
+    order.push('opened')
+
+    // Opening first and patching the warning in would need a loading state AND
+    // would leave a window where the user could confirm before it arrived.
+    expect(order).toEqual(['probe', 'opened'])
+    expect(flow.busyTabs()).toEqual(busy)
+    dispose()
+  }))
+
+  it('does not scan an empty closeable', async () => createRoot(async (dispose) => {
+    const probeBusy = vi.fn(async () => [])
+    const finalize = vi.fn()
+    const flow = createCloseFlow<TestCtx>({
+      probeBusy,
+      handleTabClose: () => Promise.resolve(true),
+      plan: () => ({ tabs: [], preserve: () => {}, finalize }),
+    })
+
+    await flow.request({ tileId: 't1' })
+
+    expect(probeBusy).not.toHaveBeenCalled()
+    expect(finalize).toHaveBeenCalledTimes(1)
+    dispose()
+  }))
+
+  it('closeAll suppresses the per-tab busy prompt, since the dialog already asked', async () => createRoot(async (dispose) => {
+    const handleTabClose = vi.fn((_tab: Tab, _opts?: { skipBusyConfirm?: boolean }) => Promise.resolve(true))
+    const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [],
+      handleTabClose,
+      plan: () => ({ tabs: [tab('a1'), tab('a2')], preserve: () => {}, finalize: () => {} }),
+    })
+    await flow.request({ tileId: 't1' })
+
+    await flow.closeAll()
+
+    // The per-tab WORKTREE prompt still runs: that one asks something this
+    // dialog never covered.
+    expect(handleTabClose.mock.calls.map(([, opts]) => opts)).toEqual([
+      { skipBusyConfirm: true },
+      { skipBusyConfirm: true },
+    ])
+    dispose()
+  }))
+
+  it('clears the busy list when the flow is cancelled', async () => createRoot(async (dispose) => {
+    const flow = createCloseFlow<TestCtx>({
+      probeBusy: async () => [{ tab: tab('a1'), title: 'a1', reason: { kind: 'agent-turn' as const, activeTasks: [] } }],
+      handleTabClose: () => Promise.resolve(true),
+      plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+    })
+    await flow.request({ tileId: 't1' })
+    expect(flow.busyTabs()).toHaveLength(1)
+
+    flow.cancel()
+
+    // A stale list would warn about the PREVIOUS closeable's work the next time
+    // a dialog opened.
+    expect(flow.busyTabs()).toEqual([])
     dispose()
   }))
 
@@ -91,10 +171,11 @@ describe('createCloseFlow', () => {
       const finalize = vi.fn()
       const tabs = [tab('a1'), tab('a2'), tab('a3')]
       const flow = createCloseFlow<TestCtx>({
+        probeBusy: async () => [],
         handleTabClose,
         plan: () => ({ tabs, preserve: () => {}, finalize }),
       })
-      flow.request({ tileId: 't1' })
+      await flow.request({ tileId: 't1' })
       await flow.closeAll()
       expect(handleTabClose).toHaveBeenCalledTimes(3)
       expect(handleTabClose.mock.calls.map(c => c[0].id)).toEqual(['a1', 'a2', 'a3'])
@@ -111,6 +192,7 @@ describe('createCloseFlow', () => {
         .mockResolvedValueOnce(true)
         .mockResolvedValueOnce(false)
       const flow = createCloseFlow<TestCtx>({
+        probeBusy: async () => [],
         handleTabClose,
         plan: () => ({
           tabs: [tab('a1'), tab('a2'), tab('a3')],
@@ -118,7 +200,7 @@ describe('createCloseFlow', () => {
           finalize,
         }),
       })
-      flow.request({ tileId: 't1' })
+      await flow.request({ tileId: 't1' })
       await flow.closeAll()
       expect(handleTabClose).toHaveBeenCalledTimes(2)
       expect(finalize).not.toHaveBeenCalled()
@@ -132,6 +214,7 @@ describe('createCloseFlow', () => {
     await createRoot(async (dispose) => {
       const observedBusy: boolean[] = []
       const flow = createCloseFlow<TestCtx>({
+        probeBusy: async () => [],
         handleTabClose: async () => {
           observedBusy.push(flow.busy())
           return true
@@ -142,7 +225,7 @@ describe('createCloseFlow', () => {
           finalize: () => {},
         }),
       })
-      flow.request({ tileId: 't1' })
+      await flow.request({ tileId: 't1' })
       await flow.closeAll()
       expect(observedBusy).toEqual([true, true])
       dispose()
@@ -153,6 +236,7 @@ describe('createCloseFlow', () => {
     await createRoot(async (dispose) => {
       const plan = vi.fn().mockReturnValue({ tabs: [], preserve: () => {}, finalize: () => {} })
       const flow = createCloseFlow<TestCtx>({
+        probeBusy: async () => [],
         handleTabClose: () => Promise.resolve(true),
         plan,
       })

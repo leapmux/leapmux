@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { BusyTabConfirmState } from './BusyTabCloseDialog'
 import type { LastTabConfirmState } from './LastTabCloseDialog'
 import type { SectionNamePayload } from './SectionNameDialog'
 import type { TabContext } from './tabContext'
@@ -28,6 +29,7 @@ import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit } from '~/stores/tab.helpers'
+import { BusyTabCloseDialog } from './BusyTabCloseDialog'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
@@ -161,6 +163,7 @@ export interface AppShellDialogStates {
   // The only updatable one: LastTabCloseDialog patches its own payload after
   // a status refresh. That capability is what keeps its <Show> non-keyed.
   lastTabConfirm: UpdatableDialogState<LastTabConfirmState>
+  busyTabConfirm: DialogState<BusyTabConfirmState>
   keyPinConfirm: DialogState<KeyPinConfirmState>
   setGoal: DialogState<SetGoalState>
   changeBranch: DialogState<ChangeBranchState>
@@ -536,6 +539,19 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           />
         )}
       </Show>
+
+      {/* Keyed: this payload is never patched in place, unlike lastTabConfirm.
+          Raised only for a tab the worktree prompt does NOT cover, so one click
+          never answers two dialogs. */}
+      <Show when={props.dialogs.busyTabConfirm.value()} keyed>
+        {state => (
+          <BusyTabCloseDialog
+            state={state}
+            onDismiss={() => props.dialogs.busyTabConfirm.close()}
+          />
+        )}
+      </Show>
+
 
       <Show when={props.dialogs.keyPinConfirm.value()} keyed>
         {state => (

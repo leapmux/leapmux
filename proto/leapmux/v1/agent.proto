@@ -249,6 +249,20 @@ message AgentInfo {
   // True when the running provider can safely add the queue head to an active
   // regular turn. The Worker computes this from the live provider capability.
   bool supports_steering = 20;
+
+  // Whether the agent is working right now, derived by the Worker from the
+  // provider's turn bookkeeping, the background-task registry, the pending
+  // control requests and the process state. This is the hydration leg of the
+  // same state AgentActivityChanged pushes on change: a tab watching in NOTIFY
+  // mode gets no catch-up replay, so the list read is where it learns the
+  // current value. See AgentActivityChanged for the derivation.
+  bool busy = 21;
+
+  // Rows in pending/running state in this tab's background-task registry. For a
+  // root that is every descendant's work; for a subagent tab it is that
+  // subagent's own row, which is 1 exactly while it runs. Reported so a close
+  // guard can say WHAT it is refusing to interrupt, not just that it refuses.
+  int32 active_background_tasks = 22;
 }
 
 // AvailableOption describes a single selectable value within an option group

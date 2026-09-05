@@ -54,10 +54,10 @@ export interface ThinkingIndicatorProps {
    * opens can show. A separate count prop let the two disagree, and an empty
    * popover behind a positive count is the failure that shape invites.
    *
-   * It does NOT decide whether the indicator is visible. That is
-   * shouldShowThinkingIndicator's `work` argument, which for a child tab reads
-   * the child's OWN row -- a different question, and the reason a finished
-   * subagent stopped spinning while its siblings ran.
+   * It does NOT decide whether the indicator is visible. The Worker does, and
+   * it asks a different question for a child tab: a subagent's own registry row
+   * IS its run, which is why a finished subagent stops spinning while its
+   * siblings keep going.
    */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void

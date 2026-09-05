@@ -34,19 +34,24 @@ type testSinkModeChange struct {
 type testSink struct {
 	// persistErr, when set, is what PersistMessage returns. Read without the
 	// lock: a test sets it at construction and never changes it afterwards.
-	persistErr         error
-	mu                 sync.Mutex
-	messages           []testSinkMessage
-	notifications      []testSinkMessage
-	streamChunks       []testSinkStreamChunk
-	streamEnds         []string
-	sessionIDs         []string
-	permissionModes    []string
-	modeChanges        []testSinkModeChange
-	settingsRefreshes  []testSinkSettingsRefreshed
-	sessionInfos       []map[string]interface{}
-	openSpans          []testSinkSpanOpen
-	closedSpans        []string
+	persistErr        error
+	mu                sync.Mutex
+	messages          []testSinkMessage
+	notifications     []testSinkMessage
+	streamChunks      []testSinkStreamChunk
+	streamEnds        []string
+	sessionIDs        []string
+	permissionModes   []string
+	modeChanges       []testSinkModeChange
+	settingsRefreshes []testSinkSettingsRefreshed
+	sessionInfos      []map[string]interface{}
+	openSpans         []testSinkSpanOpen
+	closedSpans       []string
+	// TurnActiveCalls records every SetTurnActive value in order. The ORDER is
+	// the observable that matters: a provider that clears its turn flag before
+	// it publishes the turn-end envelope, or that never clears it on a path the
+	// happy case does not reach, latches the agent busy forever.
+	TurnActiveCalls    []bool
 	reservedColorSpans []testSinkSpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
@@ -183,6 +188,34 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 		SpansOpenAtPersist: s.liveSpansLocked(),
 	})
 	return nil
+}
+
+// SetTurnActive records the provider's turn flag transitions in order, so a
+// provider test can assert the exact sequence it published.
+func (s *testSink) SetTurnActive(active bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TurnActiveCalls = append(s.TurnActiveCalls, active)
+}
+
+// TurnActives returns the published turn states in order.
+func (s *testSink) TurnActives() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.TurnActiveCalls...)
+}
+
+// LastTurnActive returns the most recently published turn state, and whether
+// anything was published at all. A provider that never published is a distinct
+// failure from one that published the wrong value: the first latches whatever
+// the agent last showed, so it never clears.
+func (s *testSink) LastTurnActive() (bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.TurnActiveCalls) == 0 {
+		return false, false
+	}
+	return s.TurnActiveCalls[len(s.TurnActiveCalls)-1], true
 }
 
 func (s *testSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
@@ -1028,6 +1061,7 @@ func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error 
 	return nil
 }
 func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                             { return nil }
+func (noopSink) SetTurnActive(bool)                                                {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}

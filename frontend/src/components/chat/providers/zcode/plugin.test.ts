@@ -83,17 +83,6 @@ describe('zcode plugin metadata', () => {
     expect(plugin.buildControlResponse!({}, '', 'req-1')).toEqual(buildDenyResponse('req-1', ''))
     expect(plugin.buildControlResponse!({}, 'do not', 'req-1')).toEqual(buildDenyResponse('req-1', 'do not'))
   })
-
-  // The notification set is also the non-progress set: each of these is visible and
-  // says nothing about the agent working, so the thinking heuristic scans past them.
-  it('declares its notification types as non-progress', () => {
-    expect([...plugin.nonProgressTypes!].sort()).toEqual([
-      ZCODE_EVENT.PermissionResolved,
-      ZCODE_EVENT.SessionClosed,
-      ZCODE_EVENT.TurnSteerDrained,
-      ZCODE_EVENT.TurnSteerQueued,
-    ].sort())
-  })
 })
 
 describe('zcode classify', () => {

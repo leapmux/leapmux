@@ -313,17 +313,12 @@ function codexContextUsageFromNotification(parsed: ParsedMessageContent): Contex
 }
 
 /**
- * Codex lifecycle → session-info patch: clear the live turn id on thread/started, clear the plan
- * streaming indicator on a `plan` item.
+ * Codex lifecycle → session-info patch: clear the plan streaming indicator on a
+ * `plan` item.
  */
 function codexLifecycleSessionInfo(parsed: ParsedMessageContent): Partial<AgentSessionInfo> | null {
-  const method = parsed.parentObject?.method as string | undefined
   const item = parsed.parentObject?.item as Record<string, unknown> | undefined
   const patch: Partial<AgentSessionInfo> = {}
-  // A new Codex thread starts idle. Clear any stale turn ID restored from localStorage so the chat
-  // shows its empty state instead of a phantom thinking indicator.
-  if (method === 'thread/started')
-    patch.codexTurnId = ''
   if (item?.type === 'plan')
     patch.streamingType = ''
   return Object.keys(patch).length > 0 ? patch : null
@@ -368,20 +363,6 @@ const codexPlugin: Provider = {
     pdf: false,
     binary: false,
   },
-  // Codex's wire format dispatches via JSON-RPC `method`. Anything we hide
-  // from the chat plus the metadata-only updates (mcp startup, rate limits)
-  // must also be invisible to the working-state heuristic -- adding a method to
-  // either set propagates automatically.
-  nonProgressMethods: new Set<string>([
-    ...CODEX_HIDDEN_LIFECYCLE_METHODS,
-    'mcpServer/startupStatus/updated',
-    'account/rateLimits/updated',
-  ]),
-  // Codex exposes an explicit turn ID for the active turn. Prefer it over
-  // the generic message-history heuristic so idle-but-running tabs don't
-  // show as thinking on creation, and so post-reconnect rehydration is
-  // driven by the authoritative server-side state.
-  hasActiveTurn: (_agent, sessionInfo) => Boolean(sessionInfo?.codexTurnId),
   planMode: buildPlanMode(CODEX_OPTION_COLLABORATION_MODE, 'plan', DEFAULT_CODEX_COLLABORATION_MODE),
   // The trigger's mode segment shows the "Workflow" (collaboration_mode) group --
   // Codex's mode axis -- not the approval policy. It reads "Plan Mode" when the
@@ -517,7 +498,6 @@ const codexPlugin: Provider = {
   // A persisted `turn_completed` result divider is the turn boundary that must stop
   // the thinking indicator after a reconnect / missed live event -- so it clears the
   // active codex_turn_id, mirroring the ephemeral session-info clear.
-  resultDividerEndsActiveTurn: subtype => subtype === 'turn_completed',
 
   rateLimitsFromMessage: codexRateLimitsFromMessage,
   contextUsageFromMessage: codexContextUsageFromNotification,

@@ -627,6 +627,9 @@ func New(cfg Config) *Service {
 }
 
 func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+	// A new process owns no turn. See NoteAgentProcessStarted for why this does
+	// not wait for the old process's exit handler to have said so.
+	svc.Output.NoteAgentProcessStarted(opts.AgentID)
 	if svc.startAgentFn != nil {
 		return svc.startAgentFn(ctx, opts, sink)
 	}
@@ -642,6 +645,8 @@ func (svc *Service) startAgent(ctx context.Context, opts agent.Options, sink age
 // the interactive entry point and then quietly exercise the wrong one, which is
 // exactly the distinction this pair exists to make.
 func (svc *Service) startBackgroundAgent(ctx context.Context, opts agent.Options, sink agent.OutputSink) (map[string]string, error) {
+	// Same rule as startAgent: a new process owns no turn.
+	svc.Output.NoteAgentProcessStarted(opts.AgentID)
 	if svc.startBackgroundAgentFn != nil {
 		return svc.startBackgroundAgentFn(ctx, opts, sink)
 	}
@@ -780,6 +785,11 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 			}
 		}
 	}
+	// Last, so it observes the cleared prompts and the ended registry rows. This
+	// is also the only signal a client gets that a CRASHED agent stopped working:
+	// this handler broadcasts no AgentStatusChange, so without it a lost process
+	// left every watching tab showing work that had already died.
+	svc.Output.NoteAgentProcessExited(agentID)
 }
 
 // agentSubtreeIDs returns the agent and every descendant of it. A subagent

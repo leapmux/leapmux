@@ -645,6 +645,21 @@ func (a *ClaudeCodeAgent) SendInput(content string, attachments []*leapmuxv1.Att
 	return a.sendInput(content, attachments, "")
 }
 
+// publishTurnActive republishes the Worker-visible turn state from turnActive,
+// the single source. Call it after EVERY critical section that writes that
+// field.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and a missing call is the only way the two can drift.
+// Never called with a.mu held: the sink broadcasts, and a broadcast can block on
+// a slow transport.
+func (a *ClaudeCodeAgent) publishTurnActive() {
+	a.mu.Lock()
+	active := a.turnActive
+	a.mu.Unlock()
+	publishTurnActiveTo(a.sink, active)
+}
+
 // SupportsSteering always reports true. The Claude Code stream-json protocol
 // accepts a priority:"next" user message during any turn, so the capability
 // needs no handshake discovery.
@@ -661,6 +676,12 @@ func (a *ClaudeCodeAgent) SteerInput(content string, attachments []*leapmuxv1.At
 }
 
 func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Attachment, priority string) error {
+	// Registered BEFORE the unlock below, so it runs AFTER it: deferred calls
+	// run last-registered-first. Publishing under a.mu would hold the agent lock
+	// across a broadcast. It re-reads the flag, so the error paths below -- and a
+	// steer, which opens no turn -- publish the unchanged value and the sink
+	// drops it.
+	defer a.publishTurnActive()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -697,6 +718,10 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	if err := a.writeStdin(data); err != nil {
 		return fmt.Errorf("write stdin: %w", err)
 	}
+	// The turn opens once the message is actually on stdin, not before: a write
+	// that failed started nothing, and marking it busy would leave the agent
+	// working forever with no envelope coming to clear it. A steer joins the turn
+	// already in flight, so it opens none.
 	if priority == "" {
 		a.turnActive = true
 	}

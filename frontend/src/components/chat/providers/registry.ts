@@ -14,7 +14,7 @@ import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
 import type { ProviderPermissionPresets } from '../providerSettings'
-import type { AgentInfo, AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentProvider, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
@@ -142,13 +142,6 @@ export interface ResultDividerModel {
   isError?: boolean
   /** Optional multi-line detail block shown below the label. Omit (undefined), never empty. */
   detail?: string
-  /**
-   * The run failed but the provider restarts it on its own, so the turn is NOT
-   * over. `isAgentWorking` reads this. The thinking indicator therefore stays
-   * visible for the whole auto-retry backoff, instead of clearing on a divider
-   * that the turn continues past.
-   */
-  turnContinues?: boolean
 }
 
 /**
@@ -350,16 +343,6 @@ export interface Provider {
    */
   resultDivider?: (parsed: unknown) => ResultDividerModel | null
 
-  /**
-   * Whether a persisted result-divider with this `subtype` ends the provider's
-   * ACTIVE turn, so the client clears the live turn-id it tracks. Only Codex
-   * tracks a live turn id (codex_turn_id, cleared so a reconnect/missed-event
-   * doesn't leave a phantom thinking indicator); other providers omit this and
-   * the connection hook does nothing. Keeps the provider's turn-end subtype
-   * knowledge in the provider plugin rather than string-matched in the hook.
-   */
-  resultDividerEndsActiveTurn?: (subtype: string | undefined) => boolean
-
   // --- Session-metadata extraction ------------------------------------------------------------
   // These hooks let the connection pipeline (useWorkspaceConnection) fold provider-native
   // notification / lifecycle / usage frames into the neutral AgentSessionInfo without parsing
@@ -484,34 +467,6 @@ export interface Provider {
   attachments?: AttachmentCapabilities
 
   /**
-   * Inner-message `type` values that don't represent agent progress for
-   * the chat-level working-state heuristic. The shared `isAgentWorking`
-   * keeps scanning back when the most recent message has one of these
-   * types instead of treating it as an activity signal — covers
-   * provider-specific lifecycle / status / extension events.
-   */
-  nonProgressTypes?: ReadonlySet<string>
-
-  /**
-   * JSON-RPC method names that don't represent agent progress (transport
-   * metadata or pure lifecycle signals). Counterpart to `nonProgressTypes`
-   * for providers whose wire format dispatches by `method` rather than
-   * `type` (Codex JSON-RPC).
-   */
-  nonProgressMethods?: ReadonlySet<string>
-
-  /**
-   * Provider-specific gate for the chat-level thinking indicator. Returns
-   * true/false to take precedence over the message-history heuristic, or
-   * null to fall through to the default. Codex uses this to gate on its
-   * explicit `codexTurnId` so a freshly-created tab doesn't show as
-   * thinking before any message arrives.
-   */
-  hasActiveTurn?: (
-    agent: AgentInfo,
-    sessionInfo: AgentSessionInfo | undefined,
-  ) => boolean | null
-  /**
    * True when a running agent of this provider can address a subagent
    * conversation inside the same process (Codex's collab child threads).
    * Drives the composer gate for child tabs together with
@@ -558,14 +513,4 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  */
 export function pluginFor(provider: AgentProvider | undefined): Provider | undefined {
   return provider != null ? providerFor(provider) : undefined
-}
-
-/**
- * All registered providers, in insertion order. Used by shared heuristics
- * (e.g. `isAgentWorking`) that need to aggregate per-provider configuration
- * without hard-coding which providers exist. Callers must have already
- * triggered the side-effect imports in `providers/index.ts`.
- */
-export function allRegisteredProviders(): Provider[] {
-  return Array.from(registry.values())
 }

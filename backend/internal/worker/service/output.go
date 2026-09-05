@@ -193,6 +193,17 @@ type OutputHandler struct {
 	// through to its root's cache. Mirrors `todos`.
 	bgtasks sync.Map // rootAgentID -> *bgTaskCache
 
+	// Per-agent derived activity ("is this agent busy") plus the last value
+	// published for it. Keyed by AGENT id, children included. See
+	// output_activity.go for the derivation and the edge-trigger rule.
+	activity sync.Map // agentID -> *agentActivity
+
+	// processRunning reports whether the feeding process for a ROOT agent id is
+	// up. Defaults to the agent manager; a test replaces it to drive the other
+	// activity inputs in isolation, because a real subprocess is not a seam the
+	// derivation's own rules should depend on.
+	processRunning func(rootAgentID string) bool
+
 	// rootSinks tracks the root agentOutputSink per root agent id so CleanupAgent
 	// can prune a closed child from its parent's childSinks cache (which would
 	// otherwise retain the child's SpanTracker + OutputHandler ref for the
@@ -325,6 +336,12 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.lastNotifThread.Delete(agentID)
 	h.trackers.delete(agentID)
 	h.todos.Delete(agentID)
+	// Activity is subprocess-scoped state (the provider's turn flag and the
+	// prompts it was blocked on), so it goes with the subprocess. Losing the
+	// "already published" mark can make the next change republish a value a
+	// client already holds, which is why the client rings on an observed
+	// TRANSITION rather than on the arrival of an event.
+	h.ForgetActivity(agentID)
 	// bgtasks is keyed by ROOT owner id; a child id keys no entry here (its
 	// rows live under the root), so this delete is a safe no-op for children.
 	// A root close reaps the root's own registry cache.
@@ -477,6 +494,7 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 // any registered watchers. Shared by ClearAgentRuntimeState and the
 // per-agent sink so the envelope shape lives in one place.
 func (h *OutputHandler) broadcastControlCancel(agentID, requestID string) {
+	h.noteControlRequestsRemoved(agentID, "", requestID)
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
@@ -511,6 +529,9 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 	for _, requestID := range deletedIDs {
 		h.broadcastControlCancel(agentID, requestID)
 	}
+	// Clears every prompt, not only the deleted ids: this runs when the
+	// subprocess owning them went away, so nothing it was blocked on survives.
+	h.noteControlRequestsRemoved(agentID, "")
 }
 
 // ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
@@ -684,12 +705,24 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 		}
 	}
 	count, ok := agent.ProviderFor(s.agentProvider).TurnEndToolUses(content)
+	// Hand the count to the activity latch BEFORE the event, so it is already
+	// recorded if the provider's SetTurnActive(false) lands first. The two
+	// arrive in provider-defined order, and only the latch's edge knows whether
+	// this turn actually settled the agent or left a subagent running.
+	s.h.noteTurnEnded(s.agentID, count, ok)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: turnEndEvent(count, ok)},
 	})
 	go s.BroadcastGitStatus()
 	return nil
+}
+
+// SetTurnActive publishes the provider's own turn bookkeeping. Providers call
+// it from the same site that mutates their private flag, so the two cannot
+// drift.
+func (s *agentOutputSink) SetTurnActive(active bool) {
+	s.h.setTurnActive(s.agentID, s.rootAgentID, active)
 }
 
 func turnEndEvent(count int32, ok bool) *leapmuxv1.AgentTurnEnd {
@@ -775,6 +808,7 @@ func (s *agentOutputSink) PersistControlRequest(requestID string, payload []byte
 	}); err != nil {
 		slog.Error("persist control request", "agent_id", s.agentID, "request_id", requestID, "error", err)
 	}
+	s.h.noteControlRequestAdded(s.agentID, s.rootAgentID, requestID)
 	return claimToken
 }
 
@@ -783,6 +817,7 @@ func (s *agentOutputSink) DeleteControlRequest(requestID string) {
 		AgentID:   s.agentID,
 		RequestID: requestID,
 	})
+	s.h.noteControlRequestsRemoved(s.agentID, s.rootAgentID, requestID)
 }
 
 func (s *agentOutputSink) BroadcastControlRequest(requestID string, payload []byte, claimToken string) {

@@ -432,10 +432,9 @@ function projectOptionGroups(base: AvailableOptionGroup[], values: Record<string
 
 /**
  * Adapter from a Tab back to an AgentInfo-shaped object. Used at the
- * shrinking number of boundary points where existing consumers (chat
- * plugins, `shouldShowThinkingIndicator`) take an AgentInfo wholesale.
- * Returns undefined when the tab isn't an AGENT or has no metadata
- * yet.
+ * shrinking number of boundary points where existing consumers (chat plugins)
+ * take an AgentInfo wholesale. Returns undefined when the tab isn't an AGENT or
+ * has no metadata yet.
  *
  * The returned value is a structurally-compatible plain object cast to AgentInfo; it
  * omits the proto-runtime $typeName / message methods, which the affected consumers do

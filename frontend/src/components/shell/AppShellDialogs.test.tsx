@@ -175,6 +175,7 @@ function makeDialogs(): AppShellDialogStates {
     sectionName: createDialogState(),
     confirmDeleteSection: createDialogState(),
     lastTabConfirm: createUpdatableDialogState(),
+    busyTabConfirm: createDialogState(),
     keyPinConfirm: createDialogState(),
     changeBranch: createDialogState(),
     deleteBranch: createDialogState(),

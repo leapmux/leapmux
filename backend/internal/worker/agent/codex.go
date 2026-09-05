@@ -628,6 +628,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	clear(a.childTurnIDs)
 	clear(a.childTurnStartAcks)
 	a.mu.Unlock()
+	a.publishTurnActive()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it
 	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
 	// turn/started also resets, but resetting here keeps every provider's context
@@ -642,6 +643,26 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 
 	a.sink.UpdateSessionID(thread.ID)
 	return thread.ID, true
+}
+
+// publishTurnActive republishes the Worker-visible turn state from turnID, the
+// single source. Call it after EVERY critical section that writes turnID.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and the sink deduplicates, so a redundant call costs
+// nothing. A MISSING call is the only way the two can drift -- which is why
+// this is a re-read and not an argument.
+//
+// Never called with a.mu held: the sink broadcasts, and a broadcast can block
+// on a slow transport.
+func (a *CodexAgent) publishTurnActive() {
+	a.mu.Lock()
+	active := a.turnID != ""
+	a.mu.Unlock()
+	// Codex tracks collab child turns in childTurnIDs, deliberately not here: a
+	// child's own run is its background-task registry row, and the Worker reads
+	// that for the child tab. This is the MAIN thread's turn only.
+	publishTurnActiveTo(a.sink, active)
 }
 
 // SendInput starts a new turn with the current settings. It refuses an active

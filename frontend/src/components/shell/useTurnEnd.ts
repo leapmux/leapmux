@@ -2,10 +2,16 @@ import type { createActiveClientStore } from '~/lib/presence/activeClient'
 import { monotonicNow } from '~/lib/monotonicNow'
 
 /**
- * Builds the debounced turn-end handler that drives:
- *   - turnEndTrigger bump (downstream: git status + directory tree refresh),
+ * Builds the debounced handler that drives:
  *   - the active-client-gated ding sound,
  *   - the `leapmux:turn-end-played` test hook event.
+ *
+ * Called when an agent SETTLES -- the Worker's busy -> idle edge -- not when a
+ * turn ends. A turn that spawns a subagent ends while the subagent keeps
+ * working, and ringing there told the user their agent was done while it was
+ * still running. The git-status and directory-tree refresh stays on the turn
+ * boundary, because the working tree changed whether or not a subagent is still
+ * going; AppShell wires that separately.
  *
  * The active-client gate distinguishes three cases for the broadcast
  * `active_client_id` vs. our hub-reported effective identity:
@@ -34,7 +40,6 @@ export interface UseTurnEndOpts {
   effectiveClientId: () => string
   getActiveWorkspaceId: () => string | null | undefined
   ownClientId: () => string
-  setTurnEndTrigger: (updater: (v: number) => number) => void
   isAgentClosing: (agentId: string) => boolean
 }
 
@@ -53,10 +58,10 @@ export function useTurnEnd(opts: UseTurnEndOpts): (agentId: string, numToolUses?
   return (agentId: string, numToolUses?: number) => {
     if (opts.isAgentClosing(agentId))
       return
-    // Always bump the trigger (drives git status and directory tree
-    // refresh), but skip the audible notification for trivial
-    // single-exchange turns.
-    opts.setTurnEndTrigger(v => v + 1)
+    // Skip the audible notification for a trivial single-exchange turn.
+    // UNDEFINED is not zero here: a settle that no turn end caused (a permission
+    // prompt, a process exit) carries no count and must still ring, as must a
+    // provider that cannot report one.
     if (numToolUses !== undefined && numToolUses === 0)
       return
     const wsId = opts.getActiveWorkspaceId() ?? ''

@@ -9,6 +9,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { clearDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createImperativeRef } from '~/lib/imperativeRef'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -115,6 +116,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         chatStore: createChatStore(),
         agentInputQueueStore: createAgentInputQueueStore(),
         controlStore: createControlStore(),
+        agentActivityStore: createAgentActivityStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
@@ -149,6 +151,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       tab: {
         handleTabSelect: () => {},
         handleTabClose: s.handleTabClose as (tab: Tab) => Promise<boolean>,
+        probeBusy: async () => [],
         setIsTabEditing: () => {},
         closingTabKeys: () => new Set(),
       },

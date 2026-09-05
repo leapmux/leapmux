@@ -13,10 +13,8 @@ import {
   isActiveBackgroundTaskStatus,
   opensSubagentTranscript,
   protoBackgroundTaskToStore,
-  rootWorkState,
   shouldShowBackgroundTasksSection,
   sortBackgroundTasks,
-  subagentWorkState,
 } from '~/stores/chatBackgroundTasks'
 
 function proto(over: { id: string, kind?: BackgroundTaskKind, status: BackgroundTaskStatus, title?: string, activeForm?: string }): ProtoBackgroundTaskItem {
@@ -140,54 +138,6 @@ describe('isActiveBackgroundTaskStatus', () => {
   })
 })
 
-describe('subagentWorkState', () => {
-  const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
-    rowKey: 'r',
-    kind: 'subagent',
-    title: 't',
-    activity: '',
-    status: 'running',
-    ...over,
-  })
-
-  it('is active while this child\'s own row is running', () => {
-    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1' })])).toBe('active')
-  })
-
-  it('is active while the row is pending', () => {
-    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1', status: 'pending' })])).toBe('active')
-  })
-
-  // 'finished', not 'unknown': the row is the authoritative record of this
-  // subagent's life, so the caller must stop rather than fall through to a
-  // transcript heuristic that would report a stopped subagent as working.
-  it('is finished once this child reaches a final status', () => {
-    for (const status of ['completed', 'failed', 'stopped', 'interrupted'] as const)
-      expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1', status })])).toBe('finished')
-  })
-
-  // The whole point: a sibling still working must not keep this child's
-  // indicator alive.
-  it('ignores a sibling subagent that is still running', () => {
-    expect(subagentWorkState('child-1', [
-      row({ rowKey: 'a', childAgentId: 'child-1', status: 'completed' }),
-      row({ rowKey: 'b', childAgentId: 'child-2', status: 'running' }),
-    ])).toBe('finished')
-  })
-
-  it('is unknown when this child has no row yet', () => {
-    expect(subagentWorkState('child-1', [])).toBe('unknown')
-    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-2' })])).toBe('unknown')
-  })
-
-  it('reads the first matching row, even with duplicates', () => {
-    expect(subagentWorkState('child-1', [
-      row({ rowKey: 'a', childAgentId: 'child-1' }),
-      row({ rowKey: 'b', childAgentId: 'child-1' }),
-    ])).toBe('active')
-  })
-})
-
 describe('chipTasksFor', () => {
   const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
     kind: 'subagent',
@@ -222,29 +172,6 @@ describe('chipTasksFor', () => {
       row({ rowKey: 'grandchild', parentAgentId: 'child-1' }),
     ]
     expect(chipTasksFor('root-1', tasks, false).map(t => t.rowKey)).toEqual(['direct', 'grandchild'])
-  })
-})
-
-describe('rootWorkState', () => {
-  const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
-    rowKey: 'r',
-    kind: 'subagent',
-    title: 't',
-    activity: '',
-    status: 'running',
-    ...over,
-  })
-
-  it('is active while any row is running', () => {
-    expect(rootWorkState([row({ status: 'completed' }), row({ rowKey: 'b' })])).toBe('active')
-  })
-
-  // Never 'finished'. A root with no running subagent may still be mid-turn on
-  // its own, which the registry knows nothing about -- reporting finished here
-  // would hide the indicator for every ordinary turn.
-  it('is unknown, never finished, when nothing is running', () => {
-    expect(rootWorkState([])).toBe('unknown')
-    expect(rootWorkState([row({ status: 'completed' })])).toBe('unknown')
   })
 })
 

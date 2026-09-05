@@ -157,6 +157,27 @@ func handlePiOutput(a *PiAgent, line *parsedLine) {
 	}
 }
 
+// publishTurnActive republishes the Worker-visible turn state from
+// currentTurnActive, the single source. Call it after EVERY critical section
+// that writes that field.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and a missing call is the only way the two can drift.
+// Never called with a.mu held: the sink broadcasts, and a broadcast can block on
+// a slow transport.
+//
+// Pi keeps the turn OPEN across a retry it drives itself (agent_end with
+// willRetry), so the state stays busy for the whole backoff -- a stretch where
+// nothing streams and no envelope arrives, and where a client that inferred
+// idleness would drop the spinner and hide the Interrupt button on a run that is
+// still going.
+func (a *PiAgent) publishTurnActive() {
+	a.mu.Lock()
+	active := a.currentTurnActive
+	a.mu.Unlock()
+	publishTurnActiveTo(a.sink, active)
+}
+
 func (a *PiAgent) handlePiAgentStart() {
 	// Read the clock before the lock, so an injected clock never runs under mu.
 	startedAt := a.now()
@@ -169,6 +190,7 @@ func (a *PiAgent) handlePiAgentStart() {
 		a.turnStartedAt = startedAt
 	}
 	a.mu.Unlock()
+	a.publishTurnActive()
 	// A fresh turn begins: start the thinking-token estimate from zero.
 	a.thinkingTokens.reset()
 }
@@ -198,6 +220,7 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 		a.turnStartedAt = time.Time{}
 	}
 	a.mu.Unlock()
+	a.publishTurnActive()
 	// Recover from any tool calls that didn't get a matching
 	// tool_execution_end (e.g. aborted turn). Otherwise the map retains the
 	// cumulative result text indefinitely across sessions.

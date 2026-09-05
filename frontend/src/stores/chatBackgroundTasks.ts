@@ -1,13 +1,16 @@
+import type { AgentTab } from './tab.types'
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { rootAgentIdFor } from './tab.helpers'
 
 // ---------------------------------------------------------------------------
 // Provider-neutral background-task registry model + conversions
 //
 // The store-shape BackgroundTaskItem and the helpers that normalize the proto
 // wire form into it, plus the sort/group/count helpers the sidebar and the
-// ThinkingIndicator chips share. A leaf module -- it imports only the
-// generated proto types -- so the chat store, the sidebar section, and the
+// close guard share. Near-leaf: it imports the generated proto types plus
+// `rootAgentIdFor`, for the one helper that has to resolve a child tab's
+// registry owner -- so the chat store, the sidebar section, and the
 // indicator chips share one shape without routing conversions through the
 // window store.
 // ---------------------------------------------------------------------------
@@ -179,39 +182,6 @@ export function countActiveBackgroundTasks(items: BackgroundTaskItem[]): number 
 }
 
 /**
- * What the registry can say about ONE tab's own work.
- *
- * Three states, not a count, because "no active work" and "no answer" are
- * different facts and only one of them may hide the thinking indicator:
- *
- * - `active`   -- work of this tab's is running. Show the indicator.
- * - `finished` -- this tab's own work ENDED. Hide it, definitively: the
- *   registry row outranks any message-history guess.
- * - `unknown`  -- the registry has no row for this tab, so it cannot answer.
- *   The caller's message heuristic decides.
- *
- * Collapsing `finished` and `unknown` into a single 0 is what kept a finished
- * subagent spinning: the heuristic then re-read the transcript and reported
- * "working" whenever the last message was not the closing divider.
- */
-export type TabWorkState = 'active' | 'finished' | 'unknown'
-
-/**
- * What the root's registry says about THIS subagent, from its own row.
- *
- * The registry is keyed by ROOT owner, so counting active rows over it answers
- * "is any subagent of this root running" -- the right question for a root
- * agent's thinking indicator, and the wrong one for a child's: it kept a
- * FINISHED subagent's indicator spinning for as long as any SIBLING ran.
- */
-export function subagentWorkState(childAgentId: string, rootTasks: BackgroundTaskItem[]): TabWorkState {
-  const own = rootTasks.find(t => t.childAgentId === childAgentId)
-  if (!own)
-    return 'unknown'
-  return isActiveBackgroundTaskStatus(own.status) ? 'active' : 'finished'
-}
-
-/**
  * The rows a tab's background-tasks CHIP should show: the work that tab is
  * running, never the tab itself.
  *
@@ -230,6 +200,31 @@ export function chipTasksFor(
 }
 
 /**
+ * The registry rows that belong to ONE tab, resolving the tab's registry owner
+ * on the way. Two callers need this and must not disagree: the chip on the tab,
+ * and the close guard that lists what a close would interrupt.
+ *
+ * The scoping rule is chipTasksFor's -- a root sees every descendant's row, a
+ * child sees only the rows IT spawned -- and the root resolution is what makes
+ * a child tab read its owner's registry rather than an empty one.
+ */
+export function createTabTaskScope(deps: {
+  getAgentTab: (id: string) => AgentTab | undefined
+  tasksForRoot: (rootAgentId: string) => BackgroundTaskItem[]
+}) {
+  const rootFor = (agentId: string): string => rootAgentIdFor(deps.getAgentTab, agentId)
+  return {
+    rootFor,
+    tasksForRoot: (agentId: string) => deps.tasksForRoot(rootFor(agentId)),
+    tasksForTab: (agentId: string) => chipTasksFor(
+      agentId,
+      deps.tasksForRoot(rootFor(agentId)),
+      !!deps.getAgentTab(agentId)?.parentAgentId,
+    ),
+  }
+}
+
+/**
  * Whether this row owns a subagent transcript that a click can open. A shell row
  * owns none, and a subagent whose provider never linked one owns none either.
  * Shared, so the Background tasks list and the SendMessage card cannot disagree
@@ -241,17 +236,6 @@ export function chipTasksFor(
  */
 export function opensSubagentTranscript(item: BackgroundTaskItem): boolean {
   return item.kind === 'subagent' && !!item.childAgentId
-}
-
-/**
- * What the registry says about a ROOT agent's work.
- *
- * Never `finished`: a root with no running subagent may still be mid-turn on
- * its own, and the registry knows nothing about that. Only a child tab, whose
- * whole life IS one registry row, can be reported finished.
- */
-export function rootWorkState(rootTasks: BackgroundTaskItem[]): TabWorkState {
-  return countActiveBackgroundTasks(rootTasks) > 0 ? 'active' : 'unknown'
 }
 
 // backgroundTaskStatusLabel spells a status out in full. The row shows status as a

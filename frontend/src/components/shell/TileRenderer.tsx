@@ -3,6 +3,7 @@ import type { NewTabTarget } from './AppShellDialogs'
 import type { CloseFlow } from './closeFlow'
 import type { createMobileOverlayState } from './MobileLayout'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
+import type { BusyTab } from './tabBusyProbe'
 import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
@@ -13,10 +14,10 @@ import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
+import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
-import type { TabWorkState } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
@@ -45,15 +46,16 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { chipTasksFor, rootWorkState, subagentWorkState } from '~/stores/chatBackgroundTasks'
+import { createTabTaskScope } from '~/stores/chatBackgroundTasks'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSteerableAgentTab } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
-import { shouldShowThinkingIndicator } from '~/utils/agentState'
+import { warningText } from '~/styles/shared.css'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 import * as styles from './AppShell.css'
+import { TabBusyDetails } from './BusyTabCloseDialog'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
 import { renameTab } from './renameTab'
@@ -85,6 +87,7 @@ interface TileRendererOpts {
     controlStore: ReturnType<typeof createControlStore>
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
+    agentActivityStore: AgentActivityStore
     repoGitStore: ReturnType<typeof createRepoGitStore>
   }
   /** Tab/agent/terminal lifecycle hooks. */
@@ -110,7 +113,9 @@ interface TileRendererOpts {
   /** Per-tab handlers + in-flight close set. */
   tab: {
     handleTabSelect: (tab: Tab) => void
-    handleTabClose: (tab: Tab) => Promise<boolean>
+    handleTabClose: (tab: Tab, opts?: { skipBusyConfirm?: boolean }) => Promise<boolean>
+    /** Which of a set of tabs are running work; see tabBusyProbe. */
+    probeBusy: (tabs: readonly Tab[]) => Promise<BusyTab[]>
     setIsTabEditing: (fn: () => boolean) => void
     closingTabKeys: () => Set<string>
   }
@@ -191,6 +196,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     controlStore,
     layoutStore,
     agentSessionStore,
+    agentActivityStore,
     repoGitStore,
   } = opts.stores
   const { agentOps, termOps } = opts.ops
@@ -224,7 +230,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     getCurrentTabContext,
     getMruAgentContext,
   } = opts.workspace
-  const { handleTabSelect, handleTabClose, setIsTabEditing, closingTabKeys } = opts.tab
+  const { handleTabSelect, handleTabClose, probeBusy, setIsTabEditing, closingTabKeys } = opts.tab
   const {
     newAgentLoadingProvider,
     newTerminalLoading,
@@ -341,6 +347,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   }
   const closeTileFlow = createCloseFlow<ClosingTile>({
     handleTabClose,
+    probeBusy,
     plan: (ctx) => {
       const originalWindowId = getWindowIdForTile(ctx.tileId)
       // `removeTileFromWindow` is itself idempotent against an
@@ -400,6 +407,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const closeFloatingWindowFlow = createCloseFlow<ClosingFloatingWindow>({
     handleTabClose,
+    probeBusy,
     plan: (ctx) => {
       const fws = floatingWindowStore
       if (!fws)
@@ -480,6 +488,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   }
   const closeGridFlow = createCloseFlow<ClosingGrid>({
     handleTabClose,
+    probeBusy,
     plan: (ctx) => {
       // Capture owner + tile ids once: the dialog blocks UI while open, so
       // capturing at request time is safe; the close-all loop's auto-
@@ -526,9 +535,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const handleTileClose = (tileId: string) => {
     const p = lookupPredicates(tileId)
     if (p?.closeMode.kind === 'grid')
-      closeGridFlow.request({ gridId: p.closeMode.gridId, ownerTileId: tileId })
+      void closeGridFlow.request({ gridId: p.closeMode.gridId, ownerTileId: tileId })
     else
-      closeTileFlow.request({ tileId })
+      void closeTileFlow.request({ tileId })
   }
 
   // Build the shared TileActions bag. Tile and the tile-level overflow menu
@@ -559,7 +568,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // Background-task registry helpers. The registry is keyed by ROOT owner id,
   // so resolve up to the root for a child tab. Only roots key a registry, so a
   // child ChatView correctly shows no chip (empty).
-  const bgRootFor = (agentId: string): string => rootAgentIdFor((id: string) => view.getAgentTab(id), agentId)
+  // One definition of "this tab's registry rows", shared with the close guard so
+  // the chip and the prompt cannot scope the same question differently.
+  const taskScope = createTabTaskScope({
+    getAgentTab: (id: string) => view.getAgentTab(id),
+    tasksForRoot: (rootId: string) => chatStore.backgroundTasks.get(rootId),
+  })
+  const bgRootFor = taskScope.rootFor
   // The store DATA ops an IMAGE tab resolves its reference through. Built once
   // and shared by every image pane, mirroring how the scroll rail hands the same
   // two ops to `warmMarkPreview` -- the modules that use them are component-layer
@@ -568,7 +583,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     getLoadedMessageBySeq: chatStore.getLoadedMessageBySeq,
     fetchMessageBySeq: chatStore.fetchMessageBySeq,
   }
-  const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
+  const bgTasksFor = taskScope.tasksForRoot
   // The session goal is ROOT state, like the registry: a child tab shows its
   // root's, because a subagent has no goal of its own.
   const goalFor = (agentId: string) => chatStore.goal.get(bgRootFor(agentId))
@@ -578,29 +593,19 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // chipTasksFor for why a child tab must not show its parent's count.
   // "This tab is a subagent's own transcript." One definition, because the
   // parent link is what four separate call sites were each re-deriving.
-  const isChildAgent = (agentId: string) => !!view.getAgentTab(agentId)?.parentAgentId
-  const chipTasksForTab = (agentId: string) =>
-    chipTasksFor(agentId, bgTasksFor(agentId), isChildAgent(agentId))
-  // What the THINKING INDICATOR reads, which is not what the chip counts.
+  const chipTasksForTab = taskScope.tasksForTab
+  // What the THINKING INDICATOR and the Interrupt button read: the Worker's
+  // answer, pushed on change and seeded on hydration.
   //
-  // The registry is keyed by ROOT owner, so counting it whole answers "is any
-  // subagent of this root still running" -- right for a root tab, wrong for a
-  // child: it kept a FINISHED subagent's indicator spinning for as long as any
-  // SIBLING subagent ran. A child instead reads only its OWN row, and that row
-  // can say `finished`, which no count can express: a child whose row ended is
-  // done, whatever its transcript's last message looks like.
-  const indicatorWorkState = (agentId: string): TabWorkState =>
-    isChildAgent(agentId)
-      ? subagentWorkState(agentId, bgTasksFor(agentId))
-      : rootWorkState(bgTasksFor(agentId))
-  const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
-    agentTabToInfo(view.getAgentTab(agentId)),
-    agentSessionStore.getInfo(agentId),
-    chatStore.getMessages(agentId),
-    chatStore.streamingText.get(agentId),
-    controlStore.getRequests(agentId).length,
-    indicatorWorkState(agentId),
-  )
+  // This used to be assembled here from six inputs -- a backwards scan of the
+  // transcript, live streaming text, the Codex turn id, the background-task
+  // registry, pending control requests and agent status -- through a precedence
+  // ladder in utils/agentState.ts. Every one of those facts belongs to the
+  // Worker, which now derives the answer once and publishes it, so the ladder
+  // and its per-provider hooks are gone. The root/child distinction the ladder
+  // encoded lives in the Worker's derivation instead: a subagent's registry row
+  // IS its run.
+  const agentThinking = (agentId: string) => agentActivityStore.isBusy(agentId)
   // Todos are owned by the root agent (the child has no independent todo list).
   // Resolve to the root so a child tab shows the root's todos, mirroring
   // background tasks. The root entry in the watch plan delivers the live updates.
@@ -961,7 +966,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 >
                   <ChatView
                     agentId={agentId}
-                    isChildTranscript={isChildAgent(agentId)}
+                    isChildTranscript={!!view.getAgentTab(agentId)?.parentAgentId}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.streamingText.get(agentId)}
@@ -1333,7 +1338,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       return controlStore.getRequests(agentId).length > 0
     },
     requestCloseFloatingWindow: (windowId: string) => {
-      closeFloatingWindowFlow.request({ windowId })
+      void closeFloatingWindowFlow.request({ windowId })
     },
     /**
      * Render the close-grid / close-tile / close-floating-window confirmation
@@ -1424,6 +1429,22 @@ function CloseFlowDialog<Ctx>(props: {
             }}
           >
             <p>{`This ${props.noun} contains ${pluralize(count(), 'tab')}. What would you like to do?`}</p>
+            {/* Attached to "Close all tabs", not to the whole dialog: moving the
+                tabs to a neighbour keeps every one of them running. Scanned
+                before the dialog opened, so it is complete on first paint. */}
+            <Show when={props.flow.busyTabs().length > 0}>
+              <p class={warningText} data-testid="close-flow-busy">
+                {`Closing them stops work in ${pluralize(props.flow.busyTabs().length, 'tab')}:`}
+              </p>
+              <For each={props.flow.busyTabs()}>
+                {busy => (
+                  <section>
+                    <p><strong>{busy.title}</strong></p>
+                    <TabBusyDetails reason={busy.reason} />
+                  </section>
+                )}
+              </For>
+            </Show>
           </ConfirmDialog>
         )
       }}
