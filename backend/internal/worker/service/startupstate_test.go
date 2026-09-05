@@ -1,17 +1,29 @@
 package service
 
 import (
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// beginForTest records an entry and registers the finishEntry that keeps
-// WaitForInFlight happy. Tests use this to exercise the startupCore primitives
-// without the full startup-goroutine machinery.
+func newTestStartupCore(t *testing.T) startupCore {
+	t.Helper()
+	return newStartupCore(testutil.NewQuartzMock(t))
+}
+
+func TestNewStartupCoreRejectsNilClock(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { newStartupCore(nil) })
+}
+
+// beginForTest records an entry and returns a cleanup that pairs with
+// finish() to keep WaitForInFlight happy. Tests use this to exercise
+// the startupCore primitives without the full startup-goroutine
+// machinery.
 func beginForTest(t *testing.T, r *startupCore, id string) {
 	t.Helper()
 	entry := r.begin(id, func() {})
@@ -25,7 +37,7 @@ func beginForTest(t *testing.T, r *startupCore, id string) {
 func TestStartupCore_ArchiveCancellationIsDistinctFromCloseAndFailure(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
+	core := newTestStartupCore(t)
 	cancelled := false
 	handle := core.begin("archive-tab", func() { cancelled = true })
 	require.NotNil(t, handle)
@@ -58,7 +70,7 @@ func TestStartupCore_ArchiveCancellationIsDistinctFromCloseAndFailure(t *testing
 func TestStartupCore_ArchiveFindsNoHandleOnceTheStartupFinished(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
+	core := newTestStartupCore(t)
 	handle := core.begin("finished-tab", func() {})
 	require.NotNil(t, handle)
 	core.succeed("finished-tab", nil)
@@ -80,7 +92,9 @@ func TestStartupCore_ArchiveFindsNoHandleOnceTheStartupFinished(t *testing.T) {
 func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 	t.Parallel()
 
-	r := newStartupCore()
+	clock := testutil.NewQuartzMock(t)
+	r := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
 	id := "term-clear-drain"
 	beginForTest(t, &r, id)
 
@@ -98,20 +112,34 @@ func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 	assert.Equal(t, 0, len(ch),
 		"clearPendingResize must drain the buffered signal so a later waiter can't wake on it")
 
-	// A wait after clear must block for its full timeout rather than waking
-	// immediately on a stale signal. `ok` cannot tell those apart -- both return
-	// false -- so the duration is the discriminator, and it is a LOWER bound,
-	// which machine load cannot break: load only ever makes this slower, and the
-	// failure being guarded against is waking EARLY.
-	//
-	// The two outcomes are pushed far apart all the same, so the assertion does
-	// not depend on a 10ms cushion: a drained-signal wake returns in
-	// microseconds, while the timeout path cannot return before 2s.
-	start := time.Now()
-	_, _, ok := r.waitForPendingResize(id, 2*time.Second)
-	assert.False(t, ok, "no resize stashed, should time out")
-	assert.GreaterOrEqual(t, time.Since(start), time.Second,
-		"wait should block for roughly the full timeout, not wake on a drained signal")
+	newTimer := clock.Trap().NewTimer(startupPendingResizeTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupPendingResizeTimerTag)
+	defer stopTimer.Close()
+
+	result := make(chan bool, 1)
+	go func() {
+		_, _, ok := r.waitForPendingResize(id, 2*time.Second)
+		result <- ok
+	}()
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, 2*time.Second, call.Duration)
+	call.MustRelease(ctx)
+	// A check of `result` here would assert nothing: the waiter leaves through
+	// the trapped Stop below, so `result` is empty on every run, drained signal
+	// or not. The end-to-end claim rests on two facts instead. The drain is
+	// exact above (len(ch) == 0 after clearPendingResize), and
+	// TestStartupCore_WaitForPendingResize_WakesOnSignal proves that a value in
+	// that channel DOES end a wait. An undrained channel therefore wakes the
+	// next waiter, which is the regression this test refuses. The lines below
+	// pin the other half: with the signal drained, only the timer ends the wait.
+
+	advance := clock.Advance(2 * time.Second)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	advance.MustWait(ctx)
+	assert.False(t, <-result, "no resize was stashed")
+	_, running := clock.Peek()
+	assert.False(t, running, "the expired timer must be stopped")
 }
 
 // TestStartupCore_WaitForPendingResize_WakesOnSignal covers the normal
@@ -120,34 +148,38 @@ func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 func TestStartupCore_WaitForPendingResize_WakesOnSignal(t *testing.T) {
 	t.Parallel()
 
-	r := newStartupCore()
+	clock := testutil.NewQuartzMock(t)
+	r := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
 	id := "term-wake"
 	beginForTest(t, &r, id)
 
+	newTimer := clock.Trap().NewTimer(startupPendingResizeTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupPendingResizeTimerTag)
+	defer stopTimer.Close()
+	type resizeResult struct {
+		cols uint16
+		rows uint16
+		ok   bool
+	}
+	result := make(chan resizeResult, 1)
 	go func() {
-		time.Sleep(5 * time.Millisecond)
-		r.setPendingResize(id, 90, 30)
+		cols, rows, ok := r.waitForPendingResize(id, 30*time.Second)
+		result <- resizeResult{cols: cols, rows: rows, ok: ok}
 	}()
-
-	// The two outcomes are deliberately FAR apart. `ok` alone cannot tell them
-	// apart -- `waitForPendingResize` calls `takePendingResize` after either
-	// select arm, so a broken chan signal still returns the right dims once the
-	// timer fires -- which makes elapsed time the only discriminator. With a
-	// 500ms timeout and a 200ms bound the margin was 300ms, close enough to
-	// machine jitter to fail on a loaded box while the signal worked fine.
-	//
-	// A 30s timeout against a 5s bound keeps exactly the same proof with ~25s of
-	// margin instead: the signal path completes in single-digit ms, and the
-	// timeout path cannot finish under 30s, so nothing load can do reaches the
-	// boundary. The test still exits in milliseconds when it passes.
-	start := time.Now()
-	cols, rows, ok := r.waitForPendingResize(id, 30*time.Second)
-	elapsed := time.Since(start)
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, 30*time.Second, call.Duration)
+	call.MustRelease(ctx)
+	require.True(t, r.setPendingResize(id, 90, 30))
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	got := <-result
+	cols, rows, ok := got.cols, got.rows, got.ok
 	require.True(t, ok)
 	assert.Equal(t, uint16(90), cols)
 	assert.Equal(t, uint16(30), rows)
-	assert.Less(t, elapsed, 5*time.Second,
-		"chan signal should wake the waiter in ms, not hit the timeout")
+	_, running := clock.Peek()
+	assert.False(t, running, "the signal path must stop its timer")
 }
 
 // TestStartupCore_WaitForPendingResize_AlreadyStashed covers the fast
@@ -156,7 +188,8 @@ func TestStartupCore_WaitForPendingResize_WakesOnSignal(t *testing.T) {
 func TestStartupCore_WaitForPendingResize_AlreadyStashed(t *testing.T) {
 	t.Parallel()
 
-	r := newStartupCore()
+	clock := testutil.NewQuartzMock(t)
+	r := newStartupCore(clock)
 	id := "term-prestashed"
 	beginForTest(t, &r, id)
 
@@ -165,6 +198,66 @@ func TestStartupCore_WaitForPendingResize_AlreadyStashed(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, uint16(100), cols)
 	assert.Equal(t, uint16(50), rows)
+	_, running := clock.Peek()
+	assert.False(t, running, "the fast path must not create a timer")
+}
+
+func TestStartupCore_WaitForPendingResizeStopsWhenStartupIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	cancelledEntry := core.begin("term-cancelled", func() {})
+	require.NotNil(t, cancelledEntry)
+	newTimer := clock.Trap().NewTimer(startupPendingResizeTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupPendingResizeTimerTag)
+	defer stopTimer.Close()
+
+	result := make(chan bool, 1)
+	go func() {
+		_, _, ok := core.waitForPendingResize("term-cancelled", time.Hour)
+		result <- ok
+	}()
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, time.Hour, call.Duration)
+	call.MustRelease(ctx)
+	core.cancelAndClear("term-cancelled", keepWorktreeOnClose)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	select {
+	case ok := <-result:
+		assert.False(t, ok)
+	case <-ctx.Done():
+		require.FailNow(t, "the pending-resize wait ignored startup cancellation")
+	}
+	core.finishEntry(cancelledEntry)
+	_, running := clock.Peek()
+	assert.False(t, running, "startup cancellation must stop the pending-resize timer")
+}
+
+func TestStartupCore_OldWaitCannotTakeReplacementResize(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	oldEntry := core.begin("term-replaced", func() {})
+	require.NotNil(t, oldEntry)
+	core.fail(oldEntry, "first startup failed")
+	core.finishEntry(oldEntry)
+
+	newEntry := core.begin("term-replaced", func() {})
+	require.NotNil(t, newEntry)
+	require.True(t, core.setPendingResize("term-replaced", 120, 50))
+	_, _, ok := core.takePendingResize(oldEntry)
+	assert.False(t, ok, "an old wait must not take a replacement startup's resize")
+	cols, rows, ok := core.takePendingResize(newEntry)
+	require.True(t, ok, "the replacement startup must retain its resize")
+	assert.Equal(t, uint16(120), cols)
+	assert.Equal(t, uint16(50), rows)
+
+	core.cancelAndClear("term-replaced", keepWorktreeOnClose)
+	core.finishEntry(newEntry)
+	core.WaitForInFlight()
 }
 
 // TestCancelAndClear_StampsTheHandleTheGoroutineHolds pins how a close reaches
@@ -174,7 +267,7 @@ func TestStartupCore_WaitForPendingResize_AlreadyStashed(t *testing.T) {
 func TestCancelAndClear_StampsTheHandleTheGoroutineHolds(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
+	core := newTestStartupCore(t)
 	h := core.begin("a-live", func() {})
 
 	_, raced := core.dispositionOf(h)
@@ -200,9 +293,10 @@ func TestCancelAndClear_StampsTheHandleTheGoroutineHolds(t *testing.T) {
 func TestCancelAndClear_FailedStartupNeverReachesItsGoroutine(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
+	core := newTestStartupCore(t)
 	h := core.begin("a-failed", func() {})
-	core.fail("a-failed", "boom")
+	require.NotNil(t, h)
+	core.fail(h, "boom")
 	core.finishEntry(h)
 
 	core.cancelAndClear("a-failed", removeWorktreeOnClose)
@@ -218,7 +312,7 @@ func TestCancelAndClear_FailedStartupNeverReachesItsGoroutine(t *testing.T) {
 func TestDispositionOf_NilHandleIsAnUncontestedStartup(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
+	core := newTestStartupCore(t)
 	got, raced := core.dispositionOf(nil)
 	assert.False(t, raced)
 	assert.Equal(t, keepWorktreeOnClose, got)
@@ -234,7 +328,7 @@ func TestDispositionOf_NilHandleIsAnUncontestedStartup(t *testing.T) {
 func TestStartupCore_BeginClaimsTheIDAgainstASecondStartup(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
+	core := newTestStartupCore(t)
 	firstCancelled := false
 	first := core.begin("tab-1", func() { firstCancelled = true })
 	require.NotNil(t, first)
@@ -259,72 +353,190 @@ func TestStartupCore_BeginClaimsTheIDAgainstASecondStartup(t *testing.T) {
 func TestStartupCore_BeginReclaimsAFailedEntry(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
-	core.fail("tab-1", "claude: command not found")
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	first := core.begin("tab-1", func() {})
+	require.NotNil(t, first)
+	core.fail(first, "claude: command not found")
+	core.finishEntry(first)
+	stopTimer := clock.Trap().TimerStop(startupFailedEvictionTag)
+	defer stopTimer.Close()
 
-	h := core.begin("tab-1", func() {})
+	hCh := make(chan *startupEntry, 1)
+	go func() { hCh <- core.begin("tab-1", func() {}) }()
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	h := <-hCh
 	require.NotNil(t, h, "a retry after a failed startup must be able to claim the tab again")
+	_, running := clock.Peek()
+	assert.False(t, running, "replacing a failed entry must stop its eviction timer")
+	core.cancelAndClear("tab-1", keepWorktreeOnClose)
 	core.finishEntry(h)
 	core.WaitForInFlight()
 }
 
-// fakeStartupClock is a deterministic startupTimerClock. NewTimer records the
-// requested delay and hands back a channel the test fires explicitly, so
-// nothing in awaitInFlight is timed by the wall clock: a test can hold a wait
-// in its armed-but-not-expired window for as long as it likes, and a test about
-// the give-up path spends no wall time reaching it.
+func TestStartupCore_FailedEntryExpiresExactlyAtTTL(t *testing.T) {
+	t.Parallel()
+
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	afterFunc := clock.Trap().AfterFunc(startupFailedEvictionTag)
+	defer afterFunc.Close()
+
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h)
+	core.finishEntry(h)
+	failed := make(chan struct{})
+	go func() {
+		core.fail(h, "boom")
+		close(failed)
+	}()
+	call := afterFunc.MustWait(ctx)
+	assert.Equal(t, failedEntryTTL, call.Duration)
+	call.MustRelease(ctx)
+	<-failed
+	_, errText, _, ok := core.snapshot("tab-1")
+	require.True(t, ok)
+	assert.Equal(t, "boom", errText)
+
+	clock.Advance(failedEntryTTL - 1).MustWait(ctx)
+	_, _, _, ok = core.snapshot("tab-1")
+	assert.True(t, ok, "the failed entry must remain before its time-to-live ends")
+	clock.Advance(1).MustWait(ctx)
+	_, _, _, ok = core.snapshot("tab-1")
+	assert.False(t, ok, "the failed entry must leave at its exact time-to-live")
+	_, running := clock.Peek()
+	assert.False(t, running, "the expired eviction timer must leave no event")
+}
+
+// TestStartupCore_CancelAndClearStopsAFailedEntryEviction pins the one
+// transition that still reaches a failed entry. fail() installs a FRESH entry
+// that no handle points at, so only the id-keyed close can retire it -- a
+// retry's begin() is the other route, and TestStartupCore_BeginReclaimsAFailedEntry
+// covers that one.
+func TestStartupCore_CancelAndClearStopsAFailedEntryEviction(t *testing.T) {
+	t.Parallel()
+
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h)
+	core.fail(h, "first failure")
+	core.finishEntry(h)
+	stopTimer := clock.Trap().TimerStop(startupFailedEvictionTag)
+	defer stopTimer.Close()
+
+	done := make(chan struct{})
+	go func() {
+		core.cancelAndClear("tab-1", keepWorktreeOnClose)
+		close(done)
+	}()
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	<-done
+	_, running := clock.Peek()
+	assert.False(t, running, "a close must stop the failed entry's eviction timer")
+	core.WaitForInFlight()
+}
+
+// TestStartupCore_StaleTransitionsCannotDisturbAFailedEntry is the other half
+// of the identity guard: the handle a startup holds stops matching the map the
+// moment fail() replaces the entry, so that goroutine's own succeed() and a
+// second fail() must both do nothing.
 //
-// Timers fire in arm order, one per fire() call, which is also the order a real
-// clock would fire them in for the one-wait-at-a-time shape awaitInFlight has.
-type fakeStartupClock struct {
-	mu     sync.Mutex
-	timers []chan time.Time
-	fired  int
-	delays []time.Duration
-	armed  chan struct{} // buffered(1); pinged on every NewTimer
-}
+// Without the guard, succeed() deleted whatever the id held and fail() replaced
+// it, so a goroutine that already reported its failure could erase the record
+// the user is about to read.
+func TestStartupCore_StaleTransitionsCannotDisturbAFailedEntry(t *testing.T) {
+	t.Parallel()
 
-func newFakeStartupClock() *fakeStartupClock {
-	return &fakeStartupClock{armed: make(chan struct{}, 1)}
-}
+	for _, tc := range []struct {
+		name  string
+		stale func(core *startupCore, h *startupEntry)
+	}{
+		{"succeed", func(core *startupCore, h *startupEntry) { core.succeed(h.id, h) }},
+		{"fail again", func(core *startupCore, h *startupEntry) { core.fail(h, "second failure") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-func (c *fakeStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
-	ch := make(chan time.Time, 1)
-	c.mu.Lock()
-	c.timers = append(c.timers, ch)
-	c.delays = append(c.delays, d)
-	c.mu.Unlock()
-	// Buffered(1) and non-blocking: a pending ping already covers the waiter's
-	// next check, so a dropped send loses nothing.
-	select {
-	case c.armed <- struct{}{}:
-	default:
+			clock := testutil.NewQuartzMock(t)
+			core := newStartupCore(clock)
+			h := core.begin("tab-1", func() {})
+			require.NotNil(t, h)
+			core.fail(h, "first failure")
+			core.finishEntry(h)
+
+			tc.stale(&core, h)
+
+			_, errText, _, ok := core.snapshot("tab-1")
+			require.True(t, ok, "a stale transition must not remove the failed entry")
+			assert.Equal(t, "first failure", errText,
+				"a stale transition must not overwrite the error the user reads")
+			delay, running := clock.Peek()
+			assert.True(t, running, "the failed entry must keep its eviction timer")
+			assert.Equal(t, failedEntryTTL, delay)
+
+			core.cancelAndClear("tab-1", keepWorktreeOnClose)
+			core.WaitForInFlight()
+		})
 	}
-	return ch, func() {}
 }
 
-// waitArmed blocks until a timer is armed, which is the signal that the code
-// under test chose to WAIT rather than answer at once.
-func (c *fakeStartupClock) waitArmed(t *testing.T) time.Duration {
-	t.Helper()
-	select {
-	case <-c.armed:
-	case <-time.After(10 * time.Second):
-		require.FailNow(t, "no wait was armed; the caller answered without waiting")
+// TestStartupCore_StaleTransitionsCannotRetireAReplacement is the reachable
+// production case the identity guard exists for. A close retires the entry
+// several steps before it stamps closed_at, so a startup goroutine whose
+// post-spawn re-read still sees an open row runs its tail AFTER a replacement
+// startup claimed the same id.
+//
+// An id-keyed succeed() then deleted the replacement's entry, and the close
+// that followed found nothing to cancel -- so the replacement's context stayed
+// live and its process outlived the tab.
+func TestStartupCore_StaleTransitionsCannotRetireAReplacement(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		stale func(core *startupCore, h *startupEntry)
+	}{
+		{"succeed", func(core *startupCore, h *startupEntry) { core.succeed(h.id, h) }},
+		{"fail", func(core *startupCore, h *startupEntry) { core.fail(h, "the retired startup failed") }},
+		{"take pending resize", func(core *startupCore, h *startupEntry) { core.takePendingResize(h) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			core := newTestStartupCore(t)
+			retired := core.begin("tab-1", func() {})
+			require.NotNil(t, retired)
+			core.cancelAndClear("tab-1", keepWorktreeOnClose)
+			core.finishEntry(retired)
+
+			var replacementCancelled bool
+			replacement := core.begin("tab-1", func() { replacementCancelled = true })
+			require.NotNil(t, replacement, "the close freed the id, so the replacement claims it")
+			require.True(t, core.setPendingResize("tab-1", 120, 50))
+
+			tc.stale(&core, retired)
+
+			// The replacement is still the claim holder, so a second startup
+			// cannot spawn beside it and its dims are still there to apply.
+			assert.Nil(t, core.begin("tab-1", func() {}),
+				"a stale transition must not free the id the replacement holds")
+			cols, rows, ok := core.takePendingResize(replacement)
+			require.True(t, ok, "a stale transition must not consume the replacement's resize")
+			assert.Equal(t, uint16(120), cols)
+			assert.Equal(t, uint16(50), rows)
+
+			// The close that follows must still reach the replacement's cancel.
+			core.cancelAndClear("tab-1", keepWorktreeOnClose)
+			assert.True(t, replacementCancelled,
+				"the close must still cancel the replacement's startup context")
+			core.finishEntry(replacement)
+			core.WaitForInFlight()
+		})
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.delays[len(c.delays)-1]
-}
-
-// fire expires the oldest timer that has not fired yet.
-func (c *fakeStartupClock) fire(t *testing.T) {
-	t.Helper()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	require.Less(t, c.fired, len(c.timers), "no armed timer left to fire")
-	c.timers[c.fired] <- time.Now()
-	c.fired++
 }
 
 // TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID pins the two
@@ -334,18 +546,30 @@ func (c *fakeStartupClock) fire(t *testing.T) {
 func TestStartupCore_AwaitInFlightReturnsAtOnceWhenNothingHoldsTheID(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
-	clock := newFakeStartupClock()
-	core.clock = clock
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
 
 	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-unclaimed", time.Hour))
+	_, running := clock.Peek()
+	assert.False(t, running, "an unclaimed ID must not create a timer")
 
-	core.fail("tab-failed", "claude: command not found")
+	h := core.begin("tab-failed", func() {})
+	require.NotNil(t, h)
+	core.fail(h, "claude: command not found")
+	core.finishEntry(h)
 	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-failed", time.Hour))
+	delay, running := clock.Peek()
+	assert.True(t, running, "the failed entry keeps its eviction timer")
+	assert.Equal(t, failedEntryTTL, delay)
 
-	clock.mu.Lock()
-	defer clock.mu.Unlock()
-	assert.Empty(t, clock.timers, "neither state may arm a timer")
+	// Peek reports the NEAREST deadline only, so the five-minute eviction timer
+	// would hide an hour-long await timer behind it. cancelAndClear stops the
+	// eviction timer, and this clock holds no other one, so an empty Peek after
+	// it is the exact statement that awaitInFlight armed nothing.
+	core.cancelAndClear("tab-failed", keepWorktreeOnClose)
+	_, running = clock.Peek()
+	assert.False(t, running, "a failed entry must not leave an await timer behind")
+	core.WaitForInFlight()
 }
 
 // TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID is the wait
@@ -361,44 +585,52 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 	// yet.
 	for _, tc := range []struct {
 		name string
-		end  func(core *startupCore)
+		end  func(core *startupCore, h *startupEntry)
 		want startupWait
 	}{
-		{"succeed", func(core *startupCore) { core.succeed("tab-1", nil) }, startupWait{settled: true}},
-		{"fail", func(core *startupCore) { core.fail("tab-1", "boom") }, startupWait{settled: true}},
+		{"succeed", func(core *startupCore, h *startupEntry) { core.succeed(h.id, h) }, startupWait{settled: true}},
+		{"fail", func(core *startupCore, h *startupEntry) { core.fail(h, "boom") }, startupWait{settled: true}},
 		{
 			"cancelAndClear",
-			func(core *startupCore) { core.cancelAndClear("tab-1", keepWorktreeOnClose) },
+			func(core *startupCore, _ *startupEntry) { core.cancelAndClear("tab-1", keepWorktreeOnClose) },
 			startupWait{settled: true, closed: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			core := newStartupCore()
-			clock := newFakeStartupClock()
-			core.clock = clock
-			holder := core.begin("tab-1", func() {})
-			require.NotNil(t, holder)
+			clock := testutil.NewQuartzMock(t)
+			core := newStartupCore(clock)
+			ctx := testutil.DeadlineContext(t)
+			h := core.begin("tab-1", func() {})
+			require.NotNil(t, h)
+			newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+			defer newTimer.Close()
+			stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+			defer stopTimer.Close()
 
 			done := make(chan startupWait, 1)
 			go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
 
-			clock.waitArmed(t)
+			call := newTimer.MustWait(ctx)
+			assert.Equal(t, time.Hour, call.Duration)
+			call.MustRelease(ctx)
 			select {
 			case <-done:
 				require.FailNow(t, "the wait returned while the startup still held the id")
 			default:
 			}
 
-			tc.end(&core)
+			tc.end(&core, h)
+			stopTimer.MustWait(ctx).MustRelease(ctx)
 			select {
 			case got := <-done:
 				assert.Equal(t, tc.want, got, "the holder finished, so the wait must report how")
-			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
 				require.FailNow(t, "the wait never returned after the holder finished")
 			}
-			core.finishEntry(holder)
+			core.cancelAndClear("tab-1", keepWorktreeOnClose)
+			core.finishEntry(h)
 			core.WaitForInFlight()
 		})
 	}
@@ -410,27 +642,35 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
-	clock := newFakeStartupClock()
-	core.clock = clock
-	holder := core.begin("tab-1", func() {})
-	require.NotNil(t, holder)
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
 
 	done := make(chan startupWait, 1)
 	go func() { done <- core.awaitInFlight("tab-1", 90*time.Second) }()
 
-	assert.Equal(t, 90*time.Second, clock.waitArmed(t), "the wait must be armed for the limit it was given")
-	clock.fire(t)
+	call := newTimer.MustWait(ctx)
+	assert.Equal(t, 90*time.Second, call.Duration, "the wait must use its supplied limit")
+	call.MustRelease(ctx)
+	advance := clock.Advance(90 * time.Second)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	advance.MustWait(ctx)
 	select {
 	case got := <-done:
 		assert.Equal(t, startupWait{}, got,
 			"a wait that expired must report that it settled nothing, and must not claim a close")
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		require.FailNow(t, "the wait outlived its own limit")
 	}
 
 	core.cancelAndClear("tab-1", keepWorktreeOnClose)
-	core.finishEntry(holder)
+	core.finishEntry(h)
 	core.WaitForInFlight()
 }
 
@@ -440,29 +680,40 @@ func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	t.Parallel()
 
-	core := newStartupCore()
-	clock := newFakeStartupClock()
-	core.clock = clock
-	holder := core.begin("tab-1", func() {})
-	require.NotNil(t, holder)
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
 
 	const waiters = 8
 	done := make(chan startupWait, waiters)
 	for range waiters {
 		go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
 	}
-	clock.waitArmed(t)
+	for range waiters {
+		call := newTimer.MustWait(ctx)
+		assert.Equal(t, time.Hour, call.Duration)
+		call.MustRelease(ctx)
+	}
 
-	core.succeed("tab-1", nil)
+	core.succeed(h.id, h)
+	for range waiters {
+		stopTimer.MustWait(ctx).MustRelease(ctx)
+	}
 	for range waiters {
 		select {
 		case got := <-done:
 			assert.Equal(t, startupWait{settled: true}, got)
-		case <-time.After(10 * time.Second):
+		case <-ctx.Done():
 			require.FailNow(t, "a waiter was left behind by the wake-up")
 		}
 	}
-	core.finishEntry(holder)
+	core.finishEntry(h)
 	core.WaitForInFlight()
 }
 
@@ -476,35 +727,34 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 
 	for _, tc := range []struct {
 		name  string
-		first func(core *startupCore)
-		then  func(core *startupCore)
+		first func(core *startupCore, h *startupEntry)
+		then  func(core *startupCore, h *startupEntry)
 	}{
 		{"succeed then succeed",
-			func(c *startupCore) { c.succeed("tab-1", nil) },
-			func(c *startupCore) { c.succeed("tab-1", nil) }},
+			func(c *startupCore, h *startupEntry) { c.succeed(h.id, h) },
+			func(c *startupCore, h *startupEntry) { c.succeed(h.id, h) }},
 		{"succeed then cancelAndClear",
-			func(c *startupCore) { c.succeed("tab-1", nil) },
-			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) }},
+			func(c *startupCore, h *startupEntry) { c.succeed(h.id, h) },
+			func(c *startupCore, _ *startupEntry) { c.cancelAndClear("tab-1", keepWorktreeOnClose) }},
 		{"succeed then fail",
-			func(c *startupCore) { c.succeed("tab-1", nil) },
-			func(c *startupCore) { c.fail("tab-1", "boom") }},
+			func(c *startupCore, h *startupEntry) { c.succeed(h.id, h) },
+			func(c *startupCore, h *startupEntry) { c.fail(h, "boom") }},
 		{"cancelAndClear then succeed",
-			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) },
-			func(c *startupCore) { c.succeed("tab-1", nil) }},
+			func(c *startupCore, _ *startupEntry) { c.cancelAndClear("tab-1", keepWorktreeOnClose) },
+			func(c *startupCore, h *startupEntry) { c.succeed(h.id, h) }},
 		{"fail then fail",
-			func(c *startupCore) { c.fail("tab-1", "boom") },
-			func(c *startupCore) { c.fail("tab-1", "boom again") }},
+			func(c *startupCore, h *startupEntry) { c.fail(h, "boom") },
+			func(c *startupCore, h *startupEntry) { c.fail(h, "boom again") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			core := newStartupCore()
-			core.clock = newFakeStartupClock()
-			holder := core.begin("tab-1", func() {})
-			require.NotNil(t, holder)
+			core := newTestStartupCore(t)
+			h := core.begin("tab-1", func() {})
+			require.NotNil(t, h)
 
-			tc.first(&core)
-			assert.NotPanics(t, func() { tc.then(&core) })
+			tc.first(&core, h)
+			assert.NotPanics(t, func() { tc.then(&core, h) })
 			// Whatever the pair did, the id must settle again without a wait:
 			// nothing is in flight for it any more. It settles as UNCLAIMED
 			// rather than as closed, because the entry the close stamped is
@@ -512,7 +762,7 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 			// close.
 			assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-1", time.Hour))
 
-			core.finishEntry(holder)
+			core.finishEntry(h)
 			core.WaitForInFlight()
 		})
 	}

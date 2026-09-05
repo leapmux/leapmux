@@ -12,39 +12,38 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// fakeClock drives the two readings apart, which is the whole point of the
-// clock seam: a suspend advances the wall clock while the monotonic clock stays
-// put, and no time.Time can be built that way (see the clock interface).
-type fakeClock struct {
+// scriptedReadings moves the two readings independently. Quartz cannot model
+// a suspend that moves wall time while monotonic time stays unchanged.
+type scriptedReadings struct {
 	mono time.Duration
 	now  time.Time
 }
 
-func newFakeClock() *fakeClock {
+func newScriptedReadings() *scriptedReadings {
 	// A fixed instant, not time.Now: the wall reading must be free of a
 	// monotonic reading so Sub between two of them is a true wall difference.
-	return &fakeClock{now: time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC)}
+	return &scriptedReadings{now: time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC)}
 }
 
-func (c *fakeClock) monotonic() time.Duration { return c.mono }
-func (c *fakeClock) wall() time.Time          { return c.now }
+func (c *scriptedReadings) monotonic() time.Duration { return c.mono }
+func (c *scriptedReadings) wall() time.Time          { return c.now }
 
 // advance moves both clocks by the same amount: an ordinary interval in which
 // the process ran the whole time.
-func (c *fakeClock) advance(d time.Duration) {
+func (c *scriptedReadings) advance(d time.Duration) {
 	c.mono += d
 	c.now = c.now.Add(d)
 }
 
 // pause moves ONLY the wall clock, which is what a suspended process observes:
 // real time passed and it ran for none of it.
-func (c *fakeClock) pause(d time.Duration) { c.now = c.now.Add(d) }
+func (c *scriptedReadings) pause(d time.Duration) { c.now = c.now.Add(d) }
 
 // stepBack moves ONLY the wall clock backwards, as a clock correction does.
-func (c *fakeClock) stepBack(d time.Duration) { c.now = c.now.Add(-d) }
+func (c *scriptedReadings) stepBack(d time.Duration) { c.now = c.now.Add(-d) }
 
 func TestSampleIsQuietWhileTheProcessKeepsRunning(t *testing.T) {
-	c := newFakeClock()
+	c := newScriptedReadings()
 	d := newDetector(c, defaultInterval, defaultThreshold)
 
 	for range 5 {
@@ -55,7 +54,7 @@ func TestSampleIsQuietWhileTheProcessKeepsRunning(t *testing.T) {
 }
 
 func TestSampleIgnoresSkewUnderTheThreshold(t *testing.T) {
-	c := newFakeClock()
+	c := newScriptedReadings()
 	d := newDetector(c, defaultInterval, defaultThreshold)
 
 	// Scheduling jitter and garbage collection produce exactly this shape, and
@@ -67,7 +66,7 @@ func TestSampleIgnoresSkewUnderTheThreshold(t *testing.T) {
 }
 
 func TestSampleReportsAPauseOnce(t *testing.T) {
-	c := newFakeClock()
+	c := newScriptedReadings()
 	d := newDetector(c, defaultInterval, defaultThreshold)
 
 	// The ticker is frozen for the pause too, so the interval that spans a
@@ -88,7 +87,7 @@ func TestSampleReportsAPauseOnce(t *testing.T) {
 }
 
 func TestSampleReportsAWallClockStepBackwards(t *testing.T) {
-	c := newFakeClock()
+	c := newScriptedReadings()
 	d := newDetector(c, defaultInterval, defaultThreshold)
 
 	c.advance(defaultInterval)
@@ -128,7 +127,7 @@ func TestReportDistinguishesABackwardsStepFromAPause(t *testing.T) {
 // pieces.
 func TestRunReportsAPauseObservedByTheLoop(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
-	c := newFakeClock()
+	c := newScriptedReadings()
 	// A tiny interval so the loop ticks promptly; the threshold stays large so
 	// only the injected pause can trip it, never the real time this test takes.
 	d := newDetector(c, time.Millisecond, defaultThreshold)
@@ -172,8 +171,8 @@ func TestStartLoopRunsOneDetectorPerProcess(t *testing.T) {
 
 	cancelSecond()
 	cancelThird()
-	// Long enough that a loop owned by either context would have exited.
-	time.Sleep(20 * time.Millisecond)
+	require.True(t, waitForRefs(1),
+		"both later holds must be released before the loop is checked")
 	assert.True(t, loopIsRunning(),
 		"the later calls share the one loop, so ending them while the first still holds must not stop it")
 
@@ -196,7 +195,8 @@ func TestStartLoopKeepsRunningWhileAnyCallerIsLive(t *testing.T) {
 	require.True(t, loopIsRunning())
 
 	cancelFirst()
-	time.Sleep(20 * time.Millisecond)
+	require.True(t, waitForRefs(1),
+		"the first hold must be released before the loop is checked")
 	assert.True(t, loopIsRunning(),
 		"the second caller still holds the loop, so ending the first must not stop it")
 
@@ -252,4 +252,25 @@ func waitForLoopToStop() {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// waitForRefs blocks until the process-wide hold count reaches n.
+//
+// A test that cancels a caller must OBSERVE the released hold before it asserts
+// on the loop. StartLoop releases through context.AfterFunc, which the runtime
+// schedules on its own goroutine, so no clock drives it. A fixed sleep asserts
+// at a moment the test does not control, and it passes without proving anything
+// when the callback has not run yet: the loop is then still running for the
+// trivial reason that nothing released it.
+func waitForRefs(n int) bool {
+	for range 2000 {
+		running.mu.Lock()
+		refs := running.refs
+		running.mu.Unlock()
+		if refs == n {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }

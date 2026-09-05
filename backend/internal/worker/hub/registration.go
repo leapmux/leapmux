@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -43,7 +44,33 @@ func Register(ctx context.Context, endpoint *hubtransport.Endpoint, registration
 		endpoint.BaseURL(),
 		connect.WithGRPC(),
 	)
-	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultBackoff(), registerAttemptTimeout)
+	return registerWithClient(ctx, client, registrationKey, version, publicKey, mlkemPublicKey, slhdsaPublicKey, newDefaultRegisterRetry())
+}
+
+const registerRetryTimerTag = "hub-register-retry"
+
+// registerRetry is the retry policy one registration run follows.
+//
+// The three travel as one value rather than as three more parameters on an
+// already long list, because they only make sense together: a caller that
+// shortens the backoff also wants the clock that makes the wait between
+// attempts instant, and the attempt limit is the third dial of the same
+// policy.
+type registerRetry struct {
+	backoff        backoff
+	attemptTimeout time.Duration
+	// clock supplies the wait between attempts. A test drives it, so a
+	// registration ladder costs no wall time and its rungs are exact.
+	clock quartz.Clock
+}
+
+// newDefaultRegisterRetry is the policy Register uses in production.
+func newDefaultRegisterRetry() registerRetry {
+	return registerRetry{
+		backoff:        newDefaultBackoff(),
+		attemptTimeout: registerAttemptTimeout,
+		clock:          quartz.NewReal(),
+	}
 }
 
 func registerWithClient(
@@ -52,8 +79,7 @@ func registerWithClient(
 	registrationKey string,
 	version string,
 	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
-	bo backoff,
-	attemptTimeout time.Duration,
+	retry registerRetry,
 ) (*RegistrationResult, error) {
 	if registrationKey == "" {
 		return nil, errors.New("registration key is required")
@@ -71,7 +97,7 @@ func registerWithClient(
 		// flow, that one is bound to a different RPC.
 		req.Header().Set("Authorization", "Bearer "+registrationKey)
 
-		resp, err := registerOnce(ctx, client, req, attemptTimeout)
+		resp, err := registerOnce(ctx, client, req, retry.attemptTimeout)
 		if err == nil {
 			// The owner is not recorded here: the Hub delivers it on every Connect
 			// (WorkerIdentity), so the worker never caches a copy that could go stale
@@ -101,12 +127,10 @@ func registerWithClient(
 			}
 		}
 
-		interval := bo.Next()
+		interval := retry.backoff.Next()
 		slog.Warn("hub unavailable, retrying registration...", "error", err, "backoff", interval)
-		select {
-		case <-ctx.Done():
+		if !waitOrCancel(ctx, retry.clock, interval, registerRetryTimerTag) {
 			return nil, ctx.Err()
-		case <-time.After(interval):
 		}
 	}
 }
@@ -124,6 +148,11 @@ func registerWithClient(
 //
 // It is generous: registration is one round trip, but it runs while a hub may
 // still be starting, and the retry costs a fresh key nothing.
+//
+// This limit stays on the CONTEXT rather than on registerRetry.clock, unlike
+// the wait between attempts. context.WithTimeout reads the real clock, and no
+// Quartz clock can drive it, so an attempt limit a test wants to reach must be
+// a short real duration.
 const registerAttemptTimeout = 30 * time.Second
 
 // registerOnce makes one attempt under timeout.

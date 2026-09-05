@@ -175,7 +175,7 @@ func TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction(t *testing.T) 
 	// Without it the store's own monotone guard would refuse a deadline that
 	// is not ahead of the stored one, and the case would pass for the wrong
 	// reason.
-	env.clock.advance(30 * time.Minute)
+	env.advance(30 * time.Minute)
 
 	resp := getWithCookie(t, env.server.URL+"/oauth/authorize?"+startQuery(nil).Encode(), cookie)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -218,7 +218,7 @@ func TestCLIConsent_ExpiredElevationClosesTheGate(t *testing.T) {
 	assert.NotContains(t, bodyOf(t, resp), "unverified")
 
 	// Past it: the same request bounces.
-	env.clock.advance(auth.ElevationWindow + time.Minute)
+	env.advance(auth.ElevationWindow + time.Minute)
 	resp = getWithCookie(t, env.server.URL+"/oauth/authorize?"+startQuery(nil).Encode(), cookie)
 	require.Equal(t, http.StatusFound, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Location"), "/elevate")
@@ -333,7 +333,7 @@ func TestCLIConsent_AdminScopeRefusedForANonAdministrator(t *testing.T) {
 	token, _, _, err := auth.Login(ctx, env.store, "plainuser", "plainpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	cookie := &http.Cookie{Name: auth.CookieName, Value: token}
-	now := env.clock.now()
+	now := env.now()
 	n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
 		SessionID:          token,
 		UserID:             userid.MustNew(plainID),
@@ -378,7 +378,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
 		token, _, _, err := auth.Login(ctx, env.store, "plainuser", "plainpass123", auth.DefaultSessionDuration)
 		require.NoError(t, err)
-		now := env.clock.now()
+		now := env.now()
 		n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
 			SessionID:          token,
 			UserID:             userid.MustNew(plainID),
@@ -429,7 +429,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		cookie := elevatedPlainUser(t, env)
 
 		userCode := verifycode.Generate()
-		now := env.clock.now()
+		now := env.now()
 		// The ASK carries the admin scope, and it is on the GRANT ROW: the
 		// device flow's request and its consent happen on two machines with a
 		// six-character code between them, so the row is the only carrier.
@@ -472,7 +472,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: ask,
 			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless",
-			IntervalSeconds: 5, ExpiresAt: env.clock.now().Add(10 * time.Minute),
+			IntervalSeconds: 5, ExpiresAt: env.now().Add(10 * time.Minute),
 		}))
 		return userCode
 	}
@@ -594,7 +594,7 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 		ClientID:   oauthapp.ControlCLIClientID,
 		DeviceCode: id.Generate(), UserCode: userCode, DeviceName: "ci-runner-7",
-		IntervalSeconds: 5, ExpiresAt: env.clock.now().Add(10 * time.Minute),
+		IntervalSeconds: 5, ExpiresAt: env.now().Add(10 * time.Minute),
 	}))
 
 	resp := getWithCookie(t, env.server.URL+"/oauth/device?user_code="+url.QueryEscape(verifycode.Format(userCode)), cookie)
@@ -611,7 +611,7 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 
 	// An EXPIRED grant is a miss too: it cannot be approved, so it has no
 	// device worth showing.
-	env.clock.advance(11 * time.Minute)
+	env.advance(11 * time.Minute)
 	expired := getWithCookie(t, env.server.URL+"/oauth/device?user_code="+url.QueryEscape(verifycode.Format(userCode)), cookie)
 	require.Equal(t, http.StatusOK, expired.StatusCode)
 	assert.NotContains(t, bodyOf(t, expired), "ci-runner-7")
@@ -659,7 +659,7 @@ func TestIssuedToken_CarriesTheAbsoluteLifetime(t *testing.T) {
 	require.NotNil(t, row.RefreshExpiresAt)
 	assert.False(t, row.RefreshExpiresAt.After(row.CreatedAt.Add(auth.AbsoluteTokenLifetime).Add(time.Minute)),
 		"a mint must not write a refresh window past the credential's ceiling")
-	assert.True(t, row.RefreshExpiresAt.After(env.clock.now()))
+	assert.True(t, row.RefreshExpiresAt.After(env.now()))
 }
 
 // TestIssuedToken_EmailsTheOwner pins the one signal that does not require
@@ -818,7 +818,7 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 	// position where the access clip can be observed at all: further out,
 	// now+1h still lands under the ceiling and an unclipped access token
 	// looks correct. The refresh clip applies here just as it did a day out.
-	env.clock.advance(auth.AbsoluteTokenLifetime - 30*time.Minute)
+	env.advance(auth.AbsoluteTokenLifetime - 30*time.Minute)
 	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {refreshToken}})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -860,7 +860,7 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 	// and each client renders its own remedy. The CLI's is ErrNotLoggedIn,
 	// which names the command; refresh.go turns invalid_grant into exactly
 	// that by deleting the stored credential.
-	env.clock.advance(48 * time.Hour)
+	env.advance(48 * time.Hour)
 	dead, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {rotated.RefreshToken}})
 	require.NoError(t, err)
 	defer func() { _ = dead.Body.Close() }()

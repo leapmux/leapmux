@@ -14,10 +14,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -46,30 +46,22 @@ type apiAuthEnv struct {
 	closer    *recordingBearerCloser
 	server    *httptest.Server
 	userID    string
-	clock     *testClock
+	// now is the handler clock every handler this env builds installs, and the
+	// ONE instant the tests read. Sharing one func is what keeps a second
+	// handler on the same notion of time as the first, which the step-up and
+	// activation cases both depend on.
+	//
+	// The mock clock behind it is not a field on purpose. It reads a FROZEN
+	// instant, so a row a test stamped from it and a deadline the handler
+	// derived from now would disagree by the test's own runtime -- and every
+	// site that reached for the wrong one compiled.
+	now func() time.Time
+	// advance moves the offset both now and the handler read.
+	advance func(time.Duration)
 	// set is the hub's own settings, wired exactly as production wires them.
 	// secure_cookies is the one key the handler reads from it, and it decides
 	// which session-cookie spelling the consent legs accept.
 	set *settings.Manager
-}
-
-// testClock drives the handler's OAuthServerHandler.Now seam: real time plus an
-// offset the test advances. It offsets rather than freezes because the
-// store's own clock stamps the rows the handler reads -- SQLite writes
-// last_polled_at with strftime('now') -- so a frozen handler clock would sit
-// permanently behind every row it compares against. Advancing lets a test
-// step past the device-code slow_down window (5s) instead of sleeping through
-// it, while every other instant stays anchored to real time.
-type testClock struct {
-	offset atomic.Int64
-}
-
-func (c *testClock) now() time.Time {
-	return time.Now().Add(time.Duration(c.offset.Load()))
-}
-
-func (c *testClock) advance(d time.Duration) {
-	c.offset.Add(int64(d))
 }
 
 type recordingBearerCloser struct {
@@ -159,7 +151,21 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	t.Cleanup(srv.Close)
 
 	closer := &recordingBearerCloser{}
-	clock := &testClock{}
+	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
+	clock.Set(time.Now())
+	// The handler reads real time PLUS the offset the test advanced. It never
+	// reads a frozen instant. It mints deadlines that assertions compare against
+	// limits the test derives from time.Now(). A clock stopped at setup drifts
+	// out of those limits by the test's own runtime.
+	// TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime shows the
+	// cost: remainingExpiresIn rounds the remaining seconds UP, so a handler
+	// clock behind real time by any amount reports 11 where the test allows 10.
+	//
+	// An advance moves the offset. Each advance in these files steps past the
+	// device-code slow_down window or the elevation window without a sleep.
+	base := clock.Now()
+	now := func() time.Time { return time.Now().Add(clock.Now().Sub(base)) }
+	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
 	h := service.NewOAuthServerHandler(service.OAuthServerDeps{
 		Store:     st,
@@ -168,7 +174,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 		Settings:  set,
 		HubURL:    func() string { return srv.URL },
 	})
-	h.Now = clock.now
+	h.Now = now
 	h.RegisterRoutes(mux)
 
 	u, err := st.Users().GetByUsername(context.Background(), "admin")
@@ -181,7 +187,8 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 		closer:    closer,
 		server:    srv,
 		userID:    u.ID,
-		clock:     clock,
+		now:       now,
+		advance:   advance,
 		set:       set,
 	}
 }
@@ -199,11 +206,11 @@ func (e *apiAuthEnv) adminCookie(t *testing.T) *http.Cookie {
 // through the REAL store write the RPCs use, so the dialect's own mapping of
 // the two columns is exercised rather than faked.
 //
-// Every instant comes from the handler's clock seam, so a test that advances
-// that clock past the window sees the gate close.
+// Every instant comes from e.now, the same seam the handler reads, so a test
+// that advances the clock past the window sees the gate close.
 func (e *apiAuthEnv) elevate(t *testing.T, cookie *http.Cookie) {
 	t.Helper()
-	now := e.clock.now()
+	now := e.now()
 	n, err := e.store.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
 		SessionID:          cookie.Value,
 		UserID:             userid.MustNew(e.userID),
@@ -597,7 +604,7 @@ func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
 	require.Equal(t, http.StatusOK, approveResp.StatusCode)
 
 	// Step past the throttle window since the previous poll.
-	env.clock.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
+	env.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
 
 	// Successful exchange.
 	successResp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
@@ -737,7 +744,7 @@ func TestAPIAuth_DeviceCode_AlreadyConsumed(t *testing.T) {
 	_ = approve.Body.Close()
 
 	// Step past the throttle, then exchange -- should succeed.
-	env.clock.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
+	env.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
 	first, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1464,7 +1471,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	}, env.clock.now().UTC())
+	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -1490,7 +1497,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	// the interval, then confirm a clean retry succeeds -- proving the
 	// grant stayed retryable. The retry goes to env.server, whose handler
 	// is the one on env's clock.
-	env.clock.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
+	env.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
 	retry, err := http.PostForm(env.server.URL+"/oauth/token", form)
 	require.NoError(t, err)
 	defer func() { _ = retry.Body.Close() }()
@@ -1561,7 +1568,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	}, env.clock.now().UTC())
+	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
@@ -1604,7 +1611,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
 		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
-	}, env.clock.now().UTC())
+	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -2285,7 +2292,7 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
 		HubURL:    func() string { return env.server.URL },
 	})
-	h.Now = env.clock.now
+	h.Now = env.now
 	h.RegisterRoutes(mux)
 	cookie := env.elevatedAdminCookie(t)
 
@@ -2379,7 +2386,7 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
 				HubURL:    func() string { return env.server.URL },
 			})
-			h.Now = env.clock.now
+			h.Now = env.now
 			h.RegisterRoutes(mux)
 
 			req := httptest.NewRequest(http.MethodPost, "/oauth/device-authorization",

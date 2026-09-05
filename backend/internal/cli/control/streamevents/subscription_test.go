@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -204,151 +205,12 @@ func protoInt32(v int32) *int32 { return &v }
 
 // fastRetry is a small, jitterless LOOKUP_FAILED budget for tests that drive
 // the ladder to exhaustion: 3 attempts at a deterministic 10ms → 20ms → 30ms.
-// The delays never elapse in real time — every retry test waits on a fakeClock
-// — but keeping them tiny and un-jittered makes the ladder an exact,
-// assertable sequence rather than a fuzzed one.
 func fastRetry() *backoffutil.Retry {
 	r, err := backoffutil.NewRetry(10*time.Millisecond, 30*time.Millisecond, 2, 0, 3)
 	if err != nil {
 		panic(err) // constants are known-valid
 	}
 	return r
-}
-
-// waitTimeout bounds every wait in this file. It is a deadlock guard, not a
-// timing assumption: the events it waits for (a goroutine arming its timer,
-// that goroutine returning, a 1ms timer firing) happen in microseconds, so
-// crossing this bound means the code under test never got there at all.
-const waitTimeout = 10 * time.Second
-
-// fakeTimer is one timer the retry goroutine asked fakeClock for.
-type fakeTimer struct {
-	delay    time.Duration
-	deliver  chan time.Time // buffered(1) so firing never blocks on a bailed retry
-	released bool           // the retry goroutine called its stop func
-}
-
-// fakeClock is a deterministic retryClock. NewTimer records the requested delay
-// and hands back a channel the test fires explicitly, so nothing in the retry
-// path is timed by the wall clock: a test can hold the retry in its
-// armed-but-not-yet-fired window for as long as it likes, and a test asserting
-// that NO retry armed reads armedCount instead of sleeping to find out.
-//
-// Timers fire in arm order, one per fireRetry call, which is also the order a
-// real clock would fire them in (the retry ladder arms at most one at a time).
-type fakeClock struct {
-	mu     sync.Mutex
-	timers []*fakeTimer
-	fired  int           // how many of them fireRetry has fired, in arm order
-	armed  chan struct{} // buffered(1); pinged on every NewTimer
-	freed  chan struct{} // buffered(1); pinged on every stop func call
-}
-
-func newFakeClock() *fakeClock {
-	return &fakeClock{
-		armed: make(chan struct{}, 1),
-		freed: make(chan struct{}, 1),
-	}
-}
-
-func (c *fakeClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
-	tm := &fakeTimer{delay: d, deliver: make(chan time.Time, 1)}
-	c.mu.Lock()
-	c.timers = append(c.timers, tm)
-	c.mu.Unlock()
-	ping(c.armed)
-	return tm.deliver, func() {
-		c.mu.Lock()
-		tm.released = true
-		c.mu.Unlock()
-		ping(c.freed)
-	}
-}
-
-// ping delivers a non-blocking wake-up on a buffered(1) signal channel. A
-// pending signal already covers the waiter's next re-check, so a dropped send
-// loses nothing.
-func ping(ch chan struct{}) {
-	select {
-	case ch <- struct{}{}:
-	default:
-	}
-}
-
-// armedCount reports how many retry timers have been armed so far. Safe to read
-// synchronously for a negative assertion: dispatchUpdateAck decides whether to
-// arm under s.mu before pushFrame returns, so a push that armed nothing leaves
-// this at its prior value for good.
-func (c *fakeClock) armedCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.timers)
-}
-
-// waitArmed blocks until at least n retry timers have been armed. The arming
-// itself happens on the retry goroutine, so a test expecting a retry must wait
-// for it rather than read armedCount directly.
-func (c *fakeClock) waitArmed(t *testing.T, n int) {
-	t.Helper()
-	c.await(t, c.armed, func() (int, bool) { return len(c.timers), len(c.timers) >= n },
-		"armed retry timer(s)", n)
-}
-
-// waitRetrySettled blocks until at least n retry goroutines have finished.
-// armLookupRetry releases its timer on the way out (the deferred stop), whether
-// it fired its Update or bailed, so a released timer means that retry is done
-// and its effects — the committed slot, the restated interest — are visible.
-func (c *fakeClock) waitRetrySettled(t *testing.T, n int) {
-	t.Helper()
-	c.await(t, c.freed, func() (int, bool) {
-		got := 0
-		for _, tm := range c.timers {
-			if tm.released {
-				got++
-			}
-		}
-		return got, got >= n
-	}, "settled retries", n)
-}
-
-// await re-checks want (under c.mu) on every ping of signal until it is
-// satisfied, failing the test if waitTimeout elapses first.
-func (c *fakeClock) await(t *testing.T, signal chan struct{}, want func() (int, bool), what string, n int) {
-	t.Helper()
-	deadline := time.After(waitTimeout)
-	for {
-		c.mu.Lock()
-		got, ok := want()
-		c.mu.Unlock()
-		if ok {
-			return
-		}
-		select {
-		case <-signal:
-		case <-deadline:
-			t.Fatalf("timed out waiting for %d %s; got %d", n, what, got)
-		}
-	}
-}
-
-// fireRetry waits for the next armed retry timer and fires it, returning the
-// delay it was armed with so the caller can assert on the ladder. Each call
-// fires the next timer in arm order.
-func (c *fakeClock) fireRetry(t *testing.T) time.Duration {
-	t.Helper()
-	c.mu.Lock()
-	next := c.fired + 1
-	c.mu.Unlock()
-	c.waitArmed(t, next)
-
-	c.mu.Lock()
-	tm := c.timers[c.fired]
-	c.fired++
-	c.mu.Unlock()
-	// Buffered, so this never blocks even if the retry already bailed via
-	// retryCtx and will never read the delivery.
-	tm.deliver <- time.Time{}
-	return tm.delay
 }
 
 // retryState reads the LOOKUP_FAILED retry's observable state under s.mu — the
@@ -361,19 +223,39 @@ func retryState(sub *Subscription) (attempts int, inFlight bool) {
 	return sub.retry.Attempts(), sub.retryInFlight
 }
 
-// newRetrySub builds a Subscription over tr whose LOOKUP_FAILED retry waits on
-// a fakeClock instead of the wall clock, and registers Cancel for cleanup.
-// Every test that can arm a retry uses it, so no retry in this package is timed
-// by a real timer. Callers that drive the ladder to exhaustion still install
-// fastRetry themselves; the rest keep the production budget, which the fake
-// clock makes free to wait out.
-func newRetrySub(t *testing.T, tr *fakeTransport) (*Subscription, *fakeClock) {
+// armCountingClock is the Quartz mock plus a count of the retry timers armed
+// on it. Every other method routes to the embedded mock, so a test drives it
+// exactly as it drives a plain *quartz.Mock. It holds no time of its own, so it
+// is a decorator rather than a second fake clock.
+//
+// The count is what a trap cannot supply. A trap holds each NewTimer call until
+// the test collects it. A second timer that the code must coalesce away parks
+// inside the trap and registers no event: Peek reports an empty clock,
+// and every "no retry timer may arm" assertion passes on the very regression it
+// exists to catch. arms counts the call itself, before the trap sees it.
+type armCountingClock struct {
+	*quartz.Mock
+	arms atomic.Int64
+}
+
+func (c *armCountingClock) NewTimer(d time.Duration, tags ...string) *quartz.Timer {
+	c.arms.Add(1)
+	return c.Mock.NewTimer(d, tags...)
+}
+
+// armCount reports how many retry timers the subscription armed so far. It is
+// safe to read synchronously for a negative assertion: dispatchUpdateAck
+// decides whether to arm under s.mu before pushFrame returns, so a push that
+// armed nothing leaves this at its prior value permanently.
+func (c *armCountingClock) armCount() int {
+	return int(c.arms.Load())
+}
+
+// newRetrySub builds a Subscription over tr with a Quartz mock.
+func newRetrySub(t *testing.T, tr *fakeTransport) (*Subscription, *armCountingClock) {
 	t.Helper()
-	clk := newFakeClock()
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	// Safe without a lock: the retry goroutine that reads sub.clock cannot exist
-	// until the first Update, which every caller issues after this returns.
-	sub.clock = clk
+	clk := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil, WithClock(clk))
 	t.Cleanup(sub.Cancel)
 	return sub, clk
 }
@@ -681,22 +563,22 @@ func TestSubscription_UpdateReopensAfterDone(t *testing.T) {
 	sub.Cancel()
 }
 
-// TestSubscription_DefaultSystemClockDrivesTheRetry is the one retry test that
-// does NOT substitute a fakeClock, and it exists because all the others do:
-// with the seam in place, nothing else exercises the clock NewSubscription
-// actually wires. A regression that left s.clock nil (panic on the first
-// LOOKUP_FAILED) or handed back a timer that never fires (the CLI silently
-// stops recovering from a transient miss) would pass every other test here.
+// TestSubscription_DefaultClockDrivesTheRetry is the one retry test that does
+// NOT substitute a mock, and it exists because all the others do: with the
+// option in place, nothing else exercises the clock NewSubscription actually
+// wires. A regression that left s.clock nil (panic on the first LOOKUP_FAILED)
+// or wired a clock whose timers never fire (the CLI silently stops recovering
+// from a transient miss) would pass every other test here.
 //
 // It waits on a real 1ms timer, which is safe in the one direction that
-// matters: the assertion is a positive edge — the retry fires and restates —
+// matters: the assertion is a positive edge -- the retry fires and restates --
 // so a loaded machine makes this slower, never wrong.
-func TestSubscription_DefaultSystemClockDrivesTheRetry(t *testing.T) {
+func TestSubscription_DefaultClockDrivesTheRetry(t *testing.T) {
 	tr := &fakeTransport{}
 	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
 	t.Cleanup(sub.Cancel)
-	require.IsType(t, systemClock{}, sub.clock,
-		"NewSubscription must wire the real clock, not leave the seam empty")
+	require.IsType(t, quartz.NewReal(), sub.clock,
+		"NewSubscription must wire the real clock, not a seeded mock a WithinDuration check would accept")
 
 	// 1ms so the real wait is negligible; the ladder shape is pinned elsewhere.
 	r, err := backoffutil.NewRetry(time.Millisecond, 2*time.Millisecond, 2, 0, 3)
@@ -710,9 +592,14 @@ func TestSubscription_DefaultSystemClockDrivesTheRetry(t *testing.T) {
 	require.Eventually(t, func() bool {
 		attempts, _ := retryState(sub)
 		return attempts == 1
-	}, waitTimeout, time.Millisecond,
+	}, 10*time.Second, time.Millisecond,
 		"a retry armed on the real clock must fire, commit its slot, and restate")
 	assert.Len(t, updatesOf(t, tr), 1, "the real-clock retry restates the interest once")
+}
+
+func TestSubscription_WithClockRejectsNil(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { WithClock(nil) })
 }
 
 // TestSubscription_LookupFailedAckRetriesLastReq pins that a LOOKUP_FAILED
@@ -721,7 +608,9 @@ func TestSubscription_DefaultSystemClockDrivesTheRetry(t *testing.T) {
 // hardcoded constant that could drift from lookupRetryInitial).
 func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
 	tr := &fakeTransport{}
-	sub, clk := newRetrySub(t, tr) // production budget: the fake clock makes it free
+	sub, clk := newRetrySub(t, tr)
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -731,15 +620,15 @@ func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
 
 	pushLookupFailed(tr, "a-1")
 
-	delay := clk.fireRetry(t)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
 	lo := time.Duration(float64(lookupRetryInitial) * (1 - lookupRetryJitter))
-	// +1ns: backoffutil's jitter window is inclusive of its upper bound.
+	// +1ns: backoffutil's jitter window includes its upper limit.
 	hi := time.Duration(float64(lookupRetryInitial)*(1+lookupRetryJitter)) + 1
 	assert.GreaterOrEqual(t, delay, lo,
 		"the first retry must wait the production ladder's first rung (±jitter)")
 	assert.LessOrEqual(t, delay, hi,
 		"the first retry must wait the production ladder's first rung (±jitter)")
-	clk.waitRetrySettled(t, 1)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 
 	updates := updatesOf(t, tr)
 	require.Len(t, updates, 1, "the retry must restate lastReq exactly once")
@@ -759,16 +648,18 @@ func TestSubscription_LookupFailedRetryReadsLatestLastReqAtFireTime(t *testing.T
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	// Open with {a-1}; the retry will arm against this interest.
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
 
 	// Arm a retry by pushing a LOOKUP_FAILED ack for a-1, and hold it in its
-	// backoff window: the fake clock fires it only when this test says so, so
+	// backoff window: the Quartz clock advances only when this test says so, so
 	// the revise below is strictly inside the window.
 	pushLookupFailed(tr, "a-1")
-	clk.waitArmed(t, 1)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
 
 	// Revise the live stream to add a-2. The retry must fire against THIS
 	// interest, not the arm-time {a-1}. This lands as the handle's 1st update.
@@ -782,8 +673,7 @@ func TestSubscription_LookupFailedRetryReadsLatestLastReqAtFireTime(t *testing.T
 	// clobbering the revise and stalling a-2's events. Ordering here is exact
 	// (revise, then retry), so the assertion cannot be satisfied by the revise
 	// itself the way a "last update has both" poll could be.
-	clk.fireRetry(t)
-	clk.waitRetrySettled(t, 1)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 
 	updates := updatesOf(t, tr)
 	require.Len(t, updates, 2, "the revise and the retry's restatement, in that order")
@@ -803,20 +693,22 @@ func TestSubscription_LookupFailedRetryReadsLatestLastReqAtFireTime(t *testing.T
 // goroutine now selects on retryCtx.Done(), which Cancel cancels, so it bails
 // promptly.
 //
-// The fake clock states that directly: its timer NEVER fires, so retryCtx is
+// The Quartz clock states that directly: its timer never fires, so retryCtx is
 // the only way out. A regression that dropped the select would hang here rather
 // than merely being slow.
 func TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
 
 	// Arm the retry and let it park on a timer that will never be fired.
 	pushLookupFailed(tr, "a-1")
-	clk.waitArmed(t, 1)
+	assert.Equal(t, 10*time.Millisecond, testutil.WaitForTimer(t, ctx, newTimer))
 
 	// Cancel must wake the retry via retryCtx -- asserted as a COMPLETION
 	// against a generous deadline, not as a tight budget: a completion guard
@@ -829,13 +721,15 @@ func TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel(t *testing.T) {
 	}()
 	select {
 	case <-cancelled:
-	case <-time.After(waitTimeout):
+	case <-ctx.Done():
 		t.Fatal("Cancel blocked on the retry timer instead of waking it via retryCtx")
 	}
 
 	// The woken retry must run to completion: refund its peeked slot (never
 	// committed) and release its timer on the way out.
-	clk.waitRetrySettled(t, 1)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	_, running := clk.Peek()
+	assert.False(t, running, "Cancel must stop the pending retry timer")
 	attempts, _ := retryState(sub)
 	assert.Equal(t, 0, attempts, "a Cancelled retry must refund its consumed slot")
 }
@@ -967,7 +861,7 @@ func TestSubscription_LookupFailedAckWithNilLastReqDoesNotConsumeBudget(t *testi
 	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "LOOKUP_FAILED ack with nil lastReq must not consume a retry attempt")
 	assert.False(t, inFlight, "LOOKUP_FAILED ack with nil lastReq must not arm a retry")
-	assert.Equal(t, 0, clk.armedCount(), "no retry timer may be armed with nothing to restate")
+	assert.Zero(t, clk.armCount(), "no retry timer may be armed with nothing to restate")
 }
 
 // TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel pins the fix for a
@@ -986,6 +880,8 @@ func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -995,16 +891,18 @@ func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
 	require.Equal(t, int32(1), openedBefore)
 
 	// Push LOOKUP_FAILED, then Cancel strictly inside the retry delay window --
-	// the fake clock's timer cannot fire until this test fires it, so the race
+	// the Quartz clock cannot advance until this test advances it, so the race
 	// the real clock left open (a 10ms timer beating Cancel on a stalled
 	// machine, re-opening the stream) is gone.
 	pushLookupFailed(tr, "a-1")
-	clk.waitArmed(t, 1)
+	assert.Equal(t, 10*time.Millisecond, testutil.WaitForTimer(t, ctx, newTimer))
 	sub.Cancel()
 
 	// The retry wakes on retryCtx and bails; it releases its timer as it returns,
 	// so a settled retry means every effect it could have had is already visible.
-	clk.waitRetrySettled(t, 1)
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	_, running := clk.Peek()
+	assert.False(t, running, "Cancel must stop the pending retry timer")
 	assert.Equal(t, openedBefore, atomic.LoadInt32(&tr.callsOpened),
 		"LOOKUP_FAILED retry must not re-open a stream after Cancel")
 	// The retry bailed when its gate retired, so it must refund the slot it
@@ -1013,7 +911,7 @@ func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
 	assert.Equal(t, 0, attempts, "a retry cancelled mid-wait must refund its attempt slot")
 }
 
-// TestSubscription_LookupFailedRetryBudgetExhausts pins the bounded-retry fix:
+// TestSubscription_LookupFailedRetryBudgetExhausts pins the retry limit:
 // previously every LOOKUP_FAILED ack spawned a fresh goroutine that produced
 // another LOOKUP_FAILED ack, compounding without limit on a flapping worker.
 // The retry must stop after the budget is spent.
@@ -1021,6 +919,8 @@ func TestSubscription_LookupFailedRetryBudgetExhausts(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry() // 3 attempts, 10 -> 20 -> 30ms, jitterless
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-missing"}},
@@ -1037,8 +937,9 @@ func TestSubscription_LookupFailedRetryBudgetExhausts(t *testing.T) {
 	}
 	for i, want := range wantLadder {
 		pushLookupFailed(tr, "a-missing")
-		assert.Equal(t, want, clk.fireRetry(t), "retry %d waits its ladder rung", i+1)
-		clk.waitRetrySettled(t, i+1)
+		delay := testutil.WaitForTimer(t, ctx, newTimer)
+		assert.Equal(t, want, delay, "retry %d waits its ladder rung", i+1)
+		testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 
 		attempts, _ := retryState(sub)
 		require.Equal(t, i+1, attempts, "each fired retry consumes exactly one slot")
@@ -1055,7 +956,7 @@ func TestSubscription_LookupFailedRetryBudgetExhausts(t *testing.T) {
 	attempts, inFlight := retryState(sub)
 	assert.Equal(t, len(wantLadder), attempts, "exactly maxAttempts retries consumed")
 	assert.False(t, inFlight, "an ack past exhaustion must not arm a retry")
-	assert.Equal(t, len(wantLadder), clk.armedCount(), "no retry timer may arm past the budget")
+	assert.Equal(t, len(wantLadder), clk.armCount(), "no retry timer may arm past the budget")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened),
 		"LOOKUP_FAILED retries must not re-open the stream (no re-open ladder)")
 	assert.Len(t, updatesOf(t, tr), len(wantLadder),
@@ -1109,12 +1010,14 @@ func TestSubscription_FreshOpenResetsRetryBudget(t *testing.T) {
 // recovery — it restated the interest and reset the budget — so the stale retry
 // rolls back its peeked slot and bails, leaving the new stream untouched.
 //
-// Holding a retry across a fresh open needs the fake clock: with a real timer
+// Holding a retry across a fresh open needs the Quartz clock. With a real timer,
 // the ordering (arm, re-open, THEN fire) could not be stated, only hoped for.
 func TestSubscription_FreshOpenRetiresArmedRetry(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -1123,7 +1026,7 @@ func TestSubscription_FreshOpenRetiresArmedRetry(t *testing.T) {
 
 	// Arm a retry against the first stream and hold it in its backoff window.
 	pushLookupFailed(tr, "a-1")
-	clk.waitArmed(t, 1)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
 
 	// The stream dies and the caller re-opens it: a fresh open, which bumps the
 	// generation the armed retry captured.
@@ -1137,8 +1040,7 @@ func TestSubscription_FreshOpenRetiresArmedRetry(t *testing.T) {
 	require.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened))
 
 	// Only now let the stale retry's timer fire.
-	clk.fireRetry(t)
-	clk.waitRetrySettled(t, 1)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 
 	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "a retry retired by a fresh open must not consume a slot")
@@ -1150,8 +1052,8 @@ func TestSubscription_FreshOpenRetiresArmedRetry(t *testing.T) {
 	// The cleared in-flight flag means the new stream can still arm its own
 	// retry — the retirement must not wedge the subscription.
 	pushLookupFailed(tr, "a-1")
-	clk.fireRetry(t)
-	clk.waitRetrySettled(t, 2)
+	delay = testutil.WaitForTimer(t, ctx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 	attempts, _ = retryState(sub)
 	assert.Equal(t, 1, attempts, "the fresh stream's own retry consumes a slot")
 	assert.Len(t, updatesOf(t, tr), 1, "the fresh stream's retry restates its interest")
@@ -1168,6 +1070,8 @@ func TestSubscription_LookupFailedRetryReopenSurvivesGateRetire(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
@@ -1186,12 +1090,12 @@ func TestSubscription_LookupFailedRetryReopenSurvivesGateRetire(t *testing.T) {
 	// re-opens (fresh-open). The re-open runs on context.Background (no gate),
 	// so nothing inside Update can cancel the newborn stream.
 	pushLookupFailed(tr, "a-1")
-	clk.fireRetry(t)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 
 	// The retry releases its timer only after its Update returns, so a settled
 	// retry means the re-open has been published -- no sleep needed to observe
 	// the post-open state.
-	clk.waitRetrySettled(t, 1)
 	require.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened),
 		"LOOKUP_FAILED retry must re-open the stream")
 
@@ -1426,6 +1330,8 @@ func TestSubscription_LateCancelRetryDoesNotOrphan(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -1454,12 +1360,13 @@ func TestSubscription_LateCancelRetryDoesNotOrphan(t *testing.T) {
 	// Arm the retry and fire it. It passes the generation check (the generation
 	// has not moved), enters Update, and blocks on releaseOpen mid-open.
 	pushLookupFailed(tr, "a-1")
-	clk.fireRetry(t)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	advance := clk.Advance(delay)
 
 	// Wait for the retry's re-open to enter OpenWatchEvents.
 	select {
 	case <-openStarted:
-	case <-time.After(waitTimeout):
+	case <-ctx.Done():
 		t.Fatal("retry's re-open never entered OpenWatchEvents")
 	}
 
@@ -1477,9 +1384,11 @@ func TestSubscription_LateCancelRetryDoesNotOrphan(t *testing.T) {
 
 	select {
 	case <-cancelDone:
-	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("Cancel did not return after the retry's Update completed")
 	}
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	advance.MustWait(ctx)
 
 	// After Cancel returns, no stream may be active: the retry's re-open did not
 	// survive as an orphan. (callsOpened may be 2 -- the open happened -- but the
@@ -1533,6 +1442,8 @@ func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
@@ -1554,13 +1465,13 @@ func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "a stale ack must not consume the retry budget")
 	assert.False(t, inFlight, "a stale ack must not arm a retry")
-	assert.Equal(t, 0, clk.armedCount(), "a stale ack must not arm a retry timer")
+	assert.Zero(t, clk.armCount(), "a stale ack must not arm a retry timer")
 
 	// A current ack (update_id=0 is always processed, matching the frontend)
 	// for an entity STILL in the interest arms a retry and consumes a slot.
 	pushLookupFailed(tr, "a-2")
-	clk.fireRetry(t)
-	clk.waitRetrySettled(t, 1)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 	attempts, _ = retryState(sub)
 	assert.Equal(t, 1, attempts, "a current ack for a wanted entity must arm a retry")
 }
@@ -1576,6 +1487,8 @@ func TestSubscription_LookupFailedAckForDroppedEntityDoesNotRetry(t *testing.T) 
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	// Open with {a-1}, then revise to {a-2} — dropping a-1 from the interest.
 	require.NoError(t, sub.Update(context.Background(),
@@ -1588,12 +1501,12 @@ func TestSubscription_LookupFailedAckForDroppedEntityDoesNotRetry(t *testing.T) 
 	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "a LOOKUP_FAILED for a dropped entity must not consume a retry slot")
 	assert.False(t, inFlight, "a LOOKUP_FAILED for a dropped entity must not arm a retry")
-	assert.Equal(t, 0, clk.armedCount(), "a LOOKUP_FAILED for a dropped entity must not arm a retry timer")
+	assert.Zero(t, clk.armCount(), "a LOOKUP_FAILED for a dropped entity must not arm a retry timer")
 
 	// A LOOKUP_FAILED for the still-wanted a-2 DOES arm a retry.
 	pushLookupFailed(tr, "a-2")
-	clk.fireRetry(t)
-	clk.waitRetrySettled(t, 1)
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 	attempts, _ = retryState(sub)
 	assert.Equal(t, 1, attempts, "a LOOKUP_FAILED for a wanted entity must arm a retry")
 }
@@ -1608,11 +1521,13 @@ func TestSubscription_LookupFailedRetryCoalescesInFlight(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clk.Mock, subscriptionRetryTimerTag)
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
 
-	// Push a burst of LOOKUP_FAILED acks. The fake clock holds the first retry
+	// Push a burst of LOOKUP_FAILED acks. The Quartz clock holds the first retry
 	// in its backoff window for the whole burst, so every ack after it lands
 	// while a retry is armed and must coalesce into that one retry. (With a real
 	// timer this window was 10ms wide and the assertions below raced it.)
@@ -1627,14 +1542,14 @@ func TestSubscription_LookupFailedRetryCoalescesInFlight(t *testing.T) {
 	attempts, inFlight := retryState(sub)
 	assert.True(t, inFlight, "a burst of acks must coalesce into one in-flight retry")
 	assert.Equal(t, 0, attempts, "an armed-but-unfired retry must not consume a slot")
-	clk.waitArmed(t, 1)
-	assert.Equal(t, 1, clk.armedCount(),
+	delay := testutil.WaitForTimer(t, ctx, newTimer)
+	assert.Equal(t, 10*time.Millisecond, delay)
+	assert.Equal(t, 1, clk.armCount(),
 		"a burst of acks must arm exactly one retry timer, not one per ack")
 
 	// After the retry fires, exactly one slot is committed (not 5) and the
 	// in-flight flag clears so the next ack can arm again.
-	clk.fireRetry(t)
-	clk.waitRetrySettled(t, 1)
+	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
 	attempts, inFlight = retryState(sub)
 	assert.Equal(t, 1, attempts,
 		"a burst of acks must coalesce into one committed retry (one slot consumed, not 5)")
@@ -1682,7 +1597,7 @@ func TestSubscription_BudgetExhaustionLogsOnce(t *testing.T) {
 	count := strings.Count(buf.String(), "LOOKUP_FAILED retry budget exhausted")
 	assert.Equal(t, 1, count,
 		"the budget-exhausted Warn must fire once per cycle, not once per ack")
-	assert.Equal(t, 0, clk.armedCount(), "a spent budget must arm no retry timer")
+	assert.Zero(t, clk.armCount(), "a spent budget must arm no retry timer")
 }
 
 // TestSubscription_RapidSequentialUpdates pins back-to-back Update behaviour:

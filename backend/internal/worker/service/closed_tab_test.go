@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -186,6 +187,15 @@ type setupOption func(*setupConfig)
 type setupConfig struct {
 	remoteIPC    ControlIPCFactory
 	rewriteQuery func(string) string
+	clock        quartz.Clock
+}
+
+// withClock installs the clock the Service's startup registries arm their
+// timers on, through Config, so a test never writes svc.AgentStartup.clock
+// after construction. Those registries read the field without their own mutex,
+// so a write that lands after the first begin() is a data race.
+func withClock(clock quartz.Clock) setupOption {
+	return func(c *setupConfig) { c.clock = clock }
 }
 
 // withRemoteIPC wires the worker's RemoteIPC factory before handlers are
@@ -291,6 +301,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		// only them. In production this arrives from the Hub's
 		// connect-time WorkerIdentity rather than at construction.
 		SeedRegisteredBy: "user-1",
+		Clock:            cfg.clock,
 	})
 	svc.ControlIPC = cfg.remoteIPC
 	// Before RegisterAll, exactly like every other field of Service: the

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
@@ -36,7 +37,7 @@ var errSubscriptionClosed = ErrSubscriptionClosed
 // open/update/store sequence, not just field reads/writes, so concurrent
 // callers cannot orphan a newly-opened stream.
 //
-// Cancel is terminal: once it returns, Update refuses with
+// Cancel is final: once it returns, Update refuses with
 // ErrSubscriptionClosed for the life of the Subscription (the closed flag is
 // never cleared). Callers that need to re-subscribe after Cancel must build a
 // new Subscription. The CLI's agent-messages --follow reconnect loop honors
@@ -119,32 +120,24 @@ type Subscription struct {
 	// single-owner contract. Reset on each fresh open so a transient miss after
 	// a clean reconnect gets a fresh budget.
 	retry *backoffutil.Retry
-	// clock is the time source armLookupRetry waits on. Set once in
-	// NewSubscription (to systemClock) and never reassigned in production, so
-	// the retry goroutine can read it without a lock; the package's tests
-	// substitute a deterministic fake before the first Update.
-	clock retryClock
+	// clock supplies the retry timer. NewSubscription sets it before a retry
+	// goroutine can start, so the goroutine can read it without the mutex.
+	clock quartz.Clock
 }
 
-// retryClock is the time source for the LOOKUP_FAILED retry wait. Production
-// uses systemClock; the subscription tests substitute a fake that fires on
-// demand, so an assertion about the armed-but-not-yet-fired window cannot lose
-// a race to a real timer on a loaded machine, and one about NO retry arming
-// needs no sleep to find out.
-type retryClock interface {
-	// NewTimer starts a timer for d, returning the channel it delivers on and a
-	// stop func that releases it — time.Timer's C/Stop pair without the concrete
-	// type. The caller must call stop exactly once, whether or not it consumed
-	// the delivery.
-	NewTimer(d time.Duration) (<-chan time.Time, func())
-}
+const subscriptionRetryTimerTag = "subscription-retry"
 
-// systemClock is the production retryClock: a plain time.NewTimer.
-type systemClock struct{}
+// SubscriptionOption changes one NewSubscription setting.
+type SubscriptionOption func(*Subscription)
 
-func (systemClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
-	t := time.NewTimer(d)
-	return t.C, func() { t.Stop() }
+// WithClock sets the clock that supplies retry timers.
+func WithClock(clock quartz.Clock) SubscriptionOption {
+	if clock == nil {
+		panic("streamevents: clock must not be nil")
+	}
+	return func(s *Subscription) {
+		s.clock = clock
+	}
 }
 
 // LOOKUP_FAILED retry policy. The eventsRejection policy in
@@ -178,6 +171,7 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 	onAgent func(*leapmuxv1.AgentEvent),
 	onTerminal func(*leapmuxv1.TerminalEvent),
 	onCursorReset func(terminalID string),
+	opts ...SubscriptionOption,
 ) *Subscription {
 	retryCtx, retryCancel := context.WithCancel(context.Background())
 	// lookupRetry* are compile-time constants, so NewRetry cannot fail; a panic
@@ -189,7 +183,7 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 		retryCancel()
 		panic(fmt.Sprintf("streamevents: invalid LOOKUP_FAILED retry policy: %v", err))
 	}
-	return &Subscription{
+	sub := &Subscription{
 		transport:     t,
 		agents:        agents,
 		terminals:     terminals,
@@ -199,8 +193,12 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 		retryCtx:      retryCtx,
 		retryCancel:   retryCancel,
 		retry:         retry,
-		clock:         systemClock{},
+		clock:         quartz.NewReal(),
 	}
+	for _, opt := range opts {
+		opt(sub)
+	}
+	return sub
 }
 
 // assignUpdateId stamps req with the next monotonic update_id and records it
@@ -313,7 +311,7 @@ func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsReq
 }
 
 // Cancel stops the in-flight subscription, if any. Safe to call from
-// any goroutine; idempotent. Terminal: after Cancel returns, Update refuses
+// any goroutine; idempotent. After Cancel returns, Update always refuses
 // with errSubscriptionClosed for the life of the Subscription.
 func (s *Subscription) Cancel() {
 	s.lifecycleMu.Lock()
@@ -544,10 +542,10 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 // once the Update is dispatched, so a fire that then loses the lifecycleMu race
 // to Cancel still counts as a real attempt.
 func (s *Subscription) armLookupRetry(retryCtx context.Context, delay time.Duration, armGen uint64) {
-	fired, stopTimer := s.clock.NewTimer(delay)
-	defer stopTimer()
+	timer := s.clock.NewTimer(delay, subscriptionRetryTimerTag)
+	defer timer.Stop(subscriptionRetryTimerTag)
 	select {
-	case <-fired:
+	case <-timer.C:
 	case <-retryCtx.Done():
 		// Cancel retired the subscription while the timer was pending. Roll back
 		// the peeked slot (no budget consumed) and bail. retryInFlight stays set:

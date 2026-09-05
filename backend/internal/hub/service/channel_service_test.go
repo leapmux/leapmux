@@ -1312,11 +1312,17 @@ func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
 	// Times out because mock worker doesn't respond.
 	require.Error(t, err)
 
+	// A WAIT, not a non-blocking read: the send to the worker happens on the
+	// handler goroutine, and the RPC above returns on its own 100ms deadline
+	// without waiting for it. A read that gives up at once therefore races the
+	// send and fails under load, although the claim here -- that the hub handed
+	// the ChannelOpen to the worker -- says nothing about which happens first.
+	// The limit is a deadlock guard, matching the sibling case above.
 	select {
 	case sentMsg := <-sentCh:
 		assert.NotNil(t, sentMsg.GetChannelOpen())
 		assert.Equal(t, []byte("pq-handshake-msg1"), sentMsg.GetChannelOpen().GetHandshakePayload())
-	default:
+	case <-time.After(time.Second):
 		require.Fail(t, "expected a message to be sent to worker")
 	}
 }
@@ -1350,11 +1356,13 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 		}, token))
 	require.Error(t, err)
 
+	// A WAIT rather than a non-blocking read, for the reason given in
+	// TestOpenChannel_PostQuantumHandshake.
 	select {
 	case sentMsg := <-sentCh:
 		assert.NotNil(t, sentMsg.GetChannelOpen())
 		assert.Equal(t, []byte("classic-handshake-msg1"), sentMsg.GetChannelOpen().GetHandshakePayload())
-	default:
+	case <-time.After(time.Second):
 		require.Fail(t, "expected a message to be sent to worker")
 	}
 }

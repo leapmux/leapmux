@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -14,7 +15,13 @@ import (
 // startup_error column is the authoritative source across restarts, so
 // expiry only evicts the in-memory copy; a later read falls back to
 // the DB path.
-const failedEntryTTL = 5 * time.Minute
+const (
+	failedEntryTTL = 5 * time.Minute
+
+	startupAwaitTimerTag         = "startup-await"
+	startupPendingResizeTimerTag = "startup-pending-resize"
+	startupFailedEvictionTag     = "startup-failed-eviction"
+)
 
 // startupEntry tracks the in-flight (or recently-failed) startup of a single
 // agent or terminal. It exists to:
@@ -30,8 +37,12 @@ const failedEntryTTL = 5 * time.Minute
 //     PTY was registered in the Manager, so runTerminalStartup can apply
 //     it the moment StartTerminal returns.
 type startupEntry struct {
+	// id is the agent or terminal this entry claims. It travels ON the entry so
+	// every transition can check that the map slot still holds THIS entry: a
+	// startup goroutine that a close already retired must not retire the
+	// replacement startup that reclaimed the same id.
 	id string
-	// failed is set once startup fails terminally. While false and cancel
+	// failed is set once startup reaches its failed state. While false and cancel
 	// is non-nil, startup is still in progress (STARTING).
 	failed       bool
 	startupError string
@@ -45,7 +56,7 @@ type startupEntry struct {
 	// evictTimer fires failedEntryTTL after fail() to drop the entry.
 	// Stored so cancelAndClear/succeed can Stop() it and release the
 	// runtime timer slot early.
-	evictTimer *time.Timer
+	evictTimer *quartz.Timer
 	// pendingResize carries the latest ResizeTerminal dims that arrived
 	// while the PTY was still being spawned. The backend PTY is created
 	// with the placeholder 80x24 from the OpenTerminal request; the
@@ -104,30 +115,17 @@ func (e *startupEntry) release() {
 	}
 }
 
-// startupTimerClock is the time source awaitInFlight limits its wait with.
-// Production uses systemStartupClock; the registry's tests substitute a fake
-// that fires on demand, so a test about the give-up path spends no wall time
-// and a test about the wait NOT giving up cannot lose to a real timer on a
-// loaded machine.
+// stopEviction stops the pending eviction of a failed entry that left its map
+// slot, which releases the runtime timer slot early. It does nothing for an
+// entry that never failed.
 //
-// It mirrors streamevents.retryClock deliberately: the same two-value
-// NewTimer, so the codebase has one shape for "a timer a test can drive".
-// The two are byte-for-byte the same type and could share one; see
-// https://github.com/leapmux/leapmux/issues/437.
-type startupTimerClock interface {
-	// NewTimer starts a timer for d, returning the channel it delivers on and a
-	// stop func that releases it -- time.Timer's C/Stop pair without the
-	// concrete type. The caller must call stop exactly once, whether or not it
-	// consumed the delivery.
-	NewTimer(d time.Duration) (<-chan time.Time, func())
-}
-
-// systemStartupClock is the production startupTimerClock: a plain time.NewTimer.
-type systemStartupClock struct{}
-
-func (systemStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
-	t := time.NewTimer(d)
-	return t.C, func() { t.Stop() }
+// The caller must NOT hold r.mu. A quartz trap on TimerStop parks the calling
+// goroutine inside Stop, and a park under r.mu blocks every other registry
+// method until the test releases the trap.
+func (e *startupEntry) stopEviction() {
+	if e != nil && e.evictTimer != nil {
+		e.evictTimer.Stop(startupFailedEvictionTag)
+	}
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -145,17 +143,22 @@ type startupCore struct {
 	entries  map[string]*startupEntry
 	inflight map[string]*startupEntry
 	wg       sync.WaitGroup
-	// clock is the time source awaitInFlight limits its wait with. Set once by
-	// newStartupCore and never reassigned in production, so a waiter reads it
-	// without the mutex; a test substitutes a fake before it starts one.
-	clock startupTimerClock
+	// clock supplies all startup timers. newStartupCore requires a non-nil clock
+	// and sets it once, and nothing replaces it after construction, so
+	// awaitInFlight, fail and waitForPendingResize read it without r.mu. A test
+	// substitutes a fake before it starts the first startup. A write after the
+	// first begin is a data race against those three reads.
+	clock quartz.Clock
 }
 
-func newStartupCore() startupCore {
+func newStartupCore(clock quartz.Clock) startupCore {
+	if clock == nil {
+		panic("service: startup clock must not be nil")
+	}
 	return startupCore{
 		entries:  make(map[string]*startupEntry),
 		inflight: make(map[string]*startupEntry),
-		clock:    systemStartupClock{},
+		clock:    clock,
 	}
 }
 
@@ -180,12 +183,19 @@ func newStartupCore() startupCore {
 // yet, so HasAgent is false.
 func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// Refuse only an IN-FLIGHT startup. A failed entry is a finished one that
 	// lingers for failedEntryTTL so a status query can still read the error;
 	// refusing on it would lock a tab out of every retry for those five minutes.
-	if existing, busy := r.entries[id]; busy && !existing.failed {
-		return nil
+	var replaced *startupEntry
+	if existing, claimed := r.entries[id]; claimed {
+		if !existing.failed {
+			r.mu.Unlock()
+			return nil
+		}
+		// A failed entry this startup replaces leaves the map below, so its
+		// pending eviction has nothing left to evict. Stopping it after the
+		// unlock keeps the timer call out of the lock.
+		replaced = existing
 	}
 	entry := &startupEntry{
 		id:           id,
@@ -197,6 +207,8 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 	r.entries[id] = entry
 	r.inflight[id] = entry
 	r.wg.Add(1)
+	r.mu.Unlock()
+	replaced.stopEviction()
 	return entry
 }
 
@@ -241,15 +253,15 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 	if entry == nil {
 		return startupWait{settled: true}
 	}
-	expired, stop := r.clock.NewTimer(limit)
-	defer stop()
+	timer := r.clock.NewTimer(limit, startupAwaitTimerTag)
+	defer timer.Stop(startupAwaitTimerTag)
 	select {
 	case <-entry.done:
 		// cancelAndClear stamps closeRaced on this same entry BEFORE it closes
 		// done, so the read below sees the close that woke this waiter.
 		_, closed := r.dispositionOf(entry)
 		return startupWait{settled: true, closed: closed}
-	case <-expired:
+	case <-timer.C:
 		return startupWait{}
 	}
 }
@@ -304,7 +316,7 @@ func (r *startupCore) setMessage(id, message string) {
 	}
 }
 
-// succeed removes the entry (on successful startup the runtime state comes
+// succeed removes h's entry (on successful startup the runtime state comes
 // from the Manager, not from this registry).
 //
 // handle, when set, makes the removal IDENTITY-GUARDED: the entry goes only
@@ -313,12 +325,16 @@ func (r *startupCore) setMessage(id, message string) {
 // when the caller is the sole owner of the claim.
 //
 // Why the guard exists. succeed frees the id, and begin admits a new startup
-// the moment it is free. A goroutine whose tail reaches succeed a second time
-// -- which the close-after-succeed branch does, because cancelAndClear now
-// stamps closeRaced on an entry it finds through inflight -- would otherwise
-// delete and release whatever claim currently holds that id. That is a
-// SECOND startup's claim, and freeing it admits a third: two startup
-// goroutines for one tab, the exact state begin exists to prevent.
+// the moment it is free. Two paths reach it after the id was released. A
+// goroutine whose tail reaches succeed a second time -- which the
+// close-after-succeed branch does, because cancelAndClear stamps closeRaced on
+// an entry it finds through inflight. And a goroutine whose post-spawn re-read
+// still saw an open row, because a close retires the entry several steps before
+// it stamps closed_at. Either would otherwise delete and release whatever claim
+// currently holds that id. That is a SECOND startup's claim, and freeing it
+// admits a third: two startup goroutines for one tab, the exact state begin
+// exists to prevent. It also left the second startup's context uncancelled, so
+// its process outlived the tab.
 func (r *startupCore) succeed(id string, handle *startupEntry) {
 	r.mu.Lock()
 	entry := r.entries[id]
@@ -329,36 +345,48 @@ func (r *startupCore) succeed(id string, handle *startupEntry) {
 		entry = nil
 	}
 	r.mu.Unlock()
-	if entry != nil && entry.evictTimer != nil {
-		entry.evictTimer.Stop()
-	}
+	entry.stopEviction()
 }
 
 // fail retains the entry with the error string for later observation and
 // schedules its eviction after failedEntryTTL so a failed tab the user
 // never closes eventually drops out of the in-memory map. Status queries
 // after eviction fall back to the persisted startup_error column.
-func (r *startupCore) fail(id, startupError string) {
-	entry := &startupEntry{failed: true, startupError: startupError}
-	entry.evictTimer = time.AfterFunc(failedEntryTTL, func() {
+//
+// It takes the HANDLE begin returned, for the reason succeed states: a startup
+// that a close already retired must not overwrite the entry of the replacement
+// startup that reclaimed the same id.
+func (r *startupCore) fail(h *startupEntry, startupError string) {
+	if h == nil {
+		return
+	}
+	id := h.id
+	entry := &startupEntry{id: id, failed: true, startupError: startupError}
+	entry.evictTimer = r.clock.AfterFunc(failedEntryTTL, func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if current, ok := r.entries[id]; ok && current == entry {
 			delete(r.entries, id)
 		}
-	})
+	}, startupFailedEvictionTag)
 	r.mu.Lock()
-	// Stop any prior pending eviction if fail is called twice, and release the
-	// startup this failure replaces: an awaited startup that FAILS has stopped
-	// being in flight just as surely as one that succeeded.
-	if prev, ok := r.entries[id]; ok {
-		if prev.evictTimer != nil {
-			prev.evictTimer.Stop()
-		}
-		prev.release()
+	prev, held := r.entries[id]
+	if held && prev != h {
+		// A close retired h and something else claimed the id. Recording this
+		// failure would evict that claim.
+		r.mu.Unlock()
+		entry.stopEviction()
+		return
 	}
+	// Release the startup this failure replaces: an awaited startup that FAILS
+	// has stopped being in flight just as surely as one that succeeded.
+	prev.release()
 	r.entries[id] = entry
 	r.mu.Unlock()
+	// Stop any prior pending eviction, after the unlock, so a trapped Stop
+	// cannot park this goroutine inside r.mu. h is never a failed entry, so
+	// prev carries a timer only when a caller failed the same handle twice.
+	prev.stopEviction()
 }
 
 // cancelAndClear triggers the cancel func if one is registered and removes
@@ -421,9 +449,7 @@ func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*
 	if entry == nil {
 		return nil
 	}
-	if entry.evictTimer != nil {
-		entry.evictTimer.Stop()
-	}
+	entry.stopEviction()
 	if entry.cancel != nil {
 		entry.cancel()
 	}
@@ -546,15 +572,22 @@ func (r *startupCore) setPendingResize(id string, cols, rows uint16) bool {
 // takePendingResize returns the stashed dims (if any) and clears the
 // slot. Called by runTerminalStartup after StartTerminal registers the
 // PTY so the stored size lands on the real terminal.
-func (r *startupCore) takePendingResize(id string) (cols, rows uint16, ok bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	entry, found := r.entries[id]
-	if !found || !entry.hasPendingResize {
+//
+// It takes the HANDLE begin returned, and it succeeds only while the map slot
+// still holds that entry. An id alone would let a startup that a close already
+// retired consume the dims of the REPLACEMENT startup that reclaimed the id,
+// and then size a PTY it does not own.
+func (r *startupCore) takePendingResize(h *startupEntry) (cols, rows uint16, ok bool) {
+	if h == nil {
 		return 0, 0, false
 	}
-	cols, rows = entry.pendingResize[0], entry.pendingResize[1]
-	entry.hasPendingResize = false
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries[h.id] != h || !h.hasPendingResize {
+		return 0, 0, false
+	}
+	cols, rows = h.pendingResize[0], h.pendingResize[1]
+	h.hasPendingResize = false
 	return cols, rows, true
 }
 
@@ -572,23 +605,26 @@ func (r *startupCore) waitForPendingResize(id string, timeout time.Duration) (co
 		r.mu.Unlock()
 		return 0, 0, false
 	}
-	if entry.hasPendingResize {
-		cols = entry.pendingResize[0]
-		rows = entry.pendingResize[1]
-		entry.hasPendingResize = false
-		r.mu.Unlock()
-		return cols, rows, true
-	}
 	ch := entry.resizeSignal
 	r.mu.Unlock()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// The already-stashed case takes the same path as the woken one, so one
+	// implementation of "take the stashed dims" serves both. It also arms no
+	// timer, which is what makes the fast path fast.
+	if cols, rows, ok := r.takePendingResize(entry); ok {
+		return cols, rows, true
+	}
+
+	timer := r.clock.NewTimer(timeout, startupPendingResizeTimerTag)
+	defer timer.Stop(startupPendingResizeTimerTag)
 	select {
 	case <-ch:
+	case <-entry.done:
+		return 0, 0, false
 	case <-timer.C:
 	}
-	return r.takePendingResize(id)
+
+	return r.takePendingResize(entry)
 }
 
 // clearPendingResize drops any stashed dims for id. Called from the
@@ -651,9 +687,9 @@ type startupRegistry[S ~int32] struct {
 	failedStatus      S
 }
 
-func newStartupRegistry[S ~int32](unspec, starting, failed S) *startupRegistry[S] {
+func newStartupRegistry[S ~int32](clock quartz.Clock, unspec, starting, failed S) *startupRegistry[S] {
 	return &startupRegistry[S]{
-		startupCore:       newStartupCore(),
+		startupCore:       newStartupCore(clock),
 		unspecifiedStatus: unspec,
 		startingStatus:    starting,
 		failedStatus:      failed,
@@ -675,16 +711,18 @@ func (r *startupRegistry[S]) status(id string) (status S, startupError, startupM
 	return r.startingStatus, "", msg, true
 }
 
-func newAgentStartupRegistry() *startupRegistry[leapmuxv1.AgentStatus] {
+func newAgentStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.AgentStatus] {
 	return newStartupRegistry(
+		clock,
 		leapmuxv1.AgentStatus_AGENT_STATUS_UNSPECIFIED,
 		leapmuxv1.AgentStatus_AGENT_STATUS_STARTING,
 		leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED,
 	)
 }
 
-func newTerminalStartupRegistry() *startupRegistry[leapmuxv1.TerminalStatus] {
+func newTerminalStartupRegistry(clock quartz.Clock) *startupRegistry[leapmuxv1.TerminalStatus] {
 	return newStartupRegistry(
+		clock,
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_UNSPECIFIED,
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING,
 		leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED,

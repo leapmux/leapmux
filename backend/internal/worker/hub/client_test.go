@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -20,17 +20,30 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 )
+
+// newBareClient builds the minimal Client the transport tests need: no
+// endpoint and no managers, but a working clock.
+//
+// The clock is not optional here even though these tests never advance it. New
+// is the only place that installs one, and a successful enqueue stamps
+// lastSendTime through it -- so a bare `&Client{}` that reaches Send with a
+// live writer panics on a nil interface instead of failing an assertion. One
+// helper means no test has to decide whether its path reaches the clock.
+func newBareClient() *Client {
+	return &Client{clock: quartz.NewReal()}
+}
 
 // newTestClient builds a Client for url. It exists so these tests state a URL
 // rather than an Endpoint: hubtransport.New opens no connection, and every
 // caller here passes a literal it controls.
-func newTestClient(t *testing.T, url string) *Client {
+func newTestClient(t *testing.T, url string, opts ...ClientOption) *Client {
 	t.Helper()
 	endpoint, err := hubtransport.New(url)
 	require.NoError(t, err, "hubtransport.New(%q)", url)
-	return New(endpoint)
+	return New(endpoint, opts...)
 }
 
 // TestNew_PreservesTheEndpointURL verifies that New() builds a client for
@@ -59,6 +72,18 @@ func TestNew_PreservesTheEndpointURL(t *testing.T) {
 			assert.Equal(t, tc.url, client.Endpoint().URL(), "endpoint URL preserved verbatim")
 		})
 	}
+}
+
+func TestWithClockRejectsNil(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { WithClock(nil) })
+}
+
+func TestNewUsesRealClockByDefault(t *testing.T) {
+	t.Parallel()
+	c := newTestClient(t, "http://localhost:0")
+	require.IsType(t, quartz.NewReal(), c.clock,
+		"New must wire the real clock, not a seeded mock a WithinDuration check would accept")
 }
 
 func TestResolveWorkingDir_HomeDir(t *testing.T) {
@@ -154,8 +179,12 @@ func TestConnectWithReconnect_ReconnectsOnFailure(t *testing.T) {
 	var attempts atomic.Int32
 	targetAttempts := int32(4)
 
-	client := &Client{}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
 
 	mockConnect := func(_ context.Context, _ string) error {
 		n := attempts.Add(1)
@@ -165,95 +194,65 @@ func TestConnectWithReconnect_ReconnectsOnFailure(t *testing.T) {
 		return fmt.Errorf("connection lost")
 	}
 
-	client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+		close(done)
+	}()
+	for range targetAttempts - 1 {
+		delay := testutil.WaitForTimer(t, testCtx, newTimer)
+		testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	}
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop did not stop after cancellation")
+	}
 
-	assert.GreaterOrEqual(t, attempts.Load(), targetAttempts, "connect call count")
+	assert.Equal(t, targetAttempts, attempts.Load(), "connect call count")
 }
 
 func TestConnectWithReconnect_StopsOnContextCancel(t *testing.T) {
 	var attempts atomic.Int32
 
-	client := &Client{}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
 
 	mockConnect := func(_ context.Context, _ string) error {
 		attempts.Add(1)
 		return fmt.Errorf("connection lost")
 	}
 
-	// Cancel after a short delay.
+	done := make(chan struct{})
 	go func() {
-		time.Sleep(15 * time.Millisecond)
-		cancel()
+		client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
+		close(done)
 	}()
+	_ = testutil.WaitForTimer(t, testCtx, newTimer)
+	cancel()
+	stopTimer.MustWait(testCtx).MustRelease(testCtx)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop ignored context cancellation")
+	}
 
-	client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
-
-	assert.GreaterOrEqual(t, attempts.Load(), int32(1), "expected at least 1 attempt")
-}
-
-// fakeClock is the clock the reconnect tests own. Now feeds the
-// long-connection threshold and After feeds the backoff wait, so a whole
-// reconnect sequence is exercised with no sleep and no window to race.
-//
-// A test asserts on the durations the code ASKED to wait, which a real sleep
-// cannot report: a measured gap carries the host's timer granularity too, and
-// on Windows that is about 15.6ms -- wide enough to swallow the difference
-// between this policy's 10ms and 40ms intervals and report them in the wrong
-// order, which is how these tests failed there while the policy was correct.
-type fakeClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	waited []time.Duration
-}
-
-func newFakeClock() *fakeClock {
-	// A fixed instant rather than time.Now, so nothing about the result depends
-	// on when the suite runs.
-	return &fakeClock{now: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-// After records the wait, advances the clock over it, and hands back a channel
-// that is already ready. The wait becomes a fact the test reads instead of a
-// delay it pays.
-func (c *fakeClock) After(d time.Duration) <-chan time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.waited = append(c.waited, d)
-	c.now = c.now.Add(d)
-	ch := make(chan time.Time, 1)
-	ch <- c.now
-	return ch
-}
-
-// Advance moves the clock without recording a wait, which is how a test states
-// that a connection LASTED some time.
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
-// waits returns a copy, so a caller cannot read the slice while
-// connectWithReconnect still appends to it.
-func (c *fakeClock) waits() []time.Duration {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]time.Duration(nil), c.waited...)
+	assert.Equal(t, int32(1), attempts.Load(), "context cancellation must stop before a second attempt")
 }
 
 func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 	var attempts atomic.Int32
 
-	clock := newFakeClock()
-	client := &Client{now: clock.Now, after: clock.After}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
 
 	// Zero jitter, so the sequence asserted below is the one the policy states.
 	bo := backoffutil.NewBackoff(10*time.Millisecond, 500*time.Millisecond, 0)
@@ -271,7 +270,12 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 			return fmt.Errorf("fail 3")
 		case 4:
 			// Holds longer than the threshold, which resets the backoff.
-			clock.Advance(80 * time.Millisecond)
+			// Await the waiter: nothing is armed while connect runs today, so
+			// Advance completes at once, but a future timer here would
+			// otherwise fire beside the rest of the test. Wait, not MustWait --
+			// this is not the test goroutine, and MustWait calls Fatalf.
+			assert.NoError(t, clock.Advance(80*time.Millisecond).Wait(testCtx),
+				"the long-connection advance must settle")
 			return fmt.Errorf("disconnect after long session")
 		case 5:
 			// Fails at once → back to the initial 10ms.
@@ -282,31 +286,42 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 		}
 	}
 
-	client.connectWithReconnect(ctx, "token", mockConnect, bo, 50*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		client.connectWithReconnect(ctx, "token", mockConnect, bo, 50*time.Millisecond)
+		close(done)
+	}()
 
-	require.GreaterOrEqual(t, attempts.Load(), int32(6), "expected at least 6 connect attempts")
-
-	// The whole policy in one line: the interval doubles while the connections
-	// are short, and the connection that outlasted the threshold puts it back to
-	// the initial interval.
-	waits := clock.waits()
-	require.GreaterOrEqual(t, len(waits), 5)
-	assert.Equal(t, []time.Duration{
+	want := []time.Duration{
 		10 * time.Millisecond,
 		20 * time.Millisecond,
 		40 * time.Millisecond,
 		10 * time.Millisecond,
 		20 * time.Millisecond,
-	}, waits[:5], "the fourth disconnect follows a long connection, so it restarts the sequence")
+	}
+	for i, expected := range want {
+		delay := testutil.WaitForTimer(t, testCtx, newTimer)
+		assert.Equal(t, expected, delay, "reconnect delay %d", i+1)
+		testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	}
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the reconnect loop did not stop after the expected attempts")
+	}
+	require.Equal(t, int32(6), attempts.Load(), "expected connect attempts")
 }
 
 func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 	targetAttempts := int32(8)
 	var attempts atomic.Int32
 
-	clock := newFakeClock()
-	client := &Client{now: clock.Now, after: clock.After}
+	clock := testutil.NewQuartzMock(t)
+	client := &Client{clock: clock}
+	testCtx := testutil.DeadlineContext(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubReconnectTimerTag)
 
 	const maxInterval = 10 * time.Millisecond
 	bo := backoffutil.NewBackoff(2*time.Millisecond, maxInterval, 0)
@@ -318,17 +333,27 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 		return fmt.Errorf("fail")
 	}
 
-	client.connectWithReconnect(ctx, "token", mockConnect, bo, 1*time.Hour)
-
-	// The waits the code asked for, not the gaps they produced: a measured gap
-	// carries the host's scheduling delay too, which is why this used to allow a
-	// 50ms tolerance against a 10ms cap -- and so could not have caught a cap
-	// five times too large.
-	waits := clock.waits()
-	require.NotEmpty(t, waits)
-	for i, wait := range waits {
-		assert.LessOrEqual(t, wait, maxInterval,
-			"wait[%d]=%v exceeds MaxInterval=%v", i, wait, maxInterval)
+	done := make(chan struct{})
+	go func() {
+		client.connectWithReconnect(ctx, "token", mockConnect, bo, time.Hour)
+		close(done)
+	}()
+	var waits []time.Duration
+	for range targetAttempts - 1 {
+		delay := testutil.WaitForTimer(t, testCtx, newTimer)
+		waits = append(waits, delay)
+		testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	}
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the capped reconnect loop did not stop")
+	}
+	require.Len(t, waits, int(targetAttempts-1),
+		"one recorded wait per failed attempt, or the cap assertion below indexes nothing")
+	for i, delay := range waits {
+		assert.LessOrEqual(t, delay, maxInterval,
+			"wait[%d]=%v exceeds MaxInterval=%v", i, delay, maxInterval)
 	}
 	assert.Equal(t, maxInterval, waits[len(waits)-1],
 		"the sequence must actually reach the cap, or the loop above proves nothing")
@@ -480,11 +505,10 @@ func TestHandleMessage_WorkspaceTabsSyncResp_NilCallbackIsSafe(t *testing.T) {
 // force-closes the stream when the greeting does not arrive in time, so the
 // reconnect backoff re-runs the greeting on a fresh stream.
 func TestWatchForIdentity_ForceCancelsWhenIdentityMissing(t *testing.T) {
-	old := workerIdentityTimeout
-	workerIdentityTimeout = 20 * time.Millisecond
-	defer func() { workerIdentityTimeout = old }()
-
-	c := newTestClient(t, "http://localhost:0")
+	clock := testutil.NewQuartzMock(t)
+	c := newTestClient(t, "http://localhost:0", WithClock(clock))
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
 	var cancelled atomic.Bool
 	c.connCancel = func() { cancelled.Store(true) }
 
@@ -492,17 +516,18 @@ func TestWatchForIdentity_ForceCancelsWhenIdentityMissing(t *testing.T) {
 	defer cancel()
 	go c.watchForIdentity(ctx)
 
-	require.Eventually(t, func() bool { return cancelled.Load() },
-		1*time.Second, 5*time.Millisecond,
-		"watchdog must force-cancel the connection when WorkerIdentity is not delivered")
+	delay := testutil.WaitForTimer(t, testCtx, newTimer)
+	assert.Equal(t, workerIdentityTimeout, delay)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
+	assert.True(t, cancelled.Load(),
+		"the watchdog must cancel the connection when the Hub omits WorkerIdentity")
 }
 
 func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
-	old := workerIdentityTimeout
-	workerIdentityTimeout = 20 * time.Millisecond
-	defer func() { workerIdentityTimeout = old }()
-
-	c := newTestClient(t, "http://localhost:0")
+	clock := testutil.NewQuartzMock(t)
+	c := newTestClient(t, "http://localhost:0", WithClock(clock))
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
 	c.identityReceived.Store(true)
 	var cancelled atomic.Bool
 	c.connCancel = func() { cancelled.Store(true) }
@@ -511,7 +536,9 @@ func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
 	defer cancel()
 	go c.watchForIdentity(ctx)
 
-	time.Sleep(80 * time.Millisecond)
+	delay := testutil.WaitForTimer(t, testCtx, newTimer)
+	assert.Equal(t, workerIdentityTimeout, delay)
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
 	assert.False(t, cancelled.Load(),
 		"watchdog must not fire once WorkerIdentity has been received")
 }
@@ -536,7 +563,7 @@ func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
 // stream tries one last frame as the connection unwinds, and Send is where that
 // attempt learns there is nothing left to send on.
 func TestClientSendReturnsTransportGoneWhenNotConnected(t *testing.T) {
-	c := &Client{}
+	c := newBareClient()
 	require.Nil(t, c.currentWriter(), "fixture must model a client that never connected")
 
 	err := c.Send(heartbeatMsg())
@@ -561,7 +588,8 @@ func TestClientSendReportsAClosedWriterAsTransportGone(t *testing.T) {
 	})
 	writer.Close()
 
-	c := &Client{writer: writer}
+	c := newBareClient()
+	c.writer = writer
 	require.NotNil(t, c.currentWriter(), "fixture must model an INSTALLED writer, not the nil-writer path")
 
 	err := c.Send(heartbeatMsg())
@@ -593,7 +621,7 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 	blocked := make(chan struct{})
 	t.Cleanup(func() { close(blocked) })
 
-	c := &Client{}
+	c := newBareClient()
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
 		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
 			<-blocked
@@ -633,7 +661,7 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 func TestClientWriteFailureCancelsConnection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var cancelled atomic.Bool
-	c := &Client{}
+	c := newBareClient()
 	c.connCancel = func() {
 		cancelled.Store(true)
 		cancel()
@@ -679,7 +707,7 @@ func TestClientTrySendDropsWhenBudgetFull(t *testing.T) {
 	fillSize := connectReqSize(filler)
 	require.Greater(t, fillSize, 400)
 
-	c := &Client{}
+	c := newBareClient()
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
 		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
 			select {
@@ -728,7 +756,7 @@ func TestClientTrySendOrResetUsesControlReserve(t *testing.T) {
 	reserve := int64(fillSize)     // one control frame of the same size
 
 	var cancelled atomic.Bool
-	c := &Client{}
+	c := newBareClient()
 	c.connCancel = func() { cancelled.Store(true) }
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
 		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
@@ -768,8 +796,10 @@ func TestClientLastSendTimeAdvancesOnEnqueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	c := &Client{}
-	c.lastSendTime = time.Now().Add(-time.Hour)
+	clock := testutil.NewQuartzMock(t)
+	c := &Client{clock: clock}
+	now := clock.Now()
+	c.lastSendTime = now.Add(-time.Hour)
 	before := c.lastSendTime
 
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
@@ -784,17 +814,234 @@ func TestClientLastSendTimeAdvancesOnEnqueue(t *testing.T) {
 	c.mu.Lock()
 	after := c.lastSendTime
 	c.mu.Unlock()
+	assert.Equal(t, now, after, "Send must use the client's clock for its enqueue timestamp")
 	assert.True(t, after.After(before), "lastSendTime must advance on enqueue")
 
 	// Reset before TrySend so the assertion does not depend on wall-clock
 	// ticks between two rapid enqueues (Windows time.Now can share a tick).
 	c.mu.Lock()
-	c.lastSendTime = time.Now().Add(-time.Hour)
+	c.lastSendTime = now.Add(-time.Hour)
 	before = c.lastSendTime
 	c.mu.Unlock()
 	require.True(t, c.TrySend(heartbeatMsg()))
 	c.mu.Lock()
 	after = c.lastSendTime
 	c.mu.Unlock()
+	assert.Equal(t, now, after, "TrySend must use the client's clock for its enqueue timestamp")
 	assert.True(t, after.After(before), "lastSendTime must advance on TrySend enqueue")
+}
+
+// TestClientLastSendTimeNeverMovesBackwards pins the monotonicity guard in
+// markEnqueued. The clock read sits outside c.mu so a trap on it cannot park
+// the whole client, which means two concurrent enqueues can read the clock in
+// one order and reach the lock in the other. The later instant must win.
+//
+// heartbeatIdleTimeout is 5s, so a regression here is not a wrong heartbeat --
+// it is lastSendTime drifting backwards under load, which makes the idle window
+// longer than the connection has really been quiet.
+func TestClientLastSendTimeNeverMovesBackwards(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	clock := testutil.NewQuartzMock(t)
+	c := &Client{clock: clock}
+	// A stamp from an enqueue whose clock read happened LATER, but which won the
+	// race to the lock first. The enqueue below reads an earlier instant.
+	ahead := clock.Now().Add(time.Minute)
+	c.lastSendTime = ahead
+
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
+		Size:          connectReqSize,
+		MaxBytes:      sendq.DefaultMaxBytes,
+		FrameOverhead: sendq.DefaultFrameOverhead,
+	})
+	t.Cleanup(func() { c.writer.Close() })
+
+	require.NoError(t, c.Send(heartbeatMsg()))
+	c.mu.Lock()
+	after := c.lastSendTime
+	c.mu.Unlock()
+	assert.Equal(t, ahead, after,
+		"an enqueue that read an earlier instant must not pull lastSendTime backwards")
+}
+
+// TestClientClockReturnsTheInstalledClock pins the accessor bootstrap.Wire
+// reads to give the Service the SAME clock this client and its terminal manager
+// run on. Without it the worker holds two clocks and a test can drive only one.
+func TestClientClockReturnsTheInstalledClock(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	c := newTestClient(t, "http://localhost:0", WithClock(clock))
+	assert.Same(t, clock, c.Clock(), "Clock must return the clock New installed")
+	assert.Same(t, clock, c.Clock(), "the accessor must be stable across calls")
+}
+
+// TestEnqueueStampDoesNotCarryTheConnectTag pins the tag split. One tag for two
+// call sites made a trap catch both, so a test that held the connect-time stamp
+// also parked every enqueue on the send path.
+func TestEnqueueStampDoesNotCarryTheConnectTag(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	require.NotEqual(t, hubSendTimestampTag, hubConnectTimestampTag,
+		"the two stamps must be separately trappable")
+
+	clock := testutil.NewQuartzMock(t)
+	c := &Client{clock: clock}
+	connectStamps := clock.Trap().Now(hubConnectTimestampTag)
+	defer connectStamps.Close()
+
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
+		Size:          connectReqSize,
+		MaxBytes:      sendq.DefaultMaxBytes,
+		FrameOverhead: sendq.DefaultFrameOverhead,
+	})
+	t.Cleanup(func() { c.writer.Close() })
+
+	// A trapped call parks its caller, so a Send that returned at all proves the
+	// enqueue stamp did not match the connect trap.
+	require.NoError(t, c.Send(heartbeatMsg()))
+	c.mu.Lock()
+	stamped := c.lastSendTime
+	c.mu.Unlock()
+	assert.Equal(t, clock.Now(), stamped, "the enqueue must still stamp its own instant")
+}
+
+func TestHeartbeatLoopUsesClockAndStopsTicker(t *testing.T) {
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	written := make(chan *leapmuxv1.ConnectRequest, 1)
+	start := clock.Now()
+	c := &Client{clock: clock, lastSendTime: start}
+	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write: func(_ context.Context, msg *leapmuxv1.ConnectRequest) error {
+			written <- msg
+			return nil
+		},
+		Size:          connectReqSize,
+		MaxBytes:      sendq.DefaultMaxBytes,
+		FrameOverhead: sendq.DefaultFrameOverhead,
+	})
+	t.Cleanup(c.writer.Close)
+
+	newTicker := clock.Trap().NewTicker(hubHeartbeatTickerTag)
+	defer newTicker.Close()
+	stopTicker := clock.Trap().TickerStop(hubHeartbeatTickerTag)
+	defer stopTicker.Close()
+	// The idle measurement is the loop's synchronization point AND its subject.
+	// Its trapped argument is the lastSendTime the loop read, so each tick
+	// reports what the PREVIOUS tick did: an unchanged argument proves the
+	// previous tick sent nothing, and a moved one proves the heartbeat stamped
+	// its enqueue on this clock. The frame's arrival orders only the writer
+	// goroutine, so the sendStamps trap below is what orders markEnqueued's own
+	// clock read against the next advance.
+	idleReads := clock.Trap().Since(hubHeartbeatIdleTag)
+	defer idleReads.Close()
+	// The enqueue stamp is the value under test, so the test must own the
+	// instant markEnqueued reads. Nothing else orders that read: Send returns
+	// once the frame is QUEUED, so the loop's clock read runs beside the writer
+	// goroutine and beside the next Advance. Without this trap the fourth tick
+	// moved the clock first and the stamp reported 8s where 6s belongs.
+	sendStamps := clock.Trap().Now(hubSendTimestampTag)
+	defer sendStamps.Close()
+	done := make(chan struct{})
+	go func() {
+		c.heartbeatLoop(ctx)
+		close(done)
+	}()
+	call := newTicker.MustWait(testCtx)
+	assert.Equal(t, 2*time.Second, call.Duration)
+	call.MustRelease(testCtx)
+
+	// tick returns the lastSendTime the loop measured its idle window against.
+	tick := func() time.Time {
+		t.Helper()
+		advance := clock.Advance(2 * time.Second)
+		idle := idleReads.MustWait(testCtx)
+		measuredAgainst := idle.Time
+		idle.MustRelease(testCtx)
+		advance.MustWait(testCtx)
+		return measuredAgainst
+	}
+
+	// Ticks 1 and 2 sit at 2s and 4s idle, both under the 5s timeout.
+	assert.Equal(t, start, tick(), "the first tick measures idle time from the last enqueue")
+	assert.Equal(t, start, tick(), "the first tick was under the idle timeout, so it sent nothing")
+	// Tick 3 reaches 6s of idle time and sends.
+	assert.Equal(t, start, tick(), "the second tick was under the idle timeout, so it sent nothing")
+	heartbeatAt := clock.Now()
+	select {
+	case msg := <-written:
+		require.NotNil(t, msg.GetHeartbeat())
+	case <-testCtx.Done():
+		require.FailNow(t, "the idle heartbeat did not run on the third tick")
+	}
+	// Release the stamp BEFORE the next advance. Now reads the clock after the
+	// release and completes before MustRelease returns, so the stamp is the
+	// instant the heartbeat went out, not the one the fourth tick moves to.
+	sendStamps.MustWait(testCtx).MustRelease(testCtx)
+	assert.Equal(t, heartbeatAt, tick(),
+		"the heartbeat enqueue timestamp must come from the client clock")
+
+	cancel()
+	stopTicker.MustWait(testCtx).MustRelease(testCtx)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the heartbeat loop did not stop after cancellation")
+	}
+	_, running := clock.Peek()
+	assert.False(t, running, "the heartbeat loop must stop its ticker")
+}
+
+// TestHeartbeatLoopStopsWhenTheSendFails covers the loop's error path: a
+// heartbeat that cannot reach the transport ends the loop. Without it the loop
+// keeps ticking against a connection that is already gone, and each tick logs
+// the same failure for the life of the process.
+func TestHeartbeatLoopStopsWhenTheSendFails(t *testing.T) {
+	clock := testutil.NewQuartzMock(t)
+	testCtx := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	// No writer, so Send reports the transport is gone. That is the ordinary
+	// end of a disconnect, and the loop must return on it rather than on the
+	// context, which stays live for the whole test.
+	c := &Client{clock: clock, lastSendTime: clock.Now()}
+
+	newTicker := clock.Trap().NewTicker(hubHeartbeatTickerTag)
+	defer newTicker.Close()
+	stopTicker := clock.Trap().TickerStop(hubHeartbeatTickerTag)
+	defer stopTicker.Close()
+	idleReads := clock.Trap().Since(hubHeartbeatIdleTag)
+	defer idleReads.Close()
+
+	done := make(chan struct{})
+	go func() {
+		c.heartbeatLoop(ctx)
+		close(done)
+	}()
+	newTicker.MustWait(testCtx).MustRelease(testCtx)
+
+	// Three ticks reach 6s of idle time, which is past the 5s timeout.
+	for range 3 {
+		advance := clock.Advance(2 * time.Second)
+		idleReads.MustWait(testCtx).MustRelease(testCtx)
+		advance.MustWait(testCtx)
+	}
+
+	stopTicker.MustWait(testCtx).MustRelease(testCtx)
+	select {
+	case <-done:
+	case <-testCtx.Done():
+		require.FailNow(t, "the heartbeat loop kept ticking after its send failed")
+	}
+	require.NoError(t, ctx.Err(), "the loop must have ended on the send, not on the context")
+	_, running := clock.Peek()
+	assert.False(t, running, "a loop that gave up must stop its ticker")
 }

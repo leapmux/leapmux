@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 
@@ -529,6 +530,14 @@ type Config struct {
 	// and ReadFile's maxReadLimit; other stream sends still reject at
 	// sendEncrypted when the reassembled frame exceeds the negotiated gate.
 	MaxMessageSize int
+	// Clock supplies the two startup registries' timers. Nil installs the real
+	// clock.
+	//
+	// bootstrap.Wire passes the Client's clock, so the reader-drain grace inside
+	// a tab's terminal and that same tab's pending-resize wait run on ONE clock.
+	// Built here instead, they would run on two, and a test could drive only the
+	// half it reached.
+	Clock quartz.Clock
 }
 
 // New creates a fully wired Service.
@@ -553,6 +562,12 @@ func New(cfg Config) *Service {
 		panic("service.New: Send must be set")
 	}
 
+	// Written back into cfg before the copy below, so Service.Clock reads the
+	// installed clock rather than nil.
+	if cfg.Clock == nil {
+		cfg.Clock = quartz.NewReal()
+	}
+
 	queries := db.New(cfg.DB)
 	watchers := NewWatcherManager()
 	output := NewOutputHandler(cfg.DB, queries, watchers, cfg.Agents, cfg.WakeLock)
@@ -562,8 +577,8 @@ func New(cfg Config) *Service {
 		Queries:         queries,
 		Watchers:        watchers,
 		Output:          output,
-		AgentStartup:    newAgentStartupRegistry(),
-		TerminalStartup: newTerminalStartupRegistry(),
+		AgentStartup:    newAgentStartupRegistry(cfg.Clock),
+		TerminalStartup: newTerminalStartupRegistry(cfg.Clock),
 		PrivateEvents:   NewPrivateEventsBus(),
 		lastBellAt:      make(map[string]time.Time),
 	}

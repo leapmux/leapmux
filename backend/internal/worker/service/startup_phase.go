@@ -154,7 +154,7 @@ func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv
 		broadcastStarting: func(label string) { svc.broadcastAgentStarting(dbAgent, label, nil) },
 		persistError:      func(errMsg string) { svc.persistAgentStartupError(dbAgent.ID, errMsg) },
 		broadcastFailed:   func(errMsg string) { svc.broadcastAgentFailed(dbAgent, errMsg, gitStatus) },
-		registryFail:      func(errMsg string) { svc.AgentStartup.fail(dbAgent.ID, errMsg) },
+		registryFail:      func(errMsg string) { svc.AgentStartup.fail(h, errMsg) },
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.AgentStartup.dispositionOf(h)
 		},
@@ -172,7 +172,7 @@ func (svc *Service) terminalStartupCallbacks(terminalID string, h *startupEntry)
 		broadcastStarting: func(label string) { svc.broadcastTerminalStarting(terminalID, label, nil) },
 		persistError:      func(errMsg string) { svc.persistTerminalStartupError(terminalID, errMsg) },
 		broadcastFailed:   func(errMsg string) { svc.broadcastTerminalFailed(terminalID, errMsg) },
-		registryFail:      func(errMsg string) { svc.TerminalStartup.fail(terminalID, errMsg) },
+		registryFail:      func(errMsg string) { svc.TerminalStartup.fail(h, errMsg) },
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.TerminalStartup.dispositionOf(h)
 		},

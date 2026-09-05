@@ -145,7 +145,7 @@ func TestCLIStepUp_BrowserApprovalStampsTheWindow(t *testing.T) {
 
 	// Past the poll throttle: the pending poll above stamped last_polled_at,
 	// and a second poll inside the interval answers slow_down.
-	env.clock.advance(2 * time.Duration(grant.Interval) * time.Second)
+	env.advance(2 * time.Duration(grant.Interval) * time.Second)
 
 	// The poll now reports success, and reports it as an ELEVATION -- a
 	// step-up mints nothing, so a token pair here would turn a request to
@@ -239,7 +239,7 @@ func TestCLIStepUp_AGrantIsSingleUse(t *testing.T) {
 	require.Equal(t, http.StatusOK, approveStepUp(t, env, grant.UserCode, env.elevatedAdminCookie(t)).StatusCode)
 	require.Equal(t, http.StatusOK, pollStepUp(t, env, grant.DeviceCode).StatusCode)
 
-	env.clock.advance(2 * time.Duration(grant.Interval) * time.Second)
+	env.advance(2 * time.Duration(grant.Interval) * time.Second)
 	assert.Equal(t, http.StatusBadRequest, pollStepUp(t, env, grant.DeviceCode).StatusCode,
 		"a consumed grant cannot be exchanged twice")
 }
@@ -281,7 +281,7 @@ func stepUpHandlerOn(t *testing.T, env *apiAuthEnv, st store.Store) *http.ServeM
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
 		HubURL:    func() string { return env.server.URL },
 	})
-	h.Now = env.clock.now
+	h.Now = env.now
 	h.RegisterRoutes(mux)
 	return mux
 }
@@ -370,7 +370,7 @@ func TestCLIStepUp_ThePollReadsTheCredentialNotTheApprovalFlag(t *testing.T) {
 	rows, err := env.store.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
 		UserCode: verifycode.Normalize(grant.UserCode),
 		UserID:   userid.MustNew(env.userID),
-	}, env.clock.now().UTC())
+	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -407,7 +407,7 @@ func TestCLIStepUp_TheActivationPageIdentifiesTheStoredCredential(t *testing.T) 
 
 	assert.Contains(t, page, "Verify an app credential", "a step-up must not read as an issuance")
 	assert.Contains(t, page, storedName, "the page must identify the credential the hub recorded")
-	assert.Contains(t, page, env.clock.now().UTC().Format("2006-01-02"), "the page must show when the credential was added")
+	assert.Contains(t, page, env.now().UTC().Format("2006-01-02"), "the page must show when the credential was added")
 	assert.NotContains(t, page, chosenName, "the requester's own label must identify nothing here")
 	assert.NotContains(t, page, "administer the hub", "a step-up widens nothing, so it offers no scope")
 }
