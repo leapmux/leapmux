@@ -829,7 +829,7 @@ func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
 	require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
 
 	svc.registeredBy.Store(&userid.UserID{})
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
 	require.Empty(t, rec.ids(), "a recovered queue must not start without a control-socket owner")

@@ -103,6 +103,7 @@ CREATE TABLE agent_input_queue_state (
     revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
     paused          INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
     pause_reason    INTEGER NOT NULL DEFAULT 0 CHECK (pause_reason BETWEEN 0 AND 5),
+    paused_for_archive INTEGER NOT NULL DEFAULT 0 CHECK (paused_for_archive IN (0, 1)),
     active_turn     INTEGER NOT NULL DEFAULT 0 CHECK (active_turn IN (0, 1)),
     active_turn_kind INTEGER NOT NULL DEFAULT 0 CHECK (active_turn_kind BETWEEN 0 AND 6),
     active_input_id TEXT NOT NULL DEFAULT '',

@@ -57,6 +57,10 @@ func TestInitialSchemaCreatesDurableInputQueue(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT sql FROM sqlite_master WHERE name = 'idx_agent_input_queue_one_edit'`).Scan(&editIndexSQL))
 	assert.Contains(t, editIndexSQL, "WHERE edit_owner <> ''")
+	var archiveMarkerColumns int
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('agent_input_queue_state') WHERE name = 'paused_for_archive'`).Scan(&archiveMarkerColumns))
+	assert.Equal(t, 1, archiveMarkerColumns)
 }
 
 func TestStoreEnqueueRoundTripAndIdempotency(t *testing.T) {

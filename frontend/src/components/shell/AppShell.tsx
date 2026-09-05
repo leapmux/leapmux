@@ -1143,13 +1143,13 @@ export const AppShell: Component = () => {
       confirmEmptyArchiveDialog.open({ count, resolve })
     })
 
-  // Clear transient write state for every agent in the archived workspace.
+  // Clear transient control state for every agent in the archived workspace.
+  // Queued input is durable Worker state and remains visible while archived.
   const handlePostArchiveWorkspace = (workspaceId: string) => {
     for (const tab of tabView.forWorkspace(workspaceId)) {
       if (tab.type !== TabType.AGENT)
         continue
       controlStore.clearAgent(tab.id)
-      chatStore.failPendingOutbound(tab.id, 'Workspace archived before the message was sent')
     }
   }
 

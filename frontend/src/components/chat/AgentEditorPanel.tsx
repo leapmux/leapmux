@@ -427,18 +427,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // eslint-disable-next-line solid/reactivity -- one-time ref registration, handler is stable
   props.addDropDataTransferRef?.(addDropDataTransferWhenReady)
 
-  const handlePasteFiles = (files: File[]) => {
-    if (ctrl.activeControlRequest() || sending())
-      return
-    addFiles(files, true)
-  }
-
-  const handleDropDataTransfer = (dataTransfer: DataTransfer) => {
-    if (ctrl.activeControlRequest() || sending())
-      return
-    void att.addDroppedDataTransfer(dataTransfer)
-  }
-
   const branchGitView = createMemo(() => {
     const tab = props.gitTab ?? {}
     return repoGitView(tab, props.repoGitStore, tab)
@@ -697,7 +685,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // attachment. `MarkdownEditor` reads these handlers at event time, so
           // an absent `attachments` refuses the paste and the drop by itself.
           // `addFiles`'s second argument marks a pasted image, which renames it.
-          attachments={!ctrl.activeControlRequest()
+          attachments={!ctrl.activeControlRequest() && !sending()
             ? {
                 onPaste: files => addFiles(files, true),
                 onDrop: dataTransfer => void att.addDroppedDataTransfer(dataTransfer),

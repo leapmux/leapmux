@@ -460,10 +460,41 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	} else if reason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED {
 		reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, reason, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, paused_for_archive = 0, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, reason, nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
+}
+
+// PauseForArchive stops the active turn and records an archive-created pause.
+// The Boolean reports whether the durable state changed.
+func (s *Store) PauseForArchive(ctx context.Context, agentID string) (Snapshot, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_input_queue_state
+		SET active_turn = 0, active_turn_kind = 0, active_input_id = '',
+			paused = 1,
+			pause_reason = CASE WHEN paused = 0 THEN ? ELSE pause_reason END,
+			paused_for_archive = CASE WHEN paused = 0 THEN 1 ELSE paused_for_archive END,
+			revision = revision + 1, updated_at = ?
+		WHERE agent_id = ? AND (active_turn = 1 OR paused = 0)`,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, nowText(), agentID)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	snapshot, err := commitSnapshot(ctx, tx, agentID)
+	return snapshot, changed == 1, err
 }
 
 func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Snapshot, bool, error) {
@@ -797,12 +828,44 @@ func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.Agen
 		if err := ensureState(ctx, tx, agentID); err != nil {
 			return Snapshot{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', paused = 1, pause_reason = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, reason, nowText(), agentID); err != nil {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE agent_input_queue_state
+			SET active_turn = 0, active_turn_kind = 0, active_input_id = '',
+				paused = 1, pause_reason = CASE WHEN paused = 1 THEN pause_reason ELSE ? END,
+				revision = revision + 1, updated_at = ?
+			WHERE agent_id = ? AND (active_turn = 1 OR paused = 0)`, reason, nowText(), agentID); err != nil {
 			return Snapshot{}, err
 		}
 		return commitSnapshot(ctx, tx, agentID)
 	}
 	return s.SetPaused(ctx, agentID, true, reason)
+}
+
+// ResumeAfterArchive resumes only the pause that PauseForArchive created. The
+// Boolean reports whether the durable state changed.
+func (s *Store) ResumeAfterArchive(ctx context.Context, agentID string) (Snapshot, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_input_queue_state
+		SET paused = 0, pause_reason = 0, paused_for_archive = 0,
+			revision = revision + 1, updated_at = ?
+		WHERE agent_id = ? AND paused = 1 AND paused_for_archive = 1`, nowText(), agentID)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	snapshot, err := commitSnapshot(ctx, tx, agentID)
+	return snapshot, changed == 1, err
 }
 
 func (s *Store) Retry(ctx context.Context, agentID, inputID string, confirmUncertain bool) (Snapshot, error) {

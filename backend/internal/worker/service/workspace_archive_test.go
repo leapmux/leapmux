@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
@@ -290,6 +291,8 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 	require.True(t, firstCleanup.Load(), "the first archive runs the teardown")
+	firstQueue, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
 
 	// A fresh cleanup under the same id: the second request must leave it
 	// registered, which no assertion on the FIRST one could tell apart from a
@@ -300,9 +303,101 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 
 	assert.False(t, secondCleanup.Load(), "an archive that changes no row runs no teardown")
+	secondQueue, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, firstQueue.Revision, secondQueue.Revision, "an unchanged archive must not mutate the queue")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), row.WorkspaceArchived)
+}
+
+func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "queued-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.InputQueue.TurnStarted(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "queued", AgentID: agentID, Text: "after unarchive",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	_, _, _, err = svc.InputQueue.BeginEdit(ctx, agentID, "queued", "client-1", false)
+	require.NoError(t, err)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	archived, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, archived.Paused)
+	assert.False(t, archived.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, archived.PauseReason)
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	active, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.False(t, active.Paused)
+	assert.False(t, active.ActiveTurn)
+	require.Len(t, active.Items, 1)
+}
+
+func TestWorkspaceArchive_PreservesAManualQueuePause(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "manually-paused-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.InputQueue.TurnStarted(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.SetPaused(ctx, agentID, true)
+	require.NoError(t, err)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused)
+	assert.False(t, snapshot.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, snapshot.PauseReason)
+}
+
+func TestWorkspaceArchive_PreservesAnExistingAgentStoppedPause(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "crashed-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.InputQueue.Pause(ctx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+	require.NoError(t, err)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, snapshot.PauseReason)
 }
 
 // TestWorkspaceArchive_CancelsAnInFlightStartup covers the startup race.
@@ -500,10 +595,9 @@ func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
 // moved from four hand-written per-handler guards into the registrars.
 //
 // The four handlers that carried a guard were the four the browser happened to
-// call. Every OTHER write RPC ran, and three of them wrote state that outlives
-// the archive: RenameAgent stored a title, DeleteAgentMessage removed a
-// transcript row, UpdateTerminalTitle stored a title. A second client, the CLI,
-// or any holder of the write scope reached all of them.
+// call. Every OTHER write RPC ran, and some wrote state that outlives the
+// archive, such as RenameAgent and UpdateTerminalTitle. A second client, the
+// CLI, or any holder of the write scope reached all of them.
 //
 // It also asserts the other half of the rule: a READ stays reachable, which is
 // what makes an archived workspace browsable rather than merely frozen.
@@ -534,10 +628,20 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		req    proto.Message
 	}{
 		{"RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: agentID, Title: "after"}},
-		{"DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{AgentId: agentID, MessageId: "m-1"}},
 		{"CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}},
 		{"InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID}},
-		{"SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{AgentId: agentID, Content: "hi"}},
+		{"EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			AgentId: agentID, InputId: "input-1", Text: "hi",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		}},
+		{"BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{AgentId: agentID, InputId: "input-1", ClientId: "client-1"}},
+		{"UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1", ClientId: "client-1", ExpectedVersion: 1, Text: "changed"}},
+		{"CancelQueuedAgentInputEdit", &leapmuxv1.CancelQueuedAgentInputEditRequest{AgentId: agentID, InputId: "input-1", ClientId: "client-1"}},
+		{"DeleteQueuedAgentInput", &leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"MoveQueuedAgentInput", &leapmuxv1.MoveQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: agentID, Paused: true}},
+		{"SteerQueuedAgentInput", &leapmuxv1.SteerQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"RetryQueuedAgentInput", &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
 		{"UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: "after"}},
 		{"CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: terminalID}},
 		{"SendInput", &leapmuxv1.SendInputRequest{TerminalId: terminalID, Data: []byte("x")}},

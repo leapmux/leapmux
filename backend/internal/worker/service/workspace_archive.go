@@ -56,8 +56,18 @@ func (svc *Service) ApplyTabArchiveState(
 	}
 
 	if state == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+		for _, agentID := range requested.agents {
+			if _, queueErr := svc.InputQueue.PauseForArchive(bgCtx(), agentID); queueErr != nil {
+				slog.Warn("archive: pause agent input queue", "agent_id", agentID, "error", queueErr)
+			}
+		}
 		svc.stopArchivedTabs(changed)
 		return nil, nil
+	}
+	for _, agentID := range requested.agents {
+		if _, queueErr := svc.InputQueue.ResumeAfterArchive(bgCtx(), agentID); queueErr != nil {
+			slog.Warn("unarchive: resume agent input queue", "agent_id", agentID, "error", queueErr)
+		}
 	}
 	return changed.agents, nil
 }

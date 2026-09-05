@@ -255,6 +255,46 @@ func (m *Manager) Pause(ctx context.Context, agentID string, reason leapmuxv1.Ag
 	return snapshot, err
 }
 
+// PauseForArchive stops automatic dispatch before an archived agent process
+// stops. It preserves a pause that another cause created.
+func (m *Manager) PauseForArchive(ctx context.Context, agentID string) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snapshot, changed, err := m.store.PauseForArchive(ctx, agentID)
+	if err == nil && changed {
+		m.observer.QueueChanged(snapshot)
+	}
+	return snapshot, err
+}
+
+// ResumeAfterArchive resumes only a pause that PauseForArchive created.
+func (m *Manager) ResumeAfterArchive(ctx context.Context, agentID string) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+	c.mu.Lock()
+	snapshot, changed, err := m.store.ResumeAfterArchive(ctx, agentID)
+	if err == nil && changed {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err == nil && changed {
+		m.scheduleDrain(agentID)
+	}
+	return snapshot, err
+}
+
 func (m *Manager) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
