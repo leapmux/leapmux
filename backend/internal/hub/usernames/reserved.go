@@ -33,8 +33,8 @@ func normalize(u string) string {
 // IsReservedSystem reports whether a username is reserved in every creation
 // path (public signup, setup signup, OAuth signup, CLI user-create). Covers
 // Solo: an operator who later opens the same data-dir in solo mode hands that
-// account the administrator, either with no credentials at all or against the
-// password its creator chose (see auth/solo_gate.go).
+// account the administrator -- with no credential over the local IPC socket,
+// or against the password its creator chose (see auth/solo_gate.go).
 func IsReservedSystem(u string) bool {
 	return contracts.UsernamesSystemReserved[normalize(u)]
 }

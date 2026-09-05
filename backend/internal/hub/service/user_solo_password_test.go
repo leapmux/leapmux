@@ -126,9 +126,10 @@ func TestChangePassword_DoesNotCreateASoloSession(t *testing.T) {
 	assert.Empty(t, resp.Header().Get("Set-Cookie"))
 }
 
-// An ordinary session that changes its password must not be handed a second
-// one: it already holds a credential, and a new session would leave the old
-// cookie pointing at a session the change revoked.
+// The OTHER identity kind, beside the synthetic solo one above: a real
+// session, elevated so the step-up rule cannot be what produces the empty
+// header. It already holds a credential, and a second session would leave the
+// old cookie pointing at one the change revoked.
 func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
@@ -167,7 +168,7 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 		&leapmuxv1.ChangePasswordRequest{NewPassword: "another-good-password"}))
 	require.NoError(t, err)
 	assert.Empty(t, resp.Header().Get("Set-Cookie"),
-		"a caller that already holds a credential keeps it; only the solo rung's caller loses one")
+		"ChangePassword mints no session for any caller; a caller that already holds one keeps it")
 }
 
 // The PASSKEY factor is refused by mode, unlike the elevation surface around

@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/sendq"
@@ -32,6 +33,11 @@ import (
 // endpoint's business: /ws/channel fails the upgrade, /ws/userevents reaches
 // its registry. Pinning either of those here would make this test fail for a
 // reason that has nothing to do with the grant.
+//
+// A test whose caller carries NO credential names 401 as well, because there
+// "not 403" is what an unauthenticated answer gives: the request would never
+// reach the scope rung, and the test would report a pass for a door it never
+// opened.
 
 // mintScopedAPIToken mints an app credential with an arbitrary grant and
 // returns the bearer.
@@ -65,13 +71,31 @@ func newWSScopeEnv(t *testing.T, soloUser *auth.UserInfo) wsScopeEnv {
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	return wsScopeEnv{
-		channel: NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), soloUser,
+		channel: NewChannelRelayHandler(st, newTestRegistry(), nil, wsScopeAuthContexts(t, st, soloUser), soloUser,
 			insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv),
-		userEvents: NewUserEventsHandler(st, unreachableCRDTRegistry(), newTestAuthContexts(t), soloUser,
+		userEvents: NewUserEventsHandler(st, unreachableCRDTRegistry(), wsScopeAuthContexts(t, st, soloUser), soloUser,
 			insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv),
 		store:     st,
 		validator: tv,
 	}
+}
+
+// wsScopeAuthContexts builds the registry whose SoloGate the WebSocket doors
+// read. The gate must be told that this hub IS solo.
+//
+// `newTestAuthContexts` passes no SoloUser, so its gate answers "not a solo
+// hub" and refuses every caller. A solo test built on that gate reached no
+// solo rung at all: an absent credential answered 401, which satisfied an
+// assertion written as "not the 403 refusal", so the test passed without the
+// behavior it names.
+func wsScopeAuthContexts(t *testing.T, st store.Store, soloUser *auth.UserInfo) *auth.AuthContextRegistry {
+	t.Helper()
+	if soloUser == nil {
+		return newTestAuthContexts(t)
+	}
+	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	t.Cleanup(registry.Stop)
+	return registry
 }
 
 // unreachableCRDTRegistry is a registry whose factory always fails.
@@ -87,9 +111,26 @@ func unreachableCRDTRegistry() *crdt.Registry {
 }
 
 // serveWithBearer runs one request against one handler and reports the status.
+//
+// The request arrives on the LOCAL IPC socket, which is the one transport the
+// solo rung admits without a credential. A TCP request takes the bearer and
+// cookie rungs like any other caller's, so a solo test built on one would pass
+// whether or not the rung exists. serveOverTCP is that other transport, for
+// the tests that assert the refusal.
 func serveWithBearer(t *testing.T, handler http.Handler, path, bearer string) int {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	return serveWS(t, handler, path, bearer, peer.WithLocalIPC(context.Background()))
+}
+
+// serveOverTCP is the same request on a TCP connection.
+func serveOverTCP(t *testing.T, handler http.Handler, path, bearer string) int {
+	t.Helper()
+	return serveWS(t, handler, path, bearer, context.Background())
+}
+
+func serveWS(t *testing.T, handler http.Handler, path, bearer string, ctx context.Context) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -168,15 +209,55 @@ func TestUnscopedCredentialPassesTheWebSocketScopeRung(t *testing.T) {
 	}
 	env := newWSScopeEnv(t, solo)
 
-	assert.NotEqual(t, http.StatusForbidden, serveWithBearer(t, env.channel, "/ws/channel", ""))
-	assert.NotEqual(t, http.StatusForbidden, serveWithBearer(t, env.userEvents, "/ws/userevents", ""))
+	for _, door := range []struct {
+		name    string
+		handler http.Handler
+		path    string
+	}{
+		{"channel", env.channel, "/ws/channel"},
+		{"userevents", env.userEvents, "/ws/userevents"},
+	} {
+		status := serveWithBearer(t, door.handler, door.path, "")
+		assert.NotEqualf(t, http.StatusForbidden, status, "%s must not refuse an unscoped caller", door.name)
+		// 401 too, and this is the assertion that makes the test real. The
+		// admission is asserted as "not the refusal" because what an admitted
+		// request does next is the endpoint's business -- but an
+		// UNAUTHENTICATED answer is also "not 403", so a test that named only
+		// the 403 passed without ever reaching the scope rung.
+		assert.NotEqualf(t, http.StatusUnauthorized, status,
+			"%s must admit the solo caller before the scope rung answers", door.name)
+	}
+}
+
+// The other side of the same rung, and the property the restricted TCP setup
+// flow rests on: the WebSocket doors are the two credential-carrying surfaces
+// that are not Connect procedures, so the interceptor's refusal does not cover
+// them. A solo TCP caller with no credential must be refused here as well, or
+// the synthetic administrator is one handshake away from anyone who reaches
+// the port.
+func TestSoloModeRefusesATCPCallerWithoutACredential(t *testing.T) {
+	t.Parallel()
+
+	solo := &auth.UserInfo{
+		ID:       userid.MustNew("u-solo"),
+		Username: "solo",
+		IsAdmin:  true,
+		Scopes:   authscope.UnscopedGrant(),
+		Solo:     true,
+	}
+	env := newWSScopeEnv(t, solo)
+
+	assert.Equal(t, http.StatusUnauthorized, serveOverTCP(t, env.channel, "/ws/channel", ""))
+	assert.Equal(t, http.StatusUnauthorized, serveOverTCP(t, env.userEvents, "/ws/userevents", ""))
 }
 
 // TestSoloModeYieldsToAPresentedBearer is the WebSocket twin of the
-// interceptor's solo test. Solo authenticates every caller as its one account,
-// so without the yield this request would pass the rung on the synthetic
-// user's unscoped grant -- discarding the narrowing the credential's owner
-// accepted, which is the one thing the scope model exists to prevent.
+// interceptor's solo test. Solo authenticates a LOCAL IPC caller as its one
+// account, so without the yield this request would pass the rung on the
+// synthetic user's unscoped grant -- discarding the narrowing the credential's
+// owner accepted, which is the one thing the scope model exists to prevent.
+// The request below arrives on that socket, because a TCP one never meets the
+// rung and would prove nothing about the yield.
 func TestSoloModeYieldsToAPresentedBearer(t *testing.T) {
 	t.Parallel()
 

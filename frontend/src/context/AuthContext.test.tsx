@@ -235,10 +235,11 @@ describe('authContext', () => {
 
   // System info is a hard prerequisite, not an optional best-effort step: its
   // module getters are fabricated defaults until it succeeds. Discarding the
-  // failure leaves `isSoloMode()` at `false` while the session restore SUCCEEDS on a
-  // solo hub (which authenticates every procedure), so the app renders as
-  // multi-user and offers a "Log out" that strands the user at a login form
-  // no credentials can satisfy. Bootstrap must stop and report instead.
+  // failure leaves `isSoloMode()` at `false` while the session restore SUCCEEDS
+  // on a solo hub reached over local IPC (which needs no credential), so the app
+  // renders as multi-user and offers a "Log out" that strands the user at a
+  // login form no credentials can satisfy. Bootstrap must stop and report
+  // instead.
   it('records a bootstrap error when the system info load fails', async () => {
     mockLoadSystemInfo.mockRejectedValue(new Error('not connected'))
     mockGetCurrentUser.mockResolvedValue({

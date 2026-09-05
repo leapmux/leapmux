@@ -84,15 +84,17 @@ type OAuthServerDeps struct {
 	Store     store.Store
 	Validator *auth.TokenValidator
 	Lifecycle *auth.CredentialLifecycleEffects
-	// SoloUser is the account a SOLO hub authenticates every caller as. It is
-	// nil on an ordinary hub, and that nil is what keeps the rung off there.
+	// SoloUser is the account a SOLO hub authenticates its LOCAL IPC callers
+	// as. It is nil on an ordinary hub, and that nil is what keeps the rung off
+	// there.
 	//
-	// The consent endpoints need it because solo has no browser session at all: a
-	// solo hub authenticates by having the port, not by a cookie, so without
-	// this rung a solo user could never reach a consent screen and could never
-	// authorize an app. The scope model would then be unreachable on exactly
-	// the deployment that most wants it -- one machine, one account, an agent
-	// that should hold file:read and nothing more.
+	// The consent endpoints need it because the desktop app holds no browser
+	// session: it reaches its own hub over that socket and has no password to
+	// present, so without this rung it could never reach a consent screen and
+	// could never authorize an app. The scope model would then be unreachable
+	// on exactly the deployment that most wants it -- one machine, one account,
+	// an agent that should hold file:read and nothing more. A solo TCP caller
+	// signs in and reaches the same screens through the cookie rung.
 	//
 	// The BEARER rung stays off here whatever this is set to; see
 	// requireSession. An app credential must not be able to consent on its own

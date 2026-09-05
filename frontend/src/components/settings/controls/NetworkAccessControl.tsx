@@ -198,9 +198,12 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       work: async () => {
         // The password FIRST. A failure here leaves no address published, where
         // the reverse would publish an address nobody can authenticate against.
-        // The reply carries this browser's new session: storing the first
-        // password is what starts demanding one, so without it the page that
-        // made the write is signed out of the form it is standing in.
+        //
+        // The caller keeps working across the write, and no session changes
+        // hands. Only a credential-free connection reaches this panel while the
+        // account has no password -- a TCP browser in that state meets the
+        // password-setup screen instead of the app -- and local IPC stays
+        // credential-free whatever the account holds.
         //
         // LATCHED, and the fields are cleared only once the whole apply lands.
         // Clearing them beside this call left the operator with no way to retry

@@ -49,9 +49,10 @@ test.describe('Password setup gate', () => {
     await expect(submit).toBeEnabled()
     await submit.click()
 
-    // The app loads with NO further sign-in. Storing the password is what
-    // started demanding one, so the reply hands this browser a session; without
-    // it the page would be signed out of the form it just used.
+    // The app loads with NO further sign-in. This browser held no session at
+    // all -- the setup procedure is the one thing a passwordless TCP caller
+    // may call -- so the reply's cookie is what carries it into the app.
+    // Without it the operator would set a password and then sign in with it.
     await expect(gate).toBeHidden()
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeHidden()
 

@@ -438,10 +438,10 @@ export const AuthProvider: ParentComponent = (props) => {
    * decision (solo vs. multi-user, setup-required) reads module getters that
    * are fabricated defaults until it succeeds. Continuing to the session
    * restore on a failed load is how the app treats a solo user as a multi-user
-   * one -- the restore succeeds (a solo hub authenticates every procedure), the
-   * code records nothing, and the app offers a "Log out" that strands them at
-   * /login. So a failed load aborts here with a
-   * `bootstrapError` for the guard's retry panel to render.
+   * one -- the restore succeeds (a solo hub authenticates the desktop app's
+   * local IPC connection with no credential), the code records nothing, and the
+   * app offers a "Log out" that strands them at /login. So a failed load aborts
+   * here with a `bootstrapError` for the guard's retry panel to render.
    *
    * Each stage also advances the boot splash's checklist (data-boot-phase on
    * <html>): system info, then the session restore, then either `ready`
