@@ -466,6 +466,74 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	return commitSnapshot(ctx, tx, agentID)
 }
 
+func (s *Store) pauseForPlannedRestart(ctx context.Context, agentID string) (Snapshot, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_input_queue_state
+		SET paused = 1, pause_reason = ?, revision = revision + 1, updated_at = ?
+		WHERE agent_id = ? AND paused = 0`,
+		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, nowText(), agentID)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	snapshot, err := commitSnapshot(ctx, tx, agentID)
+	return snapshot, changed == 1, err
+}
+
+func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, processReplaced, resumeQueue bool) (Snapshot, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := ensureState(ctx, tx, agentID); err != nil {
+		return Snapshot{}, false, err
+	}
+	var paused, active bool
+	var reason leapmuxv1.AgentInputQueuePauseReason
+	if err := tx.QueryRowContext(ctx, `
+		SELECT paused, pause_reason, active_turn
+		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &reason, &active); err != nil {
+		return Snapshot{}, false, err
+	}
+	nextPaused := paused
+	nextReason := reason
+	if resumeQueue && paused && reason == leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED {
+		nextPaused = false
+		nextReason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED
+	}
+	nextActive := active
+	if processReplaced {
+		nextActive = false
+	}
+	changed := nextPaused != paused || nextReason != reason || nextActive != active
+	if changed {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE agent_input_queue_state
+			SET paused = ?, pause_reason = ?, active_turn = ?,
+				active_turn_kind = CASE WHEN ? THEN active_turn_kind ELSE 0 END,
+				active_input_id = CASE WHEN ? THEN active_input_id ELSE '' END,
+				revision = revision + 1, updated_at = ?
+			WHERE agent_id = ?`,
+			nextPaused, nextReason, nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
+			return Snapshot{}, false, err
+		}
+	}
+	snapshot, err := commitSnapshot(ctx, tx, agentID)
+	return snapshot, changed, err
+}
+
 func (s *Store) PrepareDispatch(ctx context.Context, agentID string) (*PreparedDispatch, Snapshot, error) {
 	return s.prepare(ctx, agentID, "", false, false)
 }

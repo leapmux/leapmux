@@ -185,6 +185,9 @@ func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 		return false
 	}
 	if dbAgent.ParentAgentID.Valid {
+		if !agent.ProviderFor(dbAgent.AgentProvider).SupportsChildSteering() {
+			return false
+		}
 		row, err := a.svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), agentID)
 		return err == nil && a.svc.Agents.SupportsSteering(row.OwnerAgentID)
 	}

@@ -1,6 +1,6 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentInputKind,
@@ -95,6 +95,19 @@ describe('agentInputQueue', () => {
     const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-b' })] })
     await fireEvent.click(screen.getByText('Take Over'))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
+  })
+
+  it('requires takeover before editing a different item', async () => {
+    const handlers = renderQueue({
+      items: [item('one', { editOwnerClientId: 'client-a' }), item('two')],
+      activeEditInputId: 'one',
+    })
+    const second = screen.getByTestId('queued-input-two')
+
+    await fireEvent.click(within(second).getByRole('button', { name: 'Take Over' }))
+
+    expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), true)
+    expect(within(second).queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument()
   })
 
   it('resumes an owned edit that this panel has not loaded', async () => {

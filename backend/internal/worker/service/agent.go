@@ -1659,6 +1659,21 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider leapmuxv1.AgentProvider, opts agent.Options, fallback db.Agent) (db.Agent, bool) {
 	slog.Info("agent startup: relaunching to apply settings changed during startup",
 		"agent_id", agentID, "model", opts.Model(), "effort", opts.Effort())
+	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
+	if err != nil {
+		slog.Error("agent startup: failed to pause input before settings relaunch",
+			"agent_id", agentID, "error", err)
+		return fallback, true
+	}
+	queueRestartFinished := false
+	defer func() {
+		if !queueRestartFinished {
+			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
+				slog.Error("agent startup: failed to finish input queue settings relaunch",
+					"agent_id", agentID, "error", finishErr)
+			}
+		}
+	}()
 	sink := svc.Output.NewSink(agentID, provider)
 	// This is a relaunch like any other, so it mints its own control socket.
 	// opts came from the OPEN path, and resolveConfirmedStartupSettings replaces
@@ -1670,6 +1685,11 @@ func (svc *Service) relaunchForStartupSettingsChange(agentID string, provider le
 		defer unlock()
 		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", opts, sink, svc.restartAgentLocked)
 	}()
+	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
+		slog.Error("agent startup: failed to finish input queue settings relaunch",
+			"agent_id", agentID, "error", finishErr)
+	}
+	queueRestartFinished = true
 	if err != nil {
 		slog.Error("agent startup: failed to relaunch for startup-time settings change",
 			"agent_id", agentID, "error", err, "process_stopped", launched)
@@ -2273,6 +2293,23 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionMap) (OptionMap, agent.SettingsApplyResult) {
 	agentID, provider := dbAgent.ID, dbAgent.AgentProvider
 	resumeSessionID := svc.resolveResumeSessionID(agentID, dbAgent.AgentSessionID, dbAgent.Resumed)
+	queueRestart, err := svc.InputQueue.BeginPlannedRestart(bgCtx(), agentID)
+	if err != nil {
+		slog.Error("failed to pause input before agent settings restart", "agent_id", agentID, "error", err)
+		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
+			"type":  agent.NotificationTypeAgentError,
+			"error": "Failed to restart the agent because the input queue could not pause: " + err.Error(),
+		})
+		return newOptions, unresolvedSettingsResult(newOptions)
+	}
+	queueRestartFinished := false
+	defer func() {
+		if !queueRestartFinished {
+			if finishErr := queueRestart.Finish(bgCtx(), true, false); finishErr != nil {
+				slog.Error("failed to finish input queue settings restart", "agent_id", agentID, "error", finishErr)
+			}
+		}
+	}()
 
 	agentOpts := svc.baseAgentOptions(agentID, dbAgent.WorkingDir, provider)
 	agentOpts.ResumeSessionID = resumeSessionID
@@ -2295,11 +2332,15 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	// and its register would leave the fresh socket registered for a tab that
 	// is already gone. The other three relaunch paths already mint inside this
 	// lock; this one is the odd path out.
-	_, err := func() (map[string]string, error) {
+	_, launched, err := func() (map[string]string, bool, error) {
 		unlock := svc.Agents.LockAgent(agentID)
 		defer unlock()
-		return svc.mintAndLaunch(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
+		return svc.mintAndLaunchReportingStep(bgCtx(), "restart", agentOpts, sink, svc.restartAgentLocked)
 	}()
+	if finishErr := queueRestart.Finish(bgCtx(), launched, err == nil); finishErr != nil {
+		slog.Error("failed to finish input queue settings restart", "agent_id", agentID, "error", finishErr)
+	}
+	queueRestartFinished = true
 	if err != nil {
 		slog.Error("failed to restart agent with new settings", "agent_id", agentID, "error", err)
 		// Clear stale session ID so ensureAgentRunning won't try to resume a

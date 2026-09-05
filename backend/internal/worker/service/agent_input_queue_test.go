@@ -399,6 +399,30 @@ func TestChildSteerReturnsOwnerDeliveryError(t *testing.T) {
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
 
+func TestChildQueuePublishesOnlyEffectiveSteeringCapability(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const rootID = "zcode-root"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: rootID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}))
+	sink := svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
+	childID, err := sink.EnsureChildAgent("zcode-span", "zcode-child", "read-only child")
+	require.NoError(t, err)
+	_, err = svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID: rootID, WorkingDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+	}, sink)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(rootID) })
+	require.True(t, svc.Agents.SupportsSteering(rootID), "the mock root must expose regular steering")
+
+	assert.False(t, (&agentInputQueueAdapter{svc: svc}).SupportsSteering(childID))
+}
+
 func TestClassifyQueueSteerErrorPreservesUncertainDelivery(t *testing.T) {
 	t.Parallel()
 

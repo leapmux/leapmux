@@ -1,5 +1,6 @@
 import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
+import type { Node as ProseMirrorNode } from '@milkdown/prose/model'
 import type { Component, JSX } from 'solid-js'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import type { TrailingDebounced } from '~/lib/debounce'
@@ -275,19 +276,36 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     // Read the caret BEFORE anything moves it: `onSendRef` can open a dialog,
     // and `replaceAll` rebuilds the document under the selection.
     const hadFocus = editorHasFocus()
+    const initialDraftKey = getDraftKey()
+    const sentDraftIsCurrent = () => getDraftKey() === initialDraftKey
     // Read markdown directly from ProseMirror's document state rather than
     // the `markdown` signal, which is updated by a debounced listener (200ms)
     // and may be stale when Enter is pressed immediately after typing.
     let text = ''
+    let initialDocument: ProseMirrorNode | undefined
     try {
       editorInstance.action((ctx: Ctx) => {
         const serializer = ctx.get(serializerCtx)
         const view = ctx.get(editorViewCtx)
+        initialDocument = view.state.doc
         text = serializer(view.state.doc).trim()
       })
     }
     catch {
       return
+    }
+    const sentContentIsCurrent = () => {
+      if (!sentDraftIsCurrent() || !initialDocument)
+        return false
+      let matches = false
+      const submittedDocument = initialDocument
+      try {
+        editorInstance?.action((ctx: Ctx) => {
+          matches = submittedDocument.eq(ctx.get(editorViewCtx).state.doc)
+        })
+      }
+      catch { /* The editor can close before the send response arrives. */ }
+      return matches
     }
     if (!text) {
       // Allow sending empty text only when explicitly enabled (e.g. Enter-to-approve for control requests).
@@ -297,21 +315,20 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           emptySendResult = await onSendRef('')
         }
         catch {
-          applySendFocus(hadFocus, false)
+          applySendFocus(hadFocus && sentContentIsCurrent(), false)
           return
         }
         if (emptySendResult === false) {
-          applySendFocus(hadFocus, false)
+          applySendFocus(hadFocus && sentContentIsCurrent(), false)
           return
         }
-        const key = getDraftKey()
-        if (key)
-          clearDraft(key)
+        if (initialDraftKey && (!sentDraftIsCurrent() || sentContentIsCurrent()))
+          clearDraft(initialDraftKey)
         props.onAfterSend?.()
       }
       // An empty draft commits only under `allowEmptySend`; otherwise nothing
       // left the composer and the caret stays for the user to type into.
-      applySendFocus(hadFocus, allowEmptySendRef)
+      applySendFocus(hadFocus && sentContentIsCurrent(), allowEmptySendRef)
       return
     }
     let sendResult: boolean | void
@@ -319,22 +336,23 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       sendResult = await onSendRef(text)
     }
     catch {
-      applySendFocus(hadFocus, false)
+      applySendFocus(hadFocus && sentContentIsCurrent(), false)
       return
     }
     if (sendResult === false) {
-      applySendFocus(hadFocus, false)
+      applySendFocus(hadFocus && sentContentIsCurrent(), false)
       return
     }
-    editorInstance.action(replaceAll(''))
-    setMarkdown('')
-    onContentChangeRef?.(false)
-    const key = getDraftKey()
-    if (key) {
-      clearDraft(key)
+    const clearSubmittedContent = sentContentIsCurrent()
+    if (clearSubmittedContent) {
+      editorInstance.action(replaceAll(''))
+      setMarkdown('')
+      onContentChangeRef?.(false)
     }
+    if (initialDraftKey && (!sentDraftIsCurrent() || clearSubmittedContent))
+      clearDraft(initialDraftKey)
     props.onAfterSend?.()
-    applySendFocus(hadFocus, true)
+    applySendFocus(hadFocus && clearSubmittedContent, true)
   }
 
   // Enter key mode reference for ProseMirror plugin (closures capture signal)
@@ -403,6 +421,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // Track the last valid draft key so onCleanup can save the draft even when
   // reactive getters (props.agentId) return null during unmount.
   let latestDraftKey: string | undefined
+  let prevDraftKey: string | null | undefined
   createEffect(() => {
     const key = getDraftKey()
     if (key)
@@ -464,6 +483,18 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
 
     editorInstance = editor
+    const readyDraftKey = getDraftKey()
+    const draftKeyChangedDuringStart = readyDraftKey !== initialDraftKey
+    let readyDraft = initialDraft
+    if (draftKeyChangedDuringStart) {
+      readyDraft = readyDraftKey ? loadDraft(readyDraftKey) : { content: '', cursor: -1 }
+      editor.action(replaceAll(readyDraft.content))
+      setMarkdown(readyDraft.content)
+      props.onContentChange?.(readyDraft.content.trim().length > 0)
+    }
+    // The key effect can run while buildEditor waits. Align its prior key with
+    // the document that this startup path loaded.
+    prevDraftKey = readyDraftKey ?? null
     // Seed docStats from the parsed draft so the expand/collapse decision is
     // correct before any transaction fires. Without this a multi-line draft
     // starts collapsed until the user types. It classifies the real
@@ -510,10 +541,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       }))
     }
     // Notify parent if we loaded a draft with content, and restore cursor position
-    if (initialDraftKey && initialDraft.content) {
+    if ((draftKeyChangedDuringStart ? readyDraftKey : initialDraftKey) && readyDraft.content) {
       props.onContentChange?.(true)
       try {
-        restoreCursor(editor, initialDraft.cursor)
+        restoreCursor(editor, readyDraft.cursor)
       }
       catch { /* editor may not be ready */ }
     }
@@ -604,7 +635,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   // Swap editor content when the effective draft key changes. This covers
   // agent switches, control-request switches, and per-question draft scopes.
-  let prevDraftKey: string | null | undefined
   createEffect(on(
     getDraftKey,
     (newDraftKeyRaw) => {

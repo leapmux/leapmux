@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
@@ -256,6 +257,13 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	}, sink)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent(agentID)
+	_, err = svc.InputQueue.TurnStarted(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "startup-relaunch-queued", AgentID: agentID, Text: "after startup relaunch",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
 
 	restartCalls := 0
 	var restarted agent.Options
@@ -279,6 +287,10 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 	assert.Equal(t, "sonnet", got[agent.OptionIDModel])
 	assert.Equal(t, agent.EffortAuto, got[agent.OptionIDEffort])
 	assert.Equal(t, contracts.ClaudeModePlan, got[agent.OptionIDPermissionMode])
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
@@ -1459,10 +1471,17 @@ func TestRelaunchForStartupSettingsChange_AFailedLaunchReportsNoProcess(t *testi
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1")
+	require.NoError(t, err)
 
 	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)
 	assert.False(t, running,
 		"the relaunch stopped the old process and started none; reporting a live process announces ACTIVE for a dead agent")
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.False(t, snapshot.ActiveTurn)
+	assert.True(t, snapshot.Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, snapshot.PauseReason)
 }
 
 // TestRelaunchForStartupSettingsChange_AFailedMintKeepsTheOldProcess is the
@@ -1479,9 +1498,15 @@ func TestRelaunchForStartupSettingsChange_AFailedMintKeepsTheOldProcess(t *testi
 	seedOpenAgent(t, svc, "agent-1", true)
 	row := requireAgentRow(t, svc, "agent-1")
 	opts := svc.baseAgentOptions("agent-1", row.WorkingDir, row.AgentProvider)
+	_, err := svc.InputQueue.TurnStarted(t.Context(), "agent-1")
+	require.NoError(t, err)
 
 	_, running := svc.relaunchForStartupSettingsChange("agent-1", row.AgentProvider, opts, row)
 	assert.True(t, running,
 		"a failed mint returns before the stop, so the old process still serves the tab")
 	assert.Empty(t, rec.ids(), "no process may start when its control socket cannot be scoped to a user")
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	assert.True(t, snapshot.ActiveTurn)
+	assert.False(t, snapshot.Paused)
 }

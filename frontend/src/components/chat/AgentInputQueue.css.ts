@@ -4,6 +4,9 @@ export const root = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-1)',
+  maxHeight: 'min(40vh, 20rem)',
+  overflowY: 'auto',
+  overscrollBehavior: 'contain',
   padding: 'var(--space-2) var(--space-3) 0',
 })
 

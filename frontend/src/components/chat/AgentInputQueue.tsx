@@ -79,6 +79,10 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             const isHead = () => index() === 0
             const editedByMe = () => item.editOwnerClientId === props.clientId
             const editedByOther = () => !!item.editOwnerClientId && !editedByMe()
+            const requiresTakeover = () => editedByOther() || (
+              !item.editOwnerClientId
+              && items().some(candidate => candidate.id !== item.id && !!candidate.editOwnerClientId)
+            )
             const retryable = () => item.state === AgentInputState.FAILED || item.state === AgentInputState.DELIVERY_UNCERTAIN
             return (
               <div
@@ -111,7 +115,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
                   <button class={styles.action} type="button" onClick={() => moveUp(index())} disabled={index() === 0 || item.state === AgentInputState.DISPATCHING || items()[index() - 1]?.state === AgentInputState.DISPATCHING}>Move Up</button>
                   <button class={styles.action} type="button" onClick={() => moveDown(index())} disabled={index() === items().length - 1 || item.state === AgentInputState.DISPATCHING}>Move Down</button>
                   <Show
-                    when={editedByOther()}
+                    when={requiresTakeover()}
                     fallback={editedByMe()
                       ? props.activeEditInputId === item.id
                         ? <button class={styles.action} type="button" onClick={() => props.onCancelEdit(item)}>Cancel Edit</button>

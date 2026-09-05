@@ -2,13 +2,13 @@ import type { AgentEditorPanelProps } from './AgentEditorPanel'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageGet, localStorageSet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
-import { loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
+import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -45,6 +45,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  for (const id of ['a1', 'a2', 'a1-queue-owned-a1', 'a2-queue-owned-a2']) {
+    clearDraft(id)
+    clearAttachments(id)
+  }
 })
 
 function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
@@ -442,6 +446,148 @@ describe('agent editor panel', () => {
     expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')
   })
 
+  it('blocks new attachments while an enqueue remains in flight', async () => {
+    vi.useRealTimers()
+    const attachment = {
+      id: 'pending-1',
+      file: new File(['pending'], 'pending.txt', { type: 'text/plain' }),
+      filename: 'pending.txt',
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode('pending'),
+      size: 7,
+    }
+    setAttachments('a1', [attachment])
+    let finishEnqueue: (() => void) | undefined
+    let send: (() => void) | undefined
+    const onSendMessage = vi.fn(() => new Promise<void>((resolve) => {
+      finishEnqueue = resolve
+    }))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={onSendMessage}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    expect(screen.getByTestId('send-button')).not.toBeDisabled()
+
+    send?.()
+
+    expect(onSendMessage).toHaveBeenCalledWith('', [attachment])
+    expect(screen.getByTestId('file-input')).toBeDisabled()
+    finishEnqueue?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+  })
+
+  it('clears only the submitted draft after an agent switch', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    const attachment = (id: string) => ({
+      id,
+      file: new File([id], `${id}.txt`, { type: 'text/plain' }),
+      filename: `${id}.txt`,
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode(id),
+      size: id.length,
+    })
+    const attachmentA = attachment('attachment-a')
+    const attachmentB = attachment('attachment-b')
+    setAttachments('a1', [attachmentA])
+    setAttachments('a2', [attachmentB])
+    saveDraft('a1', 'draft a', -1)
+    saveDraft('a2', 'draft b', -1)
+    let finishEnqueue: (() => void) | undefined
+    let send: (() => void) | undefined
+    const onSendMessage = vi.fn(() => new Promise<void>((resolve) => {
+      finishEnqueue = resolve
+    }))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={onSendMessage}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    send?.()
+    expect(onSendMessage).toHaveBeenCalledWith('draft a', [attachmentA])
+
+    setAgentId('a2')
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b'))
+    finishEnqueue?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+
+    expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b')
+    expect(loadDraft('a1').content).toBe('')
+    expect(loadDraft('a2').content).toBe('draft b')
+    expect(getAttachments('a1')).toEqual([])
+    expect(getAttachments('a2')).toEqual([attachmentB])
+  })
+
+  it('does not clear a new agent queue edit when the old save finishes', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: id,
+      paused: true,
+      items: [{
+        id: `owned-${id}`,
+        agentId: id,
+        text: `preview ${id}`,
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+      }],
+    })
+    const onBeginQueueEdit = vi.fn((item: { agentId: string }) => Promise.resolve({
+      snapshot: queue(item.agentId),
+      attachments: [],
+      text: `full ${item.agentId}`,
+    }))
+    let finishSave: (() => void) | undefined
+    const onUpdateQueueItem = vi.fn(() => new Promise<void>((resolve) => {
+      finishSave = resolve
+    }))
+    saveDraft('a1-queue-owned-a1', 'saved a1 edit', -1)
+    let send: (() => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={queue(agentId())}
+          queueClientId="client-a"
+          onBeginQueueEdit={onBeginQueueEdit}
+          onUpdateQueueItem={onUpdateQueueItem}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('saved a1 edit'))
+    send?.()
+    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [])
+
+    setAgentId('a2')
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('full a2'))
+    finishSave?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+
+    expect(onBeginQueueEdit.mock.calls.filter(([item]) => item.agentId === 'a2')).toHaveLength(1)
+    expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('full a2')
+    expect(screen.getByRole('button', { name: 'Cancel Edit' })).toBeInTheDocument()
+  })
+
   it('preserves normal attachments when a queue edit is canceled', async () => {
     const normalAttachment = {
       id: 'normal-1',
@@ -493,7 +639,6 @@ describe('agent editor panel', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
     await Promise.resolve()
     expect(getAttachments('a1')).toEqual([normalAttachment])
-    clearAttachments('a1')
   })
 
   it('requires confirmation before it retries uncertain delivery', async () => {

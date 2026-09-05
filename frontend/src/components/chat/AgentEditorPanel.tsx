@@ -37,6 +37,7 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AgentInputQueue } from './AgentInputQueue'
+import { clearAttachments as clearCachedAttachments } from './attachments'
 import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
 import { ComposerPlusMenu } from './composer/ComposerPlusMenu'
@@ -165,7 +166,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const [editingInput, setEditingInput] = createSignal<QueuedAgentInput>()
   const [uncertainRetry, setUncertainRetry] = createSignal<QueuedAgentInput>()
   const [queueUpdateInFlight, setQueueUpdateInFlight] = createSignal(false)
-  let finishQueueEditAfterSend = false
+  let completedQueueEdit: { agentId: string, inputId: string } | undefined
   let pendingQueueEditText: string | undefined
   let pendingQueueEditAttachments: FileAttachment[] | undefined
   let normalAttachmentRestore: { key: string, attachments: FileAttachment[] } | undefined
@@ -187,7 +188,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const removeAttachment = att.removeAttachment
   const clearAllAttachments = att.clearAllAttachments
   const replaceAttachments = att.replaceAttachments
-  const handleFileInputChange = () => att.handleFileInputChange(fileInputRef)
+  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => sending() ? Promise.resolve(0) : addFiles(...args)
+  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => sending() ? Promise.resolve(0) : att.addDroppedDataTransfer(dataTransfer)
+  const handleFileInputChange = () => {
+    if (sending()) {
+      if (fileInputRef)
+        fileInputRef.value = ''
+      return
+    }
+    att.handleFileInputChange(fileInputRef)
+  }
 
   const loadQueueEdit = (item: QueuedAgentInput, takeover: boolean, restoreDraft: boolean) => {
     const editAgentId = untrack(() => props.agentId)
@@ -375,6 +385,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
     editorHeight.resetEditorHeight,
     () => attachments(),
     async (content, fileAttachments) => {
+      const sentAttachmentDraftKey = untrack(att.activeDraftKey)
       startSending()
       try {
         const editing = activeEditingInput()
@@ -387,12 +398,15 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             setQueueUpdateInFlight(false)
             throw error
           }
-          finishQueueEditAfterSend = true
+          completedQueueEdit = { agentId: editing.agentId, inputId: editing.id }
         }
         else {
           await props.onSendMessage(content, fileAttachments)
         }
-        clearAllAttachments()
+        if (untrack(att.activeDraftKey) === sentAttachmentDraftKey)
+          clearAllAttachments()
+        else if (sentAttachmentDraftKey)
+          clearCachedAttachments(sentAttachmentDraftKey)
       }
       finally {
         stopSending()
@@ -408,10 +422,22 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   }))
 
   // Expose addFiles for external callers (e.g. ChatDropZone).
-  // eslint-disable-next-line solid/reactivity -- one-time ref registration, addFiles is stable
-  props.addFilesRef?.(addFiles)
+  // eslint-disable-next-line solid/reactivity -- one-time ref registration, addFilesWhenReady is stable
+  props.addFilesRef?.(addFilesWhenReady)
   // eslint-disable-next-line solid/reactivity -- one-time ref registration, handler is stable
-  props.addDropDataTransferRef?.(att.addDroppedDataTransfer)
+  props.addDropDataTransferRef?.(addDropDataTransferWhenReady)
+
+  const handlePasteFiles = (files: File[]) => {
+    if (ctrl.activeControlRequest() || sending())
+      return
+    addFiles(files, true)
+  }
+
+  const handleDropDataTransfer = (dataTransfer: DataTransfer) => {
+    if (ctrl.activeControlRequest() || sending())
+      return
+    void att.addDroppedDataTransfer(dataTransfer)
+  }
 
   const branchGitView = createMemo(() => {
     const tab = props.gitTab ?? {}
@@ -588,6 +614,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           type="file"
           multiple
           accept={acceptAttribute()}
+          disabled={sending()}
           style={{ display: 'none' }}
           onChange={handleFileInputChange}
           data-testid="file-input"
@@ -600,9 +627,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
           onAfterSend={() => {
-            if (finishQueueEditAfterSend) {
-              finishQueueEditAfterSend = false
-              setEditingInput()
+            if (completedQueueEdit) {
+              const completed = completedQueueEdit
+              completedQueueEdit = undefined
+              const current = activeEditingInput()
+              if (current?.agentId === completed.agentId && current.id === completed.inputId)
+                setEditingInput()
               setQueueUpdateInFlight(false)
             }
           }}
@@ -655,6 +685,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             },
             onReady: () => {
               editorReady = true
+              const editing = activeEditingInput()
+              if (editing && pendingQueueEditText !== undefined) {
+                editorContentRef?.set(pendingQueueEditText)
+                pendingQueueEditText = undefined
+              }
               tryRegisterEditorRef(props.agentId)
             },
           }}
@@ -701,8 +736,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               agentProvider={props.agent?.agentProvider}
               onSettingChange={props.onSettingChange}
               onAttachFile={() => fileInputRef?.click()}
-              canAttach={!ctrl.activeControlRequest()}
+              canAttach={!ctrl.activeControlRequest() && !sending()}
               disabledReason={props.disabledReason}
+              attachmentDisabledReason={sending() ? 'Queueing input...' : undefined}
               settingsLoading={props.settingsLoading}
               workingTree={workingTree()}
               branchActions={props.branchActions}

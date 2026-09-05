@@ -27,6 +27,7 @@ function renderMenu(opts: {
   provider?: AgentProvider
   values?: Record<string, string>
   disabledReason?: string
+  attachmentDisabledReason?: string
   canAttach?: boolean
   agentInfo?: boolean
   settingsLoading?: boolean
@@ -52,6 +53,7 @@ function renderMenu(opts: {
       onAttachFile={onAttachFile}
       canAttach={opts.canAttach ?? true}
       disabledReason={opts.disabledReason}
+      attachmentDisabledReason={opts.attachmentDisabledReason}
       settingsLoading={opts.settingsLoading}
       workingTree={{
         isWorktree: opts.isWorktree ?? false,
@@ -427,6 +429,18 @@ describe('composerPlusMenu', () => {
     const attach = screen.getByTestId('composer-attach-file')
     expect(attach).toBeDisabled()
     expect(reasonOf(attach)).toBe('Attach is unavailable during a control request')
+  })
+
+  it('keeps settings live when only attachments are unavailable', async () => {
+    const { onSettingChange } = renderMenu({
+      groups: [group('model', 'Model', 10, ['opus', 'sonnet'])],
+      canAttach: false,
+      attachmentDisabledReason: 'Queueing input...',
+    })
+
+    expect(reasonOf(screen.getByTestId('composer-attach-file'))).toBe('Queueing input...')
+    await fireEvent.click(screen.getByTestId('model-sonnet'))
+    expect(onSettingChange).toHaveBeenCalled()
   })
 
   it('disables attach and the settings submenus when the composer accepts no input', async () => {

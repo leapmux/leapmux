@@ -11,8 +11,21 @@ import (
 )
 
 type coordinator struct {
-	mu       sync.Mutex
-	draining bool
+	mu        sync.Mutex
+	restartMu sync.Mutex
+	draining  bool
+}
+
+// PlannedRestart keeps explicit dispatch operations behind one agent restart.
+// Automatic drains stay blocked by the durable pause that BeginPlannedRestart
+// creates.
+type PlannedRestart struct {
+	manager     *Manager
+	coordinator *coordinator
+	agentID     string
+	resumeQueue bool
+	once        sync.Once
+	err         error
 }
 
 type Manager struct {
@@ -206,11 +219,13 @@ func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (S
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
 	reason := leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED
 	if paused {
 		reason = leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL
 	}
-	c := m.coordinator(agentID)
 	c.mu.Lock()
 	snapshot, err := m.store.SetPaused(ctx, agentID, paused, reason)
 	if err == nil {
@@ -229,6 +244,8 @@ func (m *Manager) Pause(ctx context.Context, agentID string, reason leapmuxv1.Ag
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	snapshot, err := m.store.Pause(ctx, agentID, reason)
@@ -277,6 +294,8 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	}
 	defer m.endActivity()
 	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	snapshot, err := m.store.Retry(ctx, agentID, inputID, confirmUncertain)
@@ -292,10 +311,12 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		return Snapshot{}, ErrManagerStopped
 	}
 	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
 	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
 		return Snapshot{}, ErrSteeringUnsupported
 	}
-	c := m.coordinator(agentID)
 	c.mu.Lock()
 	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID)
 	if err != nil {
@@ -367,6 +388,56 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		m.scheduleDrain(agentID)
 	}
 	return snapshot, nil
+}
+
+// BeginPlannedRestart pauses automatic dispatch before a provider replacement.
+// The returned guard serializes retry, steering, and pause changes until Finish.
+func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*PlannedRestart, error) {
+	if !m.beginActivity() {
+		return nil, ErrManagerStopped
+	}
+	c := m.coordinator(agentID)
+	c.restartMu.Lock()
+	c.mu.Lock()
+	snapshot, resumeQueue, err := m.store.pauseForPlannedRestart(ctx, agentID)
+	if err == nil && resumeQueue {
+		m.observer.QueueChanged(snapshot)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		c.restartMu.Unlock()
+		m.endActivity()
+		return nil, err
+	}
+	return &PlannedRestart{
+		manager: m, coordinator: c, agentID: agentID, resumeQueue: resumeQueue,
+	}, nil
+}
+
+// Finish records that the replaced process cannot finish its old turn. A
+// successful replacement restores only the temporary pause that this guard
+// created. A failed launch keeps that pause for an explicit retry.
+func (r *PlannedRestart) Finish(ctx context.Context, processReplaced, restartSucceeded bool) error {
+	if r == nil {
+		return nil
+	}
+	r.once.Do(func() {
+		resumeQueue := r.resumeQueue && (!processReplaced || restartSucceeded)
+		r.coordinator.mu.Lock()
+		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, processReplaced, resumeQueue)
+		if err == nil && changed {
+			r.manager.observer.QueueChanged(snapshot)
+		}
+		shouldDrain := err == nil && changed && !snapshot.Paused && !snapshot.ActiveTurn && len(snapshot.Items) > 0
+		r.coordinator.mu.Unlock()
+		r.coordinator.restartMu.Unlock()
+		r.manager.endActivity()
+		if shouldDrain {
+			r.manager.scheduleDrain(r.agentID)
+		}
+		r.err = err
+	})
+	return r.err
 }
 
 func (m *Manager) Recover(ctx context.Context) error {

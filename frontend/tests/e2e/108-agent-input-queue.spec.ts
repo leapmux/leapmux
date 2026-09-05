@@ -1,19 +1,20 @@
 import { Buffer } from 'node:buffer'
-import { expect, test } from './fixtures'
 import { loginViaToken, openWorkspace, sendMessage } from './helpers/ui'
+import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('agent input queue', () => {
-  test('persists paused input across clients and a reload, then supports queue changes', async ({ page, browser, authenticatedWorkspace, leapmuxServer }) => {
-    const secondContext = await browser.newContext({ baseURL: leapmuxServer.hubUrl })
+  test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker }) => {
+    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await page.getByTestId('queue-pause-button').click()
+    await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+
+    const secondContext = await browser.newContext({ baseURL: separateHubWorker.hubUrl })
     const secondPage = await secondContext.newPage()
-    await loginViaToken(secondPage, leapmuxServer.adminToken)
+    await loginViaToken(secondPage, separateHubWorker.adminToken)
     await openWorkspace(secondPage, authenticatedWorkspace.workspaceId)
     await expect(secondPage.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
 
     try {
-      await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
-      await page.getByTestId('queue-pause-button').click()
-      await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
       await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
 
       const queuedFirst = `${'x'.repeat(1200)} full text tail`
@@ -30,8 +31,11 @@ test.describe('agent input queue', () => {
         await expect(clientPage.getByTestId('agent-input-queue')).not.toContainText('full text tail')
         await expect(clientPage.getByTestId('agent-input-queue')).toContainText('queued-input.txt')
         await expect(clientPage.getByTestId('agent-input-queue')).toContainText('queued second')
+        await expect(clientPage.getByTestId('agent-input-queue')).toHaveCSS('overflow-y', 'auto')
       }
 
+      await restartWorker(separateHubWorker)
+      await ensureWorkerOnline(separateHubWorker)
       await page.reload()
       await expect(page.getByTestId('agent-input-queue')).toContainText(queuedFirstPreview)
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued second')

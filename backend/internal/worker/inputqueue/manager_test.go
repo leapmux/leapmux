@@ -427,6 +427,88 @@ func TestManagerSerializesConcurrentClientMutations(t *testing.T) {
 	assert.Equal(t, uint64(21), snapshot.Revision)
 }
 
+func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name             string
+		manualPause      bool
+		processReplaced  bool
+		restartSucceeded bool
+		wantActive       bool
+		wantPaused       bool
+		wantPauseReason  leapmuxv1.AgentInputQueuePauseReason
+	}{
+		{
+			name:            "successful replacement",
+			processReplaced: true, restartSucceeded: true,
+		},
+		{
+			name:            "failure before replacement",
+			processReplaced: false, restartSucceeded: false,
+			wantActive: true,
+		},
+		{
+			name:            "failed replacement",
+			processReplaced: true, restartSucceeded: false,
+			wantPaused:      true,
+			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
+		},
+		{
+			name:        "existing manual pause",
+			manualPause: true, processReplaced: true, restartSucceeded: true,
+			wantPaused:      true,
+			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+			ctx := context.Background()
+			_, err := manager.TurnStarted(ctx, "agent-1")
+			require.NoError(t, err)
+			if test.manualPause {
+				_, err = manager.SetPaused(ctx, "agent-1", true)
+				require.NoError(t, err)
+			}
+
+			restart, err := manager.BeginPlannedRestart(ctx, "agent-1")
+			require.NoError(t, err)
+			during, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			assert.True(t, during.Paused)
+			assert.True(t, during.ActiveTurn)
+
+			require.NoError(t, restart.Finish(ctx, test.processReplaced, test.restartSucceeded))
+			after, err := manager.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, test.wantActive, after.ActiveTurn)
+			assert.Equal(t, test.wantPaused, after.Paused)
+			assert.Equal(t, test.wantPauseReason, after.PauseReason)
+		})
+	}
+}
+
+func TestManagerPlannedRestartSerializesExplicitResume(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	ctx := context.Background()
+	restart, err := manager.BeginPlannedRestart(ctx, "agent-1")
+	require.NoError(t, err)
+	resumeDone := make(chan error, 1)
+	go func() {
+		_, resumeErr := manager.SetPaused(ctx, "agent-1", false)
+		resumeDone <- resumeErr
+	}()
+	assert.Never(t, func() bool { return len(resumeDone) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
+
+	require.NoError(t, restart.Finish(ctx, true, true))
+	require.NoError(t, <-resumeDone)
+}
+
 func TestManagerStopRefusesNewWorkAndWaitJoinsDispatch(t *testing.T) {
 	t.Parallel()
 

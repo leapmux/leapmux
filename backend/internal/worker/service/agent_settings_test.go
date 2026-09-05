@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
@@ -1062,6 +1063,51 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 		}
 	}
 	assert.True(t, sawCatalog, "restart-applied settings must broadcast the confirmed option-group catalog")
+}
+
+func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-restart-queue"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            agentID,
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"}),
+	}))
+	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	_, err := svc.Agents.MockStartAgent(ctx, agent.Options{
+		AgentID:       agentID,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		WorkingDir:    t.TempDir(),
+		Options:       map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"},
+	}, sink)
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+
+	_, err = svc.InputQueue.TurnStarted(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "after-restart", AgentID: agentID, Text: "continue after restart",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+
+	svc.startAgentFn = mockAgentStarter(t, svc, nil)
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	svc.applySettingsViaRestart(dbAgent, map[string]string{
+		agent.OptionIDModel:  "opus[1m]",
+		agent.OptionIDEffort: agent.EffortAuto,
+	})
+
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, time.Second, 10*time.Millisecond)
 }
 
 func mockAgentStarter(t *testing.T, svc *Service, onStart func(agent.Options)) func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
