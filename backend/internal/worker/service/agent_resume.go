@@ -474,13 +474,13 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	if dbAgent.ParentAgentID.Valid {
 		return resumeSkipSubagent
 	}
-	// The candidate list is a SNAPSHOT: ListRootAgentIDsForResume ran once, and a
-	// the sweep reaches a candidate at the back of a throttled queue much later -- minutes,
-	// on a machine with many tabs and a concurrency of 1. A CloseAgent in between
-	// already ran that tab's whole teardown, so a process started for it now is
-	// one nothing will ever stop: it holds a CLI and its memory for the life of
-	// the worker, under a tab no client can see. This row was read AFTER the
-	// list, which is what makes the check worth having.
+	// The candidate list is a SNAPSHOT: ListRootAgentIDsForResume ran once, and
+	// the sweep reaches a candidate at the back of a throttled queue much
+	// later -- minutes, on a machine with many tabs and a concurrency of 1. A
+	// CloseAgent in between already ran that tab's whole teardown, so a process
+	// started for it now is one nothing will ever stop: it holds a CLI and its
+	// memory for the life of the worker, under a tab no client can see. This
+	// row was read AFTER the list, which is what makes the check worth having.
 	//
 	// ensureAgentRunning refuses a closed row as well, under the per-agent
 	// lifecycle lock, which is what closes the window between this read and that
