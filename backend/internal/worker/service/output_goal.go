@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -273,6 +274,13 @@ func (h *OutputHandler) broadcastGoal(agentID string, goal *leapmuxv1.AgentGoal,
 	h.watcher.BroadcastAgentEvent(agentID, h.GoalChangedEvent(agentID, goal, updatedAt))
 }
 
+// wireGoalString returns s with every invalid UTF-8 byte removed, so a stored
+// value can never fail proto.Marshal. It drops the byte rather than writing
+// U+FFFD, the same answer validate.StripUnreadable gives, so the two agree.
+func wireGoalString(s string) string {
+	return strings.ToValidUTF8(s, "")
+}
+
 // goalStamp formats the ordering stamp, or "" when the agent never had a goal.
 // The layout is fixed-width UTC, so the recipient orders two stamps with a
 // plain string compare and never parses a date.
@@ -294,9 +302,20 @@ func (h *OutputHandler) goalProto(objective, statusWire, statusDetail string, cr
 		return nil
 	}
 	goal := &leapmuxv1.AgentGoal{
-		Objective:    objective,
+		// Repaired HERE, on the projection, exactly as bgtask.Item.ToProto
+		// repairs its labels, and for the reason that file gives: sqlite stores
+		// a bad byte verbatim, so a value that reached the column before this
+		// build's GoalUpdate.Clean existed is read back on every boot.
+		//
+		// Clean already strips these on the write path, so this is the READ path
+		// speaking for itself rather than trusting every past writer. The cost of
+		// being wrong is not a missing goal: proto.Marshal fails the WHOLE
+		// message for one bad byte, and this projection feeds
+		// ListAgentMessagesResponse -- so a single byte would fail an entire page
+		// of chat history, with nothing on screen to say why.
+		Objective:    wireGoalString(objective),
 		Status:       agent.GoalStatusToProto(agent.GoalStatusFromWire(statusWire)),
-		StatusDetail: statusDetail,
+		StatusDetail: wireGoalString(statusDetail),
 	}
 	if createdAt.Valid {
 		goal.CreatedAt = timefmt.Format(createdAt.Time)

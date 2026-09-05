@@ -6,12 +6,15 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -386,6 +389,49 @@ func TestGoal_ChangedEventStampsAnAbsentGoalToo(t *testing.T) {
 	assert.Nil(t, changed.GetGoal())
 	assert.NotEmpty(t, changed.GetGoalUpdatedAt(),
 		"a cleared goal is the answer a stale reply resurrects, so it needs a stamp")
+}
+
+// The projection speaks for itself rather than trusting every past writer.
+// proto.Marshal fails the WHOLE message for one invalid byte, and this
+// projection feeds ListAgentMessagesResponse -- so a byte that reached the
+// column would fail an entire page of chat history, not merely hide the goal.
+func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, agentID, _ := setupGoalTest(t)
+
+	// Write the bad bytes straight to the column, which is the one way they get
+	// there: GoalUpdate.Clean strips them on every path into the sink.
+	require.NoError(t, svc.Queries.UpdateAgentGoal(ctx, db.UpdateAgentGoalParams{
+		GoalObjective:    "ship \xff it",
+		GoalStatus:       "active",
+		GoalStatusDetail: "wait\xfe",
+		GoalCreatedAt:    sqltime.SQLiteNullTime{Time: time.Unix(1_700_000_000, 0).UTC(), Valid: true},
+		GoalUpdatedAt:    sqltime.SQLiteNullTime{Time: time.Unix(1_700_000_000, 0).UTC(), Valid: true},
+		ID:               agentID,
+	}))
+
+	// sqlite stores the bytes VERBATIM. Without this the test would pass for the
+	// wrong reason -- a database that sanitized on its own would leave the
+	// projection's repair doing nothing, and the assertions below could not tell
+	// the difference.
+	stored, err := svc.Queries.GetAgentByID(ctx, agentID)
+	require.NoError(t, err)
+	require.False(t, utf8.ValidString(stored.GoalObjective),
+		"the column holds the bad byte, so the repair has real work to do")
+
+	loaded, err := svc.Output.LoadGoal(ctx, agentID)
+	require.NoError(t, err)
+	require.NotNil(t, loaded.Goal)
+	assert.True(t, utf8.ValidString(loaded.Goal.GetObjective()))
+	assert.True(t, utf8.ValidString(loaded.Goal.GetStatusDetail()))
+
+	// The real assertion: the whole response this projection rides marshals.
+	_, marshalErr := proto.Marshal(&leapmuxv1.ListAgentMessagesResponse{
+		Goal:       loaded.Goal,
+		GoalLoaded: true,
+	})
+	assert.NoError(t, marshalErr, "one bad byte would fail the entire message page")
 }
 
 // Absent and zero are different answers. No two providers report the same
