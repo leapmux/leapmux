@@ -1,8 +1,12 @@
+import type { AgentEditorPanelProps } from './AgentEditorPanel'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
-import { render, screen } from '@solidjs/testing-library'
+import type { ControlRequest } from '~/stores/control.store'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { localStorageGet, localStorageSet, PREFIX_ASK_STATE } from '~/lib/browserStorage'
+import { loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
@@ -51,7 +55,14 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
   } as unknown as AgentInfo
 }
 
-function renderPanel(workerId = 'w1', controlStore?: ReturnType<typeof createControlStore>) {
+interface RenderPanelOptions {
+  workerId?: string
+  controlStore?: ReturnType<typeof createControlStore>
+  onControlResponse?: AgentEditorPanelProps['onControlResponse']
+}
+
+function renderPanel(options: RenderPanelOptions = {}) {
+  const workerId = options.workerId ?? 'w1'
   const repoGitStore = createRepoGitStore()
   const gitTab = { workerId, gitToplevel: WORKTREE_DIR }
   repoGitStore.upsert(repoKey(workerId, WORKTREE_DIR), {
@@ -68,7 +79,8 @@ function renderPanel(workerId = 'w1', controlStore?: ReturnType<typeof createCon
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={() => {}}
-        controlRequests={controlStore?.getRequests('a1')}
+        controlRequests={options.controlStore?.getRequests('a1')}
+        onControlResponse={options.onControlResponse}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -76,25 +88,31 @@ function renderPanel(workerId = 'w1', controlStore?: ReturnType<typeof createCon
   ))
 }
 
-function addControlRequest(
-  controlStore: ReturnType<typeof createControlStore>,
-  requestId: string,
-  toolName: string,
-) {
-  controlStore.addRequest('a1', {
-    requestId,
-    agentId: 'a1',
-    payload: {
-      request: { tool_name: toolName, input: {} },
-    },
-  })
+/** A control request payload naming the tool the agent asks permission to run. */
+function toolRequestPayload(toolName: string): Record<string, unknown> {
+  return { request: { tool_name: toolName, input: {} } }
 }
 
+function addControlRequest(
+  controlStore: ReturnType<typeof createControlStore>,
+  request: Omit<ControlRequest, 'agentId'>,
+) {
+  controlStore.addRequest('a1', { agentId: 'a1', ...request })
+}
+
+// The crash this suite's sibling reproduces (`ControlRequestBanner.test.tsx`)
+// cannot occur through the panel, so these are lifecycle tests rather than
+// regression tests. `insert()` builds a RENDER effect, which runs in the same
+// pure phase as a memo and OWNS the control component. Solid's `runTop` walks
+// up to the topmost stale ancestor first, so that effect always disposes the
+// component before any memo in its body can re-read the removed request. The
+// keyed owners still matter -- they make the request prop non-reactive, so the
+// panel no longer depends on that disposal order holding.
 describe('agentEditorPanel control request lifecycle', () => {
   it('removes the active control request without reading a null request', () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, 'plan-1', 'ExitPlanMode')
-    renderPanel('w1', controlStore)
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    renderPanel({ controlStore })
 
     expect(screen.getByTestId('control-banner')).toBeInTheDocument()
     expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
@@ -109,9 +127,9 @@ describe('agentEditorPanel control request lifecycle', () => {
 
   it('renders the next queued control request after removing the active request', () => {
     const controlStore = createControlStore()
-    addControlRequest(controlStore, 'plan-1', 'ExitPlanMode')
-    addControlRequest(controlStore, 'bash-1', 'Bash')
-    renderPanel('w1', controlStore)
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+    renderPanel({ controlStore })
 
     expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
 
@@ -120,6 +138,86 @@ describe('agentEditorPanel control request lifecycle', () => {
     expect(screen.getByTestId('control-banner')).toHaveTextContent(/Permission Required:\s*Bash/)
     expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
+  })
+
+  // The footer answers with the request instance it RENDERED, so the worker's
+  // idempotency claim keys on the answered instance. Reading the store again at
+  // click time would lose both values as soon as the store moved on.
+  it('answers with the rendered request id and its per-instance claim token', () => {
+    const controlStore = createControlStore()
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    addControlRequest(controlStore, {
+      requestId: 'plan-1',
+      payload: toolRequestPayload('ExitPlanMode'),
+      claimToken: 'claim-1',
+    })
+    renderPanel({ controlStore, onControlResponse })
+
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
+
+    expect(onControlResponse).toHaveBeenCalledOnce()
+    const [agentId, requestId, content, claimToken] = onControlResponse.mock.calls[0]
+    expect(agentId).toBe('a1')
+    expect(requestId).toBe('plan-1')
+    expect(claimToken).toBe('claim-1')
+    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toMatchObject({
+      response: { request_id: 'plan-1', response: { behavior: 'allow' } },
+    })
+  })
+
+  // A request that predates the worker's per-instance token carries none. The
+  // store then keys its responded mark on the payload instead, so the footer
+  // must pass the absent token through rather than substitute a placeholder.
+  it('answers with no claim token when the rendered request carries none', () => {
+    const controlStore = createControlStore()
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    renderPanel({ controlStore, onControlResponse })
+
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
+
+    expect(onControlResponse).toHaveBeenCalledOnce()
+    const [, requestId, , claimToken] = onControlResponse.mock.calls[0]
+    expect(requestId).toBe('plan-1')
+    expect(claimToken).toBeUndefined()
+  })
+
+  // The panel's `onControlResponse` is optional, and the chat views that omit it
+  // still render the footer. Answering there must resolve rather than throw.
+  it('answers without a response handler and still clears the draft', () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    saveDraft('a1-ctrl-plan-1', 'no handler', 0)
+    renderPanel({ controlStore })
+
+    expect(() => fireEvent.click(screen.getByTestId('plan-approve-btn'))).not.toThrow()
+
+    expect(loadDraft('a1-ctrl-plan-1').content).toBe('')
+  })
+
+  // Answering discards the drafts of the ANSWERED request only: its rejection
+  // text, its per-page question answers, and its saved selection state. A draft
+  // belonging to a queued sibling must survive, which is what pins that the
+  // cleanup reads the rendered request's id and not a wider key.
+  it('clears only the answered request drafts and ask state', () => {
+    const controlStore = createControlStore()
+    const onControlResponse = vi.fn().mockResolvedValue(undefined)
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+    saveDraft('a1-ctrl-plan-1', 'rejection reason', 0)
+    saveDraft('a1-ctrl-plan-1-q-3', 'page three answer', 0)
+    saveDraft('a1-ctrl-bash-1', 'queued sibling reason', 0)
+    localStorageSet(`${PREFIX_ASK_STATE}a1:plan-1`, { selections: { 0: ['Postgres'] } })
+    localStorageSet(`${PREFIX_ASK_STATE}a1:bash-1`, { selections: { 0: ['MySQL'] } })
+    renderPanel({ controlStore, onControlResponse })
+
+    fireEvent.click(screen.getByTestId('plan-approve-btn'))
+
+    expect(loadDraft('a1-ctrl-plan-1').content).toBe('')
+    expect(loadDraft('a1-ctrl-plan-1-q-3').content).toBe('')
+    expect(localStorageGet(`${PREFIX_ASK_STATE}a1:plan-1`)).toBeUndefined()
+    expect(loadDraft('a1-ctrl-bash-1').content).toBe('queued sibling reason')
+    expect(localStorageGet(`${PREFIX_ASK_STATE}a1:bash-1`)).toEqual({ selections: { 0: ['MySQL'] } })
   })
 })
 
@@ -147,7 +245,7 @@ describe('agentEditorPanel working-tree chip', () => {
   // A worker the store knows nothing about reports no home dir. The absolute
   // path is correct there; a guessed short one would not be.
   it('leaves the directory absolute for a worker with no system info', () => {
-    renderPanel('w-unknown')
+    renderPanel({ workerId: 'w-unknown' })
 
     const tooltip = hoverForTooltip(screen.getByTestId('composer-branch-trigger'))
     expect(tooltip!.querySelector('[data-testid="working-tree-directory"]')!.textContent)

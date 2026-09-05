@@ -486,6 +486,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
           allowEmptySend={(!!ctrl.activeControlRequest() && !ctrl.isAskUserQuestion()) || attachments().length > 0}
+          // Both control slots key their owner on the request, so each rendered
+          // control component holds ONE request instance for its whole life and
+          // Solid disposes it when the store drops that instance. A plain
+          // conditional passes `request` as a reactive prop instead, and every
+          // memo in the component's body -- the question detection here, a
+          // provider plugin's payload parsing below it -- then re-runs against
+          // the removed request unless a stale ancestor happens to dispose the
+          // component first. The keyed owner removes that "happens to".
           banner={(
             <Show when={ctrl.activeControlRequest()} keyed>
               {request => (
