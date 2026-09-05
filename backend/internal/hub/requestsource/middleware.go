@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/realclientip/realclientip-go"
@@ -129,7 +130,10 @@ func parseForwarded(values []string) ([]forwardedElement, error) {
 			return nil, fmt.Errorf("invalid Forwarded element")
 		}
 		element := forwardedElement{}
-		seen := make(map[string]struct{}, len(parts))
+		// A SLICE, not a map. RFC 7239 gives an element four parameter names,
+		// so this scan is over a handful of entries, and a map would allocate
+		// once per element of every header the hub parses.
+		seen := make([]string, 0, len(parts))
 		for _, part := range parts {
 			name, rawValue, ok := strings.Cut(strings.TrimSpace(part), "=")
 			name = strings.ToLower(strings.TrimSpace(name))
@@ -137,10 +141,14 @@ func parseForwarded(values []string) ([]forwardedElement, error) {
 			if !ok || !isToken(name) || rawValue == "" {
 				return nil, fmt.Errorf("invalid Forwarded parameter")
 			}
-			if _, duplicate := seen[name]; duplicate {
+			// A REPEATED parameter is refused rather than resolved. RFC 7239
+			// forbids it, and two `for` values in one element are a request to
+			// pick -- so any choice here would be a parser deciding which
+			// client address an attacker meant.
+			if slices.Contains(seen, name) {
 				return nil, fmt.Errorf("duplicate Forwarded parameter %q", name)
 			}
-			seen[name] = struct{}{}
+			seen = append(seen, name)
 			value, quoted, err := parseParameterValue(rawValue)
 			if err != nil {
 				return nil, err

@@ -167,6 +167,31 @@ func TestMiddleware_ReadsRepeatedHeaderLinesAsOneChain(t *testing.T) {
 	})
 }
 
+// A repeated parameter inside one Forwarded element is REFUSED, never
+// resolved. RFC 7239 forbids it, and two `for` values in one element ask the
+// parser to pick which client address the sender meant -- so a parser that
+// picked would let whoever writes the second value choose the answer.
+func TestMiddleware_RefusesARepeatedForwardedParameter(t *testing.T) {
+	t.Parallel()
+	for _, header := range []string{
+		`for=198.51.100.7;for=198.51.100.8`,
+		`for=198.51.100.7;proto=https;proto=http`,
+		// Case-folded: the parameter name is case-insensitive, so `For` and
+		// `for` are one name and not two.
+		`For=198.51.100.7;for=198.51.100.8`,
+	} {
+		t.Run(header, func(t *testing.T) {
+			t.Parallel()
+			observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
+				r.RemoteAddr = "10.0.0.3:4327"
+				r.Header.Set("Forwarded", header)
+			})
+			assert.Empty(t, observed.clientIP)
+			assert.Equal(t, "http", observed.scheme)
+		})
+	}
+}
+
 func TestMiddleware_PrefersForwardedWithoutFallback(t *testing.T) {
 	t.Parallel()
 	observed := observeRequest(t, mustTrusted(t, "10.0.0.0/8"), func(r *http.Request) {
