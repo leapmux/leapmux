@@ -1,15 +1,15 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
+import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
 
 import type { CodexDecision } from './controlResponse'
-import { createMemo, createSignal, Match, Show, Switch } from 'solid-js'
+import { createMemo, Match, Show, Switch } from 'solid-js'
 import { isObject, pickObject } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
-import { sendJsonRpcResult, sendResponse } from '../../controls/types'
+import { createControlSwitch, sendJsonRpcResult, sendResponse } from '../../controls/types'
 import { codexDecisionKey, codexDecisionLabel, parseCodexDecision } from './controlResponse'
 
 /** Extract Codex approval params from the control request payload. */
@@ -21,12 +21,11 @@ function getCodexParams(payload: Record<string, unknown>): Record<string, unknow
  * Sends a Codex-native approval decision as a JSON-RPC response directly.
  */
 export function sendCodexDecision(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   decision: CodexDecision,
 ): Promise<void> {
-  return sendJsonRpcResult(agentId, onRespond, requestId, { decision })
+  return sendJsonRpcResult(onRespond, requestId, { decision })
 }
 
 export function markCodexPlanPromptResponse(response: Record<string, unknown>): Record<string, unknown> {
@@ -34,11 +33,10 @@ export function markCodexPlanPromptResponse(response: Record<string, unknown>): 
 }
 
 function sendCodexPlanPromptResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   response: Record<string, unknown>,
 ): Promise<void> {
-  return sendResponse(agentId, onRespond, markCodexPlanPromptResponse(response))
+  return sendResponse(onRespond, markCodexPlanPromptResponse(response))
 }
 
 const CODEX_OTHER_OPTION_LABEL = 'None of the above'
@@ -48,9 +46,9 @@ function hasCodexOtherOption(question: Question): boolean {
   return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
 }
 
-function codexAnswerValues(question: Question, index: number, askState: AskQuestionState): string[] {
-  const selected = askState.selections()[index] ?? []
-  const customText = askState.customTexts()[index]?.trim()
+function codexAnswerValues(question: Question, index: number, answerState: ControlAnswerState): string[] {
+  const selected = answerState.selections()[index] ?? []
+  const customText = answerState.customTexts()[index]?.trim()
   const values = [...selected]
 
   if (customText) {
@@ -70,37 +68,34 @@ function codexAnswerValues(question: Question, index: number, askState: AskQuest
  * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
  */
 export function sendCodexUserInputResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   questions: Question[],
-  askState: AskQuestionState,
+  answerState: ControlAnswerState,
 ): Promise<void> {
   const answers: Record<string, { answers: string[] }> = {}
   for (let i = 0; i < questions.length; i++) {
-    const values = codexAnswerValues(questions[i], i, askState)
+    const values = codexAnswerValues(questions[i], i, answerState)
     const key = questions[i].id || questions[i].header || `q${i}`
     answers[key] = { answers: values }
   }
-  return sendJsonRpcResult(agentId, onRespond, requestId, { answers })
+  return sendJsonRpcResult(onRespond, requestId, { answers })
 }
 
 export function sendCodexUserInputRejectResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
 ): Promise<void> {
-  return sendJsonRpcResult(agentId, onRespond, requestId, { answers: {} })
+  return sendJsonRpcResult(onRespond, requestId, { answers: {} })
 }
 
 export function sendCodexPermissionsResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   permissions: Record<string, unknown>,
   scope: 'turn' | 'session',
 ): Promise<void> {
-  return sendJsonRpcResult(agentId, onRespond, requestId, { permissions, scope })
+  return sendJsonRpcResult(onRespond, requestId, { permissions, scope })
 }
 
 function isNegativeDecision(decision: CodexDecision): boolean {
@@ -208,17 +203,16 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 }
 
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
-  const [remember, setRemember] = createSignal(false)
-  const [bypass, setBypass] = createSignal(false)
+  const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
+  const bypassSwitch = createControlSwitch(() => props.answerState, 'control-bypass-permissions-checkbox')
   const handleAllow = async () => {
     await sendCodexPermissionsResponse(
-      props.request.agentId,
       props.onRespond,
       props.request.requestId,
       codexRequestedPermissions(props.request.payload),
-      remember() ? 'session' : 'turn',
+      rememberSwitch.checked() ? 'session' : 'turn',
     )
-    if (bypass() && props.bypass)
+    if (bypassSwitch.checked() && props.bypass)
       await props.bypass.apply(props.bypass.settings)
   }
   return (
@@ -228,13 +222,13 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
       negativeAction={{
         label: 'Deny',
         testId: 'control-deny-btn',
-        onSelect: () => sendCodexPermissionsResponse(props.request.agentId, props.onRespond, props.request.requestId, {}, 'turn'),
+        onSelect: () => sendCodexPermissionsResponse(props.onRespond, props.request.requestId, {}, 'turn'),
       }}
       positiveAction={{ label: 'Allow', testId: 'control-allow-btn', onSelect: handleAllow }}
       switches={() => [
-        { id: 'control-remember-checkbox', label: 'Remember', checked: remember(), onChange: setRemember },
+        { id: 'control-remember-checkbox', label: 'Remember', checked: rememberSwitch.checked(), onChange: rememberSwitch.set },
         ...(props.bypass
-          ? [{ id: 'control-bypass-permissions-checkbox', label: 'Bypass Permissions', checked: bypass(), onChange: setBypass }]
+          ? [{ id: 'control-bypass-permissions-checkbox', label: 'Bypass Permissions', checked: bypassSwitch.checked(), onChange: bypassSwitch.set }]
           : []),
       ]}
     />
@@ -246,7 +240,6 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   const planApproval = createPlanApprovalState(props)
 
   const handleApprove = () => sendCodexPlanPromptResponse(
-    props.request.agentId,
     props.onRespond,
     buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), {
       permissionMode: planApproval.permissionMode(),
@@ -261,7 +254,7 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
       negativeAction={{
         label: 'Reject',
         testId: 'control-deny-btn',
-        onSelect: () => sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, '')),
+        onSelect: () => sendCodexPlanPromptResponse(props.onRespond, buildDenyResponse(props.request.requestId, '')),
       }}
       positiveAction={{ label: 'Approve', testId: 'control-allow-btn', onSelect: handleApprove }}
       switches={() => planApprovalSwitches(planApproval)}
@@ -275,19 +268,18 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const method = () => props.request.payload.method as string | undefined
   const params = () => getCodexParams(props.request.payload)
   const decisions = createMemo(() => resolveCodexDecisions(params()?.availableDecisions))
-  const [remember, setRemember] = createSignal(false)
-  const [bypass, setBypass] = createSignal(false)
+  const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
+  const bypassSwitch = createControlSwitch(() => props.answerState, 'control-bypass-permissions-checkbox')
 
   const handleDecision = (decision: CodexDecision) => sendCodexDecision(
-    props.request.agentId,
     props.onRespond,
     props.request.requestId,
     decision,
   )
 
   const handleAllow = async () => {
-    await handleDecision(remember() ? (decisions().remembered ?? decisions().positive) : decisions().positive)
-    if (bypass() && props.bypass)
+    await handleDecision(rememberSwitch.checked() ? (decisions().remembered ?? decisions().positive) : decisions().positive)
+    if (bypassSwitch.checked() && props.bypass)
       await props.bypass.apply(props.bypass.settings)
   }
 
@@ -304,16 +296,16 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
               ? [{
                   id: 'control-remember-checkbox',
                   label: 'Remember',
-                  checked: remember(),
-                  onChange: setRemember,
+                  checked: rememberSwitch.checked(),
+                  onChange: rememberSwitch.set,
                 }]
               : []),
             ...(props.bypass
               ? [{
                   id: 'control-bypass-permissions-checkbox',
                   label: 'Bypass Permissions',
-                  checked: bypass(),
-                  onChange: setBypass,
+                  checked: bypassSwitch.checked(),
+                  onChange: bypassSwitch.set,
                 }]
               : []),
           ]}

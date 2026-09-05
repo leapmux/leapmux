@@ -389,10 +389,10 @@ const zcodePlugin: Provider = {
   askUserQuestion: {
     isRequest: zcodeIsAskUserQuestion,
     extractQuestions: zcodeQuestionsFromPayload,
-    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState, payload) =>
-      sendResponse(agentId, sendControlResponse, buildAskAnswers(askState, questions, getToolInput(payload), requestId)),
-    sendReject: (agentId, sendControlResponse, requestId, message) =>
-      sendResponse(agentId, sendControlResponse, buildDenyResponse(requestId, message)),
+    sendAnswer: (request, sendControlResponse, questions, answerState) =>
+      sendResponse(sendControlResponse, buildAskAnswers(answerState, questions, getToolInput(request.payload), request.requestId)),
+    sendReject: (request, sendControlResponse, message) =>
+      sendResponse(sendControlResponse, buildDenyResponse(request.requestId, message)),
   },
 
   // Composer send is always a rejection. The placeholder says "Type a rejection

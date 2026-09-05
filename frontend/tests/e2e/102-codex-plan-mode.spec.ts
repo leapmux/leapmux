@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import { codexTest, expect } from './codex-fixtures'
 import { expectSettingsChip, openSettingsMenu, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
@@ -20,6 +21,8 @@ async function configureCodexPlanMode(page: Page) {
 codexTest.describe('Codex Plan Mode Prompt', () => {
   codexTest('feedback revises the plan and approval can clear context', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace
+    const pageErrors: string[] = []
+    page.on('pageerror', error => pageErrors.push(error.message))
 
     await configureCodexPlanMode(page)
 
@@ -62,8 +65,17 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(clearContextSwitch).not.toBeChecked()
     await clearContextSwitch.check()
     await page.getByTestId('control-allow-btn').click()
+    // Scoped to the prompt's own text, not to the banner slot. Executing the
+    // approved plan can raise the NEXT control request into that same slot,
+    // which says nothing about whether this approval cleared.
+    await expect(revisedBanner.getByText('Implement the proposed plan?')).not.toBeVisible()
     await expectSettingsChip(page, 'Default')
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
+    // Every uncaught page error, not one known message. A narrow regex passes
+    // for a crash whose wording changed, and for every unrelated crash in this
+    // flow. `ignorableErrorEvents` owns which messages are browser-inherent, so
+    // this asks it rather than spelling its regex a second time.
+    expect(pageErrors.filter(message => !isResizeObserverLoopError(message))).toEqual([])
   })
 })

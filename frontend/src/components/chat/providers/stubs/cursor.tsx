@@ -32,9 +32,9 @@ registerACPProvider({
   questionHandling: {
     isRequest: payload => !!payload && isCursorAskQuestionPayload(payload),
     extractQuestions: payload => getCursorQuestions(payload),
-    sendAnswer: (agentId, sendControlResponse, requestId, questions, askState) =>
-      sendCursorQuestionResponse(agentId, sendControlResponse, requestId, questions, askState),
-    sendReject: (agentId, sendControlResponse, requestId, message) =>
-      sendCursorQuestionRejectResponse(agentId, sendControlResponse, requestId, message),
+    sendAnswer: (request, sendControlResponse, questions, answerState) =>
+      sendCursorQuestionResponse(sendControlResponse, request.requestId, questions, answerState),
+    sendReject: (request, sendControlResponse, message) =>
+      sendCursorQuestionRejectResponse(sendControlResponse, request.requestId, message),
   },
 })

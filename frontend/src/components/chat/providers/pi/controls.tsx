@@ -71,16 +71,15 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
   const method = createMemo(() => pickString(payload(), 'method', undefined))
   const placeholder = createMemo(() => pickString(payload(), 'placeholder'))
   const requestId = () => props.request.requestId
-  const agentId = () => props.request.agentId
 
   const handleConfirm = (confirmed: boolean) => {
-    sendPiExtensionResponse(agentId(), props.onRespond, piConfirmResponse(requestId(), confirmed))
+    sendPiExtensionResponse(props.onRespond, piConfirmResponse(requestId(), confirmed))
   }
   const handleCancel = () => {
-    sendPiExtensionResponse(agentId(), props.onRespond, piCancelResponse(requestId()))
+    sendPiExtensionResponse(props.onRespond, piCancelResponse(requestId()))
   }
   const sendValue = (value: string) => {
-    sendPiExtensionResponse(agentId(), props.onRespond, piValueResponse(requestId(), value))
+    sendPiExtensionResponse(props.onRespond, piValueResponse(requestId(), value))
   }
 
   // Local input state for `input` and `editor` dialogs. The initial value is

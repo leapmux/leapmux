@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
+import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
@@ -82,6 +83,7 @@ interface WorkspaceFixture {
 export const test = base.extend<
   {
     toastRecorder: void
+    pageErrorRecorder: void
     workspace: WorkspaceFixture
     authenticatedWorkspace: WorkspaceFixture
   },
@@ -181,6 +183,43 @@ export const test = base.extend<
     await use(page)
     await context.close()
   },
+
+  // Page-error recorder: auto-use, so it runs for every test that inherits this
+  // base. It RECORDS and does not fail.
+  //
+  // An uncaught exception in the app is invisible to Playwright: the spec keeps
+  // waiting on a locator and reports a timeout somewhere unrelated. Only
+  // `102-codex-plan-mode.spec.ts` asserts on page errors today, so nothing
+  // measures how often the suite raises one.
+  //
+  // Measuring is the point of this step. Read the `page-errors` attachment of a
+  // full run, decide per message whether it is browser-inherent (suppress it in
+  // `~/lib/ignorableErrorEvents`), deliberate (the spec that provokes it says
+  // so), or a real crash, and THEN make this fixture fail. Turning the
+  // assertion on before that measurement fails an unknown number of specs.
+  //
+  // Nineteen of the specs build their own `test` from `@playwright/test` -- nine
+  // directly, and ten through `process-control-fixtures.ts`, which spawns its
+  // own hub. They inherit nothing here, and the deliberate-failure specs are
+  // among them. Repointing them is a prerequisite of a suite-wide guarantee.
+  pageErrorRecorder: [async ({ page }, use, testInfo) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', error => pageErrors.push(error.stack ?? error.message))
+
+    await use()
+
+    // The chat virtualizer trips the ResizeObserver delivery loop routinely.
+    // `ignorableErrorEvents` owns that judgement, and the DEV-only suppressor
+    // does not reach the production bundle this suite serves, so the message
+    // arrives here. Ask that module rather than spelling its regex a second time.
+    const real = pageErrors.filter(message => !isResizeObserverLoopError(message))
+    if (real.length > 0) {
+      await testInfo.attach('page-errors', {
+        body: real.join('\n\n'),
+        contentType: 'text/plain',
+      })
+    }
+  }, { auto: true }],
 
   // Toast recorder: auto-use so it runs for every test
   toastRecorder: [async ({ page, leapmuxServer }, use, testInfo) => {

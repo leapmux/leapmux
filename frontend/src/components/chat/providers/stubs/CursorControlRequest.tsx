@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
+import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
 
 import { Match, Show, Switch } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
@@ -40,14 +40,13 @@ export function getCursorQuestions(payload: Record<string, unknown>): Question[]
 }
 
 export function sendCursorQuestionResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   questions: Question[],
-  askState: AskQuestionState,
+  answerState: ControlAnswerState,
 ): Promise<void> {
   const answers = questions.map((question, index) => {
-    const selected = askState.selections()[index] ?? []
+    const selected = answerState.selections()[index] ?? []
     const selectedOptionIds = selected.map((selectedLabel) => {
       const match = question.options.find(option => option.label === selectedLabel)
       return match?.id || selectedLabel
@@ -58,7 +57,7 @@ export function sendCursorQuestionResponse(
     }
   }).filter(answer => answer.selectedOptionIds.length > 0)
 
-  return sendResponse(agentId, onRespond, {
+  return sendResponse(onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
     result: {
@@ -71,12 +70,11 @@ export function sendCursorQuestionResponse(
 }
 
 export function sendCursorQuestionRejectResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   reason?: string,
 ): Promise<void> {
-  return sendResponse(agentId, onRespond, {
+  return sendResponse(onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
     result: {
@@ -110,19 +108,12 @@ export const CursorControlContent: Component<ContentProps> = (props) => {
 }
 
 export const CursorControlActions: Component<ActionsProps> = (props) => {
-  const createPlanAllow = () => sendResponse(
-    props.request.agentId,
-    props.onRespond,
-    buildAllowResponse(props.request.requestId, {}),
-  )
+  const createPlanAllow = () => sendResponse(props.onRespond, buildAllowResponse(props.request.requestId, {}))
 
-  const createPlanReject = () => sendResponse(
-    props.request.agentId,
-    props.onRespond,
+  const createPlanReject = () => sendResponse(props.onRespond,
     // Bare deny (no typed reason): buildDenyResponse fills the shared
     // CONTROL_REJECTED_BY_USER_MESSAGE placeholder, so don't re-spell the literal here.
-    buildDenyResponse(props.request.requestId),
-  )
+    buildDenyResponse(props.request.requestId))
 
   return (
     <ControlActionRow

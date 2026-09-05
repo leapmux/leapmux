@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, EditorContentRef, Question } from './types'
+import type { ProviderAskUserQuestion } from '../providers/registry'
+import type { ActionsProps, ControlAnswerState, EditorContentRef, Question } from './types'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { createUniqueId, For, Show } from 'solid-js'
@@ -22,7 +23,7 @@ function preservesSelectionNotes(agentProvider?: AgentProvider): boolean {
   return pluginFor(agentProvider)?.preservesSelectionNotes ?? false
 }
 
-function toggleSelection(state: AskQuestionState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
+function toggleSelection(state: ControlAnswerState, qIdx: number, label: string, multiSelect: boolean, totalQuestions: number, preserveCustomText = false) {
   if (!preserveCustomText) {
     state.setCustomTexts((prev) => {
       if (!(qIdx in prev))
@@ -49,12 +50,12 @@ function toggleSelection(state: AskQuestionState, qIdx: number, label: string, m
   }
 }
 
-function isSelected(state: AskQuestionState, qIdx: number, label: string) {
+function isSelected(state: ControlAnswerState, qIdx: number, label: string) {
   return (state.selections()[qIdx] ?? []).includes(label)
 }
 
 /** Check if a question is answered (has selection or non-empty custom text). */
-function isPageAnsweredWithOption(state: AskQuestionState, qIdx: number): boolean {
+function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number): boolean {
   const sel = state.selections()[qIdx] ?? []
   if (sel.length > 0)
     return true
@@ -63,7 +64,7 @@ function isPageAnsweredWithOption(state: AskQuestionState, qIdx: number): boolea
 }
 
 export function buildAskAnswers(
-  state: AskQuestionState,
+  state: ControlAnswerState,
   questions: Question[],
   input: Record<string, unknown>,
   requestId: string,
@@ -87,11 +88,44 @@ export function buildAskAnswers(
 }
 
 // ---------------------------------------------------------------------------
+// controlQuestion (the one AskUserQuestion detection in the app)
+// ---------------------------------------------------------------------------
+
+/** The provider capability that owns a request, with the questions it carries. */
+export interface ControlQuestion {
+  capability: ProviderAskUserQuestion
+  questions: Question[]
+}
+
+/**
+ * Classifies a control request as an AskUserQuestion prompt, or not.
+ *
+ * This is the ONE place that asks the question. The composer reads it to pick
+ * the placeholder and the send path, and the banner reads it to pick the
+ * rendered control. A second copy would let the two disagree about one payload.
+ *
+ * The function is pure, so a caller passes the request INSTANCE it already
+ * holds. It never reads the store, and it accepts an absent request, because
+ * one caller runs it inside a memo that a removal can re-run.
+ */
+export function controlQuestion(
+  request: ControlRequest | null | undefined,
+  agentProvider?: AgentProvider,
+): ControlQuestion | undefined {
+  if (!request)
+    return undefined
+  const capability = pluginFor(agentProvider)?.askUserQuestion
+  return capability?.isRequest(request.payload)
+    ? { capability, questions: capability.extractQuestions(request.payload) }
+    : undefined
+}
+
+// ---------------------------------------------------------------------------
 // trySubmitAskUserQuestion (exported for ChatView)
 // ---------------------------------------------------------------------------
 
 /**
- * Save the current editor text into askState and submit if all questions are
+ * Save the current editor text into answerState and submit if all questions are
  * answered.  Returns `true` when the response was sent (caller should clear
  * the editor), `false` otherwise.
  *
@@ -99,7 +133,7 @@ export function buildAskAnswers(
  * to the next unanswered question (wrapping around from the end).
  */
 export function trySubmitAskUserQuestion(
-  state: AskQuestionState,
+  state: ControlAnswerState,
   questions: Question[],
   currentContent: string,
   onSubmit: () => void,
@@ -154,10 +188,10 @@ export function trySubmitAskUserQuestion(
  * falls back to extracting `questions` from the wrapped tool input,
  * preserving the original Claude/Codex/OpenCode/Cursor flow.
  */
-export const AskUserQuestionContent: Component<{ request: ControlRequest, askState: AskQuestionState, optionsDisabled?: boolean, agentProvider?: AgentProvider, questions?: Question[] }> = (props) => {
+export const AskUserQuestionContent: Component<{ request: ControlRequest, answerState: ControlAnswerState, optionsDisabled?: boolean, agentProvider?: AgentProvider, questions?: Question[] }> = (props) => {
   const input = () => getToolInput(props.request.payload)
   const questions = () => props.questions ?? (input().questions as Question[] | undefined) ?? []
-  const currentPage = () => props.askState.currentPage()
+  const currentPage = () => props.answerState.currentPage()
   const currentQuestion = () => questions()[currentPage()]
 
   return (
@@ -197,9 +231,9 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                                 type="radio"
                                 name={radioName}
                                 value={opt.label}
-                                checked={(props.askState.selections()[qIdx()] ?? [])[0] === opt.label}
+                                checked={(props.answerState.selections()[qIdx()] ?? [])[0] === opt.label}
                                 onChange={() => {
-                                  toggleSelection(props.askState, qIdx(), opt.label, false, questions().length, preservesSelectionNotes(props.agentProvider))
+                                  toggleSelection(props.answerState, qIdx(), opt.label, false, questions().length, preservesSelectionNotes(props.agentProvider))
                                 }}
                                 disabled={props.optionsDisabled}
                               />
@@ -227,8 +261,8 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, askSta
                       >
                         <input
                           type="checkbox"
-                          checked={isSelected(props.askState, qIdx(), opt.label)}
-                          onChange={() => toggleSelection(props.askState, qIdx(), opt.label, true, questions().length, preservesSelectionNotes(props.agentProvider))}
+                          checked={isSelected(props.answerState, qIdx(), opt.label)}
+                          onChange={() => toggleSelection(props.answerState, qIdx(), opt.label, true, questions().length, preservesSelectionNotes(props.agentProvider))}
                           disabled={props.optionsDisabled}
                         />
                         <span class={styles.optionContent}>
@@ -259,10 +293,10 @@ export const AskUserQuestionActions: Component<ActionsProps & {
 
   /** Check if question at index is answered, accounting for unsaved editor content on the current page. */
   const isPageAnswered = (qIdx: number) => {
-    if (isPageAnsweredWithOption(props.askState, qIdx))
+    if (isPageAnsweredWithOption(props.answerState, qIdx))
       return true
     // The current page's editor text hasn't been saved to customTexts yet.
-    return qIdx === props.askState.currentPage() && props.hasEditorContent
+    return qIdx === props.answerState.currentPage() && props.hasEditorContent
   }
 
   const allAnswered = () => {
@@ -289,12 +323,12 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     if (!editor)
       return
     const text = editor.get()
-    const page = props.askState.currentPage()
-    props.askState.setCustomTexts(prev => ({ ...prev, [page]: text }))
+    const page = props.answerState.currentPage()
+    props.answerState.setCustomTexts(prev => ({ ...prev, [page]: text }))
     if (text && !preservesSelectionNotes(props.agentProvider)) {
       // Clear selections for this page since custom text overrides for providers
       // that model answers and custom text as mutually exclusive.
-      props.askState.setSelections(prev => ({ ...prev, [page]: [] }))
+      props.answerState.setSelections(prev => ({ ...prev, [page]: [] }))
     }
   }
 
@@ -303,15 +337,15 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     const editor = props.editorContentRef?.()
     if (!editor)
       return
-    const savedText = props.askState.customTexts()[page] ?? ''
+    const savedText = props.answerState.customTexts()[page] ?? ''
     editor.set(savedText)
   }
 
   const navigateToPage = (newPage: number) => {
-    if (newPage === props.askState.currentPage())
+    if (newPage === props.answerState.currentPage())
       return
     saveEditorToCurrentPage()
-    props.askState.setCurrentPage(newPage)
+    props.answerState.setCurrentPage(newPage)
     restoreEditorForPage(newPage)
   }
 
@@ -342,8 +376,8 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const handleYolo = () => {
     const qs = questions()
     for (let i = 0; i < qs.length; i++) {
-      if (!isPageAnsweredWithOption(props.askState, i)) {
-        props.askState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
+      if (!isPageAnsweredWithOption(props.answerState, i)) {
+        props.answerState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
       }
     }
     // Auto-submit after filling unanswered questions
@@ -383,7 +417,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
           <div class={styles.paginationContainer} data-testid="control-pagination">
             <For each={questions()}>
               {(_, idx) => {
-                const isCurrent = () => props.askState.currentPage() === idx()
+                const isCurrent = () => props.answerState.currentPage() === idx()
                 const answered = () => isPageAnswered(idx())
                 return (
                   <button

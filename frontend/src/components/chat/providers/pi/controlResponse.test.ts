@@ -47,7 +47,7 @@ describe('pi controlResponse helpers', () => {
 
   it('serializes responses through onRespond as UTF-8 JSON', async () => {
     let captured: Uint8Array | null = null
-    await sendPiExtensionResponse('agent', async (_id, content) => {
+    await sendPiExtensionResponse(async (content) => {
       captured = content
     }, piValueResponse('req-1', 'Allow'))
 

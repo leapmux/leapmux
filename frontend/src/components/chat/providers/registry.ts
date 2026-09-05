@@ -9,7 +9,7 @@
 
 import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
+import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
@@ -19,6 +19,7 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
+import type { ControlRequest } from '~/stores/control.store'
 
 export interface AttachmentCapabilities {
   text: boolean
@@ -30,20 +31,24 @@ export interface AttachmentCapabilities {
 export interface ProviderAskUserQuestion {
   isRequest: (payload: Record<string, unknown>) => boolean
   extractQuestions: (payload: Record<string, unknown>) => Question[]
+  /**
+   * Answers ONE request instance.
+   *
+   * The request travels whole, rather than as an agent id, a request id and a
+   * payload in three separate argument positions. Those three belong to one
+   * instance, and a caller that sourced them separately could pair values from
+   * two -- which is the exact pairing the worker's idempotency claim keys on.
+   */
   sendAnswer: (
-    agentId: string,
-    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
-    requestId: string,
+    request: ControlRequest,
+    sendControlResponse: (bytes: Uint8Array) => Promise<void>,
     questions: Question[],
-    askState: AskQuestionState,
-    payload: Record<string, unknown>,
+    answerState: ControlAnswerState,
   ) => Promise<void>
   sendReject: (
-    agentId: string,
-    sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>,
-    requestId: string,
+    request: ControlRequest,
+    sendControlResponse: (bytes: Uint8Array) => Promise<void>,
     message: string,
-    payload: Record<string, unknown>,
   ) => Promise<void>
 }
 

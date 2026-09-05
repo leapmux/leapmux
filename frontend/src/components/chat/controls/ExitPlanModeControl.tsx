@@ -80,14 +80,10 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
     props.onTriggerSend()
   }
 
-  const handleApprove = () => sendResponse(
-    props.request.agentId,
-    props.onRespond,
-    buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), {
-      permissionMode: planApproval.permissionMode(),
-      clearContext: planApproval.clearContext(),
-    }),
-  )
+  const handleApprove = () => sendResponse(props.onRespond, buildAllowResponse(props.request.requestId, getToolInput(props.request.payload), {
+    permissionMode: planApproval.permissionMode(),
+    clearContext: planApproval.clearContext(),
+  }))
 
   return (
     <ControlDecisionFooter

@@ -1,21 +1,13 @@
-import type { AskQuestionState } from '../../controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
+import { createControlAnswerState } from '../../controls/types'
 import { ZCodeControlActions, ZCodeControlContent } from './controls'
 import { ZCODE_METHOD } from './protocol'
 import './plugin'
-
-function makeAskState(selections: Record<number, string[]> = {}): AskQuestionState {
-  const [sel, setSelections] = createSignal<Record<number, string[]>>(selections)
-  const [customTexts, setCustomTexts] = createSignal<Record<number, string>>({})
-  const [currentPage, setCurrentPage] = createSignal(0)
-  return { selections: sel, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-}
 
 /**
  * A stored control request. `tool_name` is how the worker records WHICH of the three
@@ -49,7 +41,7 @@ describe('zcode plan approval control', () => {
     const { container } = render(() => (
       <ZCodeControlContent
         request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: '# Plan\n\nStep one' }] })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
       />
     ))
     expect(container.textContent ?? '').toContain('Plan Ready for Review')
@@ -58,7 +50,7 @@ describe('zcode plan approval control', () => {
 
   it('falls back to a sentence when the request states no plan', () => {
     const { container } = render(() => (
-      <ZCodeControlContent request={request(ZCODE_TOOL.ExitPlanMode)} askState={makeAskState()} />
+      <ZCodeControlContent request={request(ZCODE_TOOL.ExitPlanMode)} answerState={createControlAnswerState()} />
     ))
     expect(container.textContent ?? '').toContain('ready to proceed')
   })
@@ -70,7 +62,7 @@ describe('zcode plan approval control', () => {
     const { getByTestId } = render(() => (
       <ZCodeControlActions
         request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: 'the plan' }] })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -78,7 +70,7 @@ describe('zcode plan approval control', () => {
     ))
     fireEvent.click(getByTestId('plan-approve-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(decode(onRespond.mock.calls[0][1])).toMatchObject({
+    expect(decode(onRespond.mock.calls[0][0])).toMatchObject({
       type: 'control_response',
       response: { request_id: 'req-1', response: { behavior: 'allow' } },
     })
@@ -92,7 +84,7 @@ describe('zcode plan approval control', () => {
     const { getByTestId } = render(() => (
       <ZCodeControlActions
         request={request(ZCODE_TOOL.ExitPlanMode, { questions: [{ question: 'the plan' }] })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={onTriggerSend}
@@ -116,7 +108,7 @@ describe('zcode question control', () => {
     const { container, getByTestId } = render(() => (
       <ControlRequestContent
         request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
         agentProvider={AgentProvider.ZCODE}
       />
     ))
@@ -130,7 +122,7 @@ describe('zcode question control', () => {
     const { getByTestId } = render(() => (
       <ControlRequestActions
         request={request(ZCODE_TOOL.AskUserQuestion, questionInput)}
-        askState={makeAskState({ 0: ['MySQL'] })}
+        answerState={createControlAnswerState({ selections: { 0: ['MySQL'] } })}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -139,7 +131,7 @@ describe('zcode question control', () => {
     ))
     fireEvent.click(getByTestId('control-submit-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(decode(onRespond.mock.calls[0][1])).toMatchObject({
+    expect(decode(onRespond.mock.calls[0][0])).toMatchObject({
       response: {
         response: {
           behavior: 'allow',
@@ -157,7 +149,7 @@ describe('zcode permission control', () => {
     const { container } = render(() => (
       <ZCodeControlContent
         request={request(ZCODE_TOOL.Bash, { command: 'rm -rf build' }, { reason: 'deletes files' })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
       />
     ))
     expect(container.textContent ?? '').toContain('deletes files')
@@ -168,7 +160,7 @@ describe('zcode permission control', () => {
     const { container } = render(() => (
       <ZCodeControlContent
         request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
       />
     ))
     expect(container.textContent ?? '').toContain('ls')
@@ -179,7 +171,7 @@ describe('zcode permission control', () => {
     const { getByTestId } = render(() => (
       <ZCodeControlActions
         request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -187,7 +179,7 @@ describe('zcode permission control', () => {
     ))
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(decode(onRespond.mock.calls[0][1])).toMatchObject({
+    expect(decode(onRespond.mock.calls[0][0])).toMatchObject({
       response: { response: { behavior: 'allow' } },
     })
   })
@@ -198,7 +190,7 @@ describe('zcode permission control', () => {
     const { getByTestId } = render(() => (
       <ZCodeControlActions
         request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={onTriggerSend}
@@ -206,7 +198,7 @@ describe('zcode permission control', () => {
     ))
     fireEvent.click(getByTestId('control-deny-btn'))
     expect(onTriggerSend).not.toHaveBeenCalled()
-    expect(decode(onRespond.mock.calls[0][1])).toMatchObject({
+    expect(decode(onRespond.mock.calls[0][0])).toMatchObject({
       response: { response: { behavior: 'deny' } },
     })
   })
@@ -224,7 +216,7 @@ describe('zcode permission control', () => {
     const { getByTestId } = render(() => (
       <ZCodeControlActions
         request={request(ZCODE_TOOL.Bash, { command: 'ls' })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -247,7 +239,7 @@ describe('zcode permission control', () => {
     const { container } = render(() => (
       <ZCodeControlContent
         request={request('SomeToolAddedLater', { arg: 1 }, { reason: 'unfamiliar' })}
-        askState={makeAskState()}
+        answerState={createControlAnswerState()}
       />
     ))
     expect(container.textContent ?? '').toContain('unfamiliar')

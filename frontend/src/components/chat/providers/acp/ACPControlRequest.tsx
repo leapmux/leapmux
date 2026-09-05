@@ -33,12 +33,11 @@ function defaultAllowOptionId(payload: Record<string, unknown>): string | undefi
 }
 
 export function sendACPPermissionResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   optionId: string,
 ): Promise<void> {
-  return sendResponse(agentId, onRespond, {
+  return sendResponse(onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
     result: { outcome: { outcome: 'selected', optionId } },
@@ -64,7 +63,7 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
   const options = () => getOptions(props.request.payload)
 
   const handleOption = (optionId: string) => {
-    sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
+    sendACPPermissionResponse(props.onRespond, props.request.requestId, optionId)
   }
 
   // Await the allow BEFORE switching the mode: the worker dispatches the two
@@ -74,7 +73,7 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
     const allowOptionId = defaultAllowOptionId(props.request.payload)
     if (!allowOptionId)
       return
-    await sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
+    await sendACPPermissionResponse(props.onRespond, props.request.requestId, allowOptionId)
     if (props.bypass)
       await props.bypass.apply(props.bypass.settings)
   }

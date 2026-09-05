@@ -1,14 +1,14 @@
-import type { AskQuestionState, Question } from '../../controls/types'
+import type { Question } from '../../controls/types'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createControlAnswerState } from '../../controls/types'
 import { renderDivider } from '../../messageRenderTestUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { sendCodexDecision, sendCodexUserInputResponse } from './CodexControlRequest'
-import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
 
+import { CODEX_OPTION_COLLABORATION_MODE, DEFAULT_CODEX_COLLABORATION_MODE } from './constants'
 // Side-effect import to register the Codex plugin.
 import './plugin'
 
@@ -555,11 +555,11 @@ describe('sendCodexDecision', () => {
 
   it('sends accept decision with numeric id', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
-    await sendCodexDecision('agent1', onRespond, '42', 'accept')
+    await sendCodexDecision(onRespond, '42', 'accept')
 
     expect(onRespond).toHaveBeenCalledOnce()
     const parsed = decode(captured!)
@@ -572,11 +572,11 @@ describe('sendCodexDecision', () => {
 
   it('sends decline decision', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
-    await sendCodexDecision('agent1', onRespond, '7', 'decline')
+    await sendCodexDecision(onRespond, '7', 'decline')
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -588,12 +588,12 @@ describe('sendCodexDecision', () => {
 
   it('sends object decision', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
     const decision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }
 
-    await sendCodexDecision('agent1', onRespond, '9', decision)
+    await sendCodexDecision(onRespond, '9', decision)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -605,11 +605,11 @@ describe('sendCodexDecision', () => {
 
   it('preserves non-numeric request id', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
-    await sendCodexDecision('agent1', onRespond, 'abc', 'accept')
+    await sendCodexDecision(onRespond, 'abc', 'accept')
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -625,28 +625,18 @@ describe('sendCodexUserInputResponse', () => {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
 
-  function makeAskState(overrides: {
-    selections?: Record<number, string[]>
-    customTexts?: Record<number, string>
-  } = {}): AskQuestionState {
-    const [selections, setSelections] = createSignal<Record<number, string[]>>(overrides.selections ?? {})
-    const [customTexts, setCustomTexts] = createSignal<Record<number, string>>(overrides.customTexts ?? {})
-    const [currentPage, setCurrentPage] = createSignal(0)
-    return { selections, setSelections, customTexts, setCustomTexts, currentPage, setCurrentPage }
-  }
-
   it('sends answers using question id as key', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
     const questions: Question[] = [
       { id: 'q1', question: 'Pick one', header: 'Header1', options: [{ label: 'A' }, { label: 'B' }] },
     ]
-    const state = makeAskState({ selections: { 0: ['A'] } })
+    const state = createControlAnswerState({ selections: { 0: ['A'] } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '42', questions, state)
+    await sendCodexUserInputResponse(onRespond, '42', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -662,16 +652,16 @@ describe('sendCodexUserInputResponse', () => {
 
   it('falls back to header as key when id is missing', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
     const questions: Question[] = [
       { question: 'Pick one', header: 'MyHeader', options: [{ label: 'X' }] },
     ]
-    const state = makeAskState({ selections: { 0: ['X'] } })
+    const state = createControlAnswerState({ selections: { 0: ['X'] } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '5', questions, state)
+    await sendCodexUserInputResponse(onRespond, '5', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -687,16 +677,16 @@ describe('sendCodexUserInputResponse', () => {
 
   it('sends custom text as a Codex user_note when no option is selected', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
     const questions: Question[] = [
       { id: 'q1', question: 'Custom input', options: [] },
     ]
-    const state = makeAskState({ customTexts: { 0: 'my custom answer' } })
+    const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '10', questions, state)
+    await sendCodexUserInputResponse(onRespond, '10', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -712,16 +702,16 @@ describe('sendCodexUserInputResponse', () => {
 
   it('sends multi-select values as separate answer entries', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
     const questions: Question[] = [
       { id: 'q1', question: 'Pick multiple', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }], multiSelect: true },
     ]
-    const state = makeAskState({ selections: { 0: ['A', 'C'] } })
+    const state = createControlAnswerState({ selections: { 0: ['A', 'C'] } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '11', questions, state)
+    await sendCodexUserInputResponse(onRespond, '11', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -737,16 +727,16 @@ describe('sendCodexUserInputResponse', () => {
 
   it('preserves selected options and appends custom text as a Codex user_note', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
     const questions: Question[] = [
       { id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] },
     ]
-    const state = makeAskState({ selections: { 0: ['B'] }, customTexts: { 0: 'note for B' } })
+    const state = createControlAnswerState({ selections: { 0: ['B'] }, customTexts: { 0: 'note for B' } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '13', questions, state)
+    await sendCodexUserInputResponse(onRespond, '13', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -762,7 +752,7 @@ describe('sendCodexUserInputResponse', () => {
 
   it('formats Codex Other/custom text like the native TUI', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
@@ -774,9 +764,9 @@ describe('sendCodexUserInputResponse', () => {
         isOther: true,
       } as unknown as Question,
     ]
-    const state = makeAskState({ customTexts: { 0: 'my custom answer' } })
+    const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '14', questions, state)
+    await sendCodexUserInputResponse(onRespond, '14', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
@@ -792,7 +782,7 @@ describe('sendCodexUserInputResponse', () => {
 
   it('includes unanswered questions with empty answer lists like the native TUI', async () => {
     let captured: Uint8Array | undefined
-    const onRespond = vi.fn(async (_id: string, content: Uint8Array) => {
+    const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
 
@@ -800,9 +790,9 @@ describe('sendCodexUserInputResponse', () => {
       { id: 'q1', question: 'First', options: [{ label: 'A' }] },
       { id: 'q2', question: 'Second', options: [{ label: 'B' }] },
     ]
-    const state = makeAskState({ selections: { 0: ['A'] } })
+    const state = createControlAnswerState({ selections: { 0: ['A'] } })
 
-    await sendCodexUserInputResponse('agent1', onRespond, '12', questions, state)
+    await sendCodexUserInputResponse(onRespond, '12', questions, state)
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({

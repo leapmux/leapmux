@@ -58,7 +58,7 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('editor-draft:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('editor-min-height:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('agent-session:abc')).toBe(7 * DAY_MS)
-      expect(getTtlForKey('ask-state:agent:req')).toBe(1 * DAY_MS)
+      expect(getTtlForKey('control-state:agent:req')).toBe(1 * DAY_MS)
       expect(getTtlForKey('worker-info:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('local-messages:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('files-show-hidden:abc')).toBe(7 * DAY_MS)
@@ -379,7 +379,7 @@ describe('storageCleanup', () => {
 
     it('sets up hourly interval', () => {
       const dispose = initStorageCleanup()
-      const stored = storedKeyFor('ask-state:agent:req2')!
+      const stored = storedKeyFor('control-state:agent:req2')!
 
       vi.advanceTimersByTime(30 * 60 * 1000)
       localStorage.setItem(stored, JSON.stringify({ v: 'data', e: Date.now() + 1000 }))

@@ -63,8 +63,8 @@ describe('browserStorage', () => {
       })
 
       it('uses correct TTL per prefix', () => {
-        localStorageSet('ask-state:a:r', { selections: {} })
-        const parsed = JSON.parse(localStorage.getItem(key('ask-state:a:r'))!)
+        localStorageSet('control-state:a:r', { selections: {} })
+        const parsed = JSON.parse(localStorage.getItem(key('control-state:a:r'))!)
         expect(parsed.e).toBe(Date.now() + 1 * DAY_MS)
       })
 

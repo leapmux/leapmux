@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
+import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
 
 import { For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
@@ -52,12 +52,11 @@ export function extractOpenCodeQuestions(payload: Record<string, unknown>): Ques
  * Sends an OpenCode permission response as a JSON-RPC response.
  */
 export function sendOpenCodePermissionResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   optionId: string,
 ): Promise<void> {
-  return sendResponse(agentId, onRespond, {
+  return sendResponse(onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
     result: { outcome: { outcome: 'selected', optionId } },
@@ -65,22 +64,21 @@ export function sendOpenCodePermissionResponse(
 }
 
 export function sendOpenCodeQuestionResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
   questions: Question[],
-  askState: AskQuestionState,
+  answerState: ControlAnswerState,
 ): Promise<void> {
   const answers: string[][] = questions.map((_, index) => {
-    const selected = askState.selections()[index] ?? []
-    const customText = askState.customTexts()[index]?.trim()
+    const selected = answerState.selections()[index] ?? []
+    const customText = answerState.customTexts()[index]?.trim()
     if (selected.length > 0)
       return selected
     if (customText)
       return [customText]
     return []
   })
-  return sendResponse(agentId, onRespond, {
+  return sendResponse(onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
     result: { answers },
@@ -88,11 +86,10 @@ export function sendOpenCodeQuestionResponse(
 }
 
 export function sendOpenCodeQuestionRejectResponse(
-  agentId: string,
-  onRespond: (agentId: string, content: Uint8Array) => Promise<void>,
+  onRespond: (content: Uint8Array) => Promise<void>,
   requestId: string,
 ): Promise<void> {
-  return sendResponse(agentId, onRespond, {
+  return sendResponse(onRespond, {
     jsonrpc: '2.0',
     id: toRpcId(requestId),
     result: { rejected: true },
@@ -120,7 +117,7 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   const options = () => getOptions(props.request.payload)
 
   const handleOption = (optionId: string) => {
-    sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
+    sendOpenCodePermissionResponse(props.onRespond, props.request.requestId, optionId)
   }
 
   // Allow once, then switch to bypass mode. The allow is AWAITED first: the
@@ -128,7 +125,7 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   // cannot take live relaunches the agent, killing the session before an
   // un-awaited allow reaches it.
   const handleBypassPermissions = async () => {
-    await sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, 'once')
+    await sendOpenCodePermissionResponse(props.onRespond, props.request.requestId, 'once')
     if (props.bypass)
       await props.bypass.apply(props.bypass.settings)
   }

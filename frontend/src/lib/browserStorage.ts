@@ -171,7 +171,7 @@ export const KEY_CHANNEL_RELAY_SEQ = 'channel-relay-seq'
 export const PREFIX_EDITOR_DRAFT = 'editor-draft:'
 export const PREFIX_EDITOR_MIN_HEIGHT = 'editor-min-height:'
 export const PREFIX_AGENT_SESSION = 'agent-session:'
-export const PREFIX_ASK_STATE = 'ask-state:'
+export const PREFIX_CONTROL_STATE = 'control-state:'
 export const PREFIX_WORKER_INFO = 'worker-info:'
 export const PREFIX_LOCAL_MESSAGES = 'local-messages:'
 export const PREFIX_FILES_SHOW_HIDDEN = 'files-show-hidden:'
@@ -302,7 +302,7 @@ export const LOCAL_KEY_SPECS = {
   [PREFIX_EDITOR_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_EDITOR_MIN_HEIGHT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_AGENT_SESSION]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-  [PREFIX_ASK_STATE]: { match: 'prefix', scope: 'account', ttlMs: 1 * DAY_MS },
+  [PREFIX_CONTROL_STATE]: { match: 'prefix', scope: 'account', ttlMs: 1 * DAY_MS },
   [PREFIX_WORKER_INFO]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_LOCAL_MESSAGES]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
   [PREFIX_FILES_SHOW_HIDDEN]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },

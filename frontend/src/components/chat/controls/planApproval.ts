@@ -3,9 +3,10 @@ import type { ControlRequestSwitch } from './ControlDecisionFooter'
 import type { ActionsProps } from './types'
 import type { PermissionMode } from '~/utils/controlResponse'
 
-import { createMemo, createSignal } from 'solid-js'
+import { createMemo } from 'solid-js'
 import { OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { computePercentage } from '~/components/chat/widgets/ContextUsageGrid'
+import { createControlSwitch } from './types'
 
 export interface PlanApprovalState {
   clearContext: Accessor<boolean>
@@ -29,9 +30,13 @@ export interface PlanApprovalState {
 }
 
 /** Creates shared plan approval state (clear context + bypass permissions). */
-export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'bypass'>): PlanApprovalState {
-  const [clearContext, setClearContext] = createSignal(false)
-  const [bypassPermissions, setBypassPermissions] = createSignal(false)
+export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'bypass' | 'answerState'>): PlanApprovalState {
+  // Both switches live in the composer's shared answer record, keyed by the id
+  // that `planApprovalSwitches` below renders them under. See `createControlSwitch`.
+  const clear = createControlSwitch(() => props.answerState, 'plan-clear-context-checkbox')
+  const bypassSwitch = createControlSwitch(() => props.answerState, 'plan-bypass-permissions-checkbox')
+  const { checked: clearContext, set: setClearContext } = clear
+  const { checked: bypassPermissions, set: setBypassPermissions } = bypassSwitch
   const contextPct = createMemo(() => {
     const pct = computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider)
     return pct !== null ? Math.round(pct) : null

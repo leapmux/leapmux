@@ -2,7 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ExitPlanModeActions } from '~/components/chat/controls/ExitPlanModeControl'
-import { createAskQuestionState } from '~/test-support/askQuestionState'
+import { createControlAnswerState } from './types'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
   return {
@@ -19,7 +19,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest()}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -39,7 +39,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest()}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
@@ -60,7 +60,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest('req-clear', 'agent-clear')}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -71,9 +71,8 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
-    const [agentId, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
-    expect(agentId).toBe('agent-clear')
     expect(decoded.clearContext).toBe(true)
     expect(decoded.response.response.behavior).toBe('allow')
   })
@@ -85,7 +84,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={request}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -99,8 +98,7 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [agentId, bytes] = onRespond.mock.calls[0]
-    expect(agentId).toBe('agent-3')
+    const [bytes] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-99')
     expect(decoded.response.response.behavior).toBe('allow')
@@ -116,7 +114,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest('req-77', 'agent-7')}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -135,7 +133,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={request}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
@@ -146,8 +144,7 @@ describe('exitPlanModeActions', () => {
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
-    const [agentId, bytes] = onRespond.mock.calls[0]
-    expect(agentId).toBe('agent-5')
+    const [bytes] = onRespond.mock.calls[0]
     const decoded = JSON.parse(new TextDecoder().decode(bytes))
     expect(decoded.response.request_id).toBe('req-42')
     expect(decoded.response.response.behavior).toBe('allow')
@@ -158,7 +155,7 @@ describe('exitPlanModeActions', () => {
     render(() => (
       <ExitPlanModeActions
         request={makeRequest()}
-        askState={createAskQuestionState()}
+        answerState={createControlAnswerState()}
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}

@@ -2,7 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
-import { createAskQuestionState } from '~/test-support/askQuestionState'
+import { createControlAnswerState } from '../../controls/types'
 import { CodexControlActions } from './CodexControlRequest'
 
 function makeRequest(params: Record<string, unknown> = {}): ControlRequest {
@@ -27,7 +27,7 @@ function renderActions(request: ControlRequest, hasEditorContent = false) {
   render(() => (
     <CodexControlActions
       request={request}
-      askState={createAskQuestionState()}
+      answerState={createControlAnswerState()}
       onRespond={onRespond}
       hasEditorContent={hasEditorContent}
       onTriggerSend={vi.fn()}
@@ -53,7 +53,7 @@ describe('codex control request actions', () => {
     fireEvent.click(screen.getByTestId('control-remember-checkbox').querySelector('input')!)
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } })
   })
 
@@ -73,7 +73,7 @@ describe('codex control request actions', () => {
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toBe('cancel')
   })
 
@@ -92,7 +92,7 @@ describe('codex control request actions', () => {
 
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       jsonrpc: '2.0',
       id: 'request-1',
@@ -114,7 +114,7 @@ describe('codex control request actions', () => {
     fireEvent.click(screen.getByTestId('control-remember-checkbox').querySelector('input')!)
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result.scope).toBe('session')
   })
 
@@ -128,7 +128,7 @@ describe('codex control request actions', () => {
 
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).result).toEqual({ permissions: {}, scope: 'turn' })
   })
 
@@ -190,7 +190,7 @@ describe('codex control request actions', () => {
     fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
-    const [, bytes] = onRespond.mock.calls[0]
+    const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
       codexPlanModePrompt: true,
       clearContext: true,

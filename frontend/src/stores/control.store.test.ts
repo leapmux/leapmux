@@ -1,7 +1,7 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { createControlStore } from '~/stores/control.store'
+import { createControlStore, requestInstanceId } from '~/stores/control.store'
 
 // claimToken defaults to a per-requestId token (so a re-add of the SAME id models a reconnect replay of
 // the SAME instance); pass an explicit token to model a REISSUED instance that reused the request_id.
@@ -71,17 +71,16 @@ describe('createControlStore', () => {
     })
   })
 
-  it('should return the matching request (with its claimToken) on getRequest, else undefined', () => {
-    createRoot((dispose) => {
-      const store = createControlStore()
-      store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-      store.addRequest('agent-1', makeRequest('r2', 'agent-1'))
-      // getRequest recovers the per-instance claimToken the answer echoes back to the worker.
-      expect(store.getRequest('agent-1', 'r2')?.claimToken).toBe('tok-r2')
-      expect(store.getRequest('agent-1', 'missing')).toBeUndefined()
-      expect(store.getRequest('no-agent', 'r1')).toBeUndefined()
-      dispose()
-    })
+  // Any per-request state that outlives its request keys on this value, so the
+  // token has to reach it. Two instances of one id must not share a key, and a
+  // request with no token must keep the bare id it had before the token existed.
+  it('should distinguish two instances of one request id on requestInstanceId', () => {
+    const first = makeRequest('r1', 'agent-1')
+    const second = { ...makeRequest('r1', 'agent-1'), claimToken: 'tok-other' }
+    expect(requestInstanceId(first)).toBe('r1:tok-r1')
+    expect(requestInstanceId(second)).toBe('r1:tok-other')
+    expect(requestInstanceId(first)).not.toBe(requestInstanceId(second))
+    expect(requestInstanceId({ requestId: 'r1', agentId: 'agent-1', payload: {} })).toBe('r1')
   })
 
   it('should return empty array for unknown agent on getRequests', () => {
