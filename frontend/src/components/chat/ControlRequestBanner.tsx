@@ -13,7 +13,12 @@ import { pluginFor } from './providers/registry'
 
 function createControlQuestion(props: Pick<ContentProps, 'request' | 'agentProvider'>) {
   return createMemo(() => {
-    // Solid can update a reactive prop before the enclosing Show disposes this owner.
+    // This memo is a SIBLING of the `<Show when={props.request}>` below, never a
+    // descendant, so that Show cannot dispose it first. A caller that passes
+    // `request` as a reactive prop therefore re-runs this memo with the removed
+    // request, and an unguarded read raises a TypeError inside a memo instead of
+    // leaving an element behind. `AgentEditorPanel` keys its owner on the request
+    // and never does that, but the prop is public.
     const request = props.request
     if (!request)
       return undefined

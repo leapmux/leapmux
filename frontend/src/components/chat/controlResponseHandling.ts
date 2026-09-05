@@ -78,10 +78,18 @@ export function useControlResponseHandling(
   }
 
   // The first pending control request (if any).
-  const activeControlRequest = () => {
+  //
+  // A MEMO, so that this notifies on the active request's IDENTITY and not on
+  // every write to the list behind it. The store hands out a fresh array for
+  // each queued sibling, each answer to a later request and each reconnect
+  // sweep, and a plain thunk passes all of that churn to the composer: the
+  // keyed owners in `AgentEditorPanel` re-run, rebuild the control components
+  // and discard their local state, which unchecks the plan switches under a
+  // user who checked them.
+  const activeControlRequest = createMemo(() => {
     const reqs = props.controlRequests
     return reqs && reqs.length > 0 ? reqs[0] : null
-  }
+  })
 
   const isAskUserQuestion = () => {
     const req = activeControlRequest()

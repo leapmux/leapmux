@@ -2,7 +2,7 @@ import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
 import type { AskQuestionState } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
-import { createRoot, createSignal } from 'solid-js'
+import { createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -596,6 +596,69 @@ describe('showInterrupt', () => {
     createRoot((dispose) => {
       const { result } = setup({ agentWorking: true, canInterrupt: undefined })
       expect(result.showInterrupt()).toBe(true)
+      dispose()
+    })
+  })
+})
+
+describe('activeControlRequest', () => {
+  // `setup` spreads its overrides, which reads a getter once and freezes it, so
+  // a reactive `controlRequests` has to be built inline here.
+  function reactiveController(initial: ControlRequest[] | undefined) {
+    const [controlRequests, setControlRequests] = createSignal(initial)
+    const props: ControlResponseHandlingProps = {
+      agentId: 'agent-A',
+      get controlRequests() { return controlRequests() },
+      onSendMessage: vi.fn(),
+    }
+    const result = useControlResponseHandling(props, createMinimalAskState(), () => undefined, vi.fn())
+    return { result, setControlRequests }
+  }
+
+  // The store hands out a fresh array for every write, and the composer keys its
+  // control owners on this value. A plain read would therefore rebuild the
+  // banner and the footer -- discarding the plan switches a user already
+  // checked -- each time an unrelated request joins or leaves the queue.
+  it('notifies on a new head only, not on every write to the list', () => {
+    const head = makeControlRequest('req-head', 'agent-A')
+    // A RENDER effect, because that is how the composer subscribes: `insert()`
+    // builds one, and it runs in the same phase as a memo. The writes stay
+    // OUTSIDE the root: `createRoot` runs its callback inside `runUpdates`, so
+    // a write in there is batched and the effect flushes only after the
+    // callback returns -- after every assertion.
+    const runs: Array<ControlRequest | null> = []
+    let setControlRequests!: (reqs: ControlRequest[]) => void
+    const dispose = createRoot((disposeRoot) => {
+      const controller = reactiveController([head])
+      setControlRequests = controller.setControlRequests
+      createRenderEffect(() => runs.push(controller.result.activeControlRequest()))
+      return disposeRoot
+    })
+
+    expect(runs).toEqual([head])
+
+    setControlRequests([head, makeControlRequest('req-queued', 'agent-A')])
+    expect(runs).toEqual([head])
+
+    setControlRequests([head])
+    expect(runs).toEqual([head])
+
+    const next = makeControlRequest('req-next', 'agent-A')
+    setControlRequests([next])
+    expect(runs).toEqual([head, next])
+
+    dispose()
+  })
+
+  it('reports no active request for an empty or absent list', () => {
+    createRoot((dispose) => {
+      const { result, setControlRequests } = reactiveController([])
+
+      expect(result.activeControlRequest()).toBeNull()
+
+      setControlRequests(undefined)
+      expect(result.activeControlRequest()).toBeNull()
+
       dispose()
     })
   })

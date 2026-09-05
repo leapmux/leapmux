@@ -140,6 +140,25 @@ describe('agentEditorPanel control request lifecycle', () => {
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
   })
 
+  // The switches live in local state inside the actions component, so a remount
+  // silently unchecks them. A keyed owner compares the request by IDENTITY, and
+  // a queued sibling leaves the answered request's identity alone -- whereas a
+  // plain conditional re-reads the whole store list and rebuilds the footer.
+  it('keeps the active plan switches checked when a request queues behind it', () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode') })
+    renderPanel({ controlStore })
+
+    const clearContext = () => screen.getByTestId('plan-clear-context-checkbox').querySelector('input[type="checkbox"]')!
+    fireEvent.click(clearContext())
+    expect(clearContext()).toBeChecked()
+
+    addControlRequest(controlStore, { requestId: 'bash-1', payload: toolRequestPayload('Bash') })
+
+    expect(screen.getByTestId('control-banner')).toHaveTextContent('Plan Ready for Review')
+    expect(clearContext()).toBeChecked()
+  })
+
   // The footer answers with the request instance it RENDERED, so the worker's
   // idempotency claim keys on the answered instance. Reading the store again at
   // click time would lose both values as soon as the store moved on.

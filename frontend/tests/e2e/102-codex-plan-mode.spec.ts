@@ -64,7 +64,10 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(clearContextSwitch).not.toBeChecked()
     await clearContextSwitch.check()
     await page.getByTestId('control-allow-btn').click()
-    await expect(revisedBanner).not.toBeVisible()
+    // Scoped to the prompt's own text, not to the banner slot. Executing the
+    // approved plan can raise the NEXT control request into that same slot,
+    // which says nothing about whether this approval cleared.
+    await expect(revisedBanner.getByText('Implement the proposed plan?')).not.toBeVisible()
     await expectSettingsChip(page, 'Default')
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
