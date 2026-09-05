@@ -262,7 +262,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 				slog.Error("refusing to start agent without an identity", "agent_id", agentID, "error", err)
 				sendInternalError(sender, "failed to start agent")
-				svc.AgentStartup.finish()
+				svc.AgentStartup.finishEntry(startupHandle)
 				return
 			}
 
@@ -1841,7 +1841,7 @@ func (svc *Service) agentsHasAgentFor(agentRow *db.Agent, rootID string) bool {
 // {provider}…") rather than overlapping noise.
 func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options, h *startupEntry) {
 	agentID := agentOpts.AgentID
-	defer svc.AgentStartup.finish()
+	defer svc.AgentStartup.finishEntry(h)
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
 
 	// Phase 0: execute the git-mode mutation (worktree add, branch create,
@@ -1907,14 +1907,29 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if fetchErr == nil {
 		dbAgent = latest
 	}
-	if fetchErr == nil && dbAgent.ClosedAt.Valid {
+	switch svc.AgentStartup.interruptionOf(h, fetchErr == nil && dbAgent.ClosedAt.Valid, fetchErr == nil && dbAgent.WorkspaceArchived != 0) {
+	case interruptionClosed:
 		if startErr == nil {
 			svc.Agents.StopAgent(agentID)
 		}
 		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
 		return
+	case interruptionArchived:
+		if startErr == nil {
+			svc.Agents.StopAndWaitAgent(agentID)
+		}
+		// succeed, not fail, even when startErr is non-nil: archival is not a
+		// startup failure, and STARTUP_FAILED would refuse the user's next
+		// message after the unarchive and make the resume sweep skip the tab.
+		// Log it, because otherwise a real provider failure inside the archive
+		// window leaves no evidence anywhere.
+		if startErr != nil {
+			slog.Warn("agent startup stopped by workspace archival", "agent_id", agentID, "error", startErr)
+		}
+		svc.AgentStartup.succeed(agentID, h)
+		return
+	case interruptionNone:
 	}
-
 	if startErr != nil {
 		slog.Error("failed to start agent", "agent_id", agentID, "error", startErr)
 		svc.failAgentStartup(&dbAgent, gm, startErr, gitStatus, h)
@@ -1927,7 +1942,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	// arrives inside startAgent) is not rejected by the SendAgentMessage
 	// startup-gate. The subprocess is up and ready for input at this
 	// point; settings persistence is a best-effort DB write.
-	svc.AgentStartup.succeed(agentID)
+	svc.AgentStartup.succeed(agentID, h)
 	if dbAgent.StartupError != "" {
 		svc.persistAgentStartupError(agentID, "")
 	}
@@ -1981,6 +1996,26 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	running := true
 	if relaunch {
 		activeDbAgent, running = svc.relaunchForStartupSettingsChange(agentID, dbAgent.AgentProvider, latestOpts, activeDbAgent)
+	}
+	if latest, err := svc.getAgentByID(bgCtx(), agentID); err == nil {
+		activeDbAgent = latest
+	}
+	switch svc.AgentStartup.interruptionOf(h, activeDbAgent.ClosedAt.Valid, activeDbAgent.WorkspaceArchived != 0) {
+	case interruptionClosed:
+		if running {
+			svc.Agents.StopAndWaitAgent(agentID)
+		}
+		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
+		return
+	case interruptionArchived:
+		if running {
+			svc.Agents.StopAndWaitAgent(agentID)
+		}
+		// No broadcast here: succeed already ran above, so the client saw
+		// ACTIVE, and stopArchivedTabs broadcasts INACTIVE for every tab whose
+		// flag it changed once waitForFinished returns.
+		return
+	case interruptionNone:
 	}
 
 	activeOptions := loadOptions(activeDbAgent.Options, activeDbAgent.AgentProvider)
@@ -3128,6 +3163,9 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if dbAgent.ClosedAt.Valid {
 		return fmt.Errorf("agent %s is closed; it takes no new process", agentID)
 	}
+	if dbAgent.WorkspaceArchived != 0 {
+		return fmt.Errorf("agent %s belongs to an archived workspace; it takes no new process", agentID)
+	}
 
 	var resumeSessionID string
 	if preResolvedResumeSessionID != nil {
@@ -3145,17 +3183,18 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	// message that lands in that window used to spawn a second process for the
 	// same tab.
 	startupCtx, cancel := context.WithCancel(bgCtx())
-	if handle := svc.AgentStartup.begin(agentID, cancel); handle == nil {
+	handle := svc.AgentStartup.begin(agentID, cancel)
+	if handle == nil {
 		cancel()
 		return fmt.Errorf("agent %s already has a startup in progress", agentID)
 	}
-	defer svc.AgentStartup.finish()
+	defer svc.AgentStartup.finishEntry(handle)
 	// succeed() on BOTH outcomes, because it only means "drop the override and
 	// derive the status from the manager again". fail() would report
 	// STARTUP_FAILED, which refuses the user's next message for the whole
 	// failed-entry TTL; this path deliberately stays retryable, and the failure
 	// reaches the user as the caller's per-message delivery error.
-	defer svc.AgentStartup.succeed(agentID)
+	defer svc.AgentStartup.succeed(agentID, handle)
 
 	// Broadcast STARTING so the chat startup banner appears beneath any
 	// just-typed messages while the cold subprocess spins up. Symmetric

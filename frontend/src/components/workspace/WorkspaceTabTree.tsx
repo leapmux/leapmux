@@ -424,7 +424,7 @@ interface RowSelectionContextValue {
   activeTabKey: Accessor<string | null>
   tabItemOps: Accessor<TabItemOps | undefined>
   onTabClick: (type: TabType, id: string) => void
-  canClose: (tab: Tab) => boolean
+  canClose: () => boolean
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
   /**
@@ -507,7 +507,7 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
       onRename={edit.canRename(props.tab) ? () => edit.startEditing(props.tab) : undefined}
       onClose={() => sel.tabItemOps()?.onClose?.(props.tab)}
       isClosing={sel.tabItemOps()?.closingKeys?.has(tabKey(props.tab))}
-      canClose={sel.canClose(props.tab)}
+      canClose={sel.canClose()}
       onEditInput={v => edit.setEditingValue(v)}
       onEditCommit={() => edit.commitEdit(props.tab)}
       onEditCancel={edit.cancelEdit}
@@ -775,8 +775,8 @@ export interface WorkspaceTabTreeProps {
   tabItemOps?: TabItemOps
   /**
    * The workspace this tree belongs to is archived, so its rows offer no
-   * mutation: no branch menu, no close and no rename. A payload-backed tab
-   * keeps its close -- see `canCloseTab`, which the tab bar shares.
+   * mutation: no branch menu, no close, and no rename. See `canCloseTab`,
+   * which the tab bar shares.
    *
    * Named for the FACT rather than for the effect (this prop was `readOnly`).
    * Archival is the only thing that blocks mutation -- access is owner-only, and
@@ -944,7 +944,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
   let editCancelled = false
-  const canClose = (tab: Tab) => canCloseTab(props.archived, tab)
+  const canClose = () => canCloseTab(props.archived)
 
   // `canRenameTab` states the rule; this surface adds only whether it HAS a
   // rename handler. Shared with the tab strip, which renders the same tabs.

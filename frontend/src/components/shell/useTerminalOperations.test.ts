@@ -49,6 +49,7 @@ const restartTerminalMock = workerRpc.restartTerminal as unknown as ReturnType<t
 const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof vi.fn>
 const closeTerminalMock = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
 const listAvailableShellsMock = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
+const resizeTerminalMock = workerRpc.resizeTerminal as unknown as ReturnType<typeof vi.fn>
 const showWarnToastMock = showWarnToast as unknown as ReturnType<typeof vi.fn>
 
 /**
@@ -128,7 +129,7 @@ function addTerminal(
   stores.metadata.patch(id, meta)
 }
 
-function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}) {
+function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}, isMutatable = true) {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>({ id: 'ws-1' } as Workspace)
@@ -154,7 +155,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       selection: stores.selection,
       layoutStore: stores.layoutStore,
       activeWorkspace,
-      isActiveWorkspaceMutatable: () => true,
+      isActiveWorkspaceMutatable: () => isMutatable,
       getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
       newTerminalDialog: { open: () => {}, close: () => {}, value: () => null },
       setNewTerminalLoading: () => {},
@@ -577,6 +578,48 @@ describe('useterminaloperations.handleterminalinput', () => {
       terminalId: 'tid-1',
       cols: 100,
       rows: 30,
+    })
+  })
+
+  it.each([TerminalStatus.READY, TerminalStatus.EXITED])('suppresses input for status %s while archived', async (status) => {
+    const { ops } = setup(status, {}, false)
+    await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
+    expect(sendInputMock).not.toHaveBeenCalled()
+    expect(restartTerminalMock).not.toHaveBeenCalled()
+  })
+
+  // Archival suppresses INPUT and nothing else. Reading a dead terminal is the
+  // point of keeping the tab, and reflow is what makes a resized window show
+  // the buffer correctly -- so the metadata patch that drives it must survive.
+  // The guard belongs on input alone; a copy of it here would freeze the
+  // archived screen at whatever width it had when the workspace was archived.
+  it('still records a resize while archived, and sends no RPC to the dead PTY', async () => {
+    const { ops, view } = setup(TerminalStatus.EXITED, {}, false)
+
+    await ops.handleTerminalResize('tid-1', 120, 40)
+
+    expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 120, rows: 40 })
+    // An EXITED terminal sends no resize RPC whatever the archive state, so
+    // this half is about the dead PTY, not about archival. The READY case
+    // below is what pins archival's own reach.
+    expect(resizeTerminalMock).not.toHaveBeenCalled()
+  })
+
+  // The assertion the EXITED fixture above CANNOT make: with a live PTY, the
+  // resize RPC must still go out while archived. A copy of the input guard at
+  // the top of `handleTerminalResize` fails this and passes the EXITED case,
+  // which is exactly the regression the pair exists to catch.
+  it('still resizes a live terminal while archived', async () => {
+    const { ops, view } = setup(TerminalStatus.READY, {}, false)
+
+    await ops.handleTerminalResize('tid-1', 120, 40)
+
+    expect(view.getTerminalTab('tid-1')).toMatchObject({ cols: 120, rows: 40 })
+    expect(resizeTerminalMock).toHaveBeenCalledTimes(1)
+    expect(resizeTerminalMock.mock.calls[0][1]).toMatchObject({
+      terminalId: 'tid-1',
+      cols: 120,
+      rows: 40,
     })
   })
 

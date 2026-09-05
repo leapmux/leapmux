@@ -256,10 +256,14 @@ type Workspace struct {
 	DeletedAt   *time.Time
 }
 
-// WorkspaceTabRow is a row from workspace_tab_owned or
-// workspace_tab_rendered. The two views have the same shape; the
-// distinction is *which* table they came from. Worker reconciliation
-// reads from `_owned`; UI reads from `_rendered`.
+// WorkspaceTabRow is a stored row from workspace_tab_owned or
+// workspace_tab_rendered. The two tables hold the same stored columns; the
+// distinction is WHICH table a row came from, and which reader it serves.
+//
+// The client tab RPCs read `_rendered`. The worker delegation handler reads
+// `_owned` to find a tab's owning Worker. Worker reconciliation also reads
+// `_owned`, but through WorkerTabStateRow below, which carries the workspace's
+// archive state as well.
 type WorkspaceTabRow struct {
 	UserID      string
 	WorkspaceID string
@@ -268,6 +272,17 @@ type WorkspaceTabRow struct {
 	WorkerID    string
 	TileID      string
 	Position    string
+}
+
+// WorkerTabStateRow is the owner projection that Worker reconciliation reads.
+// ArchiveState is derived from the workspace's section in the same query.
+type WorkerTabStateRow struct {
+	UserID       string
+	WorkspaceID  string
+	TabType      leapmuxv1.TabType
+	TabID        string
+	WorkerID     string
+	ArchiveState leapmuxv1.WorkspaceArchiveState
 }
 
 // UserOpBatchRow is a single row of the CRDT op-batch journal.

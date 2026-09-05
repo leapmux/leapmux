@@ -8,11 +8,16 @@ INSERT INTO agents (id, working_dir, home_dir, title, title_auto_generated, opti
 SELECT * FROM agents WHERE id = ?;
 
 -- GetAgentID is the existence probe behind requireAgentID: it answers
--- sql.ErrNoRows for an unknown id while reading only the primary key, so a
+-- sql.ErrNoRows for an unknown id while reading two narrow columns, so a
 -- handler that needs no agent fields (close, interrupt) does not deserialize
 -- the options / option_groups JSON blobs SELECT * would.
+--
+-- workspace_archived rides along because the registrar refuses every write
+-- handler for an archived workspace, and this probe is what a by-id write
+-- handler loads. An INTEGER column costs nothing next to the blobs this query
+-- exists to skip.
 -- name: GetAgentID :one
-SELECT id FROM agents WHERE id = ?;
+SELECT id, workspace_archived FROM agents WHERE id = ?;
 
 -- GetAgentTitle reads only the title column, for the RenameAgent reply on the
 -- path that stores nothing: a request whose title cleans to empty keeps the
@@ -149,6 +154,26 @@ RETURNING *;
 -- name: SetAgentStartupError :exec
 UPDATE agents SET startup_error = ? WHERE id = ?;
 
+-- SetAgentWorkspaceArchived changes only the cached workspace lifecycle state.
+-- The row stays open, and all transcript and worktree data stays unchanged.
+--
+-- closed_at IS NULL matters, because the caller treats a changed row as a tab
+-- to stop and broadcast for. A closed row stays in this table for the whole
+-- 7-day cleanup retention, so without the predicate an archive that races a
+-- close re-runs the full teardown for a tab that the worker already tore down,
+-- and the matching unarchive spends a startup permit on it. This is the same
+-- reason the orphan reconciler reads ListAllOpenRootAgentIDs.
+-- name: SetAgentWorkspaceArchived :execrows
+UPDATE agents SET workspace_archived = sqlc.arg(workspace_archived)
+WHERE id = sqlc.arg(id) AND closed_at IS NULL
+  AND workspace_archived <> sqlc.arg(workspace_archived);
+
+-- GetAgentForInactiveBroadcast reads the three columns broadcastAgentInactive
+-- needs. GetAgentByID would answer the same question, and it reads the options
+-- and option_groups TEXT columns that this caller never looks at.
+-- name: GetAgentForInactiveBroadcast :one
+SELECT id, agent_session_id, agent_provider FROM agents WHERE id = ?;
+
 -- name: UpdateAgentHomeDir :exec
 UPDATE agents SET home_dir = ? WHERE id = ?;
 
@@ -257,6 +282,13 @@ SELECT tree.id FROM tree;
 -- state sweep keeps seeing them.
 -- name: ListAllOpenRootAgentIDs :many
 SELECT id FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL;
+
+-- ListRootAgentIDsForResume excludes archived rows before the resume scheduler
+-- dispatches them. The orphan reconciler uses ListAllOpenRootAgentIDs instead,
+-- because it must still reap an archived tab that the Hub deleted.
+-- name: ListRootAgentIDsForResume :many
+SELECT id FROM agents
+WHERE closed_at IS NULL AND parent_agent_id IS NULL AND workspace_archived = 0;
 
 
 -- ListSessionsForResume lists the resume handles this worker recorded for one

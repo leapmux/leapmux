@@ -182,14 +182,16 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         {menuItem('Rename', () => props.onRename())}
       </Show>
 
-      {/* KEPT while archived. Moving a workspace writes
-          `workspace_section_items.section_id`, which is not a mutation OF the
-          workspace -- `MoveWorkspace` is unguarded in the hub by design, since
-          archive and unarchive are the same call. It is also the only way to
-          unarchive into a SPECIFIC custom section, because `Unarchive` below
-          always targets In progress. `isMoveTargetSection` excludes Archived
-          as a target, so for an archived workspace every other workspace
-          section is legal -- the list is non-empty exactly when it is useful. */}
+      {/* KEPT while archived, and it is the only way to unarchive into a
+          SPECIFIC custom section, because `Unarchive` below always targets In
+          progress. The hub REFUSES a `MoveWorkspace` that crosses the archive
+          boundary (archival stops processes, so it cannot ride on a generic
+          reorder), so `onMoveTo` routes a crossing through
+          `SetWorkspaceArchiveState`, which carries the destination -- see
+          `useWorkspaceOperations.moveWorkspace`. `isMoveTargetSection` excludes
+          Archived as a target, so for an archived workspace every other
+          workspace section is legal -- the list is non-empty exactly when it is
+          useful. */}
       <Show when={moveTargets().length > 0}>
         <SubMenu label="Move to" data-testid="workspace-move-to" popoverTestId="workspace-move-to-popover">
           <For each={moveTargets()}>

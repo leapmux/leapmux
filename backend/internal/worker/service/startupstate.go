@@ -30,6 +30,7 @@ const failedEntryTTL = 5 * time.Minute
 //     PTY was registered in the Manager, so runTerminalStartup can apply
 //     it the moment StartTerminal returns.
 type startupEntry struct {
+	id string
 	// failed is set once startup fails terminally. While false and cancel
 	// is non-nil, startup is still in progress (STARTING).
 	failed       bool
@@ -76,6 +77,8 @@ type startupEntry struct {
 	// goroutine is reading.
 	closeDisposition closeWorktreeDisposition
 	closeRaced       bool
+	archiveStopped   bool
+	phase0Complete   bool
 	// done is closed when this startup stops being IN FLIGHT -- when succeed,
 	// fail or cancelAndClear takes the entry out of the map. awaitInFlight
 	// waits on it, so a caller that finds the id claimed can wait for the claim
@@ -85,6 +88,10 @@ type startupEntry struct {
 	// finished record with no goroutine behind it, and awaitInFlight skips a
 	// failed entry for the same reason begin does not refuse on one.
 	done chan struct{}
+	// finished closes after the startup goroutine completes its trailing
+	// rollback and cleanup work. Archival waits on it before it permits an
+	// unarchive resume to register replacement resources for the same tab.
+	finished chan struct{}
 }
 
 // release closes e.done, so every awaitInFlight waiting on this startup stops
@@ -134,9 +141,10 @@ func (systemStartupClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
 // work so callers — test cleanups and future graceful-shutdown paths —
 // observe the filesystem and DB in a quiescent state.
 type startupCore struct {
-	mu      sync.Mutex
-	entries map[string]*startupEntry
-	wg      sync.WaitGroup
+	mu       sync.Mutex
+	entries  map[string]*startupEntry
+	inflight map[string]*startupEntry
+	wg       sync.WaitGroup
 	// clock is the time source awaitInFlight limits its wait with. Set once by
 	// newStartupCore and never reassigned in production, so a waiter reads it
 	// without the mutex; a test substitutes a fake before it starts one.
@@ -144,7 +152,11 @@ type startupCore struct {
 }
 
 func newStartupCore() startupCore {
-	return startupCore{entries: make(map[string]*startupEntry), clock: systemStartupClock{}}
+	return startupCore{
+		entries:  make(map[string]*startupEntry),
+		inflight: make(map[string]*startupEntry),
+		clock:    systemStartupClock{},
+	}
 }
 
 // begin records an entry in STARTING state, adds one to the in-flight counter,
@@ -176,11 +188,14 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 		return nil
 	}
 	entry := &startupEntry{
+		id:           id,
 		cancel:       cancel,
 		resizeSignal: make(chan struct{}, 1),
 		done:         make(chan struct{}),
+		finished:     make(chan struct{}),
 	}
 	r.entries[id] = entry
+	r.inflight[id] = entry
 	r.wg.Add(1)
 	return entry
 }
@@ -239,14 +254,31 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 	}
 }
 
-// finish marks one startup goroutine as returned. Always called via `defer` at
-// the top of runAgentStartup / runTerminalStartup so it fires regardless of
-// which branch the goroutine exits through (succeed, fail, close-detected,
-// panic recovery elsewhere, …).
+// finishEntry marks one startup goroutine as returned. runAgentStartup and
+// runTerminalStartup always call it via `defer` at the top, so it fires
+// regardless of which branch the goroutine exits through (succeed, fail,
+// close-detected, archive-stopped, panic recovery elsewhere, …).
 //
-// It has no cleanup to do beyond the counter: the close disposition lives on
-// the handle the goroutine is about to drop, so it is collected with it.
-func (r *startupCore) finish() {
+// It does two things, and the pairing is why there is no counter-only variant.
+// The WaitGroup counter is what WaitForInFlight joins. `finished` is what
+// cancelForArchive's caller waits on before it clears the tab's runtime state,
+// and `inflight` is what makes the handle reachable from a tab id at all. A
+// caller that dropped the counter alone would leave a live-looking inflight
+// entry whose `finished` nobody ever closes, and the next archive of that tab
+// would block for ever waiting on it.
+//
+// The entry carries no other cleanup: its close disposition lives on the handle
+// the goroutine is about to drop, so the garbage collector takes the entry with
+// that handle.
+func (r *startupCore) finishEntry(entry *startupEntry) {
+	if entry != nil {
+		r.mu.Lock()
+		if r.inflight[entry.id] == entry {
+			delete(r.inflight, entry.id)
+		}
+		r.mu.Unlock()
+		close(entry.finished)
+	}
 	r.wg.Done()
 }
 
@@ -274,11 +306,28 @@ func (r *startupCore) setMessage(id, message string) {
 
 // succeed removes the entry (on successful startup the runtime state comes
 // from the Manager, not from this registry).
-func (r *startupCore) succeed(id string) {
+//
+// handle, when set, makes the removal IDENTITY-GUARDED: the entry goes only
+// when it is still the one the caller started. Pass it from every path that
+// can run after another succeed already released the id, and pass nil only
+// when the caller is the sole owner of the claim.
+//
+// Why the guard exists. succeed frees the id, and begin admits a new startup
+// the moment it is free. A goroutine whose tail reaches succeed a second time
+// -- which the close-after-succeed branch does, because cancelAndClear now
+// stamps closeRaced on an entry it finds through inflight -- would otherwise
+// delete and release whatever claim currently holds that id. That is a
+// SECOND startup's claim, and freeing it admits a third: two startup
+// goroutines for one tab, the exact state begin exists to prevent.
+func (r *startupCore) succeed(id string, handle *startupEntry) {
 	r.mu.Lock()
 	entry := r.entries[id]
-	delete(r.entries, id)
-	entry.release()
+	if entry != nil && (handle == nil || entry == handle) {
+		delete(r.entries, id)
+		entry.release()
+	} else {
+		entry = nil
+	}
 	r.mu.Unlock()
 	if entry != nil && entry.evictTimer != nil {
 		entry.evictTimer.Stop()
@@ -324,17 +373,53 @@ func (r *startupCore) fail(id, startupError string) {
 // installed a different entry and this stamps that one, which no goroutine is
 // reading. Both fall out of the handle rather than needing a guard.
 func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposition) {
+	r.cancelStartup(id, true, func(e *startupEntry) {
+		e.closeDisposition = disposition
+		e.closeRaced = true
+	})
+}
+
+// cancelForArchive stops an in-flight startup without marking the tab closed
+// or failed. It returns the startup handle so archival can wait for all
+// rollback and resource cleanup work to finish.
+func (r *startupCore) cancelForArchive(id string) *startupEntry {
+	return r.cancelStartup(id, false, func(e *startupEntry) {
+		// A permanent close carries the user's worktree decision and wins if
+		// both lifecycle operations reach the same startup.
+		e.archiveStopped = !e.closeRaced
+	})
+}
+
+// cancelStartup is the one detach-and-cancel body the two lifecycle
+// operations share: stamp the caller's disposition, drop the entry when it is
+// still the live one, then stop the evict timer and cancel the context outside
+// the lock. Sharing it is what keeps a close and an archive from drifting in
+// the ORDER they release `done`, stop the timer, and cancel.
+//
+// preferFinished picks which map answers first, and that is the only real
+// difference between the two callers. A close must reach a startup that
+// already FAILED, because fail() installed a different entry under the same id
+// and the close's worktree decision belongs on that one; an archive must not,
+// because a failed startup owns no process for it to stop.
+func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*startupEntry)) *startupEntry {
 	r.mu.Lock()
-	entry := r.entries[id]
-	delete(r.entries, id)
+	var entry *startupEntry
+	if preferFinished {
+		entry = r.entries[id]
+	}
+	if entry == nil {
+		entry = r.inflight[id]
+	}
 	if entry != nil {
-		entry.closeDisposition = disposition
-		entry.closeRaced = true
-		entry.release()
+		stamp(entry)
+		if r.entries[id] == entry {
+			delete(r.entries, id)
+			entry.release()
+		}
 	}
 	r.mu.Unlock()
 	if entry == nil {
-		return
+		return nil
 	}
 	if entry.evictTimer != nil {
 		entry.evictTimer.Stop()
@@ -342,6 +427,95 @@ func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposi
 	if entry.cancel != nil {
 		entry.cancel()
 	}
+	return entry
+}
+
+func (r *startupCore) waitForFinished(entry *startupEntry) {
+	if entry != nil && entry.finished != nil {
+		<-entry.finished
+	}
+}
+
+func (r *startupCore) markPhase0Complete(entry *startupEntry) {
+	if entry == nil {
+		return
+	}
+	r.mu.Lock()
+	entry.phase0Complete = true
+	r.mu.Unlock()
+}
+
+// startupInterruption names the lifecycle event that must stop a startup
+// short of reporting success, and states their PRECEDENCE in one place.
+type startupInterruption int
+
+const (
+	// interruptionNone: nothing raced this startup; finish normally.
+	interruptionNone startupInterruption = iota
+	// interruptionClosed: the tab was closed. Its teardown owns the worktree
+	// decision the user made, so the goroutine must run the close tail.
+	interruptionClosed
+	// interruptionArchived: the workspace was archived. The tab and all of its
+	// data survive; only the process stops.
+	interruptionArchived
+)
+
+// interruptionOf resolves the two dispositions against the two persisted flags
+// and answers with the one that wins.
+//
+// A CLOSE BEATS AN ARCHIVE. A close is permanent and carries the user's
+// worktree decision; an archive is reversible and keeps every row. Reporting
+// the archive for a tab that was also closed would skip that decision and
+// leave the worktree on disk.
+//
+// This function is why that precedence is stated once. Four startup paths ask
+// it -- agent start, agent post-relaunch, terminal start, terminal restart --
+// and each of them used to spell the same two checks in sequence, so the order
+// was an invisible property of statement placement at four sites, and a fifth
+// path could get it backwards without contradicting anything.
+func (r *startupCore) interruptionOf(h *startupEntry, closedInDB, archivedInDB bool) startupInterruption {
+	closeRaced, archiveStopped := false, false
+	if h != nil {
+		r.mu.Lock()
+		closeRaced, archiveStopped = h.closeRaced, h.archiveStopped
+		r.mu.Unlock()
+	}
+	switch {
+	case closeRaced || closedInDB:
+		return interruptionClosed
+	case archiveStopped || archivedInDB:
+		return interruptionArchived
+	default:
+		return interruptionNone
+	}
+}
+
+// archiveStopped reports whether an archive cancelled this startup.
+func (r *startupCore) archiveStopped(entry *startupEntry) bool {
+	if entry == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return entry.archiveStopped
+}
+
+// phase0Complete reports whether the startup got past phase 0, so its git-mode
+// mutation is already linked to the tab and a rollback must not undo it.
+//
+// It is a SEPARATE accessor from archiveStopped on purpose. The two answer
+// unrelated questions -- one about the archive, one about the worktree -- and
+// only failStartup reads this one. Returning them as one unnamed (bool, bool)
+// meant four call sites wrote `archiveStopped, _ :=` and a reader had to open
+// the implementation to tell the two apart. Both flags are monotonic, so
+// reading them under two separate locks loses nothing.
+func (r *startupCore) phase0Complete(entry *startupEntry) bool {
+	if entry == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return entry.phase0Complete
 }
 
 // setPendingResize records the latest ResizeTerminal dims for id. Returns

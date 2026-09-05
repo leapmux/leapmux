@@ -67,6 +67,31 @@ func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 	<-secondDone
 }
 
+func TestEnsureAgentRunning_RefusesArchivedAgent(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-archived", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{
+		WorkspaceArchived: 1, ID: "agent-archived",
+	})
+	require.NoError(t, err)
+	starts := 0
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		starts++
+		return map[string]string{}, nil
+	}
+
+	err = svc.ensureAgentRunning("agent-archived", nil, interactiveStart)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "archived workspace")
+	assert.Zero(t, starts)
+}
+
 // TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning verifies
 // that when SendAgentMessage triggers ensureAgentRunning on an INACTIVE agent
 // (e.g. after a worker/desktop restart that killed the subprocess), the
@@ -360,7 +385,8 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	}))
 
 	// Stand in for the open path's in-flight startup.
-	require.NotNil(t, svc.AgentStartup.begin("agent-1", func() {}))
+	openHandle := svc.AgentStartup.begin("agent-1", func() {})
+	require.NotNil(t, openHandle)
 
 	sent := make(chan struct{})
 	go func() {
@@ -379,8 +405,8 @@ func TestSendAgentMessage_DuringAnOpenStartupIsDelivered(t *testing.T) {
 	}
 
 	// The open path finishes and hands over its process.
-	svc.AgentStartup.succeed("agent-1")
-	svc.AgentStartup.finish()
+	svc.AgentStartup.succeed("agent-1", nil)
+	svc.AgentStartup.finishEntry(openHandle)
 
 	select {
 	case <-sent:

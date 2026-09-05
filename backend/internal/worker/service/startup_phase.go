@@ -24,6 +24,12 @@ type startupCallbacks struct {
 	// failStartup needs both: see rollbackGitModeAfterStartup. Read through
 	// closeRaced rather than called directly.
 	closeDisposition func() (closeWorktreeDisposition, bool)
+	// archiveStopped reports whether an archive cancelled this startup, and
+	// phase0Complete whether its git-mode mutation is already linked to the
+	// tab. Two hooks rather than one pair, because the two facts are unrelated
+	// and only failStartup reads the second.
+	archiveStopped func() bool
+	phase0Complete func() bool
 }
 
 // closeRaced reports the decision a close recorded against this startup.
@@ -37,6 +43,23 @@ func (cb startupCallbacks) closeRaced() (closeWorktreeDisposition, bool) {
 		return keepWorktreeOnClose, false
 	}
 	return cb.closeDisposition()
+}
+
+// archived reports whether an archive cancelled this startup. A nil hook means
+// a hand-built test callback set wired none, and reports "no archive raced".
+func (cb startupCallbacks) archived() bool {
+	if cb.archiveStopped == nil {
+		return false
+	}
+	return cb.archiveStopped()
+}
+
+// pastPhase0 reports whether phase 0 finished and linked its worktree.
+func (cb startupCallbacks) pastPhase0() bool {
+	if cb.phase0Complete == nil {
+		return false
+	}
+	return cb.phase0Complete()
 }
 
 // runStartupPhase0 broadcasts the per-mode label (if any) and executes
@@ -64,6 +87,13 @@ func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb s
 // Those arrive here, not on the close-detected branch, which is why the
 // rollback has to consult the disposition on this path too.
 func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbacks) {
+	_, closeRaced := cb.closeRaced()
+	if cb.archived() && !closeRaced {
+		if gm.Rollback.HasPartialMutation() && !cb.pastPhase0() {
+			svc.rollbackGitMode(gm)
+		}
+		return
+	}
 	if gm.Rollback.HasPartialMutation() {
 		if label := rollbackLabelFromRollback(gm.Rollback); label != "" {
 			cb.setMessage(label)
@@ -94,6 +124,7 @@ func (svc *Service) failStartup(gm gitModeResult, cause error, cb startupCallbac
 func (svc *Service) linkWorktreeAfterPhase0(reg *startupCore, h *startupEntry, worktreeID string, tabType leapmuxv1.TabType, tabID string, closedInDB bool) {
 	disposition, raced := reg.dispositionOf(h)
 	svc.registerTabForWorktreeAfterClose(worktreeID, tabType, tabID, closedInDB || raced, disposition)
+	reg.markPhase0Complete(h)
 }
 
 // finishStartupAfterClose is the tail both startup goroutines run when their
@@ -105,7 +136,9 @@ func (svc *Service) linkWorktreeAfterPhase0(reg *startupCore, h *startupEntry, w
 // that read. Reusing the earlier value would report the zero value (keep) for
 // every such close and silently skip a removal the user confirmed.
 func (svc *Service) finishStartupAfterClose(reg *startupCore, h *startupEntry, tabID string, gm gitModeResult) {
-	reg.succeed(tabID)
+	// Identity-guarded: this tail also runs for a close that landed AFTER the
+	// goroutine's own succeed, so the id can already belong to a newer startup.
+	reg.succeed(tabID, h)
 	disposition, _ := reg.dispositionOf(h)
 	svc.rollbackGitModeAfterClose(gm, disposition)
 }
@@ -125,6 +158,8 @@ func (svc *Service) agentStartupCallbacks(dbAgent *db.Agent, gitStatus *leapmuxv
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.AgentStartup.dispositionOf(h)
 		},
+		archiveStopped: func() bool { return svc.AgentStartup.archiveStopped(h) },
+		phase0Complete: func() bool { return svc.AgentStartup.phase0Complete(h) },
 	}
 }
 
@@ -141,5 +176,7 @@ func (svc *Service) terminalStartupCallbacks(terminalID string, h *startupEntry)
 		closeDisposition: func() (closeWorktreeDisposition, bool) {
 			return svc.TerminalStartup.dispositionOf(h)
 		},
+		archiveStopped: func() bool { return svc.TerminalStartup.archiveStopped(h) },
+		phase0Complete: func() bool { return svc.TerminalStartup.phase0Complete(h) },
 	}
 }

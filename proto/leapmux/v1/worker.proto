@@ -29,7 +29,7 @@ service WorkerReconcilerService {
 message ListOwnedTabsForWorkerRequest {}
 
 message ListOwnedTabsForWorkerResponse {
-  repeated OwnedTab tabs = 1;
+  repeated WorkerTabState tab_states = 1;
   // The single owner this response is authoritative for -- the calling
   // worker's registrant. The hub's query binds it (workspace_tab_owned is
   // keyed by (user_id, tab_id), so worker_id alone selects across tenants),
@@ -45,12 +45,10 @@ message ListOwnedTabsForWorkerResponse {
   string owner_user_id = 2;
 }
 
-// OwnedTab names one tab the Hub still knows about, for the worker's orphan
-// reconciler. It carries IDENTITY only -- no workspace, tile or position: the
-// reconciler's whole question is "does the Hub still list this tab?", and a
-// Worker that stores none of that placement state has nothing to compare it
-// against.
-message OwnedTab {
+// WorkerTabState identifies one tab that the Hub still owns and states whether
+// the workspace that contains it is archived. It carries no workspace, tile,
+// or position because the Worker stores none of that placement state.
+message WorkerTabState {
   TabType tab_type = 1;
   string  tab_id   = 2;
   // Owner of the row in workspace_tab_owned, which is keyed by
@@ -60,6 +58,7 @@ message OwnedTab {
   // another user misses the lookup and is reaped as an orphan. AGENT/TERMINAL
   // ids are globally unique, so their reconciliation ignores this field.
   string  user_id  = 3;
+  WorkspaceArchiveState archive_state = 4;
 }
 
 // WorkerManagementService is called BY Frontend on Hub via ConnectRPC.

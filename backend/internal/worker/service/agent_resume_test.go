@@ -133,7 +133,7 @@ func seedOpenAgent(t *testing.T, svc *Service, agentID string, used bool) {
 // runSweep starts the resumer and waits for its one sweep to finish.
 func runSweep(t *testing.T, svc *Service) *AgentResumer {
 	t.Helper()
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
 	return r
@@ -155,6 +155,122 @@ func TestAgentResume_RestoresUsedAgents(t *testing.T) {
 	runSweep(t, svc)
 
 	assert.Equal(t, []string{"agent-resumed"}, rec.ids())
+}
+
+func TestAgentResume_SkipsArchivedAgents(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	seedOpenAgent(t, svc, "agent-archived", true)
+	_, err := svc.Queries.SetAgentWorkspaceArchived(t.Context(), db.SetAgentWorkspaceArchivedParams{
+		WorkspaceArchived: 1,
+		ID:                "agent-archived",
+	})
+	require.NoError(t, err)
+
+	runSweep(t, svc)
+
+	assert.Empty(t, recorder.ids())
+}
+
+// TestAgentResume_SkipsSubagentTranscripts covers the candidate the BOOT sweep
+// cannot produce and the unarchive fan-out can.
+//
+// The sweep's own query selects roots, so a child never reaches it from there.
+// Schedule takes the tab ids the Hub listed for the workspace, and a subagent
+// transcript IS a tab in that layout -- so unarchiving a workspace that holds
+// one hands this scheduler an agent that owns no process. ensureAgentRunning
+// refuses it, which would spend a startup permit and log a failed start per
+// subagent tab.
+func TestAgentResume_SkipsSubagentTranscripts(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.install(svc)
+	seedOpenAgent(t, svc, "agent-root", true)
+	require.NoError(t, svc.Queries.CreateChildAgent(t.Context(), db.CreateChildAgentParams{
+		ID:            "agent-child",
+		ParentAgentID: sql.NullString{String: "agent-root", Valid: true},
+		SpawnSpanID:   "span-1",
+		Title:         "child task",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	resumer := svc.AgentResumer()
+	t.Cleanup(resumer.Stop)
+	resumer.Schedule(t.Context(), []string{"agent-child", "agent-root"})
+
+	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 }, "the root resumes")
+	assert.Equal(t, []string{"agent-root"}, recorder.ids(),
+		"a subagent transcript owns no process, so it must never be a resume candidate")
+}
+
+// TestAgentResumer_IsOneSchedulerPerService pins what makes the drain above
+// cover every producer, not just the boot sweep.
+//
+// bootstrap holds the resumer it builds at startup and wires Shutdown to Stop
+// THAT one. A fresh instance per call would give a later caller a scheduler
+// that nothing stops: its goroutines would outlive Shutdown and read a database
+// that Shutdown closed. Nothing else in the wiring says every caller must get
+// the same object, so it is stated here.
+func TestAgentResumer_IsOneSchedulerPerService(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	first := svc.AgentResumer()
+	t.Cleanup(first.Stop)
+
+	assert.Same(t, first, svc.AgentResumer(),
+		"bootstrap stops the resumer it built; a second instance would never be drained")
+}
+
+// TestAgentResume_StopDrainsScheduledWork pins the shutdown half of the
+// reusable scheduler.
+//
+// Shutdown stops the resumer and then closes the worker database. A Stop that
+// returned while a scheduled resume was still in its handshake would leave that
+// goroutine reading a closed handle -- the same hazard the boot sweep joins its
+// errgroup for. Schedule therefore increments the wait counter BEFORE it starts
+// the goroutine, under the same lock that refuses a candidate once stopped, so
+// no job can slip in after Wait begins.
+func TestAgentResume_StopDrainsScheduledWork(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	recorder := newStartRecorder()
+	recorder.block = make(chan struct{})
+	recorder.install(svc)
+	seedOpenAgent(t, svc, "agent-scheduled", true)
+
+	resumer := svc.AgentResumer()
+	resumer.Schedule(t.Context(), []string{"agent-scheduled"})
+	testutil.AssertEventually(t, func() bool { return len(recorder.ids()) == 1 },
+		"the scheduled resume reached the start")
+
+	stopped := make(chan struct{})
+	go func() {
+		resumer.Stop()
+		close(stopped)
+	}()
+	// A window that is too SHORT can only miss a regression here, never invent
+	// one: a correct Stop blocks until the release below, whatever the machine.
+	select {
+	case <-stopped:
+		require.FailNow(t, "Stop returned while a scheduled resume was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(recorder.block)
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "Stop never returned after the scheduled resume finished")
+	}
 }
 
 // TestAgentResume_UsesTheBackgroundStartPath pins which manager entry point the
@@ -299,7 +415,7 @@ func TestAgentResume_RootsTheProcessContextOutsideTheSweep(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-1", true)
 
 	sweepCtx, cancelSweep := context.WithCancel(context.Background())
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(sweepCtx)
 	r.WaitForSweepForTest()
 	require.Equal(t, []string{"agent-1"}, rec.ids())
@@ -487,7 +603,7 @@ func TestAgentResume_ACloseCancelsAnInFlightResume(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	require.Eventually(t, func() bool { return rec.inFlight.Load() == 1 }, 5*time.Second, 5*time.Millisecond,
 		"the resume never reached its start")
@@ -683,7 +799,7 @@ func TestAgentResume_WaitsForAWorkerOwner(t *testing.T) {
 	// setupTestService seeds an owner; clear it to model a worker whose Hub has
 	// not delivered WorkerIdentity yet.
 	svc.registeredBy.Store(&userid.UserID{})
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
 	require.Empty(t, rec.ids(), "no owner means no control socket, so no resume")
@@ -725,7 +841,7 @@ func TestAgentResume_SweepsOnlyOnce(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	r.Start(t.Context())
 	r.WaitForSweepForTest()
@@ -752,7 +868,7 @@ func TestAgentResume_LimitsItsOwnFanOut(t *testing.T) {
 	seedOpenAgent(t, svc, "agent-a", true)
 	seedOpenAgent(t, svc, "agent-b", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 
 	// Wait for the first resume to park inside its start, then prove no second
@@ -827,7 +943,7 @@ func TestAgentResume_StopAbandonsTheRemainingCandidates(t *testing.T) {
 		seedOpenAgent(t, svc, id, true)
 	}
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	// Wait until the first resume is parked inside its start, so the launcher is
 	// definitely past the loop's stop check for that candidate and blocked on the
@@ -888,7 +1004,7 @@ func TestAgentResume_SweepDoesNotReturnWhileAResumeIsInFlight(t *testing.T) {
 		return fetch(ctx, agentID)
 	}
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(t.Context())
 	require.Equal(t, "agent-a", <-entered, "the sweep never reached its first candidate")
 
@@ -925,7 +1041,7 @@ func TestAgentResume_AResumeAdmittedBeforeStopDoesNoWorkAfterIt(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	reads := 0
 	fetch := svc.getAgentByIDFn
 	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
@@ -976,7 +1092,7 @@ func TestAgentResume_ACancelledSweepReportsItsOutcome(t *testing.T) {
 	}
 
 	sweepCtx, cancelSweep := context.WithCancel(context.Background())
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Start(sweepCtx)
 	// Both slots are taken. Which two candidates got them does not matter; that
 	// the launcher is parked handing off the third does.
@@ -1011,7 +1127,7 @@ func TestAgentResume_StartAfterStopLaunchesNoSweep(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	r.Stop()
 	r.Start(t.Context())
 
@@ -1030,7 +1146,7 @@ func TestAgentResume_StopBeforeTheSweepIsRunNeverBlocks(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	r := svc.NewAgentResumer()
+	r := svc.AgentResumer()
 	done := make(chan struct{})
 	go func() { defer close(done); r.Stop(); r.Stop() }()
 	select {

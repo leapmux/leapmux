@@ -549,7 +549,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 // stretch the RPC latency the user sees.
 func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler, h *startupEntry) {
 	terminalID := opts.ID
-	defer svc.TerminalStartup.finish()
+	defer svc.TerminalStartup.finishEntry(h)
 
 	// Mint the remote-IPC token before phase 0 so the cleanup is in the
 	// map by the time any concurrent CloseTerminal calls terminalCleanups.run.
@@ -629,15 +629,27 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// registering in-memory metadata. Single narrow query — avoids
 	// re-reading the screen BLOB the handler entry already fetched.
 	postSpawn, postSpawnErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
-	if postSpawnErr == nil && postSpawn.ClosedAt.Valid {
+	switch svc.TerminalStartup.interruptionOf(h, postSpawnErr == nil && postSpawn.ClosedAt.Valid, postSpawnErr == nil && postSpawn.WorkspaceArchived != 0) {
+	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 		}
 		svc.finishStartupAfterClose(&svc.TerminalStartup.startupCore, h, terminalID, gm)
 		return
+	case interruptionArchived:
+		if startErr == nil {
+			svc.Terminals.StopTerminal(terminalID)
+			svc.Terminals.WaitForExit(terminalID)
+		}
+		// succeed, not fail: see the matching branch in runAgentStartup.
+		if startErr != nil {
+			slog.Warn("terminal startup stopped by workspace archival", "terminal_id", terminalID, "error", startErr)
+		}
+		svc.TerminalStartup.succeed(terminalID, h)
+		return
+	case interruptionNone:
 	}
-
 	if startErr != nil {
 		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", startErr)
 		svc.failTerminalStartup(terminalID, gm, startErr, h)
@@ -661,7 +673,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// Spawn succeeded and no close-race; hand cleanup ownership to the
 	// eventual CloseTerminal handler.
 	ownsIPCToken = false
-	svc.succeedTerminalStartup(terminalID)
+	svc.succeedTerminalStartup(terminalID, h)
 }
 
 // runTerminalRestart is the async body of RestartTerminal: it spawns a
@@ -682,7 +694,7 @@ func (svc *Service) runTerminalRestart(
 	h *startupEntry,
 ) {
 	terminalID := opts.ID
-	defer svc.TerminalStartup.finish()
+	defer svc.TerminalStartup.finishEntry(h)
 
 	// Swap the previous spawn's LEAPMUX_CONTROL_* token for a fresh one.
 	// remintControlIPC owns the ORDER -- retire, then mint -- because both
@@ -729,15 +741,28 @@ func (svc *Service) runTerminalRestart(
 	// by its own RemoveTerminal call instead. The title column from the
 	// same row is unused on the restart path (titles don't change
 	// across restart), so it's read-and-discarded.
-	if postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil && postSpawn.ClosedAt.Valid {
+	postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID)
+	switch svc.TerminalStartup.interruptionOf(h, fetchErr == nil && postSpawn.ClosedAt.Valid, fetchErr == nil && postSpawn.WorkspaceArchived != 0) {
+	case interruptionClosed:
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 		}
-		svc.TerminalStartup.succeed(terminalID)
+		svc.TerminalStartup.succeed(terminalID, h)
 		return
+	case interruptionArchived:
+		if startErr == nil {
+			svc.Terminals.StopTerminal(terminalID)
+			svc.Terminals.WaitForExit(terminalID)
+		}
+		// succeed, not fail: see the matching branch in runAgentStartup.
+		if startErr != nil {
+			slog.Warn("terminal restart stopped by workspace archival", "terminal_id", terminalID, "error", startErr)
+		}
+		svc.TerminalStartup.succeed(terminalID, h)
+		return
+	case interruptionNone:
 	}
-
 	if startErr != nil {
 		slog.Error("failed to restart terminal", "terminal_id", terminalID, "error", startErr)
 		// No git-mode mutation in the restart path — pass a zero result so
@@ -747,17 +772,17 @@ func (svc *Service) runTerminalRestart(
 	}
 
 	ownsIPCToken = false
-	svc.succeedTerminalStartup(terminalID)
+	svc.succeedTerminalStartup(terminalID, h)
 }
 
 // succeedTerminalStartup is the shared READY tail for runTerminalStartup
 // and runTerminalRestart: clear the persisted startup_error, broadcast
 // READY, and mark the registry succeeded last so observers see a durable
 // terminal state.
-func (svc *Service) succeedTerminalStartup(terminalID string) {
+func (svc *Service) succeedTerminalStartup(terminalID string, h *startupEntry) {
 	svc.persistTerminalStartupError(terminalID, "")
 	svc.broadcastTerminalReady(terminalID)
-	svc.TerminalStartup.succeed(terminalID)
+	svc.TerminalStartup.succeed(terminalID, h)
 }
 
 // runTerminalPhase0 broadcasts the per-mode label and executes the

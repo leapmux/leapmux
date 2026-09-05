@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -52,6 +53,10 @@ type OrphanReconciler struct {
 	// (closeTabForConvergence), and splitting it here meant every caller restated
 	// which policy each type gets.
 	closeTab func(tabType leapmuxv1.TabType, userID, tabID string)
+	// applyArchiveState reconciles the Hub's lifecycle state before the pass
+	// reports convergence and before the initial agent resume sweep can start.
+	applyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error)
+	resumeAgents      func([]string)
 	// onConverged reports a CONVERGED pass to the caller. Nil disables the report.
 	onConverged func()
 	// prevOrphanWorktrees maps a worktree id to when it FIRST looked orphaned. A
@@ -69,7 +74,7 @@ type OrphanReconciler struct {
 
 // OrphanReconcilerOptions configures NewOrphanReconciler.
 //
-// The three Close*Tab hooks are required; everything else has a default. There
+// CloseTab is required. The archive hooks are required when listFn is set. There
 // are no longer separate Agents / Terminals process-stopper hooks: stopping the
 // subprocess is part of the shared per-type teardown the Close*Tab hooks run, so
 // a caller cannot wire one without the other.
@@ -105,6 +110,14 @@ type OrphanReconcilerOptions struct {
 	// manager entry per reap. A tier that exists only for test convenience is
 	// exactly the divergent close path this change set out to remove.
 	CloseTab func(tabType leapmuxv1.TabType, userID, tabID string)
+	// ApplyArchiveState applies grouped authoritative tab states. Production
+	// wires it to Service.ApplyTabArchiveState, which is the ONLY way this
+	// Worker learns its archive state -- there is no RPC for it. Required when
+	// listFn is set.
+	ApplyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, []*leapmuxv1.TabRef) ([]string, error)
+	// ResumeAgents schedules agent IDs only after the whole pass converges. It
+	// is required when listFn is set.
+	ResumeAgents func([]string)
 	// OnConverged, when set, is called after every pass that CONVERGED (see
 	// reconcileOnce). It is the ONE place a caller learns that this worker's
 	// local rows now agree with the hub, which is the precondition the boot-time
@@ -152,6 +165,9 @@ func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (
 		panic("service: NewOrphanReconciler requires CloseTab" +
 			" (the offline teardown must be the same one an online close runs)")
 	}
+	if listFn != nil && (nilcheck.IsNilDependency(opts.ApplyArchiveState) || nilcheck.IsNilDependency(opts.ResumeAgents)) {
+		panic("service: NewOrphanReconciler requires archive-state apply and resume hooks when it reads Hub tab state")
+	}
 	return &OrphanReconciler{
 		queries:             queries,
 		listFn:              listFn,
@@ -163,6 +179,8 @@ func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (
 		logger:              opts.Logger,
 		reapWorktree:        opts.ReapWorktree,
 		closeTab:            opts.CloseTab,
+		applyArchiveState:   opts.ApplyArchiveState,
+		resumeAgents:        opts.ResumeAgents,
 		onConverged:         opts.OnConverged,
 		prevOrphanWorktrees: make(map[string]time.Time),
 		prevOrphanTabs:      make(map[ownedTabKey]time.Time),
@@ -355,11 +373,55 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 		// every absence below would be an unfounded reap. Nothing to do: a
 		// response with no owner is not one we can attribute any row to.
 		r.logger.Warn("orphan reconciler: hub response declares no owner scope; skipping this pass",
-			"hub_tabs", len(resp.GetTabs()))
+			"hub_tabs", len(resp.GetTabStates()))
 		return false
 	}
-	hubTabs := resp.GetTabs()
-	hubByKey := make(map[ownedTabKey]*leapmuxv1.OwnedTab, len(hubTabs))
+	hubTabs := resp.GetTabStates()
+	// Unconditional: NewOrphanReconciler refuses a listFn without both archive
+	// hooks, and the listFn == nil case returned above -- so reaching here means
+	// both are set. A nil check would read as "the hooks are optional", which is
+	// the opposite of what the constructor enforces.
+	//
+	// A row this Worker cannot classify DROPS OUT of the archive pass and keeps
+	// the rest of the pass. It must not fail the pass: the archive step runs
+	// before all three local legs, so one such row would stop every tab reap,
+	// every worktree reap, and -- because OnConverged never fires -- the boot
+	// agent-resume sweep, on every pass for the life of the process. This
+	// matches closeTabForConvergence, which warns and continues for a tab type
+	// it does not know. The reap loops below key on (tab_type, tab_id), so a
+	// dropped row simply never matches, exactly as before the archive pass
+	// existed.
+	var archivedTabs, activeTabs []*leapmuxv1.TabRef
+	for _, tab := range hubTabs {
+		if !archivableTabType(tab.GetTabType()) {
+			r.logger.Warn("orphan reconciler: hub returned a tab type this worker cannot archive",
+				"tab_id", tab.GetTabId(), "tab_type", tab.GetTabType())
+			continue
+		}
+		ref := &leapmuxv1.TabRef{TabType: tab.GetTabType(), TabId: tab.GetTabId()}
+		switch tab.GetArchiveState() {
+		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED:
+			archivedTabs = append(archivedTabs, ref)
+		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE:
+			activeTabs = append(activeTabs, ref)
+		case leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_UNSPECIFIED:
+			r.logger.Warn("orphan reconciler: hub returned an unspecified archive state",
+				"tab_id", tab.GetTabId())
+		default:
+			r.logger.Warn("orphan reconciler: hub returned an unknown archive state",
+				"tab_id", tab.GetTabId(), "archive_state", tab.GetArchiveState())
+		}
+	}
+	// Each tab lands in exactly one bucket, so the order of these two calls
+	// does not decide any tab's outcome. Archived runs first only so that a
+	// pass which stops processes does that before it schedules any resume.
+	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, archivedTabs) {
+		return false
+	}
+	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, activeTabs) {
+		return false
+	}
+	hubByKey := make(map[ownedTabKey]*leapmuxv1.WorkerTabState, len(hubTabs))
 	for _, t := range hubTabs {
 		hubByKey[newOwnedTabKey(t.GetTabType(), t.GetTabId(), t.GetUserId())] = t
 	}
@@ -371,18 +433,23 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// mint gate above.
 	now := r.now()
 	next := make(map[ownedTabKey]time.Time)
-	r.reconcileTabPayloads(ctx, hubByKey, owner, now, next)
-	r.reconcileAgents(ctx, hubByKey, now, next)
-	r.reconcileTerminals(ctx, hubByKey, now, next)
-	// Assigned ONLY here, on the path where all three cases ran. Every early
-	// return above learned nothing about absence, so overwriting the map there
-	// would restart each tab's clock and defeat the grace.
-	r.prevOrphanTabs = next
-	if len(next) > 0 {
-		// A deferred reap is unfinished business, not convergence. Report it so
-		// Run re-arms its retry backoff and a later pass does the teardown,
-		// instead of leaving it to the hourly tick.
+	// Three named results, not an accumulator: every leg must RUN, so the
+	// conjunction cannot short-circuit, and naming them keeps that visible.
+	okPayloads := r.reconcileTabPayloads(ctx, hubByKey, owner, now, next)
+	okAgents := r.reconcileAgents(ctx, hubByKey, now, next)
+	okTerminals := r.reconcileTerminals(ctx, hubByKey, now, next)
+	if localReconciled := okPayloads && okAgents && okTerminals; !localReconciled {
 		converged = false
+	} else {
+		// Replace the clock map only after all three local reads succeed. A
+		// partial read cannot prove that an omitted clock should reset.
+		r.prevOrphanTabs = next
+		if len(next) > 0 {
+			// A deferred reap is unfinished business, not convergence. Report it
+			// so Run re-arms its retry backoff and a later pass does the
+			// teardown, instead of leaving it to the hourly tick.
+			converged = false
+		}
 	}
 	return converged
 }
@@ -441,6 +508,36 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 		ok = false
 	}
 	return len(payloadRows) > 0 || len(agentIDs) > 0 || len(terminalIDs) > 0, ok
+}
+
+// applyArchiveBucket applies one archive state to the tabs the Hub reports in
+// it, and records the agents whose state changed to active. It reports whether
+// the pass may continue.
+func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmuxv1.WorkspaceArchiveState, tabs []*leapmuxv1.TabRef) bool {
+	if len(tabs) == 0 {
+		return true
+	}
+	resumeAgentIDs, err := r.applyArchiveState(ctx, state, tabs)
+	if err != nil {
+		r.logger.Warn("orphan reconciler: apply archive state", "state", state, "error", err)
+		return false
+	}
+	// Scheduled HERE, not held until the pass converges.
+	//
+	// The hold was there to keep a resume from racing an orphan close in the
+	// same pass, and it cannot: this list and the reap set are disjoint by
+	// construction. Both derive from the SAME hub response -- these ids come
+	// from tabs the hub listed, and reconcileAgents reaps only ids ABSENT from
+	// that listing. So no id can be in both.
+	//
+	// Holding them cost a delay on every unarchive, because any unrelated tab
+	// inside its orphan grace window keeps the pass non-converged. It also
+	// could not be re-driven: the flag write is an edge (`workspace_archived
+	// <> ?`), so once the row reached its new value no later pass produced the
+	// id again.
+	sort.Strings(resumeAgentIDs)
+	r.resumeAgents(resumeAgentIDs)
+	return true
 }
 
 // reconcileWorktrees reclaims worktrees whose tab links are all
@@ -520,11 +617,11 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 // and stating that at the destructive line is what keeps a future reader from
 // widening the read and silently widening the reap with it. Pinned by
 // TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner.
-func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time) {
+func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time) bool {
 	rows, err := r.queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list worker_tab_payloads", "err", err)
-		return
+		return false
 	}
 	for _, row := range rows {
 		// The row's OWN kind, not a constant: one table now holds both FILE and
@@ -581,11 +678,12 @@ func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey ma
 			r.closeTab(tabType, row.UserID, row.TabID)
 		}
 	}
+	return true
 }
 
 // reconcileAgents iterates every locally-known agent and absorbs the
 // hub's view: hub-absent -> stop the subprocess and close the row locally.
-func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, now time.Time, next map[ownedTabKey]time.Time) {
+func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time) bool {
 	// OPEN rows only. A closed row has already been torn down, so comparing it
 	// against the hub's live list only re-ran the full teardown -- cancelAndClear,
 	// StopAgent, ClearAgentRuntimeState, the registered cleanups -- and re-logged
@@ -601,7 +699,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 	rows, err := r.queries.ListAllOpenRootAgentIDs(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list agents", "err", err)
-		return
+		return false
 	}
 	for _, agentID := range rows {
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, "")
@@ -639,15 +737,16 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 			r.logger.Info("orphan reconciler: closed stale agent", "agent_id", agentID)
 		}
 	}
+	return true
 }
 
 // reconcileTerminals does the same for terminals.
-func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, now time.Time, next map[ownedTabKey]time.Time) {
+func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time) bool {
 	// OPEN rows only, for the same reasons as reconcileAgents.
 	rows, err := r.queries.ListAllOpenTerminalIDs(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list terminals", "err", err)
-		return
+		return false
 	}
 	for _, row := range rows {
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row, "")
@@ -671,4 +770,5 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 			r.logger.Info("orphan reconciler: closed stale terminal", "terminal_id", row)
 		}
 	}
+	return true
 }

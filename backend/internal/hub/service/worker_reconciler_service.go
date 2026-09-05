@@ -59,20 +59,21 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list owned tabs: %w", err))
 	}
-	out := make([]*leapmuxv1.OwnedTab, 0, len(rows))
+	out := make([]*leapmuxv1.WorkerTabState, 0, len(rows))
 	for _, r := range rows {
 		// UserId is redundant with OwnerUserId today (the query binds one
 		// owner) but stays per-row: it is what the reconciler keys its
 		// (tab_type, tab_id, user_id) comparison by, since a FILE tab id is
 		// unique only within a user.
-		out = append(out, &leapmuxv1.OwnedTab{
-			TabType: r.TabType,
-			TabId:   r.TabID,
-			UserId:  r.UserID,
+		out = append(out, &leapmuxv1.WorkerTabState{
+			TabType:      r.TabType,
+			TabId:        r.TabID,
+			UserId:       r.UserID,
+			ArchiveState: r.ArchiveState,
 		})
 	}
 	return connect.NewResponse(&leapmuxv1.ListOwnedTabsForWorkerResponse{
-		Tabs:        out,
+		TabStates:   out,
 		OwnerUserId: registeredBy.String(),
 	}), nil
 }

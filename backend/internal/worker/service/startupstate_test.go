@@ -9,17 +9,64 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// beginForTest records an entry and returns a cleanup that pairs with
-// finish() to keep WaitForInFlight happy. Tests use this to exercise
-// the startupCore primitives without the full startup-goroutine
-// machinery.
+// beginForTest records an entry and registers the finishEntry that keeps
+// WaitForInFlight happy. Tests use this to exercise the startupCore primitives
+// without the full startup-goroutine machinery.
 func beginForTest(t *testing.T, r *startupCore, id string) {
 	t.Helper()
-	r.begin(id, func() {})
+	entry := r.begin(id, func() {})
+	require.NotNil(t, entry)
 	t.Cleanup(func() {
 		r.cancelAndClear(id, keepWorktreeOnClose)
-		r.finish()
+		r.finishEntry(entry)
 	})
+}
+
+func TestStartupCore_ArchiveCancellationIsDistinctFromCloseAndFailure(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	cancelled := false
+	handle := core.begin("archive-tab", func() { cancelled = true })
+	require.NotNil(t, handle)
+	core.markPhase0Complete(handle)
+
+	archivedHandle := core.cancelForArchive("archive-tab")
+	require.Same(t, handle, archivedHandle)
+	archived, phase0Complete := core.archiveStopped(handle), core.phase0Complete(handle)
+	assert.True(t, archived)
+	assert.True(t, phase0Complete)
+	assert.True(t, cancelled)
+	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("archive-tab", time.Hour),
+		"an archived stop must not report a permanent close")
+	_, _, _, present := core.snapshot("archive-tab")
+	assert.False(t, present, "an archived stop must not leave a startup failure")
+
+	core.finishEntry(handle)
+	core.waitForFinished(handle)
+	core.WaitForInFlight()
+}
+
+// TestStartupCore_ArchiveFindsNoHandleOnceTheStartupFinished pins the invariant
+// that makes finishEntry the ONLY exit a startup goroutine may take.
+//
+// finishEntry drops the in-flight counter AND takes the entry out of the map
+// that cancelForArchive resolves a tab id through. An exit that dropped the
+// counter alone would leave a live-looking entry whose `finished` channel
+// nobody ever closes -- so the next archive of that tab would resolve it, call
+// waitForFinished, and block for ever inside the archive RPC.
+func TestStartupCore_ArchiveFindsNoHandleOnceTheStartupFinished(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	handle := core.begin("finished-tab", func() {})
+	require.NotNil(t, handle)
+	core.succeed("finished-tab", nil)
+	core.finishEntry(handle)
+
+	assert.Nil(t, core.cancelForArchive("finished-tab"),
+		"a startup that already returned leaves nothing for an archive to wait on")
+	core.WaitForInFlight()
 }
 
 // TestStartupCore_ClearPendingResize_DrainsSignal pins the contract
@@ -138,7 +185,7 @@ func TestCancelAndClear_StampsTheHandleTheGoroutineHolds(t *testing.T) {
 	got, raced := core.dispositionOf(h)
 	require.True(t, raced, "a close that raced a live startup must reach its goroutine")
 	assert.Equal(t, removeWorktreeOnClose, got)
-	core.finish()
+	core.finishEntry(h)
 }
 
 // TestCancelAndClear_FailedStartupNeverReachesItsGoroutine is the property the
@@ -156,7 +203,7 @@ func TestCancelAndClear_FailedStartupNeverReachesItsGoroutine(t *testing.T) {
 	core := newStartupCore()
 	h := core.begin("a-failed", func() {})
 	core.fail("a-failed", "boom")
-	core.finish()
+	core.finishEntry(h)
 
 	core.cancelAndClear("a-failed", removeWorktreeOnClose)
 
@@ -201,7 +248,7 @@ func TestStartupCore_BeginClaimsTheIDAgainstASecondStartup(t *testing.T) {
 	assert.True(t, firstCancelled, "the close must reach the startup that owns the slot")
 	assert.False(t, secondCancelled)
 
-	core.finish()
+	core.finishEntry(first)
 	core.WaitForInFlight()
 }
 
@@ -217,7 +264,7 @@ func TestStartupCore_BeginReclaimsAFailedEntry(t *testing.T) {
 
 	h := core.begin("tab-1", func() {})
 	require.NotNil(t, h, "a retry after a failed startup must be able to claim the tab again")
-	core.finish()
+	core.finishEntry(h)
 	core.WaitForInFlight()
 }
 
@@ -317,7 +364,7 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 		end  func(core *startupCore)
 		want startupWait
 	}{
-		{"succeed", func(core *startupCore) { core.succeed("tab-1") }, startupWait{settled: true}},
+		{"succeed", func(core *startupCore) { core.succeed("tab-1", nil) }, startupWait{settled: true}},
 		{"fail", func(core *startupCore) { core.fail("tab-1", "boom") }, startupWait{settled: true}},
 		{
 			"cancelAndClear",
@@ -331,7 +378,8 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 			core := newStartupCore()
 			clock := newFakeStartupClock()
 			core.clock = clock
-			require.NotNil(t, core.begin("tab-1", func() {}))
+			holder := core.begin("tab-1", func() {})
+			require.NotNil(t, holder)
 
 			done := make(chan startupWait, 1)
 			go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
@@ -350,7 +398,7 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 			case <-time.After(10 * time.Second):
 				require.FailNow(t, "the wait never returned after the holder finished")
 			}
-			core.finish()
+			core.finishEntry(holder)
 			core.WaitForInFlight()
 		})
 	}
@@ -365,7 +413,8 @@ func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 	core := newStartupCore()
 	clock := newFakeStartupClock()
 	core.clock = clock
-	require.NotNil(t, core.begin("tab-1", func() {}))
+	holder := core.begin("tab-1", func() {})
+	require.NotNil(t, holder)
 
 	done := make(chan startupWait, 1)
 	go func() { done <- core.awaitInFlight("tab-1", 90*time.Second) }()
@@ -381,7 +430,7 @@ func TestStartupCore_AwaitInFlightGivesUpOnItsLimit(t *testing.T) {
 	}
 
 	core.cancelAndClear("tab-1", keepWorktreeOnClose)
-	core.finish()
+	core.finishEntry(holder)
 	core.WaitForInFlight()
 }
 
@@ -394,7 +443,8 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	core := newStartupCore()
 	clock := newFakeStartupClock()
 	core.clock = clock
-	require.NotNil(t, core.begin("tab-1", func() {}))
+	holder := core.begin("tab-1", func() {})
+	require.NotNil(t, holder)
 
 	const waiters = 8
 	done := make(chan startupWait, waiters)
@@ -403,7 +453,7 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 	}
 	clock.waitArmed(t)
 
-	core.succeed("tab-1")
+	core.succeed("tab-1", nil)
 	for range waiters {
 		select {
 		case got := <-done:
@@ -412,7 +462,7 @@ func TestStartupCore_AwaitInFlightIsSafeForManyWaiters(t *testing.T) {
 			require.FailNow(t, "a waiter was left behind by the wake-up")
 		}
 	}
-	core.finish()
+	core.finishEntry(holder)
 	core.WaitForInFlight()
 }
 
@@ -430,17 +480,17 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 		then  func(core *startupCore)
 	}{
 		{"succeed then succeed",
-			func(c *startupCore) { c.succeed("tab-1") },
-			func(c *startupCore) { c.succeed("tab-1") }},
+			func(c *startupCore) { c.succeed("tab-1", nil) },
+			func(c *startupCore) { c.succeed("tab-1", nil) }},
 		{"succeed then cancelAndClear",
-			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.succeed("tab-1", nil) },
 			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) }},
 		{"succeed then fail",
-			func(c *startupCore) { c.succeed("tab-1") },
+			func(c *startupCore) { c.succeed("tab-1", nil) },
 			func(c *startupCore) { c.fail("tab-1", "boom") }},
 		{"cancelAndClear then succeed",
 			func(c *startupCore) { c.cancelAndClear("tab-1", keepWorktreeOnClose) },
-			func(c *startupCore) { c.succeed("tab-1") }},
+			func(c *startupCore) { c.succeed("tab-1", nil) }},
 		{"fail then fail",
 			func(c *startupCore) { c.fail("tab-1", "boom") },
 			func(c *startupCore) { c.fail("tab-1", "boom again") }},
@@ -450,7 +500,8 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 
 			core := newStartupCore()
 			core.clock = newFakeStartupClock()
-			require.NotNil(t, core.begin("tab-1", func() {}))
+			holder := core.begin("tab-1", func() {})
+			require.NotNil(t, holder)
 
 			tc.first(&core)
 			assert.NotPanics(t, func() { tc.then(&core) })
@@ -461,7 +512,7 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 			// close.
 			assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-1", time.Hour))
 
-			core.finish()
+			core.finishEntry(holder)
 			core.WaitForInFlight()
 		})
 	}

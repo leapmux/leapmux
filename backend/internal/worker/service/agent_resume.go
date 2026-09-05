@@ -10,8 +10,8 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// AgentResumer respawns, once per worker process, the agent subprocesses a
-// previous worker process left behind.
+// AgentResumer schedules background agent resumes. It runs one initial sweep
+// after reconciliation and accepts later unarchive transitions.
 //
 // It exists because several agent CLIs can list the agent sessions that run on
 // the same machine and send messages to them. A worker restart kills every
@@ -20,13 +20,12 @@ import (
 // and no amount of waiting fixed it. Respawning the processes is what puts them
 // back in their provider's machine-local view of each other.
 //
-// It is a type rather than a bare method for the same reason OrphanReconciler
-// is: the sweep owns a goroutine and a stop, and both have to be drivable from
-// a test without standing up bootstrap.
+// It is a type rather than a bare method because the scheduler owns goroutines
+// and a stop. Tests can drive both without bootstrap.
 type AgentResumer struct {
 	svc *Service
 
-	// mu guards the three fields below. Start and Stop take it for their WHOLE
+	// mu guards the lifecycle and scheduled-job fields below. Start and Stop take it for their WHOLE
 	// decision, not merely to read a field.
 	//
 	// The two race in production. Shutdown stops the resumer before the
@@ -47,11 +46,111 @@ type AgentResumer struct {
 	// stop closes on Stop and is what makes the launcher give up on the
 	// candidates that it did not reach yet.
 	stop chan struct{}
+	// scheduled contains reusable unarchive jobs. The wait counter increments
+	// before each goroutine starts, so Stop can drain every accepted job.
+	scheduled   map[string]struct{}
+	scheduledWG sync.WaitGroup
+	resumeSlots chan struct{}
 }
 
-// NewAgentResumer builds the boot-time resume sweep for this service.
-func (svc *Service) NewAgentResumer() *AgentResumer {
-	return &AgentResumer{svc: svc, stop: make(chan struct{})}
+// AgentResumer returns the service's shared resume scheduler, building it on
+// the first call. It is an accessor, not a constructor: bootstrap and the
+// unarchive RPC must reach the SAME scheduler, because a second one would
+// carry its own dedup set and its own stop channel, and nothing would ever
+// drain it.
+//
+// The concurrency read stays lazy on purpose. bootstrap calls
+// SetStartupConcurrency after service.New and before it starts the background
+// loops, so a resumer built in service.New would size its semaphore from the
+// manager's default pool instead of the configured value.
+func (svc *Service) AgentResumer() *AgentResumer {
+	svc.resumeSchedulerMu.Lock()
+	defer svc.resumeSchedulerMu.Unlock()
+	if svc.agentResumer == nil {
+		// max(1): a zero capacity makes resumeSlots unbuffered, and no goroutine
+		// ever receives from it, so every scheduled resume would block until Stop.
+		// The manager caps the value at one already; this keeps the deadlock
+		// impossible rather than merely absent today.
+		limit := max(1, svc.Agents.StartupConcurrency())
+		svc.agentResumer = &AgentResumer{
+			svc:         svc,
+			stop:        make(chan struct{}),
+			scheduled:   make(map[string]struct{}),
+			resumeSlots: make(chan struct{}, limit),
+		}
+	}
+	return svc.agentResumer
+}
+
+// claim reserves one agent id against concurrent resume work, and reports
+// whether the caller got it. Both producers -- Schedule and the boot sweep --
+// claim through this one set, so an id that one is already working on is never
+// started twice.
+//
+// It refuses every id once Stop latched, so a claim also answers "may I still
+// start work?".
+//
+// wg, when set, is joined UNDER the same lock that reads r.stopped. That
+// pairing is the whole reason the caller does not add to the group itself:
+// Stop latches r.stopped and then waits on the group, so an Add issued after
+// the lock was released could land after that Wait began -- the WaitGroup
+// misuse that reuse-after-Wait panics on, and, before it panics, a resume the
+// drain does not cover.
+func (r *AgentResumer) claim(agentID string, wg *sync.WaitGroup) bool {
+	if agentID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return false
+	}
+	if _, exists := r.scheduled[agentID]; exists {
+		return false
+	}
+	r.scheduled[agentID] = struct{}{}
+	if wg != nil {
+		wg.Add(1)
+	}
+	return true
+}
+
+func (r *AgentResumer) releaseClaim(agentID string) {
+	r.mu.Lock()
+	delete(r.scheduled, agentID)
+	r.mu.Unlock()
+}
+
+// Schedule queues eligible agent rows for a reusable background resume pass.
+// It deduplicates one agent while a prior resume remains in flight.
+//
+// It does NOT block, and it cannot: its callers are the orphan reconciler's
+// single goroutine and an RPC handler, and neither may wait for a provider
+// handshake. resumeSlots is therefore the cap, and one goroutine per claimed
+// id parks on it. The boot sweep wants the opposite -- ordered admission with
+// backpressure at the loop -- so it keeps its own errgroup and shares only the
+// claim.
+func (r *AgentResumer) Schedule(ctx context.Context, agentIDs []string) {
+	for _, agentID := range agentIDs {
+		if !r.claim(agentID, &r.scheduledWG) {
+			continue
+		}
+		go func() {
+			defer func() {
+				r.releaseClaim(agentID)
+				r.scheduledWG.Done()
+			}()
+			select {
+			case r.resumeSlots <- struct{}{}:
+				defer func() { <-r.resumeSlots }()
+			case <-r.stop:
+				return
+			case <-ctx.Done():
+				return
+			}
+			r.resumeOne(ctx, agentID)
+		}()
+	}
 }
 
 // Start runs the sweep once, in the background. Later calls do nothing, and so
@@ -91,22 +190,20 @@ func (r *AgentResumer) Start(ctx context.Context) {
 	}()
 }
 
-// Stop tells the launcher to reach no further candidates, and waits for the
-// sweep. A Start that arrives afterwards starts nothing.
+// Stop tells the scheduler to accept no more candidates. It waits for the
+// initial sweep and all reusable jobs. A later Start schedules nothing.
 //
-// It DOES wait for the resumes the launcher already handed off, because the
-// sweep joins its own group on every exit. Two facts make that the correct
-// design rather than an expensive one. errgroup.Go blocks the launcher once the
-// fan-out limit is full, so a Stop could never return promptly anyway while a
-// handshake was in flight. And Service.Shutdown waits for exactly the same
-// startups a few lines later through AgentStartup.WaitForInFlight, so joining
-// here costs no additional time -- it only moves the wait earlier, to the point
-// where the sweep can still be observed as running.
+// It DOES wait for the resumes it already accepted -- scheduledWG covers every
+// job from both producers, and the sweep joins its own batch on every exit.
+// Service.Shutdown waits for exactly the same startups a few lines later
+// through AgentStartup.WaitForInFlight, so joining here costs no additional
+// time; it only moves the wait earlier, to the point where the scheduler can
+// still be observed as running.
 //
-// Not joining is what made WaitForInFlight unsafe. The launcher hands a
-// candidate to errgroup.Go, the runtime does not schedule it yet, and it is
-// therefore short of AgentStartup.begin. The drain then saw a zero count and
-// returned, and the straggler read a database the caller was about to close.
+// Not joining is what made WaitForInFlight unsafe. schedule accepts a
+// candidate, the runtime does not start its goroutine yet, and it is therefore
+// short of AgentStartup.begin. The drain then saw a zero count and returned,
+// and the straggler read a database the caller was about to close.
 func (r *AgentResumer) Stop() {
 	r.mu.Lock()
 	if !r.stopped {
@@ -115,6 +212,7 @@ func (r *AgentResumer) Stop() {
 	}
 	r.mu.Unlock()
 	r.waitForSweep()
+	r.scheduledWG.Wait()
 }
 
 // waitForSweep blocks until the sweep goroutine returns, or returns at once
@@ -158,7 +256,7 @@ func (r *AgentResumer) stopping() bool {
 // for what that means and for the predicate it deliberately does not use.
 func (r *AgentResumer) sweep(ctx context.Context) {
 	svc := r.svc
-	ids, err := svc.Queries.ListAllOpenRootAgentIDs(ctx)
+	ids, err := svc.Queries.ListRootAgentIDsForResume(ctx)
 	if err != nil {
 		slog.Error("agent resume: list open agents", "error", err)
 		return
@@ -209,6 +307,19 @@ func (r *AgentResumer) sweep(ctx context.Context) {
 		default:
 		}
 		g.Go(func() error {
+			// Claim through the SAME set Schedule uses. The two producers
+			// overlap in production: a pass that unarchives a workspace calls
+			// Schedule for those agents and then reports convergence, which
+			// starts this sweep, whose query selects the rows that pass just
+			// marked active. Without one shared claim each of those agents got
+			// two goroutines, and the loser parked on the per-agent lifecycle
+			// lock for the length of the winner's provider handshake while
+			// holding a permit -- halving the effective resume concurrency on
+			// exactly the boot that needed it most.
+			if !r.claim(id, nil) {
+				return nil
+			}
+			defer r.releaseClaim(id)
 			counts.record(r.resumeOne(ctx, id))
 			return nil
 		})
@@ -319,17 +430,12 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 // anybody asks of this feature.
 type resumeSkipReason string
 
-// There is deliberately no case for an ARCHIVED workspace, and today there
-// cannot be one: a Worker stores no workspace (see OpenAgentRequest in
-// agent.proto). Archiving a workspace also stops none of its agents, so their
-// rows stay open and this sweep starts every one of them again after a restart.
-// The fix is a design decision -- close the tabs at archive time, or give the
-// Worker the workspace -- and it is tracked in
-// https://github.com/leapmux/leapmux/issues/446.
 const (
 	resumeSkipAlreadyRunning resumeSkipReason = "already running"
+	resumeSkipSubagent       resumeSkipReason = "subagent transcript, which owns no process"
 	resumeSkipClosed         resumeSkipReason = "tab closed since the sweep listed it"
 	resumeSkipStartupFailed  resumeSkipReason = "previous startup failed"
+	resumeSkipArchived       resumeSkipReason = "workspace archived"
 	resumeSkipNeverStarted   resumeSkipReason = "never started and not created from a session"
 )
 
@@ -359,13 +465,22 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	if r.svc.Agents.HasAgent(dbAgent.ID) {
 		return resumeSkipAlreadyRunning
 	}
-	// The candidate list is a SNAPSHOT: ListAllOpenRootAgentIDs ran once, and a
-	// candidate at the back of a throttled queue is reached much later -- minutes,
-	// on a machine with many tabs and a concurrency of 1. A CloseAgent in between
-	// already ran that tab's whole teardown, so a process started for it now is
-	// one nothing will ever stop: it holds a CLI and its memory for the life of
-	// the worker, under a tab no client can see. This row was read AFTER the
-	// list, which is what makes the check worth having.
+	// A virtual child agent is a subagent transcript: it has no process of its
+	// own, and ensureAgentRunning refuses one. The boot sweep never lists a
+	// child (its query selects roots), but Schedule takes the tab ids the Hub
+	// fanned out, and a subagent transcript IS a tab in the workspace layout.
+	// Without this the unarchive of a workspace holding one logs a failed start
+	// per subagent tab and spends a startup permit on each.
+	if dbAgent.ParentAgentID.Valid {
+		return resumeSkipSubagent
+	}
+	// The candidate list is a SNAPSHOT: ListRootAgentIDsForResume ran once, and
+	// the sweep reaches a candidate at the back of a throttled queue much
+	// later -- minutes, on a machine with many tabs and a concurrency of 1. A
+	// CloseAgent in between already ran that tab's whole teardown, so a process
+	// started for it now is one nothing will ever stop: it holds a CLI and its
+	// memory for the life of the worker, under a tab no client can see. This
+	// row was read AFTER the list, which is what makes the check worth having.
 	//
 	// ensureAgentRunning refuses a closed row as well, under the per-agent
 	// lifecycle lock, which is what closes the window between this read and that
@@ -379,6 +494,9 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	// fail again, and the row already tells the user to open a new agent.
 	if dbAgent.StartupError != "" {
 		return resumeSkipStartupFailed
+	}
+	if dbAgent.WorkspaceArchived != 0 {
+		return resumeSkipArchived
 	}
 	if dbAgent.AgentSessionID == "" && dbAgent.Resumed == 0 {
 		return resumeSkipNeverStarted

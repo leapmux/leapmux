@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/lexorank"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -21,8 +22,13 @@ import (
 // This service owns the workspace metadata table plus read-only tab
 // views fed by the CRDT manager's workspace_tab_rendered index.
 type WorkspaceService struct {
-	store    store.Store
-	registry *crdt.Registry
+	store           store.Store
+	registry        *crdt.Registry
+	reconcileNudger workspaceReconcileNudger
+}
+
+type workspaceReconcileNudger interface {
+	NudgeReconcile(workerID string)
 }
 
 // NewWorkspaceService creates a new WorkspaceService. registry is optional;
@@ -37,10 +43,12 @@ type WorkspaceService struct {
 func NewWorkspaceService(
 	st store.Store,
 	registry *crdt.Registry,
+	reconcileNudger workspaceReconcileNudger,
 ) *WorkspaceService {
 	return &WorkspaceService{
-		store:    st,
-		registry: registry,
+		store:           st,
+		registry:        registry,
+		reconcileNudger: reconcileNudger,
 	}
 }
 
@@ -315,6 +323,168 @@ func (s *WorkspaceService) RenameWorkspace(
 	return connect.NewResponse(&leapmuxv1.RenameWorkspaceResponse{}), nil
 }
 
+// SetWorkspaceArchiveState moves a workspace across the archive boundary and
+// nudges every Worker that hosts one of its tabs.
+//
+// The nudge IS the delivery. The Worker applies the Hub's authoritative state
+// through the same code its reconcile pass uses, so a client-side fan-out over
+// the returned tab list would be a second path to the same effect -- one that
+// exists only while a browser session is open, and that an archive from any
+// other client would skip.
+func (s *WorkspaceService) SetWorkspaceArchiveState(
+	ctx context.Context,
+	req *connect.Request[leapmuxv1.SetWorkspaceArchiveStateRequest],
+) (*connect.Response[leapmuxv1.SetWorkspaceArchiveStateResponse], error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectDelegationBearer(user, "workspace lifecycle mutation"); err != nil {
+		return nil, err
+	}
+
+	requested := req.Msg.GetArchiveState()
+	if requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE &&
+		requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("archive_state must be ACTIVE or ARCHIVED"))
+	}
+
+	workspaceID := req.Msg.GetWorkspaceId()
+	var workerIDs []string
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can modify workspace state"); err != nil {
+			return err
+		}
+
+		currentlyArchived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return fmt.Errorf("read workspace archive state: %w", err)
+		}
+		requestArchived := requested == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED
+
+		// The section move is the only step this skips when the workspace
+		// already sits on the requested side. The nudge below still runs, so
+		// the RPC ASSERTS the state its name claims rather than applying a
+		// transition.
+		//
+		// That difference is the recovery path. When a Worker misses its nudge
+		// -- a refused control frame, a reconnect -- the caller's remedy is to
+		// ask again, and a repeat that nudged nobody would do nothing, leaving
+		// those processes running until the Worker's hourly tick. Every step
+		// below is idempotent: the Worker's UPDATE changes a row only when the
+		// flag differs, and the nudge is best-effort by contract.
+		// An explicit destination moves the workspace even when it is already
+		// on the requested side, because "Move to <section>" on an archived
+		// workspace is one call now: unarchive AND land where the user asked.
+		explicitDestination := req.Msg.GetDestinationSectionId()
+		if currentlyArchived != requestArchived || explicitDestination != "" {
+			destinationID, err := resolveArchiveDestination(ctx, tx, user.ID, explicitDestination, requestArchived)
+			if err != nil {
+				return err
+			}
+			position := req.Msg.GetPosition()
+			if position == "" {
+				items, err := tx.WorkspaceSectionItems().ListByUser(ctx, user.ID)
+				if err != nil {
+					return fmt.Errorf("list workspace section items: %w", err)
+				}
+				position = appendPositionAfter(lastPositionInSection(items, destinationID), workspaceID)
+			}
+			if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+				UserID:      user.ID,
+				WorkspaceID: workspaceID,
+				SectionID:   destinationID,
+				Position:    position,
+			}); err != nil {
+				return fmt.Errorf("move workspace across archive boundary: %w", err)
+			}
+		}
+
+		tabs, err := tx.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return fmt.Errorf("list workspace tabs: %w", err)
+		}
+		workerIDs = distinctWorkerIDs(tabs)
+		return nil
+	})
+	if err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	if s.reconcileNudger != nil {
+		for _, workerID := range workerIDs {
+			s.reconcileNudger.NudgeReconcile(workerID)
+		}
+	}
+	return connect.NewResponse(&leapmuxv1.SetWorkspaceArchiveStateResponse{}), nil
+}
+
+// resolveArchiveDestination answers which section the workspace lands in.
+//
+// With no explicit id it is the built-in section for the requested side. With
+// one, the section must be the caller's, must be able to hold a workspace, and
+// must sit on the side the request asks for -- so a destination cannot
+// contradict archive_state, and this parameter can never become a second,
+// unguarded way to archive a workspace.
+func resolveArchiveDestination(ctx context.Context, tx store.Store, userID userid.UserID, explicitID string, requestArchived bool) (string, error) {
+	sections, err := tx.WorkspaceSections().ListByUserID(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("list workspace sections: %w", err)
+	}
+	if explicitID == "" {
+		destinationType := leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS
+		if requestArchived {
+			destinationType = leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+		}
+		destinationID := findSectionOfType(sections, destinationType)
+		if destinationID == "" {
+			return "", fmt.Errorf("built-in destination section %s not found", destinationType)
+		}
+		return destinationID, nil
+	}
+	destination, err := requireOwnedSection(ctx, tx, userID, explicitID)
+	if err != nil {
+		return "", err
+	}
+	if err := requireWorkspaceSection(destination); err != nil {
+		return "", err
+	}
+	destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+	if destinationArchived != requestArchived {
+		return "", connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("destination section %s is on the other side of the archive boundary than the requested state", destination.ID))
+	}
+	return destination.ID, nil
+}
+
+// distinctWorkerIDs reduces a workspace's owned tabs to the workers that host
+// them, in first-seen order so the nudges go out deterministically.
+func distinctWorkerIDs(tabs []store.OwnedTabRef) []string {
+	seen := make(map[string]struct{}, len(tabs))
+	out := make([]string, 0, len(tabs))
+	for _, tab := range tabs {
+		if tab.WorkerID == "" {
+			continue
+		}
+		if _, dup := seen[tab.WorkerID]; dup {
+			continue
+		}
+		seen[tab.WorkerID] = struct{}{}
+		out = append(out, tab.WorkerID)
+	}
+	return out
+}
+
 func (s *WorkspaceService) DeleteWorkspace(
 	ctx context.Context,
 	req *connect.Request[leapmuxv1.DeleteWorkspaceRequest],
@@ -388,6 +558,44 @@ func (s *WorkspaceService) DeleteWorkspace(
 	return connect.NewResponse(&leapmuxv1.DeleteWorkspaceResponse{
 		WorkerTabs: workerTabs,
 	}), nil
+}
+
+// appendPositionAfter returns a rank that sorts after last and that no OTHER
+// workspace can mint, by suffixing a deterministic tie-break derived from
+// workspaceID.
+//
+// lexorank.After alone is not enough here. It answers last+"n" for everybody,
+// and this transaction reads `last` and writes the new rank at READ COMMITTED
+// -- so two unarchives that overlap both read the same tail and both store the
+// identical rank. Two items in a tie come back in planner-defined order, which
+// the user sees as the sidebar reshuffling the whole set on every refresh. The
+// suffix makes the collision impossible instead of relying on the caller to
+// serialize, which only the one client loop does today and which a second
+// browser or a second device defeats.
+//
+// The tie-break appends to the rank rather than replacing it, so ordering
+// against every existing item is unchanged; it decides only the order BETWEEN
+// two workspaces that raced into the same slot, and it decides it the same way
+// on every read.
+func appendPositionAfter(last, workspaceID string) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz"
+	// FNV-1a over the workspace id, rendered in the rank alphabet. A hash
+	// rather than the raw id, because a rank may hold only [a-z].
+	var h uint32 = 2166136261
+	for i := 0; i < len(workspaceID); i++ {
+		h ^= uint32(workspaceID[i])
+		h *= 16777619
+	}
+	var suffix [6]byte
+	for i := range suffix {
+		suffix[i] = alphabet[h%uint32(len(alphabet))]
+		h /= uint32(len(alphabet))
+	}
+	// The LAST character skips 'a'. lexorank pads a short rank with 'a' before
+	// it compares (see padRight), so a rank ending in 'a' ties with the same
+	// rank without it -- which is the collision this function exists to remove.
+	suffix[len(suffix)-1] = alphabet[1+uint32(suffix[len(suffix)-1]-'a')%uint32(len(alphabet)-1)]
+	return lexorank.After(last) + string(suffix[:])
 }
 
 // groupTabsByWorker turns the flat (worker_id, tab_type, tab_id) read into the

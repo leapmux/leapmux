@@ -125,15 +125,16 @@ var newlyDelegationReachable = map[string]string{
 	// through a named RPC instead of an op body. workspace:write is the honest
 	// unit for both, and splitting them would need a scope whose only member
 	// is "delete a workspace", which no consent screen could explain.
-	leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
-	leapmuxv1connect.SectionServiceListSectionsProcedure:      "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceCreateSectionProcedure:     "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceRenameSectionProcedure:     "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceDeleteSectionProcedure:     "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceMoveSectionProcedure:       "the sidebar is layout, which SubmitOps already reaches",
-	leapmuxv1connect.SectionServiceMoveWorkspaceProcedure:     "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.WorkspaceServiceCreateWorkspaceProcedure:          "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.WorkspaceServiceRenameWorkspaceProcedure:          "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.WorkspaceServiceSetWorkspaceArchiveStateProcedure: "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.WorkspaceServiceDeleteWorkspaceProcedure:          "SubmitOps already mutates the whole layout document; workspace:write is the honest unit",
+	leapmuxv1connect.SectionServiceListSectionsProcedure:               "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceCreateSectionProcedure:              "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceRenameSectionProcedure:              "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceDeleteSectionProcedure:              "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceMoveSectionProcedure:                "the sidebar is layout, which SubmitOps already reaches",
+	leapmuxv1connect.SectionServiceMoveWorkspaceProcedure:              "the sidebar is layout, which SubmitOps already reaches",
 }
 
 // TestDelegationCeilingAdmitsTheFormerAllowlistAndOnlyRecordedAdditions is the

@@ -167,43 +167,23 @@ describe('useShortcuts', () => {
     expect(props.tabOps.handleTabClose).toHaveBeenCalledWith(tab)
   })
 
-  // The shortcut asks the SAME question the tab strip and the sidebar tree ask
-  // before they draw a close control. An archived workspace keeps its agents and
-  // terminals running, so a keyboard that still closed one would be the only
-  // surface that disagrees -- and the user would have no visible control to undo
-  // it with.
-  it('refuses to close a running tab the buttons refuse, in an archived workspace', () => {
-    const props = makeProps() as any
-    props.resolveFocusedTab = () => ({ type: TabType.TERMINAL, id: 'term-1', tileId: 'tile-1' })
-    props.isActiveWorkspaceArchived = () => true
+  it.each([TabType.AGENT, TabType.TERMINAL, TabType.FILE, TabType.IMAGE])(
+    'refuses to close tab type %s in an archived workspace',
+    (type) => {
+      const props = makeProps() as any
+      props.resolveFocusedTab = () => ({ type, id: 'tab-1', tileId: 'tile-1' })
+      props.isActiveWorkspaceArchived = () => true
 
-    render(() => {
-      useShortcuts(props as any)
-      return null
-    })
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
 
-    executeCommand('app.closeActiveTab')
+      executeCommand('app.closeActiveTab')
 
-    expect(props.tabOps.handleTabClose).not.toHaveBeenCalled()
-  })
-
-  // A payload-backed tab is the exception on every surface: it owns no process,
-  // so closing one changes nothing on the Worker.
-  it('still closes a payload-backed tab in an archived workspace', () => {
-    const props = makeProps() as any
-    const tab = { type: TabType.FILE, id: 'file-1', tileId: 'tile-1' }
-    props.resolveFocusedTab = () => tab
-    props.isActiveWorkspaceArchived = () => true
-
-    render(() => {
-      useShortcuts(props as any)
-      return null
-    })
-
-    executeCommand('app.closeActiveTab')
-
-    expect(props.tabOps.handleTabClose).toHaveBeenCalledWith(tab)
-  })
+      expect(props.tabOps.handleTabClose).not.toHaveBeenCalled()
+    },
+  )
 
   describe('without an active workspace', () => {
     function makeNoWorkspaceProps() {

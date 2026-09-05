@@ -335,10 +335,12 @@ describe('tabBar archived prop', () => {
     expect(screen.getByTestId('tab-close')).toBeDisabled()
   })
 
-  it('hides close button for agent and terminal tabs when archived is true', () => {
+  it('hides close buttons for all tab types when archived is true', () => {
     const tabs = [
       makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
       makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+      makeTab(TabType.FILE, 'f1', 'readme.md'),
+      makeTab(TabType.IMAGE, 'i1', 'image.png'),
     ]
     render(() => (
       <PreferencesProvider>
@@ -351,43 +353,6 @@ describe('tabBar archived prop', () => {
     ))
     const closeButtons = screen.queryAllByTestId('tab-close')
     expect(closeButtons).toHaveLength(0)
-  })
-
-  it('shows close button for file tabs when archived is true', () => {
-    const tabs = [
-      makeTab(TabType.FILE, 'f1', 'readme.md'),
-    ]
-    render(() => (
-      <PreferencesProvider>
-        <TabBar
-          {...defaultProps}
-          tabs={tabs}
-          archived={true}
-        />
-      </PreferencesProvider>
-    ))
-    const closeButtons = screen.getAllByTestId('tab-close')
-    expect(closeButtons).toHaveLength(1)
-  })
-
-  it('shows close button for file tab but not agent/terminal when archived is true', () => {
-    const tabs = [
-      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
-      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
-      makeTab(TabType.FILE, 'f1', 'readme.md'),
-    ]
-    render(() => (
-      <PreferencesProvider>
-        <TabBar
-          {...defaultProps}
-          tabs={tabs}
-          archived={true}
-        />
-      </PreferencesProvider>
-    ))
-    // Only the file tab should have a close button
-    const closeButtons = screen.getAllByTestId('tab-close')
-    expect(closeButtons).toHaveLength(1)
   })
 
   it('hides add-tab buttons when archived is true', () => {

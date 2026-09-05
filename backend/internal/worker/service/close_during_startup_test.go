@@ -478,7 +478,7 @@ func TestFailStartup_KeepCloseLeavesWorktreeAlone(t *testing.T) {
 				_, wtErr := svc.Queries.GetWorktreeByPath(ctx, gm.Rollback.CreatedWorktree.WorktreePath)
 				assert.NoError(t, wtErr, "the tracked worktree row must survive")
 			}
-			svc.AgentStartup.finish()
+			svc.AgentStartup.finishEntry(h)
 		})
 	}
 }
@@ -508,6 +508,46 @@ func TestFailStartup_UncontestedFailureStillRollsBack(t *testing.T) {
 	_, statErr := os.Stat(gm.Rollback.CreatedWorktree.WorktreePath)
 	assert.True(t, os.IsNotExist(statErr), "an uncontested startup failure must roll back (stat err=%v)", statErr)
 	assert.False(t, localBranchExists(t, repoDir, branchName), "and delete the branch it created")
+}
+
+func TestFailStartup_ArchiveRollsBackOnlyIncompleteGitMutation(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name           string
+		phase0Complete bool
+		wantRemoved    bool
+	}{
+		{name: "incomplete", wantRemoved: true},
+		{name: "complete", phase0Complete: true, wantRemoved: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			repoDir := testutil.NewGitRepo(t)
+			gm := createWorktreeForTest(t, svc, repoDir, "feat/archive-"+testCase.name)
+			dbAgent := createAgentRowForTest(t, svc, gm.WorkingDir)
+			handle := svc.AgentStartup.begin(dbAgent.ID, func() {})
+			require.NotNil(t, handle)
+			if testCase.phase0Complete {
+				svc.linkWorktreeAfterPhase0(&svc.AgentStartup.startupCore, handle, gm.WorktreeID,
+					leapmuxv1.TabType_TAB_TYPE_AGENT, dbAgent.ID, false)
+			}
+			svc.AgentStartup.cancelForArchive(dbAgent.ID)
+
+			svc.failAgentStartup(&dbAgent, gm, context.Canceled, nil, handle)
+			svc.AgentStartup.finishEntry(handle)
+
+			_, statErr := os.Stat(gm.Rollback.CreatedWorktree.WorktreePath)
+			if testCase.wantRemoved {
+				assert.True(t, os.IsNotExist(statErr), "an incomplete archive startup must roll back")
+				return
+			}
+			assert.NoError(t, statErr, "a completed worktree association must survive archive")
+			links, err := svc.Queries.CountWorktreeTabs(context.Background(), gm.WorktreeID)
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), links)
+		})
+	}
 }
 
 // createWorktreeForTest runs the real create-worktree git mode and returns its

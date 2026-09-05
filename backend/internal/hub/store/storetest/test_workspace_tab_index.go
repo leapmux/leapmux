@@ -85,6 +85,43 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 		assert.NoError(t, st.WorkspaceTabIndex().BulkDeleteRendered(ctx, nil))
 	})
 
+	t.Run("owned worker rows include authoritative archive state", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "tabidx-archive-state")
+		owner := userid.MustNew(user.ID)
+		worker := SeedWorker(t, st, user.ID)
+		activeWorkspace := SeedWorkspace(t, st, user.ID, "active")
+		archivedWorkspace := SeedWorkspace(t, st, user.ID, "archived")
+
+		for _, section := range []store.CreateWorkspaceSectionParams{
+			{ID: "active-section", UserID: owner, Name: "In progress", Position: "a", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS, Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT},
+			{ID: "archive-section", UserID: owner, Name: "Archived", Position: "z", SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED, Sidebar: leapmuxv1.Sidebar_SIDEBAR_LEFT},
+		} {
+			require.NoError(t, st.WorkspaceSections().Create(ctx, section))
+		}
+		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: owner, WorkspaceID: activeWorkspace, SectionID: "active-section", Position: "a",
+		}))
+		require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID: owner, WorkspaceID: archivedWorkspace, SectionID: "archive-section", Position: "a",
+		}))
+		require.NoError(t, st.WorkspaceTabIndex().BulkUpsertOwned(ctx, []store.UpsertOwnedTabParams{
+			{UserID: owner, WorkspaceID: activeWorkspace, WorkerID: worker.ID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "active-agent", TileID: "active-tile", Position: "a"},
+			{UserID: owner, WorkspaceID: archivedWorkspace, WorkerID: worker.ID, TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL, TabID: "archived-terminal", TileID: "archive-tile", Position: "a"},
+		}))
+
+		rows, err := st.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
+			UserID: owner, WorkerID: worker.ID,
+		})
+		require.NoError(t, err)
+		states := make(map[string]leapmuxv1.WorkspaceArchiveState, len(rows))
+		for _, row := range rows {
+			states[row.TabID] = row.ArchiveState
+		}
+		assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, states["active-agent"])
+		assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, states["archived-terminal"])
+	})
+
 	// workspace_tab_owned.user_id REFERENCES users(id), mirroring every sibling
 	// CRDT table. That FK is what makes a blank-owner row UNREPRESENTABLE rather
 	// than merely undeletable: before it, a blank owner was insertable while

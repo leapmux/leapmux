@@ -613,6 +613,79 @@ func TestManager_TombstoneNudgesTheHostingWorker(t *testing.T) {
 		"the hosting worker must be nudged exactly once for a batch that closed two of its tabs")
 }
 
+// TestManager_MoveAcrossWorkspacesNudgesTheHostingWorker pins the second reason
+// a worker gets nudged.
+//
+// A Worker caches each tab's archive state per row, and a MOVE is what changes
+// the Hub's answer for that tab without closing it. Before the nudge covered
+// moves, a tab dragged out of an archived workspace kept workspace_archived = 1
+// until the worker's hourly tick, so every message the user sent it answered
+// "agent belongs to an archived workspace" on a tab the sidebar showed as live.
+//
+// The companion assertion is the one that keeps this cheap: a tab CREATE must
+// still not nudge, or the most common tab operation would put a reconcile pass
+// on the worker every time.
+func TestManager_MoveAcrossWorkspacesNudgesTheHostingWorker(t *testing.T) {
+	nudger := &recordingNudger{}
+	j := newFakeJournal()
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, orphanTabAuthChecker{},
+		slog.New(slog.NewJSONHandler(io.Discard, nil)), newIncrementingClock(1_000),
+		crdt.WithReconcileNudger(nudger))
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	seedRootInternal(t, mgr, "ws-1", "root-1")
+	seedRootInternal(t, mgr, "ws-2", "root-2")
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed-a", "tab-a", "root-1", "w-host", "p1")},
+	})
+	require.NoError(t, err)
+	mgr.WaitForNudges()
+	require.Empty(t, nudger.snapshot(), "creating a tab must not nudge")
+
+	// Re-register the SAME tab against the other workspace's tile. That is what
+	// a cross-workspace move is at this layer.
+	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "move-a",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "move-a-tile", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root-2"},
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	mgr.WaitForNudges()
+
+	assert.Equal(t, []string{"w-host"}, nudger.snapshot(),
+		"a tab that changed workspace must nudge its worker, so the cached archive state is repaired")
+
+	// A re-register that does NOT change the tile is a reorder, not a move, and
+	// changes no archive answer.
+	_, err = mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "reorder-a",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "reorder-a-pos", Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+					Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p9"},
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	mgr.WaitForNudges()
+	assert.Equal(t, []string{"w-host"}, nudger.snapshot(),
+		"a reorder inside one workspace changes no archive answer, so it must not nudge again")
+}
+
 // TestManager_InternalTombstoneNudgesTheHostingWorker covers the path a
 // workspace delete actually takes. applyLifecycleDelete tombstones the
 // workspace's tabs via SubmitInternal, so the batch arrives with Internal=true.

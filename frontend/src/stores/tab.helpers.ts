@@ -751,16 +751,16 @@ export function parseTabKey(key: string): { type: TabType, id: string } | null {
  * Whether a tab may be closed from a surface that renders `archived`'s
  * workspace.
  *
- * An archived workspace takes no mutation, so its agent and terminal tabs keep
- * no close control. A PAYLOAD-BACKED tab is the exception: it holds a file or an
- * image the client opened for itself, with nothing running behind it, so
- * closing one changes nothing on the Worker.
+ * An archived workspace takes no mutation, so no tab type keeps a close
+ * control. The tab itself is therefore NOT a parameter, unlike
+ * {@link canRenameTab}: the answer is the same for every type, and taking a tab
+ * it never reads would read as a per-type rule that does not exist.
  *
- * Shared by the tab bar and the sidebar tree, which render the same tabs and
- * must not disagree about which of them close.
+ * Shared by the tab bar, the sidebar tree and the close shortcut, which render
+ * or act on the same tabs and must not disagree about which of them close.
  */
-export function canCloseTab(archived: boolean | undefined, tab: Tab): boolean {
-  return !archived || isPayloadBackedTabType(tab.type)
+export function canCloseTab(archived: boolean | undefined): boolean {
+  return !archived
 }
 
 /**

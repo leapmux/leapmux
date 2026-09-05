@@ -36,21 +36,32 @@ ON CONFLICT (id) DO UPDATE SET
 -- name: GetTerminal :one
 SELECT * FROM terminals WHERE id = ?;
 
+-- GetTerminalExitCode reads the one column the archive teardown broadcasts.
+-- GetTerminal would answer the same question, and it reads the 100KB screen
+-- BLOB that this caller never looks at.
+-- name: GetTerminalExitCode :one
+SELECT exit_code FROM terminals WHERE id = ?;
+
 -- GetTerminalID is the existence probe behind requireTerminalID: it answers
--- sql.ErrNoRows for an unknown id while reading only the primary key, so the
+-- sql.ErrNoRows for an unknown id while reading two narrow columns, so the
 -- per-keystroke SendInput / per-resize ResizeTerminal paths never load the
 -- screen BLOB SELECT * would.
+--
+-- workspace_archived rides along for the same reason as in GetAgentID: the
+-- registrar refuses every terminal write handler for an archived workspace,
+-- and an INTEGER column costs nothing next to the screen BLOB this query
+-- exists to skip.
 -- name: GetTerminalID :one
-SELECT id FROM terminals WHERE id = ?;
+SELECT id, workspace_archived FROM terminals WHERE id = ?;
 
 -- name: GetTerminalForReady :one
 -- Narrow lookup used by the post-spawn tail of runTerminalStartup /
 -- runTerminalRestart. closed_at drives the close-race teardown; title
 -- absorbs the value the frontend may have persisted between the
 -- handler returning and StartTerminal registering in-memory metadata
--- (restart ignores the title field). Two columns in one round-trip,
+-- (restart ignores the title field). Three columns in one round-trip,
 -- avoiding the SELECT * scan of the screen BLOB.
-SELECT closed_at, title FROM terminals WHERE id = ?;
+SELECT closed_at, title, workspace_archived FROM terminals WHERE id = ?;
 
 -- name: GetTerminalForRestart :one
 -- Restart hot path: returns the metadata the handler needs to respawn
@@ -61,7 +72,7 @@ SELECT closed_at, title FROM terminals WHERE id = ?;
 -- in the common case (in-memory entry still present, Respawn carries
 -- the live buffer forward and length is ignored).
 SELECT working_dir, shell_start_dir, shell, cols, rows,
-       length(screen) AS screen_length
+       length(screen) AS screen_length, workspace_archived
 FROM terminals WHERE id = ?;
 
 -- name: CloseTerminal :execresult
@@ -103,3 +114,14 @@ DELETE FROM terminals WHERE rowid IN (SELECT t.rowid FROM terminals t WHERE t.cl
 
 -- name: SetTerminalStartupError :exec
 UPDATE terminals SET startup_error = ? WHERE id = ?;
+
+-- SetTerminalWorkspaceArchived changes only the cached workspace lifecycle
+-- state. The row, final screen, and worktree link stay unchanged.
+--
+-- closed_at IS NULL matters for the same reason as SetAgentWorkspaceArchived:
+-- the caller stops and broadcasts for every row this statement changes, and a
+-- closed row stays here for the whole cleanup retention window.
+-- name: SetTerminalWorkspaceArchived :execrows
+UPDATE terminals SET workspace_archived = sqlc.arg(workspace_archived)
+WHERE id = sqlc.arg(id) AND closed_at IS NULL
+  AND workspace_archived <> sqlc.arg(workspace_archived);

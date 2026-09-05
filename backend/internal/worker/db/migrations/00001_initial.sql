@@ -48,6 +48,7 @@ CREATE TABLE agents (
     -- silently skip the new message. Maintained by the triggers on `messages` below.
     message_seq_hwm  INTEGER NOT NULL DEFAULT 0,
     startup_error    TEXT NOT NULL DEFAULT '',
+    workspace_archived INTEGER NOT NULL DEFAULT 0,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME
 );
@@ -202,6 +203,7 @@ CREATE TABLE terminals (
     screen        BLOB NOT NULL DEFAULT x'',
     exit_code     INTEGER NOT NULL DEFAULT 0,
     startup_error TEXT NOT NULL DEFAULT '',
+    workspace_archived INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at     DATETIME
 );

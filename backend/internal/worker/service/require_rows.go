@@ -35,21 +35,25 @@ func (svc *Service) requireTerminalForRestart(sender channel.ResponseWriter, ter
 }
 
 // requireAgentID resolves the agent named by the request without loading it:
-// GetAgentID fetches only the id column, skipping the options / option-group
-// JSON blobs a full GetAgentByID deserializes. Both queries share the bare
-// `id = ?` predicate, so the error mapping (empty id, missing row, db error) is
-// identical to requireAgent — use that one instead when the handler body needs
-// the row.
-func (svc *Service) requireAgentID(sender channel.ResponseWriter, agentID string) bool {
-	_, ok := requireExistingRow(sender, agentID, "agent", svc.Queries.GetAgentID)
-	return ok
+// GetAgentID fetches the id and the archive flag, skipping the options /
+// option-group JSON blobs a full GetAgentByID deserializes. Both queries share
+// the bare `id = ?` predicate, so the error mapping (empty id, missing row, db
+// error) is identical to requireAgent — use that one instead when the handler
+// body needs the row.
+//
+// It returns the archive flag rather than a bare bool, because the registrar
+// refuses a write handler for an archived workspace and this probe is the only
+// row read a by-id handler does.
+func (svc *Service) requireAgentID(sender channel.ResponseWriter, agentID string) (int64, bool) {
+	row, ok := requireExistingRow(sender, agentID, "agent", svc.Queries.GetAgentID)
+	return row.WorkspaceArchived, ok
 }
 
-// requireTerminalID is the terminal mirror of requireAgentID: an id-only
-// lookup that skips the screen BLOB a full GetTerminal would read.
-func (svc *Service) requireTerminalID(sender channel.ResponseWriter, terminalID string) bool {
-	_, ok := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalID)
-	return ok
+// requireTerminalID is the terminal mirror of requireAgentID: a narrow lookup
+// that skips the screen BLOB a full GetTerminal would read.
+func (svc *Service) requireTerminalID(sender channel.ResponseWriter, terminalID string) (int64, bool) {
+	row, ok := requireExistingRow(sender, terminalID, "terminal", svc.Queries.GetTerminalID)
+	return row.WorkspaceArchived, ok
 }
 
 // requireExistingRow factors the error-mapping shell shared by every "load a

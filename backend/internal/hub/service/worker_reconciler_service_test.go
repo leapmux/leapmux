@@ -56,14 +56,46 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 	resp, err := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(ctx, req)
 	require.NoError(t, err)
 
-	require.Len(t, resp.Msg.GetTabs(), 1, "a foreign owner's row must not be listed")
-	got := resp.Msg.GetTabs()[0]
+	require.Len(t, resp.Msg.GetTabStates(), 1, "a foreign owner's row must not be listed")
+	got := resp.Msg.GetTabStates()[0]
 	assert.Equal(t, userA.ID, got.GetUserId())
 	assert.Equal(t, sharedTabID, got.GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, got.GetTabType(),
 		"alice's row, not bob's identically-named one")
+	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, got.GetArchiveState())
 	assert.Equal(t, userA.ID, resp.Msg.GetOwnerUserId(),
 		"the response must declare the owner it is authoritative for")
+}
+
+func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	ctx := context.Background()
+	owner := storetest.SeedUser(t, st, "reconcile-archived-owner")
+	worker := storetest.SeedWorker(t, st, owner.ID)
+	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "archived")
+	ownerID := userid.MustNew(owner.ID)
+	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID: "archived-section", UserID: ownerID, Name: "Archived", Position: "z",
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}))
+	require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+		UserID: ownerID, WorkspaceID: workspaceID, SectionID: "archived-section", Position: "a",
+	}))
+	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertOwnedTabParams{
+		UserID: ownerID, WorkspaceID: workspaceID, WorkerID: worker.ID,
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "archived-agent", TileID: "tile", Position: "a",
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
+	req.Header().Set("Authorization", "Bearer "+worker.AuthToken)
+	resp, err := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(ctx, req)
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GetTabStates(), 1)
+	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+		resp.Msg.GetTabStates()[0].GetArchiveState())
 }
 
 // TestListOwnedTabsForWorker_RejectsUnauthenticated keeps the bearer gate
@@ -121,8 +153,8 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 
 	resp, err := client.ListOwnedTabsForWorker(ctx, req)
 	require.NoError(t, err, "a worker's own auth_token must reach the reconciler RPC")
-	require.Len(t, resp.Msg.GetTabs(), 1)
-	assert.Equal(t, "agent-live", resp.Msg.GetTabs()[0].GetTabId())
+	require.Len(t, resp.Msg.GetTabStates(), 1)
+	assert.Equal(t, "agent-live", resp.Msg.GetTabStates()[0].GetTabId())
 	assert.Equal(t, owner.ID, resp.Msg.GetOwnerUserId())
 }
 

@@ -1053,8 +1053,7 @@ describe('canCloseTab and canRenameTab', () => {
   const image = { type: TabType.IMAGE, id: 'i-1' } as Tab
 
   it('closes every kind while the workspace is not archived', () => {
-    for (const tab of [agent, terminal, file, image])
-      expect(canCloseTab(false, tab)).toBe(true)
+    expect(canCloseTab(false)).toBe(true)
   })
 
   it('renames a process-backed tab while the workspace is not archived', () => {
@@ -1062,18 +1061,11 @@ describe('canCloseTab and canRenameTab', () => {
     expect(canRenameTab(false, terminal)).toBe(true)
   })
 
-  // An archived workspace takes no mutation, and an agent or a terminal has a
-  // process behind it that closing would stop.
-  it('refuses to close a process-backed tab in an archived workspace', () => {
-    expect(canCloseTab(true, agent)).toBe(false)
-    expect(canCloseTab(true, terminal)).toBe(false)
-  })
-
-  // A payload-backed tab is the exception: it owns no process, so closing one
-  // changes nothing on the Worker.
-  it('still closes a payload-backed tab in an archived workspace', () => {
-    expect(canCloseTab(true, file)).toBe(true)
-    expect(canCloseTab(true, image)).toBe(true)
+  // Every tab TYPE, including the payload-backed pair that used to keep its
+  // close control: the predicate takes no tab at all now, so one call covers
+  // them, and `canRenameTab` below is what still varies by type.
+  it('refuses to close every tab type in an archived workspace', () => {
+    expect(canCloseTab(true)).toBe(false)
   })
 
   // A payload-backed tab takes its title from what it SHOWS, so a user-typed
@@ -1092,7 +1084,7 @@ describe('canCloseTab and canRenameTab', () => {
   // `undefined` is what a surface that never learned the flag passes. It must
   // read as "not archived" rather than blocking every control.
   it('treats an absent archived flag as not archived', () => {
-    expect(canCloseTab(undefined, agent)).toBe(true)
+    expect(canCloseTab(undefined)).toBe(true)
     expect(canRenameTab(undefined, agent)).toBe(true)
   })
 })

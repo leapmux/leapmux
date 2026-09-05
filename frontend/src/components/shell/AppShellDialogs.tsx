@@ -498,12 +498,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
               props.dialogs.confirmArchiveWs.close()
             }}
           >
-            {/* This sentence is NOT true today, and it stays until the behavior
-                matches it: archiving only moves the workspace into the archived
-                section, so every agent process and every PTY keeps running, and
-                the worker's resume sweep starts them again after a restart.
-                Correcting the copy alone would hide the defect.
-                See https://github.com/leapmux/leapmux/issues/446. */}
             <p>Are you sure you want to archive this workspace? All active agents and terminals will be stopped.</p>
           </ConfirmDialog>
         )}

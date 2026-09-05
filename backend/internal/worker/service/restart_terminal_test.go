@@ -133,6 +133,28 @@ func TestRestartTerminal_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRestartTerminal_RefusesArchivedTerminal(t *testing.T) {
+	t.Parallel()
+
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.UpsertTerminal(t.Context(), db.UpsertTerminalParams{
+		ID: "terminal-archived", Shell: testutil.TestShell(), WorkingDir: t.TempDir(),
+		Cols: 80, Rows: 25, Screen: []byte("preserved"),
+	}))
+	_, err := svc.Queries.SetTerminalWorkspaceArchived(t.Context(), db.SetTerminalWorkspaceArchivedParams{
+		WorkspaceArchived: 1,
+		ID:                "terminal-archived",
+	})
+	require.NoError(t, err)
+
+	w := newTestWriter()
+	dispatchRestart(dispatcher, "terminal-archived", w)
+
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codeFailedPrecondition, w.errors[0].code)
+	assert.False(t, svc.Terminals.HasTerminal("terminal-archived"))
+}
+
 // TestRestartTerminal_StillRunning rejects restarts on a live terminal so
 // the alive PTY isn't orphaned.
 func TestRestartTerminal_StillRunning(t *testing.T) {
@@ -313,13 +335,14 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 		ID: id, Cols: 80, Rows: 25, Shell: testutil.TestShell(), Screen: []byte{},
 	}))
 
-	svc.TerminalStartup.begin(id, func() {})
+	entry := svc.TerminalStartup.begin(id, func() {})
+	require.NotNil(t, entry)
 	// begin() bumps the in-flight WaitGroup. cancelAndClear only deletes
-	// the entry and runs the cancel — finish() is the matching Done()
+	// the entry and runs the cancel — finishEntry() is the matching Done()
 	// call. Without this, drainAllInFlight would block forever.
 	defer func() {
 		svc.TerminalStartup.cancelAndClear(id, keepWorktreeOnClose)
-		svc.TerminalStartup.finish()
+		svc.TerminalStartup.finishEntry(entry)
 	}()
 
 	dispatchRestart(d, id, w)

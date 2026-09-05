@@ -129,6 +129,11 @@ export interface CheckpointRecorder {
   readonly dirtyKeys: ReadonlySet<string>
   /** Visible for testing: whether the next rewrite re-serializes everything. */
   readonly needsFullRewrite: boolean
+  /**
+   * Visible for testing: resolves when every checkpoint write started so far
+   * has settled, including one that another write's success re-issued.
+   */
+  whenSettled: () => Promise<void>
 }
 
 export function createCheckpointRecorder(opts: CheckpointRecorderOptions): CheckpointRecorder {
@@ -179,8 +184,8 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
    */
   let base: 'pending' | 'none' | 'ready'
   /**
-   * A rewrite was asked for while `base` was `pending`, and still owes an
-   * answer.
+   * A caller asked for a rewrite while the base or another rewrite was
+   * pending. The recorder still owes that caller an answer.
    *
    * The hold has to DEFER the request, not drop it, and the two are easy to
    * confuse because the threshold-driven trigger re-arms itself on the next
@@ -191,6 +196,15 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
    * re-issued, so a seeded tab kept an over-ceiling log -- and, before the
    * validated-prefix copy, a poison tail -- on disk for its whole session,
    * re-truncating at the same frame on every later reload.
+   *
+   * The hold defers the request to the next ATTEMPT, not to the next SUCCESS,
+   * and the two failure tails clear it on purpose. A write that fails landed
+   * nothing: the op log, `opLogCount`, `dirty`, `needsRebase` and `base` are
+   * all exactly as they were, so the request has nothing left to protect, and
+   * `nextCompactAt` owns the retry from there. Re-issuing on failure instead
+   * would defeat that back-off and, in the `needsRebase` regime -- where
+   * `record` asks for a rewrite on every frame -- would chain failing full
+   * serializes back to back on the main thread for as long as frames arrive.
    */
   let heldRewrite = false
   /**
@@ -401,8 +415,15 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
 
   /** Returns whether a checkpoint write was actually ISSUED. */
   function rewriteCheckpoint(): boolean {
-    if (disposed || writing)
+    if (disposed)
       return false
+    if (writing) {
+      // The in-flight write already serialized its delta. Retain this request so any
+      // entity dirtied after that snapshot gets another rewrite when the
+      // current write settles.
+      heldRewrite = true
+      return false
+    }
     if (base === 'pending') {
       // A rewrite would serialize a base the in-flight adoption is about to
       // replace wholesale, and its truncate would race the adoption's own.
@@ -447,6 +468,10 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
           // exactly as they were, or the entities this attempt described would
           // never be written again.
           nextCompactAt = opLogCount + threshold
+          // The hold is answered, not dropped: this attempt WAS the deferred
+          // rewrite. Nothing landed, so every trigger that armed it is still
+          // armed, and nextCompactAt above owns the retry.
+          heldRewrite = false
           return
         }
         // The truncate landed, so the on-disk log is empty whichever lineage
@@ -459,6 +484,8 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
           // Invalidated after this write serialized. Its chunks describe the
           // superseded lineage, so leave needsRebase and the base phase standing
           // and let the retry re-base with a FULL rewrite.
+          if (heldRewrite)
+            rewriteCheckpoint()
           return
         }
         needsRebase = false
@@ -468,10 +495,14 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
         // so clearing the whole set would strand them.
         for (const key of writtenKeys)
           dirty.delete(key)
+        if (heldRewrite)
+          rewriteCheckpoint()
       })
       .catch(() => {
         writing = false
         nextCompactAt = opLogCount + threshold
+        // Answered, for the same reason as the `!ok` tail above.
+        heldRewrite = false
       }))
     return true
   }
@@ -701,6 +732,24 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
       disposed = true
       pendingFrames.length = 0
       await inFlight.catch(() => {})
+    },
+    /**
+     * Resolves when every checkpoint write started so far has settled.
+     *
+     * It is the same chain `dispose` awaits, exposed so a test can wait for
+     * the WORK to end instead of counting event-loop ticks. A tick count
+     * cannot bound a case where one write's success re-issues another: the
+     * second cycle simply had not started yet on a loaded runner, which made
+     * those tests fail only under load.
+     *
+     * It re-reads `inFlight` after each await, because a settled write may
+     * have extended the chain.
+     */
+    async whenSettled(): Promise<void> {
+      for (let previous: Promise<unknown> | null = null; previous !== inFlight;) {
+        previous = inFlight
+        await inFlight.catch(() => {})
+      }
     },
     get opLogCount(): number {
       return opLogCount

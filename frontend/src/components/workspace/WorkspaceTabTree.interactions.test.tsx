@@ -159,13 +159,15 @@ describe('workspaceTabTree interactions', () => {
     expect(onTabClose.mock.calls[0][0]).toMatchObject({ type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' })
   })
 
-  it('hides close controls for agent and terminal tabs in archived mode', () => {
+  it('hides close controls for every tab type in archived mode', () => {
     render(() => (
       <WorkspaceTabTree
         repoGitStore={repoGitStore}
         tabs={[
           makeTab(TabType.AGENT, 'a1', 'Agent 1'),
           makeTab(TabType.TERMINAL, 't1', 'Terminal 1'),
+          makeTab(TabType.FILE, 'f1', 'readme.md'),
+          makeTab(TabType.IMAGE, 'i1', 'image.png'),
         ]}
         activeTabKey={null}
         onTabClick={() => {}}
@@ -175,21 +177,6 @@ describe('workspaceTabTree interactions', () => {
     ))
 
     expect(screen.queryByTestId('workspace-tab-close')).not.toBeInTheDocument()
-  })
-
-  it('keeps file tab close control in archived mode', () => {
-    render(() => (
-      <WorkspaceTabTree
-        repoGitStore={repoGitStore}
-        tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
-        activeTabKey={null}
-        onTabClick={() => {}}
-        archived
-        workspaceId="ws-1"
-      />
-    ))
-
-    expect(screen.getByTestId('workspace-tab-close')).toBeInTheDocument()
   })
 
   it('disables the close control while a close is in flight', () => {

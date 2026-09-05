@@ -123,8 +123,7 @@ interface TabBarProps {
   activeTabKey: string | null
   /**
    * The workspace these tabs belong to is archived, so the strip offers no
-   * mutation: no close (except a payload-backed tab -- see `canCloseTab`), no
-   * rename, and no middle-click close.
+   * mutation. It offers no close, rename, or middle-click close.
    *
    * Was `readOnly`. Archival is the only thing that blocks mutation, so the two
    * were one concept under two names; the sidebar tree carries the same flag.
@@ -397,7 +396,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
             {...terminalProgressBarProps(tab())}
           />
         </Show>
-        <Show when={canCloseTab(props.archived, tab())}>
+        <Show when={canCloseTab(props.archived)}>
           <IconButton
             icon={X}
             class={styles.tabClose}
@@ -419,7 +418,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           contextMenuFor={dnd?.rowEl}
           data-testid={surface.menuTestId}
           onRename={canRename() ? () => startEditing(tab()) : undefined}
-          onClose={canCloseTab(props.archived, tab()) ? () => props.onClose(tab()) : undefined}
+          onClose={canCloseTab(props.archived) ? () => props.onClose(tab()) : undefined}
           isClosing={isClosing()}
           pop={props.tabPop?.(tab())}
         />
@@ -446,7 +445,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
     onAuxClick: (e: MouseEvent) => {
       if (e.button === 1) {
         e.preventDefault()
-        if (!canCloseTab(props.archived, tab()) || props.closingTabKeys?.has(tabKey(tab())))
+        if (!canCloseTab(props.archived) || props.closingTabKeys?.has(tabKey(tab())))
           return
         props.onClose(tab())
       }

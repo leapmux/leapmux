@@ -7,8 +7,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 )
 
-// ReconcileNudger tells a worker to run its orphan reconciler now, over the
-// Connect stream it already holds. It implements crdt.ReconcileNudger.
+// ReconcileNudger tells a worker to reconcile tab deletion and workspace
+// archive state now, over the Connect stream it already holds. It implements
+// crdt.ReconcileNudger.
 //
 // Why this exists: closing a tab is a CRDT op, and the worker learns of it
 // either through the E2EE close RPC or -- when that never arrives -- through its

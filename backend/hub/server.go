@@ -757,7 +757,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	workspaceSvc := service.NewWorkspaceService(st, crdtRegistry)
+	workspaceSvc := service.NewWorkspaceService(st, crdtRegistry, reconcileNudger)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 

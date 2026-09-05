@@ -201,14 +201,7 @@ func (s *SectionService) DeleteSection(
 			return err
 		}
 
-		var inProgressID string
-		for _, sec := range sections {
-			if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS {
-				inProgressID = sec.ID
-				break
-			}
-		}
-
+		inProgressID := findSectionOfType(sections, leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
 		if inProgressID == "" {
 			return fmt.Errorf("in_progress section not found")
 		}
@@ -231,16 +224,8 @@ func (s *SectionService) DeleteSection(
 			return err
 		}
 		// Find the highest position currently in in_progress so we
-		// can extend past it. ListByUser already orders by
-		// (ws.position, wsi.position, wsi.workspace_id), so the last
-		// in-progress entry in iteration order is the one to append
-		// after.
-		lastInProgressPos := ""
-		for _, item := range allItems {
-			if item.SectionID == inProgressID {
-				lastInProgressPos = item.Position
-			}
-		}
+		// can extend past it.
+		lastInProgressPos := lastPositionInSection(allItems, inProgressID)
 		// Walk source items in the same sort order so the relocated
 		// block keeps its original relative order in the destination.
 		for _, item := range allItems {
@@ -364,8 +349,63 @@ func nextSectionPosition(sections []store.WorkspaceSection, sidebar leapmuxv1.Si
 	return lexorank.Mid(prev, "")
 }
 
+// requireWorkspaceSection refuses a section that cannot hold a workspace.
+//
+// Shared by the sidebar move and the archive move, so a section type added
+// later cannot become legal for one of them and refused by the other.
+func requireWorkspaceSection(section *store.WorkspaceSection) error {
+	switch section.SectionType {
+	case leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+		leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED:
+		return nil
+	default:
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("section %s cannot contain workspaces", section.ID))
+	}
+}
+
+// findSectionOfType returns the id of the user's section of this type, or ""
+// when they have none. Only a BUILT-IN type answers usefully: a user holds at
+// most one of each, while CUSTOM sections repeat.
+func findSectionOfType(sections []store.WorkspaceSection, sectionType leapmuxv1.SectionType) string {
+	for _, section := range sections {
+		if section.SectionType == sectionType {
+			return section.ID
+		}
+	}
+	return ""
+}
+
+// lastPositionInSection returns the greatest lexorank currently held in
+// sectionID, or "" when the section is empty. Pair it with lexorank.After to
+// append past everything already there.
+//
+// It depends on the ORDER its argument arrives in:
+// WorkspaceSectionItems().ListByUser orders by (ws.position, wsi.position,
+// wsi.workspace_id), so one section's rows are contiguous and the last one this
+// loop sees holds the greatest position within it. A caller that sorts the
+// slice differently must not use this function.
+//
+// Two callers share it -- DeleteSection's relocation and the archive move --
+// because both append into a built-in section, and a second hand-written scan
+// is where the two would drift.
+func lastPositionInSection(items []store.WorkspaceSectionItem, sectionID string) string {
+	last := ""
+	for _, item := range items {
+		if item.SectionID == sectionID {
+			last = item.Position
+		}
+	}
+	return last
+}
+
 func (s *SectionService) requireOwnedSection(ctx context.Context, userID userid.UserID, sectionID string) (*store.WorkspaceSection, error) {
-	section, err := s.store.WorkspaceSections().GetByID(ctx, sectionID)
+	return requireOwnedSection(ctx, s.store, userID, sectionID)
+}
+
+func requireOwnedSection(ctx context.Context, st store.Store, userID userid.UserID, sectionID string) (*store.WorkspaceSection, error) {
+	section, err := st.WorkspaceSections().GetByID(ctx, sectionID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("section not found"))
@@ -450,18 +490,44 @@ func (s *SectionService) MoveWorkspace(
 		return nil, err
 	}
 
-	workspaceID := req.Msg.GetWorkspaceId()
-
-	if _, err := s.requireOwnedSection(ctx, user.ID, req.Msg.GetSectionId()); err != nil {
-		return nil, err
-	}
-
-	if err := s.store.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
-		UserID:      user.ID,
-		WorkspaceID: workspaceID,
-		SectionID:   req.Msg.GetSectionId(),
-		Position:    req.Msg.GetPosition(),
+	if err := s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		workspaceID := req.Msg.GetWorkspaceId()
+		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can move workspace"); err != nil {
+			return err
+		}
+		destination, err := requireOwnedSection(ctx, tx, user.ID, req.Msg.GetSectionId())
+		if err != nil {
+			return err
+		}
+		if err := requireWorkspaceSection(destination); err != nil {
+			return err
+		}
+		currentlyArchived, err := tx.WorkspaceSectionItems().IsInArchivedSection(ctx, store.IsWorkspaceInArchivedSectionParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			return fmt.Errorf("read workspace archive state: %w", err)
+		}
+		destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
+		if currentlyArchived != destinationArchived {
+			return connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("MoveWorkspace cannot move a workspace into or out of Archived"))
+		}
+		if err := tx.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+			UserID:      user.ID,
+			WorkspaceID: workspaceID,
+			SectionID:   destination.ID,
+			Position:    req.Msg.GetPosition(),
+		}); err != nil {
+			return err
+		}
+		return nil
 	}); err != nil {
+		var connectErr *connect.Error
+		if errors.As(err, &connectErr) {
+			return nil, connectErr
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
