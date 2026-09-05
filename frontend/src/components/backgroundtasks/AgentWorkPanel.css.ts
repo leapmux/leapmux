@@ -62,22 +62,6 @@ export const rows = style({
   minHeight: 0,
 })
 
-// Shown in place of the rows when the selected kind tab has none. Without it a
-// tab with no rows renders an empty box that reads as a rendering fault.
-export const emptyMessage = style({
-  padding: 'var(--space-4) var(--space-2)',
-  color: 'var(--faint-foreground)',
-  fontSize: 'var(--text-7)',
-  textAlign: 'center',
-})
-
-// The same box when the registry could not be LOADED. Carries the danger colour
-// because it reports a fault rather than an absence, and the two otherwise read
-// identically.
-export const loadFailedMessage = style({
-  color: 'var(--danger)',
-})
-
 // Decoration only. `ClippedText` owns the clipping rule -- see
 // `~/components/common/ClippedText.tsx`.
 //

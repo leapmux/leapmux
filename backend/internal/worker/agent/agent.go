@@ -323,14 +323,21 @@ type OutputSink interface {
 	//
 	// A GoalUpdate marked Snapshot updates state and writes no transcript row.
 	//
-	// Like every registry primitive on this interface, a CHILD sink writes under
-	// its ROOT owner. That is right for the one provider with child threads --
-	// Codex collab children are threads and can carry their own goal, and the
-	// Codex handler drops a child's goal rather than letting it overwrite the
-	// root's. A provider that later wants a per-child goal must change that
-	// decision here, not work around it.
+	// A ROOT sink only. This is where the goal parts company with every other
+	// registry primitive on this interface: those redirect a CHILD sink's write
+	// to its root owner, and this one REFUSES it and logs.
+	//
+	// Redirecting is the bug, not the service. Codex collab children are real
+	// threads and can carry a goal of their own, so a redirect would replace the
+	// session's objective with a subagent's -- under an agent that never had one.
+	// A provider drops its child goals before calling this (the Codex handler
+	// gates on isMainThreadID), so a refusal here means that provider has a bug,
+	// and the log is how it is found.
+	//
+	// A provider that later wants a per-child goal must change that decision
+	// here, not work around it.
 	UpsertGoal(update GoalUpdate)
-	// ClearGoal removes the session goal.
+	// ClearGoal removes the session goal. A root sink only, like UpsertGoal.
 	//
 	// It is unconditional, and a caller must NOT skip it because its own copy is
 	// already empty. Codex's thread/resume pushes thread/goal/cleared to mean
@@ -339,7 +346,7 @@ type OutputSink interface {
 	// process. Short-circuiting there would strand that goal forever.
 	ClearGoal()
 	// PublishGoalCapabilities re-broadcasts the goal together with the actions
-	// the now-registered process supports.
+	// the now-registered process supports. A root sink only, like UpsertGoal.
 	//
 	// It exists because that capability is read from the LIVE agent, and the
 	// agent is not reachable until the Manager has registered it -- which

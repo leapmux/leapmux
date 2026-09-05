@@ -16,7 +16,6 @@ import {
   opensSubagentTranscript,
   sortBackgroundTasks,
 } from '~/stores/chatBackgroundTasks'
-import * as panelStyles from './AgentWorkPanel.css'
 import * as styles from './BackgroundTaskList.css'
 
 interface BackgroundTaskListProps {
@@ -336,8 +335,8 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
       when={visible().length > 0}
       fallback={(
         <div
-          class={panelStyles.emptyMessage}
-          classList={{ [panelStyles.loadFailedMessage]: reportsLoadFailure() }}
+          class={styles.emptyState}
+          classList={{ [styles.emptyStateFailed]: reportsLoadFailure() }}
           data-testid={reportsLoadFailure() ? 'bg-task-load-failed' : 'bg-task-empty'}
         >
           {reportsLoadFailure() ? LOAD_FAILED_MESSAGE : props.emptyMessage}
