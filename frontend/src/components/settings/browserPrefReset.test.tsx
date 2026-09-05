@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import { render } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { KEY_BROWSER_PREFS, KEY_PREFERRED_EDITOR, loadBrowserPrefs, localStorageClearForTests, localStorageGet } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, KEY_PREFERRED_EXTERNAL_APP, loadBrowserPrefs, localStorageClearForTests, localStorageGet } from '~/lib/browserStorage'
 
 import { buildBrowserReset } from './registry/settings'
 
@@ -49,7 +49,7 @@ describe('browserPrefReset', () => {
     ctx.get().dual.theme.setBrowser({ name: 'nord', mode: 'dark' }) // nullable
     ctx.get().setExpandAgentThoughts(false) // default-on opt-out
     ctx.get().setShowHiddenMessages(true) // default-off opt-in
-    ctx.get().setPreferredEditorId('zed') // nullable, own key
+    ctx.get().setPreferredExternalAppId('zed') // nullable, own key
     // A Desktop override too. These rows are hidden outside the desktop app,
     // but "Reset overrides" clears them all the same -- the reset walks the
     // registry rather than the visible rows, so a preference set on a desktop
@@ -69,13 +69,13 @@ describe('browserPrefReset', () => {
     expect('showHiddenMessages' in loadBrowserPrefs()).toBe(false)
     expect('trayEnabled' in loadBrowserPrefs()).toBe(false)
     expect('trayOnClose' in loadBrowserPrefs()).toBe(false)
-    expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBeUndefined()
+    expect(localStorageGet<string>(KEY_PREFERRED_EXTERNAL_APP)).toBeUndefined()
 
     // The signals fall back to their defaults.
     expect(ctx.get().theme()).toEqual({ name: 'default', mode: 'system' })
     expect(ctx.get().expandAgentThoughts()).toBe(true)
     expect(ctx.get().showHiddenMessages()).toBe(false)
-    expect(ctx.get().preferredEditorId()).toBeUndefined()
+    expect(ctx.get().preferredExternalAppId()).toBeUndefined()
     expect(ctx.get().trayEnabled()).toBe(false)
     expect(ctx.get().trayOnClose()).toBe('tray')
 

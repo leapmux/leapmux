@@ -2,6 +2,7 @@ import type { WindowMode } from '~/api/platformBridge'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openWebInspector, quitApp, windowClose, windowExitFullscreen, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
+import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { localStorageClearForTests } from '~/lib/browserStorage'
 
 /// <reference types="vitest/globals" />
@@ -10,11 +11,11 @@ import { CustomTitlebar } from './CustomTitlebar'
 
 // Hoisted so the vi.mock factories below can close over them — vi.mock
 // runs above any top-level `const` in the file.
-const { initialMode, setShowAboutDialog, runtimeLocalSolo, detectedEditors } = vi.hoisted(() => ({
+const { initialMode, setShowAboutDialog, runtimeLocalSolo, detectedApps } = vi.hoisted(() => ({
   initialMode: { value: 'normal' as WindowMode },
   setShowAboutDialog: vi.fn(),
   runtimeLocalSolo: { value: false },
-  detectedEditors: { value: [] as Array<{ id: string, displayName: string }> },
+  detectedApps: { value: [] as Array<{ id: string, displayName: string, kind: ExternalAppKind }> },
 }))
 
 vi.mock('~/lib/shortcuts/platform', () => ({
@@ -53,8 +54,8 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
     openWebInspector: vi.fn(),
     platformBridge: {
       ...actual.platformBridge,
-      listEditors: () => Promise.resolve(detectedEditors.value),
-      openInEditor: vi.fn(() => Promise.resolve()),
+      listExternalApps: () => Promise.resolve(detectedApps.value),
+      openInExternalApp: vi.fn(() => Promise.resolve()),
     },
     quitApp: vi.fn(),
     windowClose: vi.fn(() => Promise.resolve()),
@@ -239,7 +240,7 @@ describe('customTitlebar minimal variant', () => {
     expect(text).not.toContain('Preferences')
     expect(text).not.toContain('Profile')
     expect(text).not.toContain('Log out')
-    expect(container.querySelector('[data-testid="open-in-editor"]')).toBeNull()
+    expect(container.querySelector('[data-testid="open-in-app"]')).toBeNull()
     expect(container.querySelector('button[aria-label^="Toggle left sidebar"]')).toBeNull()
     expect(container.querySelector('button[aria-label^="Toggle right sidebar"]')).toBeNull()
   })
@@ -274,29 +275,29 @@ describe('customTitlebar minimal variant', () => {
   })
 })
 
-describe('customTitlebar open-in-editor slot', () => {
+describe('customTitlebar open-in-app slot', () => {
   beforeEach(() => {
     runtimeLocalSolo.value = false
-    detectedEditors.value = []
+    detectedApps.value = []
     localStorageClearForTests()
   })
 
-  it('hides the open-in-editor button when not in solo mode (e.g. web)', async () => {
+  it('hides the open-in-app button when not in solo mode (e.g. web)', async () => {
     runtimeLocalSolo.value = false
-    detectedEditors.value = [{ id: 'vscode', displayName: 'Visual Studio Code' }]
+    detectedApps.value = [{ id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR }]
     const { container } = renderTitlebar(() => '/home/u/proj')
     await new Promise(r => setTimeout(r, 0))
-    expect(container.querySelector('[data-testid="open-in-editor"]')).toBeNull()
+    expect(container.querySelector('[data-testid="open-in-app"]')).toBeNull()
   })
 
-  it('shows the open-in-editor button before the left-sidebar toggle in solo mode', async () => {
+  it('shows the open-in-app button before the left-sidebar toggle in solo mode', async () => {
     runtimeLocalSolo.value = true
-    detectedEditors.value = [{ id: 'vscode', displayName: 'Visual Studio Code' }]
+    detectedApps.value = [{ id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR }]
     const { container } = renderTitlebar(() => '/home/u/proj')
-    const button = await screen.findByTestId('open-in-editor')
+    const button = await screen.findByTestId('open-in-app')
     const sidebarToggle = container.querySelector('button[aria-label^="Toggle left sidebar"]')
     expect(sidebarToggle).not.toBeNull()
-    // Render order: open-in-editor first, then the left-sidebar toggle.
+    // Render order: open-in-app first, then the left-sidebar toggle.
     const cmp = button.compareDocumentPosition(sidebarToggle!)
     expect(cmp & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })

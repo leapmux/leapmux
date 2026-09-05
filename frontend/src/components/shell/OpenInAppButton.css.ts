@@ -69,7 +69,8 @@ export const chevronFace = style({
 // Menu visual language mirrors `./AgentProviderSelector.css.ts`. We don't import
 // from there — the trigger styling above is bespoke to the split-button — but
 // the popover / item look is intentionally identical so the two selectors
-// feel like the same family.
+// feel like the same family. The ROWS inside now live with the shared list
+// that renders them, in `~/components/common/ExternalAppMenuItems.css.ts`.
 export const menu = style({
   margin: 0,
   minWidth: '12rem',
@@ -81,40 +82,4 @@ export const menu = style({
   // Override browser defaults for <menu>, which would otherwise apply
   // `padding-inline-start: 40px` and disc list-style.
   listStyle: 'none',
-})
-
-// Only what is specific to THIS menu. Everything a menu item needs to look like
-// one -- the reset, the type scale, the hover fill -- now comes from the shared
-// [role="menuitem"] rule in the global stylesheet, and the layout half
-// (display, width, padding, cursor, focus outline) from Oat's own rule. This
-// block used to restate all of it: a private workaround for the Oat coupling
-// that shared rule now owns, and a second copy that could only drift from it.
-export const menuItem = style({
-  justifyContent: 'space-between',
-})
-
-export const menuItemSelected = style({
-  backgroundColor: 'var(--accent)',
-})
-
-export const menuItemValue = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-  minWidth: 0,
-})
-
-export const check = style({
-  color: 'var(--primary)',
-  flexShrink: 0,
-})
-
-// Separator between the editor list and the trailing "Refresh" action.
-// Margin is non-negative so the rule stays inside the menu's content area —
-// negative horizontal margins extend past the padding and surface as a
-// horizontal scrollbar on the popover.
-export const menuSeparator = style({
-  margin: 'var(--space-1) 0',
-  border: 'none',
-  borderTop: '1px solid var(--border)',
 })

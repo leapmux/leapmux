@@ -10,6 +10,7 @@ import {
   repoKeyAndLabel,
   repoKeyForLocal,
   repoKeyTooltip,
+  repoOriginUrlFromKey,
   tabBranchKey,
   tabGitToplevelForKey,
 } from './branchKeys'
@@ -75,6 +76,25 @@ describe('repoKeyForLocal / isLocalRepoKey / repoKeyTooltip', () => {
   it('cannot collide with any real origin URL (control byte prefix)', () => {
     const local = repoKeyForLocal('/x')
     expect(local.charCodeAt(0)).toBeLessThan(0x20)
+  })
+})
+
+// The repository blocks of the sidebar's three row menus take the origin URL
+// straight off the repo key. A caller that peeled the prefix off by hand would
+// hand a `\x00local:`-prefixed PATH to a row that offers to copy a URL.
+describe('repoOriginUrlFromKey', () => {
+  it('returns the origin URL for a key that is one', () => {
+    expect(repoOriginUrlFromKey('https://github.com/o/r.git')).toBe('https://github.com/o/r.git')
+    expect(repoOriginUrlFromKey('git@github.com:o/r.git')).toBe('git@github.com:o/r.git')
+  })
+
+  // Empty, never the path: a repository with no remote has no URL to copy, and
+  // the row that would copy one is hidden on exactly this answer.
+  it('returns empty for a local key, and never leaks its path', () => {
+    const toplevel = '/home/me/projects/alpha'
+    const key = repoKeyForLocal(toplevel)
+    expect(repoOriginUrlFromKey(key)).toBe('')
+    expect(repoOriginUrlFromKey(key)).not.toContain(toplevel)
   })
 })
 

@@ -159,7 +159,7 @@ These are gated to the desktop app via `isDesktop` and have no effect in the bro
 
 | Command | macOS | Windows / Linux | Active when |
 |---|---|---|---|
-| [Open in External Editor](#open-in-external-editor-desktop-solo-mode) | `⇧⌘E` | `Ctrl+Shift+E` | no dialog open, desktop |
+| [Open in External App](#open-in-external-app-desktop-solo-mode) | `⇧⌘E` | `Ctrl+Shift+E` | no dialog open, desktop |
 | Open Web Inspector | `⌥⌘I` / `F12` | `Ctrl+Alt+I` / `F12` | desktop |
 | Zoom In | `⌘=` / `⌘Num+` | `Ctrl+=` / `Ctrl+Num+` | desktop |
 | Zoom Out | `⌘-` / `⌘Num-` | `Ctrl+-` / `Ctrl+Num-` | desktop |
@@ -167,29 +167,31 @@ These are gated to the desktop app via `isDesktop` and have no effect in the bro
 | Quit Application | `⌘Q` | `Ctrl+Q` | desktop |
 
 {{< callout type="info" >}}
-"Open in External Editor" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local editor to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external editor (desktop, solo mode)](#open-in-external-editor-desktop-solo-mode) below for the full feature.
+"Open in External App" works only in **solo mode**. In a distributed Hub/Worker setup, the active tab's working directory lives on the Worker machine, not your local filesystem, so there is no local application to launch and the command does nothing. See [Running LeapMux](/docs/admin/running-leapmux/) for run modes, and [Open in external app (desktop, solo mode)](#open-in-external-app-desktop-solo-mode) below for the full feature.
 {{< /callout >}}
 
 The zoom, web-inspector, and quit shortcuts ("core" bindings) are mounted at the application root, so they work on every screen — including the launcher and the sign-in/setup pages — not just inside a workspace.
 
-### Open in external editor (desktop, solo mode)
+### Open in external app (desktop, solo mode)
 
-The `⇧⌘E` / `Ctrl+Shift+E` shortcut launches an external code editor against the active tab's working directory. It is one face of a feature that also lives in the desktop workspace title bar as a **split button**.
+The `⇧⌘E` / `Ctrl+Shift+E` shortcut opens the active tab's working directory in an external application. It is one face of a feature that also lives in the desktop workspace title bar as a **split button**, and in the sidebar's workspace, repository and branch row menus.
 
-**Where it appears.** The split button shows in the title bar only when all three conditions hold: you are on the **desktop app in solo mode**, the active tab has a working directory, and at least one editor was auto-detected on your machine. It is hidden in the browser, in distributed mode, and when no editor is found.
+**Where it appears.** The split button shows in the title bar only when all three conditions hold: you are on the **desktop app in solo mode**, the active tab has a working directory, and the machine reports at least one application. It is hidden in the browser and in distributed mode.
 
 **The two faces of the split button.**
 
-- The **main face** reads "Open in {EditorName}" (with the editor's icon) when you have a preferred editor. It reads "Open in …" with a generic icon when you have not picked one. With a preferred editor, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first detected editor and records it as your preferred editor.
-- The **chevron** opens a dropdown that lists every detected editor alphabetically (with a checkmark on the current preferred one), followed by a separator and **"Refresh editor list"**.
+- The **main face** reads "Open in {AppName}" (with the application's icon) when you have a preferred application. It reads "Open in …" with a generic icon when you have not picked one. With a preferred application, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first application in the list and remembers it.
+- The **chevron** opens a dropdown that lists your file manager first, then every detected editor alphabetically, with a checkmark on the current preferred one. A separator and **"Refresh app list"** close the list.
 
-{{< callout type="info" >}}
-Picking an editor from the dropdown only **sets it as your preferred editor** — it does not launch it. To actually open the editor, use the main face or the keyboard shortcut after selecting. "Refresh editor list" re-probes your machine for installed editors, useful after you install or remove one.
-{{< /callout >}}
+Picking a row from the dropdown opens the working directory in that application and remembers it as your preferred one, so the main face and the keyboard shortcut follow your last pick. "Refresh app list" re-probes your machine, which is what you want after installing or removing an editor.
 
-**What gets opened.** LeapMux launches the editor against the **active tab's working directory**. The directory must be absolute and must exist. LeapMux rejects relative paths, missing paths, and plain files, so nothing launches when the active tab has no real directory.
+**The file manager is one of the choices.** Pick **Finder**, **File Explorer** or your Linux file manager and the split button opens the directory there. The row menus that offer the same list already carry **Reveal in file manager** of their own, so they drop their "Open in …" row while the file manager is your preferred application.
 
-**Detected editors.** LeapMux auto-detects popular editors including VS Code, the JetBrains IDEs, Cursor, Zed, Sublime Text, and others, probing your `PATH`, known install locations, and (on macOS) `.app` bundles. The chevron dropdown shows exactly which editors were found on your machine.
+**The same list in the sidebar.** A workspace row, a repository row and a branch row each carry a **Repository** section with **Copy repository URL**, **Copy repository path**, **Reveal in file manager**, an **Open in {AppName}** row for your preferred application, and an **Open in…** submenu holding the whole list. A workspace or a repository that spans more than one checkout gives each checkout its own submenu, so one checkout's actions stay together.
+
+**What gets opened.** LeapMux opens the **active tab's working directory**, or the checkout a row menu names. The directory must be absolute and must exist. LeapMux rejects relative paths, missing paths, and plain files, so nothing launches when the active tab has no real directory.
+
+**Detected applications.** LeapMux auto-detects popular editors including VS Code, the JetBrains IDEs, Cursor, Zed, Sublime Text, and others. It probes known install locations, your `PATH`, and the JetBrains Toolbox directory. On macOS it prefers the installed `.app` bundle, because that is the route that brings the application's window to the front. Your operating system's file manager is always in the list. The chevron dropdown shows exactly what was found on your machine.
 
 ## Reading the macOS glyphs
 
@@ -270,7 +272,7 @@ Each override targets a command by its id. Each id corresponds to one of the act
 | `app.splitTileHorizontal` / `app.splitTileVertical` | Split Tile Horizontally / Vertically |
 | `app.toggleLeftSidebar` / `app.toggleRightSidebar` | Toggle Left / Right Sidebar |
 | `app.openPreferences` | Open Preferences |
-| `app.openInExternalEditor` | Open in External Editor |
+| `app.openInExternalApp` | Open in External App |
 | `chat.sendMessage` | Send Message |
 | `terminal.lineStart` / `terminal.lineEnd` | Go to Line Start / End |
 | `terminal.wordLeft` / `terminal.wordRight` | Go to Previous / Next Word |
@@ -320,4 +322,4 @@ You do not need any of this to use the shortcuts, but it explains a few edge cas
 - [Terminals](/docs/using/terminals/) — terminal behavior and the macOS cursor-motion shortcuts.
 - [File Browser](/docs/using/file-browser/) — the directory tree refreshed and filtered by the Files shortcuts.
 - [Settings & Preferences](/docs/using/settings/) — the Preferences dialog and where account vs. browser settings live.
-- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External Editor" shortcut.
+- [Running LeapMux](/docs/admin/running-leapmux/) — solo vs. distributed mode, which affects the "Open in External App" shortcut.

@@ -187,31 +187,39 @@ func TestHandleListTunnelsMapsTunnelInfos(t *testing.T) {
 	assert.Equal(t, int32(8080), tunnels[0].GetTargetPort())
 }
 
-// The ListEditors dispatch arm must map the registry's listing through
-// detectedEditorsToProto; previously uncovered like ListTunnels above.
-func TestHandleListEditorsMapsDetectedEditors(t *testing.T) {
+// The ListExternalApps dispatch arm must map the registry's listing through
+// externalAppsToProto; previously uncovered like ListTunnels above. The kind
+// rides along, because the browser groups its menu by it and a dropped kind
+// would land every app in no group at all.
+func TestHandleListExternalAppsMapsTheListing(t *testing.T) {
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
-	app.editors.mu.Lock()
-	app.editors.cached = true
-	app.editors.cache = []DetectedEditor{{ID: "vscode", DisplayName: "VS Code"}}
-	app.editors.mu.Unlock()
+	app.externalApps.mu.Lock()
+	app.externalApps.cached = true
+	app.externalApps.cache = []ExternalApp{
+		{ID: "vscode", DisplayName: "VS Code", Kind: desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR},
+		{ID: "file-manager", DisplayName: "Finder", Kind: desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER},
+	}
+	app.externalApps.mu.Unlock()
 
 	var output bytes.Buffer
 	session := NewRPCSession(app, bytes.NewReader(nil), &output, nil)
 	session.handleRequest(context.Background(), &desktoppb.Request{
 		Id:     8,
-		Method: &desktoppb.Request_ListEditors{ListEditors: &desktoppb.ListEditorsRequest{Refresh: false}},
+		Method: &desktoppb.Request_ListExternalApps{ListExternalApps: &desktoppb.ListExternalAppsRequest{Refresh: false}},
 	})
 
 	frame, err := ReadFrame(&output)
 	require.NoError(t, err)
 	resp := frame.GetResponse()
 	require.Empty(t, resp.GetError())
-	editors := resp.GetListEditors().GetEditors()
-	require.Len(t, editors, 1)
-	assert.Equal(t, "vscode", editors[0].GetId())
-	assert.Equal(t, "VS Code", editors[0].GetDisplayName())
+	apps := resp.GetListExternalApps().GetApps()
+	require.Len(t, apps, 2)
+	assert.Equal(t, "vscode", apps[0].GetId())
+	assert.Equal(t, "VS Code", apps[0].GetDisplayName())
+	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR, apps[0].GetKind())
+	assert.Equal(t, "file-manager", apps[1].GetId())
+	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER, apps[1].GetKind())
 }
 
 func TestSwitchModeResponseCarriesLauncherStateWithCleanupError(t *testing.T) {

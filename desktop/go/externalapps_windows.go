@@ -2,6 +2,8 @@
 
 package main
 
+import "os/exec"
+
 const (
 	jbToolboxScript = `%LOCALAPPDATA%\JetBrains\Toolbox\scripts`
 	programFiles    = `%PROGRAMFILES%`
@@ -9,8 +11,12 @@ const (
 	localAppData    = `%LOCALAPPDATA%`
 )
 
-func defaultEditorSpecs() []EditorSpec {
-	return []EditorSpec{
+func defaultExternalAppSpecs() []ExternalAppSpec {
+	return []ExternalAppSpec{
+		// The file manager leads the list, and the menu keeps it in its own
+		// group ahead of the editors.
+		fileManagerSpec("File Explorer"),
+
 		// VS Code family
 		{
 			ID:          "vscode",
@@ -116,8 +122,8 @@ func defaultEditorSpecs() []EditorSpec {
 
 // jbSpec composes the standard JetBrains detection chain on Windows:
 // Toolbox script → PATH → versioned Program Files install.
-func jbSpec(id, displayName, cli, productGlob, exe string) EditorSpec {
-	return EditorSpec{
+func jbSpec(id, displayName, cli, productGlob, exe string) ExternalAppSpec {
+	return ExternalAppSpec{
 		ID:          id,
 		DisplayName: displayName,
 		detect: tryAll(
@@ -126,4 +132,19 @@ func jbSpec(id, displayName, cli, productGlob, exe string) EditorSpec {
 			tryGlob(programFiles+`\JetBrains\`+productGlob+`\bin\`+exe),
 		),
 	}
+}
+
+// fileManagerCommand opens a directory in File Explorer.
+//
+// The exit code is NOT meaningful: explorer.exe exits with 1 after a
+// successful open, so checking it would report every launch as a failure.
+// There is no flag that changes this -- Explorer hands the request to the
+// already-running shell process and the launcher it leaves behind reports its
+// own exit, not the shell's.
+//
+// PATH order stays as it is on this platform, unlike macOS: a Windows editor
+// brings its own window forward when a second invocation hands the folder to
+// the running instance.
+func fileManagerCommand(dir string) (*exec.Cmd, bool) {
+	return exec.Command("explorer.exe", dir), false
 }

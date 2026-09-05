@@ -44,7 +44,7 @@ The user categories, in navigation order:
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
 | **Terminal** | Terminal renderer. |
 | **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
-| **Files & Editors** | Preferred editor (desktop), reveal after download (desktop), hidden files in directory picker. |
+| **Files & Editors** | Preferred application (desktop), reveal after download (desktop), hidden files in directory picker. |
 | **Keyboard Shortcuts** | The keybinding editor (see below). |
 | **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
 
@@ -202,11 +202,11 @@ The desktop app must decide the window state before it can read your preferences
 
 ## Files & Editors
 
-Per-device toggles for files and external editors. As with the chat toggles, the in-context controls — the editor menu on **Open in …**, the file viewer's save action, the directory picker — change the same stored value as these rows.
+Per-device toggles for files and external applications. As with the chat toggles, the in-context controls — the application menu on **Open in …**, the file viewer's save action, the directory picker — change the same stored value as these rows.
 
 | Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
-| **Preferred editor** | First detected (desktop only) | The editor menu on **Open in …** | Which external editor opens files. |
+| **Preferred application** | First detected (desktop only) | The application menu on **Open in …** | Which editor or file manager opens a working directory. |
 | **Reveal after download** | On (desktop only) | The file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
 | **Hidden files in directory picker** | On | The directory picker itself | Whether the directory picker lists dotfiles. |
 

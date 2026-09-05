@@ -507,21 +507,21 @@ export const browserSettings: BrowserSettingDecl[] = [
     bind: prefs => dualScalar(prefs.dual.startMinimized),
   },
 
-  // --- Files & editors ---
+  // --- Files & external applications ---
   {
-    id: 'files.preferredEditor',
+    id: 'files.preferredExternalApp',
     category: 'files',
-    label: 'Preferred editor',
-    help: 'Editor the "Open in …" button launches (desktop only).',
+    label: 'Preferred application',
+    help: 'Editor or file manager the "Open in …" button launches (desktop only).',
     scope: 'browser',
     control: { kind: 'text', placeholder: 'e.g. vscode' },
     sentinel: 'nullable',
     hidden: () => !isDesktopApp(),
     bind: prefs => ({
-      value: prefs.preferredEditorId,
-      set: v => prefs.setPreferredEditorId(typeof v === 'string' && v !== '' ? v : undefined),
+      value: prefs.preferredExternalAppId,
+      set: v => prefs.setPreferredExternalAppId(typeof v === 'string' && v !== '' ? v : undefined),
     }),
-    resetBrowser: prefs => prefs.setPreferredEditorId(undefined),
+    resetBrowser: prefs => prefs.setPreferredExternalAppId(undefined),
   },
   {
     id: 'files.revealAfterDownload',

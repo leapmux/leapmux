@@ -2,50 +2,66 @@
 
 package main
 
+import "os/exec"
+
 // jbToolboxScript is the macOS Toolbox default scripts directory.
 const jbToolboxScript = "~/Library/Application Support/JetBrains/Toolbox/scripts"
 
-func defaultEditorSpecs() []EditorSpec {
-	return []EditorSpec{
+// Every editor here probes its .app bundle BEFORE the PATH command, which is
+// the opposite of the other two platforms. Only `open -a` activates the target
+// application on macOS. A PATH command starts a second process that hands its
+// argument to the running instance and exits, so the folder opens in a window
+// that stays behind this one, and the user sees the menu item do nothing.
+//
+// The cost of the order is that a custom PATH wrapper -- one that adds
+// `--reuse-window`, say -- no longer applies once the bundle is installed
+// where we look. Raising the window the user asked for is worth more than
+// honouring flags they cannot see.
+func defaultExternalAppSpecs() []ExternalAppSpec {
+	return []ExternalAppSpec{
+		// The file manager leads the list, and the menu keeps it in its own
+		// group ahead of the editors.
+		fileManagerSpec("Finder"),
+
 		// VS Code family
 		{
 			ID:          "vscode",
 			DisplayName: "Visual Studio Code",
 			detect: tryAll(
-				tryLookPath("code"),
 				tryMacOSApp("Visual Studio Code"),
+				tryLookPath("code"),
 			),
 		},
 		{
 			ID:          "vscode-insiders",
 			DisplayName: "Visual Studio Code - Insiders",
 			detect: tryAll(
-				tryLookPath("code-insiders"),
 				tryMacOSApp("Visual Studio Code - Insiders"),
+				tryLookPath("code-insiders"),
 			),
 		},
 		{
 			ID:          "vscodium",
 			DisplayName: "VSCodium",
 			detect: tryAll(
-				tryLookPath("codium"),
 				tryMacOSApp("VSCodium"),
+				tryLookPath("codium"),
 			),
 		},
 		{
 			ID:          "cursor",
 			DisplayName: "Cursor",
 			detect: tryAll(
-				tryLookPath("cursor"),
 				tryMacOSApp("Cursor"),
+				tryLookPath("cursor"),
 			),
 		},
 		{
 			ID:          "windsurf",
 			DisplayName: "Windsurf",
 			detect: tryAll(
-				tryLookPath("windsurf"),
 				tryMacOSApp("Windsurf"),
+				tryLookPath("windsurf"),
 			),
 		},
 
@@ -54,21 +70,21 @@ func defaultEditorSpecs() []EditorSpec {
 			ID:          "sublime-text",
 			DisplayName: "Sublime Text",
 			detect: tryAll(
-				tryLookPath("subl"),
 				tryMacOSApp("Sublime Text"),
+				tryLookPath("subl"),
 			),
 		},
 		{
 			ID:          "zed",
 			DisplayName: "Zed",
 			detect: tryAll(
+				tryMacOSApp("Zed", "Zed Preview"),
 				tryLookPath("zed"),
-				tryMacOSApp("Zed"),
-				tryMacOSApp("Zed Preview"),
 			),
 		},
 
-		// JetBrains: prefer Toolbox script (handles updates) → PATH → bundle.
+		// JetBrains: prefer the bundle (which `open` can raise) → Toolbox
+		// script (which handles updates) → PATH.
 		jbSpec("intellij-idea-ultimate", "IntelliJ IDEA Ultimate", "idea", "IntelliJ IDEA"),
 		jbSpec("intellij-idea-community", "IntelliJ IDEA Community", "idea-ce", "IntelliJ IDEA CE"),
 		jbSpec("webstorm", "WebStorm", "webstorm", "WebStorm"),
@@ -94,15 +110,30 @@ func defaultEditorSpecs() []EditorSpec {
 }
 
 // jbSpec constructs the standard JetBrains detection chain on macOS:
-// Toolbox script → PATH → /Applications/<Bundle>.app.
-func jbSpec(id, displayName, cli, bundle string) EditorSpec {
-	return EditorSpec{
+// .app bundle → Toolbox script → PATH.
+//
+// Two bundle names, because the same IDE carries different ones depending on
+// where it came from: the download from the website installs "IntelliJ
+// IDEA.app", while Toolbox names its copy after the product edition,
+// "IntelliJ IDEA Ultimate.app" — which is the display name.
+func jbSpec(id, displayName, cli, bundle string) ExternalAppSpec {
+	return ExternalAppSpec{
 		ID:          id,
 		DisplayName: displayName,
 		detect: tryAll(
+			tryMacOSApp(bundle, displayName),
 			tryPath(jbToolboxScript+"/"+cli),
 			tryLookPath(cli),
-			tryMacOSApp(bundle),
 		),
 	}
+}
+
+// fileManagerCommand opens a directory in Finder. `open <dir>` shows the
+// directory's own contents and activates Finder; `open -R` would instead
+// select the directory inside its parent, which is what "Reveal in file
+// manager" does through the Tauri opener plugin.
+//
+// The exit code is meaningful: `open` reports a missing directory.
+func fileManagerCommand(dir string) (*exec.Cmd, bool) {
+	return exec.Command("open", dir), true
 }

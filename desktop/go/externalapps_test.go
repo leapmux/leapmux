@@ -4,13 +4,17 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -184,17 +188,68 @@ func TestTryMacOSApp_ProbesBothApplicationsRoots(t *testing.T) {
 	got := tryMacOSApp("Visual Studio Code")(p)
 	require.NotNil(t, got)
 	assert.Equal(t, execKindMacOSApp, got.kind)
-	assert.Equal(t, "Visual Studio Code", got.path, "path field carries bundle name")
+	assert.Equal(t, "/Users/alice/Applications/Visual Studio Code.app", filepath.ToSlash(got.path),
+		"path field carries the RESOLVED bundle, so `open -a` addresses one exact copy")
+}
+
+func TestTryMacOSApp_PrefersSystemApplicationsOverUserCopy(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("/Users/alice")
+	p.addPath("/Applications/Cursor.app")
+	p.addPath("/Users/alice/Applications/Cursor.app")
+
+	got := tryMacOSApp("Cursor")(p)
+	require.NotNil(t, got)
+	assert.Equal(t, "/Applications/Cursor.app", filepath.ToSlash(got.path))
+}
+
+// JetBrains Toolbox installs one level below ~/Applications. Without that base
+// a Toolbox user falls through to the wrapper script, which starts the IDE
+// without raising it.
+func TestTryMacOSApp_FindsJetBrainsToolboxBundle(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("/Users/alice")
+	p.addPath("/Users/alice/Applications/JetBrains Toolbox/GoLand.app")
+
+	got := tryMacOSApp("GoLand")(p)
+	require.NotNil(t, got)
+	assert.Equal(t, "/Users/alice/Applications/JetBrains Toolbox/GoLand.app", filepath.ToSlash(got.path))
+}
+
+// One product, two bundle names: the website's download and the Toolbox copy
+// differ, and Zed ships a Preview channel beside the stable one.
+func TestTryMacOSApp_AcceptsAnyOfSeveralBundleNames(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("/Users/alice")
+	p.addPath("/Applications/Zed Preview.app")
+
+	got := tryMacOSApp("Zed", "Zed Preview")(p)
+	require.NotNil(t, got)
+	assert.Equal(t, "/Applications/Zed Preview.app", filepath.ToSlash(got.path))
+}
+
+// A "~" base with no home directory would otherwise expand to a RELATIVE path
+// and probe whatever the working directory happens to be.
+func TestTryMacOSApp_SkipsRelativeCandidateWhenHomeIsEmpty(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("")
+	p.addPath("Applications/Cursor.app")
+
+	assert.Nil(t, tryMacOSApp("Cursor")(p))
 }
 
 // --- Registry behavior ---
 
-func TestRegistry_OnlyDetectedEditorsAreListed(t *testing.T) {
+func TestRegistry_OnlyDetectedAppsAreListed(t *testing.T) {
 	t.Parallel()
 	p := newFakeProber()
 	p.addLookPath("code", "/usr/bin/code")
 
-	r := newEditorRegistry([]EditorSpec{
+	r := newExternalAppRegistry([]ExternalAppSpec{
 		{ID: "vscode", DisplayName: "Visual Studio Code", detect: tryLookPath("code")},
 		{ID: "ghost", DisplayName: "Ghost Editor", detect: tryLookPath("ghost")},
 	}, p, &recordingLauncher{})
@@ -210,14 +265,14 @@ func TestRegistry_DetectionIsCached(t *testing.T) {
 	p.addLookPath("code", "/usr/bin/code")
 
 	calls := 0
-	spec := EditorSpec{
+	spec := ExternalAppSpec{
 		ID: "vscode", DisplayName: "VS Code",
 		detect: func(pp Prober) *detectedExec {
 			calls++
 			return tryLookPath("code")(pp)
 		},
 	}
-	r := newEditorRegistry([]EditorSpec{spec}, p, &recordingLauncher{})
+	r := newExternalAppRegistry([]ExternalAppSpec{spec}, p, &recordingLauncher{})
 
 	_ = r.List()
 	_ = r.List()
@@ -231,14 +286,14 @@ func TestRegistry_RefreshReprobes(t *testing.T) {
 	p.addLookPath("code", "/usr/bin/code")
 
 	calls := 0
-	spec := EditorSpec{
+	spec := ExternalAppSpec{
 		ID: "vscode", DisplayName: "VS Code",
 		detect: func(pp Prober) *detectedExec {
 			calls++
 			return tryLookPath("code")(pp)
 		},
 	}
-	r := newEditorRegistry([]EditorSpec{spec}, p, &recordingLauncher{})
+	r := newExternalAppRegistry([]ExternalAppSpec{spec}, p, &recordingLauncher{})
 
 	_ = r.List()
 	_ = r.Refresh()
@@ -250,10 +305,10 @@ func TestRegistry_RefreshReflectsNewlyInstalledEditor(t *testing.T) {
 	t.Parallel()
 	p := newFakeProber()
 	// Initial state: nothing is installed.
-	specs := []EditorSpec{
+	specs := []ExternalAppSpec{
 		{ID: "vscode", DisplayName: "VS Code", detect: tryLookPath("code")},
 	}
-	r := newEditorRegistry(specs, p, &recordingLauncher{})
+	r := newExternalAppRegistry(specs, p, &recordingLauncher{})
 
 	assert.Empty(t, r.List(), "no editors detected initially")
 
@@ -270,10 +325,10 @@ func TestRegistry_RefreshReflectsUninstalledEditor(t *testing.T) {
 	t.Parallel()
 	p := newFakeProber()
 	p.addLookPath("code", "/usr/bin/code")
-	specs := []EditorSpec{
+	specs := []ExternalAppSpec{
 		{ID: "vscode", DisplayName: "VS Code", detect: tryLookPath("code")},
 	}
-	r := newEditorRegistry(specs, p, &recordingLauncher{})
+	r := newExternalAppRegistry(specs, p, &recordingLauncher{})
 
 	require.Len(t, r.List(), 1)
 
@@ -290,7 +345,7 @@ func TestRegistry_OpenLaunchesDetectedExec(t *testing.T) {
 	p := newFakeProber()
 	p.addLookPath("code", "/usr/bin/code")
 	launcher := &recordingLauncher{}
-	r := newEditorRegistry([]EditorSpec{
+	r := newExternalAppRegistry([]ExternalAppSpec{
 		{ID: "vscode", DisplayName: "VS Code", detect: tryLookPath("code")},
 	}, p, launcher)
 
@@ -303,7 +358,7 @@ func TestRegistry_OpenLaunchesDetectedExec(t *testing.T) {
 func TestRegistry_OpenUnknownEditor(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	r := newEditorRegistry(nil, newFakeProber(), &recordingLauncher{})
+	r := newExternalAppRegistry(nil, newFakeProber(), &recordingLauncher{})
 
 	err := r.Open("nope", dir)
 	require.Error(t, err)
@@ -316,7 +371,7 @@ func TestRegistry_OpenWrapsLauncherError(t *testing.T) {
 	p := newFakeProber()
 	p.addLookPath("code", "/usr/bin/code")
 	launcher := &recordingLauncher{err: errors.New("boom")}
-	r := newEditorRegistry([]EditorSpec{
+	r := newExternalAppRegistry([]ExternalAppSpec{
 		{ID: "vscode", DisplayName: "VS Code", detect: tryLookPath("code")},
 	}, p, launcher)
 
@@ -379,12 +434,12 @@ func TestValidateOpenPath_AcceptsDirectory(t *testing.T) {
 	assert.True(t, filepath.IsAbs(cleaned))
 }
 
-// --- Spec table sanity (per OS, via the actual defaultEditorSpecs()) ---
+// --- Spec table sanity (per OS, via the actual defaultExternalAppSpecs()) ---
 
-func TestDefaultEditorSpecs_IDsUniqueAndNonEmpty(t *testing.T) {
+func TestDefaultExternalAppSpecs_IDsUniqueAndNonEmpty(t *testing.T) {
 	t.Parallel()
 	seen := map[string]bool{}
-	for _, spec := range defaultEditorSpecs() {
+	for _, spec := range defaultExternalAppSpecs() {
 		assert.NotEmpty(t, spec.ID, "every spec must have an ID")
 		assert.NotEmpty(t, spec.DisplayName, "every spec must have a DisplayName: %s", spec.ID)
 		assert.NotNil(t, spec.detect, "every spec must have a detect func: %s", spec.ID)
@@ -395,22 +450,148 @@ func TestDefaultEditorSpecs_IDsUniqueAndNonEmpty(t *testing.T) {
 	}
 }
 
-func TestDefaultEditorSpecs_CoversCoreSet(t *testing.T) {
+// The spec table for this OS must hold exactly the ids the contract lists for
+// it. This replaces a hand-written "core set" that named a subset and trusted
+// review for the rest, so an id added on one platform only, or dropped from
+// one, now fails here instead of silently losing its icon in the browser.
+func TestDefaultExternalAppSpecs_MatchTheContractForThisOS(t *testing.T) {
 	t.Parallel()
-	seen := map[string]bool{}
-	for _, spec := range defaultEditorSpecs() {
-		seen[spec.ID] = true
+	want := contracts.ExternalAppIDsByOS[runtime.GOOS]
+	require.NotEmpty(t, want, "contracts/external-apps.json lists no app for %s", runtime.GOOS)
+
+	var got []string
+	for _, spec := range defaultExternalAppSpecs() {
+		got = append(got, spec.ID)
 	}
-	// These editors must exist on EVERY OS we ship.
-	for _, must := range []string{
-		"vscode", "vscode-insiders", "vscodium", "cursor", "windsurf",
-		"sublime-text", "zed",
-		"intellij-idea-ultimate", "intellij-idea-community",
-		"webstorm", "goland", "rustrover",
-		"pycharm-professional", "pycharm-community",
-		"phpstorm", "rubymine", "clion", "rider", "datagrip",
-		"android-studio", "fleet",
-	} {
-		assert.True(t, seen[must], "core editor missing from registry: %s", must)
+	assert.ElementsMatch(t, want, got)
+}
+
+// Every spec's kind resolves, so nothing reaches the browser as the unset
+// value -- the app menu groups by kind, and an unset one lands in no group.
+func TestDefaultExternalAppSpecs_EveryIDHasAKind(t *testing.T) {
+	t.Parallel()
+	for _, spec := range defaultExternalAppSpecs() {
+		kind := contracts.ExternalAppKindByID[spec.ID]
+		assert.NotEqual(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_UNSPECIFIED, kind,
+			"spec %s has no contract kind", spec.ID)
 	}
+}
+
+// The file manager is the one app that needs no probe, and the app menu counts
+// on it: it renders that kind as an always-present group ahead of the editors.
+func TestDefaultExternalAppSpecs_FileManagerIsAlwaysDetected(t *testing.T) {
+	t.Parallel()
+	r := newExternalAppRegistry(defaultExternalAppSpecs(), newFakeProber(), &recordingLauncher{})
+
+	var found *ExternalApp
+	for _, app := range r.List() {
+		if app.ID == fileManagerID {
+			found = &app
+			break
+		}
+	}
+	require.NotNil(t, found, "the file manager must be detected on a machine with nothing installed")
+	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER, found.Kind)
+	assert.NotEmpty(t, found.DisplayName)
+}
+
+func TestRegistry_StampsTheContractKindOnEveryApp(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.addLookPath("code", "/usr/bin/code")
+	r := newExternalAppRegistry([]ExternalAppSpec{
+		{ID: "vscode", DisplayName: "VS Code", detect: tryLookPath("code")},
+		fileManagerSpec("Finder"),
+	}, p, &recordingLauncher{})
+
+	got := r.List()
+	require.Len(t, got, 2)
+	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR, got[0].Kind)
+	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER, got[1].Kind)
+}
+
+// --- Launch: the argv, which is the whole of what this package decides ---
+
+func TestLaunchCommand_BinaryPassesTheDirectoryAlone(t *testing.T) {
+	t.Parallel()
+	cmd, exitMeaningful, err := launchCommand(&detectedExec{kind: execKindBinary, path: "/usr/bin/code"}, "/repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/usr/bin/code", "/repo"}, cmd.Args)
+	assert.True(t, exitMeaningful)
+}
+
+// The regression test for the reported bug: a macOS launch must go through
+// `open -a`, which ACTIVATES the application. Running the binary hands the
+// folder to the running instance and leaves it behind the LeapMux window,
+// which reads as the menu item doing nothing.
+func TestLaunchCommand_MacOSAppGoesThroughOpenSoTheAppIsRaised(t *testing.T) {
+	t.Parallel()
+	cmd, exitMeaningful, err := launchCommand(
+		&detectedExec{kind: execKindMacOSApp, path: "/Applications/Visual Studio Code.app"}, "/repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"open", "-a", "/Applications/Visual Studio Code.app", "/repo"}, cmd.Args)
+	assert.NotContains(t, cmd.Args, "-n", "a new instance is not wanted, only the front-most one")
+	assert.True(t, exitMeaningful)
+}
+
+func TestLaunchCommand_RejectsAnUnknownKind(t *testing.T) {
+	t.Parallel()
+	_, _, err := launchCommand(&detectedExec{kind: execKind(99)}, "/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown exec kind")
+}
+
+// --- Launch: reporting a process that starts and then refuses ---
+
+func TestStartAndWatch_ReportsAnImmediateFailureWithItsStderr(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(shellForTest(t), "-c", "echo 'no such application' >&2; exit 3")
+
+	err := startAndWatch(cmd, true)
+
+	require.Error(t, err, "a launcher that exits at once must not be reported as a successful open")
+	assert.Contains(t, err.Error(), "no such application")
+}
+
+func TestStartAndWatch_AcceptsAProcessThatKeepsRunning(t *testing.T) {
+	t.Parallel()
+	// An editor holds its process for the life of the window, which is what a
+	// real launch looks like: nothing to report before the deadline.
+	cmd := exec.Command(shellForTest(t), "-c", "sleep 30")
+
+	require.NoError(t, startAndWatch(cmd, true))
+	assert.NoError(t, cmd.Process.Kill())
+}
+
+func TestStartAndWatch_ReportsAFailureToStartAtAll(t *testing.T) {
+	t.Parallel()
+	err := startAndWatch(exec.Command(filepath.Join(t.TempDir(), "definitely-not-a-program")), true)
+	require.Error(t, err)
+}
+
+// Windows Explorer exits 1 after a SUCCESSFUL open, so a launcher whose exit
+// code says nothing must not have that code read as a failure.
+func TestStartAndWatch_IgnoresTheExitCodeWhenItCarriesNoVerdict(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(shellForTest(t), "-c", "exit 1")
+
+	assert.NoError(t, startAndWatch(cmd, false))
+}
+
+func TestFirstLine_TakesTheFirstNonEmptyLine(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "the reason", firstLine("\n  \n the reason \nusage: ...\n"))
+	assert.Empty(t, firstLine("   \n\n"))
+}
+
+// shellForTest gives a POSIX shell, skipping where there is none. The launcher
+// tests need a process whose exit code and stderr they control; the behaviour
+// under test is the WATCHING, which is platform-neutral.
+func shellForTest(t *testing.T) string {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell to drive the launcher with")
+	}
+	return sh
 }

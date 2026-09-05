@@ -72,7 +72,7 @@ Once the app or browser tab is open, you'll see the LeapMux UI. The rest of this
 
 The window has a **titlebar** across the top, a **sidebar** down each side, and the **tiling area** in the middle:
 
-- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in …"** (open the working directory in an external editor) and the **left/right sidebar toggles** are on the right.
+- **Titlebar** — the **app menu** (account and app controls) is on the left; **"Open in …"** (open the working directory in an external editor or your file manager) and the **left/right sidebar toggles** are on the right.
 - **Left sidebar** — your **workspaces**, grouped into **In progress**, any custom sections, and **Archived**, plus a **Workers** section. Each workspace expands into a tree of its open tabs, grouped by **Repo** then **Branch**.
 - **Tiling area** — the center, where tabs (agents, terminals, file viewers) are laid out under a **tab bar**; tiles can be split, gridded, and resized (see [Tabs & Layout](/docs/using/tabs-and-layout/)). For an agent, the **input area** (message composer) sits at the bottom.
 - **Right sidebar** — the **Files** browser for the active tab (see [File Browser](/docs/using/file-browser/)).

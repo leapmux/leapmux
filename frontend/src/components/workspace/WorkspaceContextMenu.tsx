@@ -11,13 +11,26 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { MenuInfoButton } from '~/components/common/MenuInfoRows'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { SubMenu } from '~/components/common/SubMenu'
+import { Tooltip } from '~/components/common/Tooltip'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
+import { useExternalApps } from '~/hooks/useExternalApps'
+import { repoGitView } from '~/stores/repoGit'
 import { dangerMenuItem } from '~/styles/shared.css'
+import { RepositoryMenuItems } from './RepositoryMenuItems'
+import { RepositoryTargetMenu } from './RepositoryTargetMenu'
 import { listRepoStartPoints } from './repoStartPoints'
 import { workspaceInfoJson, workspaceInfoRows } from './workspaceMenuInfo'
 import { menuItem } from './workspaceMenuItem'
-import { WorkspaceRepositoryMenu } from './WorkspaceRepositoryMenu'
-import { WorkspaceStartMenuItems } from './WorkspaceStartMenuItems'
+
+/**
+ * Why a repository's tab-creation items are unusable.
+ *
+ * Per repository, not per workspace: each one sits on its own worker, and the
+ * menu now names the repository before the action, so it can say which machine
+ * is missing instead of one sentence about all of them.
+ */
+const REPO_WORKER_OFFLINE_REASON
+  = 'This machine is offline. Opening a tab needs the machine the repository is on.'
 
 interface WorkspaceContextMenuProps extends ContextMenuTargetProps {
   workspaceId: string
@@ -47,11 +60,17 @@ interface WorkspaceContextMenuProps extends ContextMenuTargetProps {
  * One workspace row's menu, and the same menu on a right-click of the row.
  *
  * It composes rather than owning: the info projection is pure
- * (`workspaceMenuInfo`), the tab-creation shapes are
- * {@link WorkspaceStartMenuItems}, and the repository actions -- with the
- * editor probe that only they use -- are {@link WorkspaceRepositoryMenu}. What
- * stays here is the menu's own shape: which blocks appear, in what order, and
- * which of them an ARCHIVED workspace keeps.
+ * (`workspaceMenuInfo`), the repository actions are
+ * {@link RepositoryMenuItems}, and the "which repository" shape is
+ * {@link RepositoryTargetMenu}. What stays here is the menu's own shape:
+ * which blocks appear, in what order, and which of them an ARCHIVED workspace
+ * keeps.
+ *
+ * The repository comes FIRST and the actions hang off it. The previous shape
+ * asked for the action first -- `New agent in ▸`, `New terminal in ▸`,
+ * `Repository ▸` -- which scattered one repository's actions across three
+ * submenus, and let an offline repository appear in one of them and not the
+ * others.
  */
 export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props) => {
   // Deferred for the same reason `BranchContextMenu` defers its two worker
@@ -68,20 +87,13 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     })
   })
 
-  /**
-   * The repositories a new tab can actually be opened in.
-   *
-   * Filtered by worker liveness, unlike {@link repos}: opening an agent needs
-   * the machine the repository is on. The unfiltered list still backs the
-   * `Repository` submenu, whose items copy a URL the store already holds and
-   * open local paths -- neither of which needs the remote worker.
-   */
-  const startableRepos = createMemo((): RepoStartPoint[] => {
-    const online = props.isWorkerOnline
-    return online ? repos().filter(r => online(r.startPoint.workerId)) : repos()
-  })
-
   const isLocal = (workerId: string) => props.isLocalWorkerFn?.(workerId) ?? false
+  const isOnline = (workerId: string) => props.isWorkerOnline?.(workerId) ?? true
+
+  // Probed on open, and only where a LOCAL checkout could use one. The
+  // detection cache is module-wide, so a second row's menu pays nothing.
+  const anyLocal = () => repos().some(r => isLocal(r.startPoint.workerId))
+  const apps = useExternalApps(() => menuOpen() && anyLocal())
 
   const info = () => ({
     workspaceId: props.workspaceId,
@@ -113,12 +125,71 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
    * the handler resolves AFTER switching to this workspace -- so the dialog
    * opens against this workspace even though the row that asked was not the
    * active one.
+   *
+   * Rendered ONLY for a workspace with no repository at all. A workspace that
+   * has one must never fall back to it: "follow the current tab context" would
+   * start an agent on a machine the user never picked.
    */
   const startAtWorkspace = (): WorkspaceStartAt => ({
     workspaceId: props.workspaceId,
     workerId: '',
     workingDir: '',
   })
+
+  /**
+   * One repository's actions: the two tab-creation items, then the shared
+   * repository block.
+   *
+   * The tab-creation items are DISABLED rather than hidden when the machine is
+   * unreachable, and only they are: the repository block below either copies
+   * text the browser already holds or acts on this machine, so an offline
+   * worker leaves all of it usable.
+   */
+  const repoActions = (repo: RepoStartPoint) => {
+    const at = () => startAt(repo)
+    const reason = () => (isOnline(repo.startPoint.workerId) ? undefined : REPO_WORKER_OFFLINE_REASON)
+    // The FLAT shape names the repository in the item, because nothing else on
+    // screen does. Inside a submenu the trigger already carries that name, and
+    // repeating it there would read as a second repository.
+    const startLabel = (verb: string) =>
+      (repos().length > 1 ? `${verb}...` : `${verb} in ${repo.label}...`)
+    const startItem = (label: string, run: (at: WorkspaceStartAt) => void) => (
+      // The reason goes through <Tooltip>, which works on a disabled control
+      // and leaves the item its own name. A `title` this long BECOMES the
+      // accessible name instead.
+      <Tooltip text={reason()}>
+        <button type="button" role="menuitem" disabled={Boolean(reason())} onClick={() => run(at())}>
+          {label}
+        </button>
+      </Tooltip>
+    )
+    return (
+      <>
+        {/* Absent when archived. `isWorkspaceMutatable` says archival is the
+            one thing that blocks mutation, and every other surface already
+            obeys it: the tab bar drops its `+`, and the branch row hides its
+            whole menu. A route that survives here would be the one way in
+            that every other surface forbids. */}
+        <Show when={!props.isArchived}>
+          {startItem(startLabel('New agent'), a => props.startActions?.onNewAgentAt(a))}
+          {startItem(startLabel('New terminal'), a => props.startActions?.onNewTerminalAt(a))}
+          <hr />
+        </Show>
+        <RepositoryMenuItems
+          checkout={() => ({
+            gitToplevel: repo.startPoint.gitToplevel,
+            originUrl: repoGitView(
+              { workerId: repo.startPoint.workerId, gitToplevel: repo.startPoint.gitToplevel },
+              props.repoGitStore,
+            ).originUrl ?? '',
+            isLocal: isLocal(repo.startPoint.workerId),
+          })}
+          apps={apps}
+          testIdPrefix="workspace-repository"
+        />
+      </>
+    )
+  }
 
   return (
     <DropdownMenu
@@ -137,40 +208,22 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
         <hr />
       </Show>
 
-      {/* Absent when archived. `isWorkspaceMutatable` says archival is the one
-          thing that blocks mutation, and every other surface already obeys it:
-          the tab bar drops its `+`, and the branch row hides its whole menu. A
-          route that survives here would be the one way in that every other
-          surface forbids. */}
-      <Show when={!props.isArchived}>
-        <WorkspaceStartMenuItems
-          verb="New agent"
-          repos={repos}
-          startableRepos={startableRepos}
-          run={at => props.startActions?.onNewAgentAt(at)}
-          startAtWorkspace={startAtWorkspace}
-          startAt={startAt}
-          data-testid="workspace-new-agent"
-        />
-        <WorkspaceStartMenuItems
-          verb="New terminal"
-          repos={repos}
-          startableRepos={startableRepos}
-          run={at => props.startActions?.onNewTerminalAt(at)}
-          startAtWorkspace={startAtWorkspace}
-          startAt={startAt}
-          data-testid="workspace-new-terminal"
-        />
+      {/* A workspace with no checkout yet -- a freshly created one has no tabs
+          -- is exactly the row that most needs a way in, so the two items
+          still open with no target. */}
+      <Show when={repos().length === 0 && !props.isArchived}>
+        {menuItem('New agent...', () => props.startActions?.onNewAgentAt(startAtWorkspace()), 'workspace-new-agent')}
+        {menuItem('New terminal...', () => props.startActions?.onNewTerminalAt(startAtWorkspace()), 'workspace-new-terminal')}
       </Show>
 
-      {/* Copying a URL, revealing a directory and opening an editor mutate
-          nothing, so this stays for an archived workspace. */}
-      <WorkspaceRepositoryMenu
-        repos={repos}
-        repoGitStore={props.repoGitStore}
-        isLocal={isLocal}
-        menuOpen={menuOpen}
-      />
+      <RepositoryTargetMenu
+        targets={repos}
+        labelOf={repo => repo.label}
+        header="Repositories"
+        testIdPrefix="workspace-repository"
+      >
+        {repoActions}
+      </RepositoryTargetMenu>
 
       <hr />
 
