@@ -37,7 +37,6 @@ export interface ControlResponseHandlingResult {
   handleControlSend: (content: string) => boolean | void
   handleSend: (content: string) => boolean | void
   cleanupControlRequestDrafts: (requestId: string) => void
-  sendControlResponse: (agentId: string, bytes: Uint8Array) => Promise<void>
   togglePlanMode: () => void
   resetEditorHeight: () => void
 }
@@ -148,14 +147,15 @@ export function useControlResponseHandling(
     })
   })
 
-  // Handles editor text for control requests. Threads the per-instance claim token of the request
-  // being answered (the active one) so the worker's idempotency claim keys on THIS instance even
-  // after the request leaves the store -- the typed-feedback / ask-question sibling of the footer
-  // action path in AgentEditorPanel.
-  const sendControlResponse = (agentId: string, bytes: Uint8Array): Promise<void> => {
-    const request = activeControlRequest()
-    return props.onControlResponse?.(agentId, request?.requestId ?? '', bytes, request?.claimToken) ?? Promise.resolve()
-  }
+  // Answers as ONE request instance: the one the caller captured before it acted.
+  // The worker's idempotency claim then keys on the instance the user answered,
+  // and it still does after the store drops that instance -- the typed-feedback
+  // and ask-question sibling of the footer action path in AgentEditorPanel,
+  // which keys its owner on the request for the same reason. Reading the store
+  // again inside the responder would answer as whatever is active by then, and
+  // as no request at all once the queue is empty.
+  const responderFor = (request: ControlRequest) => (agentId: string, bytes: Uint8Array): Promise<void> =>
+    props.onControlResponse?.(agentId, request.requestId, bytes, request.claimToken) ?? Promise.resolve()
 
   const cleanupControlRequestDrafts = (requestId: string) => {
     if (!props.agentId)
@@ -173,6 +173,7 @@ export function useControlResponseHandling(
     const req = activeControlRequest()
     if (!req)
       return
+    const respond = responderFor(req)
     // Resolve the agent's own provider plugin -- no Claude fallback. A live agent
     // always carries a real provider, so a missing plugin means an UNSPECIFIED or
     // unregistered provider (a bug, e.g. backend/frontend version skew). Refuse to
@@ -192,7 +193,7 @@ export function useControlResponseHandling(
       }
       const questions = capability.extractQuestions(req.payload)
       const sendAskResponse = () => {
-        void capability.sendAnswer(req.agentId, sendControlResponse, req.requestId, questions, askState, req.payload)
+        void capability.sendAnswer(req.agentId, respond, req.requestId, questions, askState, req.payload)
       }
       const submitted = trySubmitAskUserQuestion(
         askState,
@@ -211,7 +212,7 @@ export function useControlResponseHandling(
     const response = plugin.buildControlResponse?.(req.payload, content, req.requestId)
     if (response) {
       const bytes = new TextEncoder().encode(JSON.stringify(response))
-      const sent = sendControlResponse(req.agentId, bytes)
+      const sent = respond(req.agentId, bytes)
       if (content.trim() && plugin.controlFeedbackAsFollowUpMessage?.(req.payload)) {
         void sent.then(() => props.onSendMessage(content)).catch(() => {})
       }
@@ -239,7 +240,6 @@ export function useControlResponseHandling(
     handleSend,
     isAskUserQuestion,
     resetEditorHeight: resetEditorHeightFn,
-    sendControlResponse,
     showInterrupt,
     togglePlanMode,
   }
