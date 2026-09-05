@@ -1510,8 +1510,8 @@ func sendFailedPrecondition(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
 }
 
-// sendUnavailable signals a transient failure (the caller should retry). The
-// frontend's STARTING-state queue re-queues messages that receive this code.
+// sendUnavailable signals a transient failure. The frontend RPC layer retries
+// this code with a restricted exponential backoff.
 func sendUnavailable(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.Unavailable), msg)
 }

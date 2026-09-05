@@ -5,7 +5,11 @@ interface AgentInputQueueState {
   byAgent: Record<string, AgentInputQueueSnapshot>
 }
 
-export function createAgentInputQueueStore() {
+/**
+ * Create the authoritative queue store. The live-agent check rejects an event
+ * that arrives after a local or remote tab close removed its queue entry.
+ */
+export function createAgentInputQueueStore(isLiveAgent: (agentId: string) => boolean = () => true) {
   const [state, setState] = createStore<AgentInputQueueState>({ byAgent: {} })
 
   return {
@@ -13,6 +17,8 @@ export function createAgentInputQueueStore() {
 
     apply(snapshot: AgentInputQueueSnapshot | undefined): boolean {
       if (!snapshot?.agentId)
+        return false
+      if (!isLiveAgent(snapshot.agentId))
         return false
       const current = state.byAgent[snapshot.agentId]
       if (current && current.revision > snapshot.revision)

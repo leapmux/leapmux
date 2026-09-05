@@ -424,6 +424,30 @@ type blockingStub struct {
 
 func (b *blockingStub) Wait() error { <-b.waitCh; return nil }
 
+func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager(nil)
+	registeredDuringExit := make(chan bool, 1)
+	m.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
+		registeredDuringExit <- m.HasAgent(agentID)
+	})
+	provider := &blockingStub{waitCh: make(chan struct{})}
+	_, err := m.startAgentWith(context.Background(), Options{
+		AgentID: "exiting", WorkingDir: t.TempDir(),
+	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return provider, nil }, false)
+	require.NoError(t, err)
+
+	close(provider.waitCh)
+	select {
+	case registered := <-registeredDuringExit:
+		assert.True(t, registered, "the exit callback must pause the queue before the slot permits a restart")
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit callback did not run")
+	}
+	require.Eventually(t, func() bool { return !m.HasAgent("exiting") }, time.Second, 10*time.Millisecond)
+}
+
 // TestManager_ExitGoroutineHonorsIdentityGuard verifies the stop-restart race fix: the old
 // provider's background Wait goroutine, when it unblocks AFTER a new provider has taken the
 // agent's slot (the restart case), must NOT delete the new provider's map entry or its
@@ -458,7 +482,7 @@ func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 	m.cachedOptionGroups["r"] = cachedCatalog{groups: newProvider.groups, model: "b"}
 	m.mu.Unlock()
 
-	// Release A; its goroutine runs the identity-guarded delete, then fires onExit.
+	// Release A; its goroutine fires onExit, then runs the identity-guarded delete.
 	close(old.waitCh)
 	select {
 	case <-exited:

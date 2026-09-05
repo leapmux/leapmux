@@ -98,6 +98,9 @@ const EffortHigh = "high"
 // shutdown) rather than a crash. The background-task registry uses stopped to
 // label rows 'stopped' vs 'interrupted'.
 //
+// The Manager keeps the exiting provider registered until this handler returns.
+// This lets the handler pause durable input before the slot permits a restart.
+//
 // A handler must NEVER acquire the agent's lifecycle lock, directly or through
 // a Manager method that takes it (SendInput, SendChildInput, RestartAgent,
 // StopAndWaitAgent). It runs on the exit goroutine, and a lifecycle caller is

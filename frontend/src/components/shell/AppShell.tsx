@@ -152,7 +152,7 @@ export const AppShell: Component = () => {
   // via useTabPersistence.
   const selection = createTabSelectionStore(tabView, tabMetadata)
   const chatStore = createChatStore()
-  const agentInputQueueStore = createAgentInputQueueStore()
+  const agentInputQueueStore = createAgentInputQueueStore(agentId => tabView.getAgentTab(agentId) !== undefined)
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
   const layoutStore = createLayoutStore({
@@ -931,7 +931,10 @@ export const AppShell: Component = () => {
     onCleanup(() => clearTimeout(timer))
   })
 
-  useMetadataSweep(() => crdtState(), tabMetadata)
+  useMetadataSweep(() => crdtState(), tabMetadata, (retired) => {
+    for (const tabId of retired)
+      agentInputQueueStore.clearAgent(tabId)
+  })
   // The tile owners, not a third walk of their trees: both stores memoize
   // "which tiles does this workspace have" per tick, and the sweep asks the
   // same question. Wrapped rather than passed unbound so the call site does not
@@ -1097,9 +1100,9 @@ export const AppShell: Component = () => {
     // tile-id lookup returned nothing.
     if (workspace.activeWorkspaceId() !== deletedId)
       return
-    // No store to clear: the workspace's tabs leave the projection when the hub
-    // tombstones them, and `useMetadataSweep` reclaims their metadata on the
-    // next tick. Only the selection pointer has to be dropped explicitly.
+    // No store to clear here: the workspace's tabs leave the projection when
+    // the Hub tombstones them. `useMetadataSweep` then reclaims their metadata
+    // and queue snapshots. Only the selection pointer needs an explicit write.
     // A null id clears the selection, which is what surfaces the
     // "Create a new workspace..." empty state once the last one is gone.
     switchWorkspace(nextWorkspaceId)

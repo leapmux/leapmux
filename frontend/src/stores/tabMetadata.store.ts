@@ -109,6 +109,10 @@ export interface AgentMeta {
   parentAgentId?: string
   /** Backend-authoritative: a child that accepts user messages is steerable. */
   acceptsMessages?: boolean
+  /** Whether the live provider accepts an explicit queue-head steer. */
+  supportsSteering?: boolean
+  /** The root agent that owns this agent's process and notification streams. */
+  rootAgentId?: string
 }
 
 export interface TerminalMeta {
@@ -600,11 +604,15 @@ export type TabMetadataStore = ReturnType<typeof createTabMetadataStore>
  * count moves), but it is now the only per-tick cost and it feeds a memo that
  * stays quiet until the set actually changes.
  *
+ * `onRetire` lets sibling per-tab stores use this same proven lifecycle edge.
+ * It runs before metadata drops the rows and only when at least one tab left.
+ *
  * Must be called inside a SolidJS reactive root.
  */
 export function useMetadataSweep(
   crdtState: () => UserCrdtState | null,
   metadata: TabMetadataStore,
+  onRetire?: (tabIds: ReadonlySet<string>) => void,
 ): void {
   const liveTabIdSet = createMemo<Set<string> | null>(
     () => {
@@ -650,6 +658,8 @@ export function useMetadataSweep(
       seen.delete(tabId)
     for (const tabId of live)
       seen.add(tabId)
+    if (retired.size > 0)
+      onRetire?.(retired)
     metadata.dropTabs(retired)
   })
 }

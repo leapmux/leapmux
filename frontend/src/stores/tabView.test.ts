@@ -84,9 +84,14 @@ describe('tabView', () => {
       createRoot((dispose) => {
         const { view, metadata } = mountView()
         emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
-        metadata.patch('a1', { title: 'My Agent', gitToplevel: '/repo' })
+        metadata.patch('a1', {
+          title: 'My Agent',
+          gitToplevel: '/repo',
+          supportsSteering: true,
+          rootAgentId: 'root-1',
+        })
 
-        const tab = view.getById(TabType.AGENT, 'a1')!
+        const tab = view.getAgentTab('a1')!
         // Placement from the projection...
         expect(tab.tileId).toBe(harness.rootTileId)
         expect(tab.workerId).toBe('wkr-1')
@@ -94,6 +99,8 @@ describe('tabView', () => {
         // ...metadata from the store, joined on tab id.
         expect(tab.title).toBe('My Agent')
         expect(tab.gitToplevel).toBe('/repo')
+        expect(tab.supportsSteering).toBe(true)
+        expect(tab.rootAgentId).toBe('root-1')
         dispose()
       })
     })

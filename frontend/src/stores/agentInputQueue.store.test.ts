@@ -33,4 +33,18 @@ describe('agent input queue store', () => {
     expect(store.get('a1')).toBeUndefined()
     expect('a1' in store.state.byAgent).toBe(false)
   })
+
+  it('rejects a late snapshot after close and accepts one after revival', () => {
+    const live = new Set(['a1'])
+    const store = createAgentInputQueueStore(agentId => live.has(agentId))
+    expect(store.apply(create(AgentInputQueueSnapshotSchema, { agentId: 'a1', revision: 1n }))).toBe(true)
+
+    live.delete('a1')
+    store.clearAgent('a1')
+    expect(store.apply(create(AgentInputQueueSnapshotSchema, { agentId: 'a1', revision: 2n }))).toBe(false)
+    expect(store.get('a1')).toBeUndefined()
+
+    live.add('a1')
+    expect(store.apply(create(AgentInputQueueSnapshotSchema, { agentId: 'a1', revision: 3n }))).toBe(true)
+  })
 })

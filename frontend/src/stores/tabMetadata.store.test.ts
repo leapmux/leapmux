@@ -410,7 +410,8 @@ describe('tabMetadata', () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
         const [state, setState] = createSignal<SweepState>({ tabs: { t1: {} } })
-        useMetadataSweep(() => state() as never, m)
+        const retired: string[] = []
+        useMetadataSweep(() => state() as never, m, ids => retired.push(...ids))
         m.patch('t1', { title: 'shell', screen: new Uint8Array(1024) })
         await flush()
         expect(m.get('t1')?.title).toBe('shell')
@@ -418,6 +419,7 @@ describe('tabMetadata', () => {
         setState({ tabs: {} })
         await flush()
         expect(m.get('t1')).toBeUndefined()
+        expect(retired).toEqual(['t1'])
 
         dispose()
       })

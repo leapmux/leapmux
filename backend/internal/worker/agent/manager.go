@@ -309,17 +309,6 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		}()
 
 		err := provider.Wait()
-		m.mu.Lock()
-		// Only remove the entries if they still point at THIS provider. The slot is normally
-		// freed by this goroutine, but stopAndWait (used by every restart) waits for this
-		// goroutine to finish before it returns and re-registers a new provider, so the
-		// identity check is a defensive guard rather than a race the cleanup paths can trigger.
-		if m.agents[opts.AgentID] == provider {
-			delete(m.agents, opts.AgentID)
-			delete(m.cachedOptionGroups, opts.AgentID)
-		}
-		m.mu.Unlock()
-
 		exitCode := 0
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -362,6 +351,17 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		if onExit != nil {
 			onExit(opts.AgentID, exitCode, err, stopped)
 		}
+
+		m.mu.Lock()
+		// Release the slot only after onExit pauses durable input. A turn-end
+		// drain can otherwise see no provider and restart a process after a crash.
+		// Only remove entries that still point at this provider. The identity
+		// check protects a defensive replacement from an old exit goroutine.
+		if m.agents[opts.AgentID] == provider {
+			delete(m.agents, opts.AgentID)
+			delete(m.cachedOptionGroups, opts.AgentID)
+		}
+		m.mu.Unlock()
 	}()
 
 	return confirmedOptions, nil
@@ -1090,7 +1090,9 @@ func (m *Manager) CurrentSettings(agentID string) SettingsApplyResult {
 	return p.SettingsSnapshot()
 }
 
-// HasAgent returns true if an agent is running with the given agent ID.
+// HasAgent returns true while the Manager owns the agent's lifecycle slot. The
+// slot stays owned through the exit callback so that callback can pause input
+// before another process starts.
 func (m *Manager) HasAgent(agentID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
