@@ -11,7 +11,7 @@ import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { getPlatform } from '~/lib/shortcuts/platform'
 import { isDesktopApp } from '~/lib/systemInfo'
 import * as styles from './CustomTitlebar.css'
-import { OpenInEditorButton } from './OpenInEditorButton'
+import { OpenInAppButton } from './OpenInAppButton'
 import { PanelLeftFilled, PanelRightFilled } from './SidebarIcons'
 import { AppAboutMenuItem, UserMenuItems } from './UserMenuItems'
 import { WindowCloseIcon, WindowMaximizeIcon, WindowMinimizeIcon, WindowRestoreIcon } from './WindowControlIcons'
@@ -42,7 +42,7 @@ type CustomTitlebarProps = WorkspaceCustomTitlebarProps | MinimalCustomTitlebarP
 
 const WorkspaceActions: Component<WorkspaceCustomTitlebarProps> = props => (
   <>
-    <OpenInEditorButton workingDir={() => props.activeWorkingDir?.()} />
+    <OpenInAppButton workingDir={() => props.activeWorkingDir?.()} />
 
     <IconButton
       icon={props.leftSidebarVisible ? PanelLeftFilled : PanelLeft}

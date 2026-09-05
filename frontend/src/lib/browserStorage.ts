@@ -161,7 +161,7 @@ export const KEY_BROWSER_PREFS = 'browser-prefs'
 export const KEY_MRU_AGENT_PROVIDERS = 'mru-agent-providers'
 export const KEY_KEY_PINS = 'key-pins'
 export const KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN = 'directory-selector-show-hidden'
-export const KEY_PREFERRED_EDITOR = 'preferred-editor'
+export const KEY_PREFERRED_EXTERNAL_APP = 'preferred-external-app'
 export const KEY_ACTIVE_WORKSPACE = 'active-workspace'
 export const KEY_WORKSPACE_SORT = 'workspace-sort'
 export const KEY_USER_EVENTS_RELAY_SEQ = 'user-events-relay-seq'
@@ -282,7 +282,7 @@ export const LOCAL_KEY_SPECS = {
   [KEY_MRU_AGENT_PROVIDERS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
   [KEY_KEY_PINS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
   [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
-  [KEY_PREFERRED_EDITOR]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
+  [KEY_PREFERRED_EXTERNAL_APP]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
   // The workspace this account was last on. A year rather than the days its
   // templated table-mates get: this is a preference, not a cache -- it is the
   // only record of where the app should reopen, since the URL no longer carries

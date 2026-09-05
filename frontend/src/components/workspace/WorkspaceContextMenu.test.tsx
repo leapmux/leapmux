@@ -1,6 +1,6 @@
 import type { Tab } from '~/stores/tab.types'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkspaceContextMenu } from '~/components/workspace/WorkspaceContextMenu'
 import { SectionSchema, SectionType, Sidebar } from '~/generated/proto/leapmux/v1/section_pb'
@@ -9,6 +9,12 @@ import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubWorkspaceStartActions } from '~/test-support/branchMenu'
 import { withPreferences } from '~/test-support/preferencesProvider'
+
+const copyTextMock = vi.hoisted(() => vi.fn())
+vi.mock('~/lib/clipboard', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/clipboard')>(),
+  copyTextToClipboard: (...args: unknown[]) => copyTextMock(...args),
+}))
 
 /**
  * The REAL `DropdownMenu`, not a mock.
@@ -116,12 +122,16 @@ describe('workspaceContextMenu', () => {
     const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
     renderMenu({ getTabs: () => tabs, repoGitStore: store })
 
+    // No repository resolved yet, so the menu shows the no-target shape.
     expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent...')
     expect(screen.queryByTestId('workspace-info-button')).not.toBeInTheDocument()
 
     openMenu()
 
-    expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent in leapmux...')
+    // Now it has one, so the no-target items are gone and the repository's
+    // own block replaces them.
+    expect(screen.queryByTestId('workspace-new-agent')).not.toBeInTheDocument()
+    expect(itemsOf('workspace-context-menu')).toContain('Copy repository path')
     expect(screen.getByTestId('workspace-info-button')).toBeInTheDocument()
   })
 
@@ -132,6 +142,29 @@ describe('workspaceContextMenu', () => {
     expect(itemsOf('workspace-context-menu')).toEqual([
       'New agent...',
       'New terminal...',
+      'Rename',
+      'Move to',
+      'Archive',
+      'Delete',
+    ])
+  })
+
+  // Repository FIRST, then the actions on it. The previous shape asked for the
+  // action first, which split one repository's actions across three submenus.
+  it('puts one repository\'s every action in one flat block, in order', () => {
+    const { store, tabs } = tabsAndStore([
+      { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
+    ])
+    renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+    openMenu()
+
+    // The flat shape names the repository in the item, because nothing else on
+    // screen does -- and that is the label this menu already carried.
+    expect(itemsOf('workspace-context-menu')).toEqual([
+      'New agent in example.com/o/r...',
+      'New terminal in example.com/o/r...',
+      'Copy repository URL',
+      'Copy repository path',
       'Rename',
       'Move to',
       'Archive',
@@ -234,10 +267,11 @@ describe('workspaceContextMenu', () => {
       renderMenu({ getTabs: () => tabs, repoGitStore: store, startActions })
       openMenu()
 
-      expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent in leapmux...')
-      expect(screen.queryByTestId('workspace-new-agent-popover')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-repository-leapmux')).not.toBeInTheDocument()
 
-      fireEvent.click(screen.getByTestId('workspace-new-agent'))
+      // No origin on this fixture, so the label falls back to the directory
+      // name -- which is what `repoKeyAndLabel` does for a local-only clone.
+      fireEvent.click(screen.getByRole('menuitem', { name: 'New agent in leapmux...', hidden: true }))
       expect(startActions.onNewAgentAt).toHaveBeenCalledWith({
         workspaceId: 'ws-1',
         workerId: 'w1',
@@ -245,7 +279,7 @@ describe('workspaceContextMenu', () => {
       })
     })
 
-    it('renders a submenu for two repositories', () => {
+    it('renders one submenu per repository for two repositories', () => {
       const { store, tabs } = tabsAndStore([
         { toplevel: '/home/me/alpha' },
         { toplevel: '/home/me/beta' },
@@ -253,11 +287,15 @@ describe('workspaceContextMenu', () => {
       const startActions = stubWorkspaceStartActions()
       renderMenu({ getTabs: () => tabs, repoGitStore: store, startActions })
       openMenu()
-      fireEvent.click(screen.getByTestId('workspace-new-terminal'))
 
-      expect(itemsOf('workspace-new-terminal-popover').toSorted()).toEqual(['alpha', 'beta'])
+      expect(itemsOf('workspace-context-menu').toSorted())
+        .toEqual(['Archive', 'Delete', 'Move to', 'Rename', 'alpha', 'beta'])
 
-      fireEvent.click(within(screen.getByTestId('workspace-new-terminal-popover')).getByText('beta'))
+      fireEvent.click(screen.getByTestId('workspace-repository-beta'))
+      fireEvent.click(
+        within(screen.getByTestId('workspace-repository-beta-popover'))
+          .getByRole('menuitem', { name: 'New terminal...', hidden: true }),
+      )
       expect(startActions.onNewTerminalAt).toHaveBeenCalledWith({
         workspaceId: 'ws-1',
         workerId: 'w1',
@@ -265,26 +303,70 @@ describe('workspaceContextMenu', () => {
       })
     })
 
+    // Every repository's actions now live together, so the two blocks a
+    // submenu holds are the tab-creation pair and the shared repository block.
+    it('gives each repository submenu the same block the flat shape has', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/alpha', originUrl: 'https://example.com/o/a.git' },
+        { toplevel: '/home/me/beta' },
+      ])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      openMenu()
+      // Labelled by the formatted origin, which is what `repoKeyAndLabel`
+      // prefers over the directory name once a repository has a remote.
+      fireEvent.click(screen.getByTestId('workspace-repository-example-com-o-a'))
+
+      expect(itemsOf('workspace-repository-example-com-o-a-popover')).toEqual([
+        'New agent...',
+        'New terminal...',
+        'Copy repository URL',
+        'Copy repository path',
+      ])
+    })
+
     // "No checkout" and "no REACHABLE checkout" are different states, and the
     // no-target item is only right for the first. It means "follow the current
     // tab context", so offering it for the second started an agent somewhere
     // else entirely -- a machine the user never picked.
-    it('refuses to start, and says why, when every checkout is on an offline worker', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+    // An offline repository is DISABLED, not hidden. It used to vanish from
+    // the tab-creation submenu while still appearing under Repository, so one
+    // repository was in one menu and not the other.
+    it('disables only the tab-creation items when the repository\'s worker is offline', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
+      ])
       const startActions = stubWorkspaceStartActions()
       renderMenu({
         getTabs: () => tabs,
         repoGitStore: store,
         isWorkerOnline: () => false,
+        isLocalWorkerFn: () => false,
         startActions,
       })
       openMenu()
 
-      const item = screen.getByTestId('workspace-new-agent') as HTMLButtonElement
-      expect(item.textContent).toBe('New agent...')
-      expect(item).toBeDisabled()
-      fireEvent.click(item)
+      const newAgent = screen.getByRole('menuitem', { name: 'New agent in example.com/o/r...', hidden: true })
+      expect(newAgent).toBeDisabled()
+      // The repository block stays usable: it copies text the browser already
+      // holds, which needs no Worker at all. Read before the click below,
+      // because a click on any item dismisses the whole menu.
+      expect(screen.getByRole('menuitem', { name: 'Copy repository path', hidden: true })).not.toBeDisabled()
+      expect(screen.getByRole('menuitem', { name: 'Copy repository URL', hidden: true })).not.toBeDisabled()
+
+      fireEvent.click(newAgent)
       expect(startActions.onNewAgentAt).not.toHaveBeenCalled()
+    })
+
+    // The no-target item means "follow the current tab context", so a
+    // workspace that HAS a repository must never fall back to it: it would
+    // start an agent on a machine the user never picked.
+    it('never offers the no-target item once a repository exists', () => {
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, isWorkerOnline: () => false })
+      openMenu()
+
+      expect(screen.queryByTestId('workspace-new-agent')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-new-terminal')).not.toBeInTheDocument()
     })
 
     // The other half: a workspace with NO checkout at all keeps the no-target
@@ -307,52 +389,42 @@ describe('workspaceContextMenu', () => {
     })
   })
 
-  describe('the Repository submenu', () => {
-    it('offers Copy repository URL for a repository that has an origin', () => {
-      const { store, tabs } = tabsAndStore([
-        { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
-      ])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
-      openMenu()
-      fireEvent.click(screen.getByTestId('workspace-repository'))
-
-      expect(itemsOf('workspace-repository-popover')).toEqual(['Copy repository URL'])
-    })
-
-    it('is absent for a remote worker with no origin, which offers nothing', () => {
-      // Both desktop items open the LOCAL Finder or editor, so a remote
-      // worker's absolute path either does not exist here or -- worse -- exists
-      // and is a different directory.
+  describe('the Repository block', () => {
+    it('offers Copy repository URL only for a repository that has an origin', () => {
       const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
       renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
       openMenu()
 
-      expect(screen.queryByTestId('workspace-repository')).not.toBeInTheDocument()
+      const items = itemsOf('workspace-context-menu')
+      expect(items).not.toContain('Copy repository URL')
+      expect(items).toContain('Copy repository path')
     })
 
+    // Reveal opens the LOCAL file manager, so a remote worker's absolute path
+    // either does not exist here or -- worse -- exists and is a different
+    // directory. The PATH is still worth copying: pasting it into an ssh
+    // session on the machine that has it is exactly the use.
     it('offers Reveal in file manager only for a LOCAL worker', () => {
       const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      openMenu()
+      expect(itemsOf('workspace-context-menu')).not.toContain('Reveal in file manager')
+
+      cleanup()
       renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => true })
       openMenu()
-      fireEvent.click(screen.getByTestId('workspace-repository'))
-
-      expect(itemsOf('workspace-repository-popover')).toContain('Reveal in file manager')
+      expect(itemsOf('workspace-context-menu')).toContain('Reveal in file manager')
     })
 
-    it('groups the actions per repository once there is more than one', () => {
+    it('copies the checkout path, not the origin URL, from Copy repository path', async () => {
       const { store, tabs } = tabsAndStore([
-        { toplevel: '/home/me/alpha', originUrl: 'https://example.com/o/a.git' },
-        { toplevel: '/home/me/beta', originUrl: 'https://example.com/o/b.git' },
+        { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
       ])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
       openMenu()
-      fireEvent.click(screen.getByTestId('workspace-repository'))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy repository path', hidden: true }))
 
-      const popover = screen.getByTestId('workspace-repository-popover')
-      expect(within(popover).getAllByRole('group', { hidden: true }).map(g => g.getAttribute('aria-label')).toSorted())
-        .toEqual(['example.com/o/a', 'example.com/o/b'])
-      expect(itemsOf('workspace-repository-popover'))
-        .toEqual(['Copy repository URL', 'Copy repository URL'])
+      await vi.waitFor(() => expect(copyTextMock).toHaveBeenCalledWith('/home/me/leapmux'))
     })
 
     it('stays available on an ARCHIVED workspace, because it mutates nothing', () => {
@@ -363,12 +435,18 @@ describe('workspaceContextMenu', () => {
         getTabs: () => tabs,
         repoGitStore: store,
         isArchived: true,
+        isLocalWorkerFn: () => false,
         sections: [IN_PROGRESS, ARCHIVED],
         currentSectionId: 'sec-archived',
       })
       openMenu()
 
-      expect(screen.getByTestId('workspace-repository')).toBeInTheDocument()
+      // The read-only rows survive; the two that open a tab do not.
+      const items = itemsOf('workspace-context-menu')
+      expect(items).toContain('Copy repository URL')
+      expect(items).toContain('Copy repository path')
+      expect(items).not.toContain('New agent...')
+      expect(items).not.toContain('New terminal...')
     })
   })
 

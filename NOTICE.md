@@ -107428,7 +107428,7 @@ separately to make their provenance explicit.
 
 Source: <https://github.com/lobehub/lobe-icons>
 
-Agent provider icons in `frontend/src/components/common/AgentProviderIcon.tsx` and the Cursor/Windsurf editor glyphs in `frontend/src/components/common/EditorIcons.tsx` are derived from this icon collection.
+Agent provider icons in `frontend/src/components/common/AgentProviderIcon.tsx` and the Cursor/Windsurf editor glyphs in `frontend/src/components/common/ExternalAppIcons.tsx` are derived from this icon collection.
 
 ```
 MIT License
@@ -107982,7 +107982,7 @@ SOFTWARE.
 
 Source: <https://github.com/simple-icons/simple-icons>
 
-Path data for the Sublime Text, Zed, Xcode, and Notepad++ editor glyphs in `frontend/src/components/common/EditorIcons.tsx` was extracted from this collection's `data/simple-icons.json` and re-rendered as inline SVG components.
+Path data for the Sublime Text, Zed, Xcode, and Notepad++ editor glyphs in `frontend/src/components/common/ExternalAppIcons.tsx` was extracted from this collection's `data/simple-icons.json` and re-rendered as inline SVG components.
 
 ```
 # CC0 1.0 Universal

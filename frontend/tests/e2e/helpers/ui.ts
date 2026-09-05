@@ -1442,6 +1442,57 @@ function branchMenuTrigger(row: Locator): Locator {
 }
 
 /**
+ * The first repository-group row under `root`.
+ *
+ * `:visible`-scoped for the same reason as {@link branchGroupRow}: the app
+ * mounts the sidebar twice, and an unscoped `.first()` lands on the off-screen
+ * copy, whose row refuses a hover because the on-screen sidebar covers it.
+ *
+ * Pass a workspace's own `workspace-children-<id>` subtree as `root` whenever
+ * an earlier test in the file left another workspace expanded -- rooted at the
+ * page, `.first()` answers for whichever workspace sits highest in the sidebar.
+ *
+ * The row is the HEADER alone. Its branch rows are siblings rather than
+ * children, so a locator scoped to this row addresses its own menu and never a
+ * branch's.
+ */
+export function repoGroupRow(root: Page | Locator): Locator {
+  return root.locator(`[data-testid="tab-tree-repo-group"]${VISIBLE}`).first()
+}
+
+/** The repository row's three-dot trigger. Only the trigger carries `aria-expanded`. */
+function repoMenuTrigger(row: Locator): Locator {
+  return row.locator('[data-testid="repo-row-menu-trigger"]')
+}
+
+/**
+ * Open a repository group's three-dot menu, with `requiredItem` on screen.
+ *
+ * The item is looked up INSIDE the row, not on the page: `DropdownMenu` renders
+ * its children eagerly, so every other repository row on screen holds a hidden
+ * copy of the same item and a page-rooted `getByRole` resolves to several.
+ */
+export async function openRepoMenu(row: Locator, requiredItem = 'Collapse all branches') {
+  await openRowMenu(row, repoMenuTrigger(row), repoMenuItem(row, requiredItem))
+}
+
+/** Open a repository group's three-dot menu and click one of its items. */
+export async function clickRepoMenuItem(row: Locator, itemName: string) {
+  await clickRowMenuItem(row, repoMenuTrigger(row), repoMenuItem(row, itemName))
+}
+
+/**
+ * One item of a repository row's menu, by its exact name.
+ *
+ * `exact`, because Playwright matches an accessible name by substring
+ * otherwise -- and this menu carries `Copy repository URL` beside
+ * `Copy repository path`, so a loose `Copy repository` matches both.
+ */
+export function repoMenuItem(row: Locator, name: string): Locator {
+  return row.getByRole('menuitem', { name, exact: true })
+}
+
+/**
  * Open a branch group's three-dot menu, with `requiredItem` on screen.
  *
  * Reopening the SAME menu right after a dialog closes needs a wait in between:

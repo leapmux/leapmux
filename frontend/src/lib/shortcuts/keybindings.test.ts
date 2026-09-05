@@ -13,7 +13,7 @@ const DEFAULTS: Keybinding[] = [
   { key: '$mod+n', command: 'app.newAgent', when: '!dialogOpen' },
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
   { key: '$mod+w', command: 'app.closeActiveTab' },
-  { key: '$mod+Shift+e', command: 'app.openInExternalEditor', when: 'isDesktop' },
+  { key: '$mod+Shift+e', command: 'app.openInExternalApp', when: 'isDesktop' },
   { key: '$mod+Shift+BracketLeft', command: 'app.toggleLeftSidebar' },
 ]
 

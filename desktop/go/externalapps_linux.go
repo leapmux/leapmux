@@ -2,14 +2,20 @@
 
 package main
 
+import "os/exec"
+
 const (
 	jbToolboxScript = "~/.local/share/JetBrains/Toolbox/scripts"
 	snapBin         = "/snap/bin"
 	flatpakBin      = "/var/lib/flatpak/exports/bin"
 )
 
-func defaultEditorSpecs() []EditorSpec {
-	return []EditorSpec{
+func defaultExternalAppSpecs() []ExternalAppSpec {
+	return []ExternalAppSpec{
+		// The file manager leads the list, and the menu keeps it in its own
+		// group ahead of the editors.
+		fileManagerSpec("File Manager"),
+
 		// VS Code family
 		{
 			ID:          "vscode",
@@ -95,8 +101,8 @@ func defaultEditorSpecs() []EditorSpec {
 
 // jbSpec composes the standard JetBrains detection chain on Linux:
 // Toolbox script → PATH → Snap.
-func jbSpec(id, displayName, cli, snapName string) EditorSpec {
-	return EditorSpec{
+func jbSpec(id, displayName, cli, snapName string) ExternalAppSpec {
+	return ExternalAppSpec{
 		ID:          id,
 		DisplayName: displayName,
 		detect: tryAll(
@@ -105,4 +111,20 @@ func jbSpec(id, displayName, cli, snapName string) EditorSpec {
 			tryPath(snapBin+"/"+snapName),
 		),
 	}
+}
+
+// fileManagerCommand opens a directory in whichever file manager the desktop
+// registered for a directory. `xdg-open` is the portable route: it reads the
+// desktop's own association rather than naming Nautilus, Dolphin or Thunar,
+// any of which may be the one installed.
+//
+// PATH order stays as it is on this platform, unlike macOS: a Linux editor
+// raises its own window through the window manager when a second invocation
+// hands the folder to the running instance, so there is nothing an `open`
+// equivalent would fix here.
+//
+// The exit code is meaningful: xdg-open reports "no method available" and a
+// missing file with distinct nonzero codes.
+func fileManagerCommand(dir string) (*exec.Cmd, bool) {
+	return exec.Command("xdg-open", dir), true
 }

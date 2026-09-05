@@ -18,6 +18,7 @@ import {
   bufDescriptor,
   checkCodexBypass,
   checkDesktop,
+  checkExternalApps,
   checkHeaders,
   checkListen,
   checkProviderProtocol,
@@ -38,6 +39,7 @@ import {
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
   emitGoDesktop,
+  emitGoExternalApps,
   emitGoHeaders,
   emitGoListen,
   emitGoRetry,
@@ -47,6 +49,7 @@ import {
   emitGoWire,
   emitRsDesktop,
   emitTsDesktop,
+  emitTsExternalApps,
   emitTsHeaders,
   emitTsListen,
   emitTsProviders,
@@ -600,6 +603,7 @@ describe('generate', () => {
       'backend/generated/contracts/codex-bypass.go',
       'backend/generated/contracts/copilot-permissions.go',
       'backend/generated/contracts/desktop.go',
+      'backend/generated/contracts/external-apps.go',
       'backend/generated/contracts/goose-protocol.go',
       'backend/generated/contracts/headers.go',
       'backend/generated/contracts/listen.go',
@@ -622,6 +626,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/codex-bypass.ts',
       'frontend/src/generated/contracts/copilot-permissions.ts',
       'frontend/src/generated/contracts/desktop.ts',
+      'frontend/src/generated/contracts/external-apps.ts',
       'frontend/src/generated/contracts/goose-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
       'frontend/src/generated/contracts/listen.ts',
@@ -1404,5 +1409,122 @@ describe('enumValues', () => {
 
   it('fails with a ContractError for an unknown enum or file', () => {
     expectContractError(() => enumValues({ file: [] }, 'nope.proto', 'X'), 'not found')
+  })
+})
+
+// The id vocabulary was hand-written twice before this contract -- the three
+// Go spec tables and the browser's icon table -- paired only by a comment.
+describe('checkExternalApps', () => {
+  const KINDS = [
+    'EXTERNAL_APP_KIND_UNSPECIFIED',
+    'EXTERNAL_APP_KIND_EDITOR',
+    'EXTERNAL_APP_KIND_FILE_MANAGER',
+  ]
+
+  function contract(overrides = {}) {
+    return {
+      _readme: 'x',
+      kinds: {
+        EXTERNAL_APP_KIND_EDITOR: 'an editor',
+        EXTERNAL_APP_KIND_FILE_MANAGER: 'the file manager',
+      },
+      apps: {
+        'file-manager': { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin', 'linux', 'windows'] },
+        'vscode': { kind: 'EXTERNAL_APP_KIND_EDITOR', oses: ['darwin', 'linux', 'windows'] },
+      },
+      ...overrides,
+    }
+  }
+
+  it('accepts a contract that covers every kind and every OS', () => {
+    expect(() => checkExternalApps(contract(), KINDS)).not.toThrow()
+  })
+
+  it('rejects a proto kind with no contract entry', () => {
+    expect(() => checkExternalApps(contract(), [...KINDS, 'EXTERNAL_APP_KIND_NOTEBOOK']))
+      .toThrow(/EXTERNAL_APP_KIND_NOTEBOOK has no kinds entry/)
+  })
+
+  it('rejects a kinds entry the proto no longer carries', () => {
+    const c = contract()
+    c.kinds.EXTERNAL_APP_KIND_GONE = 'removed'
+    expect(() => checkExternalApps(c, KINDS)).toThrow(/matches no ExternalAppKind enum value/)
+  })
+
+  it('rejects the unset value as a kinds entry', () => {
+    const c = contract()
+    c.kinds.EXTERNAL_APP_KIND_UNSPECIFIED = 'nothing'
+    expect(() => checkExternalApps(c, KINDS)).toThrow(/is the unset value/)
+  })
+
+  it('rejects an app whose kind is not a kinds entry', () => {
+    const c = contract()
+    c.apps.vscode.kind = 'EXTERNAL_APP_KIND_MYSTERY'
+    expect(() => checkExternalApps(c, KINDS)).toThrow(/carries kind EXTERNAL_APP_KIND_MYSTERY/)
+  })
+
+  it('rejects a kind no app carries, because the menu can never show it', () => {
+    const c = contract()
+    delete c.apps['file-manager']
+    expect(() => checkExternalApps(c, KINDS)).toThrow(/is carried by no app/)
+  })
+
+  // The app menu renders the file manager as its own always-present group, so
+  // a platform without one leaves that group empty and two make it a choice.
+  it('rejects an OS with no file manager', () => {
+    const c = contract()
+    c.apps['file-manager'].oses = ['darwin', 'windows']
+    expect(() => checkExternalApps(c, KINDS)).toThrow(/linux must carry exactly one/)
+  })
+
+  it('rejects an OS with two file managers', () => {
+    const c = contract()
+    c.apps.finder = { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin'] }
+    expect(() => checkExternalApps(c, KINDS)).toThrow(/darwin must carry exactly one/)
+  })
+})
+
+describe('emitGoExternalApps and emitTsExternalApps', () => {
+  const c = {
+    _readme: 'x',
+    kinds: {
+      EXTERNAL_APP_KIND_EDITOR: 'an editor',
+      EXTERNAL_APP_KIND_FILE_MANAGER: 'the file manager',
+    },
+    apps: {
+      'file-manager': { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin', 'linux', 'windows'] },
+      'vscode': { kind: 'EXTERNAL_APP_KIND_EDITOR', oses: ['darwin', 'linux', 'windows'] },
+      'xcode': { kind: 'EXTERNAL_APP_KIND_EDITOR', oses: ['darwin'] },
+    },
+  }
+
+  it('maps every id to its proto enum value', () => {
+    const go = emitGoExternalApps(c)
+    expect(go).toContain('"vscode":       desktopv1.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR,')
+    expect(go).toContain('"file-manager": desktopv1.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER,')
+  })
+
+  it('lists each OS only the ids that OS carries', () => {
+    const go = emitGoExternalApps(c)
+    const linux = go.slice(go.indexOf('"linux": {'), go.indexOf('"windows": {'))
+    expect(linux).toContain('"vscode"')
+    expect(linux).not.toContain('"xcode"')
+    expect(go.slice(go.indexOf('"darwin": {'), go.indexOf('"linux": {'))).toContain('"xcode"')
+  })
+
+  // Both sides must agree on the vocabulary; that agreement is the whole
+  // reason the table left the two hand-written copies.
+  it('emits the same id set to both languages', () => {
+    const ts = emitTsExternalApps(c)
+    for (const id of Object.keys(c.apps)) {
+      expect(ts).toContain(`"${id}",`)
+      expect(emitGoExternalApps(c)).toContain(`"${id}"`)
+    }
+    expect(ts).toContain('export type ExternalAppId')
+  })
+
+  it('is deterministic', () => {
+    expect(emitGoExternalApps(c)).toBe(emitGoExternalApps(c))
+    expect(emitTsExternalApps(c)).toBe(emitTsExternalApps(c))
   })
 })

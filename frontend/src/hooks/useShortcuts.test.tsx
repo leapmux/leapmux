@@ -1,5 +1,6 @@
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen } from '~/lib/shortcuts/context'
@@ -9,16 +10,17 @@ import { useShortcuts } from './useShortcuts'
 const refreshFileTree = vi.fn()
 const toggleHiddenFiles = vi.fn()
 
-const openInEditorMock = vi.fn()
+const openInExternalAppMock = vi.fn()
 const runtimeStateMock = vi.fn()
-const loadDetectedEditorsMock = vi.fn()
+const loadExternalAppsMock = vi.fn()
+const showWarnToastMock = vi.fn()
 
 vi.mock('~/api/platformBridge', () => ({
   getRuntimeState: () => runtimeStateMock(),
   isTauriApp: () => false,
   openWebInspector: vi.fn(),
   platformBridge: {
-    openInEditor: (...args: unknown[]) => openInEditorMock(...args),
+    openInExternalApp: (...args: unknown[]) => openInExternalAppMock(...args),
   },
   quitApp: vi.fn(),
   resetWebviewZoom: vi.fn(),
@@ -27,12 +29,19 @@ vi.mock('~/api/platformBridge', () => ({
   zoomOutWebview: vi.fn(),
 }))
 
-// Only the DETECTION is mocked. `resolvePreferredEditor` takes the pin and
+// Only the DETECTION is mocked. `resolvePreferredExternalApp` takes the pin and
 // the writer as arguments, so the real one runs here — a hand-mirrored copy
 // of its logic in this file could pass while the real function was wrong.
-vi.mock('~/lib/externalEditors', async importOriginal => ({
-  ...await importOriginal<typeof import('~/lib/externalEditors')>(),
-  loadDetectedEditors: () => loadDetectedEditorsMock(),
+vi.mock('~/lib/externalApps', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/externalApps')>(),
+  loadExternalApps: () => loadExternalAppsMock(),
+}))
+
+// Spread the original: this module has other exports, and the graph under test
+// reaches them through modules this file never names.
+vi.mock('~/components/common/Toast', async importOriginal => ({
+  ...await importOriginal<typeof import('~/components/common/Toast')>(),
+  showWarnToast: (...args: unknown[]) => showWarnToastMock(...args),
 }))
 
 vi.mock('~/components/shell/UserMenuState', () => ({
@@ -49,9 +58,10 @@ afterEach(() => {
   resetCommands()
   refreshFileTree.mockReset()
   toggleHiddenFiles.mockReset()
-  openInEditorMock.mockReset()
+  openInExternalAppMock.mockReset()
   runtimeStateMock.mockReset()
-  loadDetectedEditorsMock.mockReset()
+  loadExternalAppsMock.mockReset()
+  showWarnToastMock.mockReset()
 })
 
 function makeProps() {
@@ -91,8 +101,8 @@ function makeProps() {
     writeToFocusedTerminal: vi.fn(),
     getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }),
     customKeybindings: () => [],
-    preferredEditorId: (): string | undefined => undefined,
-    setPreferredEditorId: vi.fn(),
+    preferredExternalAppId: (): string | undefined => undefined,
+    setPreferredExternalAppId: vi.fn(),
   }
 }
 
@@ -304,7 +314,7 @@ describe('useShortcuts', () => {
     })
   })
 
-  describe('app.openInExternalEditor', () => {
+  describe('app.openInExternalApp', () => {
     // Don't use a default parameter — JS treats `makeSoloProps(undefined)` as
     // "no argument supplied" and substitutes the default, which is the
     // opposite of what we want for the no-workingDir case.
@@ -339,101 +349,166 @@ describe('useShortcuts', () => {
     it('does nothing when there is no active working dir', async () => {
       const props = makeSoloProps(undefined)
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
-      loadDetectedEditorsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
+      loadExternalAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
 
       render(() => {
         useShortcuts(props as any)
         return null
       })
 
-      await getCommand('app.openInExternalEditor')!.handler()
-      expect(openInEditorMock).not.toHaveBeenCalled()
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).not.toHaveBeenCalled()
     })
 
     it('does nothing when not in solo mode', async () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(false))
-      loadDetectedEditorsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
+      loadExternalAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code' }])
 
       render(() => {
         useShortcuts(props as any)
         return null
       })
 
-      await getCommand('app.openInExternalEditor')!.handler()
-      expect(openInEditorMock).not.toHaveBeenCalled()
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).not.toHaveBeenCalled()
     })
 
-    it('does nothing when no editors are detected', async () => {
+    it('does nothing when no applications are detected', async () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
-      loadDetectedEditorsMock.mockResolvedValue([])
+      loadExternalAppsMock.mockResolvedValue([])
 
       render(() => {
         useShortcuts(props as any)
         return null
       })
 
-      await getCommand('app.openInExternalEditor')!.handler()
-      expect(openInEditorMock).not.toHaveBeenCalled()
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).not.toHaveBeenCalled()
     })
 
-    it('opens the MRU editor when set', async () => {
+    it('opens the remembered application when set', async () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
-      loadDetectedEditorsMock.mockResolvedValue([
+      loadExternalAppsMock.mockResolvedValue([
         { id: 'vscode', displayName: 'VS Code' },
         { id: 'zed', displayName: 'Zed' },
       ])
-      props.preferredEditorId = () => 'zed'
+      props.preferredExternalAppId = () => 'zed'
 
       render(() => {
         useShortcuts(props as any)
         return null
       })
 
-      await getCommand('app.openInExternalEditor')!.handler()
-      expect(openInEditorMock).toHaveBeenCalledWith('zed', '/p')
-      expect(props.setPreferredEditorId).not.toHaveBeenCalled()
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).toHaveBeenCalledWith('zed', '/p')
+      expect(props.setPreferredExternalAppId).not.toHaveBeenCalled()
     })
 
-    it('falls back to first detected editor when MRU is unset', async () => {
+    it('falls back to first detected application when MRU is unset', async () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
-      loadDetectedEditorsMock.mockResolvedValue([
+      loadExternalAppsMock.mockResolvedValue([
         { id: 'vscode', displayName: 'VS Code' },
         { id: 'zed', displayName: 'Zed' },
       ])
-      props.preferredEditorId = () => undefined
+      props.preferredExternalAppId = () => undefined
 
       render(() => {
         useShortcuts(props as any)
         return null
       })
 
-      await getCommand('app.openInExternalEditor')!.handler()
-      expect(openInEditorMock).toHaveBeenCalledWith('vscode', '/p')
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).toHaveBeenCalledWith('vscode', '/p')
       // The fallback persists through the REACTIVE preference the props
-      // carry, so the editor menu and the settings row see it too.
-      expect(props.setPreferredEditorId).toHaveBeenCalledWith('vscode')
+      // carry, so the app menu and the settings row see it too.
+      expect(props.setPreferredExternalAppId).toHaveBeenCalledWith('vscode')
     })
 
-    it('falls back to first detected when MRU points at an uninstalled editor', async () => {
+    it('falls back to first detected when MRU points at an uninstalled application', async () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
-      loadDetectedEditorsMock.mockResolvedValue([
+      loadExternalAppsMock.mockResolvedValue([
         { id: 'vscode', displayName: 'VS Code' },
       ])
-      props.preferredEditorId = () => 'zed'
+      props.preferredExternalAppId = () => 'zed'
 
       render(() => {
         useShortcuts(props as any)
         return null
       })
 
-      await getCommand('app.openInExternalEditor')!.handler()
-      expect(openInEditorMock).toHaveBeenCalledWith('vscode', '/p')
-      expect(props.setPreferredEditorId).toHaveBeenCalledWith('vscode')
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).toHaveBeenCalledWith('vscode', '/p')
+      expect(props.setPreferredExternalAppId).toHaveBeenCalledWith('vscode')
+    })
+
+    // The file manager is a first-class choice, so the shortcut opens it like
+    // any other application rather than treating it as a target it must skip.
+    it('opens the file manager when that is the remembered application', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadExternalAppsMock.mockResolvedValue([
+        { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
+        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+      ])
+      props.preferredExternalAppId = () => 'file-manager'
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).toHaveBeenCalledWith('file-manager', '/p')
+      expect(props.setPreferredExternalAppId).not.toHaveBeenCalled()
+    })
+
+    // ...but it is NOT the implicit default. It leads the detected list on
+    // every platform and is always present, so an unset pin that took the
+    // first entry would open Finder on a machine with an editor installed.
+    it('prefers an editor over the file manager when nothing is remembered', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadExternalAppsMock.mockResolvedValue([
+        { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
+        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+      ])
+      props.preferredExternalAppId = () => undefined
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(openInExternalAppMock).toHaveBeenCalledWith('vscode', '/p')
+      expect(props.setPreferredExternalAppId).toHaveBeenCalledWith('vscode')
+    })
+
+    // A refused launch is indistinguishable from an application opening behind
+    // this window, so it is reported rather than only logged.
+    it('reports a refused launch, naming the application', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadExternalAppsMock.mockResolvedValue([
+        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+      ])
+      const refused = new Error('launch Visual Studio Code: exit status 1')
+      openInExternalAppMock.mockRejectedValue(refused)
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalApp')!.handler()
+      expect(showWarnToastMock).toHaveBeenCalledTimes(1)
+      expect(showWarnToastMock.mock.calls[0]![0]).toContain('VS Code')
+      expect(showWarnToastMock.mock.calls[0]![1]).toBe(refused)
     })
   })
 })

@@ -1,8 +1,9 @@
 import type { Component, JSX } from 'solid-js'
 import type { BranchMenuActions } from './branchActions'
+import type { RepositoryCheckout } from './RepositoryMenuItems'
 import type { ContextMenuTargetProps, DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
-import { createSignal } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { NewTabMenuItems } from '~/components/common/NewTabMenuItems'
@@ -10,8 +11,10 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
 import { useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
+import { useExternalApps } from '~/hooks/useExternalApps'
 import { GitMode, gitModeMenuLabel } from '~/hooks/useGitModeState'
 import { dangerMenuItem } from '~/styles/shared.css'
+import { RepositoryMenuItems } from './RepositoryMenuItems'
 
 interface BranchContextMenuProps extends ContextMenuTargetProps {
   /** Every action of this menu, already bound to one branch. */
@@ -32,6 +35,18 @@ interface BranchContextMenuProps extends ContextMenuTargetProps {
    * a branch checked out and the dialog still changes that branch.
    */
   'isWorktree': boolean
+  /**
+   * The checkout this branch sits in, which the `Repository` section acts on.
+   * Omit to render no such section.
+   *
+   * Optional because the two composer surfaces that render this menu -- the
+   * status bar's branch chip and the `[+]` menu -- hold a branch and a Worker
+   * but neither the repository's origin URL nor whether that Worker is this
+   * machine. Both answers live in the sidebar's tree, so the sidebar supplies
+   * them and the composer omits the section rather than showing a thinner
+   * copy of it.
+   */
+  'repository'?: () => RepositoryCheckout
   /**
    * Why EVERY item is unusable, or undefined when they are usable. Each action
    * runs on the Worker the repository is on -- one reads the branch state,
@@ -63,6 +78,30 @@ interface BranchContextMenuProps extends ContextMenuTargetProps {
   'trigger'?: (triggerProps: DropdownTriggerProps) => JSX.Element
   /** data-testid applied to the popover element. */
   'data-testid'?: string
+}
+
+/**
+ * The `Repository` section, and the application probe that only it uses.
+ *
+ * Its own component so the probe -- and with it the Preferences context the
+ * remembered application lives in -- exists only where the section does. The
+ * two composer surfaces render this menu WITHOUT a repository, and neither
+ * should have to stand up a preference store to show a branch menu.
+ */
+const BranchRepositorySection: Component<{
+  checkout: () => RepositoryCheckout
+}> = (props) => {
+  // Only for a LOCAL checkout: a remote worker's path either does not exist
+  // on this machine or is a different directory. The menu being open is
+  // already given -- this component mounts only then.
+  const apps = useExternalApps(() => props.checkout().isLocal)
+  return (
+    <RepositoryMenuItems
+      checkout={props.checkout}
+      apps={apps}
+      testIdPrefix="branch-repository"
+    />
+  )
 }
 
 // Per-row trigger+children wrapper around DropdownMenu. The menu items
@@ -145,6 +184,22 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
         onNewTerminalWithShell={shell => props.actions.onNewTerminalWithShell(shell)}
         onNewTerminalAdvanced={() => props.actions.onNewTerminalAdvanced()}
       />
+      {/* `disabledReason` deliberately does NOT reach this block. Every item
+          in it either copies text the browser already holds or acts on THIS
+          machine, so an offline Worker leaves all of it usable while it
+          disables everything above. */}
+      {/* Mounted on OPEN, unlike everything above it. One of these menus
+          exists per branch row of every workspace, and this block builds a
+          resource of its own -- so an eager mount pays for a probe context
+          on every row in the sidebar to serve the one menu a user opens. */}
+      <Show when={menuOpen() ? props.repository : undefined}>
+        {repository => (
+          <>
+            <hr />
+            <BranchRepositorySection checkout={repository()} />
+          </>
+        )}
+      </Show>
     </DropdownMenu>
   )
 }

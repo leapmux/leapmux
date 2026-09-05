@@ -83,7 +83,7 @@ export const WORKSPACE_KEYBINDINGS: readonly Keybinding[] = [
   { key: 'Alt+ArrowRight', command: 'terminal.wordRight', when: 'terminalFocused && platform == "mac"' },
 
   // Desktop-only
-  { key: '$mod+Shift+e', command: 'app.openInExternalEditor', when: '!dialogOpen && isDesktop' },
+  { key: '$mod+Shift+e', command: 'app.openInExternalApp', when: '!dialogOpen && isDesktop' },
 
   // Chat input
   { key: '$mod+j', command: 'chat.sendMessage', when: 'chatInputFocused' },

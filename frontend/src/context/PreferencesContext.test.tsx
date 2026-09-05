@@ -4,7 +4,7 @@ import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
-import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EDITOR, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
 import { goldenAccountSchema } from '~/test-support/accountSchema'
@@ -1425,9 +1425,9 @@ describe('preferencesContext — cross-tab sync', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
-    announceWrite(storedKeyFor(KEY_PREFERRED_EDITOR))
-    expect(ctx.get().preferredEditorId()).toBe('vscode')
+    localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
+    announceWrite(storedKeyFor(KEY_PREFERRED_EXTERNAL_APP))
+    expect(ctx.get().preferredExternalAppId()).toBe('vscode')
 
     localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, false)
     announceWrite(storedKeyFor(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN))
@@ -1443,10 +1443,10 @@ describe('preferencesContext — cross-tab sync', () => {
     ctx.get().dual.theme.setBrowser({ name: 'nord', mode: 'dark' })
 
     const applied = vi.spyOn(themeStore, 'applyTheme')
-    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
-    announceWrite(storedKeyFor(KEY_PREFERRED_EDITOR))
+    localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
+    announceWrite(storedKeyFor(KEY_PREFERRED_EXTERNAL_APP))
 
-    expect(ctx.get().preferredEditorId()).toBe('vscode')
+    expect(ctx.get().preferredExternalAppId()).toBe('vscode')
     expect(applied).not.toHaveBeenCalled()
     applied.mockRestore()
   })
@@ -1501,7 +1501,7 @@ describe('preferencesContext — the device tier follows the account', () => {
       terminalRenderer: 'canvas',
       showHiddenMessages: true,
     })
-    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
+    localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
     localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, false)
 
     const ctx = captureContext()
@@ -1512,7 +1512,7 @@ describe('preferencesContext — the device tier follows the account', () => {
     expect(ctx.get().enterKeyMode()).toBe('enter-sends')
     expect(ctx.get().terminalRenderer()).toBe('canvas')
     expect(ctx.get().showHiddenMessages()).toBe(true)
-    expect(ctx.get().preferredEditorId()).toBe('vscode')
+    expect(ctx.get().preferredExternalAppId()).toBe('vscode')
     expect(ctx.get().directoryPickerShowHidden()).toBe(false)
   })
 
@@ -1529,7 +1529,7 @@ describe('preferencesContext — the device tier follows the account', () => {
       terminalRenderer: 'canvas',
       showHiddenMessages: true,
     })
-    localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
+    localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
     localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, false)
 
     const ctx = captureContext()
@@ -1548,7 +1548,7 @@ describe('preferencesContext — the device tier follows the account', () => {
     expect(ctx.get().enterKeyMode()).toBe('cmd-enter-sends')
     expect(ctx.get().terminalRenderer()).toBe('auto')
     expect(ctx.get().showHiddenMessages()).toBe(false)
-    expect(ctx.get().preferredEditorId()).toBeUndefined()
+    expect(ctx.get().preferredExternalAppId()).toBeUndefined()
     expect(ctx.get().directoryPickerShowHidden()).toBe(true)
   })
 

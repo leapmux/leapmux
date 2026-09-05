@@ -596,23 +596,23 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 			},
 		})
 
-	case *desktoppb.Request_ListEditors:
-		editors, err := s.app.ListEditors(m.ListEditors.Refresh)
+	case *desktoppb.Request_ListExternalApps:
+		apps, err := s.app.ListExternalApps(m.ListExternalApps.Refresh)
 		if err != nil {
 			s.writeError(id, err)
 			return
 		}
 		s.writeResponse(&desktoppb.Response{
 			Id: id,
-			Result: &desktoppb.Response_ListEditors{
-				ListEditors: &desktoppb.ListEditorsResponse{
-					Editors: detectedEditorsToProto(editors),
+			Result: &desktoppb.Response_ListExternalApps{
+				ListExternalApps: &desktoppb.ListExternalAppsResponse{
+					Apps: externalAppsToProto(apps),
 				},
 			},
 		})
 
-	case *desktoppb.Request_OpenInEditor:
-		s.writeErrOrOK(id, s.app.OpenInEditor(m.OpenInEditor.EditorId, m.OpenInEditor.Path))
+	case *desktoppb.Request_OpenInExternalApp:
+		s.writeErrOrOK(id, s.app.OpenInExternalApp(m.OpenInExternalApp.AppId, m.OpenInExternalApp.Path))
 
 	case *desktoppb.Request_Shutdown:
 		outcome := lifecycleOutcome{}
@@ -701,13 +701,14 @@ func tunnelInfosToProto(tunnels []TunnelInfo) []*desktoppb.TunnelInfo {
 	return out
 }
 
-// detectedEditorsToProto maps an editor listing for the wire.
-func detectedEditorsToProto(editors []DetectedEditor) []*desktoppb.DetectedEditor {
-	out := make([]*desktoppb.DetectedEditor, len(editors))
-	for i := range editors {
-		out[i] = &desktoppb.DetectedEditor{
-			Id:          editors[i].ID,
-			DisplayName: editors[i].DisplayName,
+// externalAppsToProto maps an application listing for the wire.
+func externalAppsToProto(apps []ExternalApp) []*desktoppb.ExternalApp {
+	out := make([]*desktoppb.ExternalApp, len(apps))
+	for i := range apps {
+		out[i] = &desktoppb.ExternalApp{
+			Id:          apps[i].ID,
+			DisplayName: apps[i].DisplayName,
+			Kind:        apps[i].Kind,
 		}
 	}
 	return out

@@ -19,7 +19,7 @@ import {
   hasStorageAccount,
   KEY_BROWSER_PREFS,
   KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
-  KEY_PREFERRED_EDITOR,
+  KEY_PREFERRED_EXTERNAL_APP,
   loadBrowserPrefs,
   localStorageGet,
   localStorageRemove,
@@ -144,9 +144,9 @@ export interface PreferencesState {
   /** Terminal renderer preference (browser-only). */
   terminalRenderer: () => TerminalRendererPreference
   setTerminalRenderer: (value: TerminalRendererPreference | null) => void
-  /** Preferred external editor id (browser-only, desktop). */
-  preferredEditorId: () => string | undefined
-  setPreferredEditorId: (id: string | undefined) => void
+  /** Preferred external application id (browser-only, desktop). */
+  preferredExternalAppId: () => string | undefined
+  setPreferredExternalAppId: (id: string | undefined) => void
   /** Whether the directory picker shows hidden files (browser-only, default on). */
   directoryPickerShowHidden: () => boolean
   setDirectoryPickerShowHidden: (value: boolean) => void
@@ -615,19 +615,19 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('terminalRenderer', value ?? undefined)
   }
 
-  const [preferredEditorId, setPreferredEditorIdSignal] = createSignal<string | undefined>(undefined)
+  const [preferredExternalAppId, setPreferredExternalAppIdSignal] = createSignal<string | undefined>(undefined)
   deviceTier.push({
-    storageName: KEY_PREFERRED_EDITOR,
-    seed: prefs => setPreferredEditorIdSignal(
-      prefs === null ? undefined : localStorageGet<string>(KEY_PREFERRED_EDITOR),
+    storageName: KEY_PREFERRED_EXTERNAL_APP,
+    seed: prefs => setPreferredExternalAppIdSignal(
+      prefs === null ? undefined : localStorageGet<string>(KEY_PREFERRED_EXTERNAL_APP),
     ),
   })
-  const setPreferredEditorId = (id: string | undefined) => {
-    setPreferredEditorIdSignal(id)
+  const setPreferredExternalAppId = (id: string | undefined) => {
+    setPreferredExternalAppIdSignal(id)
     if (id === undefined)
-      localStorageRemove(KEY_PREFERRED_EDITOR)
+      localStorageRemove(KEY_PREFERRED_EXTERNAL_APP)
     else
-      localStorageSet(KEY_PREFERRED_EDITOR, id)
+      localStorageSet(KEY_PREFERRED_EXTERNAL_APP, id)
   }
 
   const [directoryPickerShowHidden, setDirectoryPickerShowHidden]
@@ -1215,8 +1215,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setEnterKeyMode,
       terminalRenderer,
       setTerminalRenderer,
-      preferredEditorId,
-      setPreferredEditorId,
+      preferredExternalAppId,
+      setPreferredExternalAppId,
       directoryPickerShowHidden,
       setDirectoryPickerShowHidden,
       terminalOsNotifications,

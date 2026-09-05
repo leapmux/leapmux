@@ -4,6 +4,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
+import { withPreferences } from '~/test-support/preferencesProvider'
 import { BranchContextMenu } from './BranchContextMenu'
 
 // Children contract: BranchContextMenu wraps a DropdownMenu with the three
@@ -320,5 +321,79 @@ describe('branchContextMenu', () => {
       await fireEvent.click(screen.getByText('Switch to branch...'))
       expect(actions.onChangeBranch).toHaveBeenCalledWith(GitMode.SwitchBranch)
     })
+  })
+})
+
+// The `Repository` section acts on the checkout the branch sits in. It is the
+// same block the workspace row menu and the repository row menu render, so a
+// user who learns it once has learned all three.
+describe('branchContextMenu repository section', () => {
+  function renderWithRepository(overrides: Partial<{ isLocal: boolean, originUrl: string, disabledReason: string }> = {}) {
+    const actions = stubBranchMenuActions()
+    const result = render(withPreferences(() => (
+      <BranchContextMenu
+        isWorktree={false}
+        workerId="w-1"
+        actions={actions}
+        disabledReason={overrides.disabledReason}
+        repository={() => ({
+          gitToplevel: '/home/me/leapmux',
+          originUrl: overrides.originUrl ?? 'https://example.com/o/r.git',
+          isLocal: overrides.isLocal ?? false,
+        })}
+      />
+    )))
+    return { ...result, trigger: screen.getByRole('button') }
+  }
+
+  it('is absent until the menu opens', () => {
+    renderWithRepository()
+
+    expect(screen.queryByText('Repository')).not.toBeInTheDocument()
+  })
+
+  it('appears AFTER the Terminals section, so nothing above it moved', async () => {
+    const { trigger } = renderWithRepository()
+    await openMenu(trigger)
+
+    const headers = screen.getAllByText(/^(?:Agents|Terminals|Repository)$/).map(el => el.textContent)
+    expect(headers).toEqual(['Agents', 'Terminals', 'Repository'])
+  })
+
+  // Every item of it either copies text the browser already holds or acts on
+  // THIS machine, so an offline Worker leaves all of it usable while it
+  // disables everything above.
+  it('stays usable while an offline Worker disables the rest', async () => {
+    const { trigger } = renderWithRepository({ disabledReason: 'Worker "mac-mini" is offline' })
+    await openMenu(trigger)
+
+    expect(menuItem('New agent...')).toBeDisabled()
+    expect(menuItem('Copy repository path')).not.toBeDisabled()
+    expect(menuItem('Copy repository URL')).not.toBeDisabled()
+  })
+
+  it('offers the local-only rows only for a checkout on THIS machine', async () => {
+    const { trigger, unmount } = renderWithRepository({ isLocal: false })
+    await openMenu(trigger)
+    expect(screen.queryByText('Reveal in file manager')).not.toBeInTheDocument()
+    unmount()
+
+    const local = renderWithRepository({ isLocal: true })
+    await openMenu(local.trigger)
+    expect(screen.getByText('Reveal in file manager')).toBeInTheDocument()
+  })
+
+  // The two composer surfaces render this menu with a branch and a Worker but
+  // no repository, and neither should have to stand up a preference store to
+  // show a branch menu.
+  it('renders no section at all when no repository is supplied', async () => {
+    const actions = stubBranchMenuActions()
+    render(() => (
+      <BranchContextMenu isWorktree={false} workerId="w-1" actions={actions} />
+    ))
+    await openMenu(screen.getByRole('button'))
+
+    expect(screen.queryByText('Repository')).not.toBeInTheDocument()
+    expect(screen.getByText('Agents')).toBeInTheDocument()
   })
 })

@@ -1,3 +1,4 @@
+import type { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
 import {
@@ -190,9 +191,18 @@ export interface TunnelInfo {
   targetPort: number
 }
 
-export interface DetectedEditor {
+/**
+ * One application the desktop machine can open a directory in.
+ *
+ * `kind` arrives as the raw `ExternalAppKind` enum number the sidecar sent.
+ * The app menu groups by it -- the file manager leads, the editors follow --
+ * so no surface has to test an id literal. Ask it through
+ * `~/lib/externalApps`'s `isFileManager` rather than comparing here.
+ */
+export interface ExternalApp {
   id: string
   displayName: string
+  kind: ExternalAppKind
 }
 
 // Tagged unions the UI consumes. Mirror CliPathStatusResponse and
@@ -996,13 +1006,13 @@ export const platformBridge = {
   async listTunnels(): Promise<TunnelInfo[]> {
     return (await tauriInvoke<TunnelInfo[]>('list_tunnels')) ?? []
   },
-  async listEditors(refresh = false): Promise<DetectedEditor[]> {
+  async listExternalApps(refresh = false): Promise<ExternalApp[]> {
     if (!isTauriApp())
       return []
-    return (await tauriInvoke<DetectedEditor[]>('list_editors', { refresh })) ?? []
+    return (await tauriInvoke<ExternalApp[]>('list_external_apps', { refresh })) ?? []
   },
-  async openInEditor(editorId: string, path: string): Promise<void> {
-    await tauriInvoke('open_in_editor', { editorId, path })
+  async openInExternalApp(appId: string, path: string): Promise<void> {
+    await tauriInvoke('open_in_external_app', { appId, path })
   },
   async onEvent(event: string, callback: (...args: unknown[]) => void): Promise<() => void> {
     if (!isTauriApp())

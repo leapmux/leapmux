@@ -1,0 +1,37 @@
+{
+  "_readme": "Every application the desktop sidecar can open a directory in, and what each one IS. The id vocabulary crosses the language boundary: the Go sidecar's per-OS spec tables key their detection on it, and the browser keys its icon table on it, so the two were hand-written copies held together by a comment before this contract. `oses` states where a spec table must carry the id, which turns the old hand-written core-set test into a mechanical comparison. `kind` gives the app menu its grouping without testing an id literal anywhere; it maps to the ExternalAppKind proto enum, so a new kind fails generation until it lands here. Detection itself -- which binary, which bundle, which probe order -- stays Go-only under the one-side-only rule, and so do the display names, which the sidecar reports at runtime.",
+  "kinds": {
+    "EXTERNAL_APP_KIND_EDITOR": "a code editor or IDE the user installed",
+    "EXTERNAL_APP_KIND_FILE_MANAGER": "the operating system's own file manager, always present"
+  },
+  "apps": {
+    "file-manager": { "kind": "EXTERNAL_APP_KIND_FILE_MANAGER", "oses": ["darwin", "linux", "windows"] },
+
+    "vscode": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "vscode-insiders": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "vscodium": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "cursor": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "windsurf": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+
+    "sublime-text": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "zed": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+
+    "intellij-idea-ultimate": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "intellij-idea-community": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "webstorm": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "goland": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "rustrover": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "pycharm-professional": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "pycharm-community": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "phpstorm": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "rubymine": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "clion": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "rider": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "datagrip": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "android-studio": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+    "fleet": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin", "linux", "windows"] },
+
+    "xcode": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["darwin"] },
+    "notepad-plus-plus": { "kind": "EXTERNAL_APP_KIND_EDITOR", "oses": ["windows"] }
+  }
+}

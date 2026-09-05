@@ -1,5 +1,6 @@
 import type { Accessor, Component } from 'solid-js'
 import type { BranchRefActions } from './branchActions'
+import type { RepoCheckout } from './repoCheckouts'
 import type { PathFlavor } from '~/lib/paths'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { RepoGitStore } from '~/stores/repoGit'
@@ -42,9 +43,12 @@ import {
   isLocalRepoKey,
   repoKeyAndLabel,
   repoKeyTooltip,
+  repoOriginUrlFromKey,
   tabBranchKey,
   tabGitToplevelForKey,
 } from './branchKeys'
+import { listRepoCheckouts } from './repoCheckouts'
+import { RepoContextMenu } from './RepoContextMenu'
 import * as css from './workspaceTabTree.css'
 
 /**
@@ -428,6 +432,13 @@ interface RowSelectionContextValue {
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
   /**
+   * Set many rows at once, in ONE signal write. "Collapse all branches" would
+   * otherwise re-render the tree once per branch of the repository.
+   */
+  setCollapsedMany: (keys: readonly string[], collapsed: boolean) => void
+  /** Whether a Worker is THIS machine. See `~/lib/workerLocality`. */
+  isLocalWorker: (workerId: string) => boolean
+  /**
    * The tab a key identifies RIGHT NOW, straight off `props.tabs` -- never off the
    * cached tree. Reactive: reading it inside a row subscribes that row to its
    * own tab, so a metadata-only change (a rename, a hydrated title/provider, a
@@ -694,6 +705,11 @@ const BranchGroupRow: Component<{
                 contextMenuFor={rowEl}
                 isWorktree={props.branch().isWorktree}
                 workerId={props.branch().workerId}
+                repository={() => ({
+                  gitToplevel: props.branch().gitToplevel,
+                  originUrl: repoOriginUrlFromKey(props.repoKey),
+                  isLocal: sel.isLocalWorker(props.branch().workerId),
+                })}
                 disabledReason={menuDisabledReason()}
                 actions={bindBranchActions(
                   branchActions(),
@@ -727,11 +743,32 @@ const RepoGroupRow: Component<{
   repoKey: string
 }> = (props) => {
   const sel = useRowSelection()
+  const actions = useBranchActions()
   const groupStats = createMemo(() => diffStatsFromRepo(props.group()))
   const branchKeys = createStableKeys(() => props.group().branches, branchGroupKey)
+  // The row element, for its right-click / long-press menu.
+  const [rowEl, setRowEl] = createContextMenuAnchor()
+
+  // Built only while the menu is open: one of these mounts per repository row
+  // of every workspace, and the projection walks every branch under it.
+  const [menuOpen, setMenuOpen] = createSignal(false)
+  const checkouts = createMemo((): RepoCheckout[] => {
+    if (!menuOpen())
+      return []
+    return listRepoCheckouts(
+      props.group().branches,
+      repoOriginUrlFromKey(props.repoKey),
+      sel.isLocalWorker,
+    )
+  })
+
+  const collapseKeys = () =>
+    props.group().branches.map(b => collapseKeyForBranch(props.repoKey, branchGroupKey(b)))
+
   return (
     <>
       <div
+        ref={setRowEl}
         class={shared.node}
         style={{ 'padding-left': '20px' }}
         onClick={() => sel.toggleCollapsed(props.repoKey)}
@@ -747,6 +784,38 @@ const RepoGroupRow: Component<{
           tooltipLabel={repoKeyTooltip(props.repoKey)}
           stats={groupStats()}
         />
+        {/* Hidden for an ARCHIVED workspace, like the branch row's menu: its
+            tab-creation items are mutations, and the read-only remainder is
+            reachable from the workspace row, which keeps its own copy. */}
+        <Show when={!sel.archived()}>
+          <div class={sidebarActions}>
+            <RepoContextMenu
+              contextMenuFor={rowEl}
+              checkouts={checkouts}
+              actionsFor={(checkout) => {
+                const bundle = actions.branchActions
+                if (!bundle || checkout.branch.branchName === null)
+                  return undefined
+                // Lazy, like the branch row's: the ref is built at click time
+                // from the branch this row shows THEN, because a row survives
+                // a tree rebuild that swaps its branch object.
+                return bindBranchActions(
+                  bundle,
+                  () => buildBranchRef(sel.workspaceId(), checkout.branch, sel.liveTab),
+                )
+              }}
+              disabledReasonFor={(checkout) => {
+                const isOnline = actions.isWorkerKnownOnline
+                return !isOnline || isOnline(checkout.workerId)
+                  ? undefined
+                  : WORKER_OFFLINE_BRANCH_REASON
+              }}
+              onToggle={setMenuOpen}
+              onCollapseAllBranches={() => sel.setCollapsedMany(collapseKeys(), true)}
+              nothingToCollapse={() => collapseKeys().every(k => sel.isCollapsed(k))}
+            />
+          </div>
+        </Show>
       </div>
 
       <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(props.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
@@ -821,6 +890,13 @@ export interface WorkspaceTabTreeProps {
    * bundle to its own {@link BranchRef}. Omit to render no branch menus.
    */
   branchActions?: BranchRefActions
+  /**
+   * Whether a Worker runs on THIS machine, so the local file manager and the
+   * local applications can open a path it reports. See `~/lib/workerLocality`.
+   * Answers false when omitted, which hides those items rather than offering
+   * one that would open the wrong directory.
+   */
+  isLocalWorkerFn?: (workerId: string) => boolean
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -994,6 +1070,18 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     })
   }
 
+  function setCollapsedMany(keys: readonly string[], value: boolean) {
+    if (keys.length === 0)
+      return
+    setCollapsed((prev) => {
+      const next = { ...prev }
+      for (const key of keys)
+        next[key] = value
+      sessionStorageSet(storageKey(), next)
+      return next
+    })
+  }
+
   const selection: RowSelectionContextValue = {
     workspaceId: () => props.workspaceId,
     archived: () => props.archived,
@@ -1003,6 +1091,8 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     canClose,
     isCollapsed,
     toggleCollapsed,
+    setCollapsedMany,
+    isLocalWorker: workerId => props.isLocalWorkerFn?.(workerId) ?? false,
     liveTab: key => tabByKey().get(key),
   }
   const editing: RowEditingContextValue = {

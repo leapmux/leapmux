@@ -34,8 +34,8 @@ message Request {
     DeleteTunnelRequest delete_tunnel = 25;
     ListTunnelsRequest list_tunnels = 26;
     ShutdownRequest shutdown = 27;
-    ListEditorsRequest list_editors = 28;
-    OpenInEditorRequest open_in_editor = 29;
+    ListExternalAppsRequest list_external_apps = 28;
+    OpenInExternalAppRequest open_in_external_app = 29;
     // UserEvents relay: the webview cannot directly dial the
     // unix-socket hub for /ws/userevents, so the sidecar opens the WS
     // on its behalf and proxies inbound frames as Tauri events.
@@ -133,9 +133,9 @@ message CloseUserEventsRelayRequest {
   uint64 relay_id = 1;
 }
 
-message ListEditorsRequest {
+message ListExternalAppsRequest {
   // When true, bypass the cached detection result and re-probe the
-  // filesystem. Used by the "Refresh editor list" UI action.
+  // filesystem. Used by the "Refresh app list" UI action.
   bool refresh = 1;
 }
 
@@ -190,8 +190,10 @@ message DeleteTunnelRequest {
   string tunnel_id = 1;
 }
 
-message OpenInEditorRequest {
-  string editor_id = 1;
+message OpenInExternalAppRequest {
+  // Stable id from contracts/external-apps.json, as ListExternalApps
+  // reported it. The sidecar refuses an id it did not detect.
+  string app_id = 1;
   string path = 2;
 }
 
@@ -211,7 +213,7 @@ message Response {
     ListTunnelsResponse list_tunnels = 17;
     StartupInfo startup_info = 18;
     SidecarInfo sidecar_info = 19;
-    ListEditorsResponse list_editors = 20;
+    ListExternalAppsResponse list_external_apps = 20;
     CliPathStatusResponse cli_path_status = 21;
     CliInstallSymlinkResponse cli_install_symlink = 22;
     SetDesktopBehaviorResponse set_desktop_behavior = 23;
@@ -298,13 +300,26 @@ message ListTunnelsResponse {
   repeated TunnelInfo tunnels = 1;
 }
 
-message ListEditorsResponse {
-  repeated DetectedEditor editors = 1;
+message ListExternalAppsResponse {
+  repeated ExternalApp apps = 1;
 }
 
-message DetectedEditor {
+// One application the desktop machine can open a directory in: an editor, or
+// the operating system's own file manager.
+message ExternalApp {
   string id = 1;
   string display_name = 2;
+  // What the app IS, so the menus can group without testing an id literal.
+  ExternalAppKind kind = 3;
+}
+
+// The kinds of application the sidecar detects. The browser groups the app
+// menu by this, which is why it crosses the wire rather than being inferred
+// from the id.
+enum ExternalAppKind {
+  EXTERNAL_APP_KIND_UNSPECIFIED = 0;
+  EXTERNAL_APP_KIND_EDITOR = 1;
+  EXTERNAL_APP_KIND_FILE_MANAGER = 2;
 }
 
 message StartupInfo {

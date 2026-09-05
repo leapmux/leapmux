@@ -57,7 +57,7 @@ export function makeFakePrefs() {
     batchBrowserPrefWrites: vi.fn((body: () => void) => body()),
     setEnterKeyMode: vi.fn(),
     setTerminalRenderer: vi.fn(),
-    setPreferredEditorId: vi.fn(),
+    setPreferredExternalAppId: vi.fn(),
     setExpandAgentThoughts: vi.fn(),
     setRevealAfterDownload: vi.fn(),
     setShowComposerStatusBar: vi.fn(),

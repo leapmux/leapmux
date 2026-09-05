@@ -10,11 +10,12 @@ import { ensureWorkerOnline, processTest, restartWorker, stopWorker, waitForWork
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
 /**
- * The workspace row menu carries an INFO BLOCK and repository-named items now,
- * and Playwright matches an accessible name by SUBSTRING unless told otherwise
- * -- so `{ name: 'Delete' }` also matched the info block (whose name is every
- * row of it joined) and `{ name: 'Archive' }` also matched
- * "New agent in archived-branch...". Every lookup below is `exact`.
+ * The workspace row menu carries an INFO BLOCK and, once the workspace spans
+ * more than one repository, a row named after each repository. Playwright
+ * matches an accessible name by SUBSTRING unless told otherwise -- so
+ * `{ name: 'Delete' }` also matched the info block, whose name is every row of
+ * it joined, and a repository named after a branch matched the branch items.
+ * Every lookup below is `exact`.
  */
 
 /** Open the context menu for a workspace item that's already located by testid. */

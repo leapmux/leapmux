@@ -479,7 +479,7 @@ describe('buildBrowserReset', () => {
     expect(fake.dual.monoFonts.setBrowser).toHaveBeenCalledWith(null)
     expect(fake.setEnterKeyMode).toHaveBeenCalledWith(null)
     expect(fake.setTerminalRenderer).toHaveBeenCalledWith(null)
-    expect(fake.setPreferredEditorId).toHaveBeenCalledWith(undefined)
+    expect(fake.setPreferredExternalAppId).toHaveBeenCalledWith(undefined)
   })
 
   it('resets default-on tiers to true (absent means true, never a stored `true`)', () => {

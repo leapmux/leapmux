@@ -77,7 +77,7 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('mru-agent-providers')).toBe(YEAR_MS)
       expect(getTtlForKey('key-pins')).toBe(YEAR_MS)
       expect(getTtlForKey('directory-selector-show-hidden')).toBe(YEAR_MS)
-      expect(getTtlForKey('preferred-editor')).toBe(YEAR_MS)
+      expect(getTtlForKey('preferred-external-app')).toBe(YEAR_MS)
       expect(getTtlForKey('user-events-relay-seq')).toBe(YEAR_MS)
       expect(getTtlForKey('channel-relay-seq')).toBe(YEAR_MS)
       // The odd one out among the templated table-mates, and deliberately so:

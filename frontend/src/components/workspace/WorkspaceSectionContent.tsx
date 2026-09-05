@@ -391,6 +391,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         workspaceId={id}
                         workerInfoFn={props.workerInfoFn}
                         isWorkerKnownOnline={props.isWorkerKnownOnline}
+                        isLocalWorkerFn={props.isLocalWorkerFn}
                         branchActions={props.branchActions}
                         repoGitStore={props.repoGitStore}
                       />

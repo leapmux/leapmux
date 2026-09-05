@@ -224,9 +224,10 @@ test.describe('sidebar section menu', () => {
 
     // With a second workspace section on screen, the row menu offers Move to --
     // and this is the ONLY place in the suite that opens a `SubMenu` in a real
-    // browser. Every item behind one (Move to, Repository, New agent in <repo>)
-    // is otherwise covered only under vitest, where `showPopover`/`hidePopover`
-    // are stubbed, so a nested popover that never opens would pass everything.
+    // browser. Every item behind one (Move to, a repository's own submenu, and
+    // the `Open in ...` list inside it) is otherwise covered only under vitest,
+    // where `showPopover`/`hidePopover` are stubbed, so a nested popover that
+    // never opens would pass everything.
     const row = workspaceRow(page, authenticatedWorkspace.workspaceId)
     await clickRowMenuItem(
       row,

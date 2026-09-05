@@ -2,13 +2,13 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 
 /**
  * Whether a worker runs on THIS machine, so a path it reports names a
- * directory the local Finder and the local editor can open.
+ * directory the local file manager and the local applications can open.
  *
  * The one place that answers it, because the answer controls two bridge calls
- * that are silently wrong otherwise: `revealInFileManager` and `openInEditor`
- * always act locally, and a workspace's repository commonly lives on a remote
- * worker where the same absolute path either does not exist or -- worse --
- * exists and is a different directory.
+ * that are silently wrong otherwise: `revealInFileManager` and
+ * `openInExternalApp` always act locally, and a workspace's repository
+ * commonly lives on a remote worker where the same absolute path either does
+ * not exist or -- worse -- exists and is a different directory.
  *
  * Two conditions, both required:
  *
@@ -26,7 +26,7 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
  * async and reaches components through a `createResource`. A synchronous
  * accessor cannot read it.
  *
- * Do NOT add an `isTauriApp()` term. Its absence at `OpenInEditorButton` is
+ * Do NOT add an `isTauriApp()` term. Its absence at `OpenInAppButton` is
  * deliberate and documented: under `task dev-desktop` the webview points at
  * http://localhost:4328, so a URL check misclassifies a solo run as non-solo.
  * `localSolo` comes from the Rust shell's own capability flag and is the whole

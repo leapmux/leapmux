@@ -2299,6 +2299,107 @@ export const ${constName} = {
 }
 
 // ---------------------------------------------------------------------------
+// external-apps: the applications the desktop sidecar opens a directory in
+//
+// The id vocabulary was hand-written twice -- the three Go spec tables and the
+// browser's icon table -- paired by a comment that said "must match". Only the
+// ids, what each one IS, and which operating systems carry it cross the
+// boundary. Detection (which binary, which bundle, in what probe order) and
+// the display names stay Go-only, because the sidecar reports the names at
+// runtime and nothing else ever spells them.
+// ---------------------------------------------------------------------------
+
+/** The operating systems a spec table can exist for, in emission order. */
+const EXTERNAL_APP_OSES = ['darwin', 'linux', 'windows']
+
+const EXTERNAL_APP_FILE_MANAGER_KIND = 'EXTERNAL_APP_KIND_FILE_MANAGER'
+
+export function checkExternalApps(a, kindEnumValues) {
+  const named = kindEnumValues.filter(n => !n.endsWith('_UNSPECIFIED'))
+  for (const name of named)
+    mustBe(a.kinds[name] != null, 'external-apps.json', `proto enum value ${name} has no kinds entry -- a new kind must land here in the same change, or every app menu groups it nowhere`)
+  for (const name of Object.keys(a.kinds)) {
+    mustBe(kindEnumValues.includes(name), 'external-apps.json', `kinds entry ${name} matches no ExternalAppKind enum value (removed from the proto?)`)
+    mustBe(!name.endsWith('_UNSPECIFIED'), 'external-apps.json', `${name} is the unset value, and no app may claim it`)
+  }
+
+  const used = new Set()
+  for (const [id, app] of Object.entries(a.apps)) {
+    mustBe(a.kinds[app.kind] != null, 'external-apps.json', `app ${id} carries kind ${app.kind}, which is not a kinds entry`)
+    used.add(app.kind)
+  }
+  for (const name of Object.keys(a.kinds))
+    mustBe(used.has(name), 'external-apps.json', `kind ${name} is carried by no app -- a kind the menu can never show is dead metadata`)
+
+  // Exactly one file manager for each operating system. The app menu renders
+  // that kind as its own leading group, and the split button treats it as the
+  // one app that is always available. Two would make the group a choice the
+  // user must make, and none would empty the group on one platform only.
+  for (const os of EXTERNAL_APP_OSES) {
+    const managers = Object.entries(a.apps)
+      .filter(([, m]) => m.kind === EXTERNAL_APP_FILE_MANAGER_KIND && m.oses.includes(os))
+      .map(([id]) => id)
+    mustBe(managers.length === 1, 'external-apps.json', `${os} must carry exactly one ${EXTERNAL_APP_FILE_MANAGER_KIND}; it carries ${managers.length}: ${managers.join(', ')}`)
+  }
+  return {}
+}
+
+export function emitGoExternalApps(a) {
+  const ids = Object.keys(a.apps)
+  const kinds = goMapBlock(ids.map(id => ({
+    key: `${jsonString(id)}:`,
+    value: `desktopv1.ExternalAppKind_${a.apps[id].kind}`,
+  })))
+  const byOS = EXTERNAL_APP_OSES.map((os) => {
+    const rows = ids.filter(id => a.apps[id].oses.includes(os)).map(id => `\t\t${jsonString(id)},`).join('\n')
+    return `\t${jsonString(os)}: {\n${rows}\n\t},`
+  }).join('\n')
+  const docs = Object.entries(a.kinds).map(([name, doc]) => `//   ${name}: ${doc}.`).join('\n')
+  return `${GO_HEADER('external-apps.json')}package contracts
+
+import desktopv1 "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+
+// The applications the desktop sidecar can open a directory in. The sidecar's
+// per-OS spec tables own the detection and the display names; these two tables
+// own the vocabulary the browser shares with them.
+
+// ExternalAppKindByID says what each application IS:
+${docs}
+//
+// The sidecar stamps the kind on every app it reports, and the browser groups
+// its menu by it, so no surface has to test an id literal.
+var ExternalAppKindByID = map[string]desktopv1.ExternalAppKind{
+${kinds}
+}
+
+// ExternalAppIDsByOS lists the ids each operating system's spec table must
+// carry, keyed by runtime.GOOS. The sidecar's table test compares its own
+// specs against this. The hand-written "core set" it replaces named a handful
+// of ids and trusted review for the rest.
+var ExternalAppIDsByOS = map[string][]string{
+${byOS}
+}
+`
+}
+
+export function emitTsExternalApps(a) {
+  const rows = Object.keys(a.apps).map(id => `  ${jsonString(id)},`).join('\n')
+  return `${TS_HEADER('external-apps.json')}
+// Every application id the desktop sidecar can report, on any operating
+// system. The icon table satisfies Record<ExternalAppId, ...>, so an id that
+// the contract adds without an icon is a type error rather than a blank menu
+// row. What each app IS travels on the wire as ExternalApp.kind, never from
+// here: the browser groups the menu by the value the sidecar sent.
+
+export const SUPPORTED_EXTERNAL_APP_IDS = [
+${rows}
+] as const
+
+export type ExternalAppId = typeof SUPPORTED_EXTERNAL_APP_IDS[number]
+`
+}
+
+// ---------------------------------------------------------------------------
 // orchestration
 // ---------------------------------------------------------------------------
 
@@ -2477,6 +2578,17 @@ const DOMAINS = [
       checkValidate(v)
       out['backend/generated/contracts/validate.go'] = emitGoValidate(v)
       out['frontend/src/generated/contracts/validate.ts'] = emitTsValidate(v)
+    },
+  },
+  {
+    name: 'external-apps',
+    requiresDescriptor: true,
+    emit(out, read, descriptorSet) {
+      const kindEnumValues = enumValues(descriptorSet, 'leapmux/desktop/v1/frame.proto', 'ExternalAppKind')
+      const a = read('external-apps')
+      checkExternalApps(a, kindEnumValues)
+      out['backend/generated/contracts/external-apps.go'] = emitGoExternalApps(a)
+      out['frontend/src/generated/contracts/external-apps.ts'] = emitTsExternalApps(a)
     },
   },
   ...PROVIDER_PROTOCOLS.map(spec => ({

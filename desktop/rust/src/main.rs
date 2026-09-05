@@ -1224,50 +1224,57 @@ fn proto_to_tunnel_info(info: &proto::TunnelInfo) -> TunnelInfoResponse {
     }
 }
 
+/// One application the sidecar detected, as the webview reads it.
+///
+/// `kind` rides through as the raw enum number the sidecar sent. The webview
+/// compares it against the generated proto enum, so the app menu can group
+/// editors apart from the file manager without any side testing an id literal.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DetectedEditorPayload {
+struct ExternalAppPayload {
     id: String,
     display_name: String,
+    kind: i32,
 }
 
 #[tauri::command]
-async fn list_editors(
+async fn list_external_apps(
     shell: State<'_, Arc<DesktopShell>>,
     refresh: Option<bool>,
-) -> Result<Vec<DetectedEditorPayload>, String> {
+) -> Result<Vec<ExternalAppPayload>, String> {
     let resp = check_response(
         shell
-            .send_request_async(proto::request::Method::ListEditors(
-                proto::ListEditorsRequest {
+            .send_request_async(proto::request::Method::ListExternalApps(
+                proto::ListExternalAppsRequest {
                     refresh: refresh.unwrap_or(false),
                 },
             ))
             .await?,
     )?;
     match resp.result {
-        Some(proto::response::Result::ListEditors(r)) => Ok(r
-            .editors
+        Some(proto::response::Result::ListExternalApps(r)) => Ok(r
+            .apps
             .into_iter()
-            .map(|e| DetectedEditorPayload {
-                id: e.id,
-                display_name: e.display_name,
+            .map(|a| ExternalAppPayload {
+                id: a.id,
+                display_name: a.display_name,
+                kind: a.kind,
             })
             .collect()),
-        _ => Err("unexpected response for list_editors".to_string()),
+        _ => Err("unexpected response for list_external_apps".to_string()),
     }
 }
 
 #[tauri::command]
-async fn open_in_editor(
+async fn open_in_external_app(
     shell: State<'_, Arc<DesktopShell>>,
-    editor_id: String,
+    app_id: String,
     path: String,
 ) -> Result<(), String> {
     check_response(
         shell
-            .send_request_async(proto::request::Method::OpenInEditor(
-                proto::OpenInEditorRequest { editor_id, path },
+            .send_request_async(proto::request::Method::OpenInExternalApp(
+                proto::OpenInExternalAppRequest { app_id, path },
             ))
             .await?,
     )?;
@@ -1997,8 +2004,8 @@ fn main() {
             delete_tunnel,
             reset_tunnels,
             list_tunnels,
-            list_editors,
-            open_in_editor,
+            list_external_apps,
+            open_in_external_app,
             file_save_open,
             file_save_open_dialog,
             file_save_write,

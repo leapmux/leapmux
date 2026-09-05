@@ -535,7 +535,7 @@ export const AppShell: Component = () => {
    * row and would otherwise ask per menu. Each menu pairs it with the worker's
    * own `autoRegistered` flag through `isLocalWorker`.
    *
-   * `OpenInEditorButton` keeps its own resource: it sits outside this tree, it
+   * `OpenInAppButton` keeps its own resource: it sits outside this tree, it
    * holds no worker, and `localSolo` alone is the whole gate it needs -- see
    * the note there.
    *
@@ -1241,8 +1241,8 @@ export const AppShell: Component = () => {
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
     getCurrentTabContext,
     customKeybindings: preferences.customKeybindings,
-    preferredEditorId: preferences.preferredEditorId,
-    setPreferredEditorId: preferences.setPreferredEditorId,
+    preferredExternalAppId: preferences.preferredExternalAppId,
+    setPreferredExternalAppId: preferences.setPreferredExternalAppId,
   })
 
   // Sidebar element factories

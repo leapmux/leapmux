@@ -1,4 +1,5 @@
-// Editor brand-mark SVGs. Inline JSX for tree-shaking and theme-awareness.
+// Brand-mark SVGs for every application LeapMux can open a directory in.
+// Inline JSX for tree-shaking and theme-awareness.
 //
 // Sources & licenses (also recorded in NOTICE.md):
 // - VS Code, VS Code Insiders, VSCodium: Wikimedia Commons (project marks,
@@ -14,16 +15,19 @@
 //   PyCharm, PhpStorm, RubyMine, CLion, Rider, DataGrip, Fleet) and
 //   Android Studio: redrawn after JetBrains' published gradient brand marks.
 //
+// The file manager carries no brand mark: it is whichever one the operating
+// system ships, so a neutral folder glyph is the honest icon for it.
+//
 // All trademarks remain the property of their respective owners. The marks
 // are reproduced here in a nominative-fair-use capacity to identify the
-// editor a user is launching.
+// application a user is launching.
 import type { Component, JSX } from 'solid-js'
-import type { EditorId } from '~/lib/externalEditors'
+import type { ExternalAppId } from '~/generated/contracts/external-apps'
 import { createUniqueId, For } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { iconStyle } from './iconStyle'
 
-interface EditorIconProps {
+interface ExternalAppIconProps {
   id?: string
   size?: number
   class?: string
@@ -552,9 +556,35 @@ function NotepadPlusPlusIcon(props: { size: number, class?: string }): JSX.Eleme
   )
 }
 
+// The operating system's file manager. Lucide's "folder" glyph in
+// `currentColor`, so it inherits the theme: Finder, File Explorer and
+// whatever xdg-open resolves to are three different products, and painting
+// any one brand's mark on all three would be wrong.
+function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={props.size}
+      height={props.size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      class={props.class}
+      style={iconStyle(props.size)}
+    >
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  )
+}
+
 // Generic fallback for unknown / missing IDs — Lucide's "code" angle-brackets
-// glyph in `currentColor` so it inherits theme.
-function GenericEditorIcon(props: { size: number, class?: string }): JSX.Element {
+// glyph in `currentColor` so it inherits theme. Only an id the contract added
+// without an icon reaches it, and that is an editor in practice: the file
+// manager has an entry of its own.
+function GenericAppIcon(props: { size: number, class?: string }): JSX.Element {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -579,10 +609,11 @@ function GenericEditorIcon(props: { size: number, class?: string }): JSX.Element
 // `(size, class) => JSX` signature.
 const jb = (spec: JBSpec): IconComponent => p => <JBIcon size={p.size} class={p.class} spec={spec} />
 
-// `satisfies Record<EditorId, IconComponent>` enforces at compile time that
-// every supported editor has an icon — adding an id to SUPPORTED_EDITOR_IDS
-// without an entry here is a type error.
-const EDITOR_ICONS = {
+// `satisfies Record<ExternalAppId, IconComponent>` enforces at compile time
+// that every supported application has an icon — adding an id to
+// contracts/external-apps.json without an entry here is a type error.
+const EXTERNAL_APP_ICONS = {
+  'file-manager': FileManagerIcon,
   'vscode': VSCodeIcon,
   'vscode-insiders': VSCodeInsidersIcon,
   'vscodium': VSCodiumIcon,
@@ -606,11 +637,11 @@ const EDITOR_ICONS = {
   'fleet': FleetIcon,
   'xcode': XcodeIcon,
   'notepad-plus-plus': NotepadPlusPlusIcon,
-} satisfies Record<EditorId, IconComponent>
+} satisfies Record<ExternalAppId, IconComponent>
 
-export function EditorIcon(props: EditorIconProps): JSX.Element {
+export function ExternalAppIcon(props: ExternalAppIconProps): JSX.Element {
   const size = () => props.size ?? 16
   const component = (): IconComponent =>
-    (props.id && EDITOR_ICONS[props.id as EditorId]) || GenericEditorIcon
+    (props.id && EXTERNAL_APP_ICONS[props.id as ExternalAppId]) || GenericAppIcon
   return <Dynamic component={component()} size={size()} class={props.class} />
 }

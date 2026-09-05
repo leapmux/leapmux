@@ -552,7 +552,7 @@ globalStyle('[role^="menuitem"]', {
 // items -- BranchContextMenu's change and delete entries (the delete one is
 // named after what it destroys, so its label reads "Delete worktree…" on a
 // worktree row and "Delete branch…" on a main-repo row),
-// FileActionsMenu's download entries while busy, OpenInEditorButton's Refresh
+// FileActionsMenu's download entries while busy, OpenInAppButton's Refresh
 // -- and Oat's `:disabled` rule sets only `cursor`/`opacity`, never
 // `pointer-events: none`, so without the guard hovering one paints the accent
 // that says "this will activate" on a control that will not.

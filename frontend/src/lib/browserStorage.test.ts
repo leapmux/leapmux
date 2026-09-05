@@ -160,10 +160,10 @@ describe('browserStorage', () => {
       // actively used" contract for preferences/trust state. After a
       // 6-month idle window, the next read should push expiration back
       // out to a year from now.
-      localStorageSet('preferred-editor', 'vscode')
+      localStorageSet('preferred-external-app', 'vscode')
       vi.advanceTimersByTime(180 * DAY_MS)
-      localStorageGet('preferred-editor')
-      expect(JSON.parse(localStorage.getItem(key('preferred-editor'))!).e).toBe(Date.now() + YEAR_MS)
+      localStorageGet('preferred-external-app')
+      expect(JSON.parse(localStorage.getItem(key('preferred-external-app'))!).e).toBe(Date.now() + YEAR_MS)
     })
 
     it('throws for an unregistered name', () => {
