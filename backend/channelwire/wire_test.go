@@ -332,7 +332,6 @@ func widestWatchEventsEnvelope(t *testing.T, payloadSize int) []byte {
 		Content:            make([]byte, payloadSize),
 		Seq:                int64(^uint64(0) >> 1),
 		CreatedAt:          "2026-07-25T00:00:00.000000000Z",
-		DeliveryError:      strings.Repeat("e", 1024),
 		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
 		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Depth:              5,

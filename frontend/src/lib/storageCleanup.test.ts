@@ -60,7 +60,6 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('agent-session:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('control-state:agent:req')).toBe(1 * DAY_MS)
       expect(getTtlForKey('worker-info:abc')).toBe(7 * DAY_MS)
-      expect(getTtlForKey('local-messages:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('files-show-hidden:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('files-sort-order:abc')).toBe(7 * DAY_MS)
     })

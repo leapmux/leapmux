@@ -13,10 +13,9 @@ import { createRowMeasurer } from './createRowMeasurer'
 
 /**
  * Minimal per-row descriptor the virtualizer needs. `id` keys the height
- * cache, the offset map, AND the scroll anchor — it is stable across window
- * trims and unique per row, where `seq` is NOT: every optimistic local message
- * shares seq 0n, so keying geometry by seq would collapse stacked locals onto
- * one offset. `hasSpanLines` drives the inter-row gap (span-line rows sit closer
+ * cache, the offset map, and the scroll anchor. It is stable across window
+ * trims and unique per row. A sequence can change when the worker consolidates
+ * a notification. `hasSpanLines` drives the inter-row gap (span-line rows sit closer
  * together so their vertical rails bridge — see SpanLines.css.ts).
  */
 export interface VirtualItem {
@@ -644,9 +643,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   }
 
   // Row identity map, rebuilt only when the item LIST changes (append, trim,
-  // heightKey change) -- NOT on every measurement commit. Keyed by row id (unique)
-  // rather than seq (0n for every optimistic local), so stacked locals each get
-  // their own offset instead of collapsing onto one. A height commit bumps only
+  // heightKey change) -- NOT on every measurement commit. The row ID remains
+  // stable across sequence changes. A height commit bumps only
   // geomVersion, which rebuilds the offsets below; re-running the n string-keyed
   // Map.set calls per commit rebuilt a map that could not have changed (dozens of
   // commits per fling through unmeasured history made that the dominant rebuild

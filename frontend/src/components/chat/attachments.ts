@@ -1,6 +1,7 @@
 /** Attachment types, cache, and helpers for the agent editor panel. */
 
 import type { AttachmentCapabilities } from './providers/registry'
+import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
 import { randomUUID } from '~/lib/idGenerator'
 import { extname } from '~/lib/paths'
 
@@ -27,8 +28,20 @@ export interface AttachmentDetails {
   mimeType: string
 }
 
-/** Maximum total size of all attachments (10 MB). */
-export const MAX_TOTAL_ATTACHMENT_SIZE = 10 * 1024 * 1024
+/**
+ * Maximum total size of every attachment on one composer draft.
+ *
+ * The number comes from contracts/agent-input.json, because the Worker
+ * enforces the same cap in Store.Enqueue. Before the contract the two sides
+ * held their own copies and could drift apart silently.
+ *
+ * This check stays advisory, and deliberately so. The Worker measures the
+ * whole item -- the text bytes PLUS the attachment bytes -- and the user can
+ * type more text after the last attachment lands, so no client check can be
+ * the authority. It exists to refuse the obvious case early, with a message
+ * that names the same limit the Worker states.
+ */
+export const MAX_TOTAL_ATTACHMENT_SIZE = MAX_AGENT_INPUT_ITEM_BYTES
 
 type WebkitDataTransferItem = DataTransferItem & {
   webkitGetAsEntry?: () => FileSystemEntry | null
@@ -332,6 +345,21 @@ export async function collectDroppedAttachmentFiles(
 const attachmentCache = new Map<string, FileAttachment[]>()
 const pastedImageCounters = new Map<string, number>()
 
+/**
+ * The key prefix that every per-queue-item draft and attachment set of one
+ * agent shares. `forgetAgentAttachments` sweeps by this prefix, and the
+ * composer composes each item key from it, so the separator has exactly one
+ * definition. A second spelling makes a lookup miss without a message.
+ */
+export function queueEditDraftKeyPrefix(agentId: string): string {
+  return `${agentId}-queue-`
+}
+
+/** The draft and attachment key for one queued input of one agent. */
+export function queueEditDraftKey(agentId: string, inputId: string): string {
+  return `${queueEditDraftKeyPrefix(agentId)}${inputId}`
+}
+
 export function getAttachments(agentId: string): FileAttachment[] {
   return attachmentCache.get(agentId) ?? []
 }
@@ -343,6 +371,18 @@ export function setAttachments(agentId: string, attachments: FileAttachment[]): 
 export function clearAttachments(agentId: string): void {
   attachmentCache.delete(agentId)
   pastedImageCounters.delete(agentId)
+}
+
+export function forgetAgentAttachments(agentId: string): void {
+  const queuePrefix = queueEditDraftKeyPrefix(agentId)
+  for (const key of attachmentCache.keys()) {
+    if (key === agentId || key.startsWith(queuePrefix))
+      attachmentCache.delete(key)
+  }
+  for (const key of pastedImageCounters.keys()) {
+    if (key === agentId || key.startsWith(queuePrefix))
+      pastedImageCounters.delete(key)
+  }
 }
 
 // ---------------------------------------------------------------------------

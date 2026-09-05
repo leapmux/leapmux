@@ -31,6 +31,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/config"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/util/validate"
@@ -66,9 +67,10 @@ type Service struct {
 	// while removing the swapped-argument one.
 	Config
 
-	Queries  *db.Queries
-	Watchers *WatcherManager // Fan-out manager for event broadcasting
-	Output   *OutputHandler  // Agent output NDJSON processor
+	Queries    *db.Queries
+	Watchers   *WatcherManager // Fan-out manager for event broadcasting
+	Output     *OutputHandler  // Agent output NDJSON processor
+	InputQueue *inputqueue.Manager
 
 	// RemoteIPC supplies per-agent local-IPC servers for the
 	// `leapmux control` CLI. Nil disables remote control (env vars are
@@ -552,7 +554,7 @@ type Config struct {
 // There is no second Init step. There used to be, because Channels and
 // Send arrived after construction -- Config carries them now, so a
 // separate call could only be forgotten. What genuinely cannot happen in
-// a constructor is the DB read that re-arms persisted schedules; that is
+// a constructor is the DB work that restores persisted runtime state; that is
 // RestoreState, which says so in its name.
 func New(cfg Config) *Service {
 	if cfg.Channels == nil {
@@ -588,6 +590,19 @@ func New(cfg Config) *Service {
 		svc.SetRegisteredBy(seed)
 	}
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents)
+	queueAdapter := &agentInputQueueAdapter{svc: svc}
+	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
+	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
+	svc.Output.SetInputReadyFunc(func(agentID string) {
+		if _, err := svc.InputQueue.TurnEnded(bgCtx(), agentID); err != nil {
+			slog.Warn("advance agent input queue after turn end failed", "agent_id", agentID, "error", err)
+		}
+	})
+	svc.Output.SetInputStartedFunc(func(agentID string) {
+		if _, err := svc.InputQueue.TurnStarted(bgCtx(), agentID); err != nil {
+			slog.Warn("mark agent input queue turn active failed", "agent_id", agentID, "error", err)
+		}
+	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
@@ -599,7 +614,7 @@ func New(cfg Config) *Service {
 	// An auto-continue injection is not a human-typed input, so it stays
 	// UNSPECIFIED (no scroll-rail jump dot).
 	svc.Output.SetSendMessageFunc(func(agentID, content string) {
-		svc.sendSyntheticUserMessage(agentID, content, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
+		svc.enqueueSyntheticUserInput(agentID, content, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE)
 	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
@@ -661,8 +676,8 @@ func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgent
 	// refuses to persist a message row for an UNSPECIFIED provider. Enforce the
 	// invariant where rows are born so a misconfigured caller fails at creation
 	// with a clear error, rather than later with a confusing "failed to persist
-	// message" on the agent's first output. The SendAgentMessage path already
-	// defaults an UNSPECIFIED request to a real provider before reaching here, so
+	// message" on the agent's first output. Agent creation already
+	// selects a real provider before reaching here, so
 	// this is a backstop that should never fire in practice.
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return fmt.Errorf("refusing to create agent %q with UNSPECIFIED agent provider", params.ID)
@@ -698,9 +713,9 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 	return svc.Queries.GetAgentByID(ctx, agentID)
 }
 
-// RestoreState re-arms what a previous worker process left persisted --
-// today, the auto-continue schedules whose timers inject synthetic user
-// messages when they fire.
+// RestoreState reconciles what a previous worker process left persisted. It
+// updates interrupted queue and background-task state, then re-arms the
+// auto-continue timers. Recovered queue dispatch waits for Hub reconciliation.
 //
 // Separate from New because it reads the database and starts timers.
 // Construction should not do either: it is what lets every unit test
@@ -711,6 +726,9 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
+	if err := svc.InputQueue.RecoverState(bgCtx()); err != nil {
+		slog.Warn("recover agent input queues failed", "error", err)
+	}
 	// Before anything else, mark every still-active background-task row
 	// 'interrupted': the previous worker process was cut off (crash/restart),
 	// so a row left 'pending'/'running' is genuinely not making progress. Pure
@@ -749,6 +767,27 @@ func (svc *Service) RestoreState() {
 func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
 	svc.Output.ClearPendingControlRequests(agentID)
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
+	if !stopped {
+		for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
+			if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {
+				slog.Warn("pause agent input queue after process exit failed", "agent_id", queueAgentID, "error", err)
+			}
+		}
+	}
+}
+
+// agentSubtreeIDs returns the agent and every descendant of it. A subagent
+// runs inside its parent's process and owns no tab, so every path that stops
+// or archives one agent must reach the whole subtree: a child queue that keeps
+// dispatching after its owner stops fails each item permanently.
+func (svc *Service) agentSubtreeIDs(agentID string) []string {
+	agentIDs := []string{agentID}
+	descendantIDs, err := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
+	if err != nil {
+		slog.Warn("list descendant agents failed", "agent_id", agentID, "error", err)
+		return agentIDs
+	}
+	return append(agentIDs, descendantIDs...)
 }
 
 // Shutdown persists in-memory final state to the database so it
@@ -766,6 +805,9 @@ func (svc *Service) Shutdown() {
 	// sweep labels them 'interrupted' (a truthful "worker restart" label)
 	// rather than MarkAgentBackgroundTasksExited stamping them 'stopped'.
 	svc.Output.SetShuttingDown()
+	// Close queue admission before any blocking shutdown work. The background
+	// resumer can otherwise schedule a recovered input while its Stop waits.
+	waitForInputQueue := svc.InputQueue.Stop()
 
 	// The user-visible goodbye goes FIRST, before anything that can block.
 	//
@@ -785,7 +827,7 @@ func (svc *Service) Shutdown() {
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
 
-	// Stop the background loops FIRST, and before the drains below. There are two
+	// Stop the background loops before the drains below. There are two
 	// of them: the orphan reconciler and the boot-time agent resume sweep.
 	//
 	// Both run work that svc.Cleanup does not cover, because only the
@@ -806,6 +848,10 @@ func (svc *Service) Shutdown() {
 	if stop := svc.stopBackgroundLoops; stop != nil {
 		stop()
 	}
+
+	// Queue dispatch runs outside the RPC handler that created it. Join those
+	// goroutines before the startup drains and provider teardown below.
+	waitForInputQueue()
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
@@ -1472,8 +1518,8 @@ func sendFailedPrecondition(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
 }
 
-// sendUnavailable signals a transient failure (the caller should retry). The
-// frontend's STARTING-state queue re-queues messages that receive this code.
+// sendUnavailable signals a transient failure. The frontend RPC layer retries
+// this code with a restricted exponential backoff.
 func sendUnavailable(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.Unavailable), msg)
 }

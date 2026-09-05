@@ -148,54 +148,6 @@ describe('usechatscroll auto-scroll signature', () => {
         }
       })
     }))
-
-  it('still auto-sticks when the window collapses to a leading optimistic local (seq 0n)', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const seqMsg = (s: bigint) => ({ seq: s } as AgentChatMessage)
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(1000)
-          div.setClientHeight(500)
-          div.setScrollTop(500) // at the bottom
-
-          // Start with a server message so autoScrollFirstSeq records seq 5.
-          const [messages, setMessages] = createSignal<AgentChatMessage[]>([seqMsg(5n)])
-          const [streamingText] = createSignal('')
-          const [agentWorking, setAgentWorking] = createSignal<boolean | undefined>(false)
-
-          const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
-            messages,
-            streamingText,
-            agentWorking,
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // The server range empties to a single pending optimistic local (seq 0n)
-          // at index 0, and content grows. seq 0n is smaller than the recorded
-          // server seq 5, so a naive `msgs[0].seq < autoScrollFirstSeq` would read
-          // this as an older-history PREPEND and suppress the bottom auto-stick.
-          // Detecting the prepend off the first SERVER seq instead keeps the stick.
-          div.setScrollHeight(1100)
-          setMessages([seqMsg(0n)])
-          setAgentWorking(true)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Auto-stuck: scrollTop = scrollHeight (1100) clamped to 1100 - 500.
-          expect(div.getScrollTop()).toBe(600)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
-        }
-      })
-    }))
 })
 
 describe('usechatscroll resize sticky-bottom', () => {

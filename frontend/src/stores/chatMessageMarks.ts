@@ -1,7 +1,6 @@
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { createPerAgentStore } from './chatPerAgentStore'
-import { isOptimisticLocalSeq } from './chatReconcile'
 
 // ---------------------------------------------------------------------------
 // Message-marks tracker
@@ -42,8 +41,8 @@ export interface ChatRailData {
   /** The marked seqs (teal jump dots). */
   marks: readonly SeqMark[]
   /**
-   * The loaded window's first/last SERVER seq (skipping optimistic locals), or undefined
-   * when the window holds no server row. The rail's thumb-drag uses these to gate in-window
+   * The loaded window's first and last persisted sequence, or undefined for an empty
+   * window. The rail's thumb-drag uses these to control in-window
    * live-scrolling; a drag mapping outside them only previews.
    */
   windowFirstSeq: bigint | undefined
@@ -58,7 +57,7 @@ export interface RailRangeInputs {
   seedMaxSeq: bigint
   /** liveTail's observed max (0n before liveTail has seen a message). */
   liveMaxSeq: bigint
-  /** The loaded window's first/last SERVER seq (undefined for an all-locals / empty window). */
+  /** The loaded window's first and last sequence, or undefined for an empty window. */
   windowFirstSeq: bigint | undefined
   windowLastSeq: bigint | undefined
   /** Whether older messages remain unfetched below the loaded window. */
@@ -206,15 +205,15 @@ export function createMessageMarksStore() {
       })
     },
     /**
-     * Record a live message's mark. Ignores optimistic locals (seq 0n) and unmarked
-     * rows. Idempotent for a re-broadcast seq. Lowers minSeq when the agent was empty
+     * Record a live message's mark. Ignores invalid sequences and unmarked rows.
+     * Idempotent for a repeated sequence. Lowers minSeq when the agent was empty
      * (0n) or the seq precedes the recorded min, so the rail range always covers it.
      * Bumps the live-mutation revision ONLY on a real change -- a no-op re-note (a
-     * re-broadcast seq, an optimistic local, an unmarked row) must not perturb the
+     * repeated sequence, an invalid sequence, or an unmarked row) must not change the
      * concurrent-seed race detector.
      */
     noteMark(agentId: string, seq: bigint, type: MarkType): void {
-      if (isOptimisticLocalSeq(seq) || type === MarkType.UNSPECIFIED)
+      if (seq <= 0n || type === MarkType.UNSPECIFIED)
         return
       const cur = base.get(agentId)
       const nextMarks = insertMarkSorted(cur.marks, seq, type)

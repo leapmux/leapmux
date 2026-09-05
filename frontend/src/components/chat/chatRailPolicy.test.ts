@@ -190,7 +190,7 @@ describe('chatrailpolicy', () => {
       })).toBe('native')
     })
 
-    it('hands an all-optimistic-local overflowing window to the native bar (no server anchor)', () => {
+    it('hands an invalid-sequence window to the native bar', () => {
       expect(resolveScrollbarOwner({
         ...base,
         ...window([0n, 0n]),

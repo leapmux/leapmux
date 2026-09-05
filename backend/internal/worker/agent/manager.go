@@ -30,7 +30,12 @@ type Manager struct {
 	// restart's new provider is never registered (and so can never persist control requests)
 	// until the old process's onExit has run. See stopAndWait and startAgentWith.
 	exitDone map[Agent]chan struct{}
-	onExit   ExitHandler
+	// exiting holds each provider whose process exited and whose exit callback
+	// has not finished. The slot stays registered through that callback, so
+	// HasAgent alone cannot separate a live process from one that exited. A
+	// caller that is about to WRITE to the provider asks AgentAlive instead.
+	exiting map[Agent]struct{}
+	onExit  ExitHandler
 
 	// startupSlots caps how many BACKGROUND agent startups run at once: one
 	// token is held from just before the provider's start func spawns the
@@ -78,6 +83,7 @@ func NewManager(onExit ExitHandler) *Manager {
 		cachedOptionGroups: make(map[string]cachedCatalog),
 		lifecycleLocks:     make(map[string]*lifecycleEntry),
 		exitDone:           make(map[Agent]chan struct{}),
+		exiting:            make(map[Agent]struct{}),
 		onExit:             onExit,
 		startupSlots:       newStartupSlots(config.ResolveStartupConcurrency(0)),
 	}
@@ -309,17 +315,11 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		}()
 
 		err := provider.Wait()
+		// The process ended. The slot stays registered until onExit finishes,
+		// so record the state that the slot no longer carries.
 		m.mu.Lock()
-		// Only remove the entries if they still point at THIS provider. The slot is normally
-		// freed by this goroutine, but stopAndWait (used by every restart) waits for this
-		// goroutine to finish before it returns and re-registers a new provider, so the
-		// identity check is a defensive guard rather than a race the cleanup paths can trigger.
-		if m.agents[opts.AgentID] == provider {
-			delete(m.agents, opts.AgentID)
-			delete(m.cachedOptionGroups, opts.AgentID)
-		}
+		m.exiting[provider] = struct{}{}
 		m.mu.Unlock()
-
 		exitCode := 0
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -362,6 +362,20 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		if onExit != nil {
 			onExit(opts.AgentID, exitCode, err, stopped)
 		}
+
+		m.mu.Lock()
+		// Delete outside the identity check below: a defensively replaced
+		// provider must leave no entry behind.
+		delete(m.exiting, provider)
+		// Release the slot only after onExit pauses durable input. A turn-end
+		// drain can otherwise see no provider and restart a process after a crash.
+		// Only remove entries that still point at this provider. The identity
+		// check protects a defensive replacement from an old exit goroutine.
+		if m.agents[opts.AgentID] == provider {
+			delete(m.agents, opts.AgentID)
+			delete(m.cachedOptionGroups, opts.AgentID)
+		}
+		m.mu.Unlock()
 	}()
 
 	return confirmedOptions, nil
@@ -370,25 +384,13 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 // SendInput routes a user message to the specified agent, waiting out any
 // lifecycle operation that is in flight for it.
 //
-// The wait is the point. A restart (a settings change the provider cannot apply
-// live, a /clear, a plan execution) stops the old process and starts a new one,
-// and a message that arrives inside that window used to reach the OLD provider
-// and come back "agent is stopped" -- the user's message was persisted with a
-// delivery error and the turn never ran, for a restart they could not see.
-// Resolving the provider under the lifecycle lock makes the send block for the
-// length of the restart and then reach the NEW process, which is what the user
-// asked for.
+// A restart stops the old process and starts a new process. Resolve the provider
+// under the lifecycle lock so input that arrives during this interval reaches
+// the new process.
 //
-// The lock covers the RESOLVE only, never the write. A provider's SendInput
-// blocks for as long as the turn takes -- Codex's turn/start has no timeout at
-// all, "minutes-to-hours" by its own comment -- and holding a lifecycle lock
-// across that would park every restart, /clear, plan execution and auto-start
-// for the agent behind one message, turn a stalled write into a wedged agent,
-// and defeat mid-turn steering, which needs the second send to reach the
-// provider WHILE the first turn runs. What remains is a race of a few
-// instructions: a restart that begins between the resolve and the write still
-// meets the old process. That is the pre-existing failure, now vanishingly
-// narrow, rather than a new class of one.
+// The lock covers only provider resolution. A blocked provider write must not
+// block a restart or explicit steering. A restart can still start between the
+// resolution and the write, but the interval is only the provider call setup.
 //
 // Never call this from a caller that already holds the lifecycle lock
 // (LockAgent, RestartAgent): the lock is not reentrant, so it deadlocks. Send
@@ -401,6 +403,44 @@ func (m *Manager) SendInput(agentID, content string, attachments []*leapmuxv1.At
 		return err
 	}
 	return p.SendInput(content, attachments)
+}
+
+func (m *Manager) CompactContext(agentID string) error {
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
+	}
+	compactor, ok := p.(ContextCompactor)
+	if !ok {
+		return ErrCompactionUnsupported
+	}
+	return compactor.CompactContext()
+}
+
+func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.Attachment) error {
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
+	}
+	steerer, ok := p.(InputSteerer)
+	if !ok {
+		return ErrSteeringUnsupported
+	}
+	return steerer.SteerInput(content, attachments)
+}
+
+// SupportsSteering reports whether the running agent can steer its active turn.
+// It asks the provider and reports the answer. It answers false for an agent
+// that does not run, and for a provider that does not implement InputSteerer.
+func (m *Manager) SupportsSteering(agentID string) bool {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	steerer, ok := p.(InputSteerer)
+	return ok && steerer.SupportsSteering()
 }
 
 // providerAfterLifecycle resolves an agent's running provider, first waiting out
@@ -456,13 +496,8 @@ func (m *Manager) Interrupt(agentID string) error {
 // ChildSteerer; providers that cannot steer a subagent return
 // ErrChildSteeringUnsupported. The service resolves childKey from the registry
 // before calling here.
-// Like SendInput, it waits out a lifecycle operation in flight for the OWNER
-// process before it resolves one: a message to a subagent tab, sent while a
-// settings change or /clear restarts the owner, otherwise reached the stopped
-// process and came back "agent is not running" -- persisted with a delivery
-// error, for a restart the user could not see. The lock covers the resolve
-// only, for the reason SendInput gives: steering a child blocks for the whole
-// child turn.
+// Like SendInput, it waits for an active lifecycle operation on the owner.
+// The lock covers only provider resolution because child steering can block.
 func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	p, err := m.providerAfterLifecycle(rootAgentID)
 	if err != nil {
@@ -473,6 +508,18 @@ func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachme
 		return ErrChildSteeringUnsupported
 	}
 	return steerer.SendChildInput(childKey, content, attachments)
+}
+
+func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	p, err := m.providerAfterLifecycle(rootAgentID)
+	if err != nil {
+		return err
+	}
+	steerer, ok := p.(ChildSteerer)
+	if !ok {
+		return ErrChildSteeringUnsupported
+	}
+	return steerer.SteerChildInput(childKey, content, attachments)
 }
 
 // InterruptChild aborts a subagent's current turn inside the owner process,
@@ -1043,12 +1090,33 @@ func (m *Manager) CurrentSettings(agentID string) SettingsApplyResult {
 	return p.SettingsSnapshot()
 }
 
-// HasAgent returns true if an agent is running with the given agent ID.
+// HasAgent returns true while the Manager owns the agent's lifecycle slot. The
+// slot stays owned through the exit callback so that callback can pause input
+// before another process starts.
 func (m *Manager) HasAgent(agentID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.agents[agentID]
 	return ok
+}
+
+// AgentAlive reports whether a LIVE process serves the agent.
+//
+// HasAgent answers a different question: it keeps the slot registered through
+// the whole exit callback, so that the callback pauses durable input before a
+// drain can restart the process. Between the process exit and the end of that
+// callback the two answers differ, and the callback does several database
+// writes, so the window is wide enough to lose a race. A caller that is about
+// to WRITE to the provider must ask this one, or it writes to a closed pipe.
+func (m *Manager) AgentAlive(agentID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	provider, ok := m.agents[agentID]
+	if !ok {
+		return false
+	}
+	_, exiting := m.exiting[provider]
+	return !exiting
 }
 
 // ListAgentIDs returns the IDs of all currently tracked agents.

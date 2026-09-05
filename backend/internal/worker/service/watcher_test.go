@@ -1250,9 +1250,10 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 		"control_request":          true,
 		"control_cancel":           true,
 		"turn_end":                 true,
-		"message_deleted":          true,
 		"todos_changed":            true,
 		"background_tasks_changed": true,
+		// input_queue_changed is deliberately absent: a queue snapshot carries
+		// every item with a text preview, so it is content.
 	}
 
 	msg := &leapmuxv1.AgentEvent{}
@@ -1273,26 +1274,34 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 	}
 }
 
-func TestBroadcast_MessageDeletedReachesNotifyWatcher(t *testing.T) {
+// A queue snapshot carries every item with a text preview, so it is content
+// and not a notification. A NOTIFY watcher renders no composer and reads none
+// of it, and the promotion to FULL replays a fresh snapshot, so a tab that
+// comes forward loses nothing. Sending it to every watcher pushed the whole
+// snapshot to every open tab on every dispatch, accept, and turn boundary.
+func TestBroadcast_InputQueueChangedSkipsNotifyWatcher(t *testing.T) {
 	t.Parallel()
 
 	m := NewWatcherManager()
-	mock := newTestWatcher("ch-1")
-	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	notify := newTestWatcher("ch-1")
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
 
-	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
-		AgentId: "agent-1",
-		Event: &leapmuxv1.AgentEvent_MessageDeleted{
-			MessageDeleted: &leapmuxv1.AgentMessageDeleted{MessageId: "m1", Seq: 3},
-		},
-	})
-	assert.Equal(t, int64(1), mock.streamCount.Load(), "MessageDeleted is notify-class")
+	queueEvent := func() *leapmuxv1.AgentEvent {
+		return &leapmuxv1.AgentEvent{
+			AgentId: "agent-1",
+			Event: &leapmuxv1.AgentEvent_InputQueueChanged{
+				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: &leapmuxv1.AgentInputQueueSnapshot{AgentId: "agent-1"}},
+			},
+		}
+	}
+	m.BroadcastAgentEvent("agent-1", queueEvent())
+	assert.Equal(t, int64(0), notify.streamCount.Load(), "a NOTIFY watcher reads no queue snapshot")
 
-	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
-		AgentId: "agent-1",
-		Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 4}},
-	})
-	assert.Equal(t, int64(1), mock.streamCount.Load(), "AgentMessage must stay content-only")
+	full := newTestWatcher("ch-2")
+	m.agents.setWatches("ch-2", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, full)
+	m.BroadcastAgentEvent("agent-1", queueEvent())
+	assert.Equal(t, int64(1), full.streamCount.Load(), "a FULL watcher reads it")
+	assert.Equal(t, int64(0), notify.streamCount.Load())
 }
 
 func TestBroadcast_TodosChangedReachesNotifyWatcher(t *testing.T) {

@@ -22,7 +22,7 @@ import {
   seqSpan,
 } from './chatScrollRailGeometry'
 
-/** Build a raw geometry with uniform-height rows for the given seqs (0n = optimistic local). */
+/** Build raw geometry with uniform-height rows for the given sequences. */
 function geoOf(seqs: bigint[], rowPx = 100): SeqSpaceGeometry {
   const items: VirtualItem[] = seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
   return {
@@ -54,17 +54,6 @@ describe('chatscrollrailgeometry', () => {
       expect(seqAtContentY(prep, 100)).toBe(3)
       expect(seqAtContentY(prep, 150)).toBe(5) // halfway from seq 3 to seq 7
       expect(seqAtContentY(prep, 200)).toBe(7)
-    })
-
-    it('maps trailing optimistic locals above the last server seq (never as the oldest)', () => {
-      const prep = prepOf([4n, 5n, 0n]) // a pending local at the tail
-      expect(seqAtContentY(prep, 0)).toBe(4)
-      expect(seqAtContentY(prep, 200)).toBe(6) // local sits one unit above seq 5
-    })
-
-    it('returns null for an all-locals / empty window', () => {
-      expect(seqAtContentY(prepOf([0n, 0n]), 50)).toBeNull()
-      expect(seqAtContentY(prepOf([]), 0)).toBeNull()
     })
   })
 
@@ -317,15 +306,6 @@ describe('chatscrollrailgeometry', () => {
       const prep = prepareGeometry(geo)
       expect(prep.geo).toBe(geo)
       expect(prep.rowSeqs).toEqual(rowStartSeqs(geo.items))
-    })
-
-    it('carries a null rowSeqs for an all-locals / empty window, so the geometry fns short-circuit', () => {
-      expect(prepareGeometry(geoOf([0n, 0n])).rowSeqs).toBeNull()
-      expect(prepareGeometry(geoOf([])).rowSeqs).toBeNull()
-      // Every consumer then short-circuits on the single null-rowSeqs guard.
-      expect(seqAtContentY(prepOf([0n, 0n]), 50)).toBeNull()
-      expect(contentYForSeq(prepOf([]), 0)).toBeNull()
-      expect(computeSeqThumb(prepOf([0n]), { hasMoreOlder: false, hasMoreNewer: false, distFromBottomPx: 999, scrollTop: 0, clientHeight: 100, minSeq: 1n, maxSeq: 5n })).toBeNull()
     })
 
     it('carries a null rowSeqs when server seqs exceed exact number conversion', () => {

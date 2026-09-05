@@ -353,14 +353,11 @@ function threadEntriesFor(
     return textEntry(formatApiRetryLabel(m))
   if (isCompactingStatus(m))
     return dividerEntry(COMPACTING_LABEL, true)
-  // Claude `compact_boundary` and Codex `thread/compacted` are both the completed-boundary signal;
-  // route both through the shared label. isCompactBoundary is a neutral shape-based helper so this
-  // shared renderer recognizes a boundary regardless of the row's provider (incl. legacy rows).
-  // Codex carries no metadata today but would pick up detail automatically if it ever adds it.
+  // Claude compact_boundary and Codex's completed contextCompaction item are
+  // both completed boundaries.
   if (isCompactBoundary(m))
     return dividerEntry(compactBoundaryLabel(m))
-  // Codex `item/started` of a contextCompaction item is the in-progress
-  // spinner. The completed boundary arrives later via `thread/compacted`.
+  // Codex item/started of a contextCompaction item is the loading boundary.
   if (m.method === 'item/started') {
     const params = pickObject(m, 'params')
     const item = pickObject(params, 'item')

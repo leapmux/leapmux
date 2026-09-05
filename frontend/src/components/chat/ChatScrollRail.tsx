@@ -51,7 +51,7 @@ const THUMB_HEIGHT_PX = 24
 export interface ChatScrollRailProps {
   /** The chat scroll container (the element the native scrollbar was hidden on). */
   scrollEl: HTMLDivElement | undefined
-  /** Visible virtual rows (ascending; trailing optimistic locals carry seq 0n). */
+  /** Visible virtual rows in ascending sequence order. */
   items: readonly VirtualItem[]
   /** Content-Y of the top of row `i`. */
   offsetOfIndex: (index: number) => number

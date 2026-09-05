@@ -120,6 +120,7 @@ function stubProps(stores: Stores) {
     settingsLoading: { start: () => {}, stop: () => {} },
     getCurrentTabContext: () => ({ workerId: '', workingDir: '' }),
     agentSessionStore: {},
+    agentInputQueueStore: { clearAgent: () => {} },
     chatStore: {},
     controlStore: {},
     layoutStore: {},

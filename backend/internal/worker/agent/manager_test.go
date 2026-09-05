@@ -189,15 +189,12 @@ func TestManager_SendInputUnknownAgent(t *testing.T) {
 	}
 }
 
-// A message that arrives while the agent is restarting must WAIT for the new
+// A message that arrives while the agent restarts must wait for the new
 // process, not fail against the old one.
 //
 // The window is a settings change the provider cannot apply live: the service
 // takes the lifecycle lock, stops the old process, and starts a new one. A send
-// that landed in it used to reach the stopped process and come back "agent is
-// stopped" -- the user's message was persisted with a delivery error and the
-// turn never ran, for a relaunch they had no way to see. E2E 045 died on exactly
-// that: the send raced the startup relaunch and the assistant never answered.
+// that lands in it must not reach the stopped process and fail the queue item.
 func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()
@@ -245,9 +242,8 @@ func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
 
 // A message to a SUBAGENT tab reaches the owner process, so it meets the same
 // restart window a root send does -- and used to fail the same way, with the
-// user's message persisted carrying a delivery error for a relaunch they had no
-// way to see. The wait belongs on every input door into the process, not just
-// the one the root uses.
+// child's queue item could fail for a restart that the user did not request.
+// Each input path into the process must wait for the restart.
 func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 	m := NewManager(nil)
 	ctx := context.Background()
@@ -428,6 +424,35 @@ type blockingStub struct {
 
 func (b *blockingStub) Wait() error { <-b.waitCh; return nil }
 
+func TestManager_ExitCallbackRunsBeforeSlotRelease(t *testing.T) {
+	t.Parallel()
+
+	type exitView struct{ hasAgent, alive bool }
+	m := NewManager(nil)
+	viewDuringExit := make(chan exitView, 1)
+	m.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
+		viewDuringExit <- exitView{hasAgent: m.HasAgent(agentID), alive: m.AgentAlive(agentID)}
+	})
+	provider := &blockingStub{waitCh: make(chan struct{})}
+	_, err := m.startAgentWith(context.Background(), Options{
+		AgentID: "exiting", WorkingDir: t.TempDir(),
+	}, noopSink{}, func(context.Context, Options, OutputSink) (Agent, error) { return provider, nil }, false)
+	require.NoError(t, err)
+
+	close(provider.waitCh)
+	select {
+	case view := <-viewDuringExit:
+		assert.True(t, view.hasAgent, "the exit callback must pause the queue before the slot permits a restart")
+		// The slot outliving the process is exactly why HasAgent cannot answer
+		// "may I write to this provider". A caller that is about to write asks
+		// AgentAlive, or it writes to a closed pipe and fails the user's input.
+		assert.False(t, view.alive, "a provider that already exited must not read as alive")
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit callback did not run")
+	}
+	require.Eventually(t, func() bool { return !m.HasAgent("exiting") }, time.Second, 10*time.Millisecond)
+}
+
 // TestManager_ExitGoroutineHonorsIdentityGuard verifies the stop-restart race fix: the old
 // provider's background Wait goroutine, when it unblocks AFTER a new provider has taken the
 // agent's slot (the restart case), must NOT delete the new provider's map entry or its
@@ -462,7 +487,7 @@ func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 	m.cachedOptionGroups["r"] = cachedCatalog{groups: newProvider.groups, model: "b"}
 	m.mu.Unlock()
 
-	// Release A; its goroutine runs the identity-guarded delete, then fires onExit.
+	// Release A; its goroutine fires onExit, then runs the identity-guarded delete.
 	close(old.waitCh)
 	select {
 	case <-exited:

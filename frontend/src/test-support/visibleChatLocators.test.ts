@@ -24,10 +24,6 @@ import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 const CHAT_TEST_IDS = [
   'message-bubble',
   'message-content',
-  'message-error',
-  'message-pending',
-  'message-retry-button',
-  'message-delete-button',
 ]
 
 /** `page.locator('[data-testid="<chat id>"...]')` without a `:visible` filter. */

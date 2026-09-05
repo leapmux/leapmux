@@ -308,7 +308,7 @@ func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 	}
 }
 
-func TestPi_SendInput_DuringTurnSetsSteer(t *testing.T) {
+func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
 	t.Parallel()
 
 	rig := newPiTestRig(t, noopSink{})
@@ -324,7 +324,7 @@ func TestPi_SendInput_DuringTurnSetsSteer(t *testing.T) {
 		return nil, true, ""
 	})
 
-	require.NoError(t, rig.agent.SendInput("steer this", nil))
+	require.NoError(t, rig.agent.SteerInput("steer this", nil))
 
 	select {
 	case payload := <-gotPayload:

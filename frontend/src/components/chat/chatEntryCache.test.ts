@@ -87,17 +87,6 @@ function forwardedUserText(id: string, seq: bigint, parentToolUseId: string): Ag
   })
 }
 
-/** An optimistic local user row (seq 0n, classifies visible). */
-function localText(id: string, text: string): AgentChatMessage {
-  return create(AgentChatMessageSchema, {
-    id,
-    source: MessageSource.USER,
-    content: new TextEncoder().encode(JSON.stringify({ content: text })),
-    contentCompression: ContentCompression.NONE,
-    seq: 0n,
-  })
-}
-
 describe('createclassifiedentrycache', () => {
   it('re-classifies a hidden reasoning row visible<->hidden as its command stream starts and clears', () => {
     createRoot((dispose) => {
@@ -106,7 +95,6 @@ describe('createclassifiedentrycache', () => {
       const cache = createClassifiedEntryCache({
         messages: () => messages,
         hasRenderableStreamBySpanId: () => streaming(),
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       // No stream yet -> the empty reasoning row is hidden.
@@ -136,7 +124,6 @@ describe('createclassifiedentrycache', () => {
       const cache = createClassifiedEntryCache({
         messages: () => messages,
         hasToolUseSiblingBySpanId: () => hasSibling(),
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -165,7 +152,6 @@ describe('createclassifiedentrycache', () => {
         messages: () => messages,
         hasToolUseSiblingBySpanId: () => true,
         toolUseSiblingContentVersionBySpanId: () => openerVersion(),
-        hasNewerMessages: () => false,
         showHiddenMessages: () => true, // keep the result row visible regardless of classification
       })
       cache.visibleEntries()
@@ -191,7 +177,6 @@ describe('createclassifiedentrycache', () => {
         messages: () => messages,
         hasToolUseSiblingBySpanId: () => true,
         toolUseSiblingRevisionBySpanId: () => openerRevision(),
-        hasNewerMessages: () => false,
         showHiddenMessages: () => true,
       })
       cache.visibleEntries()
@@ -220,7 +205,6 @@ describe('createclassifiedentrycache', () => {
         messages: () => messages,
         hasToolResultSiblingBySpanId: () => true,
         toolResultSiblingContentVersionBySpanId: () => resultVersion(),
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -247,7 +231,6 @@ describe('createclassifiedentrycache', () => {
         messages: () => messages,
         hasToolResultSiblingBySpanId: () => true,
         toolResultSiblingRevisionBySpanId: () => resultRevision(),
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -275,7 +258,6 @@ describe('createclassifiedentrycache', () => {
         messages: () => messages,
         hasToolResultSiblingBySpanId: () => hasResult(),
         toolResultSiblingContentVersionBySpanId: () => 0,
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -306,7 +288,6 @@ describe('createclassifiedentrycache', () => {
       const messages = [forwardedUserText('fu1', 3n, 'toolu_spawn')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
         isChildTranscript: () => isChild(),
       })
@@ -348,7 +329,6 @@ describe('createclassifiedentrycache', () => {
           resultProbeReads++
           return resultVersion()
         },
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
@@ -380,7 +360,6 @@ describe('createclassifiedentrycache', () => {
       const cache = createClassifiedEntryCache({
         messages,
         hasRenderableStreamBySpanId: () => false, // r1 stays hidden
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       // Read ONLY hasVisibleEntries() -- never visibleEntries(). It still caches
@@ -409,7 +388,6 @@ describe('createclassifiedentrycache', () => {
       const cache = createClassifiedEntryCache({
         messages,
         hasRenderableStreamBySpanId: () => false, // r1 stays hidden
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       expect(cache.hasVisibleEntries()).toBe(true)
@@ -427,30 +405,11 @@ describe('createclassifiedentrycache', () => {
     })
   })
 
-  it('hides trailing optimistic locals (seq 0n) while scrolled away from the tail', () => {
-    createRoot((dispose) => {
-      const [hasNewer, setHasNewer] = createSignal(false)
-      const messages = [assistantText('a1', 1n, 'hi'), localText('local-1', 'pending')]
-      const cache = createClassifiedEntryCache({
-        messages: () => messages,
-        hasNewerMessages: hasNewer,
-        showHiddenMessages: () => false,
-      })
-      // At the live tail the optimistic local renders.
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1', 'local-1'])
-      // Windowed away: the trailing local is hidden (it reappears on jump-to-latest).
-      setHasNewer(true)
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1'])
-      dispose()
-    })
-  })
-
   it('prunes entries no longer in the window and reuses the cached ref for an unchanged row', () => {
     createRoot((dispose) => {
       const [messages, setMessages] = createSignal([assistantText('a1', 1n, 'hi'), assistantText('a2', 2n, 'yo')])
       const cache = createClassifiedEntryCache({
         messages,
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       const first = cache.visibleEntries()
@@ -476,7 +435,6 @@ describe('createclassifiedentrycache', () => {
       const [messages, setMessages] = createSignal<AgentChatMessage[]>([assistantText('a1', 1n, 'hi')])
       const cache = createClassifiedEntryCache({
         messages,
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       const first = cache.visibleEntries()[0]
@@ -500,7 +458,6 @@ describe('createclassifiedentrycache', () => {
       const cache = createClassifiedEntryCache({
         messages,
         contentVersionById: id => versions.get(id) ?? 0,
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       const first = cache.visibleEntries()[0]
@@ -536,7 +493,6 @@ describe('createclassifiedentrycache', () => {
       const messages = [assistantText('a1', 1n, 'hi'), emptyCodexReasoning('r1', 2n, 'span-1')]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasNewerMessages: () => false,
         showHiddenMessages: showHidden,
       })
       expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['a1']) // r1 hidden
@@ -550,54 +506,15 @@ describe('createclassifiedentrycache', () => {
     createRoot((dispose) => {
       const visible = createClassifiedEntryCache({
         messages: () => [assistantText('a1', 1n, 'hi')],
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       expect(visible.hasVisibleEntries()).toBe(true)
 
       const allHidden = createClassifiedEntryCache({
         messages: () => [emptyCodexReasoning('r1', 1n, 'span-1')],
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       expect(allHidden.hasVisibleEntries()).toBe(false)
-      dispose()
-    })
-  })
-
-  it('hasVisibleEntries agrees with visibleEntries() when only trailing locals remain while scrolled away', () => {
-    createRoot((dispose) => {
-      const [hasNewer, setHasNewer] = createSignal(false)
-      const messages = [localText('local-1', 'pending')]
-      const cache = createClassifiedEntryCache({
-        messages: () => messages,
-        hasNewerMessages: hasNewer,
-        showHiddenMessages: () => false,
-      })
-      // At the live tail the optimistic local renders -> both accessors agree.
-      expect(cache.visibleEntries().map(e => e.msg.id)).toEqual(['local-1'])
-      expect(cache.hasVisibleEntries()).toBe(true)
-      // Windowed away: the trailing local is hidden, so visibleEntries() is empty
-      // and hasVisibleEntries() MUST agree (same hideTailLocals rule) -- otherwise
-      // a consumer gating on it would render a non-empty container with zero rows.
-      setHasNewer(true)
-      expect(cache.visibleEntries()).toEqual([])
-      expect(cache.hasVisibleEntries()).toBe(false)
-      dispose()
-    })
-  })
-
-  it('hasVisibleEntries hides trailing locals under showHiddenMessages too', () => {
-    createRoot((dispose) => {
-      const cache = createClassifiedEntryCache({
-        messages: () => [localText('local-1', 'pending')],
-        hasNewerMessages: () => true,
-        showHiddenMessages: () => true,
-      })
-      // Only a trailing local while scrolled away: the tail-local hide applies even
-      // under showHidden, so nothing renders and hasVisibleEntries agrees.
-      expect(cache.visibleEntries()).toEqual([])
-      expect(cache.hasVisibleEntries()).toBe(false)
       dispose()
     })
   })
@@ -636,7 +553,6 @@ describe('createclassifiedentrycache', () => {
       ]
       const cache = createClassifiedEntryCache({
         messages: () => messages,
-        hasNewerMessages: () => false,
         showHiddenMessages: () => false,
       })
       // Materialize the entries so the cache classifies and parses every row.

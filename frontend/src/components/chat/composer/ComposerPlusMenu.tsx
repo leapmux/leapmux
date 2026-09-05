@@ -54,6 +54,8 @@ export interface ComposerPlusMenuProps {
    * placeholder, so the box and this menu state one reason and cannot disagree.
    */
   disabledReason?: string
+  /** Specifies why only the attach item is unavailable. */
+  attachmentDisabledReason?: string
   /**
    * Whether a settings change is in flight. A model or effort change relaunches
    * the session and takes seconds, and every settings surface flips its label
@@ -279,6 +281,8 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const attachDisabledReason = () => {
     if (props.disabledReason)
       return props.disabledReason
+    if (props.attachmentDisabledReason)
+      return props.attachmentDisabledReason
     return props.canAttach ? undefined : 'Attach is unavailable during a control request'
   }
 

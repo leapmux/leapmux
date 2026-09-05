@@ -57,9 +57,8 @@ export function smallestIndexWhere(n: number, pred: (mid: number) => boolean, fa
  * seq is smaller (the insertion point) -- so `items[idx]?.seq === target` tests membership. The one
  * home for the ascending-by-seq lower-bound lookup the chat window, the marks store, and the rail
  * all repeat, backed by {@link smallestIndexWhere} so the `seq >= target` predicate + off-by-one
- * live in a single tested place. `hi` defaults to the full length; pass a smaller bound to restrict
- * the search to a prefix -- e.g. the ascending server-row region, excluding trailing optimistic
- * locals (seq 0n) that pin to the tail out of seq order.
+ * live in a single tested place. `hi` defaults to the full length. Pass a smaller limit to
+ * restrict the search to a prefix.
  */
 export function lowerBoundBySeq(items: readonly { seq: bigint }[], target: bigint, hi: number = items.length): number {
   return smallestIndexWhere(hi, mid => items[mid].seq >= target, hi)

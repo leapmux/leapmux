@@ -1,6 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { NOTIFICATION_THREAD_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, ContentCompression, MarkType, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /** Encode a JSON object as raw message content bytes (no wrapper). */
 export function rawContent(obj: unknown): Uint8Array {
@@ -18,7 +18,6 @@ export function makeMessage(overrides: Partial<{
   source: MessageSource
   seq: bigint
   createdAt: string
-  deliveryError: string
   content: Uint8Array
   contentCompression: ContentCompression
   agentProvider: number
@@ -35,7 +34,6 @@ export function makeMessage(overrides: Partial<{
     source: overrides.source ?? MessageSource.AGENT,
     seq: overrides.seq ?? 1n,
     createdAt: overrides.createdAt ?? '',
-    deliveryError: overrides.deliveryError ?? '',
     content: overrides.content ?? new Uint8Array(),
     contentCompression: overrides.contentCompression ?? ContentCompression.NONE,
     depth: overrides.depth ?? 0,
@@ -45,5 +43,7 @@ export function makeMessage(overrides: Partial<{
     spanLines: overrides.spanLines ?? '[]',
     agentProvider: overrides.agentProvider ?? AgentProvider.CLAUDE_CODE,
     spanColor: overrides.spanColor ?? -1,
+    previousSeq: 0n,
+    markType: MarkType.UNSPECIFIED,
   } as AgentChatMessage
 }

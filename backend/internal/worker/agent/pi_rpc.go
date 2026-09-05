@@ -61,6 +61,10 @@ func (a *PiAgent) sendPiCommand(method string, payload map[string]any, timeout t
 		return nil, err
 	}
 
+	return parsePiResponse(method, respLine)
+}
+
+func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, error) {
 	var env piResponseEnvelope
 	if err := json.Unmarshal(respLine, &env); err != nil {
 		return nil, fmt.Errorf("parse %s response: %w", method, err)
@@ -72,6 +76,42 @@ func (a *PiAgent) sendPiCommand(method string, payload map[string]any, timeout t
 		return nil, fmt.Errorf("%s failed", method)
 	}
 	return env.Data, nil
+}
+
+func (a *PiAgent) sendPiCommandDetached(method string, payload map[string]any, handle func(error)) error {
+	id := "leapmux-" + strconv.FormatInt(a.nextReqID.Add(1), 10)
+	envelope := make(map[string]any, len(payload)+2)
+	for key, value := range payload {
+		envelope[key] = value
+	}
+	envelope["id"] = id
+	envelope["type"] = method
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", method, err)
+	}
+	data = append(data, '\n')
+	response, release := a.register(id)
+	a.mu.Lock()
+	stopped := a.stopped
+	a.mu.Unlock()
+	if stopped {
+		release()
+		return fmt.Errorf("agent is stopped")
+	}
+	if err := a.writeStdin(data); err != nil {
+		release()
+		return fmt.Errorf("write %s: %w", method, err)
+	}
+	go func() {
+		defer release()
+		line, err := a.awaitResponse(response, method, 0)
+		if err == nil {
+			_, err = parsePiResponse(method, line)
+		}
+		handle(err)
+	}()
+	return nil
 }
 
 // handlePiResponse is the readOutput interceptor that routes {type:"response"}

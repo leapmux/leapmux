@@ -5,13 +5,13 @@ import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 //
 // The shared backbone of the simple chat sub-stores: a single
 // `{ byAgent: Record<string, T> }` reactive store with get / set / clear over a
-// configured empty value. Extracted so chatStreamingText, chatTodoStore, and
-// chatPendingOutbound stop each re-spelling the same createStore +
+// configured empty value. Extracted so chatStreamingText and chatTodoStore do
+// not repeat the same createStore and
 // `byAgent[agentId] ?? empty` accessors; each slice layers its own domain methods
-// (todos.replace, pendingOutbound.take, ...) on top. The saved-viewport-scroll
+// (such as todos.replace) on top. The saved-viewport-scroll
 // slice has no domain logic, so the window store uses this spine directly for it.
-// chatLiveTail layers its bump/settle/onDelete reconcilers on a `bigint` value.
-// Mirrors the chatReconcile / chatMessageOrder leaf extractions: a small,
+// chatLiveTail layers its sequence reconcilers on a `bigint` value.
+// This matches the chatMessageOrder extraction: a small,
 // independently tested unit the slices compose. NOT for the two-level
 // agentId -> spanId slices -- chatCommandStreams and chatToolProgress -- whose
 // nesting is a different shape; each keeps its own vivify/collapse spine.

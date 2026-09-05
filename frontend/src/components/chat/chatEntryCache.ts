@@ -202,8 +202,6 @@ export interface ClassifiedEntryCacheDeps {
    * the bump wake the memo so it re-checks freshness and rebuilds the row.
    */
   contentVersionById?: (id: string) => number
-  /** Scrolled away from the live tail: trailing optimistic locals are hidden. */
-  hasNewerMessages: () => boolean
   /** Show otherwise-hidden messages (the debug preference). */
   showHiddenMessages: () => boolean
   /**
@@ -342,22 +340,6 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   const hasVisibleMessage = (msg: AgentChatMessage): boolean =>
     resolveEntry(msg).category.kind !== 'hidden'
   /**
-   * Walk the whole window once, computing the `hideTailLocals` flag in ONE place
-   * and collecting the present-id set so the cache can be pruned to the window.
-   * Both accessors share this so neither the tail-local rule nor the prune can
-   * drift between them. The visit always sees every row (it never breaks early),
-   * so `present` is complete regardless of how the visitor short-circuits its own
-   * work; `visit` receives whether the row is a hidden trailing local.
-   *
-   * Trailing optimistic locals (seq 0n): while scrolled away from the live tail
-   * (hasNewerMessages), the in-memory bottom isn't the real bottom and the
-   * streaming/thinking UI is hidden, so a pending bubble stranded after old
-   * history would be wrong. The newest-end trim keeps the local in the store, so
-   * nothing is lost -- it reappears at the tail on jump-to-latest.
-   *
-   * The prune (pruneToWindow) drops cached entries for departed ids EVERY run.
-   */
-  /**
    * Drop cached entries for ids no longer in the window, EVERY run (no size
    * guard): a window that swaps out and in the SAME number of ids leaves size
    * unchanged, so a `size >` shortcut would never fire and would leak the departed
@@ -371,24 +353,21 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
         entryCache.delete(id)
     }
   }
-  const walkWindow = (visit: (msg: AgentChatMessage, isHiddenTailLocal: boolean) => void) => {
-    const hideTailLocals = deps.hasNewerMessages()
+  const walkWindow = (visit: (msg: AgentChatMessage) => void) => {
     const present = new Set<string>()
     for (const msg of deps.messages()) {
       present.add(msg.id)
-      visit(msg, hideTailLocals && msg.seq === 0n)
+      visit(msg)
     }
     pruneToWindow(present)
   }
   const visibleEntries = createMemo(() => {
     const showHidden = deps.showHiddenMessages()
     const result: ClassifiedEntry[] = []
-    walkWindow((msg, isHiddenTailLocal) => {
+    walkWindow((msg) => {
       // Reuse the cached entry when the message hasn't changed (same seq = same
       // content) AND its command-stream presence is unchanged; otherwise rebuild.
       const entry = resolveEntry(msg)
-      if (isHiddenTailLocal)
-        return
       if (showHidden || entry.category.kind !== 'hidden')
         result.push(entry)
     })
@@ -402,17 +381,14 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
   // cache but does NOT refresh it: rows past the first visible one skip resolveEntry,
   // so their cached entries are not rebuilt on a hasVisibleEntries-only read -- a
   // consumer that needs fresh entries must also read visibleEntries() (ChatView
-  // always does). The hideTailLocals rule comes from walkWindow, so it can't
-  // disagree with visibleEntries() -- otherwise hasVisibleEntries() could say
-  // "something renders" while visibleEntries() yields [] and a consumer gating on
-  // the former would show a non-empty container with zero rows.
+  // always does).
   const hasVisibleEntries = createMemo(() => {
     const showHidden = deps.showHiddenMessages()
     let visible = false
-    walkWindow((msg, isHiddenTailLocal) => {
+    walkWindow((msg) => {
       // `showHidden ||` short-circuits hasVisibleMessage (no classify/cache-fill);
       // `!visible &&` stops classifying once any visible row is found.
-      if (!visible && !isHiddenTailLocal && (showHidden || hasVisibleMessage(msg)))
+      if (!visible && (showHidden || hasVisibleMessage(msg)))
         visible = true
     })
     return visible

@@ -84,25 +84,21 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
 
   // -- Phase 4 raw-passthrough shapes ----------------------------------
 
-  it('codex thread/compacted (raw JSON-RPC) renders as "Context compacted"', () => {
-    const messages = [{ method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }]
-    expect(renderText(messages)).toBe('Context compacted')
-  })
-
-  it('codex thread/compacted picks up compaction detail when metadata is present (not hardcoded)', () => {
-    // The aggregate Codex branch routes through the shared compactBoundaryLabel,
-    // so a thread/compacted carrying compact_metadata renders detail too -- and
-    // stays in lockstep with the standalone renderer.
-    const messages = [{ method: 'thread/compacted', compact_metadata: { trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 } }]
-    expect(renderText(messages)).toBe('Context compacted (auto, 100.0k → 8.0k)')
-  })
-
   it('codex item/started+contextCompaction (raw JSON-RPC) renders the in-progress spinner', () => {
     const messages = [{
       method: 'item/started',
       params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
     }]
     expect(renderText(messages)).toBe('Compacting context...')
+  })
+
+  it('codex completed contextCompaction item renders the completed boundary', () => {
+    const messages = [{
+      threadId: 't1',
+      turnId: 'turn1',
+      item: { type: 'contextCompaction', id: 'compact-1' },
+    }]
+    expect(renderText(messages)).toBe('Context compacted')
   })
 
   it('codex item/started for non-compaction items does NOT match the compaction spinner', () => {
@@ -114,18 +110,6 @@ describe('renderNotificationThread: compaction and context_cleared rendering', (
     // thread renders empty. The point is we don't accidentally emit a
     // compaction spinner for unrelated item kinds.
     expect(renderText(messages)).not.toContain('Compacting context')
-  })
-
-  it('thread/compacted alongside settings_changed renders both in order', () => {
-    const messages = [
-      { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } },
-      { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } },
-    ]
-    const text = renderText(messages)
-    const compactedIdx = text.indexOf('Context compacted')
-    const modelIdx = text.indexOf('Model')
-    expect(compactedIdx).toBeGreaterThanOrEqual(0)
-    expect(modelIdx).toBeGreaterThan(compactedIdx)
   })
 
   it('legacy synthesized {type:"compacting"} envelope no longer matches the spinner (accepted regression)', () => {
@@ -246,10 +230,6 @@ describe('compaction token formatting: pre → post', () => {
     const expected = 'Context compacted (auto, 100.0k → 8.0k)'
     expect(elementText(renderNotificationThread([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
     expect(elementText(renderNotificationThread([msg], AgentProvider.CODEX))).toBe(expected)
-  })
-
-  it('renders a single Codex thread/compacted boundary with no metadata', () => {
-    expect(renderText([{ method: 'thread/compacted' }])).toBe('Context compacted')
   })
 
   it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {

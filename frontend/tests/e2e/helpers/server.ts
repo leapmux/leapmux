@@ -37,7 +37,6 @@ export function hubSpawnEnv(
 ): NodeJS.ProcessEnv {
   return { ...process.env, ...extra, LEAPMUX_HUB_DEV_FRONTEND: undefined }
 }
-
 // ──────────────────────────────────────────────
 // Global state (read from file written by global-setup)
 // ──────────────────────────────────────────────

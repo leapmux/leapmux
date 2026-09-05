@@ -26,8 +26,9 @@ type MessageEnvelope struct {
 // UserInputMessage is the structure written to Claude Code's stdin
 // when using --input-format stream-json.
 type UserInputMessage struct {
-	Type    MessageType      `json:"type"`
-	Message UserInputContent `json:"message"`
+	Type     MessageType      `json:"type"`
+	Message  UserInputContent `json:"message"`
+	Priority string           `json:"priority,omitempty"`
 }
 
 // UserInputContent is the nested message content for stream-json input.

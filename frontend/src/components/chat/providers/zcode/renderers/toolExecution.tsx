@@ -2,7 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import Bot from 'lucide-solid/icons/bot'
 import Eye from 'lucide-solid/icons/eye'
-import FileEdit from 'lucide-solid/icons/file-edit'
+import FilePen from 'lucide-solid/icons/file-pen'
 import FilePlus from 'lucide-solid/icons/file-plus'
 import Folder from 'lucide-solid/icons/folder'
 import ListChecks from 'lucide-solid/icons/list-checks'
@@ -115,7 +115,7 @@ function ZCodeEditRenderer(props: ToolProps): JSX.Element {
   const path = createMemo(() => zcodeFilePath(zcodeRowFrom(props)))
   return (
     <ToolUseLayout
-      icon={FileEdit}
+      icon={FilePen}
       toolName={ZCODE_TOOL.Edit}
       title={`Edit ${path()}`}
       context={props.context}

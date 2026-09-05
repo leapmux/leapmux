@@ -244,7 +244,7 @@ message RekeyReject {
 
 // Request from Frontend to Worker (encrypted).
 message InnerRpcRequest {
-  string method = 1;  // e.g. "ListWorkspaces", "SendAgentMessage"
+  string method = 1;  // e.g. "ListWorkspaces", "EnqueueAgentInput"
   bytes payload = 2;  // Serialized protobuf for the specific method
 }
 

@@ -1,17 +1,21 @@
 import type { FileAttachment } from './attachments'
 import type { AttachmentCapabilities } from './providers/registry'
 import { describe, expect, it } from 'vitest'
+import { MAX_AGENT_INPUT_ITEM_BYTES } from '~/generated/contracts/agent-input'
 import {
   buildAcceptAttribute,
   clearAttachments,
   collectDroppedAttachmentFiles,
   describeUnsupportedAttachment,
+  forgetAgentAttachments,
   getAttachments,
   inferAttachmentDetails,
   isAttachmentSupported,
   isImageMimeType,
   MAX_TOTAL_ATTACHMENT_SIZE,
   nextPastedImageName,
+  queueEditDraftKey,
+  queueEditDraftKeyPrefix,
   readFileAsAttachment,
   setAttachments,
   totalAttachmentSize,
@@ -128,7 +132,10 @@ describe('totalAttachmentSize', () => {
 
 describe('max total attachment size', () => {
   it('is 10 MB', () => {
-    expect(MAX_TOTAL_ATTACHMENT_SIZE).toBe(10 * 1024 * 1024)
+    // The limit comes from contracts/agent-input.json, so the Worker enforces
+    // the same number. Restating the literal here would recreate the second
+    // copy the contract exists to remove.
+    expect(MAX_TOTAL_ATTACHMENT_SIZE).toBe(MAX_AGENT_INPUT_ITEM_BYTES)
   })
 })
 
@@ -147,6 +154,35 @@ describe('attachment cache', () => {
     setAttachments('agent-2', [{ id: 'a2' } as FileAttachment])
     clearAttachments('agent-2')
     expect(getAttachments('agent-2')).toEqual([])
+  })
+
+  it('forgets normal and queue-edit attachments for a closed agent', () => {
+    setAttachments('agent-3', [{ id: 'normal' } as FileAttachment])
+    setAttachments('agent-3-queue-input-1', [{ id: 'queued' } as FileAttachment])
+    setAttachments('agent-30', [{ id: 'other' } as FileAttachment])
+
+    forgetAgentAttachments('agent-3')
+
+    expect(getAttachments('agent-3')).toEqual([])
+    expect(getAttachments('agent-3-queue-input-1')).toEqual([])
+    expect(getAttachments('agent-30')).toHaveLength(1)
+  })
+})
+
+describe('queueEditDraftKey', () => {
+  it('composes the item key from the agent prefix', () => {
+    expect(queueEditDraftKeyPrefix('agent-1')).toBe('agent-1-queue-')
+    expect(queueEditDraftKey('agent-1', 'input-9')).toBe('agent-1-queue-input-9')
+    expect(queueEditDraftKey('agent-1', 'input-9').startsWith(queueEditDraftKeyPrefix('agent-1'))).toBe(true)
+  })
+
+  it('produces a key that the agent sweep forgets', () => {
+    const key = queueEditDraftKey('agent-sweep', 'input-1')
+    setAttachments(key, [{ id: 'queued' } as FileAttachment])
+
+    forgetAgentAttachments('agent-sweep')
+
+    expect(getAttachments(key)).toEqual([])
   })
 })
 

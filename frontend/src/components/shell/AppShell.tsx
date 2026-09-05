@@ -50,6 +50,7 @@ import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
@@ -151,6 +152,7 @@ export const AppShell: Component = () => {
   // via useTabPersistence.
   const selection = createTabSelectionStore(tabView, tabMetadata)
   const chatStore = createChatStore()
+  const agentInputQueueStore = createAgentInputQueueStore(agentId => tabView.getAgentTab(agentId) !== undefined)
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
   const layoutStore = createLayoutStore({
@@ -325,6 +327,7 @@ export const AppShell: Component = () => {
   // Streaming connection management
   useWorkspaceConnection({
     chatStore,
+    agentInputQueueStore,
     view: tabView,
     metadata: tabMetadata,
     selection,
@@ -670,6 +673,7 @@ export const AppShell: Component = () => {
 
   const agentOps = useAgentOperations({
     agentSessionStore,
+    agentInputQueueStore,
     chatStore,
     controlStore,
     view: tabView,
@@ -927,7 +931,10 @@ export const AppShell: Component = () => {
     onCleanup(() => clearTimeout(timer))
   })
 
-  useMetadataSweep(() => crdtState(), tabMetadata)
+  useMetadataSweep(() => crdtState(), tabMetadata, (retired) => {
+    for (const tabId of retired)
+      agentInputQueueStore.clearAgent(tabId)
+  })
   // The tile owners, not a third walk of their trees: both stores memoize
   // "which tiles does this workspace have" per tick, and the sweep asks the
   // same question. Wrapped rather than passed unbound so the call site does not
@@ -1093,9 +1100,9 @@ export const AppShell: Component = () => {
     // tile-id lookup returned nothing.
     if (workspace.activeWorkspaceId() !== deletedId)
       return
-    // No store to clear: the workspace's tabs leave the projection when the hub
-    // tombstones them, and `useMetadataSweep` reclaims their metadata on the
-    // next tick. Only the selection pointer has to be dropped explicitly.
+    // No store to clear here: the workspace's tabs leave the projection when
+    // the Hub tombstones them. `useMetadataSweep` then reclaims their metadata
+    // and queue snapshots. Only the selection pointer needs an explicit write.
     // A null id clears the selection, which is what surfaces the
     // "Create a new workspace..." empty state once the last one is gone.
     switchWorkspace(nextWorkspaceId)
@@ -1136,13 +1143,13 @@ export const AppShell: Component = () => {
       confirmEmptyArchiveDialog.open({ count, resolve })
     })
 
-  // Clear transient write state for every agent in the archived workspace.
+  // Clear transient control state for every agent in the archived workspace.
+  // Queued input is durable Worker state and remains visible while archived.
   const handlePostArchiveWorkspace = (workspaceId: string) => {
     for (const tab of tabView.forWorkspace(workspaceId)) {
       if (tab.type !== TabType.AGENT)
         continue
       controlStore.clearAgent(tab.id)
-      chatStore.failPendingOutbound(tab.id, 'Workspace archived before the message was sent')
     }
   }
 
@@ -1164,12 +1171,14 @@ export const AppShell: Component = () => {
       metadata: tabMetadata,
       selection,
       chatStore,
+      agentInputQueueStore,
       controlStore,
       layoutStore,
       agentSessionStore,
       repoGitStore,
     },
     ops: { agentOps, termOps },
+    clientId: ownClientId,
     workspace: {
       isActiveWorkspaceMutatable,
       isActiveWorkspaceArchived,

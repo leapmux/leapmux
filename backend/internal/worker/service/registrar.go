@@ -236,10 +236,8 @@ func decodeInto[T any, PT decodedRequest[T]](
 // "an archived workspace takes no mutation" lives on this side of the wire.
 //
 // The registrars call it rather than the handlers, so a new write handler is
-// refused by construction. A per-handler guard covered four of the thirteen
-// agent and terminal write RPCs, and the nine it missed included every one that
-// writes state outliving the archive: RenameAgent, DeleteAgentMessage,
-// UpdateTerminalTitle, and both closes.
+// refused by construction. The old per-handler guards missed write paths such
+// as RenameAgent, queue mutations, UpdateTerminalTitle, and both closes.
 //
 // It keys on the SCOPE, not on the method, because the scope already states
 // whether a handler mutates. A read handler stays reachable, which is what
@@ -283,7 +281,7 @@ func agentGatedHandler[T any, PT agentScopedRequest[T]](
 	})
 }
 
-// registerAgentGated registers a handler for a request naming an agent. fn
+// registerAgentGated registers a handler for a request that carries an agent id. fn
 // receives the loaded row so the body never double-fetches.
 func registerAgentGated[T any, PT agentScopedRequest[T]](
 	r registrar,
@@ -316,7 +314,7 @@ func agentGatedByIDHandler[T any, PT agentScopedRequest[T]](
 	})
 }
 
-// registerAgentGatedByID registers a handler for a request naming an agent,
+// registerAgentGatedByID registers a handler for a request that carries an agent id,
 // resolved through an id-only existence probe — no full-row load for a handler
 // that only needs "does this agent exist?".
 func registerAgentGatedByID[T any, PT agentScopedRequest[T]](

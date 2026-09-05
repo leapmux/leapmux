@@ -213,6 +213,14 @@ type OutputHandler struct {
 	// user message. Set via SetSendMessageFunc in service.New.
 	sendMessageFunc func(agentID, content string)
 
+	// supportsSteering answers whether the running provider can add the queue
+	// head to an active turn. Set via SetSupportsSteeringFunc in service.New;
+	// nil in tests that build an OutputHandler directly, where the answer is
+	// false. buildStatusChange must carry it, because the frontend applies the
+	// field on EVERY status it receives -- a status built without it turns the
+	// tab's Steer action off for a provider that does support steering.
+	supportsSteering func(agentID string) bool
+
 	// agentStarting reports whether the agent is still in its startup window
 	// (registered in the AgentStartup registry). Set via SetAgentStartingFunc
 	// in service.New; nil in tests that build an OutputHandler directly, where
@@ -220,6 +228,8 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
+	inputReady    func(agentID string)
+	inputStarted  func(agentID string)
 
 	// wakeLock prevents system sleep while there is agent/terminal activity.
 	wakeLock *wakelock.ActivityTracker
@@ -277,11 +287,25 @@ func (h *OutputHandler) SetSendMessageFunc(fn func(agentID, content string)) {
 	h.sendMessageFunc = fn
 }
 
+// SetSupportsSteeringFunc wires the steering-capability answer that every
+// status change carries. Call before any agent output is processed.
+func (h *OutputHandler) SetSupportsSteeringFunc(fn func(agentID string) bool) {
+	h.supportsSteering = fn
+}
+
 // SetAgentStartingFunc wires the predicate PersistSettingsRefresh uses to detect
 // the startup window (see the agentStarting field). Call before any agent output
 // is processed.
 func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
+}
+
+func (h *OutputHandler) SetInputReadyFunc(fn func(agentID string)) {
+	h.inputReady = fn
+}
+
+func (h *OutputHandler) SetInputStartedFunc(fn func(agentID string)) {
+	h.inputStarted = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -589,6 +613,18 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, content, span, s.tracker)
 }
 
+func (s *agentOutputSink) InputReady() {
+	if s.h.inputReady != nil {
+		s.h.inputReady(s.agentID)
+	}
+}
+
+func (s *agentOutputSink) InputStarted() {
+	if s.h.inputStarted != nil {
+		s.h.inputStarted(s.agentID)
+	}
+}
+
 // PersistTurnEnd persists the universal turn-end divider envelope and
 // fires the git-status auto-broadcast. Each provider's final
 // envelope (Claude type:"result", Codex turn/completed, ACP prompt
@@ -779,14 +815,19 @@ func (s *agentOutputSink) buildStatusChange(
 	status leapmuxv1.AgentStatus,
 	sessionID string,
 ) *leapmuxv1.AgentStatusChange {
+	supportsSteering := false
+	if s.h.supportsSteering != nil {
+		supportsSteering = s.h.supportsSteering(s.agentID)
+	}
 	return &leapmuxv1.AgentStatusChange{
-		AgentId:        s.agentID,
-		Status:         status,
-		AgentSessionId: sessionID,
-		WorkerOnline:   true,
-		GitStatus:      gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:  s.agentProvider,
-		OptionGroups:   optionGroupsView(s.h.agents, &dbAgent, nil),
+		AgentId:          s.agentID,
+		Status:           status,
+		AgentSessionId:   sessionID,
+		WorkerOnline:     true,
+		GitStatus:        gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
+		AgentProvider:    s.agentProvider,
+		OptionGroups:     optionGroupsView(s.h.agents, &dbAgent, nil),
+		SupportsSteering: supportsSteering,
 	}
 }
 

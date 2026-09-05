@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // startRecorder captures which agents the resume sweep tried to start, and lets
@@ -560,7 +561,7 @@ func TestAgentResume_ResumesNothingForAnAgentWithNoSession(t *testing.T) {
 // fail() on the error path, which the comment there calls out and nothing else
 // checked.
 //
-// fail() reports STARTUP_FAILED, and SendAgentMessage refuses an agent in that
+// fail() reports STARTUP_FAILED, and queue dispatch refuses an agent in that
 // state for the whole failed-entry TTL. One CLI that is slow to hand-shake at
 // boot would then answer the user's next message with "agent failed to start;
 // open a new agent", and every later sweep would pass the agent over as a
@@ -745,7 +746,7 @@ func TestAgentResume_SkipsChildTranscripts(t *testing.T) {
 }
 
 // TestAgentResume_SkipsAgentsThatFailedToStart pins the same permanent-failure
-// gate SendAgentMessage applies. Respawning one burns a startup slot on a CLI
+// gate that queue dispatch applies. Respawning one uses a startup slot on a CLI
 // that is going to fail again, and the row already tells the user to open a new
 // agent.
 func TestAgentResume_SkipsAgentsThatFailedToStart(t *testing.T) {
@@ -811,6 +812,35 @@ func TestAgentResume_WaitsForAWorkerOwner(t *testing.T) {
 	r.WaitForSweepForTest()
 	assert.Equal(t, []string{"agent-1"}, rec.ids(),
 		"the refusal must not latch -- a later converged pass is the retry")
+}
+
+func TestAgentResume_DrainsRecoveredInputOnlyAfterWorkerOwner(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	rec := newStartRecorder()
+	rec.install(svc)
+	seedOpenAgent(t, svc, "agent-queue", false)
+	_, err := inputqueue.NewStore(svc.DB).Enqueue(t.Context(), inputqueue.NewItem{
+		ID: "queued", AgentID: "agent-queue", Text: "queued",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.InputQueue.RecoverState(t.Context()))
+
+	svc.registeredBy.Store(&userid.UserID{})
+	r := svc.AgentResumer()
+	r.Start(t.Context())
+	r.WaitForSweepForTest()
+	require.Empty(t, rec.ids(), "a recovered queue must not start without a control-socket owner")
+
+	owner, ok := userid.New("user-1")
+	require.True(t, ok)
+	svc.SetRegisteredBy(owner)
+	r.Start(t.Context())
+	r.WaitForSweepForTest()
+	require.Eventually(t, func() bool { return len(rec.ids()) == 1 }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"agent-queue"}, rec.ids())
 }
 
 // TestAgentResume_RefusesWhileShuttingDown pins that a sweep triggered as the

@@ -63,8 +63,9 @@ function nonProgressTypes(): Set<string> {
 /**
  * Aggregate `nonProgressMethods` across every registered provider.
  * The base set is empty (no provider-agnostic JSON-RPC methods exist);
- * Codex contributes its hidden-lifecycle methods plus the metadata-only
- * notifications (mcp startup, rate limits, thread compaction).
+ * Codex contributes its hidden-lifecycle methods -- which include
+ * `thread/compacted` -- plus the metadata-only notifications (mcp startup,
+ * rate limits).
  */
 function nonProgressMethods(): Set<string> {
   if (cachedNonProgressMethods)
@@ -137,10 +138,6 @@ function containsContextCleared(parsed: ParsedMessageContent): boolean {
 export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const msg = msgs[i]
-    // Messages with delivery errors were never sent to the agent — skip them.
-    if (msg.deliveryError)
-      continue
-
     const parsed = parseMessageContent(msg)
     const category = classifyAgentMessage(msg)
     // An `unsupported_provider` message is one we cannot interpret at all (no

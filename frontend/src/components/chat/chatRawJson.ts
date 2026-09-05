@@ -33,8 +33,6 @@ export function buildRawJsonEnvelope(
     seq: jsonInt64(message.seq),
     created_at: message.createdAt,
   }
-  if (message.deliveryError)
-    envelope.delivery_error = message.deliveryError
   if (message.depth)
     envelope.depth = message.depth
   if (message.spanId)

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,12 +227,11 @@ func TestListAgents_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *testing
 	_ = ctx
 }
 
-// TestSendAgentMessage_RejectedByPersistedStartupError ensures the
-// SendAgentMessage gate also honors the persisted DB column after a
+// This test ensures that queue dispatch honors the persisted database column after a
 // worker restart. Without this, a stale frontend could slip a message
 // past the empty in-memory registry and trigger an ensureAgentRunning
 // restart of a known-bad agent.
-func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
+func TestEnqueueAgentInput_PersistedStartupErrorPausesFailedInput(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -251,13 +251,19 @@ func TestSendAgentMessage_RejectedByPersistedStartupError(t *testing.T) {
 	}))
 	// Register a tab so requireAccessibleAgent succeeds via workspace ACL.
 
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
+	dispatch(d, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		InputId: newTestAgentInputID(),
+		Kind:    leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 		AgentId: agentID,
-		Content: "hi",
+		Text:    "hi",
 	}, w)
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, int32(9), w.errors[0].code, "want FAILED_PRECONDITION")
-	assert.Contains(t, w.errors[0].message, "failed to start")
+	require.Empty(t, w.errors)
+	require.Eventually(t, func() bool {
+		snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+		return err == nil && snapshot.Paused && len(snapshot.Items) == 1 &&
+			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED &&
+			strings.Contains(snapshot.Items[0].Error, "failed to start")
+	}, time.Second, 10*time.Millisecond)
 }
 
 // TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn asserts a
@@ -389,7 +395,7 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 // TestDeriveAgentStatus_ActiveClearsLingeringDBError verifies that once a
 // crashed subprocess is restarted (runtime ACTIVE), the derivation no
 // longer surfaces a stale DB column. The test mirrors the race where
-// `SendAgentMessage` restarts an agent via `ensureAgentRunning` before
+// queue dispatch restarts an agent through `ensureAgentRunning` before
 // the DB column has been cleared.
 func TestDeriveAgentStatus_ActiveClearsLingeringDBError(t *testing.T) {
 	t.Parallel()

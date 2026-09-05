@@ -31,7 +31,6 @@ import { resolveStack } from '~/lib/resolveStack'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import { buildMessageActions } from './messageActions'
-import * as styles from './MessageBubble.css'
 import { bubbleRunsToRightEdge, classifyParsedMessage, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageClassification'
 import { useMessageContextMenu } from './MessageContextMenuHost'
 import { renderMessageContent } from './messageRenderers'
@@ -186,15 +185,6 @@ interface MessageBubbleProps {
   message: AgentChatMessage
   parsed?: ParsedMessageContent
   category?: MessageCategory
-  error?: string
-  /**
-   * Non-error pending label rendered beneath the bubble — used for
-   * optimistic user messages held in the per-agent startup queue while
-   * the agent's subprocess is still starting.
-   */
-  pendingLabel?: string
-  onRetry?: () => void
-  onDelete?: () => void
   workingDir?: string
   homeDir?: string
   onReply?: (quotedText: string) => void
@@ -384,16 +374,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode ? undefined : extractQuotableText() ?? undefined)
 
   const rowClass = () => messageRowClass(category().kind, props.message.source)
-  const isLocalPending = () => props.message.id.startsWith('local-')
-  const isPendingUserMessage = () => isLocalPending() && props.message.source === MessageSource.USER && !props.error
   const bubbleClass = () => {
-    // The pending variant is chosen HERE, not in messageBubbleClass, because only
-    // this component knows the message is an optimistic local. It is the same
-    // bubble otherwise, so it takes the same flush-right treatment.
-    const base = isPendingUserMessage()
-      ? chatStyles.userMessagePending
-      : messageBubbleClass(category().kind, props.message.source)
-    return bubbleRunsToRightEdge(category().kind, props.message.source, !!props.error)
+    const base = messageBubbleClass(category().kind, props.message.source)
+    return bubbleRunsToRightEdge(category().kind, props.message.source)
       ? `${base} ${chatStyles.bubbleFlushRight}`
       : base
   }
@@ -581,9 +564,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         // The menu is the ONE surface that also carries the recovery actions: the
         // failed row renders them as visible buttons, but a user who reached for
         // the menu should not have to go looking for them somewhere else.
-        actions: buildMessageActions(actionsCaller(), actionsLayout(), props.error
-          ? { onRetry: props.onRetry, onDelete: props.onDelete }
-          : undefined),
+        actions: buildMessageActions(actionsCaller(), actionsLayout()),
         createdAt: props.message.createdAt,
       }),
       onCancel: () => contextMenu.close(),
@@ -592,10 +573,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   return (
-    <div
-      class={props.error ? styles.messageWithError : undefined}
-      style={!props.error ? { display: 'contents' } : undefined}
-    >
+    <div style={{ display: 'contents' }}>
       {/* eslint-disable-next-line solid/reactivity -- a ref callback, not a signal to read */}
       <div class={rowClass()} ref={attachRowMenu}>
         <div
@@ -621,26 +599,6 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           <ToolHeaderActions caller={actionsCaller()} layout={actionsLayout()} />
         </Show>
       </div>
-
-      {/* The strip is a SIBLING of the row div, so the row's gesture never sees a
-          press on it. It carries the recovery actions, which the menu also offers,
-          so a press there opens the same menu -- `attachRowMenu` is idempotent
-          about the premeasure/no-host guards and registers its own cleanup. */}
-      <Show when={props.error}>
-        {/* eslint-disable-next-line solid/reactivity -- a ref callback, not a signal to read */}
-        <div class={styles.messageError} data-testid="message-error" ref={attachRowMenu}>
-          <span class={styles.messageErrorText}>Failed to deliver</span>
-          <span class={styles.messageErrorDot}>&middot;</span>
-          <button class={styles.messageRetryButton} onClick={() => props.onRetry?.()} data-testid="message-retry-button">Retry</button>
-          <span class={styles.messageErrorDot}>&middot;</span>
-          <button class={styles.messageDeleteButton} onClick={() => props.onDelete?.()} data-testid="message-delete-button">Delete</button>
-        </div>
-      </Show>
-      <Show when={!props.error && props.pendingLabel}>
-        <div class={styles.messageError} data-testid="message-pending">
-          <span class={styles.messageErrorText} style={{ color: 'inherit', opacity: '0.7' }}>{props.pendingLabel}</span>
-        </div>
-      </Show>
     </div>
   )
 }

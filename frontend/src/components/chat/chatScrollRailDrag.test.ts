@@ -493,8 +493,7 @@ describe('createthumbdrag', () => {
     })
 
     it('seeks when the loaded window is UNKNOWN, rather than scrubbing over a frozen transcript', () => {
-      // No window bounds at all (a conversation whose rows are all optimistic locals, or a
-      // window that does not resolve yet) is the fail-closed case: "outside". The reader must
+      // A window that does not resolve is the fail-closed case: "outside". The reader must
       // still get the debounced seek, or the thumb moves over a transcript that never follows.
       const { el, handle, state, scrubSeek, previewScrollTo } = setup()
       state.windowFirstSeq = undefined

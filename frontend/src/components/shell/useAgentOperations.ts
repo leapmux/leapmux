@@ -4,6 +4,7 @@ import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
+import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { ControlRequest, createControlStore } from '~/stores/control.store'
@@ -15,7 +16,7 @@ import type { TabView } from '~/stores/tabView'
 
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { clearAttachments } from '~/components/chat/attachments'
+import { forgetAgentAttachments } from '~/components/chat/attachments'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { optionGroupLabel } from '~/components/chat/settingsGroups'
 import { showWarnToast, showWarnToastUnlessDisconnected } from '~/components/common/Toast'
@@ -23,8 +24,6 @@ import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/cl
 import { AgentOptionSettlementState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { base64ToUint8Array } from '~/lib/base64'
-import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { openedAgentTabFields, planOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
@@ -34,6 +33,7 @@ import '~/components/chat/providers'
 
 export interface UseAgentOperationsProps {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
+  agentInputQueueStore: ReturnType<typeof createAgentInputQueueStore>
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
   view: TabView
@@ -471,82 +471,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
-  // Retry a failed message delivery.
-  // Always re-sends via sendAgentMessage (which auto-starts the agent
-  // if needed), then removes the old failed message.
-  const handleRetryMessage = async (agentId: string, messageId: string) => {
-    try {
-      const workerId = getAgentWorkerId(agentId)
-      const message = props.chatStore.getMessages(agentId).find(m => m.id === messageId)
-      if (!message)
-        return
-      const parsed = parseMessageContent(message)
-      const inner = getInnerMessage(parsed)
-      const content = inner?.content
-      if (typeof content !== 'string')
-        return
-
-      // Recover attachments from the failed message (base64-encoded data).
-      const rawAttachments = Array.isArray(inner?.attachments)
-        ? inner.attachments as Array<{ filename?: string, mime_type?: string, data?: string }>
-        : []
-      const attachments = rawAttachments
-        .filter(a => a.data)
-        .map(a => ({
-          filename: a.filename ?? '',
-          mimeType: a.mime_type ?? '',
-          data: base64ToUint8Array(a.data!),
-        }))
-
-      props.chatStore.clearMessageError(messageId)
-      await workerRpc.sendAgentMessage(workerId, {
-        agentId,
-        content,
-        ...(attachments.length > 0 ? { attachments } : {}),
-      })
-      // The resend SUCCEEDED (the new message arrives via WatchEvents), so removing the
-      // old failed bubble is best-effort cleanup. A delete failure here must NOT fall
-      // through to the outer catch and re-stamp "Failed to deliver": that would mislead
-      // the user into thinking the retry failed when it actually landed. The worker now
-      // rejects deleteAgentMessage unless the row is still a FAILED user message, so a
-      // concurrent state change (or a transient network error) can make this throw after
-      // a good resend.
-      if (messageId.startsWith('local-')) {
-        props.chatStore.removeMessage(agentId, messageId)
-      }
-      else {
-        try {
-          await workerRpc.deleteAgentMessage(workerId, { agentId, messageId })
-          props.chatStore.removeMessage(agentId, messageId)
-        }
-        catch (cleanupErr) {
-          showWarnToast('Could not remove the old failed message', cleanupErr)
-        }
-      }
-    }
-    catch (err) {
-      props.chatStore.setMessageError(messageId, 'Failed to deliver')
-      showWarnToast('Retry failed', err)
-    }
-  }
-
-  // Delete a failed message
-  const handleDeleteMessage = async (agentId: string, messageId: string) => {
-    if (messageId.startsWith('local-')) {
-      // Local optimistic message: just remove from the local store.
-      props.chatStore.removeMessage(agentId, messageId)
-      return
-    }
-    try {
-      const workerId = getAgentWorkerId(agentId)
-      await workerRpc.deleteAgentMessage(workerId, { agentId, messageId })
-      props.chatStore.removeMessage(agentId, messageId)
-    }
-    catch (err) {
-      showWarnToast('Failed to delete message', err)
-    }
-  }
-
   /**
    * Reclaim every per-agent store entry a closed agent tab leaves behind.
    *
@@ -556,14 +480,15 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
    * other production caller, and the tombstone-driven metadata sweep drops
    * `tabMetadata` rows only -- so an agent tab that leaves without this call
    * strands its loaded window, live tail, command streams, span index, to-dos,
-   * streaming text and pending outbound for the life of the page.
+   * streaming text, and the input queue snapshot for the life of the page.
    *
    * Every path that retires an agent tab must call it: the ordinary close
    * below, and the descendant sweep that follows the worker's answer.
    */
   const retireAgentTabLocally = (agentId: string) => {
     props.controlStore.clearAgent(agentId)
-    clearAttachments(agentId)
+    forgetAgentAttachments(agentId)
+    props.agentInputQueueStore.clearAgent(agentId)
     props.chatStore.forgetAgent(agentId)
   }
 
@@ -645,8 +570,6 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleControlResponse,
     handleInterrupt,
     handleAgentSettingChange,
-    handleRetryMessage,
-    handleDeleteMessage,
     handleAgentClose,
     retireAgentTabLocally,
   }

@@ -164,44 +164,6 @@ func TestListMessageMarks_UnknownAgent_Errors(t *testing.T) {
 	require.NotEmpty(t, w.errors, "an unknown agent must produce an error")
 }
 
-// TestSendAgentMessage_PersistsUserMessageMark asserts a genuine user send is
-// persisted with mark_type=USER_MESSAGE (so the rail dots it), and that the mark
-// surfaces through ListMessageMarks. The synthetic-prompt path stays unmarked.
-func TestSendAgentMessage_PersistsUserMessageMark(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	svc, d, w := setupTestService(t)
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}))
-
-	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{AgentId: "agent-1", Content: "hello"}, w)
-	require.Empty(t, w.errors)
-
-	msgs, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
-	require.NoError(t, err)
-	require.Len(t, msgs, 1)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, msgs[0].MarkType, "a user send must be marked")
-
-	resp := listMarks(t, d, "agent-1")
-	require.Len(t, resp.GetMarks(), 1)
-	assert.Equal(t, msgs[0].Seq, resp.GetMarks()[0].GetSeq())
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, resp.GetMarks()[0].GetType())
-
-	// A synthetic prompt (auto-continue / plan execution) is byte-identical on the
-	// wire but is NOT a human input, so it must stay unmarked.
-	svc.sendSyntheticUserMessage("agent-1", "please continue", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
-	msgs, err = svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
-	require.NoError(t, err)
-	require.Len(t, msgs, 2)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, msgs[1].MarkType, "a synthetic prompt must not be marked")
-
-	resp = listMarks(t, d, "agent-1")
-	assert.Len(t, resp.GetMarks(), 1, "the synthetic prompt adds no rail dot")
-}
-
 // TestPersistAndBroadcast_ThreadsMarkType covers the shared persist path used by
 // the Claude transcript ingestion AND the structured control-response row: a SpanInfo
 // MarkType must land in both the persisted row and the live broadcast. This is the

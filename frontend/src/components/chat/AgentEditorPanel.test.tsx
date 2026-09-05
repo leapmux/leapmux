@@ -1,18 +1,21 @@
 import type { AgentEditorPanelProps } from './AgentEditorPanel'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { create } from '@bufbuild/protobuf'
+import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageGet, localStorageSet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
-import { loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
+import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
 import { hoverForTooltip } from '~/test-support/clipStub'
 import { AgentEditorPanel } from './AgentEditorPanel'
+import { clearAttachments, getAttachments, queueEditDraftKey, setAttachments } from './attachments'
 import '~/components/chat/providers'
 
 const HOME = '/home/dev'
@@ -42,6 +45,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  for (const id of ['a1', 'a2', 'a1-queue-owned-a1', 'a2-queue-owned-a2']) {
+    clearDraft(id)
+    clearAttachments(id)
+  }
 })
 
 function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
@@ -433,7 +440,404 @@ describe('agentEditorPanel control request lifecycle', () => {
   })
 })
 
-describe('agentEditorPanel working-tree chip', () => {
+describe('agent editor panel', () => {
+  it('always shows the queue pause control', () => {
+    renderPanel()
+    expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')
+  })
+
+  it('blocks new attachments while an enqueue remains in flight', async () => {
+    vi.useRealTimers()
+    const attachment = {
+      id: 'pending-1',
+      file: new File(['pending'], 'pending.txt', { type: 'text/plain' }),
+      filename: 'pending.txt',
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode('pending'),
+      size: 7,
+    }
+    setAttachments('a1', [attachment])
+    let finishEnqueue: (() => void) | undefined
+    let send: (() => void) | undefined
+    const onSendMessage = vi.fn(() => new Promise<void>((resolve) => {
+      finishEnqueue = resolve
+    }))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={onSendMessage}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    expect(screen.getByTestId('send-button')).not.toBeDisabled()
+
+    send?.()
+
+    expect(onSendMessage).toHaveBeenCalledWith('', [attachment])
+    expect(screen.getByTestId('file-input')).toBeDisabled()
+    finishEnqueue?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+  })
+
+  // The spinner holds for a debounce window after the enqueue resolves, so it
+  // never flashes away. That window must not hold the attachment paths: the
+  // enqueue takes milliseconds, and a composer that refuses a paste, a drop and
+  // the file picker for the rest of the second is the bug this pins.
+  it('accepts an attachment while the send spinner still holds its debounce', async () => {
+    vi.useRealTimers()
+    let finishEnqueue: (() => void) | undefined
+    let send: (() => void) | undefined
+    let addFiles: ((files: File[]) => Promise<number>) | undefined
+    const onSendMessage = vi.fn(() => new Promise<void>((resolve) => {
+      finishEnqueue = resolve
+    }))
+    saveDraft('a1', 'queued text', -1)
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={onSendMessage}
+          triggerSendRef={(value) => { send = value }}
+          addFilesRef={(fn) => { addFiles = fn }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    await waitFor(() => expect(addFiles).toBeTypeOf('function'))
+
+    // Fake `setTimeout` alone, so the 1000 ms debounce cannot fire on its own
+    // while every assertion below runs. A full fake clock also stops the
+    // FileReader that `addFiles` awaits, and the read never completes.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    send?.()
+    await waitFor(() => expect(onSendMessage).toHaveBeenCalledWith('queued text', undefined))
+    expect(screen.getByTestId('file-input')).toBeDisabled()
+    expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
+
+    finishEnqueue?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+
+    // The enqueue settled, so every attachment path opens again -- while the
+    // spinner still shows, which is what proves the two are separate.
+    expect(screen.getByTestId('send-spinner')).toBeInTheDocument()
+    await expect(addFiles?.([new File(['hello'], 'hello.txt', { type: 'text/plain' })])).resolves.toBe(1)
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    expect(screen.getByTestId('composer-attach-file')).not.toBeDisabled()
+
+    // The spinner clears only when its own debounce ends.
+    vi.advanceTimersByTime(1000)
+    expect(screen.queryByTestId('send-spinner')).not.toBeInTheDocument()
+  })
+
+  it('clears only the submitted draft after an agent switch', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    const attachment = (id: string) => ({
+      id,
+      file: new File([id], `${id}.txt`, { type: 'text/plain' }),
+      filename: `${id}.txt`,
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode(id),
+      size: id.length,
+    })
+    const attachmentA = attachment('attachment-a')
+    const attachmentB = attachment('attachment-b')
+    setAttachments('a1', [attachmentA])
+    setAttachments('a2', [attachmentB])
+    saveDraft('a1', 'draft a', -1)
+    saveDraft('a2', 'draft b', -1)
+    let finishEnqueue: (() => void) | undefined
+    let send: (() => void) | undefined
+    const onSendMessage = vi.fn(() => new Promise<void>((resolve) => {
+      finishEnqueue = resolve
+    }))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={onSendMessage}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(send).toBeTypeOf('function'))
+    send?.()
+    expect(onSendMessage).toHaveBeenCalledWith('draft a', [attachmentA])
+
+    setAgentId('a2')
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b'))
+    finishEnqueue?.()
+    // Wait on the draft that the send clears, not on the composer re-opening:
+    // the attachment paths open one microtask before the editor clears its
+    // submitted draft.
+    await waitFor(() => expect(loadDraft('a1').content).toBe(''))
+
+    expect(screen.getByTestId('file-input')).not.toBeDisabled()
+    expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('draft b')
+    expect(loadDraft('a2').content).toBe('draft b')
+    expect(getAttachments('a1')).toEqual([])
+    expect(getAttachments('a2')).toEqual([attachmentB])
+  })
+
+  it('does not clear a new agent queue edit when the old save finishes', async () => {
+    vi.useRealTimers()
+    const [agentId, setAgentId] = createSignal('a1')
+    const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: id,
+      paused: true,
+      items: [{
+        id: `owned-${id}`,
+        agentId: id,
+        text: `preview ${id}`,
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+      }],
+    })
+    const onBeginQueueEdit = vi.fn((item: { agentId: string }) => Promise.resolve({
+      snapshot: queue(item.agentId),
+      attachments: [],
+      text: `full ${item.agentId}`,
+    }))
+    let finishSave: (() => void) | undefined
+    const onUpdateQueueItem = vi.fn(() => new Promise<void>((resolve) => {
+      finishSave = resolve
+    }))
+    saveDraft('a1-queue-owned-a1', 'saved a1 edit', -1)
+    let send: (() => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={queue(agentId())}
+          queueClientId="client-a"
+          onBeginQueueEdit={onBeginQueueEdit}
+          onUpdateQueueItem={onUpdateQueueItem}
+          triggerSendRef={(value) => { send = value }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('saved a1 edit'))
+    send?.()
+    expect(onUpdateQueueItem).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'a1' }), 'saved a1 edit', [])
+
+    setAgentId('a2')
+    await waitFor(() => expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('full a2'))
+    finishSave?.()
+    await waitFor(() => expect(screen.getByTestId('file-input')).not.toBeDisabled())
+
+    expect(onBeginQueueEdit.mock.calls.filter(([item]) => item.agentId === 'a2')).toHaveLength(1)
+    expect(document.querySelector('[data-testid="chat-editor"] .ProseMirror')).toHaveTextContent('full a2')
+    expect(screen.getByRole('button', { name: 'Cancel Edit' })).toBeInTheDocument()
+  })
+
+  it('preserves normal attachments when a queue edit is canceled', async () => {
+    const normalAttachment = {
+      id: 'normal-1',
+      file: new File(['normal'], 'normal.txt', { type: 'text/plain' }),
+      filename: 'normal.txt',
+      mimeType: 'text/plain',
+      data: new TextEncoder().encode('normal'),
+      size: 6,
+    }
+    setAttachments('a1', [normalAttachment])
+    const queueSnapshot = (owner: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      revision: owner ? 2n : 1n,
+      paused: true,
+      items: [{
+        id: 'queued-1',
+        agentId: 'a1',
+        text: 'queued preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: owner,
+      }],
+    })
+    const [snapshot, setSnapshot] = createSignal(queueSnapshot(''))
+    const edited = queueSnapshot('client-a')
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot()}
+          queueClientId="client-a"
+          onBeginQueueEdit={() => {
+            setSnapshot(edited)
+            return Promise.resolve({ snapshot: edited, attachments: [], text: 'full queued text' })
+          }}
+          onCancelQueueEdit={() => {
+            setSnapshot(queueSnapshot(''))
+            return Promise.resolve()
+          }}
+        />
+      </PreferencesProvider>
+    ))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await Promise.resolve()
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
+    await Promise.resolve()
+    expect(getAttachments('a1')).toEqual([normalAttachment])
+  })
+
+  // The delete path and the cancel path share one cleanup helper. This pins the
+  // delete call site: no edit is loaded here, so only the helper can drop the
+  // draft that the deleted input left behind.
+  it('forgets the draft of a deleted queued input', async () => {
+    const draftKey = queueEditDraftKey('a1', 'queued-1')
+    saveDraft(draftKey, 'stale edit', -1)
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      items: [{
+        id: 'queued-1',
+        agentId: 'a1',
+        text: 'queued preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+      }],
+    })
+    const onDeleteQueueItem = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot}
+          queueClientId="client-a"
+          onDeleteQueueItem={onDeleteQueueItem}
+        />
+      </PreferencesProvider>
+    ))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await Promise.resolve()
+
+    expect(onDeleteQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'queued-1' }))
+    expect(loadDraft(draftKey).content).toBe('')
+  })
+
+  it('requires confirmation before it retries uncertain delivery', async () => {
+    const onRetryQueueItem = vi.fn().mockResolvedValue(undefined)
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      items: [{
+        id: 'uncertain-1',
+        agentId: 'a1',
+        text: 'possibly delivered',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.DELIVERY_UNCERTAIN,
+      }],
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot}
+          queueClientId="client-a"
+          onRetryQueueItem={onRetryQueueItem}
+        />
+      </PreferencesProvider>
+    ))
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    const dialog = screen.getByTestId('retry-uncertain-input-dialog')
+    expect(dialog).toHaveTextContent('The provider can already have accepted this input.')
+    expect(onRetryQueueItem).not.toHaveBeenCalled()
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }))
+    expect(onRetryQueueItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'uncertain-1' }), true)
+  })
+
+  it('reloads an edit that the same browser client owns', () => {
+    const onBeginQueueEdit = vi.fn(() => new Promise<never>(() => {}))
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      items: [{
+        id: 'owned-1',
+        agentId: 'a1',
+        text: 'preview',
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+      }],
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={snapshot}
+          queueClientId="client-a"
+          onBeginQueueEdit={onBeginQueueEdit}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-1' }), false)
+    expect(screen.getByRole('button', { name: 'Resume Edit' })).toBeInTheDocument()
+  })
+
+  it('loads the current agent edit while another agent edit request waits', async () => {
+    const [agentId, setAgentId] = createSignal('a1')
+    const queue = (id: string) => create(AgentInputQueueSnapshotSchema, {
+      agentId: id,
+      items: [{
+        id: `owned-${id}`,
+        agentId: id,
+        text: id,
+        kind: AgentInputKind.USER_MESSAGE,
+        state: AgentInputState.QUEUED,
+        editOwnerClientId: 'client-a',
+      }],
+    })
+    const onBeginQueueEdit = vi.fn(() => new Promise<never>(() => {}))
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId={agentId()}
+          agent={agent()}
+          repoGitStore={createRepoGitStore()}
+          onSendMessage={() => {}}
+          inputQueue={queue(agentId())}
+          queueClientId="client-a"
+          onBeginQueueEdit={onBeginQueueEdit}
+        />
+      </PreferencesProvider>
+    ))
+    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a1' }), false)
+
+    setAgentId('a2')
+    await Promise.resolve()
+
+    expect(onBeginQueueEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'owned-a2' }), false)
+  })
+
   // The defect this pins: the chip printed an absolute path while the sidebar
   // row for the SAME checkout printed a tilde one, because the panel read the
   // home dir off a field nothing populates.

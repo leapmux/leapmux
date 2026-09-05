@@ -52,6 +52,8 @@ func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
 	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
 	require.Equal(t, 1, len(sessionInfos), "turn/started should broadcast the codex_turn_id session info")
 	assert.Equal(t, "turn-42", sessionInfos[0]["codex_turn_id"])
+	assert.Equal(t, 1, sink.InputStartedCount(),
+		"turn/started must reactivate a queue after uncertain delivery")
 }
 
 func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
@@ -909,24 +911,6 @@ func TestHandleCodexOutput_WaitIsFlatNoDrain(t *testing.T) {
 	require.NotContains(t, sink.ClosedSpans(), "call-1")
 }
 
-func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
-	t.Parallel()
-
-	sink := &testSink{}
-	agent := newCodexAgentWithSink(sink)
-
-	input := `{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.NotificationCount())
-	require.Equal(t, 0, sink.MessageCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"thread/compacted must persist as AGENT (Codex-emitted)")
-	assert.JSONEq(t, input, string(last.Content),
-		"raw JSON-RPC envelope must be preserved verbatim — frontend keys off `method:\"thread/compacted\"`")
-}
-
 func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 	t.Parallel()
 
@@ -1306,12 +1290,15 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	// Register child-1 -> call-1 in the child index (spawnAgent item/started).
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-1"}}}`)))
 
 	childTurnCompleted := `{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
 	handleCodexOutput(agent, parseLine([]byte(childTurnCompleted)))
 
 	// The turn-end divider lands in the CHILD transcript, not the parent's.
 	child := sink.ChildSink("child-of-call-1").(*testSink)
+	assert.Equal(t, 1, child.InputStartedCount(),
+		"child turn/started must activate the child input queue")
 	turnEnds := 0
 	for _, m := range child.Messages() {
 		if m.TurnEnd {
@@ -1320,6 +1307,8 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	}
 	assert.Equal(t, 1, turnEnds,
 		"child turn/completed must persist a turn-end divider into the child transcript")
+	assert.Equal(t, 1, child.InputReadyCount(),
+		"child turn/completed must release the child input queue")
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {

@@ -6,6 +6,7 @@ import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -108,6 +109,7 @@ function mountConnection() {
     dispose = d
     useWorkspaceConnection({
       chatStore,
+      agentInputQueueStore: createAgentInputQueueStore(),
       view,
       metadata,
       selection,

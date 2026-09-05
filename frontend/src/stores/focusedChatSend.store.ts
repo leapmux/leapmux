@@ -7,11 +7,18 @@
  * so the focused-panel lookup falls out of `document.activeElement.closest()`
  * without leaking an agent ID into the DOM. The `WeakMap` lets entries be
  * collected automatically when the panel element is detached.
+ *
+ * The send function is asynchronous: it awaits the enqueue RPC. Every caller
+ * discards the promise deliberately, so the type states that instead of
+ * hiding it behind `() => void`, which turns a rejection into an unhandled
+ * one at a call site that looks synchronous.
  */
 
-const sendByPanel = new WeakMap<Element, () => void>()
+type PanelSend = () => void | Promise<void>
 
-export function registerPanelSend(panel: Element, send: () => void): void {
+const sendByPanel = new WeakMap<Element, PanelSend>()
+
+export function registerPanelSend(panel: Element, send: PanelSend): void {
   sendByPanel.set(panel, send)
 }
 
@@ -20,7 +27,7 @@ export function unregisterPanelSend(panel: Element): void {
 }
 
 /** Resolve the send function for the panel containing `document.activeElement`. */
-export function getFocusedChatSend(): (() => void) | undefined {
+export function getFocusedChatSend(): PanelSend | undefined {
   const panel = document.activeElement?.closest('[data-chat-panel]')
   return panel ? sendByPanel.get(panel) : undefined
 }

@@ -10,7 +10,6 @@ interface MsgOver {
   parentSpanId?: string
   spanColor?: number
   spanLines?: string
-  deliveryError?: string
   depth?: number
 }
 
@@ -39,13 +38,12 @@ describe('buildRawJsonEnvelope', () => {
 
   it('omits proto3 zero-value fields and includes the set ones', () => {
     const out = JSON.parse(buildRawJsonEnvelope(
-      msg({ spanId: 's1', spanType: 'tool_use', deliveryError: 'oops', depth: 2 }),
+      msg({ spanId: 's1', spanType: 'tool_use', depth: 2 }),
       parsed({ rawText: '{}' }),
       'agent',
     ))
     expect(out.span_id).toBe('s1')
     expect(out.span_type).toBe('tool_use')
-    expect(out.delivery_error).toBe('oops')
     expect(out.depth).toBe(2)
     // unset optional fields are absent
     expect('parent_span_id' in out).toBe(false)

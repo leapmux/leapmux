@@ -84,9 +84,7 @@ export function imageFromMessage(message: AgentChatMessage, imageIndex: number):
  * Resolve an image reference to a source, fetching the message when it is
  * outside the loaded window.
  *
- * `seq <= 0` is the optimistic-local sentinel: no worker message has it, so it
- * can only mean the reference was built from a row that was never persisted.
- * That is `gone`, not an error -- nothing will make it resolve.
+ * A nonpositive sequence cannot identify a persisted message. Report it as gone.
  */
 export async function resolveChatImage(
   ref: { workerId: string, agentId: string, seq: bigint, imageIndex: number },

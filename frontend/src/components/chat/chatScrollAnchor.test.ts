@@ -147,27 +147,8 @@ describe('chatscrollanchor', () => {
       expect(resolveNearestAnchorScrollTop(geo, { id: 'gone', offsetWithinRow: 0, seq: 99n })).toBe(480)
     })
 
-    it('skips trailing optimistic locals (seq 0n)', () => {
-      const geo = fakeGeo([...rows([10, 20]), { id: 'local', seq: 0n }])
-      // seq 2 is closest to the local's 0n, but locals are skipped -> seq 10 (offset 0).
-      expect(resolveNearestAnchorScrollTop(geo, { id: 'gone', offsetWithinRow: 0, seq: 2n })).toBe(0)
-    })
-
-    it('returns null with no seq, and with no surviving server row', () => {
+    it('returns null when the removed anchor has no sequence', () => {
       expect(resolveNearestAnchorScrollTop(fakeGeo(rows([10])), { id: 'gone', offsetWithinRow: 0 })).toBeNull()
-      const localsOnly = fakeGeo([{ id: 'local', seq: 0n }])
-      expect(resolveNearestAnchorScrollTop(localsOnly, { id: 'gone', offsetWithinRow: 0, seq: 5n })).toBeNull()
-    })
-
-    it('returns null (does not land on the oldest row) for a reconciled-local anchor (seq 0n)', () => {
-      // An anchor captured on an optimistic local carries seq 0n. Once the local
-      // reconciles its id changes, so the exact resolve fails and the nearest scan runs.
-      // A 0n seq has no ordering against server rows: the delta to every survivor would
-      // equal that survivor's own seq, picking the OLDEST row and yanking the reader to
-      // the top of history. Bail to null instead (caller snaps to the tail, where the
-      // local lived).
-      const geo = fakeGeo(rows([10, 20, 30]))
-      expect(resolveNearestAnchorScrollTop(geo, { id: 'gone', offsetWithinRow: 0, seq: 0n })).toBeNull()
     })
   })
 
@@ -183,13 +164,6 @@ describe('chatscrollanchor', () => {
     it('breaks ties toward the first (lower-index) row via the strict < compare', () => {
       // target 15 is equidistant (5) from 10 and 20; strict `<` keeps the first.
       expect(nearestServerRowIndexBySeq(rows([10, 20]), 15n)).toBe(0)
-    })
-
-    it('skips optimistic locals (seq 0n) and missing seqs, and returns -1 when none remain', () => {
-      const mixed: { id: string, seq?: bigint }[] = [{ id: 'a', seq: 0n }, { id: 'b', seq: 40n }, { id: 'c' }]
-      expect(nearestServerRowIndexBySeq(mixed, 5n)).toBe(1) // only 'b' is a server row
-      expect(nearestServerRowIndexBySeq([{ seq: 0n }], 5n)).toBe(-1)
-      expect(nearestServerRowIndexBySeq([], 5n)).toBe(-1)
     })
   })
 })

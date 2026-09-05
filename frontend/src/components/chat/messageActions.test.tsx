@@ -127,53 +127,6 @@ describe('leadingActions', () => {
   })
 })
 
-describe('error recovery actions', () => {
-  const errored = () => buildMessageActions(
-    { onReply: () => {} },
-    { onCopyJson: () => {} },
-    { onRetry: () => {}, onDelete: () => {} },
-  )
-
-  it('appends retry and delete last', () => {
-    expect(errored().map(a => a.id)).toEqual(['copy-json', 'quote', 'retry', 'delete'])
-  })
-
-  it('marks only delete destructive', () => {
-    expect(errored().filter(a => a.danger).map(a => a.id)).toEqual(['delete'])
-  })
-
-  it('offers neither for a message that delivered', () => {
-    expect(buildMessageActions({}, { onCopyJson: () => {} }).map(a => a.id)).toEqual(['copy-json'])
-  })
-
-  it('offers each independently', () => {
-    expect(buildMessageActions({}, {}, { onRetry: () => {} }).map(a => a.id)).toEqual(['retry'])
-    expect(buildMessageActions({}, {}, { onDelete: () => {} }).map(a => a.id)).toEqual(['delete'])
-  })
-
-  it('runs the handler the row supplied', () => {
-    const onRetry = vi.fn()
-    const [action] = buildMessageActions({}, {}, { onRetry })
-    action.run()
-    expect(onRetry).toHaveBeenCalledTimes(1)
-  })
-
-  /**
-   * The toolbar picks its buttons by explicit id list, so a recovery action can
-   * never reach it -- the failed row already renders Retry and Delete as visible
-   * buttons directly beside the toolbar, and a second copy would be noise.
-   */
-  it('stays out of both toolbar groups', () => {
-    const ids = [
-      ...leadingActions(errored(), false).map(a => a.id),
-      ...leadingActions(errored(), true).map(a => a.id),
-      ...trailingActions(errored()).map(a => a.id),
-    ]
-    expect(ids).not.toContain('retry')
-    expect(ids).not.toContain('delete')
-  })
-})
-
 describe('trailingActions', () => {
   it('keeps the view toggles in a fixed order', () => {
     const actions = buildMessageActions({}, {

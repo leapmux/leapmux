@@ -173,12 +173,7 @@ describe('classifyMessage', () => {
   // -- LeapMux's own user row, whatever the provider ------------------------
 
   describe('a user row with no registered plugin', () => {
-    // The optimistic bubble a send builds carries whatever provider its agent TAB
-    // holds, and a tab projected from the CRDT holds none until useTabHydrators
-    // fetches the worker-side metadata. Classifying that as unsupported_provider
-    // rendered the user's own message as "Unsupported agent provider: Unknown (0)"
-    // until the server echo replaced it -- in a META row, which also cost the
-    // full-bleed geometry every user row is laid out with.
+    // A tab projected from the CRDT has no provider until metadata hydration ends.
     it('classifies LeapMux\'s flat user payload as user_content', () => {
       const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
       expect(result.kind).toBe('user_content')
@@ -190,7 +185,7 @@ describe('classifyMessage', () => {
       const { kind } = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
       expect(isMirroredMessageRow(kind, MessageSource.USER)).toBe(true)
       expect(rowIsWidened(kind, MessageSource.USER)).toBe(true)
-      expect(bubbleRunsToRightEdge(kind, MessageSource.USER, false)).toBe(true)
+      expect(bubbleRunsToRightEdge(kind, MessageSource.USER)).toBe(true)
     })
 
     it('carries attachments through, since they are part of the same payload', () => {
@@ -262,11 +257,8 @@ describe('classifyMessage', () => {
     })
 
     it('agrees with the plugin that would have read the same payload', () => {
-      // The point of the carve-out is that the optimistic bubble and the server
-      // echo it reconciles to are the SAME row. They differ only in the provider
-      // the tab could supply at the time, so they must classify alike -- otherwise
-      // the echo re-classifies, ChatView replaces the row, and the send visibly
-      // reshapes. Claude reaches user_content through its own plugin; assert the
+      // Provider hydration must not change the classification of a user row.
+      // Claude reaches user_content through its own plugin; assert the
       // two answers are equal rather than restating the literal, so a plugin that
       // moves this payload elsewhere fails here instead of drifting silently.
       const payload = { content: 'hi' }
@@ -769,7 +761,7 @@ describe('messageRowChromeClass', () => {
     let bleedingBubbles = 0
     for (const kind of ALL_MESSAGE_KINDS) {
       for (const source of ALL_MESSAGE_SOURCES) {
-        if (!bubbleRunsToRightEdge(kind, source, false))
+        if (!bubbleRunsToRightEdge(kind, source))
           continue
         bleedingBubbles++
         expect(messageRowChromeClass(kind, source)).toBe(chatStyles.bleedRow)
@@ -870,7 +862,7 @@ describe('bubbleRunsToRightEdge', () => {
     const expected = new Set(FLUSH_RIGHT_CELLS.map(([kind, source]) => `${kind}/${source}`))
     for (const kind of ALL_MESSAGE_KINDS) {
       for (const source of ALL_MESSAGE_SOURCES)
-        expect(bubbleRunsToRightEdge(kind, source, false)).toBe(expected.has(`${kind}/${source}`))
+        expect(bubbleRunsToRightEdge(kind, source)).toBe(expected.has(`${kind}/${source}`))
     }
   })
 
@@ -879,9 +871,9 @@ describe('bubbleRunsToRightEdge', () => {
     // class was `userMessage`, which is one card of the three. A plan execution
     // renders its own accent card, so it kept a whole gutter of space inside a row
     // that messageRowChromeClass had already widened for it.
-    expect(bubbleRunsToRightEdge('plan_execution', MessageSource.USER, false))
-      .toBe(bubbleRunsToRightEdge('user_text', MessageSource.USER, false))
-    expect(bubbleRunsToRightEdge('plan_execution', MessageSource.USER, false)).toBe(true)
+    expect(bubbleRunsToRightEdge('plan_execution', MessageSource.USER))
+      .toBe(bubbleRunsToRightEdge('user_text', MessageSource.USER))
+    expect(bubbleRunsToRightEdge('plan_execution', MessageSource.USER)).toBe(true)
   })
 
   it('leaves a bubble inside the gutter when its row does not mirror', () => {
@@ -892,7 +884,7 @@ describe('bubbleRunsToRightEdge', () => {
     for (const source of [MessageSource.AGENT, MessageSource.LEAPMUX, MessageSource.UNSPECIFIED]) {
       expect(messageBubbleClass('plan_execution', source)).toBe(chatStyles.planExecutionMessage)
       expect(messageRowChromeClass('plan_execution', source)).toBe('')
-      expect(bubbleRunsToRightEdge('plan_execution', source, false)).toBe(false)
+      expect(bubbleRunsToRightEdge('plan_execution', source)).toBe(false)
     }
   })
 
@@ -903,16 +895,7 @@ describe('bubbleRunsToRightEdge', () => {
     // messageRowChromeClass would fail on a bleed with no bleedRow behind it.
     for (const kind of ['assistant_text', 'assistant_thinking'] as const) {
       expect(isMirroredMessageRow(kind, MessageSource.USER)).toBe(true)
-      expect(bubbleRunsToRightEdge(kind, MessageSource.USER, false)).toBe(false)
-    }
-  })
-
-  it('is false for every row once a delivery error stacks controls under the bubble', () => {
-    // Retry and Delete are laid out against the row's CONTENT edge, so a bleeding
-    // bubble above them would leave the two right edges a whole gutter apart.
-    for (const kind of ALL_MESSAGE_KINDS) {
-      for (const source of ALL_MESSAGE_SOURCES)
-        expect(bubbleRunsToRightEdge(kind, source, true)).toBe(false)
+      expect(bubbleRunsToRightEdge(kind, MessageSource.USER)).toBe(false)
     }
   })
 })

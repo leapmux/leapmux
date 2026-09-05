@@ -1,3 +1,4 @@
+import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
@@ -6,7 +7,9 @@ import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
+import { clearDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createImperativeRef } from '~/lib/imperativeRef'
+import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -25,6 +28,12 @@ vi.mock('~/context/PreferencesContext', () => ({
     setExpandAgentThoughts: () => {},
     showHiddenMessages: () => false,
     setShowHiddenMessages: () => {},
+    // The composer reads these four. Its `[+]` menu offers both as toggles,
+    // and the editor reads the Enter mode on every keystroke.
+    enterKeyMode: () => 'cmd-enter-sends',
+    setEnterKeyMode: () => {},
+    showComposerStatusBar: () => false,
+    setShowComposerStatusBar: () => {},
   }),
 }))
 
@@ -41,10 +50,12 @@ vi.mock('~/components/fileviewer/FileViewer', () => ({
  */
 const renameAgent = vi.hoisted(() => vi.fn(async () => ({})))
 const updateTerminalTitle = vi.hoisted(() => vi.fn(async () => ({})))
+const enqueueAgentInput = vi.hoisted(() => vi.fn(async () => ({ snapshot: undefined })))
 vi.mock('~/api/workerRpc', async importOriginal => ({
   ...(await importOriginal<typeof import('~/api/workerRpc')>()),
   renameAgent,
   updateTerminalTitle,
+  enqueueAgentInput,
 }))
 
 vi.mock('~/components/terminal/TerminalView', () => ({
@@ -71,7 +82,21 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
   addFile: (id: string, tileId: string) => Tab
 }
 
-function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentContext = () => ({ workingDir: '/repo', homeDir: '/home/me' })) {
+interface RenderRendererOptions {
+  getMruAgentContext?: () => { workingDir: string, homeDir: string }
+  /** The shell's "scroll the transcript to the tail" ref, so a test can spy on it. */
+  forceScrollToBottomRef?: ImperativeRef<() => void>
+  /**
+   * Also render the focused agent's composer. `renderTile` does not own it --
+   * the shell renders `FocusedAgentEditorPanel` beside the tiles -- so a test
+   * that drives a send has to ask for it.
+   */
+  withComposer?: boolean
+}
+
+function renderRenderer(s: RendererSetup, focusedTileId: string, options: RenderRendererOptions = {}) {
+  const getMruAgentContext = options.getMruAgentContext ?? (() => ({ workingDir: '/repo', homeDir: '/home/me' }))
+  const forceScrollToBottomRef = options.forceScrollToBottomRef ?? createImperativeRef<() => void>()
   return render(() => {
     const r = createTileRenderer({
       // Same factory production uses, so the test exercises the real
@@ -88,11 +113,13 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
         metadata: s.metadata,
         selection: s.selection,
         chatStore: createChatStore(),
+        agentInputQueueStore: createAgentInputQueueStore(),
         controlStore: createControlStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
       },
+      clientId: () => 'test-client',
       ops: {
         agentOps: {
           availableProviders: () => [],
@@ -139,7 +166,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
       refs: {
         focusEditorRef: createImperativeRef(),
         getScrollStateRef: createImperativeRef(),
-        forceScrollToBottomRef: createImperativeRef(),
+        forceScrollToBottomRef,
       },
       floatingWindow: {
         store: s.floatingWindowStore,
@@ -149,13 +176,18 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
     return (
       <>
         {r.renderTile(focusedTileId)}
+        {options.withComposer ? <r.FocusedAgentEditorPanel containerHeight={600} /> : null}
         {r.CloseDialogs()}
       </>
     )
   })
 }
 
-afterEach(() => setCRDTBridge(null))
+afterEach(() => {
+  setCRDTBridge(null)
+  // The composer test seeds this draft, and a draft outlives the render.
+  clearDraft('a1')
+})
 
 let nextPosition = 0
 
@@ -223,7 +255,7 @@ describe('tileRenderer mru agent context', () => {
     s.addFile('f2', tileId)
     const getMruAgentContext = vi.fn(() => ({ workingDir: '/repo', homeDir: '/home/me' }))
 
-    renderRenderer(s, tileId, getMruAgentContext)
+    renderRenderer(s, tileId, { getMruAgentContext })
     await screen.findAllByTestId('file-viewer')
 
     // Two panes x two prop getters = 4 walks before the memo; the load-bearing
@@ -246,7 +278,7 @@ describe('tileRenderer mru agent context', () => {
     // No agent anywhere, so the old MRU base would have been ''.
     const getMruAgentContext = vi.fn(() => ({ workingDir: '', homeDir: '' }))
 
-    renderRenderer(s, tileId, getMruAgentContext)
+    renderRenderer(s, tileId, { getMruAgentContext })
     const viewer = await screen.findByTestId('file-viewer')
 
     expect(viewer.getAttribute('data-root')).toBe('/repo')
@@ -532,6 +564,35 @@ describe('tileRenderer close-tile flow', () => {
 
 // The branch-action guard and the ref it produces are one function now, tested
 // beside it in `~/components/workspace/branchActions.test.ts`.
+
+/**
+ * A send must move the transcript to the live tail.
+ *
+ * `useChatScroll` only auto-scrolls a reader who already sits at the bottom, so
+ * nothing else moves a reader who scrolled up into old history. The composer's
+ * enqueue handler owns this, and it must scroll BEFORE the RPC: a slow or a
+ * failed enqueue must still land the reader on the tail.
+ */
+describe('tileRenderer composer send', () => {
+  it('scrolls the transcript to the live tail on a composer send', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId)
+    saveDraft('a1', 'hello worker', -1)
+    const forceScrollToBottomRef = createImperativeRef<() => void>()
+    renderRenderer(s, tileId, { forceScrollToBottomRef, withComposer: true })
+    await waitFor(() => expect(screen.getByTestId('send-button')).not.toBeDisabled())
+    // Replace the chat view's own thunk only after it registered, so the
+    // registration cannot overwrite the spy.
+    const scrollToBottom = vi.fn()
+    forceScrollToBottomRef.set(scrollToBottom)
+
+    await fireEvent.click(screen.getByTestId('send-button'))
+
+    await waitFor(() => expect(enqueueAgentInput).toHaveBeenCalled())
+    expect(scrollToBottom).toHaveBeenCalledTimes(1)
+  })
+})
 
 /**
  * The tab strip's rename goes through the shared `renameTab`, which is where

@@ -20,7 +20,12 @@ export interface PluginRefs {
    * states it, and hands the resolved string down.
    */
   getDisabledPlaceholder: () => string
-  onSend: () => void
+  /**
+   * Commit the composer's content. The handler awaits an RPC, so it answers a
+   * promise. A key handler must answer ProseMirror synchronously, so each call
+   * site discards that promise on purpose with `void`.
+   */
+  onSend: () => void | Promise<void>
 }
 
 /** Shows placeholder text when the editor is empty. */
@@ -67,14 +72,14 @@ export function createSendOnEnterPlugin(refs: Pick<PluginRefs, 'getDisabled' | '
                 return false
               }
               event.preventDefault()
-              refs.onSend()
+              void refs.onSend()
               return true
             }
           }
           else {
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
               event.preventDefault()
-              refs.onSend()
+              void refs.onSend()
               return true
             }
           }

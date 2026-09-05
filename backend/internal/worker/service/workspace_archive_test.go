@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
@@ -30,12 +31,12 @@ func applyArchive(t *testing.T, svc *Service, state leapmuxv1.WorkspaceArchiveSt
 	return resumeAgentIDs
 }
 
-// agentStatuses collects the statuses broadcast for one agent from a writer
-// that a WatchEvents dispatch streams into. Duplicates are kept: "how many
-// times" is exactly what the duplicate-request test asks.
-func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmuxv1.AgentStatus {
+// agentStatusChanges collects the status changes broadcast for one agent from
+// a writer that a watch registration streams into. Duplicates are kept: "how
+// many times" is exactly what the duplicate-request test asks.
+func agentStatusChanges(t *testing.T, w *testResponseWriter, agentID string) []*leapmuxv1.AgentStatusChange {
 	t.Helper()
-	var out []leapmuxv1.AgentStatus
+	var out []*leapmuxv1.AgentStatusChange
 	for _, s := range w.streamsSnapshot() {
 		var resp leapmuxv1.WatchEventsResponse
 		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
@@ -46,10 +47,34 @@ func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmu
 			continue
 		}
 		if sc := event.GetStatusChange(); sc != nil {
-			out = append(out, sc.GetStatus())
+			out = append(out, sc)
 		}
 	}
 	return out
+}
+
+// agentStatuses reduces those broadcasts to the status each one carries.
+func agentStatuses(t *testing.T, w *testResponseWriter, agentID string) []leapmuxv1.AgentStatus {
+	t.Helper()
+	var out []leapmuxv1.AgentStatus
+	for _, sc := range agentStatusChanges(t, w, agentID) {
+		out = append(out, sc.GetStatus())
+	}
+	return out
+}
+
+// requireOneStatusChange waits for exactly one status change for the agent and
+// returns it. The broadcast reaches the writer on the broadcaster's goroutine,
+// so the wait is what makes a read of it deterministic.
+func requireOneStatusChange(t *testing.T, w *testResponseWriter, agentID string) *leapmuxv1.AgentStatusChange {
+	t.Helper()
+	var changes []*leapmuxv1.AgentStatusChange
+	require.Eventually(t, func() bool {
+		changes = agentStatusChanges(t, w, agentID)
+		return len(changes) > 0
+	}, time.Second, 10*time.Millisecond, "no status change reached the watcher for %s", agentID)
+	require.Len(t, changes, 1)
+	return changes[0]
 }
 
 // watchAgent subscribes to one agent's events so a test can read the broadcasts
@@ -290,6 +315,8 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 	require.True(t, firstCleanup.Load(), "the first archive runs the teardown")
+	firstQueue, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
 
 	// A fresh cleanup under the same id: the second request must leave it
 	// registered, which no assertion on the FIRST one could tell apart from a
@@ -300,9 +327,101 @@ func TestWorkspaceArchive_DuplicateArchiveIsANoOp(t *testing.T) {
 	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, tab)
 
 	assert.False(t, secondCleanup.Load(), "an archive that changes no row runs no teardown")
+	secondQueue, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.Equal(t, firstQueue.Revision, secondQueue.Revision, "an unchanged archive must not mutate the queue")
 	row, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), row.WorkspaceArchived)
+}
+
+func TestWorkspaceArchive_PausesAndRestoresAnUnpausedInputQueue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "queued-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.InputQueue.TurnStarted(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: "queued", AgentID: agentID, Text: "after unarchive",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	_, _, _, err = svc.InputQueue.BeginEdit(ctx, agentID, "queued", "client-1", false)
+	require.NoError(t, err)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	archived, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, archived.Paused)
+	assert.False(t, archived.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, archived.PauseReason)
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	active, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.False(t, active.Paused)
+	assert.False(t, active.ActiveTurn)
+	require.Len(t, active.Items, 1)
+}
+
+func TestWorkspaceArchive_PreservesAManualQueuePause(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "manually-paused-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.InputQueue.TurnStarted(ctx, agentID)
+	require.NoError(t, err)
+	_, err = svc.InputQueue.SetPaused(ctx, agentID, true)
+	require.NoError(t, err)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused)
+	assert.False(t, snapshot.ActiveTurn)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL, snapshot.PauseReason)
+}
+
+func TestWorkspaceArchive_PreservesAnExistingAgentStoppedPause(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "crashed-agent"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	_, err := svc.InputQueue.Pause(ctx, agentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+	require.NoError(t, err)
+	tab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: agentID}
+
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	_, err = svc.ApplyTabArchiveState(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, []*leapmuxv1.TabRef{tab})
+	require.NoError(t, err)
+	snapshot, err := svc.InputQueue.Snapshot(ctx, agentID)
+	require.NoError(t, err)
+	assert.True(t, snapshot.Paused)
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED, snapshot.PauseReason)
 }
 
 // TestWorkspaceArchive_CancelsAnInFlightStartup covers the startup race.
@@ -500,10 +619,9 @@ func TestWorkspaceArchive_InvalidRequestChangesNothing(t *testing.T) {
 // moved from four hand-written per-handler guards into the registrars.
 //
 // The four handlers that carried a guard were the four the browser happened to
-// call. Every OTHER write RPC ran, and three of them wrote state that outlives
-// the archive: RenameAgent stored a title, DeleteAgentMessage removed a
-// transcript row, UpdateTerminalTitle stored a title. A second client, the CLI,
-// or any holder of the write scope reached all of them.
+// call. Every OTHER write RPC ran, and some wrote state that outlives the
+// archive, such as RenameAgent and UpdateTerminalTitle. A second client, the
+// CLI, or any holder of the write scope reached all of them.
 //
 // It also asserts the other half of the rule: a READ stays reachable, which is
 // what makes an archived workspace browsable rather than merely frozen.
@@ -534,10 +652,20 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		req    proto.Message
 	}{
 		{"RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: agentID, Title: "after"}},
-		{"DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{AgentId: agentID, MessageId: "m-1"}},
 		{"CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: agentID}},
 		{"InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID}},
-		{"SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{AgentId: agentID, Content: "hi"}},
+		{"EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+			AgentId: agentID, InputId: "input-1", Text: "hi",
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		}},
+		{"BeginQueuedAgentInputEdit", &leapmuxv1.BeginQueuedAgentInputEditRequest{AgentId: agentID, InputId: "input-1", ClientId: "client-1"}},
+		{"UpdateQueuedAgentInput", &leapmuxv1.UpdateQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1", ClientId: "client-1", ExpectedVersion: 1, Text: "changed"}},
+		{"CancelQueuedAgentInputEdit", &leapmuxv1.CancelQueuedAgentInputEditRequest{AgentId: agentID, InputId: "input-1", ClientId: "client-1"}},
+		{"DeleteQueuedAgentInput", &leapmuxv1.DeleteQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"MoveQueuedAgentInput", &leapmuxv1.MoveQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"SetAgentInputQueuePaused", &leapmuxv1.SetAgentInputQueuePausedRequest{AgentId: agentID, Paused: true}},
+		{"SteerQueuedAgentInput", &leapmuxv1.SteerQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
+		{"RetryQueuedAgentInput", &leapmuxv1.RetryQueuedAgentInputRequest{AgentId: agentID, InputId: "input-1"}},
 		{"UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: "after"}},
 		{"CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: terminalID}},
 		{"SendInput", &leapmuxv1.SendInputRequest{TerminalId: terminalID, Data: []byte("x")}},
@@ -700,4 +828,64 @@ func TestWorkspaceArchive_UnarchiveWaitsForAnArchiveDrain(t *testing.T) {
 	assert.Zero(t, settled.WorkspaceArchived)
 	assert.False(t, settled.ClosedAt.Valid, "neither operation may close the tab")
 	assert.Empty(t, settled.StartupError, "neither operation may mark the tab failed")
+}
+
+// TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree pins that both
+// halves of the archive reach a SUBAGENT.
+//
+// The Hub lists root tabs only, and a subagent owns no tab of its own, so a
+// walk over the requested tabs stops at the root. The archive then stopped the
+// owner process while the child queue stayed live, and the child's next
+// dispatch found no process and failed the item permanently -- a message the
+// user had to retry by hand after the workspace came back.
+func TestWorkspaceArchive_PausesAndResumesTheWholeAgentSubtree(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, childID, rootID := setupChildAgentTest(t)
+	rootTab := &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: rootID}
+
+	// The child is inside a turn, so its queue HOLDS the input below instead of
+	// dispatching it. Without the turn the enqueue dispatches at once, fails on
+	// an owner that runs no process, and pauses the queue for that reason --
+	// which is the state this test must not start from.
+	_, err := svc.InputQueue.TurnStarted(ctx, childID)
+	require.NoError(t, err)
+	inputID := newTestAgentInputID()
+	_, err = svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: inputID, AgentID: childID, Text: "hello child",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	live, err := svc.InputQueue.Snapshot(ctx, childID)
+	require.NoError(t, err)
+	require.False(t, live.Paused, "fixture check: the child queue must start live")
+	require.Len(t, live.Items, 1)
+
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, rootTab)
+
+	archived, err := svc.InputQueue.Snapshot(ctx, childID)
+	require.NoError(t, err)
+	assert.True(t, archived.Paused,
+		"the archive stopped the owner process and left the child queue dispatching")
+	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
+		archived.PauseReason)
+	assert.False(t, archived.ActiveTurn, "the archive must end the child's turn")
+	require.Len(t, archived.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, archived.Items[0].State,
+		"an archive holds the input; it never fails it")
+
+	// The user deletes the message before the workspace comes back. A queue
+	// that still held one would dispatch it the moment the resume lifts the
+	// pause, find no owner process, and pause again -- which hides the resume
+	// that the assertion below measures.
+	_, err = svc.InputQueue.Delete(ctx, childID, inputID)
+	require.NoError(t, err)
+
+	applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, rootTab)
+
+	resumed, err := svc.InputQueue.Snapshot(ctx, childID)
+	require.NoError(t, err)
+	assert.False(t, resumed.Paused,
+		"the unarchive left the child queue paused, so no later message reaches the child")
 }

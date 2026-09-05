@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 // TestAllDatetimeColumnsStoreCanonicalLayout drives every worker-DB write path
@@ -48,10 +49,15 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Options:       "{}",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
+	_, err := inputqueue.NewStore(sqlDB).Enqueue(ctx, inputqueue.NewItem{
+		ID: "queue-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "queued",
+	})
+	require.NoError(t, err)
 	require.NoError(t, closeErr(queries.CloseAgent(ctx, "agent-1")))
 
 	// messages.created_at is Go-bound on every persisted chat message.
-	_, err := queries.CreateMessage(ctx, gendb.CreateMessageParams{
+	_, err = queries.CreateMessage(ctx, gendb.CreateMessageParams{
 		ID:                 "msg-1",
 		AgentID:            "agent-1",
 		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,

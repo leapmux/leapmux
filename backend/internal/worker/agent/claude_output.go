@@ -265,12 +265,9 @@ type messageEnvelope struct {
 // CONTROL_RESPONSE. Everything else is unmarked. spanType is the resolved tool name
 // for tool_result rows (empty otherwise).
 //
-// A human-typed prompt is NOT marked here: HandleOutput drops string-content `user`
-// envelopes via isSimpleUserTextEcho before persist, and the live USER_MESSAGE dot is
-// written by the SendAgentMessage handler against the row it persists. Marking a
-// string-content echo here too would double the dot (SendAgentMessage already marked
-// the send), so this classifier deliberately leaves user text UNSPECIFIED -- an
-// un-dropped echo then persists dot-less rather than as a duplicate jump target.
+// HandleOutput drops string-content user envelopes before persistence. Queue
+// acceptance writes the USER_MESSAGE mark on the persisted input row. This
+// classifier leaves other user text unmarked to prevent a duplicate jump target.
 func claudeUserEnvelopeMarkType(spanType string) leapmuxv1.MarkType {
 	if (claudeProvider{}).IsSelfDisplayingControlTool(spanType) {
 		return leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE
@@ -601,6 +598,9 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	}
 
 	if msgType == claudeMsgTypeResult {
+		a.mu.Lock()
+		a.turnActive = false
+		a.mu.Unlock()
 		scheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.
@@ -615,6 +615,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// arms at its own turn end, so wiping every arm here would drop a live
 		// subagent's before its task_started arrived.
 		a.tasks.clearClaudeRevives("")
+		notifyInputReady(a.sink)
 	}
 }
 

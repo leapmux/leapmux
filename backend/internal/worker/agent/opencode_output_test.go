@@ -536,6 +536,7 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
+	agent.turnToolUses = 2
 
 	// Simulate a wrapped prompt response with {role: "result", content: {...}}.
 	resp := json.RawMessage(`{"id":"msg-1","role":"result","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}`)
@@ -549,8 +550,9 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 	var parsed map[string]interface{}
 	require.NoError(t, json.Unmarshal(msg.Content, &parsed))
 	require.Equal(t, "end_turn", parsed["stopReason"])
-	// num_tool_uses should be injected.
-	require.Equal(t, float64(0), parsed["num_tool_uses"])
+	// num_tool_uses must carry the completed turn's count.
+	require.Equal(t, float64(2), parsed["num_tool_uses"])
+	assert.Equal(t, 0, agent.turnToolUses)
 }
 
 func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {

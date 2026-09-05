@@ -16,10 +16,11 @@ import (
 // and ChildSteerer, so Manager.SendChildInput/InterruptChild can reach it.
 type steerableStub struct {
 	stubProvider
-	sendInputErr   error
-	interruptErr   error
-	sendInputCalls []sendInputCall
-	interruptCalls []string
+	sendInputErr    error
+	interruptErr    error
+	sendInputCalls  []sendInputCall
+	steerInputCalls []sendInputCall
+	interruptCalls  []string
 }
 
 type sendInputCall struct {
@@ -33,6 +34,13 @@ func (s *steerableStub) SendChildInput(childKey, content string, attachments []*
 		childKey:    childKey,
 		content:     content,
 		attachments: len(attachments),
+	})
+	return s.sendInputErr
+}
+
+func (s *steerableStub) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	s.steerInputCalls = append(s.steerInputCalls, sendInputCall{
+		childKey: childKey, content: content, attachments: len(attachments),
 	})
 	return s.sendInputErr
 }
@@ -80,6 +88,20 @@ func TestManager_SendChildInputDispatch(t *testing.T) {
 	assert.Equal(t, "child-1", st.sendInputCalls[0].childKey)
 	assert.Equal(t, "hello", st.sendInputCalls[0].content)
 	assert.Equal(t, 1, st.sendInputCalls[0].attachments)
+}
+
+func TestManager_SteerChildInputDispatch(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil)
+	st := &steerableStub{}
+	m.mu.Lock()
+	m.agents["root"] = st
+	m.mu.Unlock()
+
+	require.NoError(t, m.SteerChildInput("root", "child-1", "guide", nil))
+	require.Len(t, st.steerInputCalls, 1)
+	assert.Equal(t, "child-1", st.steerInputCalls[0].childKey)
+	assert.Equal(t, "guide", st.steerInputCalls[0].content)
 }
 
 func TestManager_InterruptChildDispatch(t *testing.T) {

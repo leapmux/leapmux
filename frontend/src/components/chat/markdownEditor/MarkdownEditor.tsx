@@ -1,5 +1,6 @@
 import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
+import type { Node as ProseMirrorNode } from '@milkdown/prose/model'
 import type { Component, JSX } from 'solid-js'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import type { TrailingDebounced } from '~/lib/debounce'
@@ -10,6 +11,7 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
+import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
@@ -22,6 +24,8 @@ import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
 import { decidePasteHandling } from './pasteDecision'
 import { decideSendFocus } from './sendFocus'
+
+const logger = createLogger('MarkdownEditor')
 
 export { clearDraft }
 
@@ -56,7 +60,7 @@ export interface MarkdownEditorAttachments {
 
 /** Imperative escape hatches for the editor (refs and the ready callback). */
 export interface MarkdownEditorImperative {
-  sendRef?: (send: () => void) => void
+  sendRef?: (send: () => void | Promise<void>) => void
   focusRef?: (focus: () => void) => void
   contentRef?: (get: () => string, set: (text: string) => void) => void
   insertRef?: (insert: (text: string) => void) => void
@@ -68,7 +72,9 @@ interface MarkdownEditorProps {
   draftKey?: MarkdownEditorDraftKey
   attachments?: MarkdownEditorAttachments
   imperative?: MarkdownEditorImperative
-  onSend: (markdown: string) => boolean | void
+  onSend: (markdown: string) => boolean | void | Promise<boolean | void>
+  onAfterSend?: () => void
+  onDraftKeyChanged?: (key: string | null) => void
   disabled?: boolean
   requestedHeight?: number
   maxHeight?: number
@@ -220,20 +226,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }, { defer: true }))
 
-  const focusEditor = () => {
-    if (!editorInstance)
-      return
-    try {
-      editorInstance.action((ctx: Ctx) => {
-        const view = ctx.get(editorViewCtx)
-        view.focus()
-      })
-    }
-    catch {
-      // ignore
-    }
-  }
-
   const editorHasFocus = (): boolean => {
     if (!editorInstance)
       return false
@@ -250,65 +242,128 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   /**
-   * Put the caret where the send leaves it. See `decideSendFocus` for which of
-   * the three outcomes each send gets, and why.
+   * Keep or release the caret after a send. It never takes a caret back. See
+   * `decideSendFocus` for which of the three outcomes each send gets, and why.
    */
   const applySendFocus = (hadFocus: boolean, sent: boolean) => {
-    const action = decideSendFocus({ hadFocus, sent, softKeyboardVisible: isSoftKeyboardVisible() })
-    if (action === 'restore') {
-      // The editor may still hold the caret: keepFocusOnPress stopped the
-      // button from taking it, or Android hid the keyboard with Back without
-      // blurring. Focusing an already-focused view raises the keyboard again.
-      if (!editorHasFocus())
-        focusEditor()
-    }
-    else if (action === 'release') {
+    // Decide from the caret's CURRENT owner, not the one the send started with.
+    // A send now resolves after an await, and only the USER can move the caret
+    // while that request runs: keepFocusOnPress stops every send control from
+    // taking it, and `replaceAll` dispatches a transaction that keeps the
+    // contenteditable node and its focus. So a caret that left the editor left
+    // on purpose, and the send must leave it there -- taking it back raises the
+    // on-screen keyboard over the transcript the user just uncovered, which is
+    // the one thing this module must never do.
+    const action = decideSendFocus({
+      hadFocus: hadFocus && editorHasFocus(),
+      sent,
+      softKeyboardVisible: isSoftKeyboardVisible(),
+    })
+    // `restore` moves nothing: the editor already holds the caret. It stays a
+    // separate outcome because it must NOT release the keyboard.
+    if (action === 'release')
       dismissSoftKeyboard()
-    }
   }
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (props.disabled || !editorInstance)
       return
     // Read the caret BEFORE anything moves it: `onSendRef` can open a dialog,
     // and `replaceAll` rebuilds the document under the selection.
     const hadFocus = editorHasFocus()
+    const initialDraftKey = getDraftKey()
+    const sentDraftIsCurrent = () => getDraftKey() === initialDraftKey
     // Read markdown directly from ProseMirror's document state rather than
     // the `markdown` signal, which is updated by a debounced listener (200ms)
     // and may be stale when Enter is pressed immediately after typing.
     let text = ''
+    let initialDocument: ProseMirrorNode | undefined
     try {
       editorInstance.action((ctx: Ctx) => {
         const serializer = ctx.get(serializerCtx)
         const view = ctx.get(editorViewCtx)
+        initialDocument = view.state.doc
         text = serializer(view.state.doc).trim()
       })
     }
     catch {
       return
     }
+    const sentContentIsCurrent = () => {
+      if (!sentDraftIsCurrent() || !initialDocument)
+        return false
+      let matches = false
+      const submittedDocument = initialDocument
+      try {
+        editorInstance?.action((ctx: Ctx) => {
+          matches = submittedDocument.eq(ctx.get(editorViewCtx).state.doc)
+        })
+      }
+      catch { /* The editor can close before the send response arrives. */ }
+      return matches
+    }
     if (!text) {
       // Allow sending empty text only when explicitly enabled (e.g. Enter-to-approve for control requests).
       if (allowEmptySendRef) {
-        onSendRef('')
+        let emptySendResult: boolean | void
+        try {
+          emptySendResult = await onSendRef('')
+        }
+        catch {
+          applySendFocus(hadFocus && sentContentIsCurrent(), false)
+          return
+        }
+        if (emptySendResult === false) {
+          applySendFocus(hadFocus && sentContentIsCurrent(), false)
+          return
+        }
+        if (initialDraftKey && (!sentDraftIsCurrent() || sentContentIsCurrent()))
+          clearDraft(initialDraftKey)
+        props.onAfterSend?.()
       }
       // An empty draft commits only under `allowEmptySend`; otherwise nothing
       // left the composer and the caret stays for the user to type into.
-      applySendFocus(hadFocus, allowEmptySendRef)
+      applySendFocus(hadFocus && sentContentIsCurrent(), allowEmptySendRef)
       return
     }
-    if (onSendRef(text) === false) {
-      applySendFocus(hadFocus, false)
+    let sendResult: boolean | void
+    try {
+      sendResult = await onSendRef(text)
+    }
+    catch {
+      applySendFocus(hadFocus && sentContentIsCurrent(), false)
       return
     }
-    editorInstance.action(replaceAll(''))
-    setMarkdown('')
-    onContentChangeRef?.(false)
-    const key = getDraftKey()
-    if (key) {
-      clearDraft(key)
+    if (sendResult === false) {
+      applySendFocus(hadFocus && sentContentIsCurrent(), false)
+      return
     }
-    applySendFocus(hadFocus, true)
+    // The send committed. Everything below runs AFTER the await, so a throw
+    // here becomes an unhandled rejection at every call site -- each one
+    // discards the promise this async handler answers with. Report it and keep
+    // it inside the handler.
+    //
+    // The caret repair stays LAST, after `replaceAll`, because `replaceAll` is
+    // what rebuilds the document under the selection. It cannot move before the
+    // await: iOS Safari refuses a programmatic `view.focus()` that raises the
+    // soft keyboard outside a user gesture, and the RPC ends the gesture -- but
+    // an earlier call repairs nothing, because focus is still on the editor
+    // there and `applySendFocus` skips a view that already holds it.
+    try {
+      const clearSubmittedContent = sentContentIsCurrent()
+      if (clearSubmittedContent) {
+        editorInstance.action(replaceAll(''))
+        setMarkdown('')
+        onContentChangeRef?.(false)
+      }
+      if (initialDraftKey && (!sentDraftIsCurrent() || clearSubmittedContent))
+        clearDraft(initialDraftKey)
+      props.onAfterSend?.()
+      applySendFocus(hadFocus && clearSubmittedContent, true)
+    }
+    catch (error) {
+      logger.warn('Failed to reset the composer after a send:', error)
+    }
   }
 
   // Enter key mode reference for ProseMirror plugin (closures capture signal)
@@ -377,6 +432,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // Track the last valid draft key so onCleanup can save the draft even when
   // reactive getters (props.agentId) return null during unmount.
   let latestDraftKey: string | undefined
+  let prevDraftKey: string | null | undefined
   createEffect(() => {
     const key = getDraftKey()
     if (key)
@@ -438,6 +494,18 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
 
     editorInstance = editor
+    const readyDraftKey = getDraftKey()
+    const draftKeyChangedDuringStart = readyDraftKey !== initialDraftKey
+    let readyDraft = initialDraft
+    if (draftKeyChangedDuringStart) {
+      readyDraft = readyDraftKey ? loadDraft(readyDraftKey) : { content: '', cursor: -1 }
+      editor.action(replaceAll(readyDraft.content))
+      setMarkdown(readyDraft.content)
+      props.onContentChange?.(readyDraft.content.trim().length > 0)
+    }
+    // The key effect can run while buildEditor waits. Align its prior key with
+    // the document that this startup path loaded.
+    prevDraftKey = readyDraftKey ?? null
     // Seed docStats from the parsed draft so the expand/collapse decision is
     // correct before any transaction fires. Without this a multi-line draft
     // starts collapsed until the user types. It classifies the real
@@ -484,10 +552,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       }))
     }
     // Notify parent if we loaded a draft with content, and restore cursor position
-    if (initialDraftKey && initialDraft.content) {
+    if ((draftKeyChangedDuringStart ? readyDraftKey : initialDraftKey) && readyDraft.content) {
       props.onContentChange?.(true)
       try {
-        restoreCursor(editor, initialDraft.cursor)
+        restoreCursor(editor, readyDraft.cursor)
       }
       catch { /* editor may not be ready */ }
     }
@@ -578,7 +646,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   // Swap editor content when the effective draft key changes. This covers
   // agent switches, control-request switches, and per-question draft scopes.
-  let prevDraftKey: string | null | undefined
   createEffect(on(
     getDraftKey,
     (newDraftKeyRaw) => {
@@ -622,6 +689,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       catch { /* editor may not be ready */ }
 
       prevDraftKey = newDraftKey
+      props.onDraftKeyChanged?.(newDraftKey)
     },
   ))
 

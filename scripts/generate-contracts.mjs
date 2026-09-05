@@ -2298,6 +2298,54 @@ export const ${constName} = {
   return `${TS_HEADER('retry.json')}\n${blocks.join('\n')}`
 }
 
+/**
+ * One queued agent input's caps. The browser pre-checks a composer draft and
+ * the Worker enforces the same numbers, so both must measure ONE quantity:
+ * the text bytes plus every attachment's bytes.
+ */
+export function checkAgentInput(a) {
+  const { maxItemBytes, maxItems, maxAttachmentsPerItem } = a.limits
+  // A single attachment cannot be larger than the whole item, and the queue
+  // must hold at least one item; either would make the browser's pre-check
+  // admit a draft the Worker refuses.
+  if (maxAttachmentsPerItem > maxItemBytes)
+    throw new Error(`agent-input.json: maxAttachmentsPerItem ${maxAttachmentsPerItem} exceeds maxItemBytes ${maxItemBytes}`)
+  if (maxItems < 1)
+    throw new Error(`agent-input.json: maxItems ${maxItems} must hold at least one item`)
+}
+
+export function emitGoAgentInput(a) {
+  return `${GO_HEADER('agent-input.json')}package contracts
+
+// Caps on one queued agent input. The browser refuses an over-size composer
+// draft against the same numbers before it sends EnqueueAgentInput, so a
+// draft that passes the client check cannot fail Store.Enqueue.
+// MaxAgentInputItemBytes counts the text bytes PLUS every attachment's bytes.
+
+const (
+${goConstBlock([
+  { name: 'MaxAgentInputItemBytes', value: String(a.limits.maxItemBytes) },
+  { name: 'MaxAgentInputItems', value: String(a.limits.maxItems) },
+  { name: 'MaxAgentInputAttachmentsPerItem', value: String(a.limits.maxAttachmentsPerItem) },
+])}
+)
+`
+}
+
+export function emitTsAgentInput(a) {
+  return `${TS_HEADER('agent-input.json')}
+// Caps on one queued agent input, generated from contracts/agent-input.json
+// (the Worker reads the same numbers). MAX_AGENT_INPUT_ITEM_BYTES counts the
+// text bytes PLUS every attachment's bytes, which is what Store.Enqueue
+// measures -- a client check over the attachments alone admits a draft the
+// Worker refuses.
+
+export const MAX_AGENT_INPUT_ITEM_BYTES = ${a.limits.maxItemBytes} as const
+export const MAX_AGENT_INPUT_ITEMS = ${a.limits.maxItems} as const
+export const MAX_AGENT_INPUT_ATTACHMENTS_PER_ITEM = ${a.limits.maxAttachmentsPerItem} as const
+`
+}
+
 // ---------------------------------------------------------------------------
 // orchestration
 // ---------------------------------------------------------------------------
@@ -2371,6 +2419,15 @@ const DOMAINS = [
       checkRetry(r)
       out['backend/generated/contracts/retry.go'] = emitGoRetry(r)
       out['frontend/src/generated/contracts/retry.ts'] = emitTsRetry(r)
+    },
+  },
+  {
+    name: 'agent-input',
+    emit(out, read) {
+      const a = read('agent-input')
+      checkAgentInput(a)
+      out['backend/generated/contracts/agent-input.go'] = emitGoAgentInput(a)
+      out['frontend/src/generated/contracts/agent-input.ts'] = emitTsAgentInput(a)
     },
   },
   {

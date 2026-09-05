@@ -248,19 +248,22 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 		*leapmuxv1.AgentEvent_ControlRequest,
 		*leapmuxv1.AgentEvent_ControlCancel,
 		*leapmuxv1.AgentEvent_TurnEnd,
-		*leapmuxv1.AgentEvent_MessageDeleted,
 		*leapmuxv1.AgentEvent_TodosChanged,
 		*leapmuxv1.AgentEvent_BackgroundTasksChanged:
 		return classNotify
-	case *leapmuxv1.AgentEvent_AgentMessage,
+	// A queue snapshot carries every item with a text preview, so it is content
+	// and not a notification: a NOTIFY watcher renders no composer and reads
+	// none of it. The FULL promotion replays a fresh snapshot, so a tab that
+	// comes forward loses nothing.
+	case *leapmuxv1.AgentEvent_InputQueueChanged,
+		*leapmuxv1.AgentEvent_AgentMessage,
 		*leapmuxv1.AgentEvent_StreamChunk,
 		*leapmuxv1.AgentEvent_StreamEnd,
-		*leapmuxv1.AgentEvent_MessageError,
 		*leapmuxv1.AgentEvent_CatchUpStart,
 		*leapmuxv1.AgentEvent_CatchUpComplete:
 		return classContent
 	default:
-		// An unclassified arm must not silently reach a backgrounded tab.
+		// An unclassified event case must not reach a backgrounded tab.
 		return classContent
 	}
 }

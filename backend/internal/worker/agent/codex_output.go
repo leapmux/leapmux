@@ -16,10 +16,12 @@ import (
 var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected before completion(?:$|[^[:alnum:]].*)`)
 
 // codexSystemMetadataMethods are Codex-emitted JSON-RPC notifications that
-// carry agent/system metadata (lifecycle, MCP startup, skills invalidation,
-// remote-control status). They share one handler — persist verbatim as
-// agent-emitted notifications. Methods with extra side effects
-// (rate-limit, token-usage broadcasts) keep dedicated cases below.
+// carry agent/system metadata (auto-compaction, lifecycle, MCP startup, skills
+// invalidation, remote-control status). They share one handler — persist
+// verbatim as agent-emitted notifications. Methods with extra side effects
+// (rate-limit, token-usage broadcasts) keep dedicated cases below. A method
+// that this table omits falls to the default branch and lands in the transcript
+// as a raw JSON-RPC bubble.
 var codexSystemMetadataMethods = map[string]struct{}{
 	"thread/compacted":                {},
 	"thread/name/updated":             {},
@@ -72,7 +74,7 @@ func handleCodexOutput(a *CodexAgent, line *parsedLine) {
 		a.handleItemStarted(line.Raw, line.Params)
 
 	case "item/completed":
-		a.handleItemCompleted(line.Params)
+		a.handleItemCompleted(line.Raw, line.Params)
 
 	case "turn/completed":
 		a.handleTurnCompleted(line.Params)
@@ -141,11 +143,14 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 					Status:     bgtask.StatusRunning,
 				}))
 			}
+			if childID := a.routeChildItemIfApplicable(notif.ThreadID); childID != "" {
+				notifyInputStarted(a.sink.ChildSink(childID))
+			}
 			return
 		}
 		a.mu.Lock()
-		// Codex ACCEPTED the turn. This is what `sendTurnStart` waits on: the
-		// turn/start response does not arrive until the turn ends.
+		// Codex accepted the turn. sendTurnStart waits for this notification
+		// because response timing differs across Codex versions.
 		if a.turnStartAck != nil {
 			close(a.turnStartAck)
 			a.turnStartAck = nil
@@ -163,6 +168,9 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
 		a.thinkingTokens.reset()
+		// The queue normally marks a turn active before delivery. This callback
+		// repairs that state when a delayed acceptance follows an uncertain result.
+		notifyInputStarted(a.sink)
 
 		// Broadcast the turn ID so the frontend can use it for interrupts.
 		a.sink.BroadcastSessionInfo(map[string]interface{}{
@@ -410,6 +418,12 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 	case "agentMessage":
 		// No-op for started — wait for completed to persist.
 	case "contextCompaction":
+		a.mu.Lock()
+		if a.compactionStartAck != nil {
+			close(a.compactionStartAck)
+			a.compactionStartAck = nil
+		}
+		a.mu.Unlock()
 		// Persist the raw `item/started` JSON-RPC notification verbatim as
 		// AGENT. Preserves both `method:"item/started"` (so the
 		// notification consolidator and frontend classifier route by
@@ -446,7 +460,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 }
 
 // handleItemCompleted processes item/completed notifications.
-func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
+func (a *CodexAgent) handleItemCompleted(raw []byte, params json.RawMessage) {
 	item, itemType, itemID, threadID := extractCodexItem(params)
 	if item == nil {
 		return
@@ -540,7 +554,17 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		a.sink.BroadcastStreamEnd(itemID)
 	case "contextCompaction":
-		// No-op: completion is represented by thread/compacted.
+		// Persist the raw `item/completed` JSON-RPC notification verbatim as
+		// AGENT, the same way the `item/started` arm above does. It must join
+		// the notification thread that the start opened, because the
+		// consolidator drops the "Compacting context..." status only when the
+		// compaction boundary lands in that same thread. PersistMessage clears
+		// the thread instead, which leaves the status in place for the rest of
+		// the session. codexProvider.Classify gives this notification the
+		// compaction-boundary kind.
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+			slog.Error("codex persist contextCompaction/completed", "agent_id", a.agentID, "error", err)
+		}
 	default:
 		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			SpanID: itemID, SpanType: itemType,
@@ -565,6 +589,9 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			if err := a.sink.PersistChildTurnEnd(childID, params, SpanInfo{}); err != nil {
 				slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", notif.ThreadID, "error", err)
 			}
+			a.clearChildTurnID(notif.ThreadID)
+			notifyInputReady(a.sink.ChildSink(childID))
+			return
 		}
 		a.clearChildTurnID(notif.ThreadID)
 		return
@@ -608,6 +635,15 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		}
 	}
 
+	// Clear provider turn state before the queue receives the input-ready
+	// notification. This lets the next queued input start a new turn.
+	a.mu.Lock()
+	a.turnID = ""
+	a.turnSawPlan = false
+	a.turnPlanText = ""
+	a.mu.Unlock()
+	a.clearInterruptCallsForThread(notif.ThreadID)
+
 	// Persist as a result divider.
 	if err := a.sink.PersistTurnEnd(params, SpanInfo{}); err != nil {
 		slog.Error("codex persist turn/completed", "agent_id", a.agentID, "error", err)
@@ -644,17 +680,14 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		}
 	}
 
-	a.mu.Lock()
-	a.turnID = ""
-	a.turnSawPlan = false
-	a.turnPlanText = ""
-	a.mu.Unlock()
-	a.clearInterruptCallsForThread(notif.ThreadID)
-
 	// Clear the turn ID in session info.
 	a.sink.BroadcastSessionInfo(map[string]interface{}{
 		contracts.SessionInfoKeyCodexTurnId: "",
 	})
+	// The app-server submits compaction before it sends the RPC response. A
+	// fast compaction turn can end while CompactContext's caller holds the
+	// queue coordinator. Keep this reader free to deliver the RPC response.
+	go notifyInputReady(a.sink)
 }
 
 func isRetryableCodexTurnFailure(message string) bool {

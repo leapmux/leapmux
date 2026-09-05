@@ -217,11 +217,13 @@ describe('warmmarkpreview', () => {
     }
   })
 
-  it('ignores optimistic locals (seq 0n)', () => {
+  it('ignores an invalid sequence', () => {
     const fetchMessageBySeq = vi.fn()
     warmMarkPreview('w1', 'a1', 0n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq })
+    warmMarkPreview('w1', 'a1', -1n, { getLoadedMessageBySeq: () => undefined, fetchMessageBySeq })
     expect(fetchMessageBySeq).not.toHaveBeenCalled()
     expect(getCachedMarkPreview('a1', 0n)).toBeUndefined()
+    expect(getCachedMarkPreview('a1', -1n)).toBeUndefined()
   })
 
   it('forgetMarkPreview drops one agent\'s entries and leaves other agents intact', () => {

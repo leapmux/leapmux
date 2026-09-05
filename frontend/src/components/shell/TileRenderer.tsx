@@ -7,13 +7,13 @@ import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
-import type { FileAttachment } from '~/components/chat/attachments'
 import type { AgentLifecycleProps, ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
 import type { BranchMenuActions, BranchRefActions } from '~/components/workspace/branchActions'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
+import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { TabWorkState } from '~/stores/chatBackgroundTasks'
@@ -27,9 +27,7 @@ import type { AgentTab, FileTab, ImageTab, Tab, TerminalTab } from '~/stores/tab
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { create } from '@bufbuild/protobuf'
 import { createEffect, createMemo, For, mapArray, onCleanup, Show } from 'solid-js'
-import * as workerRpc from '~/api/workerRpc'
 import { AgentEditorPanel } from '~/components/chat/AgentEditorPanel'
 import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
@@ -39,11 +37,8 @@ import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
-import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { uint8ArrayToBase64 } from '~/lib/base64'
-import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
@@ -56,6 +51,7 @@ import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/ta
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
+import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
@@ -84,6 +80,7 @@ interface TileRendererOpts {
     metadata: TabMetadataStore
     selection: TabSelectionStore
     chatStore: ReturnType<typeof createChatStore>
+    agentInputQueueStore: ReturnType<typeof createAgentInputQueueStore>
     controlStore: ReturnType<typeof createControlStore>
     layoutStore: ReturnType<typeof createLayoutStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -94,6 +91,7 @@ interface TileRendererOpts {
     agentOps: ReturnType<typeof useAgentOperations>
     termOps: ReturnType<typeof useTerminalOperations>
   }
+  clientId: () => string
   /** Active-workspace state and tab-context accessors. */
   workspace: {
     isActiveWorkspaceMutatable: () => boolean
@@ -187,6 +185,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     metadata,
     selection,
     chatStore,
+    agentInputQueueStore,
     controlStore,
     layoutStore,
     agentSessionStore,
@@ -825,7 +824,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               getTodoById: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
             }
             // The scroll-rail prop object, memoized like `lookups` above: getRailData does
-            // firstServerSeq/lastServerSeq scans and the rail's per-frame memos read
+            // firstMessageSeq/lastMessageSeq scans and the rail's per-frame memos read
             // props.rail.{minSeq,maxSeq,marks} several times per scroll frame -- a fresh
             // `{...getRailData(), previewFor, warmPreview}` per access would re-run those scans
             // and allocate an object + two closures each time. Memoizing recomputes only when
@@ -949,10 +948,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     streamingText={chatStore.streamingText.get(agentId)}
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
                     tabActive={agentTab()?.id === agentId}
-                    messageErrors={chatStore.messageErrors()}
-                    messagePendingLabels={chatStore.messagePendingLabels()}
-                    onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
-                    onDeleteMessage={messageId => agentOps.handleDeleteMessage(agentId, messageId)}
                     workingDir={agent()?.workingDir}
                     homeDir={workerInfoStore.getHomeDir(agent()?.workerId ?? '')}
                     pagination={{
@@ -1135,10 +1130,21 @@ export function createTileRenderer(opts: TileRendererOpts) {
     return tab.id
   })
 
+  // The composer's queue commands. This module composes tiles and sends no
+  // Worker RPC of its own, so the request shapes, the failure toasts and the
+  // snapshot apply live in `agentInputQueueOperations`.
+  const queueOps = createAgentInputQueueOperations({
+    view,
+    store: agentInputQueueStore,
+    clientId: opts.clientId,
+    focusedAgentId,
+    forceScrollToBottom: () => forceScrollToBottomRef()?.(),
+  })
+
   // Refs for ChatDropZone integration: addFiles and triggerSend from AgentEditorPanel.
   const addFilesRef = createImperativeRef<(files: FileList | File[]) => Promise<number>>()
   const addDropDataTransferRef = createImperativeRef<(dataTransfer: DataTransfer) => Promise<number>>()
-  const triggerSendRef = createImperativeRef<() => void>()
+  const triggerSendRef = createImperativeRef<() => void | Promise<void>>()
 
   // Clear refs when no agent is focused to avoid stale closures.
   createEffect(() => {
@@ -1154,7 +1160,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     if (addDrop) {
       const addedCount = await addDrop(dataTransfer)
       if (shiftKey && addedCount > 0)
-        triggerSendRef()?.()
+        void triggerSendRef()?.()
       return
     }
     const addFiles = addFilesRef()
@@ -1162,7 +1168,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
       return
     const addedCount = await addFiles(dataTransfer.files)
     if (shiftKey && addedCount > 0)
-      triggerSendRef()?.()
+      void triggerSendRef()?.()
   }
 
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
@@ -1198,91 +1204,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
       <AgentEditorPanel
         agentId={agentId()}
         agent={agentTabToInfo(focusedAgentTab())}
+        inputQueue={agentInputQueueStore.get(agentId())}
+        queueClientId={opts.clientId()}
         repoGitStore={repoGitStore}
         gitTab={focusedAgentTab()}
-        // eslint-disable-next-line solid/reactivity -- async event handler; reactive tracking isn't needed for user-invoked callbacks
-        onSendMessage={async (content, fileAttachments?: FileAttachment[]) => {
-          // eslint-disable-next-line solid/reactivity -- user-invoked send handler: reads at invocation time
-          const id = focusedAgentId()
-          if (!id)
-            return
-          forceScrollToBottomRef()?.()
-          const sendAgent = view.getAgentTab(id)
-          const status = sendAgent?.agentStatus
-
-          // Build optimistic message JSON with attachment data so retry can
-          // recover the binary content without re-uploading.
-          const optimisticPayload: Record<string, unknown> = { content }
-          if (fileAttachments && fileAttachments.length > 0) {
-            optimisticPayload.attachments = fileAttachments.map(a => ({
-              filename: a.filename,
-              mime_type: a.mimeType,
-              data: uint8ArrayToBase64(a.data),
-            }))
-          }
-
-          // Create an optimistic local message so it appears immediately in the chat.
-          const localId = `local-${randomUUID()}`
-          const localMsg = create(AgentChatMessageSchema, {
-            id: localId,
-            source: MessageSource.USER,
-            content: new TextEncoder().encode(JSON.stringify(optimisticPayload)),
-            contentCompression: ContentCompression.NONE,
-            seq: 0n,
-            createdAt: new Date().toISOString(),
-            agentProvider: sendAgent?.agentProvider,
-          })
-          chatStore.addMessage(id, localMsg)
-
-          const protoAttachments = fileAttachments?.map(a => ({
-            filename: a.filename,
-            mimeType: a.mimeType,
-            data: a.data,
-          })) ?? []
-
-          // Agent is still starting — queue the message. The
-          // useWorkspaceConnection status-change handler flushes on
-          // ACTIVE, or marks failed on STARTUP_FAILED.
-          if (status === AgentStatus.STARTING) {
-            chatStore.setMessagePendingLabel(localId, `Queued — ${agentProviderLabel(sendAgent?.agentProvider)} is starting…`)
-            chatStore.pendingOutbound.enqueue(id, { localId, content, attachments: protoAttachments })
-            return
-          }
-          const persistFailed = (reason: string) => {
-            chatStore.setMessageError(localId, reason)
-            chatStore.persistLocalMessage(
-              id,
-              localId,
-              content,
-              reason,
-              fileAttachments?.map(a => ({
-                filename: a.filename,
-                mime_type: a.mimeType,
-                data: uint8ArrayToBase64(a.data),
-              })),
-            )
-          }
-
-          // Agent failed to start — render the message as an error
-          // bubble immediately and reject the send.
-          if (status === AgentStatus.STARTUP_FAILED) {
-            persistFailed('Agent failed to start')
-            return
-          }
-
-          try {
-            await workerRpc.sendAgentMessage(sendAgent?.workerId ?? '', {
-              agentId: id,
-              content,
-              attachments: protoAttachments,
-            })
-            // Keep the optimistic message until the persisted message arrives.
-            // chatStore.addMessage() reconciles the matching server echo in place.
-          }
-          catch {
-            persistFailed('Failed to deliver')
-          }
-        }}
+        onSendMessage={queueOps.sendMessage}
+        onSendControlFeedback={queueOps.sendControlFeedback}
+        onBeginQueueEdit={queueOps.beginQueueEdit}
+        onUpdateQueueItem={queueOps.updateQueueItem}
+        onCancelQueueEdit={queueOps.cancelQueueEdit}
+        onDeleteQueueItem={queueOps.deleteQueueItem}
+        onMoveQueueItem={queueOps.moveQueueItem}
+        onRetryQueueItem={queueOps.retryQueueItem}
+        onSteerQueueItem={queueOps.steerQueueItem}
+        onSetQueuePaused={queueOps.setQueuePaused}
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}

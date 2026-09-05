@@ -319,20 +319,29 @@ WHERE closed_at IS NULL AND parent_agent_id IS NULL AND workspace_archived = 0;
 -- parent_agent_id IS NULL drops the virtual child rows that hold subagent
 -- transcripts. They carry no session of their own to resume.
 --
--- last_activity reads the newest message's time through the
--- messages(agent_id, seq) unique index rather than aggregating the agent's
--- whole transcript. The COALESCE is not only a fallback for a session that
--- never received a message: it makes the column NOT NULL, which is what the
--- generated scan needs -- sqlc types a bare correlated subquery as the
--- non-null SQLiteTime, whose Scan has no branch for a NULL and would fail the
--- whole query on the first message-less row.
+-- last_activity is the LATEST message time, not the time of the latest
+-- message. The two differ: a message that the durable input queue accepts
+-- keeps the time the user COMPOSED it, which is what the transcript labels
+-- "Sent:", and an item can wait in a paused queue for an hour before it takes
+-- its seq. Reading the highest-seq row's time would then report a session that
+-- just ran as an hour stale, and sort it to the bottom of the resume picker.
+--
+-- MAX scans this agent's rows instead of taking one row through the
+-- messages(agent_id, seq) unique index. That cost is deliberate: this query
+-- serves the resume dialog, which opens on a click, and correct ordering is
+-- worth more there than one index seek.
+--
+-- The COALESCE is not only a fallback for a session that never received a
+-- message: it makes the column NOT NULL, which is what the generated scan
+-- needs -- sqlc types a bare correlated subquery as the non-null SQLiteTime,
+-- whose Scan has no branch for a NULL and would fail the whole query on the
+-- first message-less row.
 -- name: ListSessionsForResume :many
 SELECT a.agent_session_id,
        a.title,
        a.closed_at,
        COALESCE(
-         (SELECT m.created_at FROM messages m
-           WHERE m.agent_id = a.id ORDER BY m.seq DESC LIMIT 1),
+         (SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = a.id),
          a.created_at
        ) AS last_activity
 FROM agents a

@@ -491,67 +491,6 @@ describe('usechatscroll windowing trim', () => {
       })
     }))
 
-  it('excludes trailing optimistic locals from keepNewest so the trim cap stays on server rows', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(500)
-          div.setScrollTop(4500)
-          // Server rows (seq 1..n) followed by two trailing optimistic locals
-          // (seq 0n) -- the exact shape the store keeps while a send is in flight.
-          const mkMsgs = (server: number): AgentChatMessage[] => [
-            ...Array.from({ length: server }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage)),
-            { id: 'local-1', seq: 0n } as AgentChatMessage,
-            { id: 'local-2', seq: 0n } as AgentChatMessage,
-          ]
-          const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 5000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm50', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 2000,
-          }
-          let lastKeep = -1
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            streamingText,
-            hasNewerMessages: () => false,
-            onTrimOldMessages: (k) => { lastKeep = k },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          div.setScrollTop(2000)
-          hook.handlers.onScroll()
-          expect(hook.atBottom()).toBe(false)
-
-          // Append a live SERVER row: window is now 151 server + 2 locals (153).
-          // The anchor m50 sits at index 49; the SERVER rows from there to the tail
-          // are 151 - 49 = 102. The two trailing locals must NOT inflate the cap
-          // (counting them would yield 104 and over-retain two old server rows).
-          setMessages(mkMsgs(MAX_LOADED_CHAT_MESSAGES + 1))
-          await Promise.resolve()
-          await Promise.resolve()
-
-          expect(lastKeep).toBe(102)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
-        }
-      })
-    }))
-
   it('protects the whole window when the anchored row was displaced out of the list', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -599,70 +538,6 @@ describe('usechatscroll windowing trim', () => {
           await Promise.resolve()
 
           expect(lastKeep).toBe(MAX_LOADED_CHAT_MESSAGES + 1)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
-        }
-      })
-    }))
-
-  it('recaptures a resolvable anchor when displaced, so the trim keeps the viewport cap not the whole window', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(500)
-          div.setScrollTop(4500)
-          const mkIdMsgs = (start: number, n: number): AgentChatMessage[] =>
-            Array.from({ length: n }, (_, i) => ({ id: `m${start + i}`, seq: BigInt(start + i) } as AgentChatMessage))
-          const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(1, MAX_LOADED_CHAT_MESSAGES))
-          const [streamingText] = createSignal('')
-          // anchorAt resolves to m1 while it's present (capture), then to a present
-          // MIDDLE row m10 once m1 is gone -- modelling an optimistic local that
-          // reconciled to a server echo under a new id between capture and trim.
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 5000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: messages().some(m => m.id === 'm1') ? 'm1' : 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 2000,
-          }
-          let lastKeep = -1
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            streamingText,
-            hasNewerMessages: () => false,
-            onTrimOldMessages: (k) => { lastKeep = k },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          div.setScrollTop(2000)
-          hook.handlers.onScroll() // captures anchor = m1
-          expect(hook.atBottom()).toBe(false)
-
-          // Replace the window so m1 (the anchor) is gone but m10 is present in the
-          // MIDDLE. Length changes so the auto-scroll signature wakes the trim.
-          const replaced = mkIdMsgs(5, MAX_LOADED_CHAT_MESSAGES + 1) // m5..m(MAX+5)
-          setMessages(replaced)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // m1 displaced -> recapture lands on m10 (a middle row), so keepNewest is
-          // the viewport cap (rows from m10 down), NOT the whole-window fallback and
-          // NOT 0. Without the recapture this would protect the whole window.
-          const m10Idx = replaced.findIndex(m => m.id === 'm10')
-          expect(m10Idx).toBeGreaterThan(0)
-          expect(lastKeep).toBe(replaced.length - m10Idx)
-          expect(lastKeep).toBeLessThan(replaced.length)
           dispose()
           resolve()
         }

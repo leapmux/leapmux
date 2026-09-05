@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-input.schema.json",
+  "title": "agent input queue limits contract",
+  "description": "Caps on one queued agent input that the browser pre-checks and the Worker enforces. maxItemBytes covers the text plus every attachment of one item, so both languages measure one quantity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "limits"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxItemBytes", "maxItems", "maxAttachmentsPerItem"],
+      "properties": {
+        "maxItemBytes": { "type": "integer", "minimum": 1 },
+        "maxItems": { "type": "integer", "minimum": 1 },
+        "maxAttachmentsPerItem": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

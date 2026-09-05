@@ -217,6 +217,9 @@ func (a *PiAgent) handlePiAgentEnd(raw []byte) {
 	// The failed attempt's spans are dead either way: a retried run reopens its
 	// own, so the reset is unconditional.
 	a.sink.ResetSpans()
+	if !env.WillRetry {
+		notifyInputReady(a.sink)
+	}
 	if a.canRequestPiSessionStats() {
 		go func() {
 			_, _ = a.refreshPiSessionStats(piSessionStatsTimeout(a.APITimeout()))

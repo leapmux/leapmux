@@ -222,9 +222,6 @@ func renderAgentMessage(m *leapmuxv1.AgentChatMessage) map[string]any {
 	if name := agentProviderName(m.GetAgentProvider()); name != "" {
 		out["agent_provider"] = name
 	}
-	if de := m.GetDeliveryError(); de != "" {
-		out["delivery_error"] = de
-	}
 	// A live reseq broadcast (notification-thread consolidation) re-emits an
 	// already-seen id at a new higher seq. previous_seq marks it as a MOVE from that
 	// older seq, so a --follow consumer can reconcile by id (update the row at

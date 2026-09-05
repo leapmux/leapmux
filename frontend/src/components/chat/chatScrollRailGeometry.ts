@@ -45,7 +45,7 @@ export function safeSeqDeltaNumber(delta: bigint): number | null {
 }
 
 export interface SeqSpaceGeometry {
-  /** Visible rows, ascending by seq; trailing optimistic locals carry seq 0n. */
+  /** Visible rows in ascending sequence order. */
   items: readonly VirtualItem[]
   /** Content-Y of the top of row `i` (i in [0, items.length]; == totalHeight at the end). */
   offsetOfIndex: (index: number) => number
@@ -84,10 +84,8 @@ export interface SeqThumbInputs {
 /**
  * The absolute seq (as a number) at the START of each row's coverage, plus a terminal
  * boundary. `out[i]` is where row i begins in seq space; `out[n]` = `out[n-1] + 1` so
- * the last row occupies one seq unit. Trailing optimistic locals (seq 0n) are assigned
- * one unit above the running server max, so they map ABOVE the last server row (where
- * they render) rather than scanning as the oldest. Returns null when the window holds no
- * server row (all-locals / empty), since no seq anchor exists to place a thumb against.
+ * the last row occupies one sequence unit. Returns null when the window is empty
+ * or contains an invalid sequence.
  *
  * Derived purely from `items`, and the internal primitive of {@link prepareGeometry} --
  * callers hold a {@link PreparedGeometry} (which memoizes this once) rather than calling
@@ -98,29 +96,16 @@ export function rowStartSeqs(items: readonly VirtualItem[]): number[] | null {
   const n = items.length
   if (n === 0)
     return null
-  let hasServer = false
-  let running = 0
   const out = Array.from<number>({ length: n + 1 })
   for (let i = 0; i < n; i++) {
     const s = items[i].seq
-    if (s !== undefined && s !== 0n) {
-      const safe = safeSeqNumber(s)
-      if (safe === null)
-        return null
-      hasServer = true
-      running = safe
-      out[i] = running
-    }
-    else {
-      // Optimistic local: one unit above the running max (pinned at the tail).
-      if (running >= Number.MAX_SAFE_INTEGER)
-        return null
-      running += 1
-      out[i] = running
-    }
+    if (s === undefined || s <= 0n)
+      return null
+    const safe = safeSeqNumber(s)
+    if (safe === null)
+      return null
+    out[i] = safe
   }
-  if (!hasServer)
-    return null
   if (out[n - 1] >= Number.MAX_SAFE_INTEGER)
     return null
   out[n] = out[n - 1] + 1
@@ -131,9 +116,7 @@ export function rowStartSeqs(items: readonly VirtualItem[]): number[] | null {
  * A {@link SeqSpaceGeometry} paired with its `rowStartSeqs` computed ONCE, handed to
  * seqAtContentY / contentYForSeq / computeSeqThumb so the (n+1)-length row map is scanned a
  * single time per geometry rather than re-derived on every call (the rail recomputes the
- * thumb every scroll frame). `rowSeqs` is null when the window holds no server row
- * (all-locals / empty), so a single guard on it covers the "no seq anchor" case for every
- * consumer.
+ * thumb every scroll frame). `rowSeqs` is null when the row sequence map is invalid.
  *
  * The rail component builds this INLINE from two separate memos (an `items`-keyed rowSeqs
  * memo plus a per-commit `geo` wrapper) so a streaming turn -- which bumps totalHeight every

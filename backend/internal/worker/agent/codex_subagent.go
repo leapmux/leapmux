@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -267,40 +268,63 @@ func (a *CodexAgent) recordCollabChildTitle(threadID, prompt string) {
 
 // --- ChildSteerer implementation ---
 
-// SendChildInput sends a user message to a child conversation (childKey = child
-// threadId). If an active child turn is known (childTurnIDs), it steers via
-// turn/steer; with no active turn it starts a new turn on the child thread via
-// turn/start. A steer error is RETURNED, never swallowed into a second
-// turn/start: turn/steer and turn/start are not safely composable because a
-// transport hiccup after the host applied the steer would start a DUPLICATE
-// concurrent turn on the same thread (interleaved output, an unsteerable
-// orphaned turn). The turn-ended race between the childTurnID check and the
-// steer resolves on the user's next send, which finds no active turn and
-// starts cleanly.
+// SendChildInput starts a new turn on a child conversation (childKey = child
+// threadId). It never steers. SteerChildInput is the one method that adds input
+// to an active child turn.
+//
+// turn/steer and turn/start are not safely composable, so this method must not
+// try one and then the other. A transport failure after the host applies the
+// steer starts a DUPLICATE concurrent turn on the same thread, which
+// interleaves the output and leaves an orphaned turn that nothing can steer.
+// So this method refuses an active child turn and returns ErrNoActiveTurn. The
+// Worker queue then holds the input until that turn ends.
 func (a *CodexAgent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	threadID := childKey
 	if !a.knownCollabChild(threadID) {
-		// The owner process is running but its in-memory spawn index does not
-		// know this thread (the index is rebuilt only when the live collab
-		// spawn re-fires, so it is empty after a worker restart). The persisted
-		// registry row resolves, so the child IS steerable in principle -- map
-		// this to ErrChildNotSteerableYet so the service tells the client to
-		// retry instead of persisting a permanent delivery error.
+		// The owner process runs, but its in-memory spawn index does not know
+		// this thread. The worker rebuilds that index only when the live collab
+		// spawn reports the thread again, so the index is empty after a worker
+		// restart. The persisted registry row resolves, so the child IS
+		// steerable in principle. ErrChildNotSteerableYet states exactly that
+		// condition; its declaration lists the caller that maps it and where.
 		return fmt.Errorf("%w: unknown codex subagent thread %q", ErrChildNotSteerableYet, childKey)
 	}
-	// Attachments: Codex's turn/start input is a string; fold attachment
-	// filenames into the content as a best-effort (Codex collab child threads
-	// do not accept structured attachments over the host protocol).
-	input := content
-	for _, att := range attachments {
-		if att.GetFilename() != "" {
-			input += "\n\n[attachment: " + att.GetFilename() + "]"
+	// The child already runs a turn, so it cannot take a NEW turn now. That is
+	// the busy condition, not the absent-turn condition: ErrNoActiveTurn here
+	// would tell the queue to store a permanent failure whose text says the
+	// child has no turn, while the child is visibly working.
+	if a.childTurnID(threadID) != "" {
+		return ErrAgentBusy
+	}
+	return a.sendTurnStartChild(threadID, codexChildInput(content, attachments))
+}
+
+func (a *CodexAgent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	if !a.knownCollabChild(childKey) {
+		return fmt.Errorf("%w: unknown codex subagent thread %q", ErrChildNotSteerableYet, childKey)
+	}
+	turnID := a.childTurnID(childKey)
+	if turnID == "" {
+		return ErrNoActiveTurn
+	}
+	if err := a.sendTurnSteer(childKey, turnID, []map[string]interface{}{{"type": "text", "text": codexChildInput(content, attachments)}}); err != nil {
+		return err
+	}
+	if a.childTurnID(childKey) != turnID {
+		return ErrNoActiveTurn
+	}
+	return nil
+}
+
+func codexChildInput(content string, attachments []*leapmuxv1.Attachment) string {
+	// Codex child turns accept only string input. Preserve each attachment name
+	// so the child can ask the user for content that it cannot receive directly.
+	for _, attachment := range attachments {
+		if attachment.GetFilename() != "" {
+			content += "\n\n[attachment: " + attachment.GetFilename() + "]"
 		}
 	}
-	if turnID := a.childTurnID(threadID); turnID != "" {
-		return a.sendTurnSteer(threadID, turnID, []map[string]interface{}{{"type": "text", "text": input}})
-	}
-	return a.sendTurnStartChild(threadID, input)
+	return content
 }
 
 // InterruptChild aborts a child's current turn inside the owner process.
@@ -315,8 +339,8 @@ func (a *CodexAgent) InterruptChild(childKey string) error {
 	return a.interruptCodexTurn(threadID, turnID)
 }
 
-// sendTurnStartChild starts a new turn on a child thread. Mirrors sendTurnStart
-// but targets a non-main thread and stores the returned turn id under the child.
+// sendTurnStartChild starts a new turn on a child thread. The turn/started
+// notification is the acceptance signal across Codex versions.
 func (a *CodexAgent) sendTurnStartChild(threadID, input string) error {
 	params := map[string]any{
 		"threadId": threadID,
@@ -326,19 +350,33 @@ func (a *CodexAgent) sendTurnStartChild(threadID, input string) error {
 	if err != nil {
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
-	resp, err := a.sendRequest("turn/start", paramsJSON, 0)
-	if err != nil {
-		return fmt.Errorf("turn/start child: %w", err)
+	ack := make(chan struct{})
+	a.mu.Lock()
+	if a.childTurnStartAcks == nil {
+		a.childTurnStartAcks = make(map[string]chan struct{})
 	}
-	var res struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
+	a.childTurnStartAcks[threadID] = ack
+	a.mu.Unlock()
+	requestErr := make(chan error, 1)
+	go func() {
+		if _, err := a.sendRequest("turn/start", paramsJSON, 0); err != nil {
+			requestErr <- err
+		}
+	}()
+
+	select {
+	case <-ack:
+		return nil
+	case err := <-requestErr:
+		a.clearChildTurnStartAck(threadID, ack)
+		return classifyCodexTurnStartRequestError("turn/start child", err)
+	case <-a.processDone:
+		a.clearChildTurnStartAck(threadID, ack)
+		return classifyCodexTurnStartRequestError("turn/start child", a.processExitError())
+	case <-time.After(turnStartAckTimeout):
+		a.clearChildTurnStartAck(threadID, ack)
+		return fmt.Errorf("%w: child turn/start received no turn/started within %s", ErrDeliveryUncertain, turnStartAckTimeout)
 	}
-	if json.Unmarshal(resp, &res) == nil && res.Turn.ID != "" {
-		a.setChildTurnID(threadID, res.Turn.ID)
-	}
-	return nil
 }
 
 // knownCollabChild reports whether the thread is a registered collab child.
@@ -366,6 +404,18 @@ func (a *CodexAgent) setChildTurnID(threadID, turnID string) {
 		a.childTurnIDs = make(map[string]string)
 	}
 	a.childTurnIDs[threadID] = turnID
+	if ack := a.childTurnStartAcks[threadID]; ack != nil {
+		close(ack)
+		delete(a.childTurnStartAcks, threadID)
+	}
+}
+
+func (a *CodexAgent) clearChildTurnStartAck(threadID string, expected chan struct{}) {
+	a.mu.Lock()
+	if a.childTurnStartAcks[threadID] == expected {
+		delete(a.childTurnStartAcks, threadID)
+	}
+	a.mu.Unlock()
 }
 
 func (a *CodexAgent) clearChildTurnID(threadID string) {

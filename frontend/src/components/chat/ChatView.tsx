@@ -97,14 +97,6 @@ export const SKELETON_CROSSFADE_MS = motion.medium
 // as a loading affordance. See createDelayedSet.
 export const SKELETON_SHOW_DELAY_MS = 500
 
-function heightKeyPart(value: string | undefined): string {
-  return value === undefined ? '0:' : `${value.length}:${value}`
-}
-
-export function rowChromeHeightKey(error: string | undefined, pendingLabel: string | undefined): string {
-  return `${heightKeyPart(error)}|${heightKeyPart(pendingLabel)}`
-}
-
 /** Imperative scroll API published by ChatView via `onScrollApiReady`. */
 export interface ChatScrollApi {
   getScrollState: () => ChatScrollState | undefined
@@ -276,11 +268,6 @@ interface ChatViewProps {
    * user can't see it (every agent tab is mounted, including hidden ones).
    */
   tabActive?: boolean
-  messageErrors?: Record<string, string>
-  /** Per-message non-error sublabels (e.g. "Queued — agent is starting…"). */
-  messagePendingLabels?: Record<string, string>
-  onRetryMessage?: (messageId: string) => void
-  onDeleteMessage?: (messageId: string) => void
   /** Workspace working directory for relativizing file paths in tool messages. */
   workingDir?: string
   /** Worker's home directory for tilde (~) path simplification. */
@@ -431,7 +418,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // A same-seq in-place body replacement bumps this; reading it keeps the entry
     // cache from reusing the pre-update classification when the proxy/seq don't move.
     contentVersionById: id => props.lookups?.getMessageContentVersion?.(id) ?? 0,
-    hasNewerMessages: () => !!props.pagination?.hasNewerMessages,
     isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })
@@ -530,9 +516,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           e.category.kind,
           () => effectiveDiffView(e.msg.id),
           () => effectiveThinkingExpanded(e),
-        )}|${rowChromeHeightKey(
-          props.messageErrors?.[e.msg.id],
-          props.messagePendingLabels?.[e.msg.id],
         )}`,
       })),
     [],
@@ -818,10 +801,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       message={entry.msg}
       parsed={entry.parsed}
       category={entry.category}
-      error={props.messageErrors?.[entry.msg.id]}
-      pendingLabel={props.messagePendingLabels?.[entry.msg.id]}
-      onRetry={() => props.onRetryMessage?.(entry.msg.id)}
-      onDelete={() => props.onDeleteMessage?.(entry.msg.id)}
       workingDir={props.workingDir}
       homeDir={props.homeDir}
       onReply={props.onReply}
@@ -1189,8 +1168,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         const { msg, parsedSpanLines } = entry
                         // Offset is resolved by the row's own id, not by
                         // range().start + localIndex(): the id is the stable,
-                        // unique key into the offset map (seq is 0n for every
-                        // optimistic local), so it can't transiently disagree with
+                        // unique key into the offset map, so it cannot disagree with
                         // the slice bounds during a scroll/measure flush.
                         const top = () => virt.offsetOfId(msg.id) ?? 0
                         // Fling skeleton: a MEASURED row entering the window

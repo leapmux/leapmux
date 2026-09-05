@@ -106,10 +106,11 @@ describe('chatmessagemarks', () => {
       })
     })
 
-    it('rejects optimistic locals (seq 0n) and unmarked rows', () => {
+    it('rejects invalid sequences and unmarked rows', () => {
       withStore((s) => {
         s.seed('a1', [], 1n, 5n)
         s.noteMark('a1', 0n, U)
+        s.noteMark('a1', -1n, C)
         s.noteMark('a1', 4n, MarkType.UNSPECIFIED)
         expect(s.get('a1').marks).toEqual([])
       })
@@ -139,7 +140,7 @@ describe('chatmessagemarks', () => {
         const r1 = s.liveRevision('a1')
         expect(r1).toBeGreaterThan(r0)
         s.noteMark('a1', 3n, C) // idempotent re-note of the same seq
-        s.noteMark('a1', 0n, U) // optimistic local, ignored
+        s.noteMark('a1', 0n, U) // invalid sequence
         s.noteMark('a1', 4n, MarkType.UNSPECIFIED) // unmarked row, ignored
         expect(s.liveRevision('a1')).toBe(r1) // none of the no-ops bumped the revision
       })
