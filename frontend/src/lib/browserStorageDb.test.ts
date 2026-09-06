@@ -48,6 +48,15 @@ const WORKER = 'w-browserstoragedb'
 const SYNC_KEY = `${PREFIX_FILES_SHOW_HIDDEN}${WORKER}:/repo` as const
 /** An `async`-tier key, so nothing is mirrored and every read reaches the store. */
 const ASYNC_KEY = `${PREFIX_EDITOR_DRAFT}${WORKER}-agent-1` as const
+/**
+ * A `sync`-tier key this file moves only to prove that a delivery already
+ * happened. No case asserts on it: every recorder below filters it out, so a
+ * barrier cannot change what a case observes.
+ */
+const SENTINEL_KEY = `${PREFIX_FILES_SHOW_HIDDEN}${WORKER}:/sentinel` as const
+
+/** Distinct per barrier, so one cannot be mistaken for the one before it. */
+let sentinelValue = 0
 
 beforeEach(() => {
   vi.stubGlobal('indexedDB', new IDBFactory())
@@ -504,25 +513,64 @@ describe('the write queue', () => {
 })
 
 describe('cross-tab changes', () => {
-  /** Deliver `changes` as a peer tab would, on the real channel. */
   /**
-   * Record what THIS module instance publishes.
+   * Wait until `ready` answers true, and fail the case if it never does.
+   *
+   * A FIXED WAIT IS NOT A BARRIER, which is the whole reason this exists. jsdom
+   * implements no BroadcastChannel, so the class is Node's: a message crosses a
+   * MessagePort and is dispatched on the event loop's message phase, while
+   * `setTimeout` here is jsdom's window timer. Nothing orders those two. An idle
+   * machine delivers first every time, so a `setTimeout(0)` looks like a barrier
+   * and is not one -- the macOS and linux-arm64 CI runners each failed one
+   * arrival case that passes locally on every run.
+   */
+  async function until(what: string, ready: () => boolean): Promise<void> {
+    for (let i = 0; i < 400 && !ready(); i++)
+      await new Promise(resolve => setTimeout(resolve, 5))
+    if (!ready())
+      throw new Error(`timed out waiting for ${what}`)
+  }
+
+  /**
+   * Record what THIS module instance publishes, and supply the barrier for it.
    *
    * The channel name is a module constant and a BroadcastChannel bus is shared
    * by every test FILE in one process, so a sibling file's sweep publishes onto
    * the same channel while this one listens -- for the same keys, since both
    * files exercise the same registry. Matching the sender is what keeps these
    * cases about this tab's own writes instead of about who runs beside them.
+   *
+   * `drain` writes the sentinel key and returns once THIS channel received the
+   * publish it caused. That publish leaves the same sender and arrives at the
+   * same receiver as every publish under test, and one queue delivers in post
+   * order -- so anything published before the sentinel already arrived. It is
+   * the only way to state "and nothing else was published", because no length
+   * of wait can prove that a message will never come.
    */
-  function recordPublished(): { seen: unknown[], stop: () => void } {
+  function recordPublished(): { seen: StorageBroadcast[], drain: () => Promise<void>, stop: () => void } {
     const mine = kvInstanceIdForTests()
-    const seen: unknown[] = []
+    const sentinel = storedKeyFor(SENTINEL_KEY)!
+    const seen: StorageBroadcast[] = []
+    let barriers = 0
     const channel = new BroadcastChannel('leapmux:browser-storage')
     channel.onmessage = (event: MessageEvent<StorageBroadcast>) => {
-      if (event.data.from === mine)
+      if (event.data.from !== mine)
+        return
+      if (event.data.changes?.some(change => change.k === sentinel))
+        barriers++
+      else
         seen.push(event.data)
     }
-    return { seen, stop: () => channel.close() }
+    return {
+      seen,
+      drain: async () => {
+        const mark = barriers
+        localStorageSet(SENTINEL_KEY, ++sentinelValue)
+        await flushStorageWrites()
+        await until('this tab\'s own publish', () => barriers > mark)
+      },
+      stop: () => channel.close(),
+    }
   }
 
   /**
@@ -548,20 +596,34 @@ describe('cross-tab changes', () => {
     return { heard, stop }
   }
 
+  /**
+   * Deliver `changes` as a peer tab would, and return once the module has them.
+   *
+   * THE WAIT IS A SENTINEL, NOT A TIMER. A second announcement follows on the
+   * SAME channel, naming the sentinel key, and this returns once the module
+   * applied that one. One channel delivers to one receiver in post order, so
+   * the sentinel's arrival proves the announcement under test arrived first --
+   * including where the module must IGNORE that announcement, which no
+   * observable effect of its own could ever prove.
+   */
   async function announce(changes: readonly StorageChange[] | null, from = 'another-tab'): Promise<void> {
+    const value = ++sentinelValue
     const channel = new BroadcastChannel('leapmux:browser-storage')
     channel.postMessage({ from, changes })
+    channel.postMessage({
+      from,
+      changes: [{ k: storedKeyFor(SENTINEL_KEY)!, v: value, e: Date.now() + 60_000 }],
+    })
+    await until('the peer tab\'s announcement', () => localStorageGet(SENTINEL_KEY) === value)
     channel.close()
-    // Delivery is a macrotask, even between two channels in one process.
-    await new Promise(resolve => setTimeout(resolve, 0))
   }
 
   it('publishes a committed write to the other tabs', async () => {
-    const { seen, stop } = recordPublished()
+    const { seen, drain, stop } = recordPublished()
 
     localStorageSet(SYNC_KEY, true)
     await flushStorageWrites()
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await drain()
     stop()
 
     // The VALUE travels, unwrapped. A receiver installs it without re-reading,
@@ -573,13 +635,13 @@ describe('cross-tab changes', () => {
   })
 
   it('does not publish an unmirrored write', async () => {
-    const { seen, stop } = recordPublished()
+    const { seen, drain, stop } = recordPublished()
 
     // No other tab holds a copy of a draft, and publishing one would put the
     // user's prose on a channel every tab receives.
     localStorageStore(ASYNC_KEY, { content: 'private', cursor: 0 })
     await flushStorageWrites()
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await drain()
     stop()
 
     expect(seen).toEqual([])
@@ -606,10 +668,14 @@ describe('cross-tab changes', () => {
 
   it('ignores its own echo', async () => {
     const { heard, stop } = recordHeard(storedKeyFor(SYNC_KEY)!)
+    const published = recordPublished()
 
     localStorageSet(SYNC_KEY, 'mine')
     await flushStorageWrites()
-    await new Promise(resolve => setTimeout(resolve, 0))
+    // The barrier proves the write REACHED the channel, so the case cannot pass
+    // because nothing was ever published for the sender check to suppress.
+    await published.drain()
+    published.stop()
     stop()
 
     // Without the sender check the two tabs would notify each other forever.
@@ -672,8 +738,9 @@ describe('cross-tab changes', () => {
   // A clear, or a database the scaffold had to rebuild: no key list describes
   // it, so every subscriber has to answer for it.
   it('passes a whole-store change through as null', async () => {
-    const heard: Array<ReadonlySet<string> | null> = []
-    const stop = onStorageChanged(keys => heard.push(keys))
+    // Through the recorder, so the barrier's own key-set notification is
+    // filtered out and only the whole-store null remains.
+    const { heard, stop } = recordHeard()
 
     await announce(null)
     stop()
