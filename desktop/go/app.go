@@ -21,7 +21,7 @@ import (
 
 // operationDrainTimeout bounds Shutdown's wait for admitted operations after
 // a.ctx is cancelled. Network/lifecycle operations honor a.ctx and unwind
-// promptly; the filesystem/exec operations (OpenInEditor, ListEditors refresh,
+// promptly; the filesystem/exec operations (OpenInExternalApp, ListExternalApps,
 // OpenFullDiskAccessSettings, CliInstallSymlink) ignore it, so an unbounded
 // wait would let one stuck launch hang shutdown -- and the process -- forever.
 // Mirrors the bounded RPCSession.drainHandlers and drainRelay drains. A
@@ -47,7 +47,7 @@ type App struct {
 	config       *DesktopConfig
 	connection   *desktopConnection
 	tunnels      *TunnelManager
-	editors      *EditorRegistry
+	externalApps *ExternalAppRegistry
 	// startSolo launches the in-process Hub+Worker. A function field (mirroring
 	// TunnelManager.openCh/dial) so tests can block startup and assert
 	// lifecycleMu is released across it rather than held for the whole boot.
@@ -76,11 +76,11 @@ const protocolVersion = "1"
 func NewApp(binaryHash string) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		ctx:        ctx,
-		cancel:     cancel,
-		tunnels:    NewTunnelManager(),
-		editors:    defaultEditorRegistry(),
-		binaryHash: binaryHash,
+		ctx:          ctx,
+		cancel:       cancel,
+		tunnels:      NewTunnelManager(),
+		externalApps: defaultExternalAppRegistry(),
+		binaryHash:   binaryHash,
 	}
 	app.startSolo = app.defaultStartSolo
 	app.startup()
@@ -128,9 +128,9 @@ func (a *App) Shutdown() error {
 
 // drainOperations waits (bounded by timeout) for admitted operations to finish so
 // their side effects complete before shared lifecycle state is torn down. A
-// straggler that ignores a.ctx (a non-cancellable editor launch or filesystem
-// scan) is abandoned after the timeout; those operations touch only their own
-// subsystem (the editor registry, OS settings), never the connection state
+// straggler that ignores a.ctx (a non-cancellable application launch or
+// filesystem scan) is abandoned after the timeout; those operations touch only
+// their own subsystem (the app registry, OS settings), never the connection state
 // disconnectAndStopSolo destroys, so proceeding is safe.
 func (a *App) drainOperations(timeout time.Duration) {
 	a.ops.drain(timeout,
@@ -967,25 +967,33 @@ func (a *App) ResetTunnels() error {
 	return nil
 }
 
-func (a *App) ListEditors(refresh bool) ([]DetectedEditor, error) {
-	if refresh {
-		done, err := a.beginOperation()
-		if err != nil {
-			return nil, err
-		}
-		defer done()
-		return a.editors.Refresh(), nil
+// ListExternalApps reports the applications the machine can open a directory
+// in, probing the filesystem when the registry has no cached answer yet.
+//
+// It takes an operation token for BOTH paths, not only the refresh. The first
+// uncached List runs the same whole-table scan that Refresh runs -- Stat,
+// LookPath and Glob across /Applications, the JetBrains Toolbox directory and
+// Program Files -- and that scan ignores a.ctx, which is exactly what
+// operationDrainTimeout exists to wait for.
+func (a *App) ListExternalApps(refresh bool) ([]ExternalApp, error) {
+	done, err := a.beginOperation()
+	if err != nil {
+		return nil, err
 	}
-	return a.editors.List(), nil
+	defer done()
+	if refresh {
+		return a.externalApps.Refresh(), nil
+	}
+	return a.externalApps.List(), nil
 }
 
-func (a *App) OpenInEditor(editorID, path string) error {
+func (a *App) OpenInExternalApp(appID, path string) error {
 	done, err := a.beginOperation()
 	if err != nil {
 		return err
 	}
 	defer done()
-	return a.editors.Open(editorID, path)
+	return a.externalApps.Open(appID, path)
 }
 
 // CliPathStatus reports whether the bundled `leapmux` CLI is discoverable on

@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/pathutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // TestWorktreeTabs_FileLinksAreOwnerScoped pins the (worktree_id, tab_type,

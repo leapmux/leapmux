@@ -30,11 +30,12 @@ describe('the section order (NAV_GROUPS)', () => {
     expect(new Set(NAV_GROUPS.map(g => g.id)).size).toBe(NAV_GROUPS.length)
   })
 
-  // Desktop sits between Terminal and Files & Editors. The docs page lists the
-  // categories in navigation order (site/content/docs/using/settings.md), and
-  // nothing derives that page from this list, so a reorder here would leave it
-  // describing a dialog that no longer matches.
-  it('places Desktop between Terminal and Files & Editors', () => {
+  // Desktop sits between Terminal and Files & Applications. The docs page
+  // lists the categories in navigation order
+  // (site/content/docs/using/settings.md), and nothing derives that page from
+  // this list, so a reorder here would leave it describing a dialog that no
+  // longer matches.
+  it('places Desktop between Terminal and Files & Applications', () => {
     const ids = NAV_GROUPS.map(g => g.id)
     expect(ids.slice(ids.indexOf('terminal'), ids.indexOf('files') + 1))
       .toEqual(['terminal', 'desktop', 'files'])

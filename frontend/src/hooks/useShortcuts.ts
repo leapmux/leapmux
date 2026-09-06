@@ -11,13 +11,12 @@ import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { getRuntimeState, platformBridge } from '~/api/platformBridge'
+import { getRuntimeState } from '~/api/platformBridge'
 import { openPreferences } from '~/components/shell/UserMenuState'
 import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { loadDetectedEditors, resolvePreferredEditor } from '~/lib/externalEditors'
+import { launchExternalApp, loadExternalApps, resolvePreferredExternalApp } from '~/lib/externalApps'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
-import { createLogger } from '~/lib/logger'
 import { registerCommand } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
@@ -61,16 +60,16 @@ interface UseShortcutsProps {
    */
   getCurrentTabContext: () => TabContext
   customKeybindings: Accessor<UserKeybindingOverride[]>
-  /** The pinned external editor, read from the REACTIVE preference. */
-  preferredEditorId: Accessor<string | undefined>
+  /** The pinned external application, read from the REACTIVE preference. */
+  preferredExternalAppId: Accessor<string | undefined>
   /**
-   * Persist the preferred external editor through the REACTIVE preference.
-   * The open-in-editor shortcut can fall back to another editor when the
-   * pinned one is gone, and that fallback must reach the editor menu and
-   * the settings row — a raw storage write leaves both showing the old
-   * pin for the life of the page.
+   * Persist the preferred external application through the REACTIVE
+   * preference. The open-in-external-app shortcut can fall back to another
+   * application when the pinned one is gone, and that fallback must reach the
+   * application menu and the settings row — a raw storage write leaves both
+   * showing the old pin for the life of the page.
    */
-  setPreferredEditorId: (id: string | undefined) => void
+  setPreferredExternalAppId: (id: string | undefined) => void
 }
 
 /**
@@ -112,8 +111,6 @@ export function useShortcuts(props: UseShortcutsProps): void {
     getCurrentTabContext,
     customKeybindings,
   } = props
-
-  const log = createLogger('shortcuts')
 
   const cleanups: (() => void)[] = []
 
@@ -178,32 +175,30 @@ export function useShortcuts(props: UseShortcutsProps): void {
     openPreferences()
   }, 'App')
 
-  cmd('app.openInExternalEditor', 'Open in External Editor', async () => {
+  cmd('app.openInExternalApp', 'Open in External App', async () => {
     const dir = getCurrentTabContext().workingDir
     if (!dir)
       return
     // Solo-mode gate: in distributed mode the working dir lives on the worker
-    // machine, not the local filesystem the app would hand to the editor process.
+    // machine, not the local filesystem we would hand to the application.
     const state = await getRuntimeState()
     if (!state.capabilities.localSolo)
       return
     // Persist any fallback pick through the reactive preference, not
-    // straight to storage: the editor menu and the settings row both read
-    // that signal, and a raw storage write leaves them showing the
-    // previous editor for the life of the page.
-    const target = resolvePreferredEditor(
-      await loadDetectedEditors(),
-      props.preferredEditorId(),
-      props.setPreferredEditorId,
+    // straight to storage: the application menu and the settings row both
+    // read that signal, and a raw storage write leaves them showing the
+    // previous application for the life of the page.
+    const target = resolvePreferredExternalApp(
+      await loadExternalApps(),
+      props.preferredExternalAppId(),
+      props.setPreferredExternalAppId,
     )
     if (!target)
       return
-    try {
-      await platformBridge.openInEditor(target.id, dir)
-    }
-    catch (err) {
-      log.warn('open_in_editor failed', { id: target.id, dir, err })
-    }
+    // Through the shared launch, which owns the report of a refusal. This
+    // command cannot hold `useExternalApps`, because it runs outside a
+    // reactive owner, so the library function is what the two paths share.
+    launchExternalApp(target.id, target.displayName, dir)
   }, 'App')
 
   function getVisibleTabs() {

@@ -15,7 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
-	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // Claude Code wire-format envelope types. Top-level `type` field on each

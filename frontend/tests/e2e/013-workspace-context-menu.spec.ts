@@ -2,14 +2,16 @@ import type { Locator } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
-import { workspaceRow } from './helpers/ui'
+import { loginViaToken, openWorkspace, workspaceRow } from './helpers/ui'
+import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
- * The workspace row menu carries an INFO BLOCK and repository-named items now,
- * and Playwright matches an accessible name by SUBSTRING unless told otherwise
- * -- so `{ name: 'Delete' }` also matched the info block (whose name is every
- * row of it joined) and `{ name: 'Archive' }` also matched
- * "New agent in archived-branch...". Every lookup below is `exact`.
+ * The workspace row menu carries an INFO BLOCK and, once the workspace spans
+ * more than one repository, a row named after each repository. Playwright
+ * matches an accessible name by SUBSTRING unless told otherwise -- so
+ * `{ name: 'Delete' }` also matched the info block, whose name is every row of
+ * it joined, and a repository named after a branch matched the branch items.
+ * Every lookup below is `exact`.
  */
 
 /**
@@ -54,6 +56,101 @@ test.describe('Workspace Context Menu', () => {
     await dialog.getByRole('button', { name: 'Confirm?' }).click()
 
     await expect(workspaceItem).not.toBeVisible()
+  })
+
+  /**
+   * The menu asks WHICH REPOSITORY first, and hangs every action on it.
+   *
+   * One repository renders flat, because a submenu holding the only choice is
+   * a click nobody should have to make -- and the two start items then name
+   * the repository themselves, which is why no header sits above them.
+   *
+   * A browser session has no local Worker, so `Reveal in file manager` and the
+   * `Open in ...` rows are hidden by design. The two clipboard items are what
+   * a browser really shows.
+   */
+  test('one repository renders its start items and its repository block flat', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'ws-menu-repo')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'WS Menu Repo',
+      repoDir,
+      'ws-menu-branch',
+    )
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    const row = workspaceRow(page, workspaceId)
+    await row.hover()
+    await row.locator('[data-testid="workspace-row-menu-trigger"]').click()
+
+    const menu = page.locator('menu[popover]:visible')
+    // Flat: no `Repositories` header, and no submenu to walk into.
+    await expect(menu.getByText('Repositories', { exact: true })).toHaveCount(0)
+
+    // The start items name the repository, which is today's label unchanged.
+    await expect(menu.getByRole('menuitem', { name: /^New agent in .+\.\.\.$/ })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: /^New terminal in .+\.\.\.$/ })).toBeVisible()
+    // ...so the no-target pair, which means "follow the current tab context",
+    // must not also appear. A workspace that HAS a repository never falls back
+    // to it: that would start an agent on a machine the user never picked.
+    await expect(menu.getByRole('menuitem', { name: 'New agent...', exact: true })).toHaveCount(0)
+    await expect(menu.getByRole('menuitem', { name: 'New terminal...', exact: true })).toHaveCount(0)
+
+    // The shared repository block, the same one the branch and repository rows
+    // render.
+    await expect(menu.getByText('Repository', { exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Copy repository path', exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Reveal in file manager', exact: true })).toHaveCount(0)
+
+    // Everything below the repository block is untouched by the restructure.
+    await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Archive', exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Delete', exact: true })).toBeVisible()
+  })
+
+  /**
+   * A workspace with no checkout at all is the row that most needs a way in,
+   * so the two items still open with no target -- meaning "follow the current
+   * tab context" -- and no repository block is rendered above them.
+   *
+   * A workspace of its OWN, not the shared fixture's: that one holds an agent
+   * in a repository, so its menu names the repository instead. Only a
+   * workspace with no tab has no checkout.
+   */
+  test('a workspace with no repository keeps the no-target start items', async ({
+    page,
+    authenticatedWorkspace,
+    leapmuxServer,
+  }) => {
+    const emptyId = await createWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, 'No Repo WS')
+    try {
+      // Both rows are on screen, and the menu below belongs to the empty one.
+      // The fixture's workspace holds a repository, so its own menu names it --
+      // which is what made this row necessary.
+      await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
+      const row = workspaceRow(page, emptyId)
+      await expect(row).toBeVisible()
+      await row.hover()
+      await row.locator('[data-testid="workspace-row-menu-trigger"]').click()
+
+      const menu = page.locator('menu[popover]:visible')
+      await expect(menu.getByRole('menuitem', { name: 'New agent...', exact: true })).toBeVisible()
+      await expect(menu.getByRole('menuitem', { name: 'New terminal...', exact: true })).toBeVisible()
+      await expect(menu.getByText('Repository', { exact: true })).toHaveCount(0)
+      await expect(menu.getByText('Repositories', { exact: true })).toHaveCount(0)
+    }
+    finally {
+      await deleteWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, emptyId).catch(() => {})
+    }
   })
 
   /**

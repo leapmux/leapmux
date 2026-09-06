@@ -69,6 +69,25 @@ test.describe('Branch context menu', () => {
     await expect(page.getByRole('menuitem', { name: 'New agent...' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'New terminal...' })).toBeVisible()
     await expect(menu.getByRole('menuitem', { name: /\/bin\// }).first()).toBeVisible()
+
+    // The Repository section, LAST -- after Terminals, so nothing that existed
+    // before it moved. A browser session has no local Worker, so `Reveal in
+    // file manager` and the `Open in ...` rows are hidden by design and the
+    // two clipboard items are what a browser really shows.
+    await expect(menu.getByText('Repository', { exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Copy repository path', exact: true })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Reveal in file manager', exact: true })).toHaveCount(0)
+
+    // Terminals comes BEFORE Repository. Read off the rendered order rather
+    // than asserted per item, because "one section at the end" is the whole
+    // claim this change makes about the menu it extends.
+    //
+    // `allTextContents`, never `allInnerTexts`: a section header carries
+    // `text-transform: uppercase`, and `innerText` reports the TRANSFORMED
+    // text, so every name here would arrive as "AGENTS" and match nothing.
+    const headers = await menu.locator('li').allTextContents()
+    expect(headers.filter(h => ['Agents', 'Terminals', 'Repository'].includes(h.trim())))
+      .toEqual(['Agents', 'Terminals', 'Repository'])
   })
 
   // Every item of this menu either changes branch state or opens a tab, and an
@@ -112,8 +131,8 @@ test.describe('Branch context menu', () => {
     const wsRow = workspaceRow(page, workspaceId)
     await wsRow.hover()
     await wsRow.locator('button').first().click()
-    // `exact`: this is the WORKSPACE row's menu, which now also offers
-    // "New agent in archived-branch..." -- and Playwright matches an
+    // `exact`: this is the WORKSPACE row's menu, whose info block and
+    // repository rows carry names of their own -- and Playwright matches an
     // accessible name by substring unless told otherwise.
     await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
     await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()

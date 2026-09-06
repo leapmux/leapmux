@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/pathutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // This file holds the provider-NEUTRAL half of session-store discovery: the

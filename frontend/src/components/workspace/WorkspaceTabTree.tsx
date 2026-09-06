@@ -1,5 +1,6 @@
 import type { Accessor, Component } from 'solid-js'
 import type { BranchRefActions } from './branchActions'
+import type { RepoCheckout } from './repoCheckouts'
 import type { PathFlavor } from '~/lib/paths'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { RepoGitStore } from '~/stores/repoGit'
@@ -33,7 +34,7 @@ import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
-import { bindBranchActions, WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
+import { bindBranchActions, WORKER_OFFLINE_BRANCH_REASON, WORKER_OFFLINE_NEW_TAB_REASON } from './branchActions'
 import { BranchContextMenu } from './BranchContextMenu'
 import {
   branchKey,
@@ -42,9 +43,12 @@ import {
   isLocalRepoKey,
   repoKeyAndLabel,
   repoKeyTooltip,
+  repoOriginUrlFromKey,
   tabBranchKey,
   tabGitToplevelForKey,
 } from './branchKeys'
+import { listRepoCheckouts } from './repoCheckouts'
+import { RepoContextMenu } from './RepoContextMenu'
 import * as css from './workspaceTabTree.css'
 
 /**
@@ -428,6 +432,13 @@ interface RowSelectionContextValue {
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
   /**
+   * Set many rows at once, in ONE signal write. "Collapse all branches" would
+   * otherwise re-render the tree once per branch of the repository.
+   */
+  setCollapsedMany: (keys: readonly string[], collapsed: boolean) => void
+  /** Whether a Worker is THIS machine. See `~/lib/workerLocality`. */
+  isLocalWorker: (workerId: string) => boolean
+  /**
    * The tab a key identifies RIGHT NOW, straight off `props.tabs` -- never off the
    * cached tree. Reactive: reading it inside a row subscribes that row to its
    * own tab, so a metadata-only change (a rename, a hydrated title/provider, a
@@ -694,6 +705,11 @@ const BranchGroupRow: Component<{
                 contextMenuFor={rowEl}
                 isWorktree={props.branch().isWorktree}
                 workerId={props.branch().workerId}
+                repository={() => ({
+                  gitToplevel: props.branch().gitToplevel,
+                  originUrl: repoOriginUrlFromKey(props.repoKey),
+                  isLocal: sel.isLocalWorker(props.branch().workerId),
+                })}
                 disabledReason={menuDisabledReason()}
                 actions={bindBranchActions(
                   branchActions(),
@@ -727,11 +743,32 @@ const RepoGroupRow: Component<{
   repoKey: string
 }> = (props) => {
   const sel = useRowSelection()
+  const actions = useBranchActions()
   const groupStats = createMemo(() => diffStatsFromRepo(props.group()))
   const branchKeys = createStableKeys(() => props.group().branches, branchGroupKey)
+  // The row element, for its right-click / long-press menu.
+  const [rowEl, setRowEl] = createContextMenuAnchor()
+
+  // Built only while the menu is open: one of these mounts per repository row
+  // of every workspace, and the projection walks every branch under it.
+  const [menuOpen, setMenuOpen] = createSignal(false)
+  const checkouts = createMemo((): RepoCheckout[] => {
+    if (!menuOpen())
+      return []
+    return listRepoCheckouts(
+      props.group().branches,
+      repoOriginUrlFromKey(props.repoKey),
+      sel.isLocalWorker,
+    )
+  })
+
+  const collapseKeys = () =>
+    props.group().branches.map(b => collapseKeyForBranch(props.repoKey, branchGroupKey(b)))
+
   return (
     <>
       <div
+        ref={setRowEl}
         class={shared.node}
         style={{ 'padding-left': '20px' }}
         onClick={() => sel.toggleCollapsed(props.repoKey)}
@@ -747,6 +784,40 @@ const RepoGroupRow: Component<{
           tooltipLabel={repoKeyTooltip(props.repoKey)}
           stats={groupStats()}
         />
+        {/* Hidden for an ARCHIVED workspace, like the branch row's menu: its
+            tab-creation items are mutations, and the read-only remainder is
+            reachable from the workspace row, which keeps its own copy. */}
+        <Show when={!sel.archived()}>
+          <div class={sidebarActions}>
+            <RepoContextMenu
+              contextMenuFor={rowEl}
+              checkouts={checkouts}
+              actionsFor={(checkout) => {
+                const bundle = actions.branchActions
+                if (!bundle || checkout.branch.branchName === null)
+                  return undefined
+                // Lazy, like the branch row's: the ref is built at click time
+                // from the branch this row shows THEN, because a row survives
+                // a tree rebuild that swaps its branch object.
+                return bindBranchActions(
+                  bundle,
+                  () => buildBranchRef(sel.workspaceId(), checkout.branch, sel.liveTab),
+                )
+              }}
+              disabledReasonFor={(checkout) => {
+                const isOnline = actions.isWorkerKnownOnline
+                // The items this disables are New agent and New terminal, so
+                // the sentence must name those, not the branch actions.
+                return !isOnline || isOnline(checkout.workerId)
+                  ? undefined
+                  : WORKER_OFFLINE_NEW_TAB_REASON
+              }}
+              onToggle={setMenuOpen}
+              onCollapseAllBranches={() => sel.setCollapsedMany(collapseKeys(), true)}
+              nothingToCollapse={() => collapseKeys().every(k => sel.isCollapsed(k))}
+            />
+          </div>
+        </Show>
       </div>
 
       <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(props.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
@@ -821,6 +892,18 @@ export interface WorkspaceTabTreeProps {
    * bundle to its own {@link BranchRef}. Omit to render no branch menus.
    */
   branchActions?: BranchRefActions
+  /**
+   * Whether a Worker runs on THIS machine, so the local file manager and the
+   * local applications can open a path it reports. See `~/lib/workerLocality`.
+   *
+   * REQUIRED. It was optional with a `?? false` default, and the default is
+   * exactly the failure: a surface that forgot the hand-off rendered a menu
+   * missing two items, with no type error and no failing test. Every render
+   * site states the answer now, including the tests that do not care -- which
+   * is the point, because the three that DO care are then the only ones that
+   * say anything but `() => false`.
+   */
+  isLocalWorkerFn: (workerId: string) => boolean
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -986,11 +1069,39 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     return collapsed()[key] ?? false
   }
 
-  function toggleCollapsed(key: string) {
+  /**
+   * Change the collapse map and persist it, in ONE signal write.
+   *
+   * The only writer, so the sessionStorage write has one home and a later
+   * change to the persistence cannot reach one path and miss the other. Solid
+   * calls an updater exactly once and synchronously, before it writes the
+   * signal, so persisting from inside it is safe.
+   */
+  function writeCollapsed(mutate: (draft: Record<string, boolean>) => void) {
     setCollapsed((prev) => {
-      const next = { ...prev, [key]: !prev[key] }
+      const next = { ...prev }
+      mutate(next)
       sessionStorageSet(storageKey(), next)
       return next
+    })
+  }
+
+  function toggleCollapsed(key: string) {
+    writeCollapsed((draft) => {
+      draft[key] = !draft[key]
+    })
+  }
+
+  function setCollapsedMany(keys: readonly string[], value: boolean) {
+    // Nothing to write when every key already holds `value`. The menu item that
+    // calls this is disabled in exactly that case, so this guards a caller that
+    // does not exist yet -- but returning `prev` notifies nobody, where a fresh
+    // object re-renders the whole tree and rewrites storage for no change.
+    if (keys.every(key => (collapsed()[key] ?? false) === value))
+      return
+    writeCollapsed((draft) => {
+      for (const key of keys)
+        draft[key] = value
     })
   }
 
@@ -1003,6 +1114,8 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     canClose,
     isCollapsed,
     toggleCollapsed,
+    setCollapsedMany,
+    isLocalWorker: workerId => props.isLocalWorkerFn(workerId),
     liveTab: key => tabByKey().get(key),
   }
   const editing: RowEditingContextValue = {

@@ -510,10 +510,10 @@ globalStyle('ot-dropdown hr', {
 // in `components`, so every unlayered vanilla-extract class outranked it no
 // matter what the selectors were. Restating the rule unlayered would have
 // silently changed that: a bare `[role="menuitem"]` is (0,1,0), the same
-// specificity as a VE class, so `dangerMenuItem` and the two `menuItemSelected`
-// classes would have been decided by stylesheet link order alone -- and a
-// chunking change would have flipped "Delete…" back to the default colour and
-// erased the selected-row highlight, with nothing to catch it.
+// specificity as a VE class, so `dangerMenuItem` and `AgentProviderSelector`'s
+// `menuItemSelected` would have been decided by stylesheet link order alone --
+// and a chunking change would have flipped "Delete…" back to the default colour
+// and erased the selected-row highlight, with nothing to catch it.
 // `declareAppLayers` states the whole order, Oat's five layers ahead of the
 // app's own, so this layer appends past `utilities` whichever stylesheet the
 // bundler emits first: it still beats Oat's `base` button fill, and still loses
@@ -552,7 +552,7 @@ globalStyle('[role^="menuitem"]', {
 // items -- BranchContextMenu's change and delete entries (the delete one is
 // named after what it destroys, so its label reads "Delete worktree…" on a
 // worktree row and "Delete branch…" on a main-repo row),
-// FileActionsMenu's download entries while busy, OpenInEditorButton's Refresh
+// FileActionsMenu's download entries while busy, OpenInAppButton's Refresh
 // -- and Oat's `:disabled` rule sets only `cursor`/`opacity`, never
 // `pointer-events: none`, so without the guard hovering one paints the accent
 // that says "this will activate" on a control that will not.

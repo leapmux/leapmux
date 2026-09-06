@@ -7,15 +7,32 @@ import { repoGitView } from '~/stores/repoGit'
 import { tabBranchKey, tabGitToplevelForKey } from './branchKeys'
 
 /**
- * Why the branch actions are unusable when the Worker is unreachable.
+ * Why an action is unusable when the Worker that holds the repository is
+ * unreachable.
  *
- * Both surfaces that offer Change/Delete branch -- the sidebar's per-branch row
- * and the composer's branch chip -- show this same sentence, because both
- * actions run on the machine the repository is on. One constant so the two
- * cannot tell the user two different reasons.
+ * ONE template, because every surface that disables something for this reason
+ * disables it for the same reason. Four do: the sidebar's per-branch row, the
+ * composer's branch chip, the repository row's tab-creation items and the
+ * workspace row's. `what` names the action, so each sentence says what the user
+ * cannot do without any of them disagreeing about why.
+ *
+ * `what` is a VERB phrase ("Changing a branch"), not its noun form ("Branch
+ * actions"), so one grammatical form fits every reason and the sentence names
+ * the thing the user tried to do.
+ *
+ * "Worker" is the term, here and everywhere. A second copy of this sentence
+ * called the same thing "this machine", and one concept with two names is a
+ * concept the reader has to unify.
  */
-export const WORKER_OFFLINE_BRANCH_REASON
-  = 'This Worker is offline. Branch actions need the machine the repository is on.'
+export function workerOfflineReason(what: string): string {
+  return `This Worker is offline. ${what} needs the machine the repository is on.`
+}
+
+/** Why Change branch and Delete branch are unusable. */
+export const WORKER_OFFLINE_BRANCH_REASON = workerOfflineReason('Changing a branch')
+
+/** Why New agent and New terminal are unusable. */
+export const WORKER_OFFLINE_NEW_TAB_REASON = workerOfflineReason('Opening a tab')
 
 /**
  * Everything a branch context menu can do, already bound to ONE branch.

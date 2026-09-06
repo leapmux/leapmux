@@ -112,6 +112,17 @@ export function isLocalRepoKey(key: string): boolean {
 }
 
 /**
+ * The origin URL a repo key encodes, or "" for an origin-less local repo.
+ *
+ * The exact inverse of the first branch of {@link repoKeyAndLabel}, which is
+ * why it lives beside it: a caller that peeled the prefix off by hand would
+ * hand a `\x00local:`-prefixed path to anything expecting a URL.
+ */
+export function repoOriginUrlFromKey(key: string): string {
+  return isLocalRepoKey(key) ? '' : key
+}
+
+/**
  * Returns the human-readable identifier behind a repo key — the toplevel
  * path for local repos, the origin URL itself otherwise. Used as the
  * tooltip on the repo group header.

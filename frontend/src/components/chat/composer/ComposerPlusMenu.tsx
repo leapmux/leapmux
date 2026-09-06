@@ -11,6 +11,7 @@ import { createMemo, createSignal, For, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { permissionPresetAvailable } from '~/components/chat/providerSettings'
 import { hasOptions, resolvedCurrent } from '~/components/chat/settingsGroups'
+import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
@@ -316,17 +317,14 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       class={styles.plusPopover}
       data-testid="composer-plus-popover"
     >
-      <Tooltip text={attachDisabledReason()}>
-        <button
-          role="menuitem"
-          data-testid="composer-attach-file"
-          disabled={!props.canAttach || !!props.disabledReason}
-          onClick={() => props.onAttachFile()}
-        >
-          <Icon icon={Paperclip} size="xs" />
-          Attach file…
-        </button>
-      </Tooltip>
+      <DisabledReasonMenuItem
+        reason={attachDisabledReason()}
+        data-testid="composer-attach-file"
+        onClick={() => props.onAttachFile()}
+      >
+        <Icon icon={Paperclip} size="xs" />
+        Attach file…
+      </DisabledReasonMenuItem>
 
       <Show when={hasMiddleSection()}><hr /></Show>
 

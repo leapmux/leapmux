@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // The worker's git serialization locks, kept beside the git code they guard

@@ -190,7 +190,15 @@ export interface TunnelInfo {
   targetPort: number
 }
 
-export interface DetectedEditor {
+/**
+ * One application the desktop machine can open a directory in.
+ *
+ * The id and the name are all the sidecar sends. What the application IS is a
+ * compile-time fact of `contracts/external-apps.json`, which the browser reads
+ * from its own generated table -- ask it through `~/lib/externalApps`'s
+ * `isFileManager`, never by comparing an id here.
+ */
+export interface ExternalApp {
   id: string
   displayName: string
 }
@@ -996,13 +1004,13 @@ export const platformBridge = {
   async listTunnels(): Promise<TunnelInfo[]> {
     return (await tauriInvoke<TunnelInfo[]>('list_tunnels')) ?? []
   },
-  async listEditors(refresh = false): Promise<DetectedEditor[]> {
+  async listExternalApps(refresh = false): Promise<ExternalApp[]> {
     if (!isTauriApp())
       return []
-    return (await tauriInvoke<DetectedEditor[]>('list_editors', { refresh })) ?? []
+    return (await tauriInvoke<ExternalApp[]>('list_external_apps', { refresh })) ?? []
   },
-  async openInEditor(editorId: string, path: string): Promise<void> {
-    await tauriInvoke('open_in_editor', { editorId, path })
+  async openInExternalApp(appId: string, path: string): Promise<void> {
+    await tauriInvoke('open_in_external_app', { appId, path })
   },
   async onEvent(event: string, callback: (...args: unknown[]) => void): Promise<() => void> {
     if (!isTauriApp())

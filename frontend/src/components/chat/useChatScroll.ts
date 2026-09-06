@@ -13,6 +13,7 @@ import { createFlingSettle, FLING_SETTLE_MS } from './chatScrollFlingSettle'
 import { cannotLeaveStickyBand, clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, STICKY_BOTTOM_THRESHOLD_PX, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
+import { registerProgrammaticScrollWriter } from './chatScrollPreserve'
 import { createProgrammaticScrollGuard } from './chatScrollProgrammaticGuard'
 import { createStaleNativeScrollTranslator } from './chatScrollStaleNative'
 import { createStickyBottom } from './chatScrollSticky'
@@ -1999,6 +2000,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     stalledNewer,
     attachListRef: (el) => {
       messageListRef = el
+      // So a repair that lives OUTSIDE this hook can write a position through
+      // it -- see `chatScrollPreserve`. A bare `scrollTop =` from outside is
+      // read back as a user gesture, because nothing recorded the landing
+      // pixel for `isProgrammaticEcho` to match.
+      registerProgrammaticScrollWriter(el, writeScrollTopProgrammatically)
       // The stall memos read messageListRef (a plain ref they can't track) and were
       // eagerly computed at hook-construction time while it was still undefined. Bump
       // the geometry tick so they re-evaluate now that the element exists (and again if
