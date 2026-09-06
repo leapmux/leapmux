@@ -708,7 +708,6 @@ func externalAppsToProto(apps []ExternalApp) []*desktoppb.ExternalApp {
 		out[i] = &desktoppb.ExternalApp{
 			Id:          apps[i].ID,
 			DisplayName: apps[i].DisplayName,
-			Kind:        apps[i].Kind,
 		}
 	}
 	return out

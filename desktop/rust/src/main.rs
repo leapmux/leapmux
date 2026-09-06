@@ -1226,15 +1226,14 @@ fn proto_to_tunnel_info(info: &proto::TunnelInfo) -> TunnelInfoResponse {
 
 /// One application the sidecar detected, as the webview reads it.
 ///
-/// `kind` rides through as the raw enum number the sidecar sent. The webview
-/// compares it against the generated proto enum, so the app menu can group
-/// editors apart from the file manager without any side testing an id literal.
+/// The id and the name are all that cross: what the application IS comes from
+/// contracts/external-apps.json, which the webview reads through its own
+/// generated table rather than over the wire.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExternalAppPayload {
     id: String,
     display_name: String,
-    kind: i32,
 }
 
 #[tauri::command]
@@ -1258,7 +1257,6 @@ async fn list_external_apps(
             .map(|a| ExternalAppPayload {
                 id: a.id,
                 display_name: a.display_name,
-                kind: a.kind,
             })
             .collect()),
         _ => Err("unexpected response for list_external_apps".to_string()),

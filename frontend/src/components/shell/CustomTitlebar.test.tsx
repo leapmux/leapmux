@@ -1,10 +1,10 @@
-import type { WindowMode } from '~/api/platformBridge'
+import type { ExternalApp, WindowMode } from '~/api/platformBridge'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { openWebInspector, quitApp, windowClose, windowExitFullscreen, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
-import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { localStorageClearForTests } from '~/lib/browserStorage'
 
+import { editorApp } from '~/test-support/externalAppFixtures'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { CustomTitlebar } from './CustomTitlebar'
@@ -15,7 +15,7 @@ const { initialMode, setShowAboutDialog, runtimeLocalSolo, detectedApps } = vi.h
   initialMode: { value: 'normal' as WindowMode },
   setShowAboutDialog: vi.fn(),
   runtimeLocalSolo: { value: false },
-  detectedApps: { value: [] as Array<{ id: string, displayName: string, kind: ExternalAppKind }> },
+  detectedApps: { value: [] as ExternalApp[] },
 }))
 
 vi.mock('~/lib/shortcuts/platform', () => ({
@@ -284,7 +284,7 @@ describe('customTitlebar open-in-app slot', () => {
 
   it('hides the open-in-app button when not in solo mode (e.g. web)', async () => {
     runtimeLocalSolo.value = false
-    detectedApps.value = [{ id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR }]
+    detectedApps.value = [editorApp('vscode', 'Visual Studio Code')]
     const { container } = renderTitlebar(() => '/home/u/proj')
     await new Promise(r => setTimeout(r, 0))
     expect(container.querySelector('[data-testid="open-in-app"]')).toBeNull()
@@ -292,7 +292,7 @@ describe('customTitlebar open-in-app slot', () => {
 
   it('shows the open-in-app button before the left-sidebar toggle in solo mode', async () => {
     runtimeLocalSolo.value = true
-    detectedApps.value = [{ id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR }]
+    detectedApps.value = [editorApp('vscode', 'Visual Studio Code')]
     const { container } = renderTitlebar(() => '/home/u/proj')
     const button = await screen.findByTestId('open-in-app')
     const sidebarToggle = container.querySelector('button[aria-label^="Toggle left sidebar"]')

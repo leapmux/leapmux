@@ -21,7 +21,7 @@ import (
 
 // operationDrainTimeout bounds Shutdown's wait for admitted operations after
 // a.ctx is cancelled. Network/lifecycle operations honor a.ctx and unwind
-// promptly; the filesystem/exec operations (OpenInExternalApp, ListExternalApps refresh,
+// promptly; the filesystem/exec operations (OpenInExternalApp, ListExternalApps,
 // OpenFullDiskAccessSettings, CliInstallSymlink) ignore it, so an unbounded
 // wait would let one stuck launch hang shutdown -- and the process -- forever.
 // Mirrors the bounded RPCSession.drainHandlers and drainRelay drains. A
@@ -967,13 +967,21 @@ func (a *App) ResetTunnels() error {
 	return nil
 }
 
+// ListExternalApps reports the applications the machine can open a directory
+// in, probing the filesystem when the registry has no cached answer yet.
+//
+// It takes an operation token for BOTH paths, not only the refresh. The first
+// uncached List runs the same whole-table scan that Refresh runs -- Stat,
+// LookPath and Glob across /Applications, the JetBrains Toolbox directory and
+// Program Files -- and that scan ignores a.ctx, which is exactly what
+// operationDrainTimeout exists to wait for.
 func (a *App) ListExternalApps(refresh bool) ([]ExternalApp, error) {
+	done, err := a.beginOperation()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	if refresh {
-		done, err := a.beginOperation()
-		if err != nil {
-			return nil, err
-		}
-		defer done()
 		return a.externalApps.Refresh(), nil
 	}
 	return a.externalApps.List(), nil

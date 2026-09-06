@@ -1415,12 +1415,6 @@ describe('enumValues', () => {
 // The id vocabulary was hand-written twice before this contract -- the three
 // Go spec tables and the browser's icon table -- paired only by a comment.
 describe('checkExternalApps', () => {
-  const KINDS = [
-    'EXTERNAL_APP_KIND_UNSPECIFIED',
-    'EXTERNAL_APP_KIND_EDITOR',
-    'EXTERNAL_APP_KIND_FILE_MANAGER',
-  ]
-
   function contract(overrides = {}) {
     return {
       _readme: 'x',
@@ -1437,36 +1431,25 @@ describe('checkExternalApps', () => {
   }
 
   it('accepts a contract that covers every kind and every OS', () => {
-    expect(() => checkExternalApps(contract(), KINDS)).not.toThrow()
-  })
-
-  it('rejects a proto kind with no contract entry', () => {
-    expect(() => checkExternalApps(contract(), [...KINDS, 'EXTERNAL_APP_KIND_NOTEBOOK']))
-      .toThrow(/EXTERNAL_APP_KIND_NOTEBOOK has no kinds entry/)
-  })
-
-  it('rejects a kinds entry the proto no longer carries', () => {
-    const c = contract()
-    c.kinds.EXTERNAL_APP_KIND_GONE = 'removed'
-    expect(() => checkExternalApps(c, KINDS)).toThrow(/matches no ExternalAppKind enum value/)
+    expect(() => checkExternalApps(contract())).not.toThrow()
   })
 
   it('rejects the unset value as a kinds entry', () => {
     const c = contract()
     c.kinds.EXTERNAL_APP_KIND_UNSPECIFIED = 'nothing'
-    expect(() => checkExternalApps(c, KINDS)).toThrow(/is the unset value/)
+    expect(() => checkExternalApps(c)).toThrow(/is the unset value/)
   })
 
   it('rejects an app whose kind is not a kinds entry', () => {
     const c = contract()
     c.apps.vscode.kind = 'EXTERNAL_APP_KIND_MYSTERY'
-    expect(() => checkExternalApps(c, KINDS)).toThrow(/carries kind EXTERNAL_APP_KIND_MYSTERY/)
+    expect(() => checkExternalApps(c)).toThrow(/carries kind EXTERNAL_APP_KIND_MYSTERY/)
   })
 
   it('rejects a kind no app carries, because the menu can never show it', () => {
     const c = contract()
     delete c.apps['file-manager']
-    expect(() => checkExternalApps(c, KINDS)).toThrow(/is carried by no app/)
+    expect(() => checkExternalApps(c)).toThrow(/is carried by no app/)
   })
 
   // The app menu renders the file manager as its own always-present group, so
@@ -1474,13 +1457,25 @@ describe('checkExternalApps', () => {
   it('rejects an OS with no file manager', () => {
     const c = contract()
     c.apps['file-manager'].oses = ['darwin', 'windows']
-    expect(() => checkExternalApps(c, KINDS)).toThrow(/linux must carry exactly one/)
+    expect(() => checkExternalApps(c)).toThrow(/linux must carry exactly one/)
   })
 
   it('rejects an OS with two file managers', () => {
     const c = contract()
     c.apps.finder = { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin'] }
-    expect(() => checkExternalApps(c, KINDS)).toThrow(/darwin must carry exactly one/)
+    expect(() => checkExternalApps(c)).toThrow(/darwin must carry exactly one/)
+  })
+
+  // The schema's `oses` enum and the generator's EXTERNAL_APP_OSES are two
+  // copies of one vocabulary. Widening the schema alone used to pass silently:
+  // both emitters iterate the generator's list, so the new platform got no
+  // table, an app exclusive to it vanished from the sidecar's own spec-table
+  // comparison, and the file-manager check never looked at it -- that platform
+  // could then ship none or two.
+  it('rejects an os token no emitter writes a table for', () => {
+    const c = contract()
+    c.apps.vscode.oses = ['darwin', 'linux', 'windows', 'freebsd']
+    expect(() => checkExternalApps(c)).toThrow(/app vscode lists os freebsd/)
   })
 })
 
@@ -1498,10 +1493,21 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
     },
   }
 
-  it('maps every id to its proto enum value', () => {
-    const go = emitGoExternalApps(c)
-    expect(go).toContain('"vscode":       desktopv1.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR,')
-    expect(go).toContain('"file-manager": desktopv1.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER,')
+  // The kind is read by the browser alone, so it is emitted for TypeScript
+  // only. Go used to carry a table of it purely to stamp each app it reported.
+  it('maps every id to its kind, for TypeScript only', () => {
+    const ts = emitTsExternalApps(c)
+    expect(ts).toContain('"vscode": "EXTERNAL_APP_KIND_EDITOR",')
+    expect(ts).toContain('"file-manager": "EXTERNAL_APP_KIND_FILE_MANAGER",')
+    expect(emitGoExternalApps(c)).not.toContain('ExternalAppKind')
+  })
+
+  // A union of the declared kinds, so a comparison against a kind the contract
+  // never declares is a type error rather than a silently false test.
+  it('types the kind as a union of the declared kinds', () => {
+    expect(emitTsExternalApps(c)).toContain(
+      'export type ExternalAppKind = "EXTERNAL_APP_KIND_EDITOR" | "EXTERNAL_APP_KIND_FILE_MANAGER"',
+    )
   })
 
   it('lists each OS only the ids that OS carries', () => {

@@ -125,6 +125,6 @@ func jbSpec(id, displayName, cli, snapName string) ExternalAppSpec {
 //
 // The exit code is meaningful: xdg-open reports "no method available" and a
 // missing file with distinct nonzero codes.
-func fileManagerCommand(dir string) (*exec.Cmd, bool) {
-	return exec.Command("xdg-open", dir), true
+func fileManagerCommand(dir string) launchPlan {
+	return launchPlan{exec.Command("xdg-open", dir), true}
 }

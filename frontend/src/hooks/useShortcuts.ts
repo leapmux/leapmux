@@ -11,12 +11,11 @@ import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
-import { getRuntimeState, platformBridge } from '~/api/platformBridge'
-import { showWarnToast } from '~/components/common/Toast'
+import { getRuntimeState } from '~/api/platformBridge'
 import { openPreferences } from '~/components/shell/UserMenuState'
 import { TAB_TYPE_WIRE_TOKEN } from '~/generated/contracts/tab-types'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { loadExternalApps, resolvePreferredExternalApp } from '~/lib/externalApps'
+import { launchExternalApp, loadExternalApps, resolvePreferredExternalApp } from '~/lib/externalApps'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
 import { registerCommand } from '~/lib/shortcuts/commands'
 import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/shortcuts/context'
@@ -196,15 +195,10 @@ export function useShortcuts(props: UseShortcutsProps): void {
     )
     if (!target)
       return
-    try {
-      await platformBridge.openInExternalApp(target.id, dir)
-    }
-    catch (err) {
-      // Surfaced, not only logged: a failed launch is indistinguishable from
-      // the application opening behind this window, so silence left the user
-      // with no way to tell the two apart.
-      showWarnToast(`Could not open ${target.displayName}`, err)
-    }
+    // Through the shared launch, which owns the report of a refusal. This
+    // command cannot hold `useExternalApps`, because it runs outside a
+    // reactive owner, so the library function is what the two paths share.
+    launchExternalApp(target.id, target.displayName, dir)
   }, 'App')
 
   function getVisibleTabs() {

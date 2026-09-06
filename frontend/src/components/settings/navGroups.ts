@@ -34,7 +34,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   // `occupiedNavGroups` drops the whole section in a browser -- the group
   // needs no visibility rule of its own.
   { id: 'desktop', title: 'Desktop', category: 'desktop', admin: false },
-  { id: 'files', title: 'Files & Editors', category: 'files', admin: false },
+  { id: 'files', title: 'Files & Applications', category: 'files', admin: false },
   { id: 'shortcuts', title: 'Keyboard Shortcuts', category: 'shortcuts', admin: false },
   { id: 'advanced', title: 'Advanced', category: 'advanced', admin: false },
   { id: 'admin-general', title: 'General', category: 'general', admin: true },

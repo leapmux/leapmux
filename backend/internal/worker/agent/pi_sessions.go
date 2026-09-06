@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // Pi writes one JSONL transcript per session, in a directory whose name derives

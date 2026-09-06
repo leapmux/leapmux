@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,6 +81,24 @@ func (f *fakeProber) Glob(pattern string) ([]string, error) {
 func (f *fakeProber) Home() string        { return f.home }
 func (f *fakeProber) Env(n string) string { return f.env[n] }
 
+// everythingProber answers yes to every probe, so a spec table row always
+// detects. It exists for the launch-side table test, which asks what a
+// candidate turns into rather than whether it is found.
+type everythingProber struct{}
+
+func (everythingProber) Stat(p string) (os.FileInfo, error) {
+	return fakeFileInfo{name: filepath.Base(p)}, nil
+}
+func (everythingProber) LookPath(n string) (string, error) { return "/usr/bin/" + n, nil }
+func (everythingProber) Glob(pattern string) ([]string, error) {
+	return []string{filepath.ToSlash(pattern)}, nil
+}
+func (everythingProber) Home() string { return "/home/alice" }
+
+// Every variable resolves, so a "%VAR%"-shaped Windows candidate expands
+// instead of being dropped as unresolved.
+func (everythingProber) Env(string) string { return "/env" }
+
 type fakeFileInfo struct {
 	name string
 	mode os.FileMode
@@ -101,14 +118,24 @@ type recordingLauncher struct {
 }
 
 type launchCall struct {
-	kind execKind
-	path string
-	dir  string
+	describe string
+	argv     []string
+	dir      string
 }
 
 func (r *recordingLauncher) Launch(d *detectedExec, dir string) error {
-	r.calls = append(r.calls, launchCall{kind: d.kind, path: d.path, dir: dir})
+	r.calls = append(r.calls, launchCall{describe: d.describe, argv: argvOf(d, dir), dir: dir})
 	return r.err
+}
+
+// argvOf is what a descriptor would actually run for `dir`.
+//
+// The argv IS the whole of what this package decides, so it is what the launch
+// tests assert. On macOS the difference between `open -a <bundle> <dir>` and
+// running the bundle's own command is the difference between raising the
+// editor's window and leaving it behind this one.
+func argvOf(d *detectedExec, dir string) []string {
+	return d.command(dir).cmd.Args
 }
 
 // --- Detection: composability ---
@@ -121,7 +148,7 @@ func TestTryAll_FirstCandidateWins(t *testing.T) {
 
 	got := tryAll(tryLookPath("first"), tryLookPath("second"))(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/usr/bin/first", got.path)
+	assert.Equal(t, "/usr/bin/first", got.describe)
 }
 
 func TestTryAll_FallsThroughMissing(t *testing.T) {
@@ -131,7 +158,7 @@ func TestTryAll_FallsThroughMissing(t *testing.T) {
 
 	got := tryAll(tryLookPath("first"), tryLookPath("second"))(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/usr/bin/second", got.path)
+	assert.Equal(t, "/usr/bin/second", got.describe)
 }
 
 func TestTryAll_NoMatchReturnsNil(t *testing.T) {
@@ -164,6 +191,84 @@ func TestTryPath_UnresolvedEnvReturnsNil(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+// %PROGRAMFILES(X86)% is a real Windows variable, and the parentheses put it
+// outside the identifier syntax that "$VAR" allows. An identifier-shaped
+// pattern matched neither the substitution nor the "still unresolved" guard, so
+// the path survived unexpanded and every x86 candidate silently probed a
+// literal "%PROGRAMFILES(X86)%\..." that cannot exist.
+func TestTryPath_ExpandsAWindowsVariableWithParentheses(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setEnv("PROGRAMFILES(X86)", `C:\Program Files (x86)`)
+	p.addPath(`C:\Program Files (x86)\Notepad++\notepad++.exe`)
+
+	got := tryPath(`%PROGRAMFILES(X86)%\Notepad++\notepad++.exe`)(p)
+	require.NotNil(t, got)
+	assert.Equal(t, `C:\Program Files (x86)\Notepad++\notepad++.exe`, got.describe)
+}
+
+// os.Expand substitutes the empty string for an unset variable, so "$OPT/x"
+// would become "/x" and probe an absolute path nobody asked for. Every syntax
+// must fail the same way.
+func TestTryPath_UnresolvedPosixVarReturnsNil(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.addPath("/JetBrains/Toolbox/scripts/idea")
+
+	assert.Nil(t, tryPath("$OPT/JetBrains/Toolbox/scripts/idea")(p))
+}
+
+// The tilde guard belongs to expandPath, so tryPath and tryGlob inherit it.
+// A sidecar started by launchd, by systemd, or inside a container has no HOME,
+// and a relative candidate would probe -- and then LAUNCH -- whatever the
+// working directory happens to hold.
+func TestTryPath_HomelessTildeReturnsNil(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("")
+	p.addPath(".local/share/JetBrains/Toolbox/scripts/idea")
+
+	assert.Nil(t, tryPath("~/.local/share/JetBrains/Toolbox/scripts/idea")(p))
+}
+
+// `~user` names a home directory this package cannot resolve: it knows one
+// home, and it is not that user's. Left alone it stays a RELATIVE path, which
+// is the same hazard the empty-home cases reject.
+func TestTryPath_OtherUsersHomeReturnsNil(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("/home/alice")
+	p.addPath("~bob/bin/idea")
+
+	assert.Nil(t, tryPath("~bob/bin/idea")(p))
+}
+
+// `~\` is a Windows spelling, and on POSIX a backslash is an ordinary
+// character in a filename -- so `~\x` is one legitimate component there, and
+// rewriting it would invent a directory nobody wrote. pathutil.ExpandHome
+// draws that line; expandPath then rejects what it leaves alone, because a
+// surviving "~" is a relative path.
+func TestTryPath_WindowsTildeIsNotExpandedOnPosix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("`~\\` is a legitimate home prefix on Windows")
+	}
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("/home/alice")
+	p.addPath(`~\bin\idea`)
+
+	assert.Nil(t, tryPath(`~\bin\idea`)(p))
+}
+
+func TestTryGlob_HomelessTildeReturnsNil(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	p.setHome("")
+	p.addPath("Applications/JetBrains/IntelliJ-2024.2/bin/idea")
+
+	assert.Nil(t, tryGlob("~/Applications/JetBrains/IntelliJ-*/bin/idea")(p))
+}
+
 func TestTryGlob_PicksLastMatchAsHighestVersion(t *testing.T) {
 	t.Parallel()
 	// Use POSIX-style paths so filepath.Match's per-OS separator semantics
@@ -175,7 +280,7 @@ func TestTryGlob_PicksLastMatchAsHighestVersion(t *testing.T) {
 
 	got := tryGlob("$OPT/JetBrains/IntelliJ-IDEA-Ultimate-*/bin/idea")(p)
 	require.NotNil(t, got)
-	assert.Contains(t, got.path, "2024.2")
+	assert.Contains(t, got.describe, "2024.2")
 }
 
 func TestTryMacOSApp_ProbesBothApplicationsRoots(t *testing.T) {
@@ -187,8 +292,9 @@ func TestTryMacOSApp_ProbesBothApplicationsRoots(t *testing.T) {
 
 	got := tryMacOSApp("Visual Studio Code")(p)
 	require.NotNil(t, got)
-	assert.Equal(t, execKindMacOSApp, got.kind)
-	assert.Equal(t, "/Users/alice/Applications/Visual Studio Code.app", filepath.ToSlash(got.path),
+	assert.Equal(t, []string{"open", "-a", "/Users/alice/Applications/Visual Studio Code.app", "/repo"},
+		argvOf(got, "/repo"), "`open -a` is the only route that RAISES the application")
+	assert.Equal(t, "/Users/alice/Applications/Visual Studio Code.app", filepath.ToSlash(got.describe),
 		"path field carries the RESOLVED bundle, so `open -a` addresses one exact copy")
 }
 
@@ -201,7 +307,7 @@ func TestTryMacOSApp_PrefersSystemApplicationsOverUserCopy(t *testing.T) {
 
 	got := tryMacOSApp("Cursor")(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/Applications/Cursor.app", filepath.ToSlash(got.path))
+	assert.Equal(t, "/Applications/Cursor.app", filepath.ToSlash(got.describe))
 }
 
 // JetBrains Toolbox installs one level below ~/Applications. Without that base
@@ -215,7 +321,7 @@ func TestTryMacOSApp_FindsJetBrainsToolboxBundle(t *testing.T) {
 
 	got := tryMacOSApp("GoLand")(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/Users/alice/Applications/JetBrains Toolbox/GoLand.app", filepath.ToSlash(got.path))
+	assert.Equal(t, "/Users/alice/Applications/JetBrains Toolbox/GoLand.app", filepath.ToSlash(got.describe))
 }
 
 // One product, two bundle names: the website's download and the Toolbox copy
@@ -228,7 +334,7 @@ func TestTryMacOSApp_AcceptsAnyOfSeveralBundleNames(t *testing.T) {
 
 	got := tryMacOSApp("Zed", "Zed Preview")(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/Applications/Zed Preview.app", filepath.ToSlash(got.path))
+	assert.Equal(t, "/Applications/Zed Preview.app", filepath.ToSlash(got.describe))
 }
 
 // A "~" base with no home directory would otherwise expand to a RELATIVE path
@@ -301,7 +407,7 @@ func TestRegistry_RefreshReprobes(t *testing.T) {
 	assert.Equal(t, 3, calls, "Refresh must always re-run detect, even after List has cached")
 }
 
-func TestRegistry_RefreshReflectsNewlyInstalledEditor(t *testing.T) {
+func TestRegistry_RefreshReflectsANewlyInstalledApplication(t *testing.T) {
 	t.Parallel()
 	p := newFakeProber()
 	// Initial state: nothing is installed.
@@ -321,7 +427,7 @@ func TestRegistry_RefreshReflectsNewlyInstalledEditor(t *testing.T) {
 	assert.Equal(t, "vscode", got[0].ID)
 }
 
-func TestRegistry_RefreshReflectsUninstalledEditor(t *testing.T) {
+func TestRegistry_RefreshReflectsAnUninstalledApplication(t *testing.T) {
 	t.Parallel()
 	p := newFakeProber()
 	p.addLookPath("code", "/usr/bin/code")
@@ -351,11 +457,11 @@ func TestRegistry_OpenLaunchesDetectedExec(t *testing.T) {
 
 	require.NoError(t, r.Open("vscode", dir))
 	require.Len(t, launcher.calls, 1)
-	assert.Equal(t, "/usr/bin/code", launcher.calls[0].path)
+	assert.Equal(t, "/usr/bin/code", launcher.calls[0].describe)
 	assert.Equal(t, dir, launcher.calls[0].dir)
 }
 
-func TestRegistry_OpenUnknownEditor(t *testing.T) {
+func TestRegistry_OpenUnknownApplication(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	r := newExternalAppRegistry(nil, newFakeProber(), &recordingLauncher{})
@@ -466,17 +572,6 @@ func TestDefaultExternalAppSpecs_MatchTheContractForThisOS(t *testing.T) {
 	assert.ElementsMatch(t, want, got)
 }
 
-// Every spec's kind resolves, so nothing reaches the browser as the unset
-// value -- the app menu groups by kind, and an unset one lands in no group.
-func TestDefaultExternalAppSpecs_EveryIDHasAKind(t *testing.T) {
-	t.Parallel()
-	for _, spec := range defaultExternalAppSpecs() {
-		kind := contracts.ExternalAppKindByID[spec.ID]
-		assert.NotEqual(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_UNSPECIFIED, kind,
-			"spec %s has no contract kind", spec.ID)
-	}
-}
-
 // The file manager is the one app that needs no probe, and the app menu counts
 // on it: it renders that kind as an always-present group ahead of the editors.
 func TestDefaultExternalAppSpecs_FileManagerIsAlwaysDetected(t *testing.T) {
@@ -491,54 +586,90 @@ func TestDefaultExternalAppSpecs_FileManagerIsAlwaysDetected(t *testing.T) {
 		}
 	}
 	require.NotNil(t, found, "the file manager must be detected on a machine with nothing installed")
-	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER, found.Kind)
 	assert.NotEmpty(t, found.DisplayName)
-}
-
-func TestRegistry_StampsTheContractKindOnEveryApp(t *testing.T) {
-	t.Parallel()
-	p := newFakeProber()
-	p.addLookPath("code", "/usr/bin/code")
-	r := newExternalAppRegistry([]ExternalAppSpec{
-		{ID: "vscode", DisplayName: "VS Code", detect: tryLookPath("code")},
-		fileManagerSpec("Finder"),
-	}, p, &recordingLauncher{})
-
-	got := r.List()
-	require.Len(t, got, 2)
-	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR, got[0].Kind)
-	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER, got[1].Kind)
 }
 
 // --- Launch: the argv, which is the whole of what this package decides ---
 
-func TestLaunchCommand_BinaryPassesTheDirectoryAlone(t *testing.T) {
+func TestExecBinary_PassesTheDirectoryAlone(t *testing.T) {
 	t.Parallel()
-	cmd, exitMeaningful, err := launchCommand(&detectedExec{kind: execKindBinary, path: "/usr/bin/code"}, "/repo")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"/usr/bin/code", "/repo"}, cmd.Args)
-	assert.True(t, exitMeaningful)
+	plan := execBinary("/usr/bin/code").command("/repo")
+
+	assert.Equal(t, []string{"/usr/bin/code", "/repo"}, plan.cmd.Args)
+	assert.True(t, plan.exitMeaningful)
 }
 
-// The regression test for the reported bug: a macOS launch must go through
-// `open -a`, which ACTIVATES the application. Running the binary hands the
-// folder to the running instance and leaves it behind the LeapMux window,
-// which reads as the menu item doing nothing.
-func TestLaunchCommand_MacOSAppGoesThroughOpenSoTheAppIsRaised(t *testing.T) {
+// Only `open -a` activates the target on macOS. Running the bundle's own
+// command hands the folder to the running instance and exits, leaving its
+// window behind this one -- which reads as the menu item doing nothing.
+func TestExecMacOSApp_GoesThroughOpenSoTheAppIsRaised(t *testing.T) {
 	t.Parallel()
-	cmd, exitMeaningful, err := launchCommand(
-		&detectedExec{kind: execKindMacOSApp, path: "/Applications/Visual Studio Code.app"}, "/repo")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"open", "-a", "/Applications/Visual Studio Code.app", "/repo"}, cmd.Args)
-	assert.NotContains(t, cmd.Args, "-n", "a new instance is not wanted, only the front-most one")
-	assert.True(t, exitMeaningful)
+	plan := execMacOSApp("/Applications/Visual Studio Code.app").command("/repo")
+
+	assert.Equal(t, []string{"open", "-a", "/Applications/Visual Studio Code.app", "/repo"}, plan.cmd.Args)
+	assert.True(t, plan.exitMeaningful)
 }
 
-func TestLaunchCommand_RejectsAnUnknownKind(t *testing.T) {
+func TestRegistry_ListHandsOutACopy(t *testing.T) {
 	t.Parallel()
-	_, _, err := launchCommand(&detectedExec{kind: execKind(99)}, "/repo")
+	p := newFakeProber()
+	p.addLookPath("code", "/usr/bin/code")
+	r := newExternalAppRegistry([]ExternalAppSpec{
+		{ID: "vscode", DisplayName: "Visual Studio Code", detect: tryLookPath("code")},
+	}, p, &recordingLauncher{})
+
+	first := r.List()
+	first[0].DisplayName = "mutated"
+	first = append(first, ExternalApp{ID: "smuggled"})
+	_ = first
+
+	second := r.List()
+	require.Len(t, second, 1)
+	assert.Equal(t, "Visual Studio Code", second[0].DisplayName)
+}
+
+// The browser puts the sidecar's sentence under a title it built from the
+// display name, so an id here reads as a second application.
+func TestRegistry_OpenNamesAnUndetectedApplicationByItsDisplayName(t *testing.T) {
+	t.Parallel()
+	p := newFakeProber()
+	r := newExternalAppRegistry([]ExternalAppSpec{
+		{ID: "vscode", DisplayName: "Visual Studio Code", detect: tryLookPath("code")},
+	}, p, &recordingLauncher{})
+
+	err := r.Open("vscode", t.TempDir())
+
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown exec kind")
+	assert.Contains(t, err.Error(), "Visual Studio Code")
+	assert.NotContains(t, err.Error(), "vscode")
+}
+
+// Every candidate the LIVE spec table can produce must reach an argv.
+//
+// The descriptor makes most of this structural -- a detector cannot build a
+// `detectedExec` without a `command` -- so what is left to guard is a
+// constructor that returns a nil function, or a per-OS `fileManagerCommand`
+// that builds no argv. The tagged union this replaced needed the test for far
+// more: a forgotten `execKind` case was neither a lint error
+// (`default-signifies-exhaustive`) nor a test failure, and surfaced only at the
+// user's click as "unknown exec kind".
+func TestDetectedExec_EveryRowOfTheSpecTableReachesAnArgv(t *testing.T) {
+	t.Parallel()
+	for _, spec := range defaultExternalAppSpecs() {
+		t.Run(spec.ID, func(t *testing.T) {
+			t.Parallel()
+			// A prober that finds EVERYTHING, so each row detects through
+			// whichever candidate it tries first and every launch shape the
+			// table can produce shows up across the loop.
+			detected := spec.detect(everythingProber{})
+			require.NotNil(t, detected, "a prober that finds everything must detect every row")
+			require.NotNil(t, detected.command, "a detected candidate must say how to launch it")
+
+			plan := detected.command(t.TempDir())
+			require.NotNil(t, plan.cmd)
+			assert.NotEmpty(t, plan.cmd.Args)
+		})
+	}
 }
 
 // --- Launch: reporting a process that starts and then refuses ---
@@ -576,6 +707,40 @@ func TestStartAndWatch_IgnoresTheExitCodeWhenItCarriesNoVerdict(t *testing.T) {
 	cmd := exec.Command(shellForTest(t), "-c", "exit 1")
 
 	assert.NoError(t, startAndWatch(cmd, false))
+}
+
+// A process that survives the failure window keeps writing for as long as it
+// runs, and nothing ever reads past the first line.
+func TestCappedBuffer_StopsGrowingAtTheLimitAndReportsFullWrites(t *testing.T) {
+	t.Parallel()
+	c := &cappedBuffer{limit: 8}
+
+	n, err := c.Write([]byte("abcde"))
+	require.NoError(t, err)
+	assert.Equal(t, 5, n)
+
+	n, err = c.Write([]byte("fghijklmno"))
+	require.NoError(t, err, "a full capture must not fail the write, or the process dies")
+	assert.Equal(t, 10, n, "the writer must report every byte as accepted")
+
+	assert.Equal(t, "abcdefgh", c.String())
+
+	n, err = c.Write([]byte("more"))
+	require.NoError(t, err)
+	assert.Equal(t, 4, n)
+	assert.Equal(t, "abcdefgh", c.String())
+}
+
+func TestStartAndWatch_KeepsTheReasonWhenStderrExceedsTheCap(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(shellForTest(t), "-c",
+		"echo 'the reason' >&2 ; head -c 200000 /dev/zero | tr '\\0' 'x' >&2 ; exit 5")
+
+	err := startAndWatch(cmd, true)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the reason",
+		"the cap must keep the head of the output, which is the part that says what went wrong")
 }
 
 func TestFirstLine_TakesTheFirstNonEmptyLine(t *testing.T) {

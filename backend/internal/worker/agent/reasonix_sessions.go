@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // Reasonix writes one JSONL transcript per session and states that session's

@@ -8,6 +8,7 @@ import {
   TRAY_ON_MINIMIZE_TASKBAR,
   TRAY_ON_MINIMIZE_TRAY,
 } from '~/generated/contracts/desktop'
+import { SUPPORTED_EXTERNAL_APP_IDS } from '~/generated/contracts/external-apps'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
@@ -16,6 +17,16 @@ import { browserToggle, CUSTOM_EDITOR_OWNS_ITS_VALUE, dualFontHalf, dualScalar }
 import { requestTerminalOsNotifications } from './terminalNotifications'
 
 const log = createLogger('settingsRegistry')
+
+// The application id vocabulary is a generated CLOSED set, so an id outside it
+// can never name a detected application. The free-text row below refuses one
+// rather than storing it: a stored typo leaves the split button reading
+// "Open in …" and the keyboard shortcut opening some other application, with
+// nothing on screen saying the value matches nothing.
+//
+// From the CONTRACT, not from `~/lib/externalApps`, which would pull
+// `platformBridge` and the toast module into the settings registry's graph.
+const KNOWN_EXTERNAL_APP_IDS: ReadonlySet<string> = new Set(SUPPORTED_EXTERNAL_APP_IDS)
 
 /**
  * The operating system's own word for each surface that the Desktop rows
@@ -519,7 +530,23 @@ export const browserSettings: BrowserSettingDecl[] = [
     hidden: () => !isDesktopApp(),
     bind: prefs => ({
       value: prefs.preferredExternalAppId,
-      set: v => prefs.setPreferredExternalAppId(typeof v === 'string' && v !== '' ? v : undefined),
+      set: (v) => {
+        const id = typeof v === 'string' ? v.trim() : ''
+        if (id === '') {
+          prefs.setPreferredExternalAppId(undefined)
+          return
+        }
+        if (!KNOWN_EXTERNAL_APP_IDS.has(id)) {
+          // A REJECTED promise, never a bare `throw`: `SettingRow.commit`
+          // passes `binding.set(v)` as the ARGUMENT to `Promise.resolve`, so a
+          // synchronous throw escapes the `.catch` that reports the reason and
+          // reverts the field.
+          return Promise.reject(new Error(
+            `No application has the id "${id}". Use one of: ${SUPPORTED_EXTERNAL_APP_IDS.join(', ')}.`,
+          ))
+        }
+        prefs.setPreferredExternalAppId(id)
+      },
     }),
     resetBrowser: prefs => prefs.setPreferredExternalAppId(undefined),
   },

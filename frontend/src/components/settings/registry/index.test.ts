@@ -66,6 +66,54 @@ function bindingsOf(
   )
 }
 
+/**
+ * The preferred-application row, whose id vocabulary is a generated CLOSED set.
+ *
+ * A typo used to be stored: `preferred()` then answered undefined, the split
+ * button silently read "Open in …", the keyboard shortcut silently opened some
+ * other application, and no surface said the stored value matched nothing.
+ */
+describe('files.preferredExternalApp binding', () => {
+  function bindPreferredApp() {
+    const fake = makeFakePrefs()
+    const binding = bindingsOf(fake as unknown as PreferencesState)['files.preferredExternalApp']!
+    return { fake, binding }
+  }
+
+  it('refuses an id outside the generated vocabulary, and says which ids exist', async () => {
+    const { fake, binding } = bindPreferredApp()
+
+    // A DISPLAY name, which is the plausible thing a user types into a box
+    // whose placeholder reads "e.g. vscode".
+    await expect(Promise.resolve(binding.set('Visual Studio Code'))).rejects.toThrow(/Visual Studio Code/)
+    expect(fake.setPreferredExternalAppId).not.toHaveBeenCalled()
+  })
+
+  it('stores an id the contract lists', () => {
+    const { fake, binding } = bindPreferredApp()
+
+    binding.set('zed')
+
+    expect(fake.setPreferredExternalAppId).toHaveBeenCalledWith('zed')
+  })
+
+  it('clears the pin for an empty value', () => {
+    const { fake, binding } = bindPreferredApp()
+
+    binding.set('   ')
+
+    expect(fake.setPreferredExternalAppId).toHaveBeenCalledWith(undefined)
+  })
+
+  it('accepts an id the user padded with spaces', () => {
+    const { fake, binding } = bindPreferredApp()
+
+    binding.set('  vscode  ')
+
+    expect(fake.setPreferredExternalAppId).toHaveBeenCalledWith('vscode')
+  })
+})
+
 /** One rendered row's control, by row id. */
 function controlOf(id: string) {
   return descriptorsOf(makeFakePrefs() as unknown as PreferencesState).find(d => d.id === id)?.control

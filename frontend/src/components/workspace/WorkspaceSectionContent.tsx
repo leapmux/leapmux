@@ -86,7 +86,7 @@ export interface WorkspaceSectionContentProps {
    * actions that open the LOCAL Finder and the LOCAL editor. See
    * `~/lib/workerLocality`.
    */
-  isLocalWorkerFn?: (workerId: string) => boolean
+  isLocalWorkerFn: (workerId: string) => boolean
   /** Open a new agent / terminal at one of a workspace's checkouts. */
   startActions?: WorkspaceStartActions
   /** Branch-menu callbacks, unbound. Each branch row binds them to its own ref. */

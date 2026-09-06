@@ -326,7 +326,7 @@ describe('branchContextMenu', () => {
 
 // The `Repository` section acts on the checkout the branch sits in. It is the
 // same block the workspace row menu and the repository row menu render, so a
-// user who learns it once has learned all three.
+// user learns it once and knows all three.
 describe('branchContextMenu repository section', () => {
   function renderWithRepository(overrides: Partial<{ isLocal: boolean, originUrl: string, disabledReason: string }> = {}) {
     const actions = stubBranchMenuActions()

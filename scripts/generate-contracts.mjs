@@ -2350,31 +2350,49 @@ export const MAX_AGENT_INPUT_ATTACHMENTS_PER_ITEM = ${a.limits.maxAttachmentsPer
 // external-apps: the applications the desktop sidecar opens a directory in
 //
 // The id vocabulary was hand-written twice -- the three Go spec tables and the
-// browser's icon table -- paired by a comment that said "must match". Only the
-// ids, what each one IS, and which operating systems carry it cross the
-// boundary. Detection (which binary, which bundle, in what probe order) and
-// the display names stay Go-only, because the sidecar reports the names at
-// runtime and nothing else ever spells them.
+// browser's icon table -- paired by a comment that said "must match". The ids
+// and the operating systems that carry them cross the boundary. Detection
+// (which binary, which bundle, in what probe order) and the display names stay
+// Go-only, because the sidecar reports the names at runtime and nothing else
+// ever spells them.
+//
+// `kind` is BROWSER-ONLY, and it lives here rather than in the frontend because
+// the one-file-manager-per-OS check below reads it beside `oses`. It used to
+// ride the wire as a proto enum, which made a compile-time constant take a
+// four-hop trip -- contract, Go table, proto enum, Rust i32 -- to answer one
+// boolean the browser can read from a generated table instead.
 // ---------------------------------------------------------------------------
 
-/** The operating systems a spec table can exist for, in emission order. */
+/**
+ * The operating systems a spec table can exist for, in emission order.
+ *
+ * The schema's `oses` enum states the same vocabulary, and `checkExternalApps`
+ * asserts the two agree. Without that assertion a token the schema accepts but
+ * this list omits passes generation silently: `emitGoExternalApps` iterates
+ * only this list, so the new OS gets no `ExternalAppIDsByOS` entry and any app
+ * exclusive to it disappears from the spec-table comparison altogether, while
+ * the file-manager check below never looks at that platform.
+ */
 const EXTERNAL_APP_OSES = ['darwin', 'linux', 'windows']
 
 const EXTERNAL_APP_FILE_MANAGER_KIND = 'EXTERNAL_APP_KIND_FILE_MANAGER'
 
-export function checkExternalApps(a, kindEnumValues) {
-  const named = kindEnumValues.filter(n => !n.endsWith('_UNSPECIFIED'))
-  for (const name of named)
-    mustBe(a.kinds[name] != null, 'external-apps.json', `proto enum value ${name} has no kinds entry -- a new kind must land here in the same change, or every app menu groups it nowhere`)
-  for (const name of Object.keys(a.kinds)) {
-    mustBe(kindEnumValues.includes(name), 'external-apps.json', `kinds entry ${name} matches no ExternalAppKind enum value (removed from the proto?)`)
+export function checkExternalApps(a) {
+  // No proto enum backs these any more, so the schema's name pattern is the
+  // only shape rule and this is the one place that can reject the sentinel.
+  for (const name of Object.keys(a.kinds))
     mustBe(!name.endsWith('_UNSPECIFIED'), 'external-apps.json', `${name} is the unset value, and no app may claim it`)
-  }
 
   const used = new Set()
   for (const [id, app] of Object.entries(a.apps)) {
     mustBe(a.kinds[app.kind] != null, 'external-apps.json', `app ${id} carries kind ${app.kind}, which is not a kinds entry`)
     used.add(app.kind)
+    // The reverse direction of EXTERNAL_APP_OSES, which the emitters iterate.
+    // An os token this generator does not know is silently dropped from every
+    // table it writes, so the app vanishes from the sidecar's own spec-table
+    // comparison and from the file-manager check below.
+    for (const os of app.oses)
+      mustBe(EXTERNAL_APP_OSES.includes(os), 'external-apps.json', `app ${id} lists os ${os}, which the generator does not emit a table for -- add it to EXTERNAL_APP_OSES in scripts/generate-contracts.mjs`)
   }
   for (const name of Object.keys(a.kinds))
     mustBe(used.has(name), 'external-apps.json', `kind ${name} is carried by no app -- a kind the menu can never show is dead metadata`)
@@ -2394,31 +2412,20 @@ export function checkExternalApps(a, kindEnumValues) {
 
 export function emitGoExternalApps(a) {
   const ids = Object.keys(a.apps)
-  const kinds = goMapBlock(ids.map(id => ({
-    key: `${jsonString(id)}:`,
-    value: `desktopv1.ExternalAppKind_${a.apps[id].kind}`,
-  })))
   const byOS = EXTERNAL_APP_OSES.map((os) => {
     const rows = ids.filter(id => a.apps[id].oses.includes(os)).map(id => `\t\t${jsonString(id)},`).join('\n')
     return `\t${jsonString(os)}: {\n${rows}\n\t},`
   }).join('\n')
-  const docs = Object.entries(a.kinds).map(([name, doc]) => `//   ${name}: ${doc}.`).join('\n')
   return `${GO_HEADER('external-apps.json')}package contracts
 
-import desktopv1 "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
-
 // The applications the desktop sidecar can open a directory in. The sidecar's
-// per-OS spec tables own the detection and the display names; these two tables
-// own the vocabulary the browser shares with them.
-
-// ExternalAppKindByID says what each application IS:
-${docs}
+// per-OS spec tables own the detection and the display names; this table owns
+// the vocabulary the browser shares with them.
 //
-// The sidecar stamps the kind on every app it reports, and the browser groups
-// its menu by it, so no surface has to test an id literal.
-var ExternalAppKindByID = map[string]desktopv1.ExternalAppKind{
-${kinds}
-}
+// No kind table here. What an application IS is read by the browser alone, so
+// it is generated for TypeScript only -- the sidecar used to stamp it on every
+// app it reported and send it over the wire, which carried a compile-time
+// constant through four languages to answer one boolean.
 
 // ExternalAppIDsByOS lists the ids each operating system's spec table must
 // carry, keyed by runtime.GOOS. The sidecar's table test compares its own
@@ -2431,19 +2438,37 @@ ${byOS}
 }
 
 export function emitTsExternalApps(a) {
-  const rows = Object.keys(a.apps).map(id => `  ${jsonString(id)},`).join('\n')
+  const ids = Object.keys(a.apps)
+  const rows = ids.map(id => `  ${jsonString(id)},`).join('\n')
+  const kindRows = ids.map(id => `  ${jsonString(id)}: ${jsonString(a.apps[id].kind)},`).join('\n')
+  const kindUnion = Object.keys(a.kinds).map(jsonString).join(' | ')
+  const docs = Object.entries(a.kinds).map(([name, doc]) => ` * - \`${name}\`: ${doc}.`).join('\n')
   return `${TS_HEADER('external-apps.json')}
 // Every application id the desktop sidecar can report, on any operating
 // system. The icon table satisfies Record<ExternalAppId, ...>, so an id that
 // the contract adds without an icon is a type error rather than a blank menu
-// row. What each app IS travels on the wire as ExternalApp.kind, never from
-// here: the browser groups the menu by the value the sidecar sent.
+// row.
 
 export const SUPPORTED_EXTERNAL_APP_IDS = [
 ${rows}
 ] as const
 
 export type ExternalAppId = typeof SUPPORTED_EXTERNAL_APP_IDS[number]
+
+export type ExternalAppKind = ${kindUnion}
+
+/**
+ * What each application IS, so the app menu groups without testing an id
+ * literal:
+${docs}
+ *
+ * Read from the CONTRACT, not from the wire. The sidecar reports only ids its
+ * own spec table holds, and a Go table test compares that table against this
+ * same contract in BOTH directions, so the two cannot name different sets.
+ */
+export const EXTERNAL_APP_KIND_BY_ID: Record<ExternalAppId, ExternalAppKind> = {
+${kindRows}
+}
 `
 }
 
@@ -2639,11 +2664,9 @@ const DOMAINS = [
   },
   {
     name: 'external-apps',
-    requiresDescriptor: true,
-    emit(out, read, descriptorSet) {
-      const kindEnumValues = enumValues(descriptorSet, 'leapmux/desktop/v1/frame.proto', 'ExternalAppKind')
+    emit(out, read) {
       const a = read('external-apps')
-      checkExternalApps(a, kindEnumValues)
+      checkExternalApps(a)
       out['backend/generated/contracts/external-apps.go'] = emitGoExternalApps(a)
       out['frontend/src/generated/contracts/external-apps.ts'] = emitTsExternalApps(a)
     },

@@ -38,7 +38,7 @@ interface DirectorySelectorProps {
 
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
   // The hidden-files toggle is a reactive preference (the settings dialog's
-  // Files & Editors group edits the same key), so it reads through the
+  // Files & Applications group edits the same key), so it reads through the
   // preferences context instead of a local persisted signal.
   const prefs = usePreferences()
   const showHiddenFiles = prefs.directoryPickerShowHidden

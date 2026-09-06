@@ -10,24 +10,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDarwinSpecs_GatesMatchPlatform(t *testing.T) {
+// The bundle must be probed BEFORE the PATH command on every row: only
+// `open -a` activates the target on macOS, and a PATH command hands the folder
+// to the running instance and exits, leaving its window behind this one. The
+// rule was a comment and seven hand-written rows before `darwinSpec`, so this
+// asserts the constructor delivers it for every row that uses it.
+func TestDarwinSpecs_ProbeTheBundleBeforeThePathCommand(t *testing.T) {
 	t.Parallel()
-	ids := map[string]bool{}
 	for _, spec := range defaultExternalAppSpecs() {
-		ids[spec.ID] = true
+		if spec.ID == fileManagerID {
+			continue
+		}
+		t.Run(spec.ID, func(t *testing.T) {
+			t.Parallel()
+			// A machine that has BOTH: the bundle where we look, and the CLI on
+			// PATH. Only the bundle-first order answers with the bundle.
+			p := newFakeProber()
+			p.setHome("/Users/alice")
+			for _, base := range macOSAppBases {
+				p.addPath(base + "/" + spec.DisplayName + ".app")
+			}
+			p.addLookPath("code", "/usr/local/bin/code")
+			p.addLookPath("idea", "/usr/local/bin/idea")
+
+			got := spec.detect(p)
+			require.NotNil(t, got, "the bundle is present, so every row must detect it")
+			assert.Equal(t, "open", argvOf(got, "/repo")[0],
+				"a PATH command here would open the folder in a window that stays behind LeapMux")
+		})
 	}
-	assert.True(t, ids["xcode"], "Xcode must appear on macOS")
-	assert.False(t, ids["notepad-plus-plus"], "Notepad++ must not appear on macOS")
 }
 
 // Finder opens the directory's own contents. `open -R` would select it inside
 // its parent instead, which is what "Reveal in file manager" does.
 func TestDarwinFileManagerCommand_OpensTheDirectoryItself(t *testing.T) {
 	t.Parallel()
-	cmd, exitMeaningful := fileManagerCommand("/repo")
-	assert.Equal(t, []string{"open", "/repo"}, cmd.Args)
-	assert.NotContains(t, cmd.Args, "-R")
-	assert.True(t, exitMeaningful)
+	plan := fileManagerCommand("/repo")
+	assert.Equal(t, []string{"open", "/repo"}, plan.cmd.Args)
+	assert.NotContains(t, plan.cmd.Args, "-R")
+	assert.True(t, plan.exitMeaningful)
 }
 
 // The regression test for the reported bug at the table level: with both a
@@ -42,8 +63,7 @@ func TestDarwinVSCode_PrefersTheBundleOverThePathCommand(t *testing.T) {
 
 	got := findDarwinSpec(t, "vscode").detect(p)
 	require.NotNil(t, got)
-	assert.Equal(t, execKindMacOSApp, got.kind)
-	assert.Equal(t, "/Applications/Visual Studio Code.app", filepath.ToSlash(got.path))
+	assert.Equal(t, "/Applications/Visual Studio Code.app", filepath.ToSlash(got.describe))
 }
 
 // With no bundle anywhere, the PATH command is still better than nothing: the
@@ -56,8 +76,7 @@ func TestDarwinVSCode_FallsBackToThePathCommand(t *testing.T) {
 
 	got := findDarwinSpec(t, "vscode").detect(p)
 	require.NotNil(t, got)
-	assert.Equal(t, execKindBinary, got.kind)
-	assert.Equal(t, "/Users/alice/.local/bin/code", got.path)
+	assert.Equal(t, "/Users/alice/.local/bin/code", got.describe)
 }
 
 // A JetBrains IDE installed only through Toolbox resolves to the Toolbox
@@ -71,8 +90,7 @@ func TestDarwinJetBrains_PrefersTheToolboxBundleOverItsScript(t *testing.T) {
 
 	got := findDarwinSpec(t, "goland").detect(p)
 	require.NotNil(t, got)
-	assert.Equal(t, execKindMacOSApp, got.kind)
-	assert.Equal(t, "/Users/alice/Applications/JetBrains Toolbox/GoLand.app", filepath.ToSlash(got.path))
+	assert.Equal(t, "/Users/alice/Applications/JetBrains Toolbox/GoLand.app", filepath.ToSlash(got.describe))
 }
 
 // findDarwinSpec returns the ExternalAppSpec with the given id from the live

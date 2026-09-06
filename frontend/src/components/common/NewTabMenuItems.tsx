@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { For, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { Tooltip } from '~/components/common/Tooltip'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
@@ -94,46 +95,31 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
           </For>
         </li>
       </Show>
-      <Tooltip text={props.disabledReason}>
-        <button
-          role="menuitem"
-          disabled={disabled()}
-          onClick={() => props.onNewAgentAdvanced()}
-        >
-          <DropdownMenuItemContent
-            label="New agent..."
-            detail={props.shortcuts ? getShortcutHintsText('app.newAgentDialog') : undefined}
-          />
-        </button>
-      </Tooltip>
+      <DisabledReasonMenuItem reason={props.disabledReason} onClick={() => props.onNewAgentAdvanced()}>
+        <DropdownMenuItemContent
+          label="New agent..."
+          detail={props.shortcuts ? getShortcutHintsText('app.newAgentDialog') : undefined}
+        />
+      </DisabledReasonMenuItem>
       <hr />
       <li class={menuSectionHeader}>Terminals</li>
-      <Tooltip text={props.disabledReason}>
-        <button
-          role="menuitem"
-          disabled={disabled()}
-          onClick={() => props.onNewTerminalAdvanced()}
-        >
-          <DropdownMenuItemContent
-            label="New terminal..."
-            detail={props.shortcuts ? getShortcutHintsText('app.newTerminalDialog') : undefined}
-          />
-        </button>
-      </Tooltip>
+      <DisabledReasonMenuItem reason={props.disabledReason} onClick={() => props.onNewTerminalAdvanced()}>
+        <DropdownMenuItemContent
+          label="New terminal..."
+          detail={props.shortcuts ? getShortcutHintsText('app.newTerminalDialog') : undefined}
+        />
+      </DisabledReasonMenuItem>
       <For each={props.availableShells ?? []}>
         {shell => (
-          <Tooltip text={props.disabledReason}>
-            <button
-              role="menuitem"
-              disabled={disabled()}
-              onClick={() => props.onNewTerminalWithShell(shell)}
-            >
-              <code>{shell}</code>
-              <Show when={shell === props.defaultShell}>
-                <span class={styles.shellDefault}>(default)</span>
-              </Show>
-            </button>
-          </Tooltip>
+          <DisabledReasonMenuItem
+            reason={props.disabledReason}
+            onClick={() => props.onNewTerminalWithShell(shell)}
+          >
+            <code>{shell}</code>
+            <Show when={shell === props.defaultShell}>
+              <span class={styles.shellDefault}>(default)</span>
+            </Show>
+          </DisabledReasonMenuItem>
         )}
       </For>
     </>

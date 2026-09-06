@@ -510,10 +510,10 @@ globalStyle('ot-dropdown hr', {
 // in `components`, so every unlayered vanilla-extract class outranked it no
 // matter what the selectors were. Restating the rule unlayered would have
 // silently changed that: a bare `[role="menuitem"]` is (0,1,0), the same
-// specificity as a VE class, so `dangerMenuItem` and the two `menuItemSelected`
-// classes would have been decided by stylesheet link order alone -- and a
-// chunking change would have flipped "Delete…" back to the default colour and
-// erased the selected-row highlight, with nothing to catch it.
+// specificity as a VE class, so `dangerMenuItem` and `AgentProviderSelector`'s
+// `menuItemSelected` would have been decided by stylesheet link order alone --
+// and a chunking change would have flipped "Delete…" back to the default colour
+// and erased the selected-row highlight, with nothing to catch it.
 // `declareAppLayers` states the whole order, Oat's five layers ahead of the
 // app's own, so this layer appends past `utilities` whichever stylesheet the
 // bundler emits first: it still beats Oat's `base` button fill, and still loses

@@ -9,16 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLinuxSpecs_GatesMatchPlatform(t *testing.T) {
-	t.Parallel()
-	ids := map[string]bool{}
-	for _, spec := range defaultExternalAppSpecs() {
-		ids[spec.ID] = true
-	}
-	assert.False(t, ids["xcode"], "Xcode must not appear on Linux")
-	assert.False(t, ids["notepad-plus-plus"], "Notepad++ must not appear on Linux")
-}
-
 // findLinuxSpec returns the ExternalAppSpec with the given id from the live Linux
 // registry, or fails the test if no such spec exists.
 func findLinuxSpec(t *testing.T, id string) ExternalAppSpec {
@@ -41,8 +31,7 @@ func TestLinuxZed_DetectsZededitorBinary(t *testing.T) {
 
 	got := findLinuxSpec(t, "zed").detect(p)
 	require.NotNil(t, got, "Zed must be detected when only `zeditor` is on PATH")
-	assert.Equal(t, execKindBinary, got.kind)
-	assert.Equal(t, "/usr/bin/zeditor", got.path)
+	assert.Equal(t, "/usr/bin/zeditor", got.describe)
 }
 
 // On Arch, /usr/bin/zed belongs to zfs-utils (the ZFS Event Daemon), not the
@@ -56,7 +45,7 @@ func TestLinuxZed_PrefersZededitorOverZed(t *testing.T) {
 
 	got := findLinuxSpec(t, "zed").detect(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/usr/bin/zeditor", got.path,
+	assert.Equal(t, "/usr/bin/zeditor", got.describe,
 		"zeditor is unambiguous; `zed` collides with zfs-utils and must not win")
 }
 
@@ -70,7 +59,7 @@ func TestLinuxZed_FallsBackToZedWhenAlone(t *testing.T) {
 
 	got := findLinuxSpec(t, "zed").detect(p)
 	require.NotNil(t, got)
-	assert.Equal(t, "/home/u/.local/bin/zed", got.path)
+	assert.Equal(t, "/home/u/.local/bin/zed", got.describe)
 }
 
 // Flatpak install: only the dev.zed.Zed wrapper exists.
@@ -81,15 +70,14 @@ func TestLinuxZed_DetectsFlatpakWrapper(t *testing.T) {
 
 	got := findLinuxSpec(t, "zed").detect(p)
 	require.NotNil(t, got)
-	assert.Equal(t, execKindBinary, got.kind)
-	assert.Equal(t, "/var/lib/flatpak/exports/bin/dev.zed.Zed", got.path)
+	assert.Equal(t, "/var/lib/flatpak/exports/bin/dev.zed.Zed", got.describe)
 }
 
 // xdg-open reads the desktop's own association, so LeapMux never has to name
 // Nautilus, Dolphin or Thunar -- any of which may be the one installed.
 func TestLinuxFileManagerCommand_DelegatesToXdgOpen(t *testing.T) {
 	t.Parallel()
-	cmd, exitMeaningful := fileManagerCommand("/repo")
-	assert.Equal(t, []string{"xdg-open", "/repo"}, cmd.Args)
-	assert.True(t, exitMeaningful)
+	plan := fileManagerCommand("/repo")
+	assert.Equal(t, []string{"xdg-open", "/repo"}, plan.cmd.Args)
+	assert.True(t, plan.exitMeaningful)
 }

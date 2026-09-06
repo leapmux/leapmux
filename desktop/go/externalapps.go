@@ -3,16 +3,17 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/leapmux/leapmux/util/procutil"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -24,37 +25,72 @@ import (
 const fileManagerID = "file-manager"
 
 // ExternalApp is what the Tauri shell ultimately surfaces to the frontend: a
-// stable id, a human-readable display name, and what the application IS.
-// Detection state itself (which executable, where) is kept inside the registry.
+// stable id and a human-readable display name. Detection state itself (which
+// executable, where) is kept inside the registry.
+//
+// No kind. What an application IS is a compile-time fact of
+// contracts/external-apps.json, and the browser reads it from the table
+// generated from that same file -- keyed by the id below, which a Go table test
+// compares against the contract in both directions.
 type ExternalApp struct {
 	ID          string
 	DisplayName string
-	// Kind lets the browser group its menu -- editors together, the file
-	// manager on its own -- without testing an id literal. It comes from
-	// contracts.ExternalAppKindByID, so the two languages cannot disagree.
-	Kind desktoppb.ExternalAppKind
+}
+
+// launchPlan is one resolved way to open a directory: the command to run, and
+// whether that command's exit code carries a verdict.
+//
+// The flag travels WITH the command rather than beside it, because only the
+// thing that built the argv knows the answer -- `explorer.exe` exits 1 after a
+// successful open, so reading its code would report every launch as failed.
+type launchPlan struct {
+	cmd            *exec.Cmd
+	exitMeaningful bool
 }
 
 // detectedExec records HOW we plan to launch a particular application,
 // captured when the registry first runs detection. There is no per-launch
 // redetect.
+//
+// The launch is a FUNCTION, not a tag this package switches on. A detector
+// cannot produce a candidate without also saying how to open it, so a new way
+// to launch cannot arrive without its argv -- where a tag plus a switch let one
+// arrive without its case and fail at the user's click. Nothing catches that
+// earlier: `.golangci.yml` sets `default-signifies-exhaustive`, so a missing
+// case is not a lint error either.
 type detectedExec struct {
-	kind execKind
-	// path semantics depend on kind:
-	//   execKindBinary      → absolute path to the binary or shim to invoke.
-	//   execKindMacOSApp    → absolute path to the .app bundle, for `open -a`.
-	//   execKindFileManager → unused; the per-OS fileManagerCommand supplies
-	//                         the whole command.
-	path string
+	// What was detected, for an error and for a test to name. Never an argv:
+	// `command` owns that.
+	describe string
+	command  func(dir string) launchPlan
 }
 
-type execKind int
+// execBinary launches a directory by handing it to a binary or a shim.
+func execBinary(path string) *detectedExec {
+	return &detectedExec{
+		describe: path,
+		command:  func(dir string) launchPlan { return launchPlan{exec.Command(path, dir), true} },
+	}
+}
 
-const (
-	execKindBinary execKind = iota
-	execKindMacOSApp
-	execKindFileManager
-)
+// execMacOSApp launches a directory through an .app bundle.
+//
+// `open -a <bundle> <dir>` asks the running instance to open the folder AND
+// activates it, which is the whole reason the bundle is probed before the PATH
+// command. Running the bundle's own command directly starts a second process
+// that forwards its argument to the first instance and exits, leaving that
+// instance wherever it was -- usually behind this window, which reads as the
+// click doing nothing.
+//
+// No `-n`: a new instance is not wanted, only the front-most one.
+func execMacOSApp(bundle string) *detectedExec {
+	return &detectedExec{
+		describe: bundle,
+		command: func(dir string) launchPlan {
+			return launchPlan{exec.Command("open", "-a", bundle, dir), true}
+		},
+	}
+}
 
 // Prober abstracts the few filesystem / environment lookups detection needs,
 // so the registry can be unit-tested without touching the real machine.
@@ -116,23 +152,27 @@ func defaultExternalAppRegistry() *ExternalAppRegistry {
 
 // List runs detection (once) and returns the applications that were found, in
 // the order they appear in the spec table. Safe for concurrent callers.
+//
+// The result is a COPY. detectLocked builds the cache with spare capacity, so
+// a caller that appended to the returned slice would write into the registry's
+// own backing array while another goroutine reads it.
 func (r *ExternalAppRegistry) List() []ExternalApp {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.cached {
 		r.detectLocked()
 	}
-	return r.cache
+	return slices.Clone(r.cache)
 }
 
 // Refresh forces a re-probe and returns the freshly detected applications.
-// Used when the user clicks "Refresh app list" after installing or
-// uninstalling an editor.
+// Used when the user clicks "Refresh app list" after installing or uninstalling
+// an application. The result is a copy, for the reason List states.
 func (r *ExternalAppRegistry) Refresh() []ExternalApp {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.detectLocked()
-	return r.cache
+	return slices.Clone(r.cache)
 }
 
 // Open launches the named application at the given absolute directory path.
@@ -151,7 +191,10 @@ func (r *ExternalAppRegistry) Open(id, path string) error {
 	detected, ok := r.detected[id]
 	r.mu.Unlock()
 	if !ok || detected == nil {
-		return fmt.Errorf("application %q is not available", id)
+		// The display name, not the id: the browser puts this sentence under a
+		// title it already built from the display name, and two spellings of
+		// one application in one notification read as two applications.
+		return fmt.Errorf("%s is not available", r.displayName(id))
 	}
 	if err := r.launcher.Launch(detected, cleaned); err != nil {
 		return fmt.Errorf("launch %s: %w", r.displayName(id), err)
@@ -159,6 +202,9 @@ func (r *ExternalAppRegistry) Open(id, path string) error {
 	return nil
 }
 
+// displayName is the human-readable name for an id, for an error a person
+// reads. It takes no lock, because r.specs is written once in
+// newExternalAppRegistry and never mutated afterwards.
 func (r *ExternalAppRegistry) displayName(id string) string {
 	for i := range r.specs {
 		if r.specs[i].ID == id {
@@ -180,11 +226,7 @@ func (r *ExternalAppRegistry) detectLocked() {
 		}
 		if d := spec.detect(r.prober); d != nil {
 			r.detected[spec.ID] = d
-			out = append(out, ExternalApp{
-				ID:          spec.ID,
-				DisplayName: spec.DisplayName,
-				Kind:        contracts.ExternalAppKindByID[spec.ID],
-			})
+			out = append(out, ExternalApp{ID: spec.ID, DisplayName: spec.DisplayName})
 		}
 	}
 	r.cache = out
@@ -229,7 +271,7 @@ func tryAll(detectors ...func(Prober) *detectedExec) func(Prober) *detectedExec 
 func tryLookPath(name string) func(Prober) *detectedExec {
 	return func(p Prober) *detectedExec {
 		if path, err := p.LookPath(name); err == nil {
-			return &detectedExec{kind: execKindBinary, path: path}
+			return execBinary(path)
 		}
 		return nil
 	}
@@ -244,7 +286,7 @@ func tryPath(raw string) func(Prober) *detectedExec {
 			return nil
 		}
 		if _, err := p.Stat(expanded); err == nil {
-			return &detectedExec{kind: execKindBinary, path: expanded}
+			return execBinary(expanded)
 		}
 		return nil
 	}
@@ -260,11 +302,19 @@ func tryGlob(pattern string) func(Prober) *detectedExec {
 		if expanded == "" {
 			return nil
 		}
-		matches, _ := p.Glob(expanded)
+		matches, err := p.Glob(expanded)
+		if err != nil {
+			// filepath.Glob fails only on a malformed pattern, so this is a
+			// spec-table bug, not a machine that lacks the application.
+			// Silence would file it under "not installed", where nobody looks.
+			slog.Warn("desktop sidecar: external-app glob pattern is malformed",
+				"pattern", expanded, "error", err)
+			return nil
+		}
 		if len(matches) == 0 {
 			return nil
 		}
-		return &detectedExec{kind: execKindBinary, path: matches[len(matches)-1]}
+		return execBinary(matches[len(matches)-1])
 	}
 }
 
@@ -293,15 +343,15 @@ func tryMacOSApp(bundleNames ...string) func(Prober) *detectedExec {
 	return func(p Prober) *detectedExec {
 		for _, base := range macOSAppBases {
 			for _, name := range bundleNames {
+				// expandPath answers "" for a "~" base with no home
+				// directory, so no candidate here can be working-directory
+				// relative.
 				full := expandPath(p, filepath.Join(base, name+".app"))
-				// A "~" base with no home directory expands to a RELATIVE
-				// path, which would probe whatever the working directory
-				// happens to be. Absolute or not at all.
-				if full == "" || !filepath.IsAbs(full) {
+				if full == "" {
 					continue
 				}
 				if _, err := p.Stat(full); err == nil {
-					return &detectedExec{kind: execKindMacOSApp, path: full}
+					return execMacOSApp(full)
 				}
 			}
 		}
@@ -320,44 +370,74 @@ func fileManagerSpec(displayName string) ExternalAppSpec {
 		ID:          fileManagerID,
 		DisplayName: displayName,
 		detect: func(Prober) *detectedExec {
-			return &detectedExec{kind: execKindFileManager}
+			return &detectedExec{describe: displayName, command: fileManagerCommand}
 		},
 	}
 }
 
 // expandPath resolves "~", "$VAR", "${VAR}", and "%VAR%" against the prober's
-// view of the environment. Returns "" if a referenced variable is empty —
-// callers treat that as "candidate not applicable".
+// view of the environment. It returns "" when any of those references does not
+// resolve, and every caller treats "" as "candidate not applicable".
+//
+// One rule covers all three syntaxes, and it lives HERE rather than at a probe
+// helper, because a half-expanded path is dangerous in two different ways and
+// each helper would have to guard against both. A "~" that does not resolve
+// leaves a RELATIVE path, which probes the process working directory and, on a
+// hit, becomes the argv of a real launch. An unset "$VAR" is worse, because
+// os.Expand substitutes the empty string silently: "$OPT/JetBrains/scripts"
+// becomes "/JetBrains/scripts" and probes an absolute path nobody asked for.
+// A sidecar started by launchd, by systemd, or inside a container reaches both
+// conditions with an ordinary spec table.
+//
+// The tilde half is pathutil.ExpandHome, shared with the backend rather than
+// spelled again: that helper's own doc records how this repo came to hold four
+// copies of the rule, and this package would have been the fifth. It was moved
+// out of `internal/` for this, because the desktop sidecar is its own module.
 func expandPath(p Prober, raw string) string {
 	out := raw
-	switch {
-	case out == "~":
-		out = p.Home()
-	case strings.HasPrefix(out, "~/") || strings.HasPrefix(out, `~\`):
-		out = filepath.Join(p.Home(), out[2:])
+	if strings.HasPrefix(out, "~") {
+		// pathutil.ExpandHome answers the input UNCHANGED for a home it cannot
+		// resolve, and for a form it does not accept -- `~user`, and `~\` off
+		// Windows. A leading "~" that survives it is therefore a RELATIVE path,
+		// which would probe the process working directory and, on a hit, become
+		// the argv of a real launch.
+		out = pathutil.ExpandHome(out, p.Home())
+		if strings.HasPrefix(out, "~") {
+			return ""
+		}
 	}
 
-	out = os.Expand(out, p.Env)
-	out = winEnvPattern.ReplaceAllStringFunc(out, func(match string) string {
-		name := match[1 : len(match)-1]
+	resolved := true
+	out = os.Expand(out, func(name string) string {
 		v := p.Env(name)
 		if v == "" {
-			// Mark as unresolved by returning the original token so the
-			// downstream Stat fails predictably.
-			return match
+			resolved = false
 		}
 		return v
 	})
-
-	// If any %VAR% remained unresolved, treat the whole path as unusable.
-	if winEnvPattern.MatchString(out) {
+	out = winEnvPattern.ReplaceAllStringFunc(out, func(match string) string {
+		v := p.Env(match[1 : len(match)-1])
+		if v == "" {
+			resolved = false
+		}
+		return v
+	})
+	if !resolved {
 		return ""
 	}
 	return out
 }
 
-// %FOO% (Windows-style env reference). Allows letters, digits, underscore.
-var winEnvPattern = regexp.MustCompile(`%[A-Za-z_][A-Za-z0-9_]*%`)
+// %FOO% (Windows-style env reference).
+//
+// A Windows variable name accepts every character except "%" itself, so the
+// class excludes only "%" and the two path separators -- the separators
+// because a name cannot span a path segment, and stopping there keeps one
+// unresolved "%" from swallowing the rest of the path. An identifier-shaped
+// class ([A-Za-z_][A-Za-z0-9_]*) would be wrong: %PROGRAMFILES(X86)% is a real
+// variable that the Windows spec table needs, and its parentheses put it
+// outside that syntax.
+var winEnvPattern = regexp.MustCompile(`%[^%\\/]+%`)
 
 // --- Default Prober and Launcher (real OS) ---
 
@@ -383,59 +463,48 @@ func (osProber) Env(name string) string { return os.Getenv(name) }
 // application opening behind the window.
 //
 // A process still alive at the deadline counts as launched, which is the
-// normal case: a first launch keeps the process for the life of the editor.
+// normal case: a first launch of an editor keeps the process for the life of
+// its window.
 const launchFailureWindow = 400 * time.Millisecond
+
+// stderrCaptureLimit caps what one launch keeps of a command's stderr.
+//
+// Only the first line ever reaches the user. A process that survives the
+// failure window keeps writing into this buffer for as long as it runs, and a
+// GUI application logs for hours, so an uncapped buffer grows without limit in
+// a sidecar that never restarts.
+const stderrCaptureLimit = 8 << 10
 
 type osLauncher struct{}
 
-// launchCommand builds the command that opens path in the detected
-// application, and says whether the command's exit code carries a verdict.
-//
-// Split from Launch so a test can assert the argv of every kind without
-// spawning anything -- argv is the whole of what this package decides, and
-// the macOS branch is the difference between raising the editor and leaving
-// it behind the window.
-func launchCommand(detected *detectedExec, path string) (*exec.Cmd, bool, error) {
-	switch detected.kind {
-	case execKindBinary:
-		return exec.Command(detected.path, path), true, nil
-	case execKindMacOSApp:
-		// `open -a <bundle> <dir>` asks the running instance to open the
-		// folder AND activates it, which is the whole reason the bundle is
-		// probed before the PATH command. Running the command directly starts
-		// a second process that forwards its argument to the first instance
-		// and exits, leaving that instance wherever it was -- usually behind
-		// this window, which reads as the click doing nothing.
-		//
-		// No `-n`: a new instance is not wanted, only the front-most one.
-		return exec.Command("open", "-a", detected.path, path), true, nil
-	case execKindFileManager:
-		cmd, exitMeaningful := fileManagerCommand(path)
-		return cmd, exitMeaningful, nil
-	default:
-		return nil, false, fmt.Errorf("unknown exec kind: %d", detected.kind)
-	}
-}
-
 func (osLauncher) Launch(detected *detectedExec, path string) error {
-	cmd, exitMeaningful, err := launchCommand(detected, path)
-	if err != nil {
-		return err
-	}
-	procutil.HideConsoleWindow(cmd)
-	return startAndWatch(cmd, exitMeaningful)
+	plan := detected.command(path)
+	procutil.HideConsoleWindow(plan.cmd)
+	return startAndWatch(plan.cmd, plan.exitMeaningful)
 }
 
 // startAndWatch starts cmd and reports an immediate failure.
 //
 // It always reaps the child, in the goroutine below, so a session's launches
-// cannot accumulate zombies. When exitMeaningful is false the exit code is
-// collected and discarded: some launchers report a nonzero status for a
-// perfectly good open, and calling those failures would be worse than staying
-// silent.
+// cannot accumulate zombies. That goroutine, and the stderr pipe os/exec makes
+// for the capture, stay alive until every process holding the pipe's write end
+// closes it -- a launcher shim exits at once but the editor it started inherits
+// the pipe, so in practice that is when the user quits the editor. The capture
+// is capped for exactly that reason; the goroutine and the descriptors are the
+// price of reaping the child at all.
+//
+// cmd.WaitDelay does NOT belong here, although it looks like the bound this
+// wants. It closes the parent's end of the pipe once the delay expires, so the
+// editor's next write to stderr takes an EPIPE -- and a SIGPIPE with it. The
+// sidecar must not risk killing the application the user just opened to
+// release one file descriptor sooner.
+//
+// When exitMeaningful is false the exit code is collected and discarded: some
+// launchers report a nonzero status for a perfectly good open, and calling
+// those failures would be worse than staying silent.
 func startAndWatch(cmd *exec.Cmd, exitMeaningful bool) error {
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &cappedBuffer{limit: stderrCaptureLimit}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -463,6 +532,30 @@ func startAndWatch(cmd *exec.Cmd, exitMeaningful bool) error {
 		return nil
 	}
 }
+
+// cappedBuffer collects at most limit bytes of a command's output and discards
+// the rest. It always reports a complete write, so the process it captures
+// keeps running after the cap fills instead of failing on a short write.
+//
+// Only startAndWatch's own goroutine writes it, and only the branch that waited
+// for cmd.Wait reads it, so it needs no lock of its own.
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.limit - c.buf.Len(); room > 0 {
+		if len(p) > room {
+			c.buf.Write(p[:room])
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
 
 // firstLine is the first non-empty line of s, for an error a person reads in a
 // notification. A failing launcher can print a whole usage screen, and the

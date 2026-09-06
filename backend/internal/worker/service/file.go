@@ -15,8 +15,8 @@ import (
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/pathutil"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/leapmux/leapmux/util/validate"
 )
 

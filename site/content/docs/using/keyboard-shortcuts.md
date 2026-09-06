@@ -12,7 +12,7 @@ LeapMux ships with a VS Code-style keyboard shortcut system: every shortcut is a
 A keyboard shortcut in LeapMux is the combination of three independent pieces:
 
 - **Command** — a named action with a human title, such as `app.newAgent` ("New Agent") or `app.closeActiveTab` ("Close Active Tab"). The command holds the logic; it does not know which key triggers it.
-- **Keybinding** — a key string mapped to a command, optionally gated by a `when`-clause. For example, `$mod+n` runs `app.newAgent` when `!dialogOpen` (no dialog is open).
+- **Keybinding** — a key string mapped to a command, optionally restricted by a `when`-clause. For example, `$mod+n` runs `app.newAgent` when `!dialogOpen` (no dialog is open).
 - **Context** — a set of named boolean/string values evaluated the moment you press a key (for example `dialogOpen`, `terminalFocused`, or `platform == "mac"`). A binding fires only if its `when`-clause evaluates to true against the current context.
 
 Because these are decoupled, the same command can be bound to several keys, and the same key can run different commands depending on what is focused.
@@ -155,7 +155,7 @@ See [Workspaces](/docs/using/workspaces/).
 
 ### Desktop app only
 
-These are gated to the desktop app via `isDesktop` and have no effect in the browser.
+The `isDesktop` clause restricts these to the desktop app. They have no effect in the browser.
 
 | Command | macOS | Windows / Linux | Active when |
 |---|---|---|---|
@@ -176,14 +176,14 @@ The zoom, web-inspector, and quit shortcuts ("core" bindings) are mounted at the
 
 The `⇧⌘E` / `Ctrl+Shift+E` shortcut opens the active tab's working directory in an external application. It is one face of a feature that also lives in the desktop workspace title bar as a **split button**, and in the sidebar's workspace, repository and branch row menus.
 
-**Where it appears.** The split button shows in the title bar only when all three conditions hold: you are on the **desktop app in solo mode**, the active tab has a working directory, and the machine reports at least one application. It is hidden in the browser and in distributed mode.
+**Where it appears.** The split button shows in the title bar only when all three conditions hold. You are on the **desktop app in solo mode**. The active tab has a working directory. The machine reports at least one application. It is hidden in the browser and in distributed mode.
 
 **The two faces of the split button.**
 
-- The **main face** reads "Open in {AppName}" (with the application's icon) when you have a preferred application. It reads "Open in …" with a generic icon when you have not picked one. With a preferred application, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first application in the list and remembers it.
+- The **main face** reads "Open in {AppName}" (with the application's icon) when you have a preferred application. It reads "Open in …" with a generic icon when you have not picked one. With a preferred application, clicking the main face — or pressing `⇧⌘E` / `Ctrl+Shift+E` — launches it. Without one, clicking the main face opens the dropdown; pressing the shortcut launches the first detected EDITOR and remembers it. It skips the file manager, which leads the list, because a machine with three editors installed should not open Finder.
 - The **chevron** opens a dropdown that lists your file manager first, then every detected editor alphabetically, with a checkmark on the current preferred one. A separator and **"Refresh app list"** close the list.
 
-Picking a row from the dropdown opens the working directory in that application and remembers it as your preferred one, so the main face and the keyboard shortcut follow your last pick. "Refresh app list" re-probes your machine, which is what you want after installing or removing an editor.
+Picking a row from the dropdown opens the working directory in that application and remembers it. The main face and the keyboard shortcut then follow your last pick. "Refresh app list" re-probes your machine, which is what you want after you install or remove an application.
 
 **The file manager is one of the choices.** Pick **Finder**, **File Explorer** or your Linux file manager and the split button opens the directory there. The row menus that offer the same list already carry **Reveal in file manager** of their own, so they drop their "Open in …" row while the file manager is your preferred application.
 

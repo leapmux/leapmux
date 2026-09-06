@@ -141,6 +141,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={onTabClick}
         tabItemOps={{ onClose: onTabClose }}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -161,6 +162,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         tabItemOps={{ onClose: onTabClose }}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -185,6 +187,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         archived
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -200,6 +203,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         tabItemOps={{ onClose: () => {}, closingKeys: new Set([`${TabType.AGENT}:a1`]) }}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -216,6 +220,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         tabItemOps={{ onRename }}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -236,6 +241,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent 1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -253,6 +259,7 @@ describe('workspaceTabTree interactions', () => {
         activeTabKey={null}
         onTabClick={() => {}}
         tabItemOps={{ onRename: vi.fn() }}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -287,6 +294,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -318,6 +326,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -349,6 +358,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -377,6 +387,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1'), gitTab('a2')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -405,6 +416,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         isWorkerKnownOnline={() => false}
         branchActions={branchActions}
@@ -438,6 +450,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         isWorkerKnownOnline={workerId => workerId === 'w1'}
         branchActions={branchActions}
@@ -468,6 +481,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -494,6 +508,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         isWorkerKnownOnline={() => online()}
         branchActions={branchActions}
@@ -525,6 +540,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1'), offlineTab]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         isWorkerKnownOnline={workerId => workerId === 'w1'}
         branchActions={stubBranchRefActions()}
@@ -571,6 +587,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={[gitTab('a1')]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           archived={archived}
           branchActions={branchActions}
@@ -609,6 +626,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -636,6 +654,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTab('a1'), gitTab('a2')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -706,6 +725,7 @@ describe('workspaceTabTree interactions', () => {
           } as Tab]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           workerInfoFn={opts.noWorkerInfo ? undefined : workerInfo}
         />
@@ -832,6 +852,7 @@ describe('workspaceTabTree interactions', () => {
           } as Tab))}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           workerInfoFn={lookup}
         />
@@ -883,6 +904,7 @@ describe('workspaceTabTree interactions', () => {
           } as Tab]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           workerInfoFn={() => info()}
         />
@@ -918,6 +940,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[wtTab]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -988,6 +1011,7 @@ describe('workspaceTabTree interactions', () => {
         ]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={stubBranchRefActions()}
       />
@@ -1007,6 +1031,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTabOnBranch('a1', 'feature-1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1039,6 +1064,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[detachedTab]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={stubBranchRefActions()}
       />
@@ -1056,6 +1082,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTabOnBranch('a1', 'feature-1'), gitTabOnBranch('a2', 'feature-2')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         archived
         branchActions={stubBranchRefActions()}
@@ -1076,6 +1103,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         tabItemOps={{ onClose: vi.fn(), onRename: vi.fn() }}
       />
@@ -1093,6 +1121,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         tabItemOps={{ onClose: vi.fn() }}
       />
@@ -1109,6 +1138,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={[gitTabOnBranch('a1', 'feature-1'), gitTabOnBranch('a2', 'feature-1')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         tabItemOps={{ onClose: vi.fn(), onRename: vi.fn() }}
       />
@@ -1134,6 +1164,7 @@ describe('workspaceTabTree interactions', () => {
         ]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
         branchActions={branchActions}
       />
@@ -1237,6 +1268,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1309,6 +1341,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1367,6 +1400,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1449,6 +1483,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1502,6 +1537,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={tabs()}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
         />
       ))
@@ -1617,6 +1653,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={tabs()}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           branchActions={branchActions}
         />
@@ -1639,6 +1676,7 @@ describe('workspaceTabTree interactions', () => {
         tabs={collisionPairTabs()}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1676,6 +1714,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={[gitTab('a1'), otherTab]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -1692,6 +1731,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={[gitTab('a1')]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -1722,6 +1762,47 @@ describe('workspaceTabTree interactions', () => {
       expect(screen.getByRole('menuitem', { name: 'Reveal in file manager', hidden: true })).toBeInTheDocument()
     })
 
+    it('hides the local-only rows when the tree says the worker is remote', () => {
+      renderTree(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={[gitTab('a1')]}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          isLocalWorkerFn={() => false}
+          branchActions={stubBranchRefActions()}
+        />
+      ))
+      openRepoMenu()
+
+      expect(screen.queryByRole('menuitem', { name: 'Reveal in file manager', hidden: true })).not.toBeInTheDocument()
+      // The path is still copyable: it is what a user pastes into an ssh
+      // session on the machine that actually has it.
+      expect(screen.getByRole('menuitem', { name: 'Copy repository path', hidden: true })).toBeInTheDocument()
+    })
+
+    // The prop's own doc says an omitted `isLocalWorkerFn` answers false, so a
+    // surface that forgets to thread it HIDES the local rows rather than
+    // offering one that would open the wrong directory. Nothing exercised that
+    // default: flipping it to `?? true` left the whole frontend suite green.
+    it('hides the local-only rows when no locality answer is supplied at all', () => {
+      renderTree(() => (
+        <WorkspaceTabTree
+          repoGitStore={repoGitStore}
+          tabs={[gitTab('a1')]}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
+          workspaceId="ws-1"
+          branchActions={stubBranchRefActions()}
+        />
+      ))
+      openRepoMenu()
+
+      expect(screen.queryByRole('menuitem', { name: 'Reveal in file manager', hidden: true })).not.toBeInTheDocument()
+    })
+
     // The kebab is one of two ways in. The other is the row itself, which the
     // tree wires through `contextMenuFor` -- and that wiring is what this
     // asserts: the same menu, from a gesture that never touches the trigger.
@@ -1732,6 +1813,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={[gitTab('a1')]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -1765,6 +1847,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={[gitTab('a1')]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           archived
           branchActions={stubBranchRefActions()}
@@ -1781,6 +1864,7 @@ describe('workspaceTabTree interactions', () => {
           tabs={[gitTab('a1')]}
           activeTabKey={null}
           onTabClick={() => {}}
+          isLocalWorkerFn={() => false}
           workspaceId="ws-1"
           branchActions={stubBranchRefActions()}
         />
@@ -1822,6 +1906,7 @@ describe('workspaceTabTree subagent nesting', () => {
         tabs={[makeTab(TabType.AGENT, 'root', 'Root'), subagentTab('kid', 'root')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1842,6 +1927,7 @@ describe('workspaceTabTree subagent nesting', () => {
         ]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1859,6 +1945,7 @@ describe('workspaceTabTree subagent nesting', () => {
         tabs={[makeTab(TabType.AGENT, 'other', 'Other'), subagentTab('kid', 'gone')]}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))
@@ -1880,6 +1967,7 @@ describe('workspaceTabTree subagent nesting', () => {
         tabs={tabs()}
         activeTabKey={null}
         onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
         workspaceId="ws-1"
       />
     ))

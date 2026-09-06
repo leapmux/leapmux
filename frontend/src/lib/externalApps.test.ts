@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { editorApp, fileManagerApp } from '~/test-support/externalAppFixtures'
 import {
   _resetExternalAppCacheForTests,
   isFileManager,
@@ -33,18 +33,18 @@ describe('loadExternalApps', () => {
 
   it('returns the bridge result', async () => {
     listAppsMock.mockResolvedValueOnce([
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      editorApp('vscode', 'Visual Studio Code'),
+      editorApp('zed', 'Zed'),
     ])
     const got = await loadExternalApps()
     expect(got).toEqual([
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      editorApp('vscode', 'Visual Studio Code'),
+      editorApp('zed', 'Zed'),
     ])
   })
 
   it('caches across calls (single IPC round-trip)', async () => {
-    listAppsMock.mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
     await loadExternalApps()
     await loadExternalApps()
     await loadExternalApps()
@@ -58,7 +58,7 @@ describe('loadExternalApps', () => {
     }))
     const a = loadExternalApps()
     const b = loadExternalApps()
-    resolveList([{ id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR }])
+    resolveList([editorApp('zed', 'Zed')])
     const [ra, rb] = await Promise.all([a, b])
     expect(ra).toEqual(rb)
     expect(listAppsMock).toHaveBeenCalledTimes(1)
@@ -67,17 +67,17 @@ describe('loadExternalApps', () => {
   it('lets a later caller retry after a failure', async () => {
     listAppsMock.mockRejectedValueOnce(new Error('boom'))
     await expect(loadExternalApps()).rejects.toThrow('boom')
-    listAppsMock.mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
     const got = await loadExternalApps()
-    expect(got).toEqual([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    expect(got).toEqual([editorApp('vscode', 'VS Code')])
   })
 
   it('bypasses cache and re-asks the bridge when refresh=true', async () => {
     listAppsMock
-      .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+      .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
       .mockResolvedValueOnce([
-        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
-        { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+        editorApp('vscode', 'VS Code'),
+        editorApp('zed', 'Zed'),
       ])
     const first = await loadExternalApps()
     const second = await loadExternalApps(true)
@@ -95,12 +95,12 @@ describe('loadExternalApps', () => {
     // a downstream chat-scroll bug from the resulting layout thrash).
     listAppsMock
       .mockResolvedValueOnce([
-        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
-        { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+        editorApp('vscode', 'VS Code'),
+        editorApp('zed', 'Zed'),
       ])
       .mockResolvedValueOnce([
         // Same id+name as the first call, but a brand-new object.
-        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+        editorApp('vscode', 'VS Code'),
         // `zed` removed; brand-new object for vscode again.
       ])
     const first = await loadExternalApps()
@@ -113,8 +113,8 @@ describe('loadExternalApps', () => {
 
   it('refreshes object identity when displayName changes', async () => {
     listAppsMock
-      .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
-      .mockResolvedValueOnce([{ id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR }])
+      .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+      .mockResolvedValueOnce([editorApp('vscode', 'Visual Studio Code')])
     const first = await loadExternalApps()
     const second = await loadExternalApps(true)
     // Different displayName → must be a new reference so Solid re-renders.
@@ -125,8 +125,8 @@ describe('loadExternalApps', () => {
 
 describe('resolvePreferredExternalApp', () => {
   const list = [
-    { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
-    { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+    editorApp('vscode', 'VS Code'),
+    editorApp('zed', 'Zed'),
   ]
 
   it('returns undefined for an empty list, and persists nothing', () => {
@@ -168,9 +168,9 @@ describe('resolvePreferredExternalApp', () => {
   // every user who never picked -- on a machine with three editors installed.
   describe('the fallback with the file manager present', () => {
     const withFileManager = [
-      { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
-      { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      fileManagerApp('Finder'),
+      editorApp('vscode', 'VS Code'),
+      editorApp('zed', 'Zed'),
     ]
 
     it('skips the file manager and takes the first editor when nothing is pinned', () => {
@@ -206,20 +206,28 @@ describe('isFileManager', () => {
   // repository block drops its "Open in ..." row for a file-manager default.
   // An id test would have to be repeated at every one of those sites.
   it('answers true for the file-manager kind', () => {
-    expect(isFileManager({ id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER })).toBe(true)
+    expect(isFileManager(fileManagerApp('Finder'))).toBe(true)
   })
 
   it('answers false for an editor', () => {
-    expect(isFileManager({ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR })).toBe(false)
+    expect(isFileManager(editorApp('vscode', 'VS Code'))).toBe(false)
   })
 
   it('answers false for an absent application', () => {
     expect(isFileManager(undefined)).toBe(false)
   })
 
-  // A sidecar that sent no kind at all must not be mistaken for the file
-  // manager, which would hide the "Open in ..." row for every editor.
-  it('answers false for the unset kind', () => {
-    expect(isFileManager({ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.UNSPECIFIED })).toBe(false)
+  // An id the contract does not list must not be mistaken for the file
+  // manager, which would hide the "Open in ..." row for every editor. False is
+  // the safe direction: the menu then treats it as an ordinary application.
+  it('answers false for an id the contract does not know', () => {
+    expect(isFileManager({ id: 'not-a-real-app', displayName: 'Mystery' })).toBe(false)
+  })
+
+  // The id is what decides, so a file manager under any display name still
+  // groups as one -- Finder, File Explorer and whatever xdg-open resolves to
+  // are three different products behind one id.
+  it('answers true for the file manager under any display name', () => {
+    expect(isFileManager({ id: 'file-manager', displayName: 'Dolphin' })).toBe(true)
   })
 })

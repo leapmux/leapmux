@@ -7,30 +7,20 @@ import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { RepoGitStore } from '~/stores/repoGit'
 import type { Tab } from '~/stores/tab.types'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { MenuInfoButton } from '~/components/common/MenuInfoRows'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { SubMenu } from '~/components/common/SubMenu'
-import { Tooltip } from '~/components/common/Tooltip'
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
-import { useExternalApps } from '~/hooks/useExternalApps'
 import { repoGitView } from '~/stores/repoGit'
 import { dangerMenuItem } from '~/styles/shared.css'
+import { WORKER_OFFLINE_NEW_TAB_REASON } from './branchActions'
 import { RepositoryMenuItems } from './RepositoryMenuItems'
 import { RepositoryTargetMenu } from './RepositoryTargetMenu'
 import { listRepoStartPoints } from './repoStartPoints'
 import { workspaceInfoJson, workspaceInfoRows } from './workspaceMenuInfo'
 import { menuItem } from './workspaceMenuItem'
-
-/**
- * Why a repository's tab-creation items are unusable.
- *
- * Per repository, not per workspace: each one sits on its own worker, and the
- * menu now names the repository before the action, so it can say which machine
- * is missing instead of one sentence about all of them.
- */
-const REPO_WORKER_OFFLINE_REASON
-  = 'This machine is offline. Opening a tab needs the machine the repository is on.'
 
 interface WorkspaceContextMenuProps extends ContextMenuTargetProps {
   workspaceId: string
@@ -45,8 +35,15 @@ interface WorkspaceContextMenuProps extends ContextMenuTargetProps {
   repoGitStore: RepoGitStore
   workerInfoFn?: (id: string) => WorkerInfo | null
   isWorkerOnline?: (workerId: string) => boolean
-  /** Whether a worker runs on THIS machine. See `~/lib/workerLocality`. */
-  isLocalWorkerFn?: (workerId: string) => boolean
+  /**
+   * Whether a worker runs on THIS machine. See `~/lib/workerLocality`.
+   *
+   * REQUIRED, like the other two layers that carry it. An optional prop with a
+   * `?? false` default made a forgotten hand-off silently drop "Reveal in file
+   * manager" and "Open in ..." from the menu, with no type error and nothing on
+   * screen to notice.
+   */
+  isLocalWorkerFn: (workerId: string) => boolean
   /** Open a new agent / terminal at one of this workspace's checkouts. */
   startActions?: WorkspaceStartActions
   onRename: () => void
@@ -87,13 +84,8 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
     })
   })
 
-  const isLocal = (workerId: string) => props.isLocalWorkerFn?.(workerId) ?? false
+  const isLocal = (workerId: string) => props.isLocalWorkerFn(workerId)
   const isOnline = (workerId: string) => props.isWorkerOnline?.(workerId) ?? true
-
-  // Probed on open, and only where a LOCAL checkout could use one. The
-  // detection cache is module-wide, so a second row's menu pays nothing.
-  const anyLocal = () => repos().some(r => isLocal(r.startPoint.workerId))
-  const apps = useExternalApps(() => menuOpen() && anyLocal())
 
   const info = () => ({
     workspaceId: props.workspaceId,
@@ -147,21 +139,34 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
    */
   const repoActions = (repo: RepoStartPoint) => {
     const at = () => startAt(repo)
-    const reason = () => (isOnline(repo.startPoint.workerId) ? undefined : REPO_WORKER_OFFLINE_REASON)
+    // Per repository, not per workspace: each one sits on its own Worker, and
+    // the menu names the repository before the action, so it can say which one
+    // is unreachable instead of one sentence about all of them.
+    const reason = () => (isOnline(repo.startPoint.workerId) ? undefined : WORKER_OFFLINE_NEW_TAB_REASON)
     // The FLAT shape names the repository in the item, because nothing else on
     // screen does. Inside a submenu the trigger already carries that name, and
     // repeating it there would read as a second repository.
     const startLabel = (verb: string) =>
       (repos().length > 1 ? `${verb}...` : `${verb} in ${repo.label}...`)
-    const startItem = (label: string, run: (at: WorkspaceStartAt) => void) => (
-      // The reason goes through <Tooltip>, which works on a disabled control
-      // and leaves the item its own name. A `title` this long BECOMES the
-      // accessible name instead.
-      <Tooltip text={reason()}>
-        <button type="button" role="menuitem" disabled={Boolean(reason())} onClick={() => run(at())}>
-          {label}
-        </button>
-      </Tooltip>
+    // The test id only on the FLAT shape, which is the one repository the menu
+    // renders without a submenu, so the id names exactly one item. Inside a
+    // `<For>` it would be one id per repository, a selector nobody can predict;
+    // there the submenu's own id is the way in. Without this the flat shape had
+    // no stable selector at all and every lookup fell back to a localized label.
+    //
+    // A DIFFERENT id from the no-target pair below, which starts a tab with no
+    // checkout at all. One id for both would make "this workspace has no
+    // repository, so it offers the no-target start" untestable, and that is the
+    // rule that keeps a repository-bearing workspace from starting an agent on
+    // a machine the user never picked.
+    const startItem = (label: string, testId: string, run: (at: WorkspaceStartAt) => void) => (
+      <DisabledReasonMenuItem
+        reason={reason()}
+        data-testid={repos().length > 1 ? undefined : testId}
+        onClick={() => run(at())}
+      >
+        {label}
+      </DisabledReasonMenuItem>
     )
     return (
       <>
@@ -171,8 +176,8 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
             whole menu. A route that survives here would be the one way in
             that every other surface forbids. */}
         <Show when={!props.isArchived}>
-          {startItem(startLabel('New agent'), a => props.startActions?.onNewAgentAt(a))}
-          {startItem(startLabel('New terminal'), a => props.startActions?.onNewTerminalAt(a))}
+          {startItem(startLabel('New agent'), 'workspace-repo-new-agent', a => props.startActions?.onNewAgentAt(a))}
+          {startItem(startLabel('New terminal'), 'workspace-repo-new-terminal', a => props.startActions?.onNewTerminalAt(a))}
           <hr />
         </Show>
         <RepositoryMenuItems
@@ -184,8 +189,6 @@ export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props
             ).originUrl ?? '',
             isLocal: isLocal(repo.startPoint.workerId),
           })}
-          apps={apps}
-          testIdPrefix="workspace-repository"
         />
       </>
     )

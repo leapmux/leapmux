@@ -1,10 +1,11 @@
+/// <reference types="vitest/globals" />
+import type { ExternalApp } from '~/api/platformBridge'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-/// <reference types="vitest/globals" />
-import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 
 import { KEY_PREFERRED_EXTERNAL_APP, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { _resetExternalAppCacheForTests } from '~/lib/externalApps'
+import { editorApp, fileManagerApp } from '~/test-support/externalAppFixtures'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { OpenInAppButton } from './OpenInAppButton'
 
@@ -33,7 +34,7 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
 // reaches them through modules this file never names.
 vi.mock('~/components/common/Toast', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/components/common/Toast')>()
-  return { ...actual, showWarnToast: (...args: unknown[]) => showWarnToastMock(...args) }
+  return { ...actual, showWarnToastWithLoggedCause: (...args: unknown[]) => showWarnToastMock(...args) }
 })
 
 function soloRuntimeState(localSolo: boolean) {
@@ -82,9 +83,22 @@ function renderButtonNoDir() {
   return render(withPreferences(() => <OpenInAppButton workingDir={() => undefined} />))
 }
 
+/**
+ * Every application row's label, in render order.
+ *
+ * Reads the label SPAN that `DropdownMenuCheckableItem` marks with its own
+ * `-label` test id, not the row's text: a brand mark carries a `<title>`, so
+ * the row's textContent reads "CursorCursor".
+ */
+function appLabels(container: HTMLElement): string[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>('[data-testid^="open-in-app-item-"][data-testid$="-label"]'),
+  ).map(el => el.textContent?.trim() ?? '')
+}
+
 describe('open in app button', () => {
   it('renders nothing when workingDir is empty', async () => {
-    listAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
     const { container } = renderButtonNoDir()
     // Wait a tick for the resource to settle; nothing should render.
     await new Promise(r => setTimeout(r, 0))
@@ -93,7 +107,7 @@ describe('open in app button', () => {
 
   it('renders nothing when not in solo Tauri', async () => {
     runtimeStateMock.mockResolvedValue(soloRuntimeState(false))
-    listAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
     const { container } = renderButton()
     await new Promise(r => setTimeout(r, 0))
     expect(container.querySelector('[data-testid="open-in-app"]')).toBeNull()
@@ -107,14 +121,14 @@ describe('open in app button', () => {
   })
 
   it('shows "Open in …" when no MRU is set', async () => {
-    listAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
     renderButton()
     const main = await screen.findByTestId('open-in-app-main')
     expect(main.textContent).toContain('Open in …')
   })
 
   it('clicking main with no MRU does NOT launch (opens menu instead)', async () => {
-    listAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
     renderButton()
     const main = await screen.findByTestId('open-in-app-main')
     fireEvent.click(main)
@@ -123,8 +137,8 @@ describe('open in app button', () => {
 
   it('shows "Open in <name>" when MRU is set and matches a detected application', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      editorApp('vscode', 'Visual Studio Code'),
+      editorApp('zed', 'Zed'),
     ])
     localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'zed')
     renderButton()
@@ -134,7 +148,7 @@ describe('open in app button', () => {
 
   it('clicking main with MRU set launches that application', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
+      editorApp('vscode', 'Visual Studio Code'),
     ])
     localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
     renderButton('/home/u/proj')
@@ -150,8 +164,8 @@ describe('open in app button', () => {
   // which menu it was rendered in.
   it('picking a menu row launches that application and remembers it', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      editorApp('vscode', 'Visual Studio Code'),
+      editorApp('zed', 'Zed'),
     ])
     renderButton('/p')
     const item = await screen.findByTestId('open-in-app-item-zed')
@@ -169,7 +183,7 @@ describe('open in app button', () => {
   // offers this list shares -- this is the one test that exercises it.
   it('reports a refused launch, naming the application', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      editorApp('zed', 'Zed'),
     ])
     const refused = new Error('launch Zed: no such file or directory')
     openInExternalAppMock.mockRejectedValue(refused)
@@ -179,7 +193,11 @@ describe('open in app button', () => {
     fireEvent.click(item)
 
     await waitFor(() => expect(showWarnToastMock).toHaveBeenCalledTimes(1))
-    expect(showWarnToastMock.mock.calls[0]![0]).toContain('Zed')
+    // The sidecar's REASON, not the caller's sentence alone: the whole point of
+    // the window `startAndWatch` watches is to say why the launch was refused.
+    expect(showWarnToastMock.mock.calls[0]![0]).toBe(
+      'Could not open Zed: launch Zed: no such file or directory',
+    )
     expect(showWarnToastMock.mock.calls[0]![1]).toBe(refused)
     // The pick is still remembered: the application exists, and a failure to
     // launch it once is no reason to make the user choose again.
@@ -188,7 +206,7 @@ describe('open in app button', () => {
 
   it('does not launch a pick while the working directory is unknown', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+      editorApp('zed', 'Zed'),
     ])
     render(withPreferences(() => <OpenInAppButton workingDir={() => ''} />))
     await new Promise(r => setTimeout(r, 0))
@@ -201,22 +219,20 @@ describe('open in app button', () => {
   // "Finder" would otherwise file between "Cursor" and "Visual Studio Code".
   it('lists the file manager first, ahead of the editors', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
-      { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
-      { id: 'cursor', displayName: 'Cursor', kind: ExternalAppKind.EDITOR },
+      editorApp('vscode', 'Visual Studio Code'),
+      fileManagerApp('Finder'),
+      editorApp('cursor', 'Cursor'),
     ])
     const { container } = renderButton()
     await screen.findByTestId('open-in-app-item-file-manager')
-    const labels = Array.from(
-      container.querySelectorAll<HTMLElement>('[data-testid^="open-in-app-item-"] > span > span'),
-    ).map(el => el.textContent?.trim())
+    const labels = appLabels(container)
     expect(labels).toEqual(['Finder', 'Cursor', 'Visual Studio Code'])
   })
 
   it('can remember the file manager, and names it on the face', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
+      fileManagerApp('Finder'),
+      editorApp('vscode', 'Visual Studio Code'),
     ])
     renderButton('/p')
     fireEvent.click(await screen.findByTestId('open-in-app-item-file-manager'))
@@ -226,7 +242,7 @@ describe('open in app button', () => {
   })
 
   it('falls back to "Open in …" when MRU points at an application that is no longer detected', async () => {
-    listAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
     localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'zed')
     renderButton()
     const main = await screen.findByTestId('open-in-app-main')
@@ -234,7 +250,7 @@ describe('open in app button', () => {
   })
 
   it('chevron button has aria-haspopup=menu', async () => {
-    listAppsMock.mockResolvedValue([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+    listAppsMock.mockResolvedValue([editorApp('vscode', 'VS Code')])
     renderButton()
     const chevron = await screen.findByTestId('open-in-app-chevron')
     expect(chevron.getAttribute('aria-haspopup')).toBe('menu')
@@ -242,15 +258,13 @@ describe('open in app button', () => {
 
   it('sorts the editors alphabetically by display name', async () => {
     listAppsMock.mockResolvedValue([
-      { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
-      { id: 'intellij-idea-ultimate', displayName: 'IntelliJ IDEA Ultimate', kind: ExternalAppKind.EDITOR },
-      { id: 'vscode', displayName: 'Visual Studio Code', kind: ExternalAppKind.EDITOR },
+      editorApp('zed', 'Zed'),
+      editorApp('intellij-idea-ultimate', 'IntelliJ IDEA Ultimate'),
+      editorApp('vscode', 'Visual Studio Code'),
     ])
     const { container } = renderButton()
     await screen.findByTestId('open-in-app-item-vscode')
-    const labels = Array.from(
-      container.querySelectorAll<HTMLElement>('[data-testid^="open-in-app-item-"] > span > span'),
-    ).map(el => el.textContent?.trim())
+    const labels = appLabels(container)
     expect(labels).toEqual([
       'IntelliJ IDEA Ultimate',
       'Visual Studio Code',
@@ -261,10 +275,10 @@ describe('open in app button', () => {
   describe('refresh app list', () => {
     it('asks the bridge to re-probe and updates the menu', async () => {
       listAppsMock
-        .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
         .mockResolvedValueOnce([
-          { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
-          { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+          editorApp('vscode', 'VS Code'),
+          editorApp('zed', 'Zed'),
         ])
       renderButton()
       const refreshBtn = await screen.findByTestId('open-in-app-refresh')
@@ -278,10 +292,10 @@ describe('open in app button', () => {
     it('migrates MRU to the first remaining application when the prior one disappears', async () => {
       listAppsMock
         .mockResolvedValueOnce([
-          { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
-          { id: 'zed', displayName: 'Zed', kind: ExternalAppKind.EDITOR },
+          editorApp('vscode', 'VS Code'),
+          editorApp('zed', 'Zed'),
         ])
-        .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
       localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'zed')
       renderButton('/p')
       // MRU is `zed` initially.
@@ -306,7 +320,7 @@ describe('open in app button', () => {
     // refreshing, so the empty-list path is genuinely exercised.
     it('leaves the MRU alone when refresh returns no applications', async () => {
       listAppsMock
-        .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
         .mockResolvedValueOnce([])
       localStorageSet(KEY_PREFERRED_EXTERNAL_APP, 'vscode')
       renderButton('/p')
@@ -327,9 +341,9 @@ describe('open in app button', () => {
     })
 
     it('disables the chevron and shows a spinner there while the refresh is in flight', async () => {
-      let resolveRefresh: (v: { id: string, displayName: string, kind: ExternalAppKind }[]) => void = () => {}
+      let resolveRefresh: (v: ExternalApp[]) => void = () => {}
       listAppsMock
-        .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+        .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
         .mockImplementationOnce(() => new Promise((r) => {
           resolveRefresh = r
         }))
@@ -340,7 +354,7 @@ describe('open in app button', () => {
       fireEvent.click(refreshBtn)
       await waitFor(() => expect(chevron.disabled).toBe(true))
       // Resolve the in-flight refresh; the chevron flips back to enabled.
-      resolveRefresh([{ id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR }])
+      resolveRefresh([editorApp('vscode', 'VS Code')])
       await waitFor(() => expect(chevron.disabled).toBe(false))
     })
   })

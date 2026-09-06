@@ -112,7 +112,13 @@ func defaultExternalAppSpecs() []ExternalAppSpec {
 		{
 			ID:          "notepad-plus-plus",
 			DisplayName: "Notepad++",
+			// PATH first, like every other row here. A package manager --
+			// Scoop, Chocolatey -- installs outside Program Files and puts the
+			// executable on PATH, and with the two Program Files probes alone
+			// such an install was undetectable and "Refresh app list" re-ran
+			// the same two misses.
 			detect: tryAll(
+				tryLookPath("notepad++"),
 				tryPath(programFiles+`\Notepad++\notepad++.exe`),
 				tryPath(programFilesX86+`\Notepad++\notepad++.exe`),
 			),
@@ -145,6 +151,6 @@ func jbSpec(id, displayName, cli, productGlob, exe string) ExternalAppSpec {
 // PATH order stays as it is on this platform, unlike macOS: a Windows editor
 // brings its own window forward when a second invocation hands the folder to
 // the running instance.
-func fileManagerCommand(dir string) (*exec.Cmd, bool) {
-	return exec.Command("explorer.exe", dir), false
+func fileManagerCommand(dir string) launchPlan {
+	return launchPlan{exec.Command("explorer.exe", dir), false}
 }

@@ -8,7 +8,6 @@ import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger
 import { NewTabMenuItems } from '~/components/common/NewTabMenuItems'
 import { useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
-import { useExternalApps } from '~/hooks/useExternalApps'
 import { RepositoryMenuItems } from './RepositoryMenuItems'
 import { RepositoryTargetMenu } from './RepositoryTargetMenu'
 
@@ -53,7 +52,6 @@ const CheckoutActions: Component<{
     props.menuOpen() && props.checkout.workerId ? { workerId: props.checkout.workerId } : null
   const { providers } = useAvailableProviders(listSource)
   const { shells, defaultShell } = useAvailableShells(listSource)
-  const apps = useExternalApps(() => props.menuOpen() && props.checkout.isLocal)
 
   return (
     <>
@@ -76,11 +74,7 @@ const CheckoutActions: Component<{
       </Show>
       {/* `disabledReason` deliberately does NOT reach this block: every item
           copies text the browser already holds or acts on THIS machine. */}
-      <RepositoryMenuItems
-        checkout={() => props.checkout}
-        apps={apps}
-        testIdPrefix="repo-repository"
-      />
+      <RepositoryMenuItems checkout={() => props.checkout} />
     </>
   )
 }

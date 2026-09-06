@@ -4,14 +4,13 @@ import type { RepositoryCheckout } from './RepositoryMenuItems'
 import type { ContextMenuTargetProps, DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import { createSignal, Show } from 'solid-js'
+import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { NewTabMenuItems } from '~/components/common/NewTabMenuItems'
-import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
 import { useAvailableProviders } from '~/hooks/useAvailableProviders'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
-import { useExternalApps } from '~/hooks/useExternalApps'
 import { GitMode, gitModeMenuLabel } from '~/hooks/useGitModeState'
 import { dangerMenuItem } from '~/styles/shared.css'
 import { RepositoryMenuItems } from './RepositoryMenuItems'
@@ -80,30 +79,6 @@ interface BranchContextMenuProps extends ContextMenuTargetProps {
   'data-testid'?: string
 }
 
-/**
- * The `Repository` section, and the application probe that only it uses.
- *
- * Its own component so the probe -- and with it the Preferences context the
- * remembered application lives in -- exists only where the section does. The
- * two composer surfaces render this menu WITHOUT a repository, and neither
- * should have to stand up a preference store to show a branch menu.
- */
-const BranchRepositorySection: Component<{
-  checkout: () => RepositoryCheckout
-}> = (props) => {
-  // Only for a LOCAL checkout: a remote worker's path either does not exist
-  // on this machine or is a different directory. The menu being open is
-  // already given -- this component mounts only then.
-  const apps = useExternalApps(() => props.checkout().isLocal)
-  return (
-    <RepositoryMenuItems
-      checkout={props.checkout}
-      apps={apps}
-      testIdPrefix="branch-repository"
-    />
-  )
-}
-
 // Per-row trigger+children wrapper around DropdownMenu. The menu items
 // close over their row's branch data via the bound `actions` bundle, so
 // there's no shared overlay state to thread.
@@ -120,18 +95,12 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
 
   /** One change item. The three differ only in their mode. */
   const changeItem = (mode: ChangeBranchMode) => (
-    // The reason goes through <Tooltip>, which works on a disabled control and
-    // leaves the item its own name. A `title` this long BECOMES the accessible
-    // name, so a screen reader announced the reason in place of the label.
-    <Tooltip text={props.disabledReason}>
-      <button
-        role="menuitem"
-        disabled={Boolean(props.disabledReason)}
-        onClick={() => props.actions.onChangeBranch(mode)}
-      >
-        {gitModeMenuLabel(mode)}
-      </button>
-    </Tooltip>
+    <DisabledReasonMenuItem
+      reason={props.disabledReason}
+      onClick={() => props.actions.onChangeBranch(mode)}
+    >
+      {gitModeMenuLabel(mode)}
+    </DisabledReasonMenuItem>
   )
 
   return (
@@ -160,16 +129,13 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
       {changeItem(GitMode.CreateBranch)}
       {changeItem(GitMode.CreateWorktree)}
       <hr />
-      <Tooltip text={props.disabledReason}>
-        <button
-          role="menuitem"
-          class={dangerMenuItem}
-          disabled={Boolean(props.disabledReason)}
-          onClick={() => props.actions.onDeleteBranch()}
-        >
-          {`${workingTreeDeleteLabel(props.isWorktree)}...`}
-        </button>
-      </Tooltip>
+      <DisabledReasonMenuItem
+        reason={props.disabledReason}
+        class={dangerMenuItem}
+        onClick={() => props.actions.onDeleteBranch()}
+      >
+        {`${workingTreeDeleteLabel(props.isWorktree)}...`}
+      </DisabledReasonMenuItem>
       <hr />
       {/* The same block the tab bar's + menu renders, WITHOUT its shortcut
           hints: those keys open a tab at the current tab's working directory,
@@ -196,7 +162,7 @@ export const BranchContextMenu: Component<BranchContextMenuProps> = (props) => {
         {repository => (
           <>
             <hr />
-            <BranchRepositorySection checkout={repository()} />
+            <RepositoryMenuItems checkout={repository()} />
           </>
         )}
       </Show>

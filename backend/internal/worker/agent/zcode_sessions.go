@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // ZCode's CLI stores its sessions in a SQLite database whose `session` table is

@@ -1,10 +1,10 @@
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { executeCommand, getCommand, resetCommands } from '~/lib/shortcuts/commands'
 import { evaluateWhen } from '~/lib/shortcuts/context'
 import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend.store'
+import { editorApp, fileManagerApp } from '~/test-support/externalAppFixtures'
 import { useShortcuts } from './useShortcuts'
 
 const refreshFileTree = vi.fn()
@@ -41,7 +41,7 @@ vi.mock('~/lib/externalApps', async importOriginal => ({
 // reaches them through modules this file never names.
 vi.mock('~/components/common/Toast', async importOriginal => ({
   ...await importOriginal<typeof import('~/components/common/Toast')>(),
-  showWarnToast: (...args: unknown[]) => showWarnToastMock(...args),
+  showWarnToastWithLoggedCause: (...args: unknown[]) => showWarnToastMock(...args),
 }))
 
 vi.mock('~/components/shell/UserMenuState', () => ({
@@ -58,7 +58,10 @@ afterEach(() => {
   resetCommands()
   refreshFileTree.mockReset()
   toggleHiddenFiles.mockReset()
+  // Reset to a RESOLVED promise, not to undefined: `openInExternalApp` is
+  // declared `Promise<void>`, and the launch path attaches a `.catch` to it.
   openInExternalAppMock.mockReset()
+  openInExternalAppMock.mockResolvedValue(undefined)
   runtimeStateMock.mockReset()
   loadExternalAppsMock.mockReset()
   showWarnToastMock.mockReset()
@@ -452,8 +455,8 @@ describe('useShortcuts', () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
       loadExternalAppsMock.mockResolvedValue([
-        { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
-        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+        fileManagerApp('Finder'),
+        editorApp('vscode', 'VS Code'),
       ])
       props.preferredExternalAppId = () => 'file-manager'
 
@@ -474,8 +477,8 @@ describe('useShortcuts', () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
       loadExternalAppsMock.mockResolvedValue([
-        { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER },
-        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+        fileManagerApp('Finder'),
+        editorApp('vscode', 'VS Code'),
       ])
       props.preferredExternalAppId = () => undefined
 
@@ -495,7 +498,7 @@ describe('useShortcuts', () => {
       const props = makeSoloProps('/p')
       runtimeStateMock.mockResolvedValue(soloRuntime(true))
       loadExternalAppsMock.mockResolvedValue([
-        { id: 'vscode', displayName: 'VS Code', kind: ExternalAppKind.EDITOR },
+        editorApp('vscode', 'VS Code'),
       ])
       const refused = new Error('launch Visual Studio Code: exit status 1')
       openInExternalAppMock.mockRejectedValue(refused)
@@ -506,9 +509,33 @@ describe('useShortcuts', () => {
       })
 
       await getCommand('app.openInExternalApp')!.handler()
-      expect(showWarnToastMock).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(showWarnToastMock).toHaveBeenCalledTimes(1))
       expect(showWarnToastMock.mock.calls[0]![0]).toContain('VS Code')
       expect(showWarnToastMock.mock.calls[0]![1]).toBe(refused)
+    })
+
+    // Tauri rejects with the `Err(String)` the Rust command returned, NOT with
+    // an Error, and that string is the only place the sidecar's reason lives.
+    // A toast built from `formatErrorMessage` dropped it and showed the
+    // caller's sentence alone.
+    it('puts the sidecar reason in the toast when the rejection is a plain string', async () => {
+      const props = makeSoloProps('/p')
+      runtimeStateMock.mockResolvedValue(soloRuntime(true))
+      loadExternalAppsMock.mockResolvedValue([
+        editorApp('zed', 'Zed'),
+      ])
+      openInExternalAppMock.mockRejectedValue('launch Zed: exit status 1: bundle is missing')
+
+      render(() => {
+        useShortcuts(props as any)
+        return null
+      })
+
+      await getCommand('app.openInExternalApp')!.handler()
+      await vi.waitFor(() => expect(showWarnToastMock).toHaveBeenCalledTimes(1))
+      expect(showWarnToastMock.mock.calls[0]![0]).toBe(
+        'Could not open Zed: launch Zed: exit status 1: bundle is missing',
+      )
     })
   })
 })

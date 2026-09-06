@@ -26,6 +26,7 @@ import type { ExternalAppId } from '~/generated/contracts/external-apps'
 import { createUniqueId, For } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { iconStyle } from './iconStyle'
+import { SvgIconFrame } from './SvgIconFrame'
 
 interface ExternalAppIconProps {
   id?: string
@@ -561,22 +562,14 @@ function NotepadPlusPlusIcon(props: { size: number, class?: string }): JSX.Eleme
 // whatever xdg-open resolves to are three different products, and painting
 // any one brand's mark on all three would be wrong.
 function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
+  // Through the shared frame, unlike the brand marks above: this glyph wants
+  // exactly lucide's geometry and stroke, which is what `SvgIconFrame` is. It
+  // also brings lucide's `aria-hidden` default, so the row's accessible name
+  // stays the application's name alone.
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={props.size}
-      height={props.size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      class={props.class}
-      style={iconStyle(props.size)}
-    >
+    <SvgIconFrame size={props.size} class={props.class} style={iconStyle(props.size)}>
       <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-    </svg>
+    </SvgIconFrame>
   )
 }
 
@@ -586,22 +579,10 @@ function FileManagerIcon(props: { size: number, class?: string }): JSX.Element {
 // manager has an entry of its own.
 function GenericAppIcon(props: { size: number, class?: string }): JSX.Element {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={props.size}
-      height={props.size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      class={props.class}
-      style={iconStyle(props.size)}
-    >
+    <SvgIconFrame size={props.size} class={props.class} style={iconStyle(props.size)}>
       <path d="m16 18 6-6-6-6" />
       <path d="m8 6-6 6 6 6" />
-    </svg>
+    </SvgIconFrame>
   )
 }
 

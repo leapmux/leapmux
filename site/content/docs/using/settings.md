@@ -1,6 +1,6 @@
 ---
 title: "Settings & Preferences"
-description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Desktop, Files & Editors, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
+description: "Every Preferences dialog category in order: Account, Apps, Appearance, Notifications, Chat & Composer, Terminal, Desktop, Files & Applications, Keyboard Shortcuts, Advanced — and the Administration group hub administrators see."
 type: docs
 weight: 10
 ---
@@ -44,7 +44,7 @@ The user categories, in navigation order:
 | **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
 | **Terminal** | Terminal renderer. |
 | **Desktop** | The tray (menu bar) icon, what closing and minimizing a window do, and the login launch. The desktop app only; in a browser the category disappears from the dialog. |
-| **Files & Editors** | Preferred application (desktop), reveal after download (desktop), hidden files in directory picker. |
+| **Files & Applications** | Preferred application (desktop), reveal after download (desktop), hidden files in directory picker. |
 | **Keyboard Shortcuts** | The keybinding editor (see below). |
 | **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
 
@@ -200,13 +200,13 @@ Applies to the **login launch only** — starting LeapMux yourself always shows 
 The desktop app must decide the window state before it can read your preferences. It therefore keeps a copy of the tray and login-launch settings on the machine. LeapMux rewrites the copy whenever a setting changes, and your account stays the source of truth. The copy belongs to the operating-system user, not to a LeapMux account. On a machine that two LeapMux accounts sign in on, LeapMux starts with the settings of the account that signed in last. A change made on another device reaches this machine when you next sign in there, so one launch can still follow the previous choice.
 {{< /callout >}}
 
-## Files & Editors
+## Files & Applications
 
 Per-device toggles for files and external applications. As with the chat toggles, the in-context controls — the application menu on **Open in …**, the file viewer's save action, the directory picker — change the same stored value as these rows.
 
 | Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
-| **Preferred application** | First detected (desktop only) | The application menu on **Open in …** | Which editor or file manager opens a working directory. |
+| **Preferred application** | First detected editor (desktop only) | The application menu on **Open in …** | Which editor or file manager opens a working directory. |
 | **Reveal after download** | On (desktop only) | The file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
 | **Hidden files in directory picker** | On | The directory picker itself | Whether the directory picker lists dotfiles. |
 

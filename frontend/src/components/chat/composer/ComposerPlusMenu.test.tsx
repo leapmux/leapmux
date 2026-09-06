@@ -2,6 +2,7 @@ import type { AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { WORKER_OFFLINE_BRANCH_REASON } from '~/components/workspace/branchActions'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
@@ -621,7 +622,7 @@ describe('composerPlusMenu', () => {
   })
 
   it('disables every branch action when the Worker is unreachable, and says why', () => {
-    const reason = 'This Worker is offline. Branch actions need the machine the repository is on.'
+    const reason = WORKER_OFFLINE_BRANCH_REASON
     const { branchActions } = renderMenu({ branchName: 'main', branchDisabledReason: reason })
 
     // The trigger stays ENABLED — the items inside it are what the guard

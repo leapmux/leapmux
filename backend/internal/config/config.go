@@ -12,7 +12,7 @@ import (
 
 	"github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/v2"
-	"github.com/leapmux/leapmux/internal/util/pathutil"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // IsHelpArg reports whether arg is one of the recognized help tokens.

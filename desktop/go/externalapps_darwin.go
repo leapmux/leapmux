@@ -24,64 +24,17 @@ func defaultExternalAppSpecs() []ExternalAppSpec {
 		fileManagerSpec("Finder"),
 
 		// VS Code family
-		{
-			ID:          "vscode",
-			DisplayName: "Visual Studio Code",
-			detect: tryAll(
-				tryMacOSApp("Visual Studio Code"),
-				tryLookPath("code"),
-			),
-		},
-		{
-			ID:          "vscode-insiders",
-			DisplayName: "Visual Studio Code - Insiders",
-			detect: tryAll(
-				tryMacOSApp("Visual Studio Code - Insiders"),
-				tryLookPath("code-insiders"),
-			),
-		},
-		{
-			ID:          "vscodium",
-			DisplayName: "VSCodium",
-			detect: tryAll(
-				tryMacOSApp("VSCodium"),
-				tryLookPath("codium"),
-			),
-		},
-		{
-			ID:          "cursor",
-			DisplayName: "Cursor",
-			detect: tryAll(
-				tryMacOSApp("Cursor"),
-				tryLookPath("cursor"),
-			),
-		},
-		{
-			ID:          "windsurf",
-			DisplayName: "Windsurf",
-			detect: tryAll(
-				tryMacOSApp("Windsurf"),
-				tryLookPath("windsurf"),
-			),
-		},
+		darwinSpec("vscode", "Visual Studio Code", "code"),
+		darwinSpec("vscode-insiders", "Visual Studio Code - Insiders", "code-insiders"),
+		darwinSpec("vscodium", "VSCodium", "codium"),
+		darwinSpec("cursor", "Cursor", "cursor"),
+		darwinSpec("windsurf", "Windsurf", "windsurf"),
 
 		// Standalone
-		{
-			ID:          "sublime-text",
-			DisplayName: "Sublime Text",
-			detect: tryAll(
-				tryMacOSApp("Sublime Text"),
-				tryLookPath("subl"),
-			),
-		},
-		{
-			ID:          "zed",
-			DisplayName: "Zed",
-			detect: tryAll(
-				tryMacOSApp("Zed", "Zed Preview"),
-				tryLookPath("zed"),
-			),
-		},
+		darwinSpec("sublime-text", "Sublime Text", "subl"),
+		// Zed ships a Preview channel beside the stable one, under its own
+		// bundle name.
+		darwinSpec("zed", "Zed", "zed", "Zed Preview"),
 
 		// JetBrains: prefer the bundle (which `open` can raise) → Toolbox
 		// script (which handles updates) → PATH.
@@ -106,6 +59,30 @@ func defaultExternalAppSpecs() []ExternalAppSpec {
 			DisplayName: "Xcode",
 			detect:      tryMacOSApp("Xcode"),
 		},
+	}
+}
+
+// darwinSpec constructs the standard macOS detection chain: the .app bundle
+// first, then the PATH command.
+//
+// A constructor rather than seven hand-written rows, because the ORDER is the
+// whole fix and nothing else enforces it. The comment at the top of this file
+// states the rule, and a comment is what the previous shape relied on: a new
+// row written the other way round compiles, detects the editor, and reopens
+// the bug this file exists to close -- with no test failing, because the
+// fall-through to PATH is a supported path in its own right.
+//
+// The bundle name is the DISPLAY name, which is true of every row here.
+// `extraBundles` covers a product that ships under more than one, which today
+// is Zed's Preview channel.
+func darwinSpec(id, displayName, cli string, extraBundles ...string) ExternalAppSpec {
+	return ExternalAppSpec{
+		ID:          id,
+		DisplayName: displayName,
+		detect: tryAll(
+			tryMacOSApp(append([]string{displayName}, extraBundles...)...),
+			tryLookPath(cli),
+		),
 	}
 }
 
@@ -134,6 +111,6 @@ func jbSpec(id, displayName, cli, bundle string) ExternalAppSpec {
 // manager" does through the Tauri opener plugin.
 //
 // The exit code is meaningful: `open` reports a missing directory.
-func fileManagerCommand(dir string) (*exec.Cmd, bool) {
-	return exec.Command("open", dir), true
+func fileManagerCommand(dir string) launchPlan {
+	return launchPlan{exec.Command("open", dir), true}
 }

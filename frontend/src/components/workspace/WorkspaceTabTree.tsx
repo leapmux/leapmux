@@ -34,7 +34,7 @@ import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
-import { bindBranchActions, WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
+import { bindBranchActions, WORKER_OFFLINE_BRANCH_REASON, WORKER_OFFLINE_NEW_TAB_REASON } from './branchActions'
 import { BranchContextMenu } from './BranchContextMenu'
 import {
   branchKey,
@@ -806,9 +806,11 @@ const RepoGroupRow: Component<{
               }}
               disabledReasonFor={(checkout) => {
                 const isOnline = actions.isWorkerKnownOnline
+                // The items this disables are New agent and New terminal, so
+                // the sentence must name those, not the branch actions.
                 return !isOnline || isOnline(checkout.workerId)
                   ? undefined
-                  : WORKER_OFFLINE_BRANCH_REASON
+                  : WORKER_OFFLINE_NEW_TAB_REASON
               }}
               onToggle={setMenuOpen}
               onCollapseAllBranches={() => sel.setCollapsedMany(collapseKeys(), true)}
@@ -893,10 +895,15 @@ export interface WorkspaceTabTreeProps {
   /**
    * Whether a Worker runs on THIS machine, so the local file manager and the
    * local applications can open a path it reports. See `~/lib/workerLocality`.
-   * Answers false when omitted, which hides those items rather than offering
-   * one that would open the wrong directory.
+   *
+   * REQUIRED. It was optional with a `?? false` default, and the default is
+   * exactly the failure: a surface that forgot the hand-off rendered a menu
+   * missing two items, with no type error and no failing test. Every render
+   * site states the answer now, including the tests that do not care -- which
+   * is the point, because the three that DO care are then the only ones that
+   * say anything but `() => false`.
    */
-  isLocalWorkerFn?: (workerId: string) => boolean
+  isLocalWorkerFn: (workerId: string) => boolean
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -1062,23 +1069,39 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     return collapsed()[key] ?? false
   }
 
-  function toggleCollapsed(key: string) {
+  /**
+   * Change the collapse map and persist it, in ONE signal write.
+   *
+   * The only writer, so the sessionStorage write has one home and a later
+   * change to the persistence cannot reach one path and miss the other. Solid
+   * calls an updater exactly once and synchronously, before it writes the
+   * signal, so persisting from inside it is safe.
+   */
+  function writeCollapsed(mutate: (draft: Record<string, boolean>) => void) {
     setCollapsed((prev) => {
-      const next = { ...prev, [key]: !prev[key] }
+      const next = { ...prev }
+      mutate(next)
       sessionStorageSet(storageKey(), next)
       return next
     })
   }
 
+  function toggleCollapsed(key: string) {
+    writeCollapsed((draft) => {
+      draft[key] = !draft[key]
+    })
+  }
+
   function setCollapsedMany(keys: readonly string[], value: boolean) {
-    if (keys.length === 0)
+    // Nothing to write when every key already holds `value`. The menu item that
+    // calls this is disabled in exactly that case, so this guards a caller that
+    // does not exist yet -- but returning `prev` notifies nobody, where a fresh
+    // object re-renders the whole tree and rewrites storage for no change.
+    if (keys.every(key => (collapsed()[key] ?? false) === value))
       return
-    setCollapsed((prev) => {
-      const next = { ...prev }
+    writeCollapsed((draft) => {
       for (const key of keys)
-        next[key] = value
-      sessionStorageSet(storageKey(), next)
-      return next
+        draft[key] = value
     })
   }
 
@@ -1092,7 +1115,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     isCollapsed,
     toggleCollapsed,
     setCollapsedMany,
-    isLocalWorker: workerId => props.isLocalWorkerFn?.(workerId) ?? false,
+    isLocalWorker: workerId => props.isLocalWorkerFn(workerId),
     liveTab: key => tabByKey().get(key),
   }
   const editing: RowEditingContextValue = {

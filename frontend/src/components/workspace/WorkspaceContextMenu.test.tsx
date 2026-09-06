@@ -78,6 +78,9 @@ function renderMenu(overrides: Partial<Parameters<typeof WorkspaceContextMenu>[0
     currentSectionId: 'sec-ip',
     getTabs: () => tabs,
     repoGitStore: store,
+    // Remote by default: the locality-dependent rows are the subject of a few
+    // tests, and every other test should not have to think about them.
+    isLocalWorkerFn: () => false,
     onRename: noop,
     onMoveTo: noop as (sectionId: string) => void,
     onArchive: noop,
@@ -367,6 +370,31 @@ describe('workspaceContextMenu', () => {
 
       expect(screen.queryByTestId('workspace-new-agent')).not.toBeInTheDocument()
       expect(screen.queryByTestId('workspace-new-terminal')).not.toBeInTheDocument()
+    })
+
+    // The flat shape is the one repository a workspace has, rendered without a
+    // submenu. It carried no stable selector after the menu was reorganized
+    // around the repository, so every lookup fell back to a localized label.
+    it('gives the flat repository items a stable selector of their own', () => {
+      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      openMenu()
+
+      expect(screen.getByTestId('workspace-repo-new-agent')).toBeInTheDocument()
+      expect(screen.getByTestId('workspace-repo-new-terminal')).toBeInTheDocument()
+    })
+
+    // Inside a `<For>` the id would be one per repository, which is a selector
+    // nobody can predict; the submenu's own id is the way in there.
+    it('drops that selector once the items move into per-repository submenus', () => {
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/alpha' },
+        { toplevel: '/home/me/beta' },
+      ])
+      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      openMenu()
+
+      expect(screen.queryByTestId('workspace-repo-new-agent')).not.toBeInTheDocument()
     })
 
     // The other half: a workspace with NO checkout at all keeps the no-target

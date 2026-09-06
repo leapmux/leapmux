@@ -1,4 +1,3 @@
-import type { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
 import {
@@ -194,15 +193,14 @@ export interface TunnelInfo {
 /**
  * One application the desktop machine can open a directory in.
  *
- * `kind` arrives as the raw `ExternalAppKind` enum number the sidecar sent.
- * The app menu groups by it -- the file manager leads, the editors follow --
- * so no surface has to test an id literal. Ask it through
- * `~/lib/externalApps`'s `isFileManager` rather than comparing here.
+ * The id and the name are all the sidecar sends. What the application IS is a
+ * compile-time fact of `contracts/external-apps.json`, which the browser reads
+ * from its own generated table -- ask it through `~/lib/externalApps`'s
+ * `isFileManager`, never by comparing an id here.
  */
 export interface ExternalApp {
   id: string
   displayName: string
-  kind: ExternalAppKind
 }
 
 // Tagged unions the UI consumes. Mirror CliPathStatusResponse and

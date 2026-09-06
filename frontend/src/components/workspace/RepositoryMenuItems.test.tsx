@@ -1,14 +1,20 @@
 import type { RepositoryCheckout } from './RepositoryMenuItems'
 import type { ExternalApp } from '~/api/platformBridge'
-import type { ExternalApps } from '~/hooks/useExternalApps'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ExternalAppKind } from '~/generated/proto/leapmux/desktop/v1/frame_pb'
+import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { _resetExternalAppCacheForTests } from '~/lib/externalApps'
+import { editorApp, fileManagerApp } from '~/test-support/externalAppFixtures'
 import { RepositoryMenuItems } from './RepositoryMenuItems'
 
-const { copyTextMock, revealMock } = vi.hoisted(() => ({
+const { copyTextMock, revealMock, listAppsMock, openInExternalAppMock, prefs } = vi.hoisted(() => ({
   copyTextMock: vi.fn(),
   revealMock: vi.fn(),
+  listAppsMock: vi.fn(),
+  openInExternalAppMock: vi.fn(),
+  prefs: {
+    preferredExternalAppId: vi.fn<() => string | undefined>(),
+    setPreferredExternalAppId: vi.fn<(id: string | undefined) => void>(),
+  },
 }))
 
 vi.mock('~/lib/clipboard', async importOriginal => ({
@@ -18,14 +24,26 @@ vi.mock('~/lib/clipboard', async importOriginal => ({
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
-  return { ...actual, revealInFileManager: (...args: unknown[]) => revealMock(...args) }
+  return {
+    ...actual,
+    revealInFileManager: (...args: unknown[]) => revealMock(...args),
+    platformBridge: {
+      ...actual.platformBridge,
+      listExternalApps: (refresh?: boolean) => listAppsMock(refresh ?? false),
+      openInExternalApp: (...args: unknown[]) => openInExternalAppMock(...args),
+    },
+  }
 })
 
-function editor(id: string, displayName: string): ExternalApp {
-  return { id, displayName, kind: ExternalAppKind.EDITOR }
-}
+// The block stands its own probe up now, so it reads the pin through the
+// context. Only the two members the hook touches need to behave, and both are
+// spies so a test can assert the WRITE as well as the read.
+vi.mock('~/context/PreferencesContext', async importOriginal => ({
+  ...await importOriginal<typeof import('~/context/PreferencesContext')>(),
+  usePreferences: () => prefs,
+}))
 
-const FINDER: ExternalApp = { id: 'file-manager', displayName: 'Finder', kind: ExternalAppKind.FILE_MANAGER }
+const FINDER = fileManagerApp()
 
 const LOCAL: RepositoryCheckout = {
   gitToplevel: '/home/me/leapmux',
@@ -34,27 +52,28 @@ const LOCAL: RepositoryCheckout = {
 }
 
 /**
- * A stand-in for the real hook. The hook owns the probe and the toast, which
- * are its own concern; what this component decides is WHICH rows exist and
- * what each one acts on.
+ * Render the block against a machine that reports `apps`, with `pinned`
+ * remembered.
+ *
+ * Async because the block probes: the detected list arrives through a resource,
+ * so a test that asserts a row naming an application has to wait for it. The
+ * rows that do not depend on detection are there from the first paint.
  */
-function stubApps(apps: ExternalApp[], preferred?: ExternalApp): ExternalApps {
-  return {
-    apps: () => apps,
-    preferred: () => preferred,
-    preferredId: () => preferred?.id,
-    launch: vi.fn(),
-    refresh: vi.fn(async () => {}),
-    refreshing: () => false,
-  }
-}
-
-function renderItems(checkout: RepositoryCheckout, apps: ExternalApps) {
+async function renderItems(
+  checkout: RepositoryCheckout,
+  apps: ExternalApp[] = [],
+  pinned?: string,
+) {
+  listAppsMock.mockResolvedValue(apps)
+  prefs.preferredExternalAppId.mockReturnValue(pinned)
   render(() => (
     <menu data-testid="host">
-      <RepositoryMenuItems checkout={() => checkout} apps={apps} testIdPrefix="repo" />
+      <RepositoryMenuItems checkout={() => checkout} />
     </menu>
   ))
+  // The probe runs only for a local checkout, and only it can add rows.
+  if (checkout.isLocal && apps.length > 0)
+    await waitFor(() => expect(items()).toContain('Open in…'))
 }
 
 /**
@@ -74,11 +93,22 @@ function items(): string[] {
 beforeEach(() => {
   copyTextMock.mockReset()
   revealMock.mockReset()
+  listAppsMock.mockReset()
+  listAppsMock.mockResolvedValue([])
+  openInExternalAppMock.mockReset()
+  openInExternalAppMock.mockResolvedValue(undefined)
+  prefs.preferredExternalAppId.mockReset()
+  prefs.setPreferredExternalAppId.mockReset()
+  _resetExternalAppCacheForTests()
+})
+
+afterEach(() => {
+  _resetExternalAppCacheForTests()
 })
 
 describe('repositoryMenuItems', () => {
-  it('offers every row for a local checkout with an origin', () => {
-    renderItems(LOCAL, stubApps([editor('vscode', 'Visual Studio Code')], editor('vscode', 'Visual Studio Code')))
+  it('offers every row for a local checkout with an origin', async () => {
+    await renderItems(LOCAL, [editorApp('vscode', 'Visual Studio Code')], 'vscode')
 
     expect(items()).toEqual([
       'Copy repository URL',
@@ -89,14 +119,14 @@ describe('repositoryMenuItems', () => {
     ])
   })
 
-  it('carries its own section header, so it reads as one block wherever it lands', () => {
-    renderItems(LOCAL, stubApps([]))
+  it('carries its own section header, so it reads as one block wherever it lands', async () => {
+    await renderItems(LOCAL)
 
     expect(screen.getByText('Repository')).toBeInTheDocument()
   })
 
-  it('drops Copy repository URL for a repository with no remote', () => {
-    renderItems({ ...LOCAL, originUrl: '' }, stubApps([]))
+  it('drops Copy repository URL for a repository with no remote', async () => {
+    await renderItems({ ...LOCAL, originUrl: '' })
 
     expect(items()).not.toContain('Copy repository URL')
     expect(items()).toContain('Copy repository path')
@@ -106,62 +136,66 @@ describe('repositoryMenuItems', () => {
   // absolute path either does not exist here or -- worse -- exists and is a
   // different directory. The PATH is still worth copying: pasting it into an
   // ssh session on the machine that has it is exactly the use.
-  it('hides every local-only row for a remote worker, and keeps the path', () => {
-    renderItems({ ...LOCAL, isLocal: false }, stubApps([editor('vscode', 'VS Code')], editor('vscode', 'VS Code')))
+  it('hides every local-only row for a remote worker, and keeps the path', async () => {
+    await renderItems({ ...LOCAL, isLocal: false }, [editorApp('vscode', 'VS Code')], 'vscode')
 
     expect(items()).toEqual(['Copy repository URL', 'Copy repository path'])
+    expect(listAppsMock).not.toHaveBeenCalled()
   })
 
-  it('copies the checkout path, not the origin URL', () => {
-    renderItems(LOCAL, stubApps([]))
+  it('copies the checkout path, not the origin URL', async () => {
+    await renderItems(LOCAL)
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy repository path', hidden: true }))
     expect(copyTextMock).toHaveBeenCalledWith('/home/me/leapmux')
   })
 
-  it('copies the origin URL from its own row', () => {
-    renderItems(LOCAL, stubApps([]))
+  it('copies the origin URL from its own row', async () => {
+    await renderItems(LOCAL)
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Copy repository URL', hidden: true }))
     expect(copyTextMock).toHaveBeenCalledWith('https://example.com/o/r.git')
   })
 
-  it('reveals the checkout directory', () => {
-    renderItems(LOCAL, stubApps([]))
+  it('reveals the checkout directory', async () => {
+    await renderItems(LOCAL)
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Reveal in file manager', hidden: true }))
     expect(revealMock).toHaveBeenCalledWith('/home/me/leapmux')
   })
 
-  it('launches the remembered application at the checkout', () => {
-    const apps = stubApps([editor('zed', 'Zed')], editor('zed', 'Zed'))
-    renderItems(LOCAL, apps)
+  it('launches the remembered application at the checkout', async () => {
+    await renderItems(LOCAL, [editorApp('zed', 'Zed')], 'zed')
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Zed', hidden: true }))
-    expect(apps.launch).toHaveBeenCalledWith('zed', '/home/me/leapmux')
+    expect(openInExternalAppMock).toHaveBeenCalledWith('zed', '/home/me/leapmux')
   })
 
-  // "Open in Finder" directly under "Reveal in file manager" says almost the
-  // same thing twice. The submenu still offers it, so nothing is unreachable.
-  it('drops the Open in ... row when the remembered application is the file manager', () => {
-    renderItems(LOCAL, stubApps([FINDER, editor('zed', 'Zed')], FINDER))
+  // "Reveal in file manager" selects the directory inside its PARENT; this
+  // opens the directory itself. Two different operations, so the row stays --
+  // hiding it made an affordance vanish whenever a user picked Finder once.
+  it('keeps the Open in ... row when the remembered application is the file manager', async () => {
+    await renderItems(LOCAL, [FINDER, editorApp('zed', 'Zed')], 'file-manager')
 
     expect(items()).toEqual([
       'Copy repository URL',
       'Copy repository path',
       'Reveal in file manager',
+      'Open in Finder',
       'Open in…',
     ])
   })
 
-  it('keeps the Open in ... row for an editor default', () => {
-    renderItems(LOCAL, stubApps([FINDER, editor('zed', 'Zed')], editor('zed', 'Zed')))
+  it('keeps the Open in ... row for an editor default', async () => {
+    await renderItems(LOCAL, [FINDER, editorApp('zed', 'Zed')], 'zed')
 
     expect(items()).toContain('Open in Zed')
   })
 
-  it('offers no Open in ... row when nothing is remembered yet', () => {
-    renderItems(LOCAL, stubApps([editor('zed', 'Zed')]))
+  // The row names an explicit choice, never a guess. The submenu below is one
+  // hover away, and picking from it is what makes the choice.
+  it('offers no Open in ... row when nothing is remembered yet', async () => {
+    await renderItems(LOCAL, [editorApp('zed', 'Zed')])
 
     expect(items()).toEqual([
       'Copy repository URL',
@@ -172,18 +206,20 @@ describe('repositoryMenuItems', () => {
   })
 
   // A submenu that opens on an empty list is a dead end.
-  it('hides the Open in ... submenu when no application was detected', () => {
-    renderItems(LOCAL, stubApps([]))
+  it('hides the Open in ... submenu when no application was detected', async () => {
+    await renderItems(LOCAL)
 
     expect(items()).toEqual(['Copy repository URL', 'Copy repository path', 'Reveal in file manager'])
   })
 
-  it('launches the application picked inside the submenu, at this checkout', () => {
-    const apps = stubApps([FINDER, editor('zed', 'Zed')], editor('zed', 'Zed'))
-    renderItems(LOCAL, apps)
+  it('launches the application picked inside the submenu, at this checkout', async () => {
+    await renderItems(LOCAL, [FINDER, editorApp('zed', 'Zed')], 'zed')
 
-    fireEvent.click(screen.getByTestId('repo-open-in'))
-    fireEvent.click(screen.getByTestId('repo-item-file-manager'))
-    expect(apps.launch).toHaveBeenCalledWith('file-manager', '/home/me/leapmux')
+    fireEvent.click(screen.getByTestId('repository-open-in'))
+    fireEvent.click(screen.getByTestId('repository-item-file-manager'))
+
+    expect(openInExternalAppMock).toHaveBeenCalledWith('file-manager', '/home/me/leapmux')
+    // Picking also REMEMBERS, on every surface that renders the list.
+    expect(prefs.setPreferredExternalAppId).toHaveBeenCalledWith('file-manager')
   })
 })

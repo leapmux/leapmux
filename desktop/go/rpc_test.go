@@ -188,17 +188,15 @@ func TestHandleListTunnelsMapsTunnelInfos(t *testing.T) {
 }
 
 // The ListExternalApps dispatch arm must map the registry's listing through
-// externalAppsToProto; previously uncovered like ListTunnels above. The kind
-// rides along, because the browser groups its menu by it and a dropped kind
-// would land every app in no group at all.
+// externalAppsToProto; previously uncovered like ListTunnels above.
 func TestHandleListExternalAppsMapsTheListing(t *testing.T) {
 	app := NewApp("")
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	app.externalApps.mu.Lock()
 	app.externalApps.cached = true
 	app.externalApps.cache = []ExternalApp{
-		{ID: "vscode", DisplayName: "VS Code", Kind: desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR},
-		{ID: "file-manager", DisplayName: "Finder", Kind: desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER},
+		{ID: "vscode", DisplayName: "VS Code"},
+		{ID: "file-manager", DisplayName: "Finder"},
 	}
 	app.externalApps.mu.Unlock()
 
@@ -217,9 +215,8 @@ func TestHandleListExternalAppsMapsTheListing(t *testing.T) {
 	require.Len(t, apps, 2)
 	assert.Equal(t, "vscode", apps[0].GetId())
 	assert.Equal(t, "VS Code", apps[0].GetDisplayName())
-	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_EDITOR, apps[0].GetKind())
 	assert.Equal(t, "file-manager", apps[1].GetId())
-	assert.Equal(t, desktoppb.ExternalAppKind_EXTERNAL_APP_KIND_FILE_MANAGER, apps[1].GetKind())
+	assert.Equal(t, "Finder", apps[1].GetDisplayName())
 }
 
 func TestSwitchModeResponseCarriesLauncherStateWithCleanupError(t *testing.T) {

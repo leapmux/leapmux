@@ -13,9 +13,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/pathutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/pathutil"
 )
 
 // TabPayloadStore is the worker-local store of (user_id, tab_id) → TabPayload:
