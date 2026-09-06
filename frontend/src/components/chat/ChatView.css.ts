@@ -274,6 +274,18 @@ export const loadingOlderIndicator = style([loadingIndicatorBase, { top: 'var(--
 export const loadingNewerIndicator = style([loadingIndicatorBase, { bottom: 'var(--space-3)' }])
 
 export const inputArea = style({
+  // ONE declaration owns every vertical gap in this column: the pause banner,
+  // the input queue, the attachment strip and the composer box.
+  //
+  // Each of those children keeps its own vertical padding at zero. Padding
+  // ADDS where two children meet -- it never collapses the way margin does --
+  // so when each child owned its own spacing the queue's bottom padding and
+  // the strip's top padding stacked into 8px while every other boundary was
+  // 4px, and the size of one gap depended on which optional children rendered.
+  // A container `gap` cannot do either.
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
   // Bottom padding is space-1 when the status bar is shown beneath, and
   // space-2 when it's hidden (the status bar's own space-2 bottom padding
   // then provides the gap to the window edge instead).

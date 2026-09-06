@@ -8,7 +8,7 @@ import {
   AgentInputState,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentInputQueue } from './AgentInputQueue'
+import { AgentInputQueue, resolveQueueDrop } from './AgentInputQueue'
 
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
   return create(QueuedAgentInputSchema, {
@@ -50,6 +50,61 @@ function renderQueue(overrides: {
   return handlers
 }
 
+// A pointer drag cannot be reproduced here: solid-dnd activates on real
+// pointer geometry and collision detection, which jsdom does not supply. The
+// gesture is covered in tests/e2e/108-agent-input-queue.spec.ts; the
+// arithmetic it feeds is covered directly.
+describe('resolveQueueDrop', () => {
+  const three = [item('one'), item('two'), item('three')]
+
+  it('points an upward drop at the drop target itself', () => {
+    expect(resolveQueueDrop(three, 'qi-two', 'qi-one')).toEqual({
+      moved: expect.objectContaining({ id: 'two' }),
+      beforeInputId: 'one',
+    })
+  })
+
+  it('points a downward drop at the item after the drop target', () => {
+    // The removal shifts everything below up by one, so aiming at the target
+    // itself would land the row one slot short.
+    expect(resolveQueueDrop(three, 'qi-one', 'qi-two')).toEqual({
+      moved: expect.objectContaining({ id: 'one' }),
+      beforeInputId: 'three',
+    })
+  })
+
+  it('sends a drop on the last row to the end', () => {
+    expect(resolveQueueDrop(three, 'qi-one', 'qi-three')).toEqual({
+      moved: expect.objectContaining({ id: 'one' }),
+      beforeInputId: '',
+    })
+  })
+
+  it('refuses a drop on the dragged row itself', () => {
+    expect(resolveQueueDrop(three, 'qi-two', 'qi-two')).toBeUndefined()
+  })
+
+  it('refuses an id that is not in the list', () => {
+    expect(resolveQueueDrop(three, 'qi-nope', 'qi-one')).toBeUndefined()
+    expect(resolveQueueDrop(three, 'qi-one', 'qi-nope')).toBeUndefined()
+  })
+
+  it('refuses to move a dispatching row', () => {
+    const list = [item('one', { state: AgentInputState.DISPATCHING }), item('two')]
+    expect(resolveQueueDrop(list, 'qi-one', 'qi-two')).toBeUndefined()
+  })
+
+  it('refuses to displace a dispatching row', () => {
+    // The Worker is already sending it, so its slot is not the user's to take.
+    const list = [item('one', { state: AgentInputState.DISPATCHING }), item('two')]
+    expect(resolveQueueDrop(list, 'qi-two', 'qi-one')).toBeUndefined()
+  })
+
+  it('refuses an empty list', () => {
+    expect(resolveQueueDrop([], 'qi-one', 'qi-two')).toBeUndefined()
+  })
+})
+
 describe('agentInputQueue', () => {
   it('renders operation, state, text, and attachment metadata', () => {
     renderQueue({
@@ -87,52 +142,14 @@ describe('agentInputQueue', () => {
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), '')
   })
 
-  it('moves an input dragged upward before its drop target', async () => {
-    const handlers = renderQueue()
-    const first = screen.getByTestId('queued-input-one')
-    const second = screen.getByTestId('queued-input-two')
-
-    await fireEvent.dragStart(second)
-    await fireEvent.drop(first)
-
-    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), 'one')
-  })
-
-  it('moves an input dragged downward onto the drop target slot', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
-
-    await fireEvent.dragStart(screen.getByTestId('queued-input-one'))
-    await fireEvent.drop(screen.getByTestId('queued-input-two'))
-
-    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), 'three')
-  })
-
-  it('moves an input dragged onto the last row to the end', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
-
-    await fireEvent.dragStart(screen.getByTestId('queued-input-one'))
-    await fireEvent.drop(screen.getByTestId('queued-input-three'))
-
-    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), '')
-  })
-
-  it('ignores a drop on the dragged row itself', async () => {
-    const handlers = renderQueue()
-    const first = screen.getByTestId('queued-input-one')
-
-    await fireEvent.dragStart(first)
-    await fireEvent.drop(first)
-
-    expect(handlers.onMove).not.toHaveBeenCalled()
-  })
-
-  it('ignores a drop on a dispatching row', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
-
-    await fireEvent.dragStart(screen.getByTestId('queued-input-two'))
-    await fireEvent.drop(screen.getByTestId('queued-input-one'))
-
-    expect(handlers.onMove).not.toHaveBeenCalled()
+  it('gives a dispatching row an inert grip, so it offers no drag it cannot do', () => {
+    renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    const dispatching = screen.getByTestId('queue-drag-handle-one')
+    const movable = screen.getByTestId('queue-drag-handle-two')
+    // Hidden rather than removed: the grip keeps its grid cell, so the row's
+    // text does not shift one column left.
+    expect(dispatching.className).toContain('dragHandleInert')
+    expect(movable.className).not.toContain('dragHandleInert')
   })
 
   it('does not move an item across a dispatching head', () => {
@@ -143,7 +160,7 @@ describe('agentInputQueue', () => {
 
   it('shows Take Over for an edit owned by another client', async () => {
     const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-b' })] })
-    await fireEvent.click(screen.getByText('Take Over'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Take Over' }))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
   })
 
@@ -162,7 +179,7 @@ describe('agentInputQueue', () => {
 
   it('resumes an owned edit that this panel has not loaded', async () => {
     const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-a' })] })
-    await fireEvent.click(screen.getByText('Resume Edit'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Resume Edit' }))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), false)
   })
 
@@ -171,7 +188,7 @@ describe('agentInputQueue', () => {
       items: [item('one', { editOwnerClientId: 'client-a' })],
       activeEditInputId: 'one',
     })
-    await fireEvent.click(screen.getByText('Cancel Edit'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
     expect(handlers.onCancelEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
   })
 
@@ -204,18 +221,74 @@ describe('agentInputQueue', () => {
   it('offers Retry for a failed head', async () => {
     const handlers = renderQueue({ items: [item('one', { state: AgentInputState.FAILED, error: 'offline' })] })
     expect(screen.getByText('offline')).toBeInTheDocument()
-    await fireEvent.click(screen.getByText('Retry'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(handlers.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), false)
   })
 
   it('does not offer Retry while the failed head is edited', () => {
     renderQueue({ items: [item('one', { state: AgentInputState.FAILED, editOwnerClientId: 'client-a' })] })
-    expect(screen.queryByText('Retry')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
   })
 
   it('marks a delivery-uncertain retry as requiring confirmation', async () => {
     const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DELIVERY_UNCERTAIN })] })
-    await fireEvent.click(screen.getByText('Retry'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(handlers.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
+  })
+
+  it('keeps the first Delete click from deleting', async () => {
+    const handlers = renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(handlers.onDelete).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+
+  it('deletes on the second Delete click', async () => {
+    const handlers = renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm delete?' }))
+    expect(handlers.onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
+  })
+
+  it('arms Delete as an outline, never as a filled danger button', async () => {
+    renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const armed = screen.getByRole('button', { name: 'Confirm delete?' })
+    // `data-variant` alone paints a filled danger background. Keeping the
+    // `outline` class is what reduces it to a danger BORDER, so the pair is
+    // the contract, not either half.
+    expect(armed).toHaveAttribute('data-variant', 'danger')
+    expect(armed.classList.contains('outline')).toBe(true)
+  })
+
+  it('disarms Delete when the button loses focus', async () => {
+    const handlers = renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await fireEvent.blur(screen.getByRole('button', { name: 'Confirm delete?' }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(handlers.onDelete).not.toHaveBeenCalled()
+  })
+
+  it('names every row action although the row renders no button text', () => {
+    renderQueue({ items: [item('one'), item('two')], supportsSteering: true })
+    const first = screen.getByTestId('queued-input-one')
+    for (const name of ['Move Up', 'Move Down', 'Edit', 'Delete']) {
+      const button = within(first).getByRole('button', { name })
+      expect(button).toBeInTheDocument()
+      expect(button.textContent).toBe('')
+    }
+  })
+
+  it('puts Steer last, as the one action that keeps a visible label', () => {
+    renderQueue({
+      items: [item('one', { canSteer: true }), item('two')],
+      supportsSteering: true,
+    })
+    const first = screen.getByTestId('queued-input-one')
+    const buttons = within(first).getAllByRole('button')
+    const steer = within(first).getByRole('button', { name: 'Steer' })
+    expect(buttons[buttons.length - 1]).toBe(steer)
+    expect(steer).toHaveTextContent('Steer')
   })
 })

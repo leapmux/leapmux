@@ -78,8 +78,28 @@ export const footerSlot = style({
   position: 'absolute',
   bottom: 'var(--space-1)',
   right: 'var(--space-1)',
+  // Never reach into the `[+]` button's column.
+  //
+  // This slot and `plusSlot` are both absolute on the same bottom line, one
+  // anchored right and one anchored left, inside the same containing block.
+  // With an auto width and no cap, a wide action row grows leftward straight
+  // across the `[+]`: it wins the paint because it comes later in the DOM at
+  // an equal `z-index`, and its children re-enable pointer events, so it
+  // swallows the clicks as well. A narrow viewport with Pause, Interrupt and
+  // Send in the row is where this happens.
+  //
+  // The cap stops the box one `space-1` to the right of the `[+]`, and
+  // `flex-wrap` sends whatever no longer fits onto a second line rather than
+  // past that edge. `composerLayout` measures the slot's height into
+  // `--composer-actions-h`, and the expanded layout reserves it, so a wrapped
+  // row pushes the text up instead of covering it. The cap also keeps
+  // `collapsedAvailableWidth` at or above zero, so any text at all forces the
+  // expanded layout, which is what does that reserving.
+  maxWidth: 'calc(100% - var(--composer-left-pad) - var(--space-1))',
   zIndex: 1,
   display: 'flex',
+  flexWrap: 'wrap',
+  justifyContent: 'flex-end',
   alignItems: 'center',
   gap: 'var(--space-1)',
   pointerEvents: 'none',
@@ -130,9 +150,18 @@ globalStyle(`${container}[data-expanded] ${footerSlot}`, {
 
 // Control-request footers (full-width two-zone action rows) stretch across the
 // box instead of hugging the right corner.
+//
+// The left edge stops at `--composer-left-pad`, not at `space-1`, because the
+// `[+]` button sits at `space-1` on this same bottom line and stays rendered
+// during a control request. A row that started at `space-1` covered it
+// outright, which a narrow viewport made obvious. `max-width` goes back to
+// `none` here: `left` and `right` already fix both edges, and leaving the cap
+// on over-constrains the box, so the browser drops `right` and the row stops
+// reaching the corner.
 globalStyle(`${container}[data-expanded] ${footerSlot}[data-full-width]`, {
-  left: 'var(--space-1)',
+  left: 'var(--composer-left-pad)',
   right: 'var(--space-1)',
+  maxWidth: 'none',
 })
 
 /**

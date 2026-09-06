@@ -10,6 +10,8 @@ import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab } from '~/stores/tab.types'
+import Pause from 'lucide-solid/icons/pause'
+import Play from 'lucide-solid/icons/play'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from 'solid-js'
@@ -20,7 +22,7 @@ import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
@@ -36,6 +38,7 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AgentInputQueue } from './AgentInputQueue'
+import { AgentInputQueuePauseBanner } from './AgentInputQueuePauseBanner'
 import { clearAttachments as clearCachedAttachments } from './attachments'
 import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
@@ -133,20 +136,36 @@ export interface AgentEditorPanelProps {
   triggerSendRef?: (fn: () => void | Promise<void>) => void
 }
 
+/**
+ * The queue's pause toggle, which shares the composer's action cluster with
+ * Interrupt and Send.
+ *
+ * `actionLabel` hides the word below `sm`, so the three buttons shrink to
+ * icons together on a phone and the cluster stops crowding the `[+]` button.
+ * The tooltip carries the name once the word is gone -- and, through
+ * `ariaLabel`, so does the accessibility tree, which reads nothing from a
+ * `display: none` label.
+ */
 const AgentInputQueuePauseButton: Component<{
   paused: boolean
   onSetPaused?: (paused: boolean) => Promise<void>
-}> = props => (
-  <button
-    type="button"
-    class="outline"
-    onMouseDown={keepFocusOnPress}
-    onClick={() => { void props.onSetPaused?.(!props.paused).catch(() => {}) }}
-    data-testid="queue-pause-button"
-  >
-    {props.paused ? 'Resume Queue' : 'Pause Queue'}
-  </button>
-)
+}> = (props) => {
+  const label = () => (props.paused ? 'Resume Queue' : 'Pause Queue')
+  return (
+    <Tooltip text={label()} ariaLabel>
+      <button
+        type="button"
+        class="outline"
+        onMouseDown={keepFocusOnPress}
+        onClick={() => { void props.onSetPaused?.(!props.paused).catch(() => {}) }}
+        data-testid="queue-pause-button"
+      >
+        <Icon icon={props.paused ? Play : Pause} size="sm" />
+        <span class={styles.actionLabel}>{label()}</span>
+      </button>
+    </Tooltip>
+  )
+}
 
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let panelRef: HTMLDivElement | undefined
@@ -163,6 +182,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // rest of the second.
   const [enqueueInFlight, setEnqueueInFlight] = createSignal(false)
   const interruptLoading = createLoadingSignal()
+  // A paused queue changes what Send DOES, so the button that presses it
+  // reads the same flag the banner above does.
+  const queuePaused = () => props.inputQueue?.paused ?? false
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
 
@@ -498,6 +520,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         class={styles.inputArea}
         data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
       >
+        <AgentInputQueuePauseBanner
+          paused={props.inputQueue?.paused ?? false}
+          reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
+          onResume={() => { void props.onSetQueuePaused?.(false).catch(() => {}) }}
+        />
         <AgentInputQueue
           snapshot={props.inputQueue}
           clientId={props.queueClientId ?? ''}
@@ -700,42 +727,63 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     <div class={styles.actionCluster} data-testid="composer-actions">
                       <AgentInputQueuePauseButton paused={props.inputQueue?.paused ?? false} onSetPaused={props.onSetQueuePaused} />
                       <Show when={ctrl.showInterrupt()}>
-                        <button
-                          class="outline"
-                          onMouseDown={keepFocusOnPress}
-                          onClick={() => {
-                            interruptLoading.start()
-                            props.onInterrupt?.()
-                            // The press leaves the composer focused, so the
-                            // keyboard would sit over the output the user just
-                            // stopped the agent to read. `keepFocusOnPress`
-                            // above is what makes the composer still the
-                            // active element here on Chrome and on Firefox,
-                            // which focus a pressed button; the send path
-                            // reads the same state through `decideSendFocus`.
-                            dismissSoftKeyboard()
-                          }}
-                          disabled={interruptLoading.loading()}
-                          data-testid="interrupt-button"
-                        >
-                          <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
-                            <Spinner />
-                          </Show>
-                          <span class={styles.actionLabel}>{interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}</span>
-                        </button>
+                        {/*
+                          The tooltip is the ONLY name this button has below
+                          `sm`, where `actionLabel` hides the word: a
+                          `display: none` label reaches neither a screen reader
+                          nor a by-name lookup.
+                        */}
+                        <Tooltip text={interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'} ariaLabel>
+                          <button
+                            class="outline"
+                            onMouseDown={keepFocusOnPress}
+                            onClick={() => {
+                              interruptLoading.start()
+                              props.onInterrupt?.()
+                              // The press leaves the composer focused, so the
+                              // keyboard would sit over the output the user just
+                              // stopped the agent to read. `keepFocusOnPress`
+                              // above is what makes the composer still the
+                              // active element here on Chrome and on Firefox,
+                              // which focus a pressed button; the send path
+                              // reads the same state through `decideSendFocus`.
+                              dismissSoftKeyboard()
+                            }}
+                            disabled={interruptLoading.loading()}
+                            data-testid="interrupt-button"
+                          >
+                            <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
+                              <Spinner />
+                            </Show>
+                            <span class={styles.actionLabel}>{interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}</span>
+                          </button>
+                        </Tooltip>
                       </Show>
-                      <button
-                        type="button"
-                        disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
-                        onMouseDown={keepFocusOnPress}
-                        onClick={() => { void triggerSend?.() }}
-                        data-testid="send-button"
-                      >
-                        <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
-                          <Spinner data-testid="send-spinner" />
-                        </Show>
-                        <span class={styles.actionLabel}>Send</span>
-                      </button>
+                      {/*
+                        A paused queue does not drain, so this press parks the
+                        message rather than delivering it. The button says so at
+                        the moment of the press, which is the only moment that
+                        reaches a user who never looked at the banner.
+
+                        The visible word stays INSIDE the accessible name
+                        ("Queue" within "Add to queue"), because a name that
+                        drops the visible label breaks both a voice-control user
+                        and every by-name lookup.
+                      */}
+                      <Tooltip text={queuePaused() ? 'Add to queue' : 'Send'} ariaLabel>
+                        <button
+                          type="button"
+                          disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
+                          onMouseDown={keepFocusOnPress}
+                          onClick={() => { void triggerSend?.() }}
+                          data-testid="send-button"
+                        >
+                          <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
+                            <Spinner data-testid="send-spinner" />
+                          </Show>
+                          <span class={styles.actionLabel}>{queuePaused() ? 'Queue' : 'Send'}</span>
+                        </button>
+                      </Tooltip>
                     </div>
                   ),
                 }

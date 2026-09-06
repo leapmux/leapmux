@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
+import { Tooltip } from '~/components/common/Tooltip'
 
 describe('confirmButton', () => {
   beforeEach(() => {
@@ -155,5 +156,92 @@ describe('confirmButton', () => {
 
     fireEvent.click(button)
     expect(button).toHaveAttribute('data-armed')
+  })
+
+  it('adds no aria-label for a button that names itself with text', () => {
+    render(() => (
+      <ConfirmButton onClick={() => {}}>
+        Delete
+      </ConfirmButton>
+    ))
+    expect(screen.getByRole('button')).not.toHaveAttribute('aria-label')
+  })
+
+  it('names an icon-only button from the tooltip props, and renames it when armed', () => {
+    render(() => (
+      <ConfirmButton
+        onClick={() => {}}
+        tooltip="Delete"
+        confirmTooltip="Confirm delete?"
+        confirmLabel={<svg data-testid="armed-icon" />}
+      >
+        <svg data-testid="resting-icon" />
+      </ConfirmButton>
+    ))
+    // The name is the ONLY thing an icon-only button says, so the armed state
+    // has to reach the accessibility tree through it.
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(screen.getByTestId('resting-icon')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(screen.getByRole('button', { name: 'Confirm delete?' })).toBeInTheDocument()
+    expect(screen.getByTestId('armed-icon')).toBeInTheDocument()
+    expect(screen.queryByTestId('resting-icon')).not.toBeInTheDocument()
+  })
+
+  it('restores the resting name when the reset timer expires', () => {
+    render(() => (
+      <ConfirmButton onClick={() => {}} tooltip="Delete" confirmTooltip="Confirm delete?">
+        <svg />
+      </ConfirmButton>
+    ))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('button', { name: 'Confirm delete?' })).toBeInTheDocument()
+
+    vi.advanceTimersByTime(10_000)
+
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+  })
+
+  it('leaves a caller-supplied Tooltip in sole charge of the button', () => {
+    // LastTabCloseDialog and DeleteBranchDialog wrap this button in their own
+    // `<Tooltip describedBy>` to say why Delete is refused. Both tooltips
+    // resolve the same `<button>` as their target and both write its
+    // `aria-label` and `aria-describedby`, so this component must add NO
+    // tooltip of its own unless the caller asked for one.
+    render(() => (
+      <>
+        <span id="reason-1">held for review</span>
+        <Tooltip text="held for review" describedBy="reason-1">
+          <ConfirmButton disabled onClick={() => {}}>
+            Delete worktree
+          </ConfirmButton>
+        </Tooltip>
+      </>
+    ))
+    expect(screen.getByRole('button')).toHaveAttribute('aria-describedby', 'reason-1')
+  })
+
+  it('keeps the resting name when armed and no confirm tooltip is given', () => {
+    render(() => (
+      <ConfirmButton onClick={() => {}} tooltip="Delete">
+        <svg />
+      </ConfirmButton>
+    ))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    // Not renamed, but still NAMED. Falling through to undefined would strip
+    // the aria-label and leave an icon-only button unlabelled while armed.
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveAttribute('data-armed')
+  })
+
+  it('renders an element confirmLabel instead of the default text', () => {
+    render(() => (
+      <ConfirmButton onClick={() => {}} confirmLabel={<span>Gone?</span>}>
+        Delete
+      </ConfirmButton>
+    ))
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.getByRole('button')).toHaveTextContent('Gone?')
   })
 })

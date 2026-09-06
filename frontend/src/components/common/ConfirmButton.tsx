@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { createEffect, createSignal, onCleanup, splitProps } from 'solid-js'
+import { Tooltip } from './Tooltip'
 
 const RESET_TIMEOUT_MS = 10_000
 
@@ -14,8 +15,28 @@ const RESET_TIMEOUT_MS = 10_000
  * routes its own `title` prop through `<Tooltip>`.
  */
 interface ConfirmButtonProps extends Omit<JSX.ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'title'> {
-  /** Label shown after the first click (armed state). Defaults to "Confirm?". */
-  confirmLabel?: string
+  /**
+   * Content shown after the first click (armed state). Defaults to "Confirm?".
+   *
+   * Takes an element, not only a string, so an icon-only button can swap its
+   * icon for one that shows the next click confirms.
+   */
+  confirmLabel?: JSX.Element
+  /**
+   * The tooltip text, and the accessible name, while the button rests.
+   *
+   * A button with text needs neither this prop nor `confirmTooltip`, because
+   * its children already state its name and `confirmLabel` renames it. An
+   * icon-only button carries no text: without these two it reaches a screen
+   * reader unnamed, and the armed state stays invisible there.
+   *
+   * This component routes both through `<Tooltip>` itself, exactly as
+   * `IconButton` routes its own `title`. A caller cannot do it from outside,
+   * because the armed state lives in here.
+   */
+  tooltip?: string
+  /** The tooltip text, and the accessible name, while the button is armed. */
+  confirmTooltip?: string
   /** Called only on the second (confirming) click. */
   onClick: () => void
 }
@@ -26,7 +47,7 @@ interface ConfirmButtonProps extends Omit<JSX.ButtonHTMLAttributes<HTMLButtonEle
  * on blur or after 10 seconds of inactivity.
  */
 export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
-  const [local, buttonProps] = splitProps(props, ['confirmLabel', 'onClick', 'children'])
+  const [local, buttonProps] = splitProps(props, ['confirmLabel', 'tooltip', 'confirmTooltip', 'onClick', 'children'])
   const [armed, setArmed] = createSignal(false)
   let resetTimer: ReturnType<typeof setTimeout> | undefined
   let blurResetTimer: ReturnType<typeof setTimeout> | undefined
@@ -77,7 +98,13 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
     }
   }
 
-  return (
+  // Falls back to the RESTING name rather than to nothing. A caller that names
+  // the button once still has a named button while it is armed, and an
+  // icon-only control has no other source of a name: without the fallback the
+  // armed state reached a screen reader as an unlabelled button.
+  const tooltipText = () => (armed() ? (local.confirmTooltip ?? local.tooltip) : local.tooltip)
+
+  const button = (
     <button
       {...buttonProps}
       type="button"
@@ -91,5 +118,25 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
     >
       {armed() ? (local.confirmLabel ?? 'Confirm?') : local.children}
     </button>
+  )
+
+  // Wrap ONLY for a caller that asked for a tooltip.
+  //
+  // An unconditional wrapper breaks the callers that supply their OWN
+  // `<Tooltip>` around this button -- LastTabCloseDialog and
+  // DeleteBranchDialog both do, to state why Delete is disabled. Two tooltips
+  // resolve the same `<button>` as their target and both write its
+  // `aria-label` and `aria-describedby`, so the inner one erases the reason
+  // the outer one published and the button loses its description.
+  return (
+    <>
+      {local.tooltip === undefined && local.confirmTooltip === undefined
+        ? button
+        : (
+            <Tooltip text={tooltipText()} ariaLabel>
+              {button}
+            </Tooltip>
+          )}
+    </>
   )
 }
