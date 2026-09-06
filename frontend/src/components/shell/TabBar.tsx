@@ -187,7 +187,6 @@ export const TabBar: Component<TabBarProps> = (props) => {
   // Deregister on the way out. Without this a closed tile leaves an accessor
   // over a disposed signal, which keeps answering whatever it last held -- and
   // a tile closed mid-rename would suppress every automatic focus from then on.
-  // eslint-disable-next-line solid/reactivity
   onCleanup(() => props.isEditingRef?.(null))
 
   let editCancelled = false
