@@ -674,6 +674,61 @@ describe('sweepAbandonedCheckpoints', () => {
     expect((await readCheckpoint('u', 'other-tab')).status).toBe('ok')
   })
 
+  // `lastSeenAt` is wall-clock and every row was written by THIS device, so a
+  // stamp ahead of `now` means the clock moved backward since. It is never
+  // evidence of a running tab -- a live one re-stamps from the same clock this
+  // sweep reads -- and its negative age otherwise defeats both arms: `isLive`
+  // reads it as freshly touched, and it sorts past the TTL cutoff in an
+  // ascending prefix. Nothing else reclaims a foreign owner's row short of a
+  // logout many users never perform.
+  it('collects a row stamped in the future, across accounts', async () => {
+    await seedOwner('u', 'live-tab', 1_000)
+    await seedOwner('other', 'clock-ahead', 9_000_000)
+
+    // Well inside the TTL, so the ordinary arms collect nothing: the misdated
+    // row is the only victim, which is what isolates this rule.
+    const collected = await sweepAbandonedCheckpoints('u', 'live-tab', { now: 2_000 })
+
+    expect(collected).toBe(1)
+    expect((await readCheckpoint('other', 'clock-ahead')).status).toBe('miss')
+    expect((await readCheckpoint('u', 'live-tab')).status).toBe('ok')
+  })
+
+  // The sweeping tab is exempt however its own row is stamped. A clock that is
+  // ahead RIGHT NOW stamps this tab's row ahead of a `now` some caller passed,
+  // and deleting the base the live session is writing against is worse than any
+  // storage it holds.
+  it('keeps the sweeping tab\'s own row even when it is stamped in the future', async () => {
+    await seedOwner('u', 'live-tab', 9_000_000)
+
+    const collected = await sweepAbandonedCheckpoints('u', 'live-tab', { now: 2_000 })
+
+    expect(collected).toBe(0)
+    expect((await readCheckpoint('u', 'live-tab')).status).toBe('ok')
+  })
+
+  // A misdated row also stops RESERVING a slot in its own account's budget,
+  // which is what shrank the usable cap by one for every clock-ahead session.
+  it('does not let a future-stamped row of this account reserve a cap slot', async () => {
+    await seedOwner('u', 'clock-ahead', 9_000_000)
+    for (let i = 0; i < 3; i++)
+      await seedOwner('u', `tab-${i}`, 1_000 + i)
+
+    // maxOwners 3 means "me plus two others". Counted correctly, the two
+    // youngest others fit; counted with the misdated row reserving a slot, one
+    // of them would be evicted to make room for a row nothing can reach.
+    const collected = await sweepAbandonedCheckpoints('u', 'tab-2', {
+      now: 2_000,
+      maxOwners: 3,
+    })
+
+    expect((await readCheckpoint('u', 'clock-ahead')).status).toBe('miss')
+    expect((await readCheckpoint('u', 'tab-2')).status).toBe('ok')
+    expect((await readCheckpoint('u', 'tab-1')).status).toBe('ok')
+    expect((await readCheckpoint('u', 'tab-0')).status).toBe('ok')
+    expect(collected).toBe(1)
+  })
+
   it('caps retained owners oldest-first even when none has expired', async () => {
     // The TTL alone does not bound a user who opens tabs faster than they age
     // out, so the cap is a second, independent bound.
@@ -894,8 +949,9 @@ async function openDbRaw(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     // NO version argument: a versionless open attaches to whatever version
     // exists, so this neither triggers a spurious version-change transaction
-    // against the connection the store holds nor has to be kept in step with
-    // DB_VERSION by hand.
+    // against the connection the store holds nor has to be kept in step with a
+    // declared version by hand: the scaffold recreates on a shape change rather
+    // than versioning, so there is no version to bump.
     const r = indexedDB.open('leapmux-crdt-state')
     r.onsuccess = () => resolve(r.result)
     r.onerror = () => reject(r.error)

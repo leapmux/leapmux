@@ -37,6 +37,15 @@ const YEAR_MS = 365 * DAY_MS
 // The account `vitest.setup.ts` signs the suite in as. Taken from there rather
 // than spelled again, because it is not an expectation of this file's own -- it
 // is the identity every read and write here resolves under.
+/**
+ * How long `~/lib/idleCallback`'s fallback waits.
+ *
+ * jsdom has no `requestIdleCallback`, so every deferred sweep in this file runs
+ * on `setTimeout(cb, 1)`. It is 1ms rather than 0 because that helper pairs its
+ * request with a cancel and both must pick the same mechanism.
+ */
+const IDLE_FALLBACK_MS = 1
+
 const ACCOUNT = TEST_USER_ID
 const OTHER = 'otheraccount'
 
@@ -438,13 +447,15 @@ describe('storageCleanup', () => {
   describe('initStorageCleanup', () => {
     // The first sweep is deferred off the paint path, so `App` does not walk
     // every account's keys in both stores before the first frame. jsdom has no
-    // `requestIdleCallback`, so this exercises the `setTimeout(0)` fallback.
+    // `requestIdleCallback`, so this exercises `~/lib/idleCallback`'s
+    // `setTimeout(cb, 1)` fallback -- 1ms, not 0, because that helper pairs the
+    // request with a cancel that must use the same mechanism.
     it('sweeps once the browser is idle, not during init', async () => {
       localStorage.setItem('leapmux-old-key', 'stale')
       const dispose = initStorageCleanup()
       expect(localStorage.getItem('leapmux-old-key')).toBe('stale')
 
-      vi.advanceTimersByTime(0)
+      vi.advanceTimersByTime(IDLE_FALLBACK_MS)
       expect(localStorage.getItem('leapmux-old-key')).toBeNull()
       dispose()
     })
@@ -461,7 +472,7 @@ describe('storageCleanup', () => {
     it('returns a dispose function that clears the interval', async () => {
       const dispose = initStorageCleanup()
       // Add a stale key after the deferred init cleanup ran.
-      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(IDLE_FALLBACK_MS)
       await settleSweep()
       localStorage.setItem('leapmux-stale', 'data')
 
@@ -486,7 +497,7 @@ describe('storageCleanup', () => {
       // Start the deferred first sweep and deliberately DO NOT settle it: its
       // synchronous halves have run and its database half is still in flight,
       // which is exactly the window the latch covers.
-      vi.advanceTimersByTime(0)
+      vi.advanceTimersByTime(IDLE_FALLBACK_MS)
 
       // Only the synchronous legacy pass deletes this, so its survival is proof
       // that the hourly tick found the latch closed and did nothing.
@@ -513,10 +524,30 @@ describe('storageCleanup', () => {
       await vi.advanceTimersByTimeAsync(2000)
       expect(await readKvRow(stored)).toBeDefined()
 
-      // Advance to the 1-hour mark.
-      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 2000)
+      // Advance to the 1-hour mark, plus the idle window the tick schedules:
+      // an hourly sweep waits for idle exactly as the first one does, so the
+      // interval firing only ARMS it.
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 - 2000 + IDLE_FALLBACK_MS)
       expect(await readKvRow(stored)).toBeUndefined()
 
+      dispose()
+    })
+
+    // The hourly sweep is deferred too, not only the first. `runCleanup` walks
+    // both Web Storage stores SYNCHRONOUSLY on the main thread, so a tick that
+    // swept straight off the timer would land in the middle of an interaction.
+    it('waits for an idle window on the hourly tick, not only the first', async () => {
+      const dispose = initStorageCleanup()
+      await vi.advanceTimersByTimeAsync(IDLE_FALLBACK_MS)
+      await settleSweep()
+
+      localStorage.setItem('leapmux-old-key', 'stale')
+      // The interval itself fires here, and only arms the idle callback.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000 - IDLE_FALLBACK_MS)
+      expect(localStorage.getItem('leapmux-old-key')).toBe('stale')
+
+      await vi.advanceTimersByTimeAsync(IDLE_FALLBACK_MS)
+      expect(localStorage.getItem('leapmux-old-key')).toBeNull()
       dispose()
     })
   })

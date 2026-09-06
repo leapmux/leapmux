@@ -1,30 +1,7 @@
 import type { AsyncLocalKey, SyncLocalKey } from '~/lib/browserStorage'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  accountStorageKey,
-  accountStorageKeyPrefix,
-  batchBrowserPrefWrites,
-  hasStorageAccount,
-  KEY_BROWSER_PREFS,
-  KEY_CHANNEL_RELAY_SEQ,
-  KEY_CLIENT_ID,
-  LOCAL_KEY_SPECS,
-  localStorageGet,
-  localStorageLoad,
-  localStorageRemove,
-  localStorageSet,
-  mirrorEntryForTests,
-  onStorageAccountChange,
-  resetStorageAccountForTests,
-  SESSION_KEY_SPECS,
-  sessionStorageClearForTests,
-  sessionStorageGet,
-  sessionStorageHas,
-  sessionStorageRemove,
-  sessionStorageSet,
-  setStorageAccountForTests,
-  storedKeyFor,
-} from '~/lib/browserStorage'
+import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
+import { accountStorageKey, accountStorageKeyPrefix, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, mirrorEntryForTests, onStorageAccountChange, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
 // Restated rather than imported, so an assertion is an INDEPENDENT statement of
@@ -541,5 +518,45 @@ describe('browserStorage', () => {
       sessionStorageClearForTests()
       expect(sessionStorageHas('tab-mru')).toBe(false)
     })
+  })
+})
+
+// A synchronous read used to answer from `JSON.parse`, which produced a fresh
+// object per call by construction. The mirror holds ONE object, and several
+// callers do a read-modify-write in place, so handing out the reference lets
+// them mutate the mirror -- and the row queued beside it -- before their own
+// write has validated anything.
+describe('the synchronous tier hands out private copies', () => {
+  it('does not let a caller mutate the mirror through what it read', () => {
+    localStorageSet(KEY_KEY_PINS, { 'w-1': { publicKeyHex: 'aa', firstSeen: 1 } })
+
+    const pins = localStorageGet<Record<string, unknown>>(KEY_KEY_PINS)!
+    delete pins['w-1']
+    pins['w-2'] = { publicKeyHex: 'bb', firstSeen: 2 }
+
+    // The store still holds what was written, because the caller mutated a copy.
+    expect(localStorageGet(KEY_KEY_PINS)).toEqual({ 'w-1': { publicKeyHex: 'aa', firstSeen: 1 } })
+  })
+
+  it('gives each read its own copy', () => {
+    localStorageSet(KEY_KEY_PINS, { 'w-1': { publicKeyHex: 'aa', firstSeen: 1 } })
+    expect(localStorageGet(KEY_KEY_PINS)).not.toBe(localStorageGet(KEY_KEY_PINS))
+  })
+
+  // The whole point of the batch: one document, stored once at the end. A batch
+  // that mutated the mirror in place would let a read inside `body` observe a
+  // half-applied document, and would leave the mirror mutated if the trailing
+  // write were ever refused.
+  it('keeps a preference batch private until it stores', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split', turnEndSound: 'chime' })
+
+    let seenMidBatch: unknown
+    batchBrowserPrefWrites(() => {
+      updateBrowserPref('diffView', undefined)
+      seenMidBatch = loadBrowserPrefs()
+    })
+
+    expect(seenMidBatch).toEqual({ diffView: 'split', turnEndSound: 'chime' })
+    expect(loadBrowserPrefs()).toEqual({ turnEndSound: 'chime' })
   })
 })

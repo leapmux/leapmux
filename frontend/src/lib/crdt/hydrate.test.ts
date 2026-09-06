@@ -417,10 +417,12 @@ async function openDbRaw(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     // NO version argument: a versionless open attaches to whatever version
     // exists, so this neither triggers a spurious version-change transaction
-    // against the connection the store holds nor has to be kept in step with
-    // DB_VERSION by hand (pinning it meant every bump silently broke these
-    // cases with a VersionError). The store's own open, which the callers above
-    // have already performed, is what creates the schema.
+    // against the connection the store holds nor has to be kept in step with a
+    // declared version by hand. The scaffold has none to keep in step with --
+    // it recreates on a shape change rather than versioning -- and pinning the
+    // version this replaced meant every bump silently broke these cases with a
+    // VersionError. The store's own open, which the callers above have already
+    // performed, is what creates the schema.
     const r = indexedDB.open('leapmux-crdt-state')
     r.onsuccess = () => resolve(r.result)
     r.onerror = () => reject(r.error)

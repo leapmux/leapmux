@@ -131,6 +131,15 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
   let pendingQueueEditAttachments: FileAttachment[] | undefined
   let normalAttachmentRestore: { key: string, attachments: FileAttachment[] } | undefined
   const queueEditRequests = new Set<string>()
+  /**
+   * Which queue-edit load the panel is waiting for.
+   *
+   * Bumped by every `loadQueueEdit`, and compared after each of its two awaits.
+   * `queueEditRequests` dedupes the SAME row, so it cannot answer "the user
+   * moved to a different row while this one was loading" -- and that is the case
+   * that installs one row's text over another's.
+   */
+  let queueEditLoadToken = 0
   let attachmentPorts: QueueEditAttachmentPorts | undefined
 
   const requirePorts = (): QueueEditAttachmentPorts => {
@@ -160,19 +169,30 @@ export function createQueueEditSession(opts: QueueEditSessionOptions): QueueEdit
     const beginEdit = opts.onBeginQueueEdit()
     if (!beginEdit)
       return
+    // THE SESSION, not the agent, is what the guards below compare.
+    //
+    // `queueEditRequests` dedupes per (agent, input), so two DIFFERENT queued
+    // rows of the same agent can be in flight together -- and the queue keeps
+    // every other row's Edit button live until one of them installs itself. An
+    // agent check passes for both, so the slower load wins and the composer
+    // opens on row A's text, attachments and attachment-restore point while the
+    // user is pointing at row B. A per-load token answers the question the state
+    // actually belongs to: "is this still the load the panel is waiting for?"
+    const loadToken = ++queueEditLoadToken
     queueEditRequests.add(requestKey)
     const request = beginEdit(item, takeover)
     void request.then(async (response) => {
-      if (untrack(opts.agentId) !== editAgentId)
+      if (loadToken !== queueEditLoadToken || untrack(opts.agentId) !== editAgentId)
         return
       const edited = response.snapshot?.items.find(candidate => candidate.id === inputId) ?? item
       const queueDraftKey = queueEditDraftKey(editAgentId, inputId)
       // The draft read is asynchronous (drafts are an unbounded family on the
-      // unmirrored storage tier), so the agent is CHECKED AGAIN below: this
-      // await is a second window in which the panel can move to another agent,
-      // and everything after it writes this session's state.
+      // unmirrored storage tier), so both guards run AGAIN below: this await is
+      // a second window in which the panel can move to another agent or the user
+      // can start editing another row, and everything after it writes this
+      // session's state.
       const savedDraft = restoreDraft ? await loadDraft(queueDraftKey) : undefined
-      if (untrack(opts.agentId) !== editAgentId)
+      if (loadToken !== queueEditLoadToken || untrack(opts.agentId) !== editAgentId)
         return
       pendingQueueEditText = savedDraft?.content
         ? undefined

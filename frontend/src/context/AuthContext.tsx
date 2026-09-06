@@ -245,7 +245,7 @@ export const AuthProvider: ParentComponent = (props) => {
    * of a User the app cannot key anything by, and it routes to `/login` -- with
    * the fault recorded, because a hub that answers this way has a real bug.
    */
-  const setUser = async (next: User | null): Promise<void> => {
+  const setUser = async (next: User | null): Promise<boolean> => {
     const generation = ++authGeneration
     if (next && !next.id) {
       log.error('the hub returned a user with no id; treating the session as signed out', { user: next })
@@ -258,10 +258,11 @@ export const AuthProvider: ParentComponent = (props) => {
       // at an account the mirror no longer holds -- which `setStorageAccount`
       // would refuse anyway, loudly, in the middle of a sign-in.
       if (generation !== authGeneration)
-        return
+        return false
       setStorageAccount(next.id)
     }
     setUserSignal(next)
+    return true
   }
 
   /**
@@ -333,7 +334,15 @@ export const AuthProvider: ParentComponent = (props) => {
    * is still the newest before it gets here.
    */
   const adoptCurrentUser = async (resp: GetCurrentUserResponse) => {
-    await setUser(resp.user ?? null)
+    // EVERY write below belongs to `resp`, so none of them may run once a newer
+    // identity has taken over. `setUser` is asynchronous now -- it reads the
+    // account's stored rows before it publishes -- and a sign-in or a sign-out
+    // landing inside that await supersedes this response. Publishing its
+    // elevation window then mirrors a dead session's deadline onto the live one,
+    // which is what makes `/elevate` redirect a visitor it should have prompted.
+    // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
+    if (!await setUser(resp.user ?? null))
+      return
     setElevationExpiresAt(resp.elevationExpiresAt)
     // The only response the /verify-email page's own bootstrap reads. Seeding
     // the cooldown from it is what lets a hard reload of that page resume the
@@ -368,7 +377,10 @@ export const AuthProvider: ParentComponent = (props) => {
    * hub's consent gate then answers with a page that has no way forward.
    */
   const adoptSignedInUser = async (u: User | null) => {
-    await setUser(u)
+    // See `adoptCurrentUser`: nothing below may run for an identity a newer one
+    // superseded during the hydration await.
+    if (!await setUser(u))
+      return
     setElevationExpiresAt(undefined)
     // Enter the shell checklist before AppShell mounts so login does not flash
     // the finished signed-out `ready` phase, then jump to `workspaces`.

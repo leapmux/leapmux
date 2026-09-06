@@ -384,6 +384,40 @@ describe('createIdbConnection when an open is blocked', () => {
     stubborn.close()
     conn.reset()
   })
+
+  // The rejection is only half of it. The raw request underneath keeps running,
+  // so once the peer yields it OPENS -- and a connection nothing holds still
+  // answers `versionchange`, which blocks the next schema repair's
+  // `deleteDatabase` and leaves the store running against a drifted database.
+  //
+  // Closing inside the `blocked` handler looks like the fix and is the bug:
+  // `close()` runs Dexie's `cancelOpen`, so `db.open()` REJECTS and the
+  // fulfilled branch that would have closed the late handle never runs.
+  it('closes the connection the blocked request eventually opens', async () => {
+    const stubborn = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open('orphan-late', 1)
+      request.onupgradeneeded = () => buildCanonical(request.result)
+      request.onsuccess = () => resolve(request.result)
+    })
+    // The prototype off a live instance: this environment supplies
+    // fake-indexeddb's classes but installs no `IDBDatabase` global to spy on.
+    const closes = vi.spyOn(Object.getPrototypeOf(stubborn) as { close: () => void }, 'close')
+
+    const conn = connect('orphan-late')
+    await expect(conn.open()).rejects.toThrow(/blocked/)
+    const closesAtRejection = closes.mock.calls.length
+
+    // The peer yields, so the scaffold's still-pending request completes. Its
+    // handle must be closed: one call for `stubborn` itself, and one for the
+    // connection nothing will ever hold.
+    stubborn.close()
+    await vi.waitFor(() => {
+      expect(closes.mock.calls.length).toBeGreaterThan(closesAtRejection + 1)
+    })
+
+    conn.reset()
+    closes.mockRestore()
+  })
 })
 
 // The early-stop primitive both stores' bounded walks depend on. Collecting

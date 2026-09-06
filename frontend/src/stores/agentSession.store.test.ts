@@ -59,16 +59,21 @@ describe('createAgentSessionStore', () => {
     })
   })
 
+  // An agent id OF ITS OWN, because this is the one case that asserts the exact
+  // stored document. A store defers its write behind the agent's hydrating read
+  // and keeps no handle to cancel it, so a sibling case that disposed its root
+  // while a read was outstanding still writes `agent-1` afterwards -- into
+  // whichever database `useTestStorage` has installed by then.
   it('should persist after updateInfo', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('agent-1', { totalCostUsd: 1.5 })
+      store.updateInfo('agent-persist', { totalCostUsd: 1.5 })
       dispose()
     })
     // Polled: the store defers a write until the agent's stored row has been
     // read and merged, so the value lands an IndexedDB round trip later.
     await vi.waitFor(async () => {
-      expect(await localStorageLoad<{ totalCostUsd: number }>(`${PREFIX_AGENT_SESSION}agent-1`))
+      expect(await localStorageLoad<{ totalCostUsd: number }>(`${PREFIX_AGENT_SESSION}agent-persist`))
         .toEqual({ totalCostUsd: 1.5 })
     })
   })

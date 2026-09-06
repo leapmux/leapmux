@@ -1099,21 +1099,45 @@ export async function sweepAbandonedCheckpoints(
     if (rows.length === 0)
       return 0
 
+    // A STAMP IN THE FUTURE IS CORRUPT, AND GOES ON SIGHT.
+    //
+    // `lastSeenAt` is wall-clock and every row here was written by this device,
+    // so a stamp ahead of `now` means the clock moved BACKWARD since -- a
+    // correction, or a session that ran while it was set forward. It is never
+    // evidence of a running tab: a live one re-stamps its row from the same
+    // clock this sweep reads, so it would not be ahead of it.
+    //
+    // Collected SEPARATELY rather than folded into the arms below, because a
+    // negative age defeats both. `isLive` reads it as freshly touched, so the
+    // row is skipped and `reserved` spends one of `maxOwners` on it; and
+    // `selectSweepVictims` takes a PREFIX of an ascending list, where such a row
+    // sorts last and its `at > now - ttlMs` keeps it out of the TTL arm. The
+    // result is a header plus every chunk under it stranded until wall-clock
+    // reaches the stamp, which for a clock set years ahead is never -- and
+    // nothing else reclaims a foreign owner's row short of a logout.
+    // `listSeedCandidates` excludes the same rows one level down, with a closed
+    // upper bound at `now`.
+    const misdated = rows.filter(row => row.at > now && row.clientId !== keepClientId)
+    // The index yields lastSeenAt-ascending, and dropping a tail keeps that, so
+    // both partitions below stay oldest-first.
+    const dated = rows.filter(row => row.at <= now || row.clientId === keepClientId)
+
     // A row touched within the liveness window belongs to a running tab. The
     // sweeping tab is live by definition even if it has not written a row yet.
     const livenessWindowMs = opts.livenessWindowMs ?? OWNER_LIVENESS_WINDOW_MS
     const isLive = (row: SweepCandidate): boolean =>
       row.clientId === keepClientId || now - row.at < livenessWindowMs
-    // The index yields lastSeenAt-ascending, so both partitions stay oldest-first.
-    const candidates = rows.filter(row => !isLive(row))
+    const candidates = dated.filter(row => !isLive(row))
     const mine = candidates.filter(row => row.userId === userId)
     const foreign = candidates.filter(row => row.userId !== userId)
     // This tab occupies a slot in its own account's budget whether or not it
-    // has written a row yet, and so does every live sibling that has one.
-    const reserved = 1 + rows.filter(row => row.userId === userId
+    // has written a row yet, and so does every live sibling that has one. A
+    // misdated row is not among them, so it no longer shrinks the usable cap.
+    const reserved = 1 + dated.filter(row => row.userId === userId
       && row.clientId !== keepClientId
       && isLive(row)).length
     const victims = [
+      ...misdated,
       ...selectSweepVictims(foreign, { now, ttlMs }),
       ...selectSweepVictims(mine, { now, ttlMs, maxEntries: maxOwners, reserved }),
     ]

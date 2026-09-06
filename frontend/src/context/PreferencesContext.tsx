@@ -1,6 +1,7 @@
 import type { Accessor, ParentComponent } from 'solid-js'
 import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
-import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, SyncLocalKey, TerminalRendererPreference } from '~/lib/browserStorage'
+import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserPreferences'
+import type { SyncLocalKey } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { batch, createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
@@ -14,21 +15,8 @@ import {
   TRAY_ON_MINIMIZE_TRAY,
 } from '~/generated/contracts/desktop'
 import { NAME_BYTE_LIMIT } from '~/generated/contracts/validate'
-import {
-  batchBrowserPrefWrites,
-  hasStorageAccount,
-  KEY_BROWSER_PREFS,
-  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
-  KEY_PREFERRED_EXTERNAL_APP,
-  loadBrowserPrefs,
-  localStorageGet,
-  localStorageRemove,
-  localStorageSet,
-  onStorageAccountChange,
-  onStorageChanged,
-  storedKeyFor,
-  updateBrowserPref,
-} from '~/lib/browserStorage'
+import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
+import { hasStorageAccount, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageGet, localStorageRemove, localStorageSet, onStorageAccountChange, onStorageChanged, storedKeyFor } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { buildFontFamily, DEFAULT_MONO_FONT_FAMILY } from '~/lib/fontStack'

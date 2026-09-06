@@ -2,7 +2,8 @@ import type { JSX } from 'solid-js'
 import { render } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { KEY_BROWSER_PREFS, KEY_PREFERRED_EXTERNAL_APP, loadBrowserPrefs, localStorageClearForTests, localStorageGet } from '~/lib/browserStorage'
+import { loadBrowserPrefs } from '~/lib/browserPreferences'
+import { KEY_BROWSER_PREFS, KEY_PREFERRED_EXTERNAL_APP, localStorageClearForTests, localStorageGet } from '~/lib/browserStorage'
 
 import { buildBrowserReset } from './registry/settings'
 

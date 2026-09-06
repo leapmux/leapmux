@@ -71,6 +71,13 @@ export interface RowHeightPersistenceDeps {
   /**
    * Stable per-chat identity for the storage key (the agent id). Undefined
    * disables persistence entirely (nothing loads, nothing saves).
+   *
+   * STABLE MEANS STABLE FOR THE INSTANCE'S LIFE. The load runs once and its
+   * result is adopted with no identity recheck, and `pending` plus
+   * `attemptedAdoptions` accumulate against this one chat, so an accessor that
+   * moved would adopt one chat's heights into another and save them back under
+   * the wrong key. `ChatView` satisfies this: `<For>` gives each agent tab its
+   * own instance and disposes it rather than re-pointing it.
    */
   storageId: () => string | undefined
   virtualItems: Accessor<VirtualItem[]>
@@ -212,18 +219,23 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   // Load once, as soon as the storage identity is available.
   //
   // The read is ASYNCHRONOUS -- a stored payload is tens of KB, so this family
-  // is on the unmirrored tier -- and `id` is captured BEFORE the await so the
-  // rows cannot be adopted under a chat the effect has since moved off. The
-  // `loaded` latch already prevents a second entry, so no further guard is
-  // needed for re-entry, only for identity.
+  // is on the unmirrored tier -- so the effect returns before the rows arrive.
+  //
+  // ONE LOAD PER INSTANCE IS THE WHOLE CONTRACT, and it rests on `storageId`
+  // being stable for the instance's life: `ChatView` passes `() => props.agentId`
+  // and is rendered one instance per agent tab by a `<For>`, which binds the id
+  // as a constant per row and disposes the pane rather than re-pointing it. A
+  // post-await identity recheck would therefore be unreachable code, and keying
+  // the latch by id would not be enough on its own to support a changing id:
+  // `pending` and `attemptedAdoptions` still hold the previous chat's rows, and
+  // the debounced save would write them under the new key. If `storageId` ever
+  // becomes movable, all three have to move with it.
   createEffect(() => {
     const id = deps.storageId()
     if (id === undefined || loaded)
       return
     loaded = true
     void localStorageLoad<StoredRowHeights>(storageKey(id)).then((stored) => {
-      if (deps.storageId() !== id)
-        return
       if (stored !== undefined) {
         const rows = parseStoredRows(stored)
         // A payload from an older version parses to nothing. Drop it now rather

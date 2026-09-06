@@ -58,6 +58,8 @@ import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
 export interface AgentEditorPanelProps {
+  /** See `MarkdownEditorProps.suppressAutoFocus`. Forwarded unchanged. */
+  suppressAutoFocus?: () => boolean
   agentId: string
   agent?: AgentInfo
   /**
@@ -533,6 +535,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           data-testid="file-input"
         />
         <MarkdownEditor
+          suppressAutoFocus={props.suppressAutoFocus}
           draftKey={{
             agentId: props.agentId,
             key: activeDraftKey(),

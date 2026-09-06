@@ -1,5 +1,5 @@
 import type { ITheme } from '@xterm/xterm'
-import type { BrowserPreferences, TerminalRendererPreference } from './browserStorage'
+import type { BrowserPreferences, TerminalRendererPreference } from './browserPreferences'
 import type { TerminalImeHandle } from './terminalIme'
 import type {
   ResolvedThemeMode,
@@ -13,7 +13,7 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, resolveVariant, themeById } from '~/styles/themes'
-import { loadBrowserPrefs } from './browserStorage'
+import { loadBrowserPrefs } from './browserPreferences'
 import { copyTextToClipboard } from './clipboard'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'

@@ -1,6 +1,7 @@
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { createEffect, createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { workerProjectionsEqual } from '~/components/workspace/WorkspaceTabTree'
 import { deferred, flush } from '~/test-support/async'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
@@ -529,6 +530,55 @@ describe('workerInfoStore', () => {
         dispose()
         done()
       })
+    })
+  })
+})
+
+// THE CONTRACT `WorkspaceTabTree` RESTS ON, pinned at the store rather than at
+// the component that consumes it.
+//
+// `workersProjection` builds `{ id, info: workerInfo(id) }` per worker and gates
+// its own recompute on `workerProjectionsEqual`. So a worker's info changing
+// must make the OLD and NEW reads compare UNEQUAL -- otherwise the memo keeps
+// its previous value, `buildTree` never re-runs, and the tree shows the stale
+// record. That is the exact freeze the memo's comment records fixing: every row
+// reads `homeDir` to shorten its directory, and the system info arrives on its
+// own RPC after the first paint.
+//
+// It holds today because `workerInfo` answers with a plain record and each write
+// installs a new one. It would STOP holding the moment the store handed out a
+// live reference into its own state -- both sides of the comparison would then
+// be the same object, every field would compare equal, and the tree would freeze
+// with nothing to show for it.
+describe('workerInfo feeds a projection that can tell a change happened', () => {
+  it('compares unequal after the worker info changes', async () => {
+    await createRoot(async (dispose) => {
+      const id = uniqueWorkerId()
+      // ONE store, because that is what `workersProjection` holds: a single
+      // `workerInfoFn` it calls before and after. Two instances would compare
+      // two separate caches and could not see a shared reference at all.
+      const store = createWorkerInfoStore()
+
+      // The first reading arrives from disk, which is how a worker's info shows
+      // up before any RPC. Stamped past the freshness window, so the fetch below
+      // actually spends its round trip instead of answering from the row.
+      setWorkerInfo(id, { ...makeRespFor(id, { homeDir: '/home/before' }), updatedAt: Date.now() - 10 * 60_000 })
+      expect(store.workerInfo(id)).toBeNull()
+      await flush()
+      const before = store.workerInfo(id)
+      expect(before?.homeDir).toBe('/home/before')
+
+      // The system-info RPC then lands with a different home directory, which is
+      // the case the tree froze on: every row shortens its directory with it.
+      mockGetWorkerSystemInfo.mockResolvedValueOnce(makeRespFor(id, { homeDir: '/home/after' }))
+      const after = await store.fetchWorkerInfo(id)
+      expect(after?.homeDir).toBe('/home/after')
+
+      expect(
+        workerProjectionsEqual([{ id, info: before }], [{ id, info: after }]),
+        'the projection must see the change, or the tab tree freezes on the stale record',
+      ).toBe(false)
+      dispose()
     })
   })
 })

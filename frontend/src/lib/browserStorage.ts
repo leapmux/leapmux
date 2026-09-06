@@ -68,10 +68,12 @@
  * would have to live in sessionStorage.
  */
 import type { KvRow, StorageWrite } from './browserStorageDb'
+import { browserPrefBatchOpen } from './browserPreferences'
 import {
   enqueueKvDelete,
   enqueueKvPut,
   flushKvWrites,
+  kvWriteEpoch,
   onKvBroadcast,
   peekKvPending,
   publishKvRemovals,
@@ -82,6 +84,7 @@ import {
   resetKvForTests,
   sweepKv,
 } from './browserStorageDb'
+import { cancelIdle, requestIdle } from './idleCallback'
 import { createLogger } from './logger'
 
 const log = createLogger('browserStorage')
@@ -91,109 +94,6 @@ export type { StorageWrite } from './browserStorageDb'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
-export type TerminalRendererPreference = 'auto' | 'webgl' | 'canvas'
-
-/**
- * Browser-level preferences stored as a single JSON object.
- * Fields that are undefined mean "use account default."
- * Dual-tier keys override the matching account setting from
- * UserService; browser-only keys have no account half.
- */
-/**
- * The stored shape of one appearance preference, as it sits in localStorage.
- *
- * Every field is optional and every field is a bare `string`, because this is
- * UNTRUSTED: it is whatever a previous build, or a hand-edited storage entry,
- * left behind. `parseThemeValue` / `parseTerminalThemeValue` in `~/lib/themeStore`
- * validate it into the `ThemeValue` / `TerminalThemeValue` the app actually
- * uses, so this type deliberately is NOT those -- naming it separately is what
- * keeps a validated value and a stored one from being confused.
- *
- * Stated once because all three appearance surfaces store the same document; it
- * was written out inline three times, so a fourth field had three places to be
- * added and two of them could be forgotten.
- */
-export interface StoredThemeDocument {
-  name?: string
-  mode?: string
-  variant?: { light?: string, dark?: string }
-}
-
-export interface BrowserPreferences {
-  /**
-   * Whole-object browser override of the account `theme` tier
-   * ({name, mode}). Absent means "use the account value". The palette name and
-   * its light/dark mode override together because they are one appearance
-   * choice, presented by one control under one scope chip. `variant` pins which
-   * look of that palette each polarity wears; see ~/styles/themes/types.ts.
-   */
-  theme?: StoredThemeDocument
-  /**
-   * Whole-object browser override of the account `terminal_theme` tier
-   * ({name, mode}). The `match-ui` sentinel fills both halves or neither; see
-   * ~/styles/themes/types.ts.
-   */
-  terminalTheme?: StoredThemeDocument
-  /**
-   * Whole-object browser override of the account `syntax_theme` tier
-   * ({name, mode}). Same shape and same `match-ui` sentinel as
-   * {@link terminalTheme}.
-   */
-  syntaxTheme?: StoredThemeDocument
-  diffView?: string
-  turnEndSound?: string
-  turnEndSoundVolume?: number
-  debugLogging?: boolean
-  expandAgentThoughts?: boolean
-  showHiddenMessages?: boolean
-  enterKeyMode?: EnterKeyMode
-  terminalRenderer?: TerminalRendererPreference
-  /**
-   * Whole-object browser override of the account `ui_fonts` tier
-   * ({enabled, fonts}). Absent means "use the account value"; the whole
-   * object is the override unit because overriding the toggle and the list
-   * independently gives incoherent states.
-   */
-  uiFontOverride?: { enabled: boolean, fonts: string[] }
-  /**
-   * Whole-object browser override of the account `mono_fonts` tier. Same
-   * contract as {@link uiFontOverride}.
-   */
-  monoFontOverride?: { enabled: boolean, fonts: string[] }
-  /**
-   * Whether to reveal the saved file in the OS file manager (Finder /
-   * Explorer / Files) after a successful download. Only applies in
-   * desktop mode; ignored in the browser. Defaults to true — set to
-   * `false` explicitly to opt out.
-   */
-  revealAfterDownload?: boolean
-  /** Desktop/browser terminal OSC notifications (OSC 9 / 777 / 99). Default off. */
-  terminalOsNotifications?: boolean
-  /**
-   * Device overrides of the five Desktop account keys. Absent means "use the
-   * account value", like every other dual tier, and they ride inside this same
-   * consolidated document so `LOCAL_KEY_SPECS` needs no entry of its own.
-   *
-   * FIVE SCALARS, not one object: the user makes five choices under five scope
-   * chips, so an object would make an override of any one of them drag the
-   * other four onto the device tier. The enums are typed as bare `string` for
-   * the reason {@link diffView} is -- this is untrusted storage, and the parse
-   * in PreferencesContext is what narrows it.
-   */
-  trayEnabled?: boolean
-  trayOnClose?: string
-  trayOnMinimize?: string
-  startOnLogin?: boolean
-  startMinimized?: string
-  /**
-   * Whether the composer status bar (branch/model/effort/mode +
-   * rate-limit/context chips) is shown beneath the input box. Default on;
-   * toggled from the composer's `[+]` menu.
-   */
-  showComposerStatusBar?: boolean
-}
 
 // ---------------------------------------------------------------------------
 // Key registry
@@ -316,9 +216,15 @@ export interface KeySpec {
  * It is the answer for everything else, and the answer a NEW key should take
  * unless it can name the reader that cannot await.
  *
- * The two tiers coincide with small versus unbounded, and that is not a
- * coincidence: a value big enough to matter already had something asynchronous
- * around it.
+ * THE TIER IS ABOUT THE READER, NOT ABOUT THE SIZE. Every family whose VALUE is
+ * large is `async`, because a value big enough to matter already had something
+ * asynchronous around it. But the converse does not hold: three `sync` families
+ * are prefix families with no cap -- `files-show-hidden:`, `files-sort-order:`
+ * and `workspace-git-mode:` grow one small row per (worker, directory) or per
+ * repository the user ever opens, and the TTL is all that limits them. They keep
+ * the synchronous tier because their readers are a `createSignal` initializer
+ * and a `createMemo`, and a mirror that evicted one would serve that reader a
+ * default it cannot correct.
  */
 export type KeyAccess = 'sync' | 'async'
 
@@ -333,16 +239,21 @@ export type KeyAccess = 'sync' | 'async'
  * sessionStorage keys carry no `access`. They are still on the Web Storage API,
  * which is synchronous by nature, so the tier is a property of this store alone.
  */
-export interface LocalKeySpec extends KeySpec {
-  readonly access: KeyAccess
+export type LocalKeySpec
   /**
-   * Merge the value as a HIGH-WATER MARK rather than last-write-wins.
-   *
-   * Only the two relay sequence marks. See `KvWriteOptions.monotonic` in
-   * `~/lib/browserStorageDb` for what it prevents.
+   * A `sync` key MAY declare `monotonic`: merge the value as a HIGH-WATER MARK
+   * rather than last-write-wins. Only the two relay sequence marks do. See
+   * `KvWriteOptions.monotonic` in `~/lib/browserStorageDb` for what it prevents.
    */
-  readonly monotonic?: true
-}
+  = | (KeySpec & { readonly access: 'sync', readonly monotonic?: true })
+  /**
+   * An `async` key MAY NOT, and the union is what makes that a COMPILE error
+   * rather than a silent nothing. Only `localStorageSet` forwards the flag;
+   * `localStorageStore` writes last-write-wins, so an `async` key that declared
+   * `monotonic` would read as fenced and be written unfenced -- which is the
+   * relay wedge the flag exists to prevent, arriving through the registry.
+   */
+    | (KeySpec & { readonly access: 'async', readonly monotonic?: never })
 
 /**
  * Every localStorage key, by logical name.
@@ -366,8 +277,10 @@ export interface LocalKeySpec extends KeySpec {
 export const LOCAL_KEY_SPECS = {
   // User-level preferences and trust state -- values that should outlive
   // ordinary idle gaps but still self-clean if the app goes unopened for a
-  // year. The on-read refresh in `readDynamic` pushes the expiration forward on
-  // every access, so a user who opens the app at any point during the year
+  // year. The on-read refresh -- `readMirror` for the `sync` tier and
+  // `localStorageLoad` for the `async` one -- pushes the expiration forward once
+  // it is within REFRESH_THRESHOLD_MS of the full TTL, so a user who opens the
+  // app at any point during the year
   // keeps these forever; a year of total inactivity expires them.
   // `sync`: read inside the synchronous `onStorageAccountChange` callback (see
   // PreferencesContext.reseedBrowserTier), and by `~/lib/terminal` while it
@@ -456,7 +369,8 @@ export const SESSION_KEY_SPECS = {
   // The set of expanded workspaces in the sidebar tree. Matches the 30-day
   // lifetime of the per-workspace UI snapshot. Its sibling "which workspace is
   // active" is deliberately NOT here: that one has to survive a tab close, so
-  // it lives in localStorage under `KEY_ACTIVE_WORKSPACE`.
+  // it lives in the durable half (`LOCAL_KEY_SPECS`) under
+  // `KEY_ACTIVE_WORKSPACE`.
   [KEY_EXPANDED_WORKSPACES]: { match: 'exact', scope: 'account', ttlMs: 30 * DAY_MS },
   // Per-session CRDT client identity. Long-lived so a refresh keeps the same
   // id; the TTL limits retention if the tab survives for weeks without being
@@ -967,13 +881,18 @@ function writeWrapped(storage: Storage, key: string, value: unknown, ttl: number
 }
 
 /**
- * Report a write that failed, and continue.
+ * Report a sessionStorage write that failed, and continue.
  *
- * A failed write is still not an error a caller can act on -- a draft, a layout
- * snapshot or a key pin has nowhere else to go -- so it stays swallowed. But a
- * REFUSAL must not be silent: the usual cause is the origin quota, every key is
- * partitioned per account, and the symptom a user reports is "my preferences
- * stop saving" with nothing anywhere to point at the cause.
+ * ONLY sessionStorage reaches here. The localStorage family moved to IndexedDB,
+ * whose write queue reports its own refusals; see `reportWriteFailure` in
+ * `~/lib/browserStorageDb`, which is a separate function for a separate store
+ * and shares no wording this one could drift from.
+ *
+ * A failed write is still not an error a caller can act on -- a tab pointer or a
+ * sidebar layout has nowhere else to go -- so it stays swallowed. But a REFUSAL
+ * must not be silent: the usual cause is the origin quota, every key is
+ * partitioned per account, and the symptom a user reports is "my layout stops
+ * saving" with nothing anywhere to point at the cause.
  *
  * A `ReferenceError` is the other case and it is not a refusal: it means the
  * environment has no such global at all, which is true of Node -- server-side
@@ -981,8 +900,8 @@ function writeWrapped(storage: Storage, key: string, value: unknown, ttl: number
  * That is an expected property of where the code runs, so it stays at debug and
  * does not put a warning on the console for every write.
  */
-function reportWriteFailure(store: string, name: string, err: unknown): void {
-  const message = `${store} write failed for "${name}"; the value is not persisted`
+function reportWriteFailure(name: string, err: unknown): void {
+  const message = `sessionStorage write failed for "${name}"; the value is not persisted`
   if (err instanceof ReferenceError)
     log.debug(message, err)
   else
@@ -993,20 +912,31 @@ function reportWriteFailure(store: string, name: string, err: unknown): void {
 // The mirror: the synchronous tier's view of the database
 // ---------------------------------------------------------------------------
 
-/** Every exact `sync` local name, computed once. */
-const SYNC_EXACT_NAMES = Object.entries(LOCAL_KEY_SPECS)
-  .filter(([, spec]) => spec.match === 'exact' && spec.access === 'sync')
-  .map(([name]) => name)
+/** The local names whose registration satisfies `predicate`, computed once. */
+function namesWhere(predicate: (spec: LocalKeySpec) => boolean): string[] {
+  return Object.entries(LOCAL_KEY_SPECS)
+    .filter(([, spec]) => predicate(spec))
+    .map(([name]) => name)
+}
 
-/** Every `sync` local prefix, computed once. */
-const SYNC_PREFIX_NAMES = Object.entries(LOCAL_KEY_SPECS)
-  .filter(([, spec]) => spec.match === 'prefix' && spec.access === 'sync')
-  .map(([name]) => name)
+/**
+ * The three name lists the hydration reads, PARTITIONED so no name appears in
+ * two of them.
+ *
+ * The two relay marks are `exact`, `sync` AND `device` at once, so a plain
+ * "every sync exact name" list and a separate "every device name" list both
+ * hold them -- and the hydration then asks for each of those keys twice.
+ * Scoping the account list to `scope: 'account'` is what makes the three lists
+ * disjoint, and it is also what lets each one compose its keys with the one
+ * function that answers for its scope.
+ */
+const SYNC_EXACT_ACCOUNT_NAMES = namesWhere(spec => spec.match === 'exact' && spec.access === 'sync' && spec.scope === 'account')
+
+/** Every `sync` local prefix. Every prefix family is account-scoped. */
+const SYNC_PREFIX_NAMES = namesWhere(spec => spec.match === 'prefix' && spec.access === 'sync')
 
 /** The device-scoped names, which every account shares. */
-const DEVICE_NAMES = Object.entries(LOCAL_KEY_SPECS)
-  .filter(([, spec]) => spec.scope === 'device')
-  .map(([name]) => name)
+const DEVICE_NAMES = namesWhere(spec => spec.scope === 'device')
 
 /**
  * Load `userId`'s synchronous rows, plus the device rows, into the mirror.
@@ -1029,6 +959,18 @@ const DEVICE_NAMES = Object.entries(LOCAL_KEY_SPECS)
  */
 export async function hydrateStorageAccount(userId: string): Promise<void> {
   const token = ++hydrationToken
+  // ALREADY HYDRATED FOR THIS ACCOUNT: nothing to do. The token still moves
+  // first, so a hydration for a DIFFERENT account that is still in flight
+  // cannot install its rows over the mirror this one is keeping.
+  //
+  // This is not only an optimization. `AuthContext.setUser` runs on every
+  // `refreshUser`, and ten settings call sites make one -- so without this a
+  // routine profile save re-reads the whole synchronous tier and rebuilds the
+  // mirror from disk, discarding any write this tab issued but has not flushed.
+  // The BroadcastChannel keeps the mirror current across tabs, and the sweep
+  // publishes its own evictions, so a re-read buys nothing.
+  if (mirroredAccount === userId)
+    return
   let rows: KvRow[] = []
   try {
     rows = await readSyncRows(userId)
@@ -1055,8 +997,10 @@ export async function hydrateStorageAccount(userId: string): Promise<void> {
  * megabyte of drafts is not.
  */
 async function readSyncRows(userId: string): Promise<KvRow[]> {
+  // The two lists are disjoint by construction, so each name composes under the
+  // one function that answers for its scope and no key is requested twice.
   const exactKeys = [
-    ...SYNC_EXACT_NAMES.map(name => composeFor(userId, name)),
+    ...SYNC_EXACT_ACCOUNT_NAMES.map(name => accountStorageKey(userId, name)),
     ...DEVICE_NAMES.map(name => deviceStorageKey(name)),
   ]
   const accountPrefix = accountStorageKeyPrefix(userId)
@@ -1065,12 +1009,6 @@ async function readSyncRows(userId: string): Promise<KvRow[]> {
     ...SYNC_PREFIX_NAMES.map(prefix => readKvPrefix(accountPrefix + prefix)),
   ])
   return [...exact, ...families.flat()]
-}
-
-/** The stored key `name` takes under `userId`, honouring its registered scope. */
-function composeFor(userId: string, name: string): string {
-  const spec = specFor(name, LOCAL_INDEX)
-  return spec?.scope === 'device' ? deviceStorageKey(name) : accountStorageKey(userId, name)
 }
 
 /**
@@ -1084,6 +1022,18 @@ function installMirror(userId: string, rows: readonly KvRow[]): void {
   const now = Date.now()
   mirror.clear()
   for (const row of rows) {
+    // A WRITE THIS TAB ISSUED DURING THE READ WINS. The read started before it,
+    // so the row it returned is older by construction -- and the write already
+    // reached the queue, so installing the older row would leave the mirror
+    // disagreeing with what is about to be on disk. The device rows reach this
+    // path in production: `persistedSeq`'s allocator runs from a channel-wrapper
+    // constructor with no lifecycle hook to wait on.
+    const queued = peekKvPending(row.k)
+    if (queued !== undefined) {
+      if (!('removed' in queued) && queued.row.e > now)
+        mirror.set(row.k, { v: queued.row.v, e: queued.row.e })
+      continue
+    }
     if (row.e <= now) {
       enqueueKvDelete(row.k, { publish: true })
       continue
@@ -1102,7 +1052,7 @@ function installMirror(userId: string, rows: readonly KvRow[]): void {
  * refused FLUSH settles that write's durability false without touching the
  * value, which is the property the old inner `try` existed to guarantee.
  */
-function readMirror(key: string, ttl: number): unknown | undefined {
+function readMirror(key: string, spec: LocalKeySpec): unknown | undefined {
   const entry = mirror.get(key)
   if (entry === undefined)
     return undefined
@@ -1112,11 +1062,32 @@ function readMirror(key: string, ttl: number): unknown | undefined {
     enqueueKvDelete(key, { publish: true })
     return undefined
   }
-  if (shouldRefreshExpiration(entry.e, ttl)) {
-    entry.e = now + ttl
-    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: false })
+  if (shouldRefreshExpiration(entry.e, spec.ttlMs)) {
+    entry.e = now + spec.ttlMs
+    // `monotonic` travels with the KEY, not with the call. This refresh writes
+    // the same row `localStorageSet` writes, so it must carry the same merge
+    // policy: without it a refresh of a high-water mark whose mirror sits below
+    // disk would write the smaller value back and un-fence the relay.
+    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: false, monotonic: spec.monotonic })
   }
-  return entry.v
+  return cloneForRead(entry.v)
+}
+
+/**
+ * A private copy of a mirrored value, so a caller cannot mutate the mirror.
+ *
+ * The synchronous tier used to answer from `JSON.parse`, which produced a fresh
+ * object per read by construction. The mirror holds ONE object, and several
+ * callers do a read-modify-write in place -- `KeyPinStore.resolve`'s `commit`
+ * assigns into the map it read, `updateBrowserPref` deletes a field of the
+ * document it read. Without this they would mutate the mirror, and the queued
+ * row beside it, before their own write validated anything.
+ *
+ * A primitive cannot be mutated, so it is returned as it is. Everything else is
+ * already structured-cloneable, because `snapshotValue` cloned it on the way in.
+ */
+function cloneForRead(value: unknown): unknown {
+  return typeof value === 'object' && value !== null ? structuredClone(value) : value
 }
 
 /**
@@ -1135,8 +1106,21 @@ function readMirror(key: string, ttl: number): unknown | undefined {
  * not a mistake, so a JSON round trip serializes them -- which is exactly what
  * every write here did before, so nothing regresses by taking it.
  *
- * What is left after both refuse is a genuine programming error (a function, a
- * DOM node, a cycle), and it is reported rather than dropped in silence.
+ * THE SECOND STRATEGY IS LOSSY, and it cannot tell which loss it is taking.
+ * `JSON.stringify` does not refuse a function, a DOM node or a `Symbol` -- it
+ * DROPS the key and serializes the rest -- so the fallback stores a truncated
+ * value where structured clone refused the whole one. It also undoes the
+ * widening that made structured clone worth taking: `NaN` and `Infinity` become
+ * `null`, a `Map` and a `Set` become `{}`, a `Date` becomes a string, and a
+ * `Uint8Array` becomes an object keyed by index. A value that merely CONTAINS a
+ * Solid proxy takes all of that for its other fields too.
+ *
+ * So the fallback WARNS. It is the expected path for the store-backed writers
+ * and there is nothing a caller can do about it, which is why it stores rather
+ * than refuses -- but a field that silently stopped round-tripping is exactly
+ * the defect nobody finds by reading the code. Only a value neither strategy can
+ * serialize (a cycle survives structured clone, so in practice a `BigInt`) is a
+ * refusal.
  */
 function snapshotValue(name: string, value: unknown): { ok: true, value: unknown } | { ok: false } {
   try {
@@ -1147,7 +1131,12 @@ function snapshotValue(name: string, value: unknown): { ok: true, value: unknown
     // inspecting the object's internals.
   }
   try {
-    return { ok: true, value: JSON.parse(JSON.stringify(value)) as unknown }
+    const serialized = { ok: true, value: JSON.parse(JSON.stringify(value)) as unknown } as const
+    log.debug(
+      `browser storage value for "${name}" is not structured-cloneable; stored through JSON, `
+      + 'which drops a function or a DOM node and narrows NaN, Map, Set, Date and a typed array',
+    )
+    return serialized
   }
   catch (err) {
     log.error(`browser storage value for "${name}" cannot be stored; it must be plain data`, err)
@@ -1166,8 +1155,8 @@ function snapshotValue(name: string, value: unknown): { ok: true, value: unknown
  * on this path at all.
  */
 export function localStorageGet<T>(name: SyncLocalKey): T | undefined {
-  const { key, ttl } = resolveLocalKey(name, 'sync')
-  return readMirror(key, ttl) as T | undefined
+  const { key, spec } = resolveLocalKey(name, 'sync')
+  return readMirror(key, spec) as T | undefined
 }
 
 /**
@@ -1184,6 +1173,15 @@ export function localStorageSet(name: SyncLocalKey, value: unknown): StorageWrit
   if (!snapshot.ok)
     return REFUSED_WRITE
   const entry: MirrorEntry = { v: snapshot.value, e: Date.now() + ttl }
+  // THE MIRROR OBEYS THE SAME MERGE POLICY THE TRANSACTION DOES. `applyBatch`
+  // skips a monotonic put that would lower the row, and it neither publishes
+  // that skip nor reports it, so a mirror updated unconditionally here keeps the
+  // smaller value for the rest of the session -- and the next read serves it and
+  // refreshes it back onto disk. The expiration still moves, because the row
+  // stays in use whichever value won.
+  const existing = mirror.get(key)
+  if (spec.monotonic === true && typeof existing?.v === 'number' && typeof entry.v === 'number' && existing.v >= entry.v)
+    entry.v = existing.v
   mirror.set(key, entry)
   return enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: true, monotonic: spec.monotonic })
 }
@@ -1216,6 +1214,7 @@ export function localStorageRemove(name: SyncLocalKey): StorageWrite {
 export async function localStorageLoad<T>(name: AsyncLocalKey): Promise<T | undefined> {
   const { key, ttl } = resolveLocalKey(name, 'async')
   const now = Date.now()
+  const epoch = kvWriteEpoch()
   const queued = peekKvPending(key)
   if (queued !== undefined) {
     if ('removed' in queued || queued.row.e <= now)
@@ -1227,13 +1226,31 @@ export async function localStorageLoad<T>(name: AsyncLocalKey): Promise<T | unde
     // structured clone, so this is what makes the two paths behave alike.
     return structuredClone(queued.row.v) as T
   }
-  // The queue may have JUST drained this key into a transaction that has not
-  // committed, in which case `peekKvPending` no longer knows about it and the
-  // row is not yet on disk. Waiting for that flush is what makes a read see
-  // every write this tab issued, whichever side of the drain it lands on.
-  // It resolves immediately when nothing is in flight, which is the common case.
-  await flushKvWrites()
+  // NO WAIT FOR THE QUEUE. `peekKvPending` above consults the in-flight batch as
+  // well as the pending map, so it already answered for every write this tab has
+  // issued for this key, whichever side of the drain it sits on. Waiting for a
+  // commit could therefore only ever be a wait for OTHER keys.
   const row = await readKvRow(key)
+  // A WRITE LANDED WHILE THIS READ WAS AWAITING, so none of the housekeeping
+  // below may run. `enqueue` supersedes by key, so a refresh put or an expiry
+  // delete issued now would REPLACE the caller's row -- and its settle is
+  // appended to the winner's list, so the discarded write still reports itself
+  // durable and nothing anywhere says the value was dropped.
+  //
+  // The epoch is deliberately global: any write is enough to make this read's
+  // view of the row untrustworthy, and skipping a best-effort expiry refresh
+  // costs nothing. `peekKvPending` then answers for THIS key, consulting the
+  // in-flight batch as well as the queue, because a write can be in neither the
+  // queue nor the database while its transaction commits.
+  if (kvWriteEpoch() !== epoch) {
+    const raced = peekKvPending(key)
+    if (raced !== undefined) {
+      if ('removed' in raced || raced.row.e <= Date.now())
+        return undefined
+      return structuredClone(raced.row.v) as T
+    }
+    return row === undefined || row.e <= now ? undefined : structuredClone(row.v) as T
+  }
   if (row === undefined)
     return undefined
   if (row.e <= now) {
@@ -1242,7 +1259,10 @@ export async function localStorageLoad<T>(name: AsyncLocalKey): Promise<T | unde
   }
   if (shouldRefreshExpiration(row.e, ttl))
     enqueueKvPut({ k: key, v: row.v, e: now + ttl }, { publish: false })
-  return row.v as T
+  // CLONED for the same reason the queued branch above clones: the row object
+  // is the one the refresh put just queued, so a caller that mutates what it
+  // read would mutate the row underneath the flush.
+  return structuredClone(row.v) as T
 }
 
 /** Write an unmirrored value. See {@link localStorageSet} for the shared contract. */
@@ -1305,89 +1325,6 @@ export function resetBrowserStorageForTests(): void {
   hydrationToken++
 }
 
-/** Load the consolidated browser preferences from localStorage. */
-export function loadBrowserPrefs(): BrowserPreferences {
-  return localStorageGet<BrowserPreferences>(KEY_BROWSER_PREFS) ?? {}
-}
-
-/** Any value a browser preference field can hold. */
-export type BrowserPrefValue = NonNullable<BrowserPreferences[keyof BrowserPreferences]>
-
-/**
- * The document every browser-preference write shares while a batch is open, or
- * null while each write owns its own read and write.
- */
-let batchedPrefs: BrowserPreferences | null = null
-
-/**
- * Whether a batch is open, for `setStorageAccount`'s guard.
- *
- * A function rather than a direct read of `batchedPrefs`, because the guard sits
- * above this declaration: the account namespace is the earlier concept and
- * reads better first, and a hoisted function keeps that order without the
- * use-before-define a bare reference would be.
- */
-function browserPrefBatchOpen(): boolean {
-  return batchedPrefs !== null
-}
-
-/**
- * Update a single field in the consolidated browser preferences.
- *
- * `undefined` DELETES the field, which is what "use the account default" means
- * on disk -- storing a null instead would read back as a device override that
- * pins the value to nothing.
- *
- * This lives beside the key and the interface rather than in
- * PreferencesContext, because the document's SHAPE is this module's to state:
- * the interface above, the field-deletion rule here and the batch below are one
- * contract, and a writer that restated any part of it elsewhere could drift
- * from the reader beside it.
- */
-export function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPrefValue | undefined): void {
-  const prefs = batchedPrefs ?? loadBrowserPrefs()
-  if (value === undefined) {
-    delete prefs[key]
-  }
-  else {
-    (prefs as Record<string, unknown>)[key] = value
-  }
-  // The batch owns the write while one is open. Storing here as well would
-  // defeat it and publish a half-applied document to the other tabs.
-  if (batchedPrefs === null)
-    localStorageSet(KEY_BROWSER_PREFS, prefs)
-}
-
-/**
- * Run `body` with every browser-preference write applied to ONE document,
- * stored once at the end.
- *
- * "Reset all browser overrides" clears seventeen fields, and each one is
- * otherwise a full read, parse, serialize and write of the whole document. One
- * write is also one `storage` event for the other tabs rather than seventeen.
- *
- * Both guards are required. The `finally` closes the batch even when a write
- * inside `body` throws; without it every later write in the page would
- * accumulate into a document that nothing stores. The re-entrancy check holds
- * the same invariant from the other side: a nested call must not adopt a second
- * document and store it over the outer one.
- */
-export function batchBrowserPrefWrites(body: () => void): void {
-  if (batchedPrefs !== null) {
-    body()
-    return
-  }
-  batchedPrefs = loadBrowserPrefs()
-  try {
-    body()
-  }
-  finally {
-    const written = batchedPrefs
-    batchedPrefs = null
-    localStorageSet(KEY_BROWSER_PREFS, written)
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Safe sessionStorage wrappers
 // ---------------------------------------------------------------------------
@@ -1409,7 +1346,7 @@ export function sessionStorageSet(name: string, value: unknown): void {
     writeWrapped(sessionStorage, key, value, ttl)
   }
   catch (err) {
-    reportWriteFailure('sessionStorage', name, err)
+    reportWriteFailure(name, err)
   }
 }
 
@@ -1448,37 +1385,52 @@ export function sessionStorageClearForTests(): void {
 // Cleanup
 // ---------------------------------------------------------------------------
 
+/**
+ * Delete every `leapmux:`-family key of one Web Storage store that `isRegistered`
+ * rejects, or whose wrapper is missing, malformed or expired.
+ *
+ * `() => false` makes it an unconditional retirement of the whole family, which
+ * is what the localStorage half now wants: nothing registers there any more.
+ *
+ * The WHOLE walk is guarded, not each access. A store that throws on `length`
+ * -- Node and server-side rendering have no such global at all -- must not
+ * reject `runCleanup`, because that would skip every sweep after it.
+ */
 function sweepStorage(
-  storage: Storage,
+  storage: () => Storage,
   isRegistered: (key: string) => boolean,
 ): void {
-  const now = Date.now()
-  const keysToDelete: string[] = []
-  for (let i = 0; i < storage.length; i++) {
-    const key = storage.key(i)
-    if (!key)
-      continue
-    if (!key.startsWith(NAMESPACE) && !key.startsWith(RETIRED_NAMESPACE))
-      continue
-    if (isRegistered(key)) {
-      try {
-        const raw = storage.getItem(key)
-        if (raw !== null) {
-          const parsed = JSON.parse(raw)
-          if (isWrappedValue(parsed) && parsed.e > now)
-            continue
+  try {
+    const store = storage()
+    const now = Date.now()
+    const keysToDelete: string[] = []
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i)
+      if (!key)
+        continue
+      if (!key.startsWith(NAMESPACE) && !key.startsWith(RETIRED_NAMESPACE))
+        continue
+      if (isRegistered(key)) {
+        try {
+          const raw = store.getItem(key)
+          if (raw !== null) {
+            const parsed = JSON.parse(raw)
+            if (isWrappedValue(parsed) && parsed.e > now)
+              continue
+          }
         }
+        catch { /* parse error → treat as stale */ }
       }
-      catch { /* parse error → treat as stale */ }
+      keysToDelete.push(key)
     }
-    keysToDelete.push(key)
-  }
-  for (const key of keysToDelete) {
-    try {
-      storage.removeItem(key)
+    for (const key of keysToDelete) {
+      try {
+        store.removeItem(key)
+      }
+      catch { /* ignore removal errors */ }
     }
-    catch { /* ignore removal errors */ }
   }
+  catch { /* no such store here (Node, SSR): nothing to sweep */ }
 }
 
 /**
@@ -1497,39 +1449,29 @@ function sweepStorage(
  * unknown -- which is how the move to scoped keys retires the old ones without
  * a migration step.
  */
-export async function runCleanup(): Promise<void> {
-  sweepStorage(sessionStorage, isRegisteredSessionKey)
-  sweepLegacyLocalStorage()
-  const deleted = await sweepKv(Date.now(), isRegisteredLocalKey)
+export async function runCleanup(opts: { checkRegistrations: boolean } = { checkRegistrations: true }): Promise<void> {
+  sweepStorage(() => sessionStorage, isRegisteredSessionKey)
+  // The `leapmux:` family no longer lives in localStorage at all, so nothing
+  // there is registered and every namespaced key goes. No values are copied
+  // across: the local UI state, drafts and worker key pins a browser holds are
+  // re-earned on the next load, and carrying them would mean maintaining a
+  // translation between two layouts for the sake of one release.
+  sweepStorage(() => localStorage, () => false)
+  const deleted = await sweepKv(Date.now(), isRegisteredLocalKey, opts)
   if (deleted.length === 0)
     return
   // Drop what the sweep deleted from the mirror, so a synchronous read cannot
-  // serve a value that is no longer on disk, and tell the other tabs.
-  const evicted = deleted.filter(key => mirror.delete(key))
-  publishKvRemovals(evicted)
-}
-
-/**
- * Delete every `leapmux:` and `leapmux-` key left in localStorage.
- *
- * The family lives in IndexedDB now, so nothing in localStorage is registered
- * any more and no registration check is needed. Unconditional, and no values are
- * copied across: the local UI state, drafts and worker key pins a browser holds
- * are re-earned on the next load, and carrying them would mean maintaining a
- * translation between two layouts for the sake of one release.
- */
-function sweepLegacyLocalStorage(): void {
-  try {
-    const doomed: string[] = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key && (key.startsWith(NAMESPACE) || key.startsWith(RETIRED_NAMESPACE)))
-        doomed.push(key)
-    }
-    for (const key of doomed)
-      localStorage.removeItem(key)
-  }
-  catch { /* no localStorage here (Node, SSR): nothing to retire */ }
+  // serve a value that is no longer on disk.
+  for (const key of deleted)
+    mirror.delete(key)
+  // Tell the other tabs about EVERY deletion, not only the ones this tab
+  // mirrored. The sweep's expiry arm reaches across accounts, so a peer signed
+  // in as somebody else is exactly the tab that still holds the row this one
+  // just reclaimed -- and it would serve it from memory, then refresh it back
+  // onto disk. A removal carries no value, so the reason the unmirrored tier
+  // publishes nothing (a user's draft prose on a channel every tab receives)
+  // does not apply, and the receiver already drops what it does not mirror.
+  publishKvRemovals(deleted)
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,16 +1552,17 @@ function isMirroredKey(stored: string): boolean {
 }
 
 /**
- * Run `body` once the browser is idle, or on the next timer tick where
- * `requestIdleCallback` is absent. Returns the cancel.
+ * Run `body` once the browser is idle. Returns the cancel.
+ *
+ * `~/lib/idleCallback` owns the fallback, and the reason to route through it
+ * rather than to test `requestIdleCallback` here is its `hasIdleCallback`: it
+ * requires BOTH halves of the pair, so a webview that exposes the request and
+ * not the cancel takes the timer path for both. Scheduling with one mechanism
+ * and cancelling with the other throws out of the dispose that `App` registers.
  */
 function whenIdle(body: () => void): () => void {
-  if (typeof requestIdleCallback === 'function') {
-    const handle = requestIdleCallback(body, { timeout: IDLE_SWEEP_TIMEOUT_MS })
-    return () => cancelIdleCallback(handle)
-  }
-  const handle = setTimeout(body, 0)
-  return () => clearTimeout(handle)
+  const handle = requestIdle(body, { timeout: IDLE_SWEEP_TIMEOUT_MS })
+  return () => cancelIdle(handle)
 }
 
 /**
@@ -1643,18 +1586,34 @@ export function initStorageCleanup(): () => void {
   // key the next one would, so starting a second is pure duplicate work -- and
   // two concurrent passes would each report the other's deletions as their own.
   let sweeping = false
+  let cancelIdleSweep: (() => void) | null = null
+  // The registration pass runs ONCE per page, on the first sweep. It walks every
+  // primary key in the table (see `sweepKv` for why it cannot be ranged), and
+  // what it looks for changes only when a deploy changes the registry.
+  let checkRegistrations = true
   const sweep = (): void => {
     if (sweeping)
       return
     sweeping = true
-    void runCleanup().finally(() => {
+    const withRegistrations = checkRegistrations
+    checkRegistrations = false
+    void runCleanup({ checkRegistrations: withRegistrations }).finally(() => {
       sweeping = false
     })
   }
-  const cancelFirst = whenIdle(sweep)
-  const id = setInterval(sweep, CLEANUP_INTERVAL_MS)
+  // EVERY sweep waits for an idle window, not only the first. The two Web
+  // Storage walks are synchronous main-thread work, so an hourly one that fired
+  // straight off the timer would land in the middle of whatever the user is
+  // doing. `IDLE_SWEEP_TIMEOUT_MS` caps the wait, so a page that never idles
+  // still sweeps.
+  const scheduleIdleSweep = (): void => {
+    cancelIdleSweep?.()
+    cancelIdleSweep = whenIdle(sweep)
+  }
+  scheduleIdleSweep()
+  const id = setInterval(scheduleIdleSweep, CLEANUP_INTERVAL_MS)
   return () => {
-    cancelFirst()
+    cancelIdleSweep?.()
     clearInterval(id)
   }
 }

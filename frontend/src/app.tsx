@@ -170,14 +170,15 @@ export default function App() {
   onCleanup(disposeStorageCleanup)
 
   // Browser storage writes behind, so a write issued in the last moments before
-  // a reload has not reached disk yet. `pagehide` starts that transaction
-  // synchronously in the handler, which browsers generally let finish.
+  // a reload has not reached disk yet. `pagehide` drains the queue.
   //
-  // It narrows the window rather than closing it: a write issued after this
-  // fires is still lost, where the synchronous `setItem` it replaces could not
-  // be. The one place that mattered in practice -- the editor draft before a
-  // reload -- is covered, because the draft is written on a debounce that ends
-  // well before an unload.
+  // IT DOES NOT START THE TRANSACTION SYNCHRONOUSLY, and no arrangement here
+  // could: the flush awaits the connection before it opens a transaction, so the
+  // write lands at least a microtask after the handler returns. This narrows the
+  // window rather than closing it, and the synchronous `setItem` it replaces
+  // could not lose a write at all. The one place that mattered in practice --
+  // the editor draft before a reload -- is covered anyway, because the draft is
+  // written on a debounce that ends well before an unload.
   onMount(() => {
     const flush = () => {
       void flushStorageWrites()

@@ -111,9 +111,13 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * LAST -- and a rename in any other tile then read as "not editing", which is
    * the state every guard below is trying to detect.
    *
-   * Registration is by tile id and the `TabBar` deregisters on cleanup, so a
-   * closed tile cannot leave an accessor that reads a disposed signal and
-   * reports a rename that ended with it.
+   * A REGISTRATION HANDS BACK ITS OWN DEREGISTER, and that deregister removes
+   * the entry only while it is still the installed one. Deleting by tile id
+   * alone is correct today only because Solid disposes the outgoing computation
+   * before it runs the replacement -- an ordering guarantee stated in neither
+   * file. A registration that outlived its deregister would drop the LIVE
+   * accessor and leave every automatic focus unguarded, which is the exact state
+   * the map exists to detect.
    */
   const tabEditingByTile = new Map<string, () => boolean>()
 
@@ -916,11 +920,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // directly would route an image the agent read from disk to a tab that
     // shows the downsample it sent its model.
     handleChatImageOpen,
-    setIsTabEditing: (tileId: string, fn: (() => boolean) | null) => {
-      if (fn)
-        tabEditingByTile.set(tileId, fn)
-      else
-        tabEditingByTile.delete(tileId)
+    setIsTabEditing: (tileId: string, fn: () => boolean): (() => void) => {
+      tabEditingByTile.set(tileId, fn)
+      return () => {
+        // Only if this registration is still the installed one. A tile that
+        // remounts registers before the outgoing bar cleans up, and an
+        // unconditional delete would then remove the new bar's accessor.
+        if (tabEditingByTile.get(tileId) === fn)
+          tabEditingByTile.delete(tileId)
+      }
     },
     /**
      * Exposed because a rename must survive every automatic focus, not only the

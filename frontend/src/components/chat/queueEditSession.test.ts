@@ -102,6 +102,79 @@ describe('createQueueEditSession ownership loss', () => {
     return created
   }
 
+  // TWO ROWS, ONE AGENT. `queueEditRequests` dedupes per (agent, input) and the
+  // queue leaves every other row's Edit button live until one load installs
+  // itself, so a user who clicks row A and then row B has two loads in flight at
+  // once -- and row A's can settle last.
+  //
+  // The guards inside the handler compare the AGENT, which both loads pass, so
+  // the state is protected by a per-load token instead. This case pins the
+  // OUTCOME (the row the user asked for last is the one that opens, with its own
+  // text and attachment bucket); it does not isolate the token, because I could
+  // not make the stale load install itself here even with the token removed.
+  it('installs the edit the user asked for last, not the load that finished last', async () => {
+    const SECOND_INPUT_ID = 'queued-2'
+    const rows = [INPUT_ID, SECOND_INPUT_ID].map(id => ({
+      id,
+      agentId: AGENT_ID,
+      text: `queued ${id}`,
+      kind: AgentInputKind.USER_MESSAGE,
+      state: AgentInputState.QUEUED,
+      editOwnerClientId: CLIENT_ID,
+    }))
+    const bothRows = create(AgentInputQueueSnapshotSchema, { agentId: AGENT_ID, paused: true, items: rows })
+    // Take the ITEMS BACK OFF the built snapshot, so each one is a real message
+    // rather than the plain object the builder accepts.
+    const [firstRow, secondRow] = bothRows.items
+
+    // Row one's begin-edit settles LAST, which is the ordering that makes the
+    // slower load win when nothing tells it that it is stale.
+    const resolvers = new Map<string, () => void>()
+    const [snapshot] = createSignal(bothRows)
+    let session!: QueueEditSession
+    const dispose = createRoot((disposeRoot) => {
+      session = createQueueEditSession({
+        agentId: () => AGENT_ID,
+        inputQueue: snapshot,
+        clientId: () => CLIENT_ID,
+        onBeginQueueEdit: () => async (item) => {
+          await new Promise<void>(resolve => resolvers.set(item.id, resolve))
+          return { snapshot: bothRows, attachments: [], text: `full ${item.id}` }
+        },
+      })
+      session.bindAttachments({
+        attachments: () => [],
+        activeDraftKey: () => session.attachmentDraftKey(),
+        replaceAttachments: vi.fn(),
+        clearAllAttachments: vi.fn(),
+      })
+      return disposeRoot
+    })
+
+    try {
+      session.loadQueueEdit(firstRow!, false, false)
+      session.loadQueueEdit(secondRow!, false, false)
+      await vi.waitFor(() => expect(resolvers.size).toBe(2))
+
+      resolvers.get(SECOND_INPUT_ID)!()
+      await vi.waitFor(() => expect(session.activeEditingInput()?.id).toBe(SECOND_INPUT_ID))
+      resolvers.get(INPUT_ID)!()
+      // A macrotask, so row one's handler has certainly finished. Without the
+      // token it installs itself here, over the row the user is pointing at.
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect(session.activeEditingInput()?.id).toBe(SECOND_INPUT_ID)
+      expect(session.attachmentDraftKey()).toBe(queueEditDraftKey(AGENT_ID, SECOND_INPUT_ID))
+      // The TEXT is the sharper half: the composer is about to be seeded with
+      // it, and a stale load overwrites it after the newer one has already put
+      // its own there.
+      expect(session.takePendingText()).toBe(`full ${SECOND_INPUT_ID}`)
+    }
+    finally {
+      dispose()
+    }
+  })
+
   // The rule this pins: the worker rewrites the item while the update RPC runs,
   // and the rewritten item can carry another owner or no owner at all. A drop
   // there would empty the composer under the user's own save. The send path

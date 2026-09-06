@@ -2,6 +2,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { flushStorageWrites, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet, resetBrowserStorageForTests, setStorageAccountForTests } from './browserStorage'
+import { readKvRow } from './browserStorageDb'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
@@ -218,6 +219,36 @@ describe('createPersistedSeq', () => {
 
   // Infinity is the other value JSON flattened to null and structured clone
   // keeps. Same guard, same outcome.
+  // THE REPAIR REACHES DISK, which is the half a mirror-only assertion misses.
+  // The key merges as a high-water mark, so a poisoned value -- Infinity, a
+  // fraction, a mark past the composition ceiling -- compares greater than every
+  // real one and no ordinary write can replace it. Without the delete the row
+  // keeps the bad value, every reload lands here again, and the allocator mints
+  // 1 for ever while the sidecar's fence sits somewhere else entirely.
+  it('clears the poisoned row so the re-seeded mark reaches disk', async () => {
+    installCryptoMock()
+    // A real database, because this asserts what is ON DISK. The mirror-only
+    // assertions above pass either way: the mirror takes the re-seeded 1 while
+    // the row keeps the poison, and that split is the defect.
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    resetBrowserStorageForTests()
+    setStorageAccountForTests(TEST_USER_ID)
+    try {
+      localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.POSITIVE_INFINITY)
+      await flushStorageWrites()
+
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      expect(next()).toBeGreaterThan(0)
+      await flushStorageWrites()
+
+      expect(await readKvRow('leapmux:channel-relay-seq')).toMatchObject({ v: 1 })
+    }
+    finally {
+      resetBrowserStorageForTests()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('rejects a stored Infinity and re-seeds from 0', () => {
     installCryptoMock()
     localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.POSITIVE_INFINITY)

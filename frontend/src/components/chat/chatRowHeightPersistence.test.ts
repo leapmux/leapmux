@@ -384,6 +384,35 @@ describe('chatrowheightpersistence', () => {
     h.dispose()
   })
 
+  // ONE LOAD PER INSTANCE is the whole contract, and it is what makes a
+  // post-await identity recheck unreachable: the latch means a second id issues
+  // no read at all, so no read can land under a chat the effect moved off. The
+  // latch alone would NOT be enough to support a moving id -- `pending` and
+  // `attemptedAdoptions` still hold the previous chat's rows -- which is why
+  // `ChatView` gives each agent tab its own instance instead.
+  it('loads once per instance, ignoring a storage id that moves afterwards', async () => {
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: STORED_ROW_HEIGHTS_VERSION,
+      rows: [storedRow('a', 'k-a', 120)],
+    })
+    localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-2`, {
+      v: STORED_ROW_HEIGHTS_VERSION,
+      rows: [storedRow('a', 'k-a', 999)],
+    })
+    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')] })
+    await settle()
+    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+
+    h.setStorageId('agent-2')
+    await settle()
+
+    // The second chat's 999 never reaches the virtualizer, and no second prime
+    // happens at all.
+    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    h.dispose()
+    localStorageDrop(`${PREFIX_CHAT_ROW_HEIGHTS}agent-2`)
+  })
+
   it('caps the stored snapshot at the ceiling, dropping pending entries before fresh measurements', async () => {
     // A never-matching pending row (different layout epoch) plus a full
     // ceiling's worth of fresh measurements: the cap must keep every fresh

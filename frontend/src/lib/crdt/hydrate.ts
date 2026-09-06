@@ -459,9 +459,9 @@ async function seedFromSibling(
     //
     // But adoptCheckpoint's `await openDb()` is a no-op microtask only while
     // the cached connection is live. A peer tab's schema-repair
-    // `deleteDatabase()` nulls it (idb.ts's `onversionchange` handler), and the
-    // reopen that follows is a whole task -- which is exactly long enough for
-    // the ordering argument to lapse. So the guard is re-consulted at the point
+    // `deleteDatabase()` nulls it (idb.ts drops the cached promise from its
+    // `close` handler), and the reopen that follows is a whole task -- which is
+    // exactly long enough for the ordering argument to lapse. So the guard is re-consulted at the point
     // the transaction is actually created, where it needs no ordering argument
     // at all.
     if (opts.superseded?.()) {

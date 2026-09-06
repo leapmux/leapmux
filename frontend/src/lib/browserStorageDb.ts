@@ -27,7 +27,9 @@
  */
 import type { Table } from 'dexie'
 import type Dexie from 'dexie'
+import { tryCreateBroadcastChannel } from './broadcastChannel'
 import { createIdbConnection, isIndexedDbAvailable } from './idb'
+import { randomUUID } from './idGenerator'
 import { createLogger } from './logger'
 
 const log = createLogger('browserStorageDb')
@@ -186,50 +188,97 @@ export interface KvWriteOptions {
   readonly monotonic?: boolean
 }
 
+interface PendingCommon {
+  readonly publish: boolean
+  /**
+   * Every write that this op superseded, plus this one's own.
+   *
+   * A FLAT LIST, not a chain of wrapped callbacks. Each superseded write must
+   * settle on the one commit that stored the later value -- three relay ids
+   * minted in one tick collapse to a single put of the largest and three
+   * successes -- but nesting one callback inside the next retains every
+   * superseded op, and its whole row, until the chain unwinds.
+   */
+  readonly settles: Array<(ok: boolean) => void>
+}
+
 type PendingOp
-  = | { kind: 'put', row: KvRow, publish: boolean, monotonic: boolean, settle: (ok: boolean) => void }
-    | { kind: 'delete', key: string, publish: boolean, settle: (ok: boolean) => void }
+  = | (PendingCommon & { kind: 'put', row: KvRow, monotonic: boolean })
+    | (PendingCommon & { kind: 'delete', key: string })
 
 let pending = new Map<string, PendingOp>()
 let flushScheduled = false
 let flushInFlight: Promise<void> | null = null
+/**
+ * The batch `runFlush` swapped out of `pending` and has not settled yet.
+ *
+ * Held here because the swap happens BEFORE the first await, so a reset that
+ * lands mid-flush cannot find those ops in `pending` any more -- and every one
+ * of their `durable` promises would stay pending forever.
+ */
+let inFlightBatch: Map<string, PendingOp> | null = null
 /** Bumped by `resetKvForTests`, so a flush it abandoned cannot settle or publish. */
 let resetGeneration = 0
+/**
+ * Bumped by every enqueue, so a reader can tell that SOMETHING was written while
+ * it was awaiting.
+ *
+ * A single counter rather than one per key: it is only ever used to decide
+ * whether a read's own housekeeping is still safe to issue, and that decision
+ * has to be conservative anyway. A per-key map would also grow with the key set.
+ */
+let writeEpoch = 0
+
+/** Settle every write an op stands for. */
+function settleOp(op: PendingOp, ok: boolean): void {
+  for (const settle of op.settles)
+    settle(ok)
+}
 
 /**
  * Queue `op` for `key`, superseding whatever was queued for it.
  *
- * The superseded op's durability is CHAINED to the winner's, so both resolve on
- * the one commit that stored the later value. That is the right answer for a
- * high-water mark: three relay ids minted in one tick collapse to a single put
- * of the largest and three successes.
+ * The superseded op's durability is carried into the winner's settle list, so
+ * both resolve on the one commit that stored the later value.
  */
-function enqueue(key: string, build: (settle: (ok: boolean) => void) => PendingOp): StorageWrite {
+function enqueue(
+  key: string,
+  build: (settles: Array<(ok: boolean) => void>, superseded: PendingOp | undefined) => PendingOp,
+): StorageWrite {
   let settle!: (ok: boolean) => void
   const durable = new Promise<boolean>((resolve) => {
     settle = resolve
   })
   const superseded = pending.get(key)
-  pending.set(key, build((ok) => {
-    superseded?.settle(ok)
-    settle(ok)
-  }))
+  const settles = superseded === undefined ? [settle] : [...superseded.settles, settle]
+  writeEpoch++
+  pending.set(key, build(settles, superseded))
   scheduleFlush()
   return { durable }
 }
 
 export function enqueueKvPut(row: KvRow, opts: KvWriteOptions): StorageWrite {
-  return enqueue(row.k, settle => ({
+  return enqueue(row.k, (settles, superseded) => ({
     kind: 'put',
     row,
     publish: opts.publish,
-    monotonic: opts.monotonic === true,
-    settle,
+    // A put that supersedes a pending DELETE REPLACES the row; it does not merge
+    // with it. The caller asked for the stored value to go, so the high-water
+    // compare must not resurrect it.
+    //
+    // This is the only way a monotonic mark can ever be repaired. A stored value
+    // that is not a usable mark -- `Infinity`, a fraction, a number past the
+    // composition ceiling -- compares greater than every real mark, so no
+    // ordinary write can replace it and the sequence stays poisoned for the life
+    // of the profile. `persistedSeq` drops the row when it refuses to seed from
+    // it, and that delete is what lets the mark it writes next actually land.
+    monotonic: opts.monotonic === true && superseded?.kind !== 'delete',
+    settles,
   }))
 }
 
 export function enqueueKvDelete(key: string, opts: KvWriteOptions): StorageWrite {
-  return enqueue(key, settle => ({ kind: 'delete', key, publish: opts.publish, settle }))
+  return enqueue(key, settles => ({ kind: 'delete', key, publish: opts.publish, settles }))
 }
 
 /**
@@ -241,10 +290,22 @@ export function enqueueKvDelete(key: string, opts: KvWriteOptions): StorageWrite
  * this they would read the value the pending write is about to replace.
  */
 export function peekKvPending(key: string): { row: KvRow } | { removed: true } | undefined {
-  const op = pending.get(key)
+  // The IN-FLIGHT batch counts too. `runFlush` swaps it out of `pending` before
+  // its first await, so between that swap and the commit a write is in neither
+  // the queue nor the database -- and a reader that missed it would answer with
+  // the row it is about to replace.
+  const op = pending.get(key) ?? inFlightBatch?.get(key)
   if (op === undefined)
     return undefined
   return op.kind === 'put' ? { row: op.row } : { removed: true }
+}
+
+/**
+ * How many writes this tab has enqueued. For a reader that must know whether one
+ * landed while it was awaiting.
+ */
+export function kvWriteEpoch(): number {
+  return writeEpoch
 }
 
 /**
@@ -274,19 +335,23 @@ async function runFlush(): Promise<void> {
   // than being lost or half-applied.
   const batch = pending
   pending = new Map()
+  // Published so a reset can settle this batch. It is no longer reachable
+  // through `pending`, and a write whose durability never settles hangs the
+  // caller that awaited it.
+  inFlightBatch = batch
 
   const generation = resetGeneration
   flushInFlight = (async () => {
     let landed: Set<string> | null = null
     const db = await openKv()
-    // The queue was reset while this batch was opening. Its ops are already
-    // settled and its database is not this one's, so it must not report.
+    // The queue was reset while this batch was opening. `resetKvForTests`
+    // settled its ops and its database is not this one's, so it must not report.
     if (generation !== resetGeneration)
       return
     if (db === null) {
       // Not a refusal: the environment has none. Already reported once.
       for (const op of batch.values())
-        op.settle(false)
+        settleOp(op, false)
       return
     }
     try {
@@ -302,7 +367,7 @@ async function runFlush(): Promise<void> {
     if (generation !== resetGeneration)
       return
     for (const op of batch.values())
-      op.settle(landed !== null)
+      settleOp(op, landed !== null)
     if (landed !== null)
       publishCommitted(batch, landed)
   })()
@@ -312,6 +377,7 @@ async function runFlush(): Promise<void> {
   }
   finally {
     if (generation === resetGeneration) {
+      inFlightBatch = null
       flushInFlight = null
       if (pending.size > 0)
         scheduleFlush()
@@ -382,15 +448,29 @@ export async function flushKvWrites(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Delete every expired row, plus every row `isRegistered` rejects. Resolves the
- * keys that were deleted, so the gateway can drop them from its mirror and tell
- * the other tabs.
+ * Delete every expired row, plus -- when `checkRegistrations` is set -- every row
+ * `isRegistered` rejects. Resolves the keys that were deleted, so the gateway
+ * can drop them from its mirror and tell the other tabs.
  *
  * Expiry comes straight off the index and reads NO value: the walk that judged a
- * 40 KB row-height blob used to have to fetch it first. The registration pass
- * reads primary keys only, for the same reason.
+ * 40 KB row-height blob used to have to fetch it first.
+ *
+ * THE REGISTRATION PASS IS NOT ON THE HOURLY CADENCE, because it cannot be
+ * bounded the way expiry can. Its predicate is a property of the KEY, and a
+ * registered key is `leapmux:u:<any user id>:<name>` -- the account segment is
+ * an open set, so no fixed range describes "registered" and the walk has to
+ * visit every primary key in the table. That table holds the unbounded families
+ * the tier split exists for, times every account that ever signed in on this
+ * profile, and the walk runs inside the same `rw` transaction the write queue
+ * needs. What it looks for only changes when a deploy changes the registry, so
+ * the gateway runs it ONCE per page and leaves the hourly timer on the
+ * index-bounded expiry arm.
  */
-export async function sweepKv(now: number, isRegistered: (key: string) => boolean): Promise<string[]> {
+export async function sweepKv(
+  now: number,
+  isRegistered: (key: string) => boolean,
+  opts: { checkRegistrations: boolean },
+): Promise<string[]> {
   const db = await openKv()
   if (!db)
     return []
@@ -398,8 +478,9 @@ export async function sweepKv(now: number, isRegistered: (key: string) => boolea
   try {
     await db.transaction('rw', db[TABLE], async () => {
       const expired = await db[TABLE].where(EXPIRES_INDEX).below(now).primaryKeys()
-      const unregistered = (await db[TABLE].toCollection().primaryKeys())
-        .filter(key => !isRegistered(key))
+      const unregistered = opts.checkRegistrations
+        ? (await db[TABLE].toCollection().primaryKeys()).filter(key => !isRegistered(key))
+        : []
       // A key can be in both lists; the set is what makes the delete and the
       // reported result idempotent.
       const victims = [...new Set([...expired, ...unregistered])]
@@ -451,15 +532,12 @@ export interface StorageBroadcast {
 /**
  * This tab's identity on the channel.
  *
- * `randomUUID` where it exists; a random string otherwise, because the id only
- * has to be distinct among the tabs of one origin and never leaves the browser.
+ * `~/lib/idGenerator`'s `randomUUID`, which is what `~/lib/crdt/clientIdentity`
+ * already uses to mint its own per-tab channel id. It falls back to
+ * `crypto.getRandomValues` rather than to `Math.random`, so the id stays
+ * RFC 4122 shaped wherever `crypto.randomUUID` is absent.
  */
-const instanceId = (() => {
-  const uuid = globalThis.crypto?.randomUUID
-  return typeof uuid === 'function'
-    ? globalThis.crypto.randomUUID()
-    : `t-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`
-})()
+const instanceId = randomUUID()
 
 type BroadcastListener = (changes: readonly StorageChange[] | null) => void
 
@@ -468,25 +546,16 @@ const broadcastListeners = new Set<BroadcastListener>()
 /**
  * The channel, or null where there is none.
  *
- * Constructed inside a `try` because some embedded webviews expose the
- * constructor and then refuse to construct one -- the same hazard
- * `~/lib/crdt/clientIdentity` documents. Without a channel there is no cross-tab
- * sync and nothing else changes, which is a strict subset of what the `storage`
- * event gave and affects exactly one consumer.
+ * `tryCreateBroadcastChannel` owns the two ways it can be absent, including the
+ * embedded webviews that expose the constructor and then refuse to construct one
+ * -- the same hazard `~/lib/crdt/clientIdentity` meets. Without a channel there
+ * is no cross-tab sync and nothing else changes, which is a strict subset of
+ * what the `storage` event gave and affects exactly one consumer.
  */
-const channel: BroadcastChannel | null = (() => {
-  if (typeof BroadcastChannel === 'undefined') {
-    log.debug('no BroadcastChannel; browser-storage changes will not cross tabs')
-    return null
-  }
-  try {
-    return new BroadcastChannel(CHANNEL_NAME)
-  }
-  catch (err) {
-    log.debug('BroadcastChannel refused to construct; browser-storage changes will not cross tabs', err)
-    return null
-  }
-})()
+const channel: BroadcastChannel | null = tryCreateBroadcastChannel(
+  CHANNEL_NAME,
+  (reason, err) => log.debug(`${reason}; browser-storage changes will not cross tabs`, err),
+)
 
 if (channel !== null) {
   channel.onmessage = (event: MessageEvent<StorageBroadcast>) => {
@@ -496,6 +565,18 @@ if (channel !== null) {
     for (const listener of broadcastListeners)
       listener(message.changes)
   }
+}
+
+/**
+ * This tab's id on the channel. FOR TESTS ONLY.
+ *
+ * A BroadcastChannel bus is shared by every test FILE in one process, and the
+ * channel name is a module constant, so a sibling file's writes arrive at any
+ * listener a test opens. Matching `from` against this is what lets a case assert
+ * what THIS module instance published rather than what the process did.
+ */
+export function kvInstanceIdForTests(): string {
+  return instanceId
 }
 
 /** Run `listener` when ANOTHER tab commits a published change. Returns the unsubscribe. */
@@ -564,9 +645,16 @@ function publishCommitted(batch: Map<string, PendingOp>, landed: ReadonlySet<str
  */
 export function resetKvForTests(): void {
   resetGeneration++
+  // BOTH maps. `runFlush` swaps its batch out of `pending` before its first
+  // await, so an abandoned flush's ops are reachable only through
+  // `inFlightBatch` -- and a `durable` promise nobody settles never rejects and
+  // never resolves, so a caller awaiting it hangs in the NEXT test.
   for (const op of pending.values())
-    op.settle(false)
+    settleOp(op, false)
+  for (const op of inFlightBatch?.values() ?? [])
+    settleOp(op, false)
   pending = new Map()
+  inFlightBatch = null
   flushScheduled = false
   flushInFlight = null
   loggedUnavailable = false

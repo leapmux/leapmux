@@ -79,6 +79,13 @@ class FakeBroadcastChannel {
   }
 }
 
+/** A class that exists and throws when it is called, as some webviews do. */
+class RefusingBroadcastChannel {
+  constructor() {
+    throw new Error('BroadcastChannel is not supported in this webview')
+  }
+}
+
 beforeEach(() => {
   FakeBroadcastChannel.reset()
   vi.stubGlobal('BroadcastChannel', FakeBroadcastChannel)
@@ -195,6 +202,19 @@ describe('createClientIdentity', () => {
     sessionStorageSet(KEY_CLIENT_ID, 'c-no-channel')
     const identity = createClientIdentity()
     expect(identity.clientId()).toBe('c-no-channel')
+    identity.dispose()
+  })
+
+  // The SECOND way the class can be absent, and the one the `typeof` test above
+  // cannot reach: some embedded webviews expose the constructor and throw from
+  // it. Without the handshake there is no duplicate-tab check, so the incumbent
+  // id must simply stand -- a throw out of `createClientIdentity` would instead
+  // take down every surface that reads the CRDT client identity.
+  it('uses the stored id unchanged where BroadcastChannel refuses to construct', () => {
+    vi.stubGlobal('BroadcastChannel', RefusingBroadcastChannel)
+    sessionStorageSet(KEY_CLIENT_ID, 'c-refused')
+    const identity = createClientIdentity()
+    expect(identity.clientId()).toBe('c-refused')
     identity.dispose()
   })
 })

@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { accountStorageKey, KEY_BROWSER_PREFS, KEY_CLIENT_ID } from '../../src/lib/browserStorage'
 import { expect, test } from './fixtures'
-import { databaseStores, webStorageKeys } from './helpers/storage'
+import { databaseStores, readEntry, webStorageKeys } from './helpers/storage'
 import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
 
 /**
@@ -25,6 +25,7 @@ import { loginViaToken, openSettingsAt, pickTheme } from './helpers/ui'
 const DECLARED = {
   'leapmux-kv': ['entries'],
   'leapmux-crdt-state': ['checkpointChunks', 'checkpoints', 'opLog'],
+  'leapmux-render-cache': ['artifacts'],
 } as const
 
 /** Set the palette as a device-tier override, through the Preferences dialog. */
@@ -84,25 +85,9 @@ test.describe('browser storage medium', () => {
     // The row the theme override wrote, read back through the same layout the
     // app composes. `v` is the unwrapped value -- a structured clone, not a
     // JSON envelope -- so the palette is readable without a parse.
-    const rows = await page.evaluate(dbName => new Promise<unknown[]>((resolve) => {
-      const request = indexedDB.open(dbName)
-      request.onerror = () => resolve([])
-      request.onsuccess = () => {
-        const db = request.result
-        const all = db.transaction('entries', 'readonly').objectStore('entries').getAll()
-        all.onsuccess = () => {
-          db.close()
-          resolve(all.result as unknown[])
-        }
-        all.onerror = () => {
-          db.close()
-          resolve([])
-        }
-      }
-    }), 'leapmux-kv')
-    const prefs = (rows as Array<{ k: string, v: { theme?: { name?: string } } }>)
-      .find(row => row.k === prefsKey)
-    expect(prefs?.v.theme?.name, 'the palette must be readable as a structured value').toBe('nord')
+    const prefs = await readEntry(page, prefsKey)
+    const palette = (prefs?.v as { theme?: { name?: string } } | undefined)?.theme?.name
+    expect(palette, 'the palette must be readable as a structured value').toBe('nord')
   })
 
   test('builds the CRDT checkpoint database with its declared stores', async ({ page, leapmuxServer }) => {
@@ -116,6 +101,22 @@ test.describe('browser storage medium', () => {
       async () => (await databaseStores(page, 'leapmux-crdt-state')) ?? [],
       'the checkpoint database must exist with all three declared stores',
     ).toEqual([...DECLARED['leapmux-crdt-state']])
+  })
+
+  // The THIRD database, and the one the rest of the suite never names. It caches
+  // rendered markdown and highlighted code, so every behaviour it backs is
+  // invisible when it silently falls back to re-rendering -- which is exactly
+  // the shape of failure this file exists to catch.
+  test('builds the render cache with its declared store', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+
+    // Opened lazily, on the first artifact a render persists, so this polls for
+    // the same reason the checkpoint database above does.
+    await expect.poll(
+      async () => (await databaseStores(page, 'leapmux-render-cache')) ?? [],
+      'the render cache must exist with its declared store',
+    ).toEqual([...DECLARED['leapmux-render-cache']])
   })
 
   test('carries a preference change to a second tab', async ({ page, leapmuxServer }) => {

@@ -4,22 +4,8 @@ import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { START_MINIMIZED_MINIMIZED, START_MINIMIZED_WINDOW, TRAY_ON_CLOSE_QUIT, TRAY_ON_CLOSE_TRAY, TRAY_ON_MINIMIZE_TASKBAR, TRAY_ON_MINIMIZE_TRAY } from '~/generated/contracts/desktop'
-import {
-  accountStorageKey,
-  deliverStorageChangeForTests,
-  KEY_BROWSER_PREFS,
-  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
-  KEY_PREFERRED_EXTERNAL_APP,
-  loadBrowserPrefs,
-  localStorageClearForTests,
-  localStorageGet,
-  localStorageRemove,
-  localStorageSet,
-  mirrorEntryForTests,
-  resetStorageAccountForTests,
-  setStorageAccountForTests,
-  storedKeyFor,
-} from '~/lib/browserStorage'
+import { loadBrowserPrefs } from '~/lib/browserPreferences'
+import { accountStorageKey, deliverStorageChangeForTests, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageClearForTests, localStorageGet, localStorageRemove, localStorageSet, mirrorEntryForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { buildFontFamily } from '~/lib/fontStack'
 import { applyTheme, DEFAULT_THEME_VALUE, themeStore } from '~/lib/themeStore'
 import { goldenAccountSchema } from '~/test-support/accountSchema'

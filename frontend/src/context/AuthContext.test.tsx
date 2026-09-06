@@ -9,7 +9,8 @@ import { createEffect, createRoot, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
-import { flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
+import { loadBrowserPrefs } from '~/lib/browserPreferences'
+import { flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
@@ -963,6 +964,34 @@ describe('authContext storage namespace', () => {
     expect(published).not.toContain('bob')
     expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:carol:browser-prefs')
     stop()
+  })
+
+  // The identity is not the only thing a stale adopt would publish. `setUser`
+  // returns early when a newer one superseded it mid-hydration, but its CALLERS
+  // continue -- and `adoptCurrentUser` then mirrors the dead response's elevation
+  // window onto whatever session is live now. That window is what `/elevate`
+  // reads to decide whether to prompt, so a signed-out visitor is redirected
+  // away and the hub's consent gate answers with a page that has no way forward.
+  // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
+  it('does not apply a superseded response\'s elevation window', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    expect(auth().elevationExpiresAt()).toBeUndefined()
+
+    // A refresh carrying an elevation, superseded mid-flight by a sign-out.
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+      elevationExpiresAt: { seconds: 4_102_444_800n, nanos: 0 },
+    })
+    // `logout` runs `clearAuthUser` in its `finally`, which is the ordinary
+    // production path into the null branch of `setUser`.
+    const stale = auth().refreshUser()
+    await auth().logout()
+    await stale
+
+    expect(auth().isAuthenticated()).toBe(false)
+    expect(auth().elevationExpiresAt()).toBeUndefined()
   })
 
   // Signing out tears down the authenticated tree, and the writes that teardown

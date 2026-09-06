@@ -271,13 +271,16 @@ function installedFingerprint(idb: IDBDatabase): string {
   }))
 }
 
-/** Carries the offending connection out of `openOnce`, so the repair path can close it. */
-class SchemaDrift extends Error {
-  constructor(readonly db: Dexie) {
-    super(`indexedDB ${db.name}: stored schema does not match the declaration`)
-    this.name = 'SchemaDrift'
-  }
-}
+/**
+ * What one open attempt produced: a connection that passed the shape check, or
+ * the fact that it did not.
+ *
+ * A VALUE rather than a thrown carrier. Schema drift is an ordinary outcome of
+ * this module's policy, not an error, and returning it keeps the close of the
+ * drifted handle at the one place that knows the handle is unusable -- instead
+ * of obliging every catcher to remember.
+ */
+type OpenAttempt = { ok: true, db: Dexie } | { ok: false }
 
 function errorName(err: unknown): string {
   return (err as { name?: string } | null | undefined)?.name ?? ''
@@ -363,8 +366,12 @@ export function createIdbConnection<T extends Dexie = Dexie>(
     }
   }
 
-  /** One open attempt, ending in a connection that has passed the shape check. */
-  async function openOnce(): Promise<Dexie> {
+  /**
+   * One open attempt. Resolves the connection when it passed the shape check,
+   * and `{ ok: false }` -- with the drifted handle already closed -- when it did
+   * not. Rejects only when the open itself failed.
+   */
+  async function openOnce(): Promise<OpenAttempt> {
     // CONSTRUCTED PER ATTEMPT, never once at module scope. Dexie snapshots
     // `indexedDB` and `IDBKeyRange` into `db._deps` in its CONSTRUCTOR, from the
     // options given here -- and its own `Dexie.dependencies` defaults were read
@@ -391,20 +398,28 @@ export function createIdbConnection<T extends Dexie = Dexie>(
     const opened = await new Promise<Dexie>((resolve, reject) => {
       // Dexie does NOT reject a blocked open. It fires this event and leaves
       // the request pending while another tab holds an older connection, so
-      // without this the caller waits forever instead of degrading. Closing
-      // with disableAutoOpen cancels Dexie's own pending open, which is what
-      // replaces the orphaned-handle bookkeeping a raw IDBOpenDBRequest needs.
+      // without this the caller waits forever instead of degrading.
+      //
+      // IT DOES NOT CLOSE HERE, and that is the whole repair. `close()` runs
+      // Dexie's `cancelOpen`, which makes the pending `db.open()` REJECT with
+      // DatabaseClosedError -- while the raw request underneath keeps running
+      // and, once the peer tab yields, fires its own `onsuccess` and re-assigns
+      // `db.idbdb`. The result is an OPEN connection this module closed and
+      // therefore believes is gone. Leaving the promise alone lets the
+      // fulfilled branch below run for real, which is the only place that can
+      // close the handle the late open produced.
       db.on('blocked', () => {
         if (settled)
           return
         settled = true
-        db.close({ disableAutoOpen: true })
         reject(new Error(`indexedDB ${name} open blocked`))
       })
       db.open().then(
         () => {
           // A `blocked` event already rejected for us and the open completed
-          // anyway. Close the connection nothing will ever hold.
+          // anyway. Close the connection nothing will ever hold: it would
+          // otherwise answer `versionchange` for an instance no caller holds,
+          // and block the next schema repair's deleteDatabase.
           if (settled) {
             db.close({ disableAutoOpen: true })
             return
@@ -421,9 +436,13 @@ export function createIdbConnection<T extends Dexie = Dexie>(
       )
     })
 
-    if (!shapeMatches(opened, expected))
-      throw new SchemaDrift(opened)
-    return opened
+    if (!shapeMatches(opened, expected)) {
+      // Closed HERE, at the one place that knows the handle is unusable, so no
+      // catcher has to remember to do it.
+      opened.close({ disableAutoOpen: true })
+      return { ok: false }
+    }
+    return { ok: true, db: opened }
   }
 
   /**
@@ -436,16 +455,10 @@ export function createIdbConnection<T extends Dexie = Dexie>(
    */
   async function recreate(): Promise<Dexie> {
     await deleteDatabaseByName(name)
-    try {
-      return await openOnce()
-    }
-    catch (err) {
-      if (err instanceof SchemaDrift) {
-        err.db.close({ disableAutoOpen: true })
-        throw new Error(`indexedDB ${name}: schema still unusable after recreate`)
-      }
-      throw err
-    }
+    const attempt = await openOnce()
+    if (!attempt.ok)
+      throw new Error(`indexedDB ${name}: schema still unusable after recreate`)
+    return attempt.db
   }
 
   function open(): Promise<T> {
@@ -463,14 +476,11 @@ export function createIdbConnection<T extends Dexie = Dexie>(
       }
       attempt = openOnce()
         .catch(async (err: unknown) => {
-          if (err instanceof SchemaDrift) {
-            err.db.close({ disableAutoOpen: true })
-            return await recreate()
-          }
           if (!RECREATE_ON_OPEN_ERROR.has(errorName(err)))
             throw err
-          return await recreate()
+          return { ok: false } as const
         })
+        .then(async result => (result.ok ? result.db : await recreate()))
         .then((db) => {
           // Registered only now, AFTER the repair path above, so the deliberate
           // closes in it cannot invalidate a cache entry they do not own.

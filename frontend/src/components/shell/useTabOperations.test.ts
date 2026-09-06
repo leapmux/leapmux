@@ -2053,14 +2053,33 @@ describe('useTabOperations tab-rename state', () => {
   it('forgets a tile that deregistered, so a closed tile cannot report forever', () => {
     createRoot((dispose) => {
       const { ops } = setup()
-      ops.setIsTabEditing('tile-left', () => true)
+      const deregister = ops.setIsTabEditing('tile-left', () => true)
       expect(ops.isTabEditing()).toBe(true)
 
-      // What `TabBar`'s onCleanup sends. Without it a tile closed mid-rename
+      // What `TabBar`'s onCleanup calls. Without it a tile closed mid-rename
       // leaves an accessor over a disposed signal that keeps answering true,
       // and every automatic focus stays suppressed for the page's life.
-      ops.setIsTabEditing('tile-left', null)
+      deregister()
       expect(ops.isTabEditing()).toBe(false)
+      dispose()
+    })
+  })
+
+  // A deregister removes only the registration it belongs to. A remount
+  // registers before the outgoing bar cleans up, so a delete keyed on the tile
+  // alone would drop the LIVE accessor and leave every automatic focus
+  // unguarded -- the exact state this map exists to detect. Today that ordering
+  // cannot occur, because Solid disposes a computation before it runs the
+  // replacement; the point is that the map no longer depends on it.
+  it('ignores a deregister from a registration a remount already replaced', () => {
+    createRoot((dispose) => {
+      const { ops } = setup()
+      const staleDeregister = ops.setIsTabEditing('tile-left', () => false)
+      ops.setIsTabEditing('tile-left', () => true)
+
+      staleDeregister()
+
+      expect(ops.isTabEditing()).toBe(true)
       dispose()
     })
   })

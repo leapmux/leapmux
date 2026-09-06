@@ -19,9 +19,16 @@ function hasIdleCallback(): boolean {
   return typeof requestIdleCallback === 'function' && typeof cancelIdleCallback === 'function'
 }
 
-export function requestIdle(callback: () => void): number {
+/**
+ * `options.timeout` caps how long the callback waits for an idle window, for a
+ * caller whose work must happen even on a page that never goes idle. The
+ * fallback ignores it, because a timer already runs the callback immediately.
+ */
+export function requestIdle(callback: () => void, options?: IdleRequestOptions): number {
+  // `options` is forwarded only when a caller gave one, so the ordinary call
+  // stays a one-argument call rather than passing an explicit `undefined`.
   if (hasIdleCallback())
-    return requestIdleCallback(callback)
+    return options === undefined ? requestIdleCallback(callback) : requestIdleCallback(callback, options)
   return setTimeout(callback, 1) as unknown as number
 }
 

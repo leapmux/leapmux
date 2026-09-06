@@ -3,7 +3,7 @@ import type { ProviderPermissionPreset, ProviderSettingChangeHandler } from '~/c
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { EnterKeyMode } from '~/lib/browserStorage'
+import type { EnterKeyMode } from '~/lib/browserPreferences'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'

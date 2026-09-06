@@ -18,7 +18,15 @@ import { TEST_USER_ID } from './crdtBridge'
  * and therefore needs a place to persist to. Call this once at the top level of
  * such a file.
  *
- * DO NOT combine it with fake timers in the same file.
+ * FAKE TIMERS NEED CARE, and four files in this repo combine the two
+ * successfully. fake-indexeddb schedules its request callbacks on
+ * `setImmediate` (falling back to `setTimeout`), so a request only stalls when
+ * the fake clock owns that timer AND nothing advances it. Either condition is
+ * enough to be safe: leave `setImmediate` real (`vi.useFakeTimers({ toFake:
+ * [...] })` without it, as `storageCleanup.test.ts` does), or advance the clock
+ * while a request is outstanding (`chatRowHeightPersistence.test.ts`). A bare
+ * `vi.useFakeTimers()` plus an `await` on a read, with no advance in between,
+ * is the combination that hangs.
  */
 export function useTestStorage(): void {
   beforeEach(() => {

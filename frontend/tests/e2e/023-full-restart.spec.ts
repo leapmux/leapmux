@@ -39,7 +39,7 @@ test.describe('Full Hub+Worker Restart', () => {
       await restartWorker(separateHubWorker)
 
       // Reload to establish fresh connections to the restarted Hub. The app
-      // restores the workspace from localStorage — there is no URL to carry it.
+      // restores the workspace from browser storage — there is no URL to carry it.
       await reopenWorkspace(page, workspaceId)
 
       // Wait for the editor to be ready after page reload
@@ -116,7 +116,7 @@ test.describe('Full Hub+Worker Restart', () => {
     await restartHub(separateHubWorker)
     await restartWorker(separateHubWorker)
 
-    // Reload; the app restores the workspace from localStorage.
+    // Reload; the app restores the workspace from browser storage.
     await reopenWorkspace(page, authenticatedWorkspace.workspaceId)
 
     // Verify the terminal tab is restored with the custom title
@@ -206,7 +206,7 @@ test.describe('Full Hub+Worker Restart', () => {
       await restartHub(separateHubWorker)
       await restartWorker(separateHubWorker)
 
-      // Reload; the app restores the workspace from localStorage.
+      // Reload; the app restores the workspace from browser storage.
       await reopenWorkspace(page, workspaceId)
 
       // Agent tab should be visible after restore
@@ -261,7 +261,7 @@ test.describe('Full Hub+Worker Restart', () => {
       await restartWorker(separateHubWorker)
 
       // Reload to establish fresh connections to the restarted hub. The app
-      // restores the workspace from localStorage — there is no URL to carry it.
+      // restores the workspace from browser storage — there is no URL to carry it.
       await reopenWorkspace(page, workspaceId)
       await expect(editor).toBeVisible()
 

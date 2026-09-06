@@ -22,6 +22,19 @@ describe('idlecallback', () => {
     expect(cic).toHaveBeenCalledWith(42)
   })
 
+  // `initStorageCleanup` caps how long its sweep waits for an idle window, so a
+  // page that never goes idle still sweeps. The fallback ignores the option,
+  // because a timer already runs the callback immediately.
+  it('forwards a timeout to requestIdleCallback', () => {
+    const ric = vi.fn(() => 42)
+    vi.stubGlobal('requestIdleCallback', ric)
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
+
+    const cb = () => {}
+    requestIdle(cb, { timeout: 5000 })
+
+    expect(ric).toHaveBeenCalledWith(cb, { timeout: 5000 })
+  })
   it('falls back to timers under a PARTIAL polyfill (request present, cancel absent)', () => {
     // The two must be used as a pair: if requestIdleCallback exists but
     // cancelIdleCallback does not, scheduling via requestIdleCallback would leave the

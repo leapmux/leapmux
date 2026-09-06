@@ -44,7 +44,7 @@
 // therefore its own id space.
 
 import type { SyncLocalKey } from './browserStorage'
-import { localStorageGet, localStorageSet } from './browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet } from './browserStorage'
 import { createLogger } from './logger'
 
 const log = createLogger('persistedSeq')
@@ -111,12 +111,29 @@ export function createPersistedSeq(key: SyncLocalKey): () => number {
       // satisfies all three -- `-0 === 0` -- but `-0 + 1 === 1` advances
       // forward correctly, and the JSON path cannot deliver it anyway since
       // JSON.stringify(-0) yields 0.) Anything rejected re-seeds from 0.
-      mark = typeof persisted === 'number'
+      const usable = typeof persisted === 'number'
         && Number.isSafeInteger(persisted)
         && persisted >= 0
         && persisted <= MARK_LIMIT
-        ? persisted
-        : 0
+      if (usable) {
+        mark = persisted
+      }
+      else {
+        mark = 0
+        // DROP THE POISONED ROW, and do it before the write below.
+        //
+        // The key merges as a high-water mark, so a stored value that is not a
+        // usable mark wins every compare against a real one: `Infinity`, a
+        // fraction and a number past MARK_LIMIT all sort above whatever this
+        // allocator writes next, so the row would keep the bad value and every
+        // later reload would land here again. Deleting it first is what makes
+        // the repair reach disk -- a put that supersedes a pending delete
+        // replaces the row instead of merging with it.
+        //
+        // Only this module can make that call: the store knows what a mark is,
+        // but MARK_LIMIT is the composition ceiling of the id built here.
+        localStorageRemove(key)
+      }
     }
     mark++
     // The durability of the write, not a read-back of it. A read-back would

@@ -88,11 +88,17 @@ export function createAgentSessionStore() {
     infoByAgent: {},
   })
 
-  // Track which agents have had their persisted info requested.
-  const loaded = new Set<string>()
-  // The in-flight read per agent, dropped once it settles. `persist` waits on
-  // it; see there for why a write may not overtake a read.
-  const loading = new Map<string, Promise<void>>()
+  /**
+   * Per agent: the in-flight persisted read, or `null` once it settled.
+   *
+   * ONE STRUCTURE, because presence and in-flight are two facts about one
+   * lifecycle and they must agree. A key is present from the first touch, which
+   * is what keeps a burst of touches to a single read; the value is the promise
+   * `persist` and `clearContextUsage` wait on, and `null` afterwards. `null`
+   * rather than a deleted key, so "settled" and "never requested" stay
+   * distinguishable in the type rather than both reading as `undefined`.
+   */
+  const reads = new Map<string, Promise<void> | null>()
 
   // Hydrate an agent's persisted info into the reactive store on first touch.
   // Every mutator must call this before reading/clearing keys: otherwise a
@@ -100,14 +106,13 @@ export function createAgentSessionStore() {
   // could overwrite real persisted data (e.g. clearContextUsage saving a bare
   // `rest` over stored rateLimits/cost).
   //
-  // `loaded` is marked SYNCHRONOUSLY and the read runs behind it, so `getInfo`
+  // The key is registered SYNCHRONOUSLY and the read runs behind it, so `getInfo`
   // stays synchronous for the render path that calls it and the store notifies
-  // when the row arrives, one microtask later. Marking it up front is what
+  // when the row arrives, one microtask later. Registering it up front is what
   // keeps a burst of touches to one read.
   const ensureLoaded = (agentId: string) => {
-    if (loaded.has(agentId))
+    if (reads.has(agentId))
       return
-    loaded.add(agentId)
     const read = loadFromStorage(agentId).then((stored) => {
       if (Object.keys(stored).length === 0)
         return
@@ -116,11 +121,22 @@ export function createAgentSessionStore() {
       // older than any of them by construction, so it must fill gaps rather
       // than overwrite. The synchronous read this replaces could not race.
       setState('infoByAgent', agentId, (prev = {}) => ({ ...stored, ...prev }))
-    })
-    loading.set(agentId, read)
+    // A failed read is a MISS: the agent simply has no stored info, which is
+    // already a defined outcome here. Without this the rejection would also
+    // travel into `whenLoaded`, whose `read.then(body)` would then DROP the
+    // body -- losing the write it was waiting to make, and leaving the next
+    // `whenLoaded` to run synchronously against an entry that never hydrated.
+    // That is exactly the clobber `ensureLoaded` exists to prevent.
+    }).catch(() => {})
+    // Set AFTER the chain is built and still in the same turn: `loadFromStorage`
+    // is an `async` function, so it cannot throw synchronously and runs no user
+    // code before its first await. Nothing can re-enter `ensureLoaded` between
+    // the `has` above and this line.
+    reads.set(agentId, read)
     void read.finally(() => {
-      if (loading.get(agentId) === read)
-        loading.delete(agentId)
+      // Only this read's own entry: a newer one would own the key by then.
+      if (reads.get(agentId) === read)
+        reads.set(agentId, null)
     })
   }
 
@@ -137,8 +153,10 @@ export function createAgentSessionStore() {
    * asynchronous re-opened it.
    */
   const whenLoaded = (agentId: string, body: () => void) => {
-    const read = loading.get(agentId)
-    if (read === undefined)
+    // `null` (settled) and absent (never requested) both run the body now, which
+    // is why one falsy test answers for both.
+    const read = reads.get(agentId)
+    if (!read)
       body()
     else
       void read.then(body)

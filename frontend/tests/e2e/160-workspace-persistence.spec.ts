@@ -5,7 +5,7 @@ import { loginViaToken, openWorkspace, reopenWorkspace, waitForWorkspaceReady, w
 /**
  * Which workspace the app opens on used to be carried by the URL
  * (`/workspace/{id}`), so a reload was self-describing. It is now a per-user
- * localStorage entry read by `resolveActiveWorkspace`, which makes these the
+ * browser-storage entry read by `resolveActiveWorkspace`, which makes these the
  * only end-to-end checks that the selection survives a reload at all — and that
  * a selection pointing at a workspace the user no longer has degrades to a
  * sibling rather than to an empty shell.

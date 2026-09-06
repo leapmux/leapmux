@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { useWindowPointerDrag } from '~/components/shell/windowPointerDrag'
+import { onStorageAccountChange } from '~/lib/browserStorage'
 import {
   clampEditorHeight,
   clearEditorMinHeight,
@@ -12,7 +13,39 @@ import {
 // In-memory cache of per-agent heights. The stored height is on the
 // ASYNCHRONOUS storage tier, which a render cannot await, so this cache is what
 // answers the render path after the first read lands.
+//
+// It MIRRORS an account-scoped key (`PREFIX_EDITOR_MIN_HEIGHT` is
+// `scope: 'account'`), so it follows the namespace, which is the rule
+// `~/lib/browserStorage` states for exactly this shape. An in-tab account switch
+// needs no reload -- `AuthContext` moves the namespace in place -- so without
+// this the next account reads the previous one's entries. It also bounds the
+// map, which otherwise keeps one entry per agent for the page's life.
 const editorMinHeightCache = new Map<string, number | undefined>()
+
+// Through a NAMED function, so `resetEditorMinHeightCacheForTests` can register
+// it again.
+function dropCachedHeights(): void {
+  editorMinHeightCache.clear()
+}
+
+onStorageAccountChange(dropCachedHeights)
+
+/**
+ * Drop the cache and subscribe to the account move again. FOR TESTS ONLY.
+ *
+ * `resetStorageAccountForTests` CLEARS every account listener, and the suite
+ * runs it before each test -- so this module, which subscribes at import time,
+ * is unsubscribed for the whole file and its account-switch behaviour
+ * disappears from every test with no failure to show for it. Registering again
+ * here is what makes that behaviour reachable at all. The listeners live in a
+ * Set keyed by reference, so the second registration is a no-op in production,
+ * where nothing calls this. `~/lib/accountScopedSignal` carries the same seam
+ * for the same reason.
+ */
+export function resetEditorMinHeightCacheForTests(): void {
+  editorMinHeightCache.clear()
+  onStorageAccountChange(dropCachedHeights)
+}
 
 export interface UseEditorMinHeightOptions {
   /** Agent ID used as the storage key. */
@@ -57,6 +90,14 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
   // default height. Only the FIRST visit to an agent pays a read, and the guard
   // on `opts.agentId()` after it stops a slow read from applying an older
   // agent's height to the one now on screen.
+  //
+  // A MISS PUBLISHES NOTHING until the read lands. Writing `undefined` first
+  // would collapse the composer to EDITOR_MIN_HEIGHT and expand it again one
+  // round trip later, for every agent the session has not visited yet -- the
+  // synchronous read this replaced set the height once, before paint. Holding
+  // the current value costs at most one frame of the outgoing agent's height,
+  // and on a cold start that value is already `undefined`, which is the right
+  // answer for an agent with no stored override.
   createEffect(on(opts.agentId, (agentId) => {
     if (!agentId)
       return
@@ -64,7 +105,6 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
       setEditorMinHeightSignal(editorMinHeightCache.get(agentId))
       return
     }
-    setEditorMinHeightSignal(undefined)
     void getStoredEditorMinHeight(agentId).then((stored) => {
       // A write may have landed for this agent while the read was in flight
       // (a resize drag ends in `setEditorMinHeight` below), and it is newer
