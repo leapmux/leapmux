@@ -694,13 +694,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // pointer behind would make a second swap arriving during this read save
       // the incoming document under the outgoing key.
       prevDraftKey = newDraftKey
-      props.onDraftKeyChanged?.(newDraftKey)
       const swapTarget = editorInstance
       // Captured before the await. `props` is reactive, and reading a prop off
       // it inside the callback below would read it outside any tracked scope --
-      // which is what solid/reactivity flags, and it is right: the handler this
-      // swap belongs to is the one that was installed when the swap started.
+      // which is what solid/reactivity flags, and it is right: the handlers this
+      // swap belongs to are the ones that were installed when the swap started.
       const notifyContentChange = props.onContentChange
+      const notifyDraftKeyChanged = props.onDraftKeyChanged
       void swapDraft(newDraftKey, (draft) => {
         try {
           swapTarget.action(replaceAll(draft.content))
@@ -709,6 +709,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           notifyContentChange?.(draft.content.trim().length > 0)
         }
         catch { /* editor may not be ready */ }
+        // AFTER the document is replaced, never before. `AgentEditorPanel`
+        // answers this by writing the queue-edit text into the editor, and the
+        // replace above would then wipe what it just wrote -- the saved draft
+        // for a freshly opened queue edit is empty. The read is asynchronous,
+        // so "notify first" is no longer the same instant as "document ready";
+        // it was, when the draft load was synchronous.
+        notifyDraftKeyChanged?.(newDraftKey)
       })
     },
   ))
