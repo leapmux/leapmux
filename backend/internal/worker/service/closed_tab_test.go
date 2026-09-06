@@ -57,6 +57,26 @@ type testResponseWriter struct {
 	streams    []*leapmuxv1.InnerStreamMessage
 	streamCtrl channel.StreamController
 	failStream bool
+	// ended closes when the handler sends its End frame. A test waits on it
+	// rather than polling, because the frame comes from the session goroutine
+	// and a real-time budget only measures how loaded the runner is.
+	ended     chan struct{}
+	endClosed bool
+}
+
+// streamEndSignal returns the channel that closes on the End frame. Created on
+// demand, so a testResponseWriter built as a struct literal works too.
+func (w *testResponseWriter) streamEndSignal() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.endedLocked()
+}
+
+func (w *testResponseWriter) endedLocked() chan struct{} {
+	if w.ended == nil {
+		w.ended = make(chan struct{})
+	}
+	return w.ended
 }
 
 // killStreamSends makes every later SendStream fail, simulating a dead
@@ -93,6 +113,10 @@ func (w *testResponseWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 		return errors.New("test: transport gone")
 	}
 	w.streams = append(w.streams, m)
+	if m.GetEnd() && !w.endClosed {
+		w.endClosed = true
+		close(w.endedLocked())
+	}
 	return nil
 }
 

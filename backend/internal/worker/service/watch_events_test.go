@@ -104,6 +104,21 @@ func waitTerminalWatchCount(t *testing.T, svc *Service, termID string, want int)
 	}, time.Second, 10*time.Millisecond)
 }
 
+// waitStreamEnded blocks until the handler sends its End frame.
+//
+// The generous limit is a backstop against a hung handler, not the mechanism:
+// the channel wakes the test the instant the frame lands. A short real-time
+// budget here measures the CI runner's load, and a loaded Windows runner needs
+// more than a second to schedule the session goroutine.
+func waitStreamEnded(t *testing.T, w *testResponseWriter) {
+	t.Helper()
+	select {
+	case <-w.streamEndSignal():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the session never sent its End frame")
+	}
+}
+
 func streamEnded(w *testResponseWriter) bool {
 	for _, s := range w.streamsSnapshot() {
 		if s.GetEnd() {
@@ -283,9 +298,11 @@ func TestWatchEvents_CancelFrameUnwatchesAndEnds(t *testing.T) {
 
 	w.deliverStreamRequest(nil, true)
 
-	require.Eventually(t, func() bool {
-		return !svc.Watchers.agents.hasEntity("agent-1") && streamEnded(w)
-	}, time.Second, 10*time.Millisecond)
+	// OnCancel unwatches on the caller's goroutine and only the End frame
+	// crosses to the session goroutine. So wait for that frame, then read the
+	// registry: once the stream ends, the unwatch already happened.
+	waitStreamEnded(t, w)
+	assert.False(t, svc.Watchers.agents.hasEntity("agent-1"))
 }
 
 func TestWorkerPrivateEvents_CancelReleasesSubscriber(t *testing.T) {
