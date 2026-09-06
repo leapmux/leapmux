@@ -165,6 +165,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         handleTabClose: s.handleTabClose as (tab: Tab) => Promise<boolean>,
         probeBusy: async () => [],
         setIsTabEditing: () => {},
+        isTabEditing: () => false,
         closingTabKeys: () => new Set(),
       },
       newTab: {

@@ -24,6 +24,17 @@ interface TerminalViewProps {
   /** Whether the enclosing tile is the layout-focused tile. See TerminalContainer.tileFocused. */
   tileFocused: boolean
   /**
+   * Whether a tab rename is open ANYWHERE in the shell. Absent means "no", for
+   * a caller that has no tab bar around it.
+   *
+   * Focusing an xterm while the inline rename input is open blurs that input,
+   * and its blur handler COMMITS and unmounts it -- so the rename ends on its
+   * own and the user's next keystrokes land in the terminal. `useTabOperations`
+   * gates its own two automatic focus paths on the same accessor; this is the
+   * third, and it was the one left open.
+   */
+  tabEditing?: () => boolean
+  /**
    * Resume cursor for a terminal, read at mount to seed its snapshot apply.
    *
    * A lookup rather than a field on `TerminalTab`, because it is written at
@@ -239,6 +250,8 @@ const TerminalContainer: Component<{
    * with the cursor blinking in xterm.
    */
   tileFocused: boolean
+  /** See TerminalViewProps.tabEditing. */
+  tabEditing?: () => boolean
   screen?: Uint8Array
   lastOffset?: number
   cols?: number
@@ -398,11 +411,17 @@ const TerminalContainer: Component<{
     })
   })
 
-  // Re-fit when this terminal becomes active+visible. Focus is gated
-  // on `tileFocused` so an MRU-driven rotation (e.g. user just
-  // dragged the agent off this tile and the terminal got promoted to
-  // the active tab on the now-unfocused source tile) doesn't grab
-  // the keyboard cursor away from where the user is looking.
+  // Re-fit when this terminal becomes active+visible. Focus is gated TWICE.
+  //
+  // On `tileFocused`, so an MRU-driven rotation (e.g. user just dragged the
+  // agent off this tile and the terminal got promoted to the active tab on the
+  // now-unfocused source tile) doesn't grab the keyboard cursor away from where
+  // the user is looking.
+  //
+  // And on `tabEditing`, because this effect re-runs on any change to
+  // active / visible / tileFocused -- a sidebar toggle, a tile closing, a
+  // layout change -- and one of those landing while the inline rename input is
+  // open would blur it, which COMMITS and unmounts it mid-rename.
   createEffect(() => {
     if (props.active && props.visible) {
       const instance = instances.get(props.terminalId)
@@ -412,7 +431,11 @@ const TerminalContainer: Component<{
           const prevCols = instance.terminal.cols
           const prevRows = instance.terminal.rows
           instance.fitAddon.fit()
-          if (shouldFocus)
+          // The FIT runs either way -- it is what keeps the geometry right --
+          // and only the focus stands down. Read here rather than above,
+          // because a rename that opens after this effect ran must still
+          // suppress the focus this frame is about to take.
+          if (shouldFocus && !props.tabEditing?.())
             instance.terminal.focus()
           if (instance.terminal.cols !== prevCols || instance.terminal.rows !== prevRows) {
             props.onResize(props.terminalId, instance.terminal.cols, instance.terminal.rows)
@@ -657,6 +680,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     active={id === props.activeTerminalId}
                     visible={props.visible}
                     tileFocused={props.tileFocused}
+                    tabEditing={props.tabEditing}
                     screen={terminal()?.screen}
                     lastOffset={props.getLastOffset?.(id)}
                     cols={terminal()?.cols}

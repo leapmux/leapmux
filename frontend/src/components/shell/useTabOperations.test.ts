@@ -1,7 +1,7 @@
 import type { TabBusyReason } from '~/components/shell/tabBusyProbe'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { create } from '@bufbuild/protobuf'
-import { createRoot } from 'solid-js'
+import { createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -2012,3 +2012,56 @@ function setupForFocusMigration() {
   })
   return { ...stores, ops, homeTileId, otherTileId, handleAgentClose, handleTerminalClose }
 }
+
+// "A tab rename is open" is what stops every automatic focus in the shell from
+// blurring the inline rename input -- a blur COMMITS it, so a stolen focus ends
+// the rename and the next keystrokes land somewhere else.
+//
+// It is registered PER TILE because every tile renders its own `TabBar`. A
+// single accessor answered for whichever tile registered last, so in a split
+// layout a rename in any other tile read as "not editing" and every guard
+// waved it through.
+describe('useTabOperations tab-rename state', () => {
+  it('reports no rename when nothing is registered', () => {
+    createRoot((dispose) => {
+      const { ops } = setup()
+      expect(ops.isTabEditing()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('sees a rename in ANY tile, not just the one that registered last', () => {
+    createRoot((dispose) => {
+      const { ops } = setup()
+      const [editingLeft, setEditingLeft] = createSignal(false)
+      const [editingRight, setEditingRight] = createSignal(false)
+      // Two tiles, registered in order. Under one shared accessor the second
+      // would erase the first and this case would fail on the left tile.
+      ops.setIsTabEditing('tile-left', () => editingLeft())
+      ops.setIsTabEditing('tile-right', () => editingRight())
+
+      expect(ops.isTabEditing()).toBe(false)
+      setEditingLeft(true)
+      expect(ops.isTabEditing(), 'a rename in the FIRST-registered tile').toBe(true)
+      setEditingLeft(false)
+      setEditingRight(true)
+      expect(ops.isTabEditing(), 'a rename in the last-registered tile').toBe(true)
+      dispose()
+    })
+  })
+
+  it('forgets a tile that deregistered, so a closed tile cannot report forever', () => {
+    createRoot((dispose) => {
+      const { ops } = setup()
+      ops.setIsTabEditing('tile-left', () => true)
+      expect(ops.isTabEditing()).toBe(true)
+
+      // What `TabBar`'s onCleanup sends. Without it a tile closed mid-rename
+      // leaves an accessor over a disposed signal that keeps answering true,
+      // and every automatic focus stays suppressed for the page's life.
+      ops.setIsTabEditing('tile-left', null)
+      expect(ops.isTabEditing()).toBe(false)
+      dispose()
+    })
+  })
+})

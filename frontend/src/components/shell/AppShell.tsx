@@ -1284,6 +1284,7 @@ export const AppShell: Component = () => {
       handleTabClose: tabOps.handleTabClose,
       probeBusy: busyProbe.probeMany,
       setIsTabEditing: tabOps.setIsTabEditing,
+      isTabEditing: tabOps.isTabEditing,
       closingTabKeys: tabOps.closingTabKeys,
     },
     newTab: {

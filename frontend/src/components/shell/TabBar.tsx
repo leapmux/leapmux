@@ -130,7 +130,12 @@ interface TabBarProps {
    */
   archived?: boolean
   closingTabKeys?: Set<string>
-  isEditingRef?: (fn: () => boolean) => void
+  /**
+   * Publish "a rename is open in this tile" to the shell, so an automatic focus
+   * elsewhere can stand down. Called with `null` on cleanup, which is what stops
+   * a closed tile from reporting a rename forever.
+   */
+  isEditingRef?: (fn: (() => boolean) | null) => void
   onSelect: (tab: Tab) => void
   onClose: (tab: Tab) => void
   onRename: (tab: Tab, title: string) => void
@@ -179,6 +184,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
   // This is intentionally called once during setup (not reactive).
   // eslint-disable-next-line solid/reactivity
   props.isEditingRef?.(() => editingTabKey() !== null)
+  // Deregister on the way out. Without this a closed tile leaves an accessor
+  // over a disposed signal, which keeps answering whatever it last held -- and
+  // a tile closed mid-rename would suppress every automatic focus from then on.
+  // eslint-disable-next-line solid/reactivity
+  onCleanup(() => props.isEditingRef?.(null))
 
   let editCancelled = false
   let tabListRef: HTMLDivElement | undefined
