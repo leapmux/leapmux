@@ -243,7 +243,15 @@ func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
 // hasRegistryRowFor reports whether the display list holds a row for this child
 // at all, which is what separates "this subagent finished" from "the list cannot
 // say".
+//
+// An empty id is nobody's row. A registry-only row -- a shell task -- carries no
+// child agent id, so a blank query would match the first one and report an
+// answer the list never gave. The caller guards this today; the guard is here so
+// it does not have to.
 func hasRegistryRowFor(rows []bgtask.Item, childAgentID string) bool {
+	if childAgentID == "" {
+		return false
+	}
 	for i := range rows {
 		if rows[i].ChildAgentID == childAgentID {
 			return true

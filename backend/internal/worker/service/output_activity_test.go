@@ -556,3 +556,65 @@ func TestActivity_AChildWithNoRowAnywhereIsIdle(t *testing.T) {
 	assert.False(t, busy)
 	assert.Zero(t, tasks)
 }
+
+func TestHasRegistryRowFor(t *testing.T) {
+	t.Parallel()
+
+	rows := []bgtask.Item{
+		{RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusCompleted},
+		{RowKey: "b", Status: bgtask.StatusRunning},
+	}
+
+	// "This child's row says finished" and "the list cannot say" are different
+	// facts, and only the second one may fall through to the table. A finished
+	// row that re-read the store on every snapshot would put a query on the
+	// settle path of every closed subagent.
+	assert.True(t, hasRegistryRowFor(rows, "child-1"), "a finished row is still an answer")
+	assert.False(t, hasRegistryRowFor(rows, "child-2"), "no row for this child at all")
+	// A shell task carries no child agent id, so a blank query would match the
+	// first one and report an answer the list never gave.
+	assert.False(t, hasRegistryRowFor(rows, ""), "an empty id is nobody's row")
+	assert.False(t, hasRegistryRowFor(nil, "child-1"))
+}
+
+func TestActivity_AChildIsIdleWhenThereIsNoStoreToAsk(t *testing.T) {
+	t.Parallel()
+
+	// The in-memory handler owns no queries, and the child miss path runs before
+	// anything else can stop it. Reporting idle is the same stance
+	// backgroundTaskRows takes for a failed read: a wrong busy strands a tab the
+	// user can no longer close by any route.
+	h, rec := newActivityHandler(t, "child-1")
+
+	busy, tasks := h.AgentActivitySnapshot("child-1", "root-1")
+
+	assert.False(t, busy)
+	assert.Zero(t, tasks)
+	assert.Empty(t, rec.busyStates(), "a read publishes nothing")
+}
+
+func TestActivity_APendingChildRowCountsAsWorkPastTheCap(t *testing.T) {
+	t.Parallel()
+
+	// A subagent that has been spawned but has not reported yet is PENDING, and
+	// that is the state it sits in for the whole window where the user is most
+	// likely to close the tab by accident. The fallback has to treat it as work,
+	// not just `running`.
+	svc, sink := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "SCAN", Status: bgtask.StatusPending,
+	}))
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	require.False(t, hasRegistryRowFor(displayed, childID), "the cap must have dropped the row")
+
+	busy, tasks := svc.Output.AgentActivitySnapshot(childID, "root-1")
+
+	assert.True(t, busy)
+	assert.Equal(t, int32(1), tasks)
+}
