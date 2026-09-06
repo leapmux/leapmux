@@ -237,18 +237,19 @@ message TerminalProcess {
   string name = 2;
 }
 
-// TerminalProcesses reports one terminal's running work.
+// TerminalProcesses reports one terminal's running work: what the USER started,
+// at ANY depth -- a `make` and the `cc` it spawned both appear.
 //
-// `processes` holds every process running beneath the login shell, at ANY depth
-// -- a `make` and the `cc` it spawned both appear -- and NEVER the login shell
-// itself, which the Worker spawned and always tears down with the tab.
+// Two things are always absent. The login shell itself, which the Worker spawned
+// and always tears down with the tab. And the shell's OWN work: a prompt hook, a
+// completion helper, a theme shelling out for git state. A shell puts every job
+// it runs in a process group of its own and keeps its own bookkeeping in the
+// group it already has, and the Worker reports only the first kind -- otherwise
+// `mise activate zsh`, which forks before every prompt, made an idle terminal
+// look busy.
+//
 // Breadth-first, so the shell's own children lead and the processes a user
 // recognises are the ones that survive the cap.
-//
-// An empty list is the answer to three different situations, and a close guard
-// treats them alike because they mean the same thing: the shell exited, the PTY
-// has not spawned yet (a close landing during async startup), or the shell sits
-// idle at its prompt. Nothing to warn about.
 message TerminalProcesses {
   string terminal_id = 1;
   repeated TerminalProcess processes = 2;
@@ -258,9 +259,11 @@ message TerminalProcesses {
   int32 total_count = 3;
 }
 
-// InspectTerminalProcessesResponse omits a terminal the Worker does not hold --
-// a close that lands during async startup, or one that arrives after a Worker
-// restart.
+// InspectTerminalProcessesResponse holds an entry only for a terminal that is
+// running something. A close guard treats four situations alike, because they
+// mean the same thing to it -- nothing to warn about: the shell sits idle at its
+// prompt, the shell exited, the PTY has not spawned yet (a close landing during
+// async startup), or the Worker restarted and no longer holds the id.
 message InspectTerminalProcessesResponse {
   repeated TerminalProcesses terminals = 1;
 }

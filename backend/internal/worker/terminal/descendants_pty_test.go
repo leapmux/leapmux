@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -13,9 +14,12 @@ import (
 )
 
 // startShellPastInit spawns a real PTY and waits until the shell has echoed a
-// marker, which is the only reliable proof it is past its init scripts. A walk
-// run before that can catch a profile script's own children and read as a busy
-// terminal on every platform at random.
+// marker, which is the only reliable proof it is past its init scripts and
+// accepting input. Every case below sends a command, so it needs a shell that
+// will run one.
+//
+// It is no longer what keeps the walk quiet: a profile script's own children
+// share the shell's process group, and reportsAsWork excludes that group.
 func startShellPastInit(t *testing.T, m *Manager, id string) {
 	t.Helper()
 	require.NoError(t, m.StartTerminal(context.Background(), Options{
@@ -47,6 +51,21 @@ func namesOf(procs []ProcessInfo) []string {
 	return out
 }
 
+// oneTerminal asks about a single terminal and flattens the batch answer, so
+// each test below reads as "what is this tab running". An omitted terminal --
+// idle, unknown, or exited -- answers empty, which is what every caller of the
+// batch treats those three as.
+func oneTerminal(t *testing.T, m *Manager, id string) ([]ProcessInfo, int, error) {
+	t.Helper()
+	out, err := m.DescendantProcesses(context.Background(), []string{id})
+	if err != nil || len(out) == 0 {
+		return nil, 0, err
+	}
+	require.Len(t, out, 1)
+	require.Equal(t, id, out[0].TerminalID)
+	return out[0].Processes, out[0].Total, nil
+}
+
 func TestDescendantProcesses_FindsABackgroundedChild(t *testing.T) {
 	m := NewManager()
 	const id = "desc-child"
@@ -57,7 +76,7 @@ func TestDescendantProcesses_FindsABackgroundedChild(t *testing.T) {
 
 	var got []ProcessInfo
 	testutil.AssertEventually(t, func() bool {
-		procs, _, err := m.DescendantProcesses(context.Background(), id)
+		procs, _, err := oneTerminal(t, m, id)
 		if err != nil {
 			return false
 		}
@@ -84,7 +103,7 @@ func TestDescendantProcesses_ReachesAGrandchild(t *testing.T) {
 	var got []string
 	var total int
 	testutil.AssertEventually(t, func() bool {
-		procs, n, err := m.DescendantProcesses(context.Background(), id)
+		procs, n, err := oneTerminal(t, m, id)
 		if err != nil {
 			return false
 		}
@@ -105,7 +124,7 @@ func TestDescendantProcesses_IdleShellReportsNothingAndNeverItself(t *testing.T)
 	const id = "desc-idle"
 	startShellPastInit(t, m, id)
 
-	procs, total, err := m.DescendantProcesses(context.Background(), id)
+	procs, total, err := oneTerminal(t, m, id)
 
 	require.NoError(t, err)
 	assert.Empty(t, procs, "an idle shell is running nothing worth warning about")
@@ -114,9 +133,10 @@ func TestDescendantProcesses_IdleShellReportsNothingAndNeverItself(t *testing.T)
 	// The shell is the Worker's own process; warning about it would mean warning
 	// about the tab's own existence, and every terminal close would prompt.
 	//
-	// Safe to assert emptiness only because testutil.TestShell() is /bin/sh. A
-	// user's real interactive shell is not: starship and powerlevel10k fork a
-	// process per prompt, so the same assertion against zsh would flake.
+	// The assertion holds for a real interactive shell too, which is the point of
+	// the process-group filter: `mise`, starship and powerlevel10k all fork
+	// before a prompt, and every one of those forks stays in the shell's own
+	// group.
 	shellPID := terminalOf(t, m, id).ShellPID()
 	for _, p := range procs {
 		assert.NotEqual(t, int32(shellPID), p.PID)
@@ -131,7 +151,7 @@ func TestDescendantProcesses_ExitedShellReportsNothing(t *testing.T) {
 	m.StopTerminal(id)
 	m.WaitForExit(id)
 
-	procs, total, err := m.DescendantProcesses(context.Background(), id)
+	procs, total, err := oneTerminal(t, m, id)
 
 	// The pid is reused once the OS reaps it, so a walk from a dead shell can
 	// enumerate a stranger's children under this tab's name.
@@ -145,7 +165,7 @@ func TestDescendantProcesses_UnknownTerminalIsEmptyNotAnError(t *testing.T) {
 
 	m := NewManager()
 
-	procs, total, err := m.DescendantProcesses(context.Background(), "no-such-terminal")
+	procs, total, err := oneTerminal(t, m, "no-such-terminal")
 
 	// Routine, not exceptional: the DB row exists for the whole async-startup
 	// window before the PTY does, and again after a worker restart. A close
@@ -171,4 +191,88 @@ func terminalOf(t *testing.T, m *Manager, id string) *Terminal {
 	term, ok := m.terminals[id]
 	require.True(t, ok, "terminal %s should be installed", id)
 	return term
+}
+
+// TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups pins the OS fact the
+// whole filter rests on: a shell with job control puts each job it runs in a
+// process group of its own and keeps its own work in the group it already has.
+//
+// The negative half -- a descendant IN the shell's group -- has no portable PTY
+// form. Producing one needs shell code that forks outside job control (a zsh
+// `precmd` hook, a bash `PROMPT_COMMAND`), and the two spell it differently
+// while /bin/sh is bash on macOS and dash on Linux, where neither exists.
+// descendants_test.go covers that half against the traversal directly.
+func TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no process groups; processGroupOf declines and every descendant is reported")
+	}
+	m := NewManager()
+	const id = "desc-groups"
+	startShellPastInit(t, m, id)
+
+	shellPID := terminalOf(t, m, id).ShellPID()
+	shellGroup, ok := processGroupOf(shellPID)
+	require.True(t, ok, "the shell's own group must be readable, or the filter degrades to reporting everything")
+
+	line, _ := testutil.TestSleepCommand()
+	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
+
+	var got []ProcessInfo
+	testutil.AssertEventually(t, func() bool {
+		procs, _, err := oneTerminal(t, m, id)
+		if err != nil {
+			return false
+		}
+		got = procs
+		return len(procs) > 0
+	}, "expected the backgrounded child to appear beneath the shell")
+
+	for _, p := range got {
+		group, ok := processGroupOf(int(p.PID))
+		require.True(t, ok)
+		assert.NotEqual(t, shellGroup, group,
+			"a job the user started gets its own group; sharing the shell's would hide it from the guard")
+	}
+}
+
+// TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan pins the batch
+// contract the close guard depends on. A tile close asks about every terminal
+// it holds at once, and the answer must name the RIGHT tab: a busy one comes
+// back, an idle one and an unknown one are omitted, and the entries keep the
+// order asked so a refusal reads in the order the close would have run.
+func TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan(t *testing.T) {
+	m := NewManager()
+	const busyID, idleID = "batch-busy", "batch-idle"
+	startShellPastInit(t, m, busyID)
+	startShellPastInit(t, m, idleID)
+
+	line, want := testutil.TestSleepCommand()
+	require.NoError(t, m.SendInput(busyID, []byte(line+testutil.TestShellEnter())))
+
+	var out []TerminalProcesses
+	testutil.AssertEventually(t, func() bool {
+		got, err := m.DescendantProcesses(context.Background(), []string{"no-such-terminal", idleID, busyID})
+		if err != nil {
+			return false
+		}
+		out = got
+		return len(got) > 0
+	}, "expected the busy terminal to report its child")
+
+	require.Len(t, out, 1, "an idle terminal and an unknown id are both omitted")
+	assert.Equal(t, busyID, out[0].TerminalID, "the answer must name the tab it belongs to")
+	assert.Contains(t, namesOf(out[0].Processes), want)
+}
+
+func TestDescendantProcesses_EmptyRequestAsksNothing(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager()
+
+	out, err := m.DescendantProcesses(context.Background(), nil)
+
+	// A tile of file tabs holds no terminal, and scanning the machine's process
+	// table to answer a question nobody asked is pure cost.
+	require.NoError(t, err)
+	assert.Empty(t, out)
 }

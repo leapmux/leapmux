@@ -460,3 +460,29 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, svc.agentToProto(&childRow, false, nil).GetBusy())
 }
+
+// --- The terminal half of the close guard ----------------------------------
+
+// TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout pins the handler's
+// contract at the boundary the guard reads.
+//
+// Four situations answer alike, and they have to: the terminal sits idle, its
+// shell exited, the PTY has not spawned yet, or the Worker no longer holds the
+// id. A close guard treats every one as "nothing to warn about", and an ERROR
+// instead of an empty answer would fail the whole close rather than let it
+// proceed unwarned.
+func TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+
+	dispatch(d, "InspectTerminalProcesses", &leapmuxv1.InspectTerminalProcessesRequest{
+		// A blank id, and one no PTY was ever started for.
+		TerminalIds: []string{"", "no-such-terminal"},
+	}, w)
+
+	require.Empty(t, w.errors, "an unanswerable probe is an empty answer, never a failed close")
+	var resp leapmuxv1.InspectTerminalProcessesResponse
+	lastResponse(t, w, &resp)
+	assert.Empty(t, resp.GetTerminals())
+}

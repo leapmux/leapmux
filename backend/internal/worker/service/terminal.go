@@ -75,30 +75,31 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.InspectTerminalProcessesRequest, sender channel.ResponseWriter) {
 			ctx, cancel := context.WithTimeout(ctx, terminalProcessScanTimeout)
 			defer cancel()
-			out := make([]*leapmuxv1.TerminalProcesses, 0, len(r.GetTerminalIds()))
+			ids := make([]string, 0, len(r.GetTerminalIds()))
 			for _, terminalID := range r.GetTerminalIds() {
-				if terminalID == "" {
-					continue
+				if terminalID != "" {
+					ids = append(ids, terminalID)
 				}
-				procs, total, err := svc.Terminals.DescendantProcesses(ctx, terminalID)
-				if err != nil {
-					// One unreadable terminal must not fail the batch: the guard
-					// would then refuse to answer for the tabs it CAN see, and a
-					// guard that cannot answer has to let the close through.
-					slog.Warn("inspect terminal processes", "terminal_id", terminalID, "error", err)
-					continue
-				}
-				if len(procs) == 0 {
-					continue
-				}
-				wire := make([]*leapmuxv1.TerminalProcess, 0, len(procs))
-				for _, proc := range procs {
+			}
+			// One process-table scan for the whole batch, and the manager omits
+			// every terminal that is running nothing.
+			running, err := svc.Terminals.DescendantProcesses(ctx, ids)
+			if err != nil {
+				// A scan the OS refused answers "nothing running" rather than an
+				// error. A guard that cannot answer has to let the close through,
+				// and an error here would instead make the whole close fail.
+				slog.Warn("inspect terminal processes", "terminal_ids", len(ids), "error", err)
+			}
+			out := make([]*leapmuxv1.TerminalProcesses, 0, len(running))
+			for _, t := range running {
+				wire := make([]*leapmuxv1.TerminalProcess, 0, len(t.Processes))
+				for _, proc := range t.Processes {
 					wire = append(wire, &leapmuxv1.TerminalProcess{Pid: proc.PID, Name: proc.Name})
 				}
 				out = append(out, &leapmuxv1.TerminalProcesses{
-					TerminalId: terminalID,
+					TerminalId: t.TerminalID,
 					Processes:  wire,
-					TotalCount: int32(total),
+					TotalCount: int32(t.Total),
 				})
 			}
 			sendProtoResponse(sender, &leapmuxv1.InspectTerminalProcessesResponse{Terminals: out})

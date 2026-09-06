@@ -12,27 +12,76 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// DescendantProcesses reports the processes running beneath one terminal's
-// login shell, excluding the shell. The second return is the total found, which
-// exceeds len(procs) when the cap dropped some.
+// TerminalProcesses is what one terminal is running. Total exceeds
+// len(Processes) when the cap dropped some.
+type TerminalProcesses struct {
+	TerminalID string
+	Processes  []ProcessInfo
+	Total      int
+}
+
+// DescendantProcesses reports the processes running beneath each terminal's
+// login shell, excluding the shell itself and the shell's own bookkeeping (see
+// reportsAsWork). The result holds one entry per terminal that is running
+// something, in the order asked.
 //
-// An id the manager does not hold answers empty with no error. That is routine,
-// not exceptional: registerTerminalGatedByID gates on the DB row, which exists
-// for the whole async-startup window before the PTY does, and after a worker
+// ONE process-table scan for the whole batch. The scan is the expensive part,
+// and closing a tile asks about every terminal it holds at once; scanning per
+// terminal cost a full pass per tab and could also disagree with itself, since
+// two passes taken milliseconds apart can show a process under one tab and not
+// the next.
+//
+// A terminal that is running nothing is OMITTED, and so is an id the manager
+// does not hold. The two are the same answer to a close guard, and the second
+// is routine rather than exceptional: the DB row a caller resolves exists for
+// the whole async-startup window before the PTY does, and after a worker
 // restart. A close-confirmation dialog must not fail because the PTY is 200ms
 // from existing.
 //
-// The lock is RELEASED before the walk, mirroring ScreenSnapshotSince rather
+// The lock is RELEASED before the scan, mirroring ScreenSnapshotSince rather
 // than SnapshotTerminal: a process-table scan is milliseconds of syscalls, and
 // holding m.mu across it would freeze SendInput and Resize for every OTHER tab.
-func (m *Manager) DescendantProcesses(ctx context.Context, terminalID string) ([]ProcessInfo, int, error) {
-	m.mu.RLock()
-	t, ok := m.terminals[terminalID]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, 0, nil
+//
+// IsExited brackets the scan on BOTH sides. The OS hands a reaped pid to the
+// next fork, so a walk that starts -- or finishes -- after a shell exited can
+// enumerate a STRANGER's children under that tab's name. The trailing check is
+// the one that matters; the leading one only skips work for a shell already
+// known to be gone.
+func (m *Manager) DescendantProcesses(ctx context.Context, terminalIDs []string) ([]TerminalProcesses, error) {
+	if len(terminalIDs) == 0 {
+		return nil, nil
 	}
-	return t.DescendantProcesses(ctx)
+	type target struct {
+		id string
+		t  *Terminal
+	}
+	// IsExited is a lock-free channel read, so the leading check costs nothing
+	// to make here and saves the scan entirely when every id is already gone.
+	m.mu.RLock()
+	targets := make([]target, 0, len(terminalIDs))
+	for _, id := range terminalIDs {
+		if t, ok := m.terminals[id]; ok && !t.IsExited() {
+			targets = append(targets, target{id: id, t: t})
+		}
+	}
+	m.mu.RUnlock()
+	if len(targets) == 0 {
+		return nil, nil
+	}
+
+	scan, err := newProcessScan(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TerminalProcesses, 0, len(targets))
+	for _, tg := range targets {
+		procs, total := scan.descendantsOf(tg.t.ShellPID(), maxReportedProcesses)
+		if len(procs) == 0 || tg.t.IsExited() {
+			continue
+		}
+		out = append(out, TerminalProcesses{TerminalID: tg.id, Processes: procs, Total: total})
+	}
+	return out, nil
 }
 
 // ErrTerminalNotFound is returned when a terminal operation targets an ID

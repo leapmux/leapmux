@@ -803,6 +803,10 @@ export function handleAgentInactive(
     stores.chatStore.sweepOrphanedBufferedSpans(agentId)
   // No alert here either: a process exit drives the Worker's busy state to
   // false, and handleAgentSettled owns every settle. See its doc comment.
+  //
+  // No git refresh either, for the reason above -- and this status change
+  // carries its own gitStatus, which handleAgentStatusChange has already
+  // written to the repo store by the time it reaches here.
 }
 
 /**
@@ -900,6 +904,12 @@ export function handleControlRequest(
     // No alert here. A pending control request drives the Worker's busy state to
     // false, so handleAgentSettled raises it from the one edge -- and raising it
     // in both places rang twice for one pause.
+    //
+    // No git / directory-tree refresh either, which this site used to trigger as
+    // a side effect of the same call. That refresh now belongs to the TURN
+    // boundary alone (onTurnEndRefresh): a prompt arrives mid-turn, so the tree
+    // it would show is half-written, and the turn end that follows refreshes it
+    // for real.
   }
 }
 

@@ -761,27 +761,6 @@ func (t *Terminal) ShellPID() int {
 	return t.shellPID
 }
 
-// DescendantProcesses reports every process running beneath this terminal's
-// login shell, at any depth, excluding the shell itself. The second return is
-// how many were found in total, which exceeds len(procs) when the cap dropped
-// some.
-//
-// IsExited brackets the walk on BOTH sides. The OS hands a reaped pid to the
-// next fork, so a walk that starts -- or finishes -- after the shell exited can
-// enumerate a STRANGER's children under this tab's name. The trailing check is
-// the one that matters; the leading one only proves the shell was alive when we
-// began.
-func (t *Terminal) DescendantProcesses(ctx context.Context) ([]ProcessInfo, int, error) {
-	if t.IsExited() {
-		return nil, 0, nil
-	}
-	procs, total, err := descendantsOf(ctx, t.shellPID, maxReportedProcesses)
-	if err != nil || t.IsExited() {
-		return nil, 0, err
-	}
-	return procs, total, nil
-}
-
 // ScreenSnapshot returns the full retained PTY output and the cumulative
 // byte offset at its end.
 func (t *Terminal) ScreenSnapshot() ([]byte, int64) {

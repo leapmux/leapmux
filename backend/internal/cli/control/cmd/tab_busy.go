@@ -16,6 +16,16 @@ import (
 // The browser raises a dialog for this; the CLI never prompts (a worker-spawned
 // caller has no terminal), so it refuses and names the flag that overrides it --
 // the same shape the `--worktree` gate already uses.
+//
+// Three commands close a tab and are NOT guarded, each by decision:
+//
+//   - `workspace delete` is destructive by name, carries its own --force, and
+//     its fan-out never inspects an individual tab.
+//   - tab_spawn.go's closeOrphanAgent and its terminal rollback unwind a `tab
+//     open` that already failed. They close what this command itself created
+//     moments ago, so there is no user work to lose.
+//   - `agent interrupt` aborts a turn without closing anything. Interrupting IS
+//     the intent, and a guard would ask the user to confirm what they asked for.
 
 // allowBusyFlagHelp is the one spelling of the flag's help text, so `tab close`
 // and the `tile` verbs cannot describe the same override differently.
