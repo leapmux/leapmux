@@ -93,6 +93,10 @@ type testSink struct {
 	// (no-op upsert, absorbed reject) are skipped so length asserts stay
 	// meaningful.
 	bgTaskStatuses map[string][]bgtask.Status
+	// closeBgTaskHook runs at the START of CloseBackgroundTask, before the lock,
+	// so a test can observe what the rest of the process can see at the moment a
+	// row reaches its final status. Set it before the first close.
+	closeBgTaskHook func(rowKey string, status bgtask.Status)
 	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
 	// in order. The effect alone cannot prove the call: a revive leaves the row
 	// running, which is also how it looked before it ever finished.
@@ -734,6 +738,9 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 }
 
 func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if s.closeBgTaskHook != nil {
+		s.closeBgTaskHook(rowKey, status)
+	}
 	rowKey = bgtask.NormalizeRowKey(rowKey)
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -625,6 +626,58 @@ func TestACPTerminal_NonZeroExitMarksFailed(t *testing.T) {
 	})
 	resps = rec.wait(t, 2, 5*time.Second)
 	assert.EqualValues(t, 7, resps[1]["result"].(map[string]interface{})["exitCode"])
+
+	sink.bgTasksMu.Lock()
+	row := sink.bgTasks[termID]
+	sink.bgTasksMu.Unlock()
+	assert.Equal(t, bgtask.StatusFailed, row.Status)
+
+	dispatchTerminal(b, acpMethodTerminalRelease, 3, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 3, 3*time.Second)
+}
+
+// The registry row must reach its final status BEFORE anything can observe the
+// exit. sess.done is that observation point: terminal/wait_for_exit replies off
+// it, so a client that closes the channel first can read its own terminal's row
+// and still see RUNNING. This asserts the order at the one instant that shows
+// it -- inside CloseBackgroundTask, where done must still be open.
+func TestACPTerminal_ClosesTheRegistryRowBeforeTheExitIsObservable(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+
+	var exitWasObservable atomic.Bool
+	sink.closeBgTaskHook = func(rowKey string, _ bgtask.Status) {
+		sess, ok := b.getTerminal(rowKey)
+		if !ok {
+			return
+		}
+		select {
+		case <-sess.done:
+			exitWasObservable.Store(true)
+		default:
+		}
+	}
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   "exit 7",
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	resps = rec.wait(t, 2, 5*time.Second)
+	require.EqualValues(t, 7, resps[1]["result"].(map[string]interface{})["exitCode"])
+
+	assert.False(t, exitWasObservable.Load(),
+		"wait_for_exit can reply while the row still says RUNNING")
 
 	sink.bgTasksMu.Lock()
 	row := sink.bgTasks[termID]
