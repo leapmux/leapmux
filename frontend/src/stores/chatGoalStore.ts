@@ -76,6 +76,16 @@ export function createGoalStore() {
       if (applied !== undefined && updatedAt < applied)
         return
       appliedAt.set(agentId, updatedAt)
+      // The capabilities ride the same guard, and an EQUAL stamp is what makes
+      // that safe: the capability re-publish carries the row's own current
+      // stamp, so it ties rather than losing, and the goal half it repeats is
+      // unchanged anyway.
+      //
+      // Applying them ABOVE the guard would let a stale cold-load answer -- one
+      // the worker built before the agent's process exited -- restore Pause and
+      // Clear for a process that is gone, seconds after the exit broadcast
+      // correctly took them away.
+      actions.set(agentId, goalActionsFromProto(supportedActions))
       const previous = goal.get(agentId)
       const incoming = next ? protoGoalToStore(next) : undefined
       // The counters belong to ONE goal, so they are dropped whenever the goal
@@ -88,7 +98,6 @@ export function createGoalStore() {
       if (!incoming || incoming.createdAt !== previous?.createdAt)
         progress.clear(agentId)
       goal.setReconciled(agentId, incoming)
-      actions.set(agentId, goalActionsFromProto(supportedActions))
     },
     /**
      * Merge in the volatile counters.

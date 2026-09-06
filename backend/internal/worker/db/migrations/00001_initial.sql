@@ -63,10 +63,14 @@ CREATE TABLE agents (
     -- thread/goal/updated with a fresh createdAt, so a user who restarts the
     -- same objective is invisible without it.
     --
-    -- goal_status is '' when no goal exists. The worker also blanks it at boot
-    -- (see MarkAllActiveAgentBackgroundTasksInterrupted's neighbour), because a
-    -- status that survives a restart would draw live Pause/Clear buttons for a
-    -- process that never resumed the goal.
+    -- goal_status is '' when no goal exists, and otherwise holds the last
+    -- status the PROVIDER reported. Nothing else writes it.
+    --
+    -- 'dormant' is deliberately absent. It means "the objective is stored and
+    -- no live process pursues it", which the projection derives from the
+    -- running-agent map at read time (see GoalSnapshotFrom). Storing it would
+    -- put the same fact in two places, and the copy went stale the moment a
+    -- process exited without the sweep that wrote it.
     goal_objective     TEXT NOT NULL DEFAULT '',
     goal_status        TEXT NOT NULL DEFAULT '' CHECK (goal_status IN ('','active','paused','blocked','done')),
     -- The provider's OWN word for the status ('usageLimited', 'notSatisfied',

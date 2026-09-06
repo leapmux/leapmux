@@ -75,7 +75,15 @@ func (m *sessionInfoCapturingWriter) snapshot() []map[string]interface{} {
 	return out
 }
 
+// newSessionInfoFixture is the two-value shape the dedup tests want. The replay
+// tests need the service as well, so the build lives in the wider one below.
 func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturingWriter) {
+	t.Helper()
+	_, sink, mock := newSessionInfoServiceFixture(t)
+	return sink, mock
+}
+
+func newSessionInfoServiceFixture(t *testing.T) (*Service, agent.OutputSink, *sessionInfoCapturingWriter) {
 	t.Helper()
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
@@ -95,7 +103,7 @@ func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturin
 	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
-	return sink, mock
+	return svc, sink, mock
 }
 
 // TestBroadcastSessionInfo_FirstCallShipsEverything: from a fresh sink,

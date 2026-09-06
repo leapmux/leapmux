@@ -33,6 +33,20 @@ export function pickNumber(obj: Record<string, unknown> | null | undefined, key:
   return rest.length > 0 ? rest[0] : null
 }
 
+/**
+ * Read a COUNTER: a number that is finite and not negative, or undefined.
+ *
+ * A provider's counter must render as absent, never as NaN and never as a
+ * negative. A NaN or an Infinity reaches a formatter and prints "NaN" on the
+ * card, and a negative count is not a count. Absent and zero stay different
+ * answers, because no two providers report the same set of counters and a zero
+ * would state a number the provider never gave.
+ */
+export function pickCounter(obj: Record<string, unknown> | null | undefined, key: string): number | undefined {
+  const n = pickNumber(obj, key, undefined)
+  return n !== undefined && Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
 /** Read a strict-boolean property: true iff the value is exactly `true`. */
 export function pickBool(obj: Record<string, unknown> | null | undefined, key: string): boolean {
   return obj?.[key] === true

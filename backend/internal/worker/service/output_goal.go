@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -12,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // The session-goal applier.
@@ -54,15 +54,43 @@ func (h *OutputHandler) goalMutex(agentID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// applyGoalUpdate records one provider report of the session goal.
-func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.AgentProvider, update agent.GoalUpdate) {
-	update = update.Clean()
+// goalPresent reports whether a row holds a goal.
+//
+// ONE rule, because three sites ask the question and they used to answer it
+// three ways: the projection tested the objective, the clear path also counted
+// a stored identity, and Clean forced an empty objective to mean no goal. A row
+// could therefore be "no goal" to the card and "had a goal" to the clear, which
+// wrote a "Goal cleared" row with an empty objective for a card that had
+// already emptied itself.
+//
+// The OBJECTIVE decides. A goal with no text is one the user cannot read, and
+// the identity column alone is bookkeeping, not a goal.
+func goalPresent(objective string) bool { return objective != "" }
 
+// applyGoalUpdate records one provider report of the session goal.
+//
+// The report arrives already cleaned: agentOutputSink.UpsertGoal runs Clean at
+// the sink boundary, which is where GoalUpdate.Clean's own doc says it belongs.
+// Cleaning again here would re-scan the whole objective on a path Codex drives
+// after every completed tool call.
+func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.AgentProvider, update agent.GoalUpdate) {
+	// A report with no readable objective is a REMOVAL, and clearGoal is the
+	// one path that performs one. Reaching the code below with it half-wiped
+	// the row -- objective, status and detail blanked, the identity left behind
+	// -- broadcast an empty card, and wrote nothing to the transcript, so the
+	// goal vanished mid-session with no record. Three routes produce it:
+	// Reasonix sends an absent objective as "", ZCode returns early only when
+	// BOTH halves are empty, and Clean empties an objective made of control
+	// characters.
+	if !goalPresent(update.Objective) {
+		h.clearGoal(agentID, provider, update.Snapshot)
+		return
+	}
 	mu := h.goalMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
 
-	row, err := h.queries.GetAgentByID(bgCtx(), agentID)
+	row, err := h.queries.GetAgentGoal(bgCtx(), agentID)
 	if err != nil {
 		slog.Warn("failed to fetch agent for goal update", "agent_id", agentID, "error", err)
 		return
@@ -76,6 +104,12 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	// goal id on the wire -- a user who restarts the SAME objective gets a fresh
 	// createdAt and nothing else, so a test over (objective, status) alone would
 	// read a restart as no change and never announce it.
+	//
+	// The first report after a worker restart needs no rule of its own. The row
+	// holds the last status the provider reported, dormancy is derived rather
+	// than stored, so a restatement of the same goal matches on all three parts
+	// and announces nothing. A goal that finished or blocked while the worker
+	// was down still differs in status, and is still announced.
 	statusWire := agent.GoalStatusWire(update.Status)
 	sameIdentity := sameGoalCreatedAt(row.GoalCreatedAt, update)
 	transition := row.GoalObjective != update.Objective ||
@@ -137,44 +171,65 @@ func (h *OutputHandler) applyGoalUpdate(agentID string, provider leapmuxv1.Agent
 	if update.Snapshot {
 		return
 	}
-	// The same lie, reached a different way, and it needs its own rule because
-	// only two providers mark a restatement for themselves.
-	//
-	// ClearGoalStatusesAtBoot blanks goal_status for a goal that outlived the
-	// worker, so the provider's first report after a restart RE-ARMS a status
-	// nothing was pursuing. That is a transition by the test above, and
-	// announcing it would print "Goal set: X" at restart time for a goal set
-	// before the restart -- exactly what Codex's snapshot flag prevents for
-	// Codex, and what nothing prevents for Claude Code or Reasonix.
-	//
-	// A blank status beside a non-empty objective is a state ONLY that sweep
-	// produces: a clear wipes the objective too, and GoalUpdate.Clean refuses to
-	// store an objective with no status. Requiring the objective and the
-	// identity to match as well is what keeps a genuinely NEW goal announced.
-	if row.GoalStatus == "" && row.GoalObjective != "" &&
-		row.GoalObjective == update.Objective && sameIdentity {
-		return
-	}
-	// An objective nobody can read has nothing to announce. This is reachable:
-	// StripUnreadable empties a string made only of control characters.
-	if update.Objective == "" {
-		return
-	}
 	h.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-		"type":          agent.NotificationTypeGoalUpdated,
+		"type":          contracts.NotificationTypeGoalUpdated,
 		"objective":     update.Objective,
 		"goal_status":   statusWire,
 		"status_detail": update.StatusDetail,
+		// The transition KIND, so the transcript can say what happened rather
+		// than guess it from the resulting status. Without it a resume -- which
+		// changes the status to `active` and nothing else -- reads as "Goal
+		// set: X" two rows under "Goal paused: X", announcing a new goal for an
+		// objective nobody replaced.
+		"goal_transition": goalTransitionKind(row, update),
 	})
 }
 
+// goalTransitionKind names what a transition DID, from the row as it stood
+// before the write. Only the applier holds both sides, so only the applier can
+// answer: the persisted payload carries the resulting state alone, and several
+// different changes land on the same one.
+func goalTransitionKind(row db.GetAgentGoalRow, update agent.GoalUpdate) string {
+	// Derived HERE rather than taken as a parameter. The caller computed it from
+	// these same two values, and a signature that accepted it would let a second
+	// caller pass an identity answer that disagrees with the update -- which
+	// names the wrong verb in the transcript and nothing catches it.
+	sameIdentity := sameGoalCreatedAt(row.GoalCreatedAt, update)
+	// Reaching a status case below means the STATUS is what moved: the caller
+	// only asks after a transition, and the two cases above take the objective
+	// and the identity.
+	switch {
+	case !goalPresent(row.GoalObjective):
+		return contracts.GoalTransitionSet
+	case row.GoalObjective != update.Objective || !sameIdentity:
+		return contracts.GoalTransitionReplaced
+	case update.Status == agent.GoalStatusActive:
+		return contracts.GoalTransitionResumed
+	case update.Status == agent.GoalStatusPaused:
+		return contracts.GoalTransitionPaused
+	case update.Status == agent.GoalStatusDone:
+		return contracts.GoalTransitionAchieved
+	default:
+		return contracts.GoalTransitionBlocked
+	}
+}
+
 // clearGoal removes the session goal.
-func (h *OutputHandler) clearGoal(agentID string, provider leapmuxv1.AgentProvider) {
+//
+// `snapshot` marks a clear that RESTATES the absence rather than announcing a
+// removal, exactly as GoalUpdate.Snapshot does for the upsert half. Codex
+// pushes thread/goal/cleared on every thread/resume for a thread that has none,
+// and that arrives when the worker's copy is cold and the row still holds a
+// goal from the previous process -- so without the flag the user opens the chat
+// after a restart and reads "Goal cleared: ship the tests" for a clear nobody
+// performed. The write and the broadcast still run; only the transcript row is
+// suppressed.
+func (h *OutputHandler) clearGoal(agentID string, provider leapmuxv1.AgentProvider, snapshot bool) {
 	mu := h.goalMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
 
-	row, err := h.queries.GetAgentByID(bgCtx(), agentID)
+	row, err := h.queries.GetAgentGoal(bgCtx(), agentID)
 	if err != nil {
 		slog.Warn("failed to fetch agent for goal clear", "agent_id", agentID, "error", err)
 		return
@@ -183,7 +238,7 @@ func (h *OutputHandler) clearGoal(agentID string, provider leapmuxv1.AgentProvid
 	// in-memory copy. Codex sends thread/goal/cleared on resume to mean "this
 	// thread has no goal", and that arrives exactly when the worker's copy is
 	// cold and the row still holds a goal from the previous process.
-	hadGoal := row.GoalObjective != "" || row.GoalStatus != "" || row.GoalCreatedAt.Valid
+	hadGoal := goalPresent(row.GoalObjective)
 
 	// Captured, not read twice: the stamp that goes in the row must be the one
 	// the broadcast carries, or the browser orders its answers against a value
@@ -203,8 +258,11 @@ func (h *OutputHandler) clearGoal(agentID string, provider leapmuxv1.AgentProvid
 		return
 	}
 	h.broadcastGoal(agentID, nil, goalStamp(sqltime.SQLiteNullTime{Time: clearedAt, Valid: true}))
+	if snapshot {
+		return
+	}
 	h.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-		"type":      agent.NotificationTypeGoalCleared,
+		"type":      contracts.NotificationTypeGoalCleared,
 		"objective": row.GoalObjective,
 	})
 }
@@ -274,13 +332,6 @@ func (h *OutputHandler) broadcastGoal(agentID string, goal *leapmuxv1.AgentGoal,
 	h.watcher.BroadcastAgentEvent(agentID, h.GoalChangedEvent(agentID, goal, updatedAt))
 }
 
-// wireGoalString returns s with every invalid UTF-8 byte removed, so a stored
-// value can never fail proto.Marshal. It drops the byte rather than writing
-// U+FFFD, the same answer validate.StripUnreadable gives, so the two agree.
-func wireGoalString(s string) string {
-	return strings.ToValidUTF8(s, "")
-}
-
 // goalStamp formats the ordering stamp, or "" when the agent never had a goal.
 // The layout is fixed-width UTC, so the recipient orders two stamps with a
 // plain string compare and never parses a date.
@@ -298,7 +349,9 @@ func goalStamp(updatedAt sqltime.SQLiteNullTime) string {
 // empty state needs to know, and the stamp orders the very write that removes
 // the goal. Both ride AgentGoalChanged and the cold-load response instead.
 func (h *OutputHandler) goalProto(objective, statusWire, statusDetail string, createdAt sqltime.SQLiteNullTime) *leapmuxv1.AgentGoal {
-	if objective == "" && statusWire == "" {
+	// The one presence rule, so the projection cannot disagree with the clear
+	// path about the same row. See goalPresent.
+	if !goalPresent(objective) {
 		return nil
 	}
 	goal := &leapmuxv1.AgentGoal{
@@ -313,9 +366,9 @@ func (h *OutputHandler) goalProto(objective, statusWire, statusDetail string, cr
 		// message for one bad byte, and this projection feeds
 		// ListAgentMessagesResponse -- so a single byte would fail an entire page
 		// of chat history, with nothing on screen to say why.
-		Objective:    wireGoalString(objective),
+		Objective:    validate.WireString(objective),
 		Status:       agent.GoalStatusToProto(agent.GoalStatusFromWire(statusWire)),
-		StatusDetail: wireGoalString(statusDetail),
+		StatusDetail: validate.WireString(statusDetail),
 	}
 	if createdAt.Valid {
 		goal.CreatedAt = timefmt.Format(createdAt.Time)
@@ -352,6 +405,15 @@ func (h *OutputHandler) SupportedGoalActions(agentID string) []leapmuxv1.AgentGo
 //
 // A child agent has no goal, and no capability either.
 func (h *OutputHandler) publishGoalCapabilities(agentID string) {
+	// Under the goal mutex, so the read and the broadcast cannot straddle a
+	// concurrent applyGoalUpdate. Without it this can read stamp T1, lose the
+	// race to a write that broadcasts T2, and then broadcast T1 -- which the
+	// browser drops as stale, together with the capability list that is the
+	// whole reason this broadcast exists.
+	mu := h.goalMutex(agentID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	snapshot, err := h.LoadGoal(bgCtx(), agentID)
 	if err != nil {
 		slog.Warn("failed to read agent goal for capability broadcast", "agent_id", agentID, "error", err)
@@ -377,31 +439,100 @@ type GoalSnapshot struct {
 // the Codex handler drops a child thread's goal rather than overwriting its
 // root's.
 func (h *OutputHandler) LoadGoal(ctx context.Context, agentID string) (GoalSnapshot, error) {
-	row, err := h.queries.GetAgentByID(ctx, agentID)
+	row, err := h.queries.GetAgentGoal(ctx, agentID)
 	if err != nil {
 		return GoalSnapshot{}, err
 	}
-	if row.ParentAgentID.Valid {
-		return GoalSnapshot{}, nil
-	}
-	return GoalSnapshot{
-		Goal:      h.goalProto(row.GoalObjective, row.GoalStatus, row.GoalStatusDetail, row.GoalCreatedAt),
-		UpdatedAt: goalStamp(row.GoalUpdatedAt),
-	}, nil
+	return h.GoalSnapshotFrom(goalColumnsOfRow(row)), nil
 }
 
-// ClearGoalStatusesAtBoot blanks every stored goal status once, at worker start.
+// GoalSnapshotFrom projects an agents row that the caller ALREADY holds.
 //
-// A goal that survived a restart is not being pursued: no process holds it, and
-// the provider has not re-reported it. Leaving the status set would draw a
-// panel with live Pause and Clear buttons for a goal nothing is running, and
-// pressing one would either error or act on a process that never knew about it.
+// The RPC handlers reach the goal columns through a row the dispatcher loaded
+// for them, so re-reading the row inside LoadGoal would run a second query for
+// data already in hand -- once per cold chat load and once per resubscribe. The
+// registry leg beside it reads its own column off that row for the same reason.
+func (h *OutputHandler) GoalSnapshotFrom(cols GoalColumns) GoalSnapshot {
+	if cols.IsChild {
+		return GoalSnapshot{}
+	}
+	statusWire, statusDetail := cols.StatusWire, cols.StatusDetail
+	// DORMANT is derived here and stored nowhere.
+	//
+	// It means "the objective is stored and no live process pursues it", which
+	// is the running-agent map's answer, not a fact about the row. Writing it
+	// into the column took two sweeps -- one at boot, one per process exit --
+	// and every exit those two missed left a card with a live Active dot and
+	// working Pause and Clear buttons for a process that was gone. Reading it
+	// from the map cannot miss one.
+	//
+	// The provider's own word goes with it. It described the running state
+	// ("verifying", "two suites still fail"), and beside a dormant goal it
+	// states a check that nothing performs.
+	if goalPresent(cols.Objective) && !h.agentAlive(cols.AgentID) {
+		statusWire, statusDetail = contracts.GoalStatusTokenDormant, ""
+	}
+	return GoalSnapshot{
+		Goal:      h.goalProto(cols.Objective, statusWire, statusDetail, cols.CreatedAt),
+		UpdatedAt: goalStamp(cols.UpdatedAt),
+	}
+}
+
+// agentAlive reports whether a live process serves the agent.
 //
-// The OBJECTIVE text stays, so the panel can still say what was being
-// attempted. The provider's own snapshot re-arms the status when the session
-// resumes -- Codex pushes exactly that on thread/resume.
-func (h *OutputHandler) ClearGoalStatusesAtBoot(ctx context.Context) error {
-	return h.queries.ClearAllAgentGoalStatuses(ctx)
+// An absent Manager answers TRUE, which is the conservative answer: it means
+// "do not claim dormant". A worker with no agent manager cannot observe an exit
+// either, so inventing the state it would have recorded is worse than leaving
+// the provider's last word alone.
+func (h *OutputHandler) agentAlive(agentID string) bool {
+	return h.agents == nil || h.agents.AgentAlive(agentID)
+}
+
+// GoalColumns is the goal half of an agents row, named.
+//
+// A struct rather than six positional parameters, because three of those were
+// interchangeable strings in a row and two were interchangeable nullable times:
+// a transposed pair compiled cleanly and rendered the provider's own word as
+// the neutral status, or ordered every answer by the wrong stamp. Two adapters
+// build it, one per sqlc row type, so no call site spells the field order.
+type GoalColumns struct {
+	// AgentID, because the projection asks the running-agent map whether a
+	// process still serves this row. It comes off the row itself, so no call
+	// site pairs a set of columns with somebody else's id.
+	AgentID      string
+	IsChild      bool
+	Objective    string
+	StatusWire   string
+	StatusDetail string
+	CreatedAt    sqltime.SQLiteNullTime
+	UpdatedAt    sqltime.SQLiteNullTime
+}
+
+// GoalColumnsOfAgent reads them from the full agents row the RPC dispatcher
+// already loaded.
+func GoalColumnsOfAgent(row db.Agent) GoalColumns {
+	return GoalColumns{
+		AgentID:      row.ID,
+		IsChild:      row.ParentAgentID.Valid,
+		Objective:    row.GoalObjective,
+		StatusWire:   row.GoalStatus,
+		StatusDetail: row.GoalStatusDetail,
+		CreatedAt:    row.GoalCreatedAt,
+		UpdatedAt:    row.GoalUpdatedAt,
+	}
+}
+
+// goalColumnsOfRow reads them from the narrow query the goal paths use.
+func goalColumnsOfRow(row db.GetAgentGoalRow) GoalColumns {
+	return GoalColumns{
+		AgentID:      row.ID,
+		IsChild:      row.ParentAgentID.Valid,
+		Objective:    row.GoalObjective,
+		StatusWire:   row.GoalStatus,
+		StatusDetail: row.GoalStatusDetail,
+		CreatedAt:    row.GoalCreatedAt,
+		UpdatedAt:    row.GoalUpdatedAt,
+	}
 }
 
 // --- sink methods ---
@@ -411,6 +542,15 @@ func (s *agentOutputSink) UpsertGoal(update agent.GoalUpdate) {
 		return
 	}
 	update = update.Clean()
+	// The GOAL first, then the counters, and the order is load bearing.
+	//
+	// Both ride the same ordered channel to the browser, and the browser drops
+	// the counters whenever the goal they measured is replaced -- which includes
+	// the FIRST goal it ever sees, because it has no previous one to compare
+	// against. Broadcasting the counters first therefore delivered them, and the
+	// goal event landing second threw them away, so a resumed session showed a
+	// card with no progress row at all until the next report moved a number.
+	s.h.applyGoalUpdate(s.agentID, s.agentProvider, update)
 	// The volatile counters ride this sink's own session-info channel, which
 	// dedups by encoded value and never persists. Routing them through the sink
 	// rather than the handler is what earns that dedup -- the cache lives here.
@@ -419,7 +559,6 @@ func (s *agentOutputSink) UpsertGoal(update agent.GoalUpdate) {
 			contracts.SessionInfoKeyGoalProgress: progress,
 		})
 	}
-	s.h.applyGoalUpdate(s.agentID, s.agentProvider, update)
 }
 
 func (s *agentOutputSink) PublishGoalCapabilities() {
@@ -429,11 +568,11 @@ func (s *agentOutputSink) PublishGoalCapabilities() {
 	s.h.publishGoalCapabilities(s.agentID)
 }
 
-func (s *agentOutputSink) ClearGoal() {
+func (s *agentOutputSink) ClearGoal(snapshot bool) {
 	if !s.ownsGoal("ClearGoal") {
 		return
 	}
-	s.h.clearGoal(s.agentID, s.agentProvider)
+	s.h.clearGoal(s.agentID, s.agentProvider, snapshot)
 }
 
 // ownsGoal reports whether this sink may write a goal, which only a ROOT sink

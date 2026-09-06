@@ -1,5 +1,13 @@
 import { keyframes, style } from '@vanilla-extract/css'
 
+// Decoration only. `ClippedText` owns the clipping rule -- see
+// `~/components/common/ClippedText.tsx`.
+//
+// `display: block` is defensive, not load-bearing. The header is a <span>, and
+// an inline box would drop the vertical padding below; but the header renders
+// into `rows`, which is a flex container, and CSS blockifies a flex item
+// already. This declaration only holds the padding if `rows` stops being a flex
+// container.
 export const groupHeader = style({
   display: 'block',
   padding: 'var(--space-1) 0',

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -11,11 +12,16 @@ import (
 // The session goal: a standing objective the agent keeps working toward, which
 // a check at the end of every turn re-tests until the condition holds.
 //
-// Five providers have this feature and each spells it differently -- Codex's
-// thread/goal/updated, ZCode's session-snapshot `goal`, Claude Code's
-// active_goal stdout frame, Copilot's autopilot objective, Reasonix's
-// status_update. This file holds the neutral shape they all reduce to, so the
-// service layer and the browser learn one vocabulary instead of five.
+// Several CLIs have this feature and each spells it differently. LeapMux reads
+// four of them today -- Codex's thread/goal/updated, ZCode's session-snapshot
+// `goal`, Claude Code's active_goal stdout frame, and Reasonix's status_update.
+// This file holds the neutral shape they reduce to, so the service layer and
+// the browser learn one vocabulary instead of four.
+//
+// Copilot, Goose and Cursor also have a session goal and LeapMux reads none of
+// them: Copilot keeps one `current` autopilot objective, Goose holds a `/goal`
+// and a separate `/grind` slot, and Cursor keeps one `goalState`. Each would
+// need its own reader here; nothing else in this file changes for them.
 //
 // There is at most ONE goal per agent, because every one of those CLIs enforces
 // that itself: Codex keys thread_goals by thread_id, ZCode keys its target by
@@ -25,11 +31,15 @@ import (
 // friendlier zero value: the zero GoalStatus means "no goal", which is what a
 // caller with an empty struct wants.
 //
-// Four values, deliberately. The UI branches three ways (pause iff active,
-// resume iff paused, clear always) and the providers' own enums do not agree --
-// Codex has six words, ZCode has six different ones. A neutral value per
-// provider word would claim a precision the mapping cannot deliver, so the
-// provider's own word travels beside this as GoalUpdate.StatusDetail.
+// Five values, deliberately. Four come from the providers, and the UI branches
+// three ways on them (pause iff active, resume iff paused, clear always). The
+// providers' own enums do not agree -- Codex has six words, ZCode has six
+// different ones -- so a neutral value per provider word would claim a
+// precision the mapping cannot deliver, and the provider's own word travels
+// beside this as GoalUpdate.StatusDetail.
+//
+// GoalStatusDormant is the fifth, and no provider reports it. LeapMux writes it
+// when the process that pursued the goal is gone. See its comment below.
 type GoalStatus int
 
 const (
@@ -41,22 +51,43 @@ const (
 	// Reasonix's blocked and stopped.
 	GoalStatusBlocked
 	GoalStatusDone
+	// GoalStatusDormant is "the objective is stored, and no live process is
+	// pursuing it". LeapMux writes it, never a provider: at worker boot for
+	// every goal that outlived the process, and when one agent's process exits.
+	//
+	// It exists because the two alternatives both lie. Keeping the last status
+	// draws a live Active dot and working Pause and Clear buttons for a process
+	// that no longer exists, and blanking the status projects the enum's zero
+	// value, which the browser can only read as "a status this build does not
+	// understand" -- so a goal that is merely waiting renders as a fault.
+	GoalStatusDormant
 )
 
 // goalStatusWires maps each status onto the token stored in agents.goal_status.
 // The empty token is GoalStatusNone, so a cleared goal and a never-set goal read
 // back identically.
+//
+// The tokens come from the contract, because the BROWSER reads the same ones:
+// the worker ships goal_status inside the goal_updated notification payload and
+// the transcript renderer narrows it. The agents.goal_status CHECK constraint is
+// a third spelling that the generator cannot emit -- keep it in step by hand.
 var goalStatusWires = map[GoalStatus]string{
-	GoalStatusNone:    "",
-	GoalStatusActive:  "active",
-	GoalStatusPaused:  "paused",
-	GoalStatusBlocked: "blocked",
-	GoalStatusDone:    "done",
+	GoalStatusNone:    contracts.GoalStatusTokenNone,
+	GoalStatusActive:  contracts.GoalStatusTokenActive,
+	GoalStatusPaused:  contracts.GoalStatusTokenPaused,
+	GoalStatusBlocked: contracts.GoalStatusTokenBlocked,
+	GoalStatusDone:    contracts.GoalStatusTokenDone,
+	GoalStatusDormant: contracts.GoalStatusTokenDormant,
 }
 
-// GoalStatusWire returns the token persisted in agents.goal_status. The column
-// has a CHECK constraint over exactly these tokens, so an unmapped status would
-// fail the write rather than store a value nothing can read back.
+// GoalStatusWire returns the token persisted in agents.goal_status.
+//
+// An unmapped status yields "", because that is what a Go map miss gives, and
+// the column's CHECK constraint accepts "". So the write SUCCEEDS and stores a
+// non-empty objective beside a blank status, which every reader then takes as
+// "no goal": GoalStatusFromWire answers GoalStatusNone, the projection sends
+// AGENT_GOAL_STATUS_UNSPECIFIED, and the card draws the goal as one it cannot
+// act on. Keep every GoalStatus constant in goalStatusWires.
 func GoalStatusWire(s GoalStatus) string { return goalStatusWires[s] }
 
 // GoalStatusFromWire is the inverse. An unrecognized token reads as
@@ -83,24 +114,12 @@ func GoalStatusToProto(s GoalStatus) leapmuxv1.AgentGoalStatus {
 		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_BLOCKED
 	case GoalStatusDone:
 		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DONE
+	case GoalStatusDormant:
+		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT
 	default:
 		return leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNSPECIFIED
 	}
 }
-
-// GoalObjectiveByteLimit caps the objective the worker stores and ships.
-//
-// The text is written by a model or by a user and reaches a proto string and a
-// database column, so it needs the same cap every other provider-chosen label
-// carries (see bgtask.LabelByteLimit). Codex refuses an objective over 4000
-// characters itself; this is the same order and applies to every provider,
-// including the ones that refuse nothing.
-const GoalObjectiveByteLimit = 4096
-
-// GoalStatusDetailByteLimit caps the provider's own status word. A status word
-// is a word; anything longer is a provider sending prose down a field the UI
-// renders inline.
-const GoalStatusDetailByteLimit = 256
 
 // GoalUpdate is one provider's report of the current goal.
 //
@@ -150,21 +169,47 @@ type GoalUpdate struct {
 // is the only way the panel ever populates -- so a single bad byte from one
 // provider would leave an empty panel forever with nothing in the log to
 // explain it. This is the same hazard bgtask.wireString exists to prevent.
-// It also refuses one contradictory report: an objective with no status.
-// GoalStatusNone means "no goal", so a report that states both says a goal
-// exists and does not. Every provider already resolves an unrecognized status
-// word to Blocked for the same reason -- a state this build cannot read is one
-// it must not offer Pause for -- and doing it here means a NEW provider that
-// forgets the mapping inherits the rule instead of storing the contradiction.
 //
-// It is not cosmetic. A stored objective with a blank status is the exact mark
-// the applier reads as "this goal outlived a worker restart", so a provider
-// able to write that state by hand would silence a real transition.
+// It also resolves the two contradictory reports, in OPPOSITE directions,
+// because a goal needs both halves and each half decides what the other means.
+//
+// An objective with NO status becomes Blocked. GoalStatusNone means "no goal",
+// so a report that states both says a goal exists and does not. Every provider
+// already resolves an unrecognized status word to Blocked for the same reason
+// -- a state this build cannot read is one it must not offer Pause for -- and
+// doing it here means a NEW provider that forgets the mapping inherits the rule
+// instead of storing the contradiction. A stored objective with a blank status
+// is also the exact mark the applier reads as "this goal outlived a worker
+// restart", so a provider able to write that state by hand would silence a real
+// transition.
+//
+// A status with NO objective becomes no goal at all, and drops the counters
+// with it. Three routes reach that state: ZCode returns early only when BOTH
+// halves are empty, Reasonix sends an absent `objective` as "" while its state
+// machine starts, and StripUnreadable above empties an objective made only of
+// control characters. The card renders a goal from the status alone, so without
+// this the panel shows an empty objective line with an armed status dot and
+// live Pause and Clear buttons -- a goal with no text that the user cannot read
+// and did not set.
 func (u GoalUpdate) Clean() GoalUpdate {
-	u.Objective = validate.StripUnreadable(u.Objective, GoalObjectiveByteLimit)
-	u.StatusDetail = validate.StripUnreadable(u.StatusDetail, GoalStatusDetailByteLimit)
+	// The caps come from the contract, because the BROWSER enforces the same
+	// objective limit on its own input. The objective is written by a model or
+	// by a user and reaches a proto string and a database column, so it needs
+	// the cap every other provider-chosen label carries (see
+	// bgtask.LabelByteLimit); the status detail is a WORD, and anything longer
+	// is a provider sending prose down a field the card renders inline.
+	u.Objective = validate.StripUnreadable(u.Objective, contracts.GoalObjectiveByteLimit)
+	u.StatusDetail = validate.StripUnreadable(u.StatusDetail, contracts.GoalStatusDetailByteLimit)
 	if u.Objective != "" && u.Status == GoalStatusNone {
 		u.Status = GoalStatusBlocked
+	}
+	if u.Objective == "" {
+		u.Status = GoalStatusNone
+		u.StatusDetail = ""
+		u.TokensUsed = nil
+		u.TokenBudget = nil
+		u.TimeUsedSeconds = nil
+		u.Iterations = nil
 	}
 	return u
 }

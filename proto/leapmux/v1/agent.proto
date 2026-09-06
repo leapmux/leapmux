@@ -790,13 +790,13 @@ message AgentGoal {
   // ListAgentMessagesResponse.goal_updated_at. One value, one home.
 }
 
-// AgentGoalStatus is the neutral status vocabulary. Four values, because the UI
-// branches three ways (pause iff active, resume iff paused, clear always) and
-// the providers' own enums do not agree: Codex says
-// active/paused/blocked/usageLimited/budgetLimited/complete, ZCode says
-// active/paused/verifying/verified/notSatisfied/failed. A neutral enum with a
-// value per provider word would pretend to a precision the mapping does not
-// have -- AgentGoal.status_detail carries the provider's word instead.
+// AgentGoalStatus is the neutral status vocabulary. Four of its values come
+// from the providers, because the UI branches three ways (pause iff active,
+// resume iff paused, clear always) and the providers' own enums do not agree:
+// Codex says active/paused/blocked/usageLimited/budgetLimited/complete, ZCode
+// says active/paused/verifying/verified/notSatisfied/failed. A neutral enum
+// with a value per provider word would pretend to a precision the mapping does
+// not have -- AgentGoal.status_detail carries the provider's word instead.
 enum AgentGoalStatus {
   // No goal. This is the zero value, so an absent goal and a goal with no
   // status are the same thing, which is what every caller wants.
@@ -807,6 +807,16 @@ enum AgentGoalStatus {
   // budgetLimited, ZCode notSatisfied/failed, Reasonix blocked/stopped.
   AGENT_GOAL_STATUS_BLOCKED = 3;
   AGENT_GOAL_STATUS_DONE = 4;
+  // The objective is stored, and no live process pursues it. The WORKER writes
+  // this, never a provider: at boot for every goal that outlived the process,
+  // and when one agent's process exits.
+  //
+  // It is a state of its own because the two alternatives both lie. Keeping the
+  // last status draws a live Active dot and working Pause and Clear buttons for
+  // a process that no longer exists. Blanking the status sends UNSPECIFIED,
+  // which a client can only read as "a status I do not understand", so a goal
+  // that merely waits for its session to resume renders as a fault.
+  AGENT_GOAL_STATUS_DORMANT = 5;
 }
 
 enum AgentGoalAction {

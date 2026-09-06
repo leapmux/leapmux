@@ -91,7 +91,8 @@ func (a *zcodeAgent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 		return
 	}
 	if string(raw) == "null" {
-		a.sink.ClearGoal()
+		// A session snapshot RESTATES the absence; a state patch announces it.
+		a.sink.ClearGoal(snapshot)
 		return
 	}
 	var state zcodeGoalState
@@ -170,12 +171,21 @@ func (a *zcodeAgent) sendZCodeGoal(action, objective string) error {
 	if objective != "" {
 		params["objective"] = objective
 	}
-	// The reply carries the resulting snapshot. It is not applied: the
-	// app-server also emits a state.updated patch for the same change, so
-	// reading both would give the stored goal two writers with no ordering
-	// between them.
-	if _, err := a.sendZCodeRequest(zcodeMethodSessionGoal, params, a.APITimeout()); err != nil {
+	raw, err := a.sendZCodeRequest(zcodeMethodSessionGoal, params, a.APITimeout())
+	if err != nil {
 		return err
+	}
+	// The reply's GOAL is deliberately not applied: the app-server also emits a
+	// state.updated patch for the same change, and reading both would give the
+	// stored goal two writers with no ordering between them.
+	//
+	// Its REVISION is another matter, and skipping it broke the second action
+	// in a row. This call bumps the app-server's counter, and nothing else
+	// refreshes ours until a turn ends -- so Pause followed by Resume sent the
+	// same pre-pause expectedRevision twice and the app-server refused the
+	// second for a conflict that did not exist.
+	if snap, ok := a.parseStateSnapshot(raw); ok {
+		a.noteZCodeStateRevision(snap.Runtime.StateRevision)
 	}
 	return nil
 }

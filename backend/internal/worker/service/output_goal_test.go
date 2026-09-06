@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"regexp"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -58,11 +61,41 @@ func goalNotificationCount(t *testing.T, svc *Service, agentID string) int {
 	for _, m := range msgs {
 		body, err := msgcodec.Decompress(m.Content, m.ContentCompression)
 		require.NoError(t, err)
-		n += bytes.Count(body, []byte(`"`+agent.NotificationTypeGoalUpdated+`"`))
-		n += bytes.Count(body, []byte(`"`+agent.NotificationTypeGoalCleared+`"`))
+		n += bytes.Count(body, []byte(`"`+contracts.NotificationTypeGoalUpdated+`"`))
+		n += bytes.Count(body, []byte(`"`+contracts.NotificationTypeGoalCleared+`"`))
 	}
 	return n
 }
+
+// goalTransitionKinds returns the `goal_transition` token of every goal_updated
+// entry, in order. It reads the PERSISTED payload rather than calling
+// goalTransitionKind directly, because the value only helps if it survives the
+// notification envelope the browser reads.
+func goalTransitionKinds(t *testing.T, svc *Service, agentID string) []string {
+	t.Helper()
+	msgs, err := svc.Queries.ListMessagesByAgentID(context.Background(), db.ListMessagesByAgentIDParams{
+		AgentID: agentID, Seq: 0, Limit: 1000,
+	})
+	require.NoError(t, err)
+	var kinds []string
+	for _, m := range msgs {
+		body, err := msgcodec.Decompress(m.Content, m.ContentCompression)
+		require.NoError(t, err)
+		// Adjacent notifications fold into one thread wrapper, so a row can
+		// carry several entries. Scan the raw body IN ORDER rather than
+		// decoding a shape that differs between a standalone row and a thread;
+		// the order is what the assertions are about.
+		for _, match := range goalTransitionPattern.FindAllSubmatch(body, -1) {
+			kinds = append(kinds, string(match[1]))
+		}
+	}
+	return kinds
+}
+
+// goalTransitionPattern reads the transition token out of a persisted payload.
+// The value is written with json.Marshal of a map, so the key and the value sit
+// together with no space.
+var goalTransitionPattern = regexp.MustCompile(`"goal_transition":"([a-z]+)"`)
 
 func activeGoal(objective string, tokensUsed int64, createdAt time.Time) agent.GoalUpdate {
 	return agent.GoalUpdate{
@@ -170,7 +203,7 @@ func TestGoal_ClearIssuesTheWriteFromStoredState(t *testing.T) {
 	// A fresh sink stands in for a worker that restarted: it has no memory of
 	// the goal above, and the row still holds it.
 	coldSink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	coldSink.ClearGoal()
+	coldSink.ClearGoal(false)
 
 	row := readRow()
 	assert.Empty(t, row.GoalObjective)
@@ -184,26 +217,9 @@ func TestGoal_ClearWithNoGoalAnnouncesNothing(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
 
-	sink.ClearGoal()
+	sink.ClearGoal(false)
 
 	assert.Equal(t, 0, goalNotificationCount(t, svc, agentID))
-}
-
-// A goal that survived a restart is being pursued by nobody. Leaving its status
-// set would draw live Pause and Clear buttons for a goal no process holds.
-func TestGoal_BootSweepBlanksStatusAndKeepsObjective(t *testing.T) {
-	t.Parallel()
-	svc, sink, _, readRow := setupGoalTest(t)
-	created := time.Unix(1_700_000_000, 0).UTC()
-
-	sink.UpsertGoal(activeGoal("Survived a restart", 10, created))
-	require.NoError(t, svc.Output.ClearGoalStatusesAtBoot(context.Background()))
-
-	row := readRow()
-	assert.Empty(t, row.GoalStatus, "no process is pursuing it")
-	assert.Empty(t, row.GoalStatusDetail)
-	assert.Equal(t, "Survived a restart", row.GoalObjective,
-		"the panel can still say what was being attempted")
 }
 
 // The status DETAIL moves far more often than the goal does: Claude Code puts
@@ -232,40 +248,14 @@ func TestGoal_StatusDetailChangeStoresButNeverAnnounces(t *testing.T) {
 		"the card still reads the latest reason")
 }
 
-// The boot sweep blanks goal_status, so the provider's first report after a
-// worker restart RE-ARMS it. That is a transition by the test's own terms, and
-// announcing it would print "Goal set: X" at restart time for a goal set before
-// the restart -- the same lie Codex's snapshot flag prevents for Codex, reached
-// by a route Claude Code and Reasonix cannot mark for themselves.
-func TestGoal_ReArmingAfterABootSweepAnnouncesNothing(t *testing.T) {
-	t.Parallel()
-	svc, sink, agentID, readRow := setupGoalTest(t)
-	created := time.Unix(1_700_000_000, 0).UTC()
-
-	sink.UpsertGoal(activeGoal("Survived a restart", 10, created))
-	require.NoError(t, svc.Output.ClearGoalStatusesAtBoot(context.Background()))
-	require.Equal(t, 1, goalNotificationCount(t, svc, agentID))
-
-	// The provider reports the same goal again, with no snapshot marking of its
-	// own -- Reasonix never sets one.
-	rearm := activeGoal("Survived a restart", 20, created)
-	rearm.Snapshot = false
-	sink.UpsertGoal(rearm)
-
-	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
-		"re-arming a goal that outlived the worker is not a new transition")
-	assert.Equal(t, "active", readRow().GoalStatus, "but the card is armed again")
-}
-
-// The re-arm rule must not swallow a real change. A DIFFERENT objective after a
-// restart is a new goal and has to reach the transcript.
-func TestGoal_ANewObjectiveAfterABootSweepStillAnnounces(t *testing.T) {
+// A DIFFERENT objective after a restart is a new goal and has to reach the
+// transcript. The restatement rule must not swallow it.
+func TestGoal_ANewObjectiveAfterARestartStillAnnounces(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
 	created := time.Unix(1_700_000_000, 0).UTC()
 
 	sink.UpsertGoal(activeGoal("The old objective", 10, created))
-	require.NoError(t, svc.Output.ClearGoalStatusesAtBoot(context.Background()))
 
 	sink.UpsertGoal(activeGoal("A brand new objective", 0, time.Unix(1_700_050_000, 0).UTC()))
 
@@ -288,7 +278,7 @@ func TestGoal_ClearedAgentStillCarriesAnOrderingStamp(t *testing.T) {
 	require.NotNil(t, set.Goal)
 	require.NotEmpty(t, set.UpdatedAt)
 
-	sink.ClearGoal()
+	sink.ClearGoal(false)
 
 	cleared, err := svc.Output.LoadGoal(ctx, agentID)
 	require.NoError(t, err)
@@ -333,20 +323,18 @@ func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
 // objective with a subagent's.
 func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	svc, sink, rootID, readRow := setupGoalTest(t)
+	svc, sink, _, readRow := setupGoalTest(t)
 	sink.UpsertGoal(activeGoal("Root objective", 10, time.Unix(1_700_000_000, 0).UTC()))
 
 	childID, err := sink.EnsureChildAgent("span-1", "child-key-1", "A subagent")
 	require.NoError(t, err)
 	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	_ = ctx
 
 	childSink.UpsertGoal(activeGoal("Subagent objective", 1, time.Unix(1_700_005_000, 0).UTC()))
+	childSink.ClearGoal(false)
 
 	assert.Equal(t, "Root objective", readRow().GoalObjective,
-		"a child's goal must not overwrite the session's")
-	_ = rootID
+		"a child's goal must not overwrite the session's, and a child's clear must not erase it")
 }
 
 // The event the browser actually reads. Three paths send it -- the applier's
@@ -378,7 +366,7 @@ func TestGoal_ChangedEventStampsAnAbsentGoalToo(t *testing.T) {
 	ctx := context.Background()
 	svc, sink, agentID, _ := setupGoalTest(t)
 	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
-	sink.ClearGoal()
+	sink.ClearGoal(false)
 
 	stored, err := svc.Output.LoadGoal(ctx, agentID)
 	require.NoError(t, err)
@@ -459,4 +447,368 @@ func TestGoalProgressInfo_OmitsWhatTheProviderDidNotReport(t *testing.T) {
 
 	// A provider that reports no counter at all broadcasts nothing.
 	assert.Nil(t, goalProgressInfo(agent.GoalUpdate{Objective: "no counters here"}))
+}
+
+// The mutex the applier holds is the whole reason a burst of identical reports
+// announces once. Every other test in this file calls the sink serially, and a
+// serial suite stays green with the lock removed: the read-modify-write only
+// interleaves when two reports genuinely race.
+//
+// Run under -race, where a missing lock is also a reported data race.
+func TestGoal_ConcurrentIdenticalReportsAnnounceOnce(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	// One shared createdAt, so every report describes the SAME goal and only
+	// the first of them is a transition.
+	const reporters = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range reporters {
+		wg.Add(1)
+		go func(tokens int64) {
+			defer wg.Done()
+			<-start
+			sink.UpsertGoal(activeGoal("Ship it", tokens, created))
+		}(int64(i * 100))
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
+		"eight racing reports of one goal are ONE transition")
+	assert.Equal(t, "Ship it", readRow().GoalObjective)
+}
+
+// A clear that RESTATES the absence must not announce one. Codex pushes
+// thread/goal/cleared on every resume for a thread that has no goal, and that
+// lands when the worker's copy is cold and the row still holds a goal from the
+// previous process -- so without the flag the user opens the chat after a
+// restart and reads "Goal cleared: X" for a clear nobody performed.
+func TestGoal_SnapshotClearRemovesTheGoalWithoutAnnouncingIt(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Survived a restart", 10, time.Unix(1_700_000_000, 0).UTC()))
+	require.Equal(t, 1, goalNotificationCount(t, svc, agentID))
+
+	sink.ClearGoal(true)
+
+	row := readRow()
+	assert.Empty(t, row.GoalObjective, "the write still runs")
+	assert.Empty(t, row.GoalStatus)
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
+		"a restatement of the absence announces nothing")
+}
+
+// The mirror of the test above: a clear the user actually performed still
+// reaches the transcript, so the flag suppresses a restatement and nothing else.
+func TestGoal_RealClearAnnounces(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+
+	sink.ClearGoal(false)
+
+	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID))
+}
+
+// The case the old blank-status sentinel swallowed. A goal that FINISHED while
+// the worker was down comes back in a different status, and that is a real
+// transition the user must see -- the re-arm rule must not absorb it.
+func TestGoal_AGoalThatFinishedDuringTheRestartStillAnnounces(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+	sink.UpsertGoal(activeGoal("Ship it", 10, created))
+
+	done := activeGoal("Ship it", 900, created)
+	done.Status = agent.GoalStatusDone
+	done.StatusDetail = "complete"
+	sink.UpsertGoal(done)
+
+	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID),
+		"an achievement that happened during the restart is still news")
+}
+
+// A goal with a status and NO objective is a goal the user cannot read. The
+// card would draw an empty line with an armed dot and live controls, so the
+// write path refuses it and the read path refuses it again.
+func TestGoal_AStatusWithNoObjectiveIsNoGoal(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+
+	sink.UpsertGoal(agent.GoalUpdate{
+		Objective:    "",
+		Status:       agent.GoalStatusActive,
+		StatusDetail: "active",
+		CreatedAt:    time.Unix(1_700_000_000, 0).UTC(),
+	})
+
+	row := readRow()
+	assert.Empty(t, row.GoalObjective)
+	assert.Empty(t, row.GoalStatus, "Clean resolves the contradiction to no goal")
+	assert.Equal(t, 0, goalNotificationCount(t, svc, agentID))
+
+	snapshot, err := svc.Output.LoadGoal(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Nil(t, snapshot.Goal, "the read path refuses a goal with no text too")
+}
+
+// A report that cleans away the objective is a REMOVAL, and it must reach the
+// transcript as one. Reaching the applier's write path with it half-wiped the
+// row -- objective, status and detail blanked, the identity left behind -- so
+// the card emptied mid-session with nothing said, and the NEXT report carrying
+// the objective again read the blank row as a first "Goal set".
+func TestGoal_AReportThatEmptiesTheObjectiveClearsTheGoal(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+	sink.UpsertGoal(activeGoal("Ship it", 10, created))
+	require.Equal(t, 1, goalNotificationCount(t, svc, agentID))
+
+	// Reasonix sends an absent objective as "" while its state machine starts.
+	sink.UpsertGoal(agent.GoalUpdate{Objective: "", Status: agent.GoalStatusActive, CreatedAt: created})
+
+	row := readRow()
+	assert.Empty(t, row.GoalObjective)
+	assert.False(t, row.GoalCreatedAt.Valid, "the clear drops the identity, so no phantom goal survives")
+	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID),
+		"the removal is announced rather than happening silently")
+
+	// And the goal that comes back is a fresh SET, not a repeat of one the
+	// transcript never retracted.
+	sink.UpsertGoal(activeGoal("Ship it", 0, created))
+	assert.Equal(t, []string{"set", "set"}, goalTransitionKinds(t, svc, agentID))
+}
+
+// The transition KIND is what lets the transcript say "Goal resumed" instead of
+// guessing from the resulting status. A resume ends `active`, and so does a
+// first set, so the status alone cannot tell the two apart.
+func TestGoal_TransitionKindDistinguishesAResumeFromASet(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	sink.UpsertGoal(activeGoal("Ship it", 10, created))
+	paused := activeGoal("Ship it", 20, created)
+	paused.Status = agent.GoalStatusPaused
+	paused.StatusDetail = "paused"
+	sink.UpsertGoal(paused)
+	sink.UpsertGoal(activeGoal("Ship it", 30, created))
+
+	assert.Equal(t, []string{"set", "paused", "resumed"}, goalTransitionKinds(t, svc, agentID),
+		"the third report returns to active, and that is a RESUME, not a new goal")
+}
+
+// A replacement carries its own kind, so the transcript never reports a
+// restarted objective as an update of the previous one.
+func TestGoal_TransitionKindMarksAReplacement(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupGoalTest(t)
+
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+	sink.UpsertGoal(activeGoal("Ship something else", 0, time.Unix(1_700_009_000, 0).UTC()))
+
+	assert.Equal(t, []string{"set", "replaced"}, goalTransitionKinds(t, svc, agentID))
+}
+
+// startGoalAgentProcess registers a live process for the agent through the
+// manager's own start path, so AgentAlive answers true exactly as it does in
+// production. Without one the projection reads every stored goal as dormant,
+// which is the correct answer and the wrong fixture for a live-goal test.
+func startGoalAgentProcess(t *testing.T, svc *Service, agentID string) {
+	t.Helper()
+	_, err := svc.Agents.MockStartAgent(t.Context(), agent.Options{
+		AgentID:       agentID,
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	require.NoError(t, err)
+	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
+	require.True(t, svc.Agents.AgentAlive(agentID))
+}
+
+// DORMANT is derived, never stored. No process pursues a goal that outlived its
+// process, and reporting the last live status would draw a card with an armed
+// dot and working Pause and Clear buttons for a process that is gone.
+//
+// The projection answers `dormant` rather than the empty token, because the
+// empty token means "no goal at all": a client reading that back cannot tell a
+// waiting goal from a status this build does not understand, so a waiting goal
+// would render as a fault.
+func TestGoal_AGoalWithNoRunningProcessProjectsDormant(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	report := activeGoal("Survived a restart", 10, created)
+	report.StatusDetail = "verifying"
+	sink.UpsertGoal(report)
+
+	snapshot, err := svc.Output.LoadGoal(context.Background(), agentID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot.Goal, "the objective survives, so the panel can still say it")
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT, snapshot.Goal.GetStatus())
+	assert.Equal(t, "Survived a restart", snapshot.Goal.GetObjective())
+	assert.Empty(t, snapshot.Goal.GetStatusDetail(),
+		"the provider's word described the running state, and nothing runs")
+
+	// And nothing was written to reach that answer, which is the whole point:
+	// there is no stored copy left to go stale.
+	row := readRow()
+	assert.Equal(t, "active", row.GoalStatus, "the row still holds the provider's last word")
+	assert.Equal(t, "verifying", row.GoalStatusDetail)
+}
+
+// The other half of the same rule: a goal a live process pursues keeps the
+// status that process reported.
+func TestGoal_AGoalWithARunningProcessKeepsItsStatus(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, _ := setupGoalTest(t)
+	startGoalAgentProcess(t, svc, agentID)
+
+	report := activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC())
+	report.StatusDetail = "verifying"
+	sink.UpsertGoal(report)
+
+	snapshot, err := svc.Output.LoadGoal(context.Background(), agentID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot.Goal)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE, snapshot.Goal.GetStatus())
+	assert.Equal(t, "verifying", snapshot.Goal.GetStatusDetail())
+}
+
+// An agent with NO goal never reads as dormant. Dormant means "an objective is
+// stored and nothing pursues it", so with no objective there is nothing to say.
+func TestGoal_AnAgentWithNoGoalNeverProjectsDormant(t *testing.T) {
+	t.Parallel()
+	svc, _, agentID, _ := setupGoalTest(t)
+
+	snapshot, err := svc.Output.LoadGoal(context.Background(), agentID)
+	require.NoError(t, err)
+	assert.Nil(t, snapshot.Goal)
+}
+
+// The first report after a worker restart restates a goal the row already
+// holds, and it must announce nothing -- printing "Goal set: X" at restart time
+// for a goal set an hour ago is the lie Codex's snapshot flag prevents for
+// Codex, reached by a route Claude Code and Reasonix cannot mark for
+// themselves.
+//
+// This needs no rule of its own now. Dormancy is derived, so the restart leaves
+// the stored status alone and the restatement matches it.
+func TestGoal_TheFirstReportAfterARestartAnnouncesNothing(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	created := time.Unix(1_700_000_000, 0).UTC()
+
+	sink.UpsertGoal(activeGoal("Survived a restart", 10, created))
+	require.Equal(t, 1, goalNotificationCount(t, svc, agentID))
+
+	// The provider reports the same goal again, with no snapshot marking of its
+	// own -- Reasonix never sets one.
+	rearm := activeGoal("Survived a restart", 20, created)
+	rearm.Snapshot = false
+	sink.UpsertGoal(rearm)
+
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
+		"restating a goal that outlived the worker is not a new transition")
+	assert.Equal(t, "active", readRow().GoalStatus)
+}
+
+// A process that exits mid-session leaves a goal nothing pursues. The exit
+// publishes so a browser holding the tab open sees the controls settle, rather
+// than learning on its next cold load -- and it writes NOTHING, because the
+// status it would have written is the one the projection already derives.
+func TestGoal_ProcessExitPublishesTheDormantGoalWithoutWriting(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+	before := readRow()
+
+	svc.Output.publishGoalCapabilities(agentID)
+
+	row := readRow()
+	assert.Equal(t, before.GoalStatus, row.GoalStatus, "the exit writes no status")
+	assert.Equal(t, before.GoalUpdatedAt.Time, row.GoalUpdatedAt.Time, "nor moves the stamp")
+	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
+		"settling the card is a state change, not a transcript event")
+}
+
+// It runs for EVERY process exit, including providers with no goal feature at
+// all, so an agent that never had a goal must come through it untouched.
+func TestGoal_ProcessExitDoesNothingForAnAgentWithNoGoal(t *testing.T) {
+	t.Parallel()
+	svc, _, agentID, readRow := setupGoalTest(t)
+
+	svc.Output.publishGoalCapabilities(agentID)
+
+	row := readRow()
+	assert.Empty(t, row.GoalStatus)
+	assert.False(t, row.GoalUpdatedAt.Valid, "no stamp, so nothing was written")
+}
+
+// A relaunch stops the old process and runs the exit path again. Nothing is
+// stored, so a second pass cannot differ from the first.
+func TestGoal_ProcessExitIsIdempotent(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+
+	svc.Output.publishGoalCapabilities(agentID)
+	first := readRow().GoalUpdatedAt
+	svc.Output.publishGoalCapabilities(agentID)
+
+	assert.Equal(t, first.Time, readRow().GoalUpdatedAt.Time, "the stamp does not move")
+}
+
+// The OTHER adapter. Two of them build GoalColumns -- one per sqlc row type --
+// and the cold-load path uses this one. It has to carry the agent id like its
+// sibling, or the projection asks the running-agent map about the empty string,
+// gets "not alive", and reports every cold-loaded goal as dormant.
+func TestGoal_TheFullRowAdapterProjectsALiveGoal(t *testing.T) {
+	t.Parallel()
+	svc, sink, agentID, readRow := setupGoalTest(t)
+	startGoalAgentProcess(t, svc, agentID)
+	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
+
+	snapshot := svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(readRow()))
+
+	require.NotNil(t, snapshot.Goal)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE, snapshot.Goal.GetStatus(),
+		"the adapter carries the id, so the projection can find the process")
+}
+
+// A worker with no agent manager cannot observe an exit either, so it must not
+// invent the state that observing one would have recorded.
+func TestGoal_AnAbsentManagerNeverClaimsDormant(t *testing.T) {
+	t.Parallel()
+	h := NewOutputHandler(nil, nil, nil, nil, nil)
+
+	snapshot := h.GoalSnapshotFrom(GoalColumns{
+		AgentID:    "agent-1",
+		Objective:  "Ship it",
+		StatusWire: "active",
+	})
+
+	require.NotNil(t, snapshot.Goal)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE, snapshot.Goal.GetStatus())
+}
+
+// A CHILD owns no goal, and that answer comes before the liveness question: a
+// subagent runs inside its parent's process, so asking the map about the child
+// id would report dormant for a goal it does not own in the first place.
+func TestGoal_AChildProjectsNoGoalAtAll(t *testing.T) {
+	t.Parallel()
+	svc, _, _, _ := setupGoalTest(t)
+
+	snapshot := svc.Output.GoalSnapshotFrom(GoalColumns{
+		AgentID:    "child-1",
+		IsChild:    true,
+		Objective:  "the root's objective",
+		StatusWire: "active",
+	})
+
+	assert.Nil(t, snapshot.Goal)
 }

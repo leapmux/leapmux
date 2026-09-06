@@ -59,8 +59,12 @@ type testSink struct {
 	// ClearGoal. A provider's goal parser is tested through these: they hold the
 	// neutral GoalUpdate, so a test asserts what the parser MEANT rather than
 	// the provider bytes it read.
-	goals                   []GoalUpdate
-	goalClears              int
+	goals      []GoalUpdate
+	goalClears int
+	// goalClearSnapshots records the snapshot flag of every ClearGoal, in order.
+	// The count alone cannot tell a restatement from a real removal, and that is
+	// the whole distinction the flag exists to carry.
+	goalClearSnapshots      []bool
 	goalCapabilityPublishes int
 	autoSchedules           []AutoContinueSchedule
 	autoCancels             []AutoContinueReason
@@ -346,27 +350,54 @@ func (s *testSink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool)
 
 func (s *testSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string) {}
 
+// ownsGoal mirrors the production sink: only a ROOT sink may write a goal, and
+// a child sink refuses and records nothing.
+//
+// The fake has to refuse too, or it hides the bug the production guard exists
+// to catch. A provider that wrote a goal through a child sink would replace the
+// session's objective with a subagent's; with an accepting fake, every
+// provider's goal test still passes and only one service-level test could see
+// it. A child testSink carries the child id this sink was created for.
+func (s *testSink) ownsGoal() bool { return s.childAgentID() == "" }
+
 // UpsertGoal and ClearGoal record what a provider reported, so a parser test
 // asserts against the neutral GoalUpdate rather than the provider's wire bytes.
 func (s *testSink) UpsertGoal(update GoalUpdate) {
+	if !s.ownsGoal() {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goals = append(s.goals, update)
 }
 
-func (s *testSink) ClearGoal() {
+func (s *testSink) ClearGoal(snapshot bool) {
+	if !s.ownsGoal() {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goalClears++
+	s.goalClearSnapshots = append(s.goalClearSnapshots, snapshot)
 }
 
 // PublishGoalCapabilities is counted rather than ignored: the Manager calls it
 // once per start, and a provider test asserting the goal path needs to see that
 // the capability was published after registration rather than during it.
 func (s *testSink) PublishGoalCapabilities() {
+	if !s.ownsGoal() {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goalCapabilityPublishes++
+}
+
+// GoalClearSnapshots returns the snapshot flag of every ClearGoal, in order.
+func (s *testSink) GoalClearSnapshots() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.goalClearSnapshots...)
 }
 
 // GoalCapabilityPublishes counts the PublishGoalCapabilities calls.
@@ -1021,7 +1052,7 @@ func (noopSink) StorePlanModeToolUse(string, string)                            
 func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)                { return "", false }
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}
 func (noopSink) UpsertGoal(GoalUpdate)                                             {}
-func (noopSink) ClearGoal()                                                        {}
+func (noopSink) ClearGoal(bool)                                                    {}
 func (noopSink) PublishGoalCapabilities()                                          {}
 func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                         {}
 func (noopSink) CancelAutoContinue(AutoContinueReason)                             {}

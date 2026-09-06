@@ -2,7 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"io"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -305,4 +308,395 @@ func TestReasonixGoal_ImplementsNoGoalController(t *testing.T) {
 	var a any = &ReasonixAgent{}
 	_, ok := a.(GoalController)
 	assert.False(t, ok, "Reasonix cannot honestly perform a goal action")
+}
+
+// Reasonix's real wire vocabulary. `cancelled` and `failed` come from a
+// per-turn override rather than the goal enum, so they are easy to miss; both
+// mean "not progressing, needs the user".
+func TestReasonixGoal_StatusMapping(t *testing.T) {
+	t.Parallel()
+
+	for wire, want := range map[string]GoalStatus{
+		"running":  GoalStatusActive,
+		"complete": GoalStatusDone,
+		"blocked":  GoalStatusBlocked,
+		// Set when the user cancels a turn, and when a turn returns an error.
+		"cancelled": GoalStatusBlocked,
+		"failed":    GoalStatusBlocked,
+		// A word this build does not know must not offer Pause either.
+		"somethingNew": GoalStatusBlocked,
+	} {
+		assert.Equal(t, want, reasonixGoalStatus(wire), "status %q", wire)
+	}
+}
+
+// The notification is also observed with the status fields HOISTED to the top
+// level. The struct declares both shapes because declaring one silently
+// reported no goal, and every other Reasonix test here sends the nested shape --
+// so without this the hoisted field could be deleted with a green suite.
+func TestReasonixGoal_ReadsTheHoistedShape(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := &ReasonixAgent{}
+	agent.agentID = "test-agent"
+	agent.sink = sink
+
+	handled := agent.handleExtraMethod(&parsedLine{
+		Method: reasonixMethodStatusUpdate,
+		Params: json.RawMessage(`{"sessionId":"","goal":{"status":"running",` +
+			`"objective":"hoisted objective"}}`),
+	})
+
+	require.True(t, handled)
+	got, ok := sink.LastGoal()
+	require.True(t, ok, "the hoisted shape must report a goal, not silence")
+	assert.Equal(t, "hoisted objective", got.Objective)
+	assert.Equal(t, GoalStatusActive, got.Status)
+}
+
+// When BOTH shapes arrive, the nested one wins. Nothing else pins that
+// precedence, so inverting it would keep the suite green.
+func TestReasonixGoal_NestedStatusWinsOverTheHoistedCopy(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := &ReasonixAgent{}
+	agent.agentID = "test-agent"
+	agent.sink = sink
+
+	agent.handleExtraMethod(&parsedLine{
+		Method: reasonixMethodStatusUpdate,
+		Params: json.RawMessage(`{"sessionId":"",` +
+			`"goal":{"status":"running","objective":"hoisted"},` +
+			`"status":{"goal":{"status":"running","objective":"nested"}}}`),
+	})
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "nested", got.Objective)
+}
+
+// workDurationMs is MILLISECONDS and TimeUsedSeconds is seconds. A direct
+// assignment would print a duration a thousand times too large.
+func TestReasonixGoal_ConvertsWorkDurationToSeconds(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := &ReasonixAgent{}
+	agent.agentID = "test-agent"
+	agent.sink = sink
+
+	agent.handleExtraMethod(&parsedLine{
+		Method: reasonixMethodStatusUpdate,
+		Params: json.RawMessage(`{"sessionId":"","status":{"goal":{"status":"running",` +
+			`"objective":"land it","runtime":{"workDurationMs":90000}}}}`),
+	})
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	require.NotNil(t, got.TimeUsedSeconds)
+	assert.EqualValues(t, 90, *got.TimeUsedSeconds)
+}
+
+// A status update that reaches the reader goroutine while a session/new round
+// trip holds sessionMu must not block. It once did: isCurrentACPSession took
+// sessionMu.RLock on the goroutine that has to deliver that round trip's own
+// response, so the clear and the whole output stream stalled until the API
+// timeout.
+func TestReasonixGoal_StatusUpdateDoesNotBlockOnTheSessionLock(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := &ReasonixAgent{}
+	agent.agentID = "test-agent"
+	agent.sink = sink
+
+	agent.sessionMu.Lock()
+	defer agent.sessionMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		agent.handleExtraMethod(&parsedLine{
+			Method: reasonixMethodStatusUpdate,
+			Params: json.RawMessage(`{"sessionId":"","status":{"goal":{"status":"running","objective":"x"}}}`),
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the status update blocked on sessionMu, which the reader goroutine must never wait for")
+	}
+}
+
+// A session snapshot RESTATES the goal, so it must be reported as one. Only the
+// Codex path asserted the snapshot rule before, and ZCode reaches it through a
+// different function.
+func TestZCodeGoal_SessionSnapshotIsARestatement(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newZCodeTestAgent(t, sink)
+
+	agent.reportZCodeGoal(json.RawMessage(`{"objective":"resumed objective","status":"active"}`), true)
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "resumed objective", got.Objective)
+	assert.True(t, got.Snapshot, "a resume restates the goal; it does not announce one")
+}
+
+// The same call with snapshot=false is what a state PATCH uses, and that one
+// does announce. The pair is what proves the flag is threaded rather than
+// hardcoded.
+func TestZCodeGoal_StatePatchIsNotARestatement(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newZCodeTestAgent(t, sink)
+
+	agent.reportZCodeGoal(json.RawMessage(`{"objective":"live change","status":"active"}`), false)
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.False(t, got.Snapshot)
+}
+
+// A snapshot that says the session has NO goal clears it as a restatement too.
+// Without the flag a resume writes "Goal cleared: X" for a clear nobody made.
+func TestZCodeGoal_SnapshotNullClearIsARestatement(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newZCodeTestAgent(t, sink)
+
+	agent.reportZCodeGoal(json.RawMessage(`null`), true)
+
+	assert.Equal(t, []bool{true}, sink.GoalClearSnapshots())
+}
+
+// The session snapshot is the only place a RESUMED session learns its
+// revision before a turn ends. Reading eventSeq alone left it at 0, and
+// session/goal then sent expectedRevision 0 against a live session whose
+// revision was higher -- the app-server refused every goal action.
+func TestZCodeGoal_SessionSnapshotSeedsTheStateRevision(t *testing.T) {
+	t.Parallel()
+
+	agent := newZCodeTestAgent(t, &testSink{})
+	snap, ok := agent.parseStateSnapshot(json.RawMessage(
+		`{"session":{"sessionId":"sess-1"},"runtime":{"eventSeq":7,"stateRevision":42}}`))
+	require.True(t, ok)
+
+	agent.applyParsedStateSnapshot(snap)
+
+	agent.mu.Lock()
+	got := agent.stateRevision
+	agent.mu.Unlock()
+	assert.EqualValues(t, 42, got, "a resumed session must know its revision before its first turn ends")
+}
+
+// A workspace-scope patch carries no SESSION state. A `goal` key on one must
+// not reach the session goal: a null there would clear a live goal and write a
+// "Goal cleared" row for a change the user never made.
+func TestZCodeGoal_WorkspaceScopePatchNeverTouchesTheGoal(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newZCodeTestAgent(t, sink)
+	agent.reportZCodeGoal(json.RawMessage(`{"objective":"live goal","status":"active"}`), false)
+	require.Equal(t, 1, len(sink.Goals()))
+
+	agent.handleZCodeStateUpdated(json.RawMessage(
+		`{"scope":"workspace","patch":{"goal":null}}`))
+
+	assert.Equal(t, 0, sink.GoalClears(), "a workspace patch must not clear the session goal")
+}
+
+// A settings reply folds its state document through applyStateSnapshot, and
+// three setters do that. Reporting the goal from inside the fold let a model,
+// effort or permission-mode change write the goal columns -- and a reply that
+// spelled `goal: null` would DELETE a live goal with no transcript row.
+func TestZCodeGoal_ASettingsSnapshotNeverTouchesTheGoal(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newZCodeTestAgent(t, sink)
+
+	// The shape a setter reply carries, with a goal key that must be ignored.
+	_, ok := agent.applyStateSnapshot(json.RawMessage(
+		`{"session":{"sessionId":"sess-1"},"runtime":{"eventSeq":3},"goal":null}`))
+
+	require.True(t, ok)
+	assert.Zero(t, sink.GoalClears(), "a settings reply must not clear the goal")
+	assert.Empty(t, sink.Goals(), "nor set one")
+}
+
+// The revision the reply carries must be folded, or a second goal action before
+// the next turn end sends the same expectedRevision twice and the app-server
+// refuses it for a conflict that does not exist.
+func TestZCodeGoal_TracksTheRevisionMonotonically(t *testing.T) {
+	t.Parallel()
+
+	agent := newZCodeTestAgent(t, &testSink{})
+
+	agent.noteZCodeStateRevision(12)
+	agent.noteZCodeStateRevision(7)
+	agent.noteZCodeStateRevision(0)
+
+	agent.mu.Lock()
+	got := agent.stateRevision
+	agent.mu.Unlock()
+	assert.EqualValues(t, 12, got, "a stale or absent revision never moves it backwards")
+}
+
+// A patch for a session ClearContext already replaced must not apply. It would
+// resurrect the goal the user just cleared and write a "Goal set" row for it.
+func TestZCodeGoal_IgnoresAPatchForAReplacedSession(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newZCodeTestAgent(t, sink)
+	agent.mu.Lock()
+	agent.sessionID = "sess-new"
+	agent.mu.Unlock()
+
+	agent.handleZCodeStateUpdated(json.RawMessage(
+		`{"scope":"session","sessionId":"sess-old","patch":{"goal":{"objective":"stale goal","status":"active"}}}`))
+
+	assert.Empty(t, sink.Goals(), "a patch for the replaced session is not this session's goal")
+}
+
+// newClaudeGoalAgent gives a Claude agent whose stdin is a real pipe, so
+// SendInput succeeds and SetGoal reaches its local write. The read end is
+// drained, or a long objective would block on a full pipe buffer.
+func newClaudeGoalAgent(t *testing.T, sink OutputSink) *ClaudeCodeAgent {
+	t.Helper()
+	readPipe, writePipe, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = writePipe.Close()
+		_ = readPipe.Close()
+	})
+	go func() { _, _ = io.Copy(io.Discard, readPipe) }()
+	agent := newTestAgent(sink)
+	agent.stdin = writePipe
+	return agent
+}
+
+// Claude Code never reports its own goal back, so the provider writes the row
+// itself. Without this write the card stays empty for the life of the session
+// while the CLI honors the goal.
+func TestClaudeGoal_SetGoalWritesTheGoalItself(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newClaudeGoalAgent(t, sink)
+
+	require.NoError(t, agent.SetGoal("make the tests pass"))
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok, "the provider is the only writer here")
+	assert.Equal(t, "make the tests pass", got.Objective)
+	assert.Equal(t, GoalStatusActive, got.Status)
+	assert.False(t, got.CreatedAt.IsZero(), "the provider mints the identity the CLI never sends")
+	assert.False(t, got.Snapshot, "the user just did this, so it is a real transition")
+}
+
+// The row must state the bytes the CLI received, not the bytes the user typed.
+// A newline ends the command and sends the rest as a second line, so the
+// objective is folded before it goes out -- and the write has to carry the same
+// folded text or the row and the CLI hold different goals.
+func TestClaudeGoal_SetGoalWritesTheFoldedObjective(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newClaudeGoalAgent(t, sink)
+
+	require.NoError(t, agent.SetGoal("  every  test\n\tpasses  "))
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "every test passes", got.Objective)
+}
+
+// A fresh identity on every set, so re-setting the SAME objective reads as a
+// restart rather than as no change.
+func TestClaudeGoal_ARepeatedSetMintsAFreshIdentity(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newClaudeGoalAgent(t, sink)
+
+	require.NoError(t, agent.SetGoal("ship it"))
+	first, ok := sink.LastGoal()
+	require.True(t, ok)
+
+	// The command IS a user turn, so the second one waits for the first to end.
+	// Without this the send returns ErrAgentBusy and never reaches the write.
+	agent.mu.Lock()
+	agent.turnActive = false
+	agent.mu.Unlock()
+
+	require.NoError(t, agent.SetGoal("ship it"))
+	second, ok := sink.LastGoal()
+	require.True(t, ok)
+
+	assert.False(t, second.CreatedAt.Before(first.CreatedAt),
+		"the same objective set again is a restart, not a repeat")
+	assert.Len(t, sink.Goals(), 2)
+}
+
+func TestClaudeGoal_ClearGoalClearsTheGoalItself(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newClaudeGoalAgent(t, sink)
+
+	require.NoError(t, agent.ClearGoal())
+
+	assert.Equal(t, 1, sink.GoalClears())
+	assert.Empty(t, sink.Goals())
+}
+
+// The write follows the send, so a send that fails writes nothing. Otherwise
+// the row would state a goal that never reached the process.
+func TestClaudeGoal_AFailedSendWritesNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newClaudeGoalAgent(t, sink)
+	agent.mu.Lock()
+	agent.stopped = true
+	agent.mu.Unlock()
+
+	assert.Error(t, agent.SetGoal("ship it"))
+	assert.Error(t, agent.ClearGoal())
+	assert.Empty(t, sink.Goals(), "a refused send is not a goal")
+	assert.Zero(t, sink.GoalClears())
+}
+
+// An empty objective never reaches the CLI, so it never reaches the row either.
+func TestClaudeGoal_SetGoalRefusesAnEmptyObjective(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newClaudeGoalAgent(t, sink)
+
+	assert.Error(t, agent.SetGoal("   "))
+	assert.Empty(t, sink.Goals())
+}
+
+// Every other provider reports its own change, and a local write there would
+// race the report already in flight -- the user would watch the control flip
+// back. So their SetGoal touches the sink not at all.
+func TestGoal_AnEchoingProviderWritesNothingLocally(t *testing.T) {
+	t.Parallel()
+
+	zsink := &testSink{}
+	zagent := newZCodeTestAgent(t, zsink)
+	_ = zagent.SetGoal("ship it")
+	assert.Empty(t, zsink.Goals(), "ZCode answers a session/goal with a state patch")
+	assert.Zero(t, zsink.GoalClears())
 }

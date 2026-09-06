@@ -755,17 +755,6 @@ func (svc *Service) RestoreState() {
 		slog.Info("marked background tasks interrupted on boot", "count", len(endedChildIDs))
 		svc.Output.WriteSubagentEndDividers(endedChildIDs, bgtask.StatusInterrupted)
 	}
-	// Blank every stored session-goal status, for the same reason the sweep
-	// above interrupts the task rows: the previous process is gone, so no goal
-	// is being pursued. Leaving a status set would draw a goal panel with live
-	// Pause and Clear buttons for a goal nothing is running, and pressing one
-	// would act on a process that never knew about it. The OBJECTIVE text stays
-	// so the panel can still say what was being attempted, and the provider's
-	// own snapshot re-arms the status when a session resumes -- Codex pushes
-	// exactly that on thread/resume.
-	if err := svc.Output.ClearGoalStatusesAtBoot(bgCtx()); err != nil {
-		slog.Warn("clear session-goal statuses on boot failed", "error", err)
-	}
 	svc.Output.restoreAutoContinueSchedules()
 }
 
@@ -778,6 +767,12 @@ func (svc *Service) RestoreState() {
 func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
 	svc.Output.ClearPendingControlRequests(agentID)
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
+	// Re-publish the session goal, which now reads DORMANT: the projection
+	// derives that from the running-agent map, and AgentAlive already answers
+	// false inside this callback. Nothing is written -- this only tells a browser
+	// holding the tab open, which would otherwise keep a live Active dot and
+	// working Pause and Clear buttons until its next cold load.
+	svc.Output.publishGoalCapabilities(agentID)
 	if !stopped {
 		for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
 			if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {

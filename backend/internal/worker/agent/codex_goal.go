@@ -140,7 +140,9 @@ func (a *CodexAgent) handleGoalCleared(params json.RawMessage) {
 	if !a.isMainThreadID(notif.ThreadID) {
 		return
 	}
-	a.sink.ClearGoal()
+	// A clear that arrives during the resume handshake RESTATES that this
+	// thread has no goal; it does not announce a removal the user just made.
+	a.sink.ClearGoal(a.resumingThread.Load())
 }
 
 // codexGoalTime converts Codex's Unix SECONDS to a time.Time. Zero means the

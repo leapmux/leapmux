@@ -559,11 +559,23 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 // Same shape as the AgentInfo.accepts_messages decision, which type-asserts
 // ChildSteerer for the same reason: the capability cannot drift from the code
 // that implements it.
+// It reads the agent map DIRECTLY rather than through providerAfterLifecycle,
+// and that is deliberate: StartAgent publishes the capabilities while a
+// lifecycle caller holds LockAgent, and the ExitHandler broadcasts them while
+// RestartAgent waits on it. The lifecycle lock is not reentrant, so taking it
+// here deadlocks both paths. A capability read is safe on a stale entry -- the
+// worst answer is one extra broadcast that names what the old process could do.
 func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 	m.mu.RLock()
 	p, ok := m.agents[agentID]
+	_, exiting := m.exiting[p]
 	m.mu.RUnlock()
-	if !ok {
+	// An EXITING process can do nothing, and the exit handler is exactly when
+	// this is asked: onExit runs before the map entry is deleted, so a bare
+	// lookup still finds the dying process and answers with its full action
+	// list. The broadcast that exists to settle the controls would then ship
+	// live Pause and Clear for a process that is gone.
+	if !ok || exiting {
 		return nil
 	}
 	controller, ok := p.(GoalController)
@@ -582,11 +594,17 @@ func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
 // instance, and a service-side check would read the capability through a second
 // lookup that could resolve a different process.
 func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) error {
-	m.mu.RLock()
-	p, ok := m.agents[agentID]
-	m.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+	// providerAfterLifecycle, like every other command dispatch here: the map
+	// read must happen AFTER a restart finishes, or it hands back the process
+	// that restart is destroying. A bare read can also miss the window between
+	// stopAndWait clearing the old entry and StartAgent registering the new
+	// one, and answer ErrAgentNotFound for an agent the user can see running.
+	//
+	// The two capability queries beside this one must NOT take that lock. Read
+	// their comment: both run from callers that already hold it.
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
 	}
 	controller, ok := p.(GoalController)
 	if !ok {

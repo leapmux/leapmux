@@ -272,14 +272,18 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 		a.threadID = opts.ResumeSessionID
 		a.mu.Unlock()
 		// Mark the handshake, so the unsolicited reports it triggers are read as
-		// restatements rather than as events the user just caused. Cleared once
-		// the resume settles, whether it held or not.
+		// restatements rather than as events the user just caused.
 		a.resumingThread.Store(true)
-		defer a.resumingThread.Store(false)
 	}
 
 	thread, err := a.startOrResumeThread(threadParams, opts.ResumeSessionID, timeout)
 	if err != nil {
+		// Clear on BOTH exits, and not with a defer. A defer here is
+		// function-scoped, not block-scoped, so the flag would stay set through
+		// the model query and the settings publication that follow. Every goal
+		// report Codex made in that window would count as a restatement, and a
+		// real transition would never reach the transcript.
+		a.resumingThread.Store(false)
 		cleanup()
 		return nil, a.formatStartupError(threadMethod, err)
 	}
@@ -289,6 +293,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 	a.applyThreadResult(thread)
 	a.threadID = thread.ID
 	a.mu.Unlock()
+	a.resumingThread.Store(false)
 	sink.UpdateSessionID(thread.ID)
 	sink.BroadcastStatusActive(thread.ID)
 
@@ -628,6 +633,12 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	// turn/started also resets, but resetting here keeps every provider's context
 	// clear consistent rather than relying on that follow-up.
 	a.thinkingTokens.reset()
+
+	// A goal belongs to a THREAD, and this call replaced the thread. Codex
+	// sends thread/goal/cleared only after a real removal and on a resume, so a
+	// fresh thread/start reports nothing at all -- the stored goal would stay,
+	// and the card would offer Pause and Clear for a thread that has no goal.
+	a.sink.ClearGoal(false)
 
 	a.sink.UpdateSessionID(thread.ID)
 	return thread.ID, true

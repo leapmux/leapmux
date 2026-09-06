@@ -17,7 +17,7 @@ import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { TabWorkState } from '~/stores/chatBackgroundTasks'
-import type { GoalAction } from '~/stores/chatGoal'
+import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -880,12 +880,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
               get providerLabel() { return agentProviderLabel(agent()?.agentProvider) },
               get backgroundTasks() { return chipTasks() },
               get registryRows() { return rootTasks() },
-              // Getters, for the reason the comment above gives: a plain value
-              // here compiles, renders once, and never updates.
-              get goal() { return goalFor(agentId) },
-              get goalProgress() { return goalProgressFor(agentId) },
-              get goalActions() { return goalActionsFor(agentId) },
-              onGoalAction: onGoalAction ? action => onGoalAction(bgRootFor(agentId), action) : undefined,
+              // A getter, for the reason the comment above gives: a plain value
+              // here compiles, renders once, and never updates. The whole goal
+              // surface is one field, so no hop below can forward part of it.
+              get goal(): GoalSurface {
+                return {
+                  current: goalFor(agentId),
+                  progress: goalProgressFor(agentId),
+                  actions: goalActionsFor(agentId),
+                  onAction: onGoalAction ? action => onGoalAction(bgRootFor(agentId), action) : undefined,
+                }
+              },
               onOpenSubagent: onOpenBackgroundTask,
               // The WORKER travels with the agent, from the tab that owns this
               // transcript. Reading it from the focused tile instead would take

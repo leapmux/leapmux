@@ -77,7 +77,10 @@ func (a *ClaudeCodeAgent) handleActiveGoal(content []byte) {
 		return
 	}
 	if frame.Value == nil {
-		a.sink.ClearGoal()
+		// Claude Code marks no restatement of its own: the CLI emits active_goal
+		// only when the goal actually changes, and it emits nothing at all until
+		// it receives input. So a null frame is always a real removal.
+		a.sink.ClearGoal(false)
 		return
 	}
 	value := frame.Value
@@ -134,8 +137,19 @@ func (a *ClaudeCodeAgent) observeSlashCommands(content []byte) {
 	// The list carries bare names, without the leading slash.
 	has := slices.Contains(frame.SlashCommands, strings.TrimPrefix(claudeGoalCommand, "/"))
 	a.mu.Lock()
+	changed := a.hasGoalCommand != has
 	a.hasGoalCommand = has
 	a.mu.Unlock()
+	if !changed {
+		return
+	}
+	// Re-publish, because the capability just changed and the Manager's single
+	// publish at registration already ran with the old answer. Nothing orders
+	// this stdout frame against the control response the startup handshake
+	// waits for, so the frame can arrive after the agent registers. Without
+	// this the browser keeps an empty action list, the work panel hides its
+	// "Set a goal" button, and the session has no route to a first goal.
+	a.sink.PublishGoalCapabilities()
 }
 
 // --- GoalController ---
@@ -162,6 +176,33 @@ func (a *ClaudeCodeAgent) SupportedGoalActions() []GoalAction {
 	return []GoalAction{GoalActionSet, GoalActionClear}
 }
 
+// Claude Code is the one provider that writes its own goal state, because it
+// is the one provider that does not report the change back.
+//
+// The CLI does emit an `active_goal` stdout frame, and handleActiveGoal reads
+// it -- but the CLI subscribes that emitter only under CLAUDE_CODE_REMOTE.
+// LeapMux does not set that flag, because it also removes git status from the
+// model's system context, disables auto-memory, caps the Monitor tool's
+// persistent watches and adds four more stdout frame families. None of that is
+// worth one panel.
+//
+// So a goal set here is honored by the CLI and never reported back, and without
+// the write below the card stays empty forever. Every other provider leaves its
+// own state alone here and lets its echo do the writing, which is what keeps a
+// local write from racing a report already in flight.
+//
+// The write happens AFTER the send succeeds, and it carries the FOLDED text --
+// the same bytes the CLI received. A write before the send would state a goal
+// that never reached the process, and a write of the unfolded text would state
+// a goal that differs from the one the CLI holds.
+//
+// The trade this accepts: the CLI can still refuse the change, because Claude
+// caps the condition and the command runs as a user turn that can fail. The row
+// then states a goal the CLI does not hold. That drift is visible -- the refusal
+// lands in the transcript beside the row -- and it is the price of a panel that
+// works at all for a provider whose echo is switched off. If a future release
+// emits the frame unconditionally, delete both writes and handleActiveGoal
+// covers it.
 func (a *ClaudeCodeAgent) SetGoal(objective string) error {
 	objective = strings.TrimSpace(objective)
 	if objective == "" {
@@ -171,11 +212,28 @@ func (a *ClaudeCodeAgent) SetGoal(objective string) error {
 	// multi-line objective has to be folded. Claude reads the whole remainder of
 	// the line as the condition.
 	objective = strings.Join(strings.Fields(objective), " ")
-	return a.SendInput(claudeGoalCommand+" "+objective, nil)
+	if err := a.SendInput(claudeGoalCommand+" "+objective, nil); err != nil {
+		return err
+	}
+	// A fresh CreatedAt on every set, so re-setting the SAME objective reads as
+	// a restart rather than as no change. Codex earns that identity from its own
+	// wire; here this agent is the only source of it.
+	a.sink.UpsertGoal(GoalUpdate{
+		Objective: objective,
+		Status:    GoalStatusActive,
+		CreatedAt: time.Now().UTC(),
+	})
+	return nil
 }
 
 func (a *ClaudeCodeAgent) ClearGoal() error {
-	return a.SendInput(claudeGoalCommand+" "+claudeGoalClearArgument, nil)
+	if err := a.SendInput(claudeGoalCommand+" "+claudeGoalClearArgument, nil); err != nil {
+		return err
+	}
+	// Not a snapshot: the user just did this, so it is a real transition and the
+	// transcript says so.
+	a.sink.ClearGoal(false)
+	return nil
 }
 
 // PauseGoal and ResumeGoal exist to satisfy GoalController and always refuse.

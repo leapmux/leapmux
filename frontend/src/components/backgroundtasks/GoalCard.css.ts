@@ -81,18 +81,3 @@ export const empty = style({
   color: 'var(--faint-foreground)',
   fontSize: 'var(--text-7)',
 })
-
-/**
- * The live region that announces a status change.
- *
- * Offscreen rather than hidden: `display: none` and `visibility: hidden` both
- * take a live region out of the accessibility tree, so nothing is announced.
- */
-export const liveRegion = style({
-  position: 'absolute',
-  width: '1px',
-  height: '1px',
-  overflow: 'hidden',
-  clipPath: 'inset(50%)',
-  whiteSpace: 'nowrap',
-})

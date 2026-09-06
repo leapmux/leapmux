@@ -60,8 +60,7 @@ function renderList(props: {
     <AgentWorkPanel
       variant="sidebar"
       tasks={props.tasks}
-      goalProgress={{}}
-      goalActions={[]}
+      goal={{ progress: {}, actions: [] }}
       loadFailed={props.loadFailed}
       onOpenSubagent={props.onOpenSubagent}
     />
@@ -174,23 +173,23 @@ describe('backgroundTaskList', () => {
       expect(labelOf(container)).toBe('toolu_01A2b3')
     })
 
-    // Each arm is cleaned and the FALLBACK reads the cleaned arm, so a
+    // Each candidate is cleaned and the FALLBACK reads the cleaned text, so a
     // description of nothing but invisible characters falls through to the key
     // instead of rendering the row as a blank line.
-    it('falls through an arm that cleans to nothing', () => {
+    it('falls through a candidate that cleans to nothing', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: 'call-abc', title: '', description: '​​' })],
       })
       expect(labelOf(container)).toBe('call-abc')
     })
 
-    // The LAST arm can clean to nothing as readily as the first two. The worker
+    // The LAST candidate can clean to nothing as readily as the first two. The worker
     // refuses an unusable row key rather than rewriting it, and a key of
     // nothing but bidirectional overrides is usable as an identity, so it
     // reaches the reader as a non-empty string that `cleanName` empties. Every
-    // arm then falls through and the row drew a blank first line with a status
+    // candidate then falls through and the row drew a blank first line with a status
     // dot beside it.
-    it('names the row Untitled when every arm cleans to nothing', () => {
+    it('names the row Untitled when every candidate cleans to nothing', () => {
       const { container } = renderList({
         tasks: [row({ rowKey: '\u202E\u202E', title: '', description: '\u200B' })],
       })
@@ -207,7 +206,7 @@ describe('backgroundTaskList', () => {
     })
 
     // The echo guard compares the second line against the first, so BOTH sides
-    // have to be cleaned. The title arm is cleaned and the description arm was
+    // have to be cleaned. The title candidate is cleaned and the description one was
     // not, so the comparison stopped matching for every string the fold
     // rewrites -- and the row printed the same command twice, once folded and
     // once raw. Claude's local_bash sends the command as both title and
@@ -605,7 +604,7 @@ describe('backgroundTaskList clipping', () => {
 describe('backgroundTaskList load failure', () => {
   function renderFailed(tasks: BackgroundTaskItem[]) {
     return render(() => (
-      <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={tasks} loadFailed />
+      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} loadFailed />
     ))
   }
 
@@ -680,7 +679,7 @@ describe('backgroundTaskList in-place updates', () => {
   /** A store-backed list, which is the shape the sidebar actually renders. */
   function renderLiveList(initial: BackgroundTaskItem[]) {
     const [tasks, setTasks] = createStore<BackgroundTaskItem[]>(initial)
-    const result = render(() => <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={tasks} />)
+    const result = render(() => <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} />)
     return { ...result, setTasks }
   }
 
@@ -744,7 +743,7 @@ describe('backgroundTaskList in-place updates', () => {
     ])
     const onOpenSubagent = vi.fn()
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={tasks} onOpenSubagent={onOpenSubagent} />
+      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} onOpenSubagent={onOpenSubagent} />
     ))
     const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dotBefore = container.querySelector('[data-testid="bg-task-status-dot"]')!
@@ -779,7 +778,7 @@ describe('backgroundTaskList in-place updates', () => {
         row({ rowKey: 't1', title: long, status: 'running' }),
       ])
       const { container } = render(() => (
-        <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={tasks} onOpenSubagent={() => {}} />
+        <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} onOpenSubagent={() => {}} />
       ))
       const el = container.querySelector<HTMLButtonElement>('[data-testid="bg-task-row"]')!
       expect(el.getAttribute('aria-disabled')).toBe('true')
@@ -801,7 +800,7 @@ describe('backgroundTaskList in-place updates', () => {
       row({ rowKey: 't1', title: 'npm test', kind: 'shell', status: 'running' }),
     ])
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={tasks} onOpenSubagent={() => {}} />
+      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={tasks} onOpenSubagent={() => {}} />
     ))
     expect(container.querySelector('[data-testid="bg-task-row"]')!.tagName).toBe('DIV')
   })
@@ -874,7 +873,7 @@ describe('backgroundTaskList in-place updates', () => {
       const long = 'A title far wider than the row that holds it'
       store.replace('a1', [protoTask('t1', long, 'reading')])
       const { container } = render(() => (
-        <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={store.get('a1')} />
+        <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={store.get('a1')} />
       ))
 
       const title = titles(container)[0]!
@@ -899,7 +898,7 @@ describe('backgroundTaskList in-place updates', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [protoTask('t1', 'Review the diff', 'reading')])
     const { container } = render(() => (
-      <AgentWorkPanel variant="sidebar" goalProgress={{}} goalActions={[]} tasks={store.get('a1')} />
+      <AgentWorkPanel variant="sidebar" goal={{ progress: {}, actions: [] }} tasks={store.get('a1')} />
     ))
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
 

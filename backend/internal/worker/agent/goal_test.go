@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -19,8 +20,10 @@ func TestGoalStatusWire_RoundTripsEveryStatus(t *testing.T) {
 	}
 }
 
-// The column has a CHECK constraint over exactly these tokens, so an unmapped
-// status would fail the write instead of storing something nothing reads back.
+// Every status must map to a token the column's CHECK constraint accepts. An
+// unmapped status yields "", which the constraint also accepts, so the write
+// succeeds and stores a status every reader takes as "no goal". This test is
+// what keeps the map complete.
 func TestGoalStatusWire_UsesTheTokensTheColumnAccepts(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "", GoalStatusWire(GoalStatusNone))
@@ -61,12 +64,12 @@ func TestGoalUpdateClean_DropsBytesThatWouldFailProtoMarshal(t *testing.T) {
 func TestGoalUpdateClean_CapsBothProviderWrittenStrings(t *testing.T) {
 	t.Parallel()
 	got := GoalUpdate{
-		Objective:    strings.Repeat("o", GoalObjectiveByteLimit*2),
-		StatusDetail: strings.Repeat("d", GoalStatusDetailByteLimit*2),
+		Objective:    strings.Repeat("o", contracts.GoalObjectiveByteLimit*2),
+		StatusDetail: strings.Repeat("d", contracts.GoalStatusDetailByteLimit*2),
 		Status:       GoalStatusActive,
 	}.Clean()
-	assert.LessOrEqual(t, len(got.Objective), GoalObjectiveByteLimit)
-	assert.LessOrEqual(t, len(got.StatusDetail), GoalStatusDetailByteLimit)
+	assert.LessOrEqual(t, len(got.Objective), contracts.GoalObjectiveByteLimit)
+	assert.LessOrEqual(t, len(got.StatusDetail), contracts.GoalStatusDetailByteLimit)
 }
 
 // GoalStatusNone means "no goal", so a report that states an objective AND no
@@ -81,7 +84,30 @@ func TestGoalUpdateClean_RefusesAnObjectiveWithNoStatus(t *testing.T) {
 	got := GoalUpdate{Objective: "Ship it", Status: GoalStatusNone}.Clean()
 	assert.Equal(t, GoalStatusBlocked, got.Status)
 	assert.NotEmpty(t, GoalStatusWire(got.Status),
-		"the stored token must never be the one the boot sweep writes")
+		"a stored objective must never carry the empty status token")
+}
+
+// The other direction, which the card renders as a goal with no text: an armed
+// status dot and live Pause and Clear buttons above an empty line. Three routes
+// reach it -- ZCode returns early only when BOTH halves are empty, Reasonix
+// sends an absent objective as "", and StripUnreadable empties a string made
+// only of control characters.
+func TestGoalUpdateClean_RefusesAStatusWithNoObjective(t *testing.T) {
+	t.Parallel()
+	tokens := int64(900)
+	got := GoalUpdate{Status: GoalStatusActive, StatusDetail: "active", TokensUsed: &tokens}.Clean()
+	assert.Equal(t, GoalStatusNone, got.Status, "a goal with no text is no goal")
+	assert.Empty(t, got.StatusDetail)
+	assert.Nil(t, got.TokensUsed, "the counters measured a goal that does not exist")
+}
+
+// An objective made only of control characters is emptied by StripUnreadable,
+// and the emptied report must resolve the same way as one that arrived empty.
+func TestGoalUpdateClean_AnUnreadableObjectiveBecomesNoGoal(t *testing.T) {
+	t.Parallel()
+	got := GoalUpdate{Objective: "\x01\x02\x03", Status: GoalStatusActive}.Clean()
+	assert.Empty(t, got.Objective)
+	assert.Equal(t, GoalStatusNone, got.Status)
 }
 
 // An EMPTY objective with no status is the honest spelling of "no goal" and must

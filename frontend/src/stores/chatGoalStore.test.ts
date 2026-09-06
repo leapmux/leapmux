@@ -131,14 +131,52 @@ describe('createGoalStore', () => {
    * lands in the browser a round trip later, so a clear that happened in
    * between is undone by the older answer arriving second.
    */
-  it('drops an answer older than the one already applied', () => {
+  it('drops a GOAL older than the one already applied', () => {
     createRoot((dispose) => {
       const store = createGoalStore()
       store.replace('a', protoGoal({ objective: 'current' }), [AgentGoalAction.CLEAR], STAMP_2)
       // The cold load read the row before the goal above was written.
-      store.replace('a', protoGoal({ objective: 'stale' }), [], STAMP_1)
+      store.replace('a', protoGoal({ objective: 'stale' }), [AgentGoalAction.CLEAR], STAMP_1)
       expect(store.get('a')?.objective).toBe('current')
-      expect(store.supportedActions('a')).toEqual(['clear'])
+      dispose()
+    })
+  })
+
+  /**
+   * The capability re-publish must NOT be dropped. It carries the row's own
+   * current stamp, so it ties with the applied one rather than losing -- which
+   * is why the guard drops a STRICTLY older answer and lets an equal one
+   * through.
+   */
+  it('applies the supported actions from an answer whose stamp ties', () => {
+    createRoot((dispose) => {
+      const store = createGoalStore()
+      store.replace('a', protoGoal({ objective: 'current' }), [], STAMP_2)
+      expect(store.supportedActions('a')).toEqual([])
+
+      store.replace('a', protoGoal({ objective: 'current' }), [AgentGoalAction.PAUSE], STAMP_2)
+
+      expect(store.supportedActions('a')).toEqual(['pause'])
+      dispose()
+    })
+  })
+
+  /**
+   * But a STALE answer must not restore them. The cold load reads the
+   * capability before the worker builds its response, so an agent whose process
+   * exits in between produces exactly this pair: the exit broadcast correctly
+   * empties the list, then the older answer lands carrying the live one.
+   * Restoring it would draw Pause and Clear for a process that is gone.
+   */
+  it('drops the supported actions from an answer older than the one applied', () => {
+    createRoot((dispose) => {
+      const store = createGoalStore()
+      store.replace('a', protoGoal({ objective: 'current' }), [], STAMP_2)
+
+      store.replace('a', protoGoal({ objective: 'current' }), [AgentGoalAction.PAUSE], STAMP_1)
+
+      expect(store.supportedActions('a')).toEqual([])
+      expect(store.get('a')?.objective).toBe('current')
       dispose()
     })
   })

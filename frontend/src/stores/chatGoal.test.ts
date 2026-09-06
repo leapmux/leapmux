@@ -2,12 +2,12 @@ import type { AgentGoal as ProtoAgentGoal } from '~/generated/proto/leapmux/v1/a
 import { describe, expect, it } from 'vitest'
 import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import {
-  goalActionAvailable,
-  goalActionDisabledReason,
   goalActionsFromProto,
-  goalActionSupported,
+  goalActionState,
   goalActionToProto,
+  goalStatusFromWire,
   goalStatusLabel,
+  hasGoalSurface,
   protoGoalToStore,
 } from './chatGoal'
 
@@ -74,63 +74,84 @@ describe('goalActionsFromProto', () => {
   })
 })
 
-describe('goalActionAvailable', () => {
+describe('goalActionState', () => {
   const all = ['set', 'clear', 'pause', 'resume'] as const
   const active = protoGoalToStore(protoGoal({ status: AgentGoalStatus.ACTIVE }))
   const paused = protoGoalToStore(protoGoal({ status: AgentGoalStatus.PAUSED }))
 
-  it('refuses an action the agent does not support', () => {
-    expect(goalActionAvailable(active, ['set', 'clear'], 'pause')).toBe(false)
+  // A provider's gap is PERMANENT -- Claude Code has no pause -- so its button
+  // would never light up and is better absent than dead.
+  it('hides an action the agent does not support', () => {
+    expect(goalActionState(active, ['set', 'clear'], 'pause')).toEqual({ kind: 'hidden' })
+    expect(goalActionState(undefined, [], 'set')).toEqual({ kind: 'hidden' })
   })
 
   // Pause and resume are opposites: offering both would leave one that does
-  // nothing on a goal already in that state.
-  it('offers pause only for an active goal, and resume only for a paused one', () => {
-    expect(goalActionAvailable(active, [...all], 'pause')).toBe(true)
-    expect(goalActionAvailable(active, [...all], 'resume')).toBe(false)
-    expect(goalActionAvailable(paused, [...all], 'resume')).toBe(true)
-    expect(goalActionAvailable(paused, [...all], 'pause')).toBe(false)
+  // nothing on a goal already in that state. The refused one stays RENDERED,
+  // because it comes back.
+  it('enables pause only for an active goal, and resume only for a paused one', () => {
+    expect(goalActionState(active, [...all], 'pause')).toEqual({ kind: 'enabled' })
+    expect(goalActionState(active, [...all], 'resume'))
+      .toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
+    expect(goalActionState(paused, [...all], 'resume')).toEqual({ kind: 'enabled' })
+    expect(goalActionState(paused, [...all], 'pause'))
+      .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
   })
 
   // The one action that does not need a goal to exist -- it is how the first one
   // arrives, and the empty state's button depends on exactly this.
-  it('offers set when there is no goal at all', () => {
-    expect(goalActionAvailable(undefined, ['set'], 'set')).toBe(true)
-    expect(goalActionAvailable(undefined, ['set', 'clear'], 'clear')).toBe(false)
+  it('enables set when there is no goal at all', () => {
+    expect(goalActionState(undefined, ['set'], 'set')).toEqual({ kind: 'enabled' })
+    expect(goalActionState(undefined, ['set', 'clear'], 'clear'))
+      .toEqual({ kind: 'disabled', reason: 'This session has no goal' })
+  })
+
+  // A dormant goal is waiting, not active and not paused, so neither verb
+  // applies -- and each says which state it needs rather than going silent.
+  it('refuses both pause and resume for a dormant goal, with a reason', () => {
+    const dormant = protoGoalToStore(protoGoal({ status: AgentGoalStatus.DORMANT }))
+    expect(goalActionState(dormant, [...all], 'pause'))
+      .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
+    expect(goalActionState(dormant, [...all], 'resume'))
+      .toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
+    expect(goalActionState(dormant, [...all], 'clear')).toEqual({ kind: 'enabled' })
   })
 })
 
-describe('goalActionSupported', () => {
-  /**
-   * Decides whether a control is RENDERED, which is a different question from
-   * whether it is enabled. A provider's gap is permanent -- Claude Code has no
-   * pause -- so its button would never light up and is better absent.
-   */
-  it('reports only what the agent offers at all', () => {
-    expect(goalActionSupported(['set', 'clear'], 'clear')).toBe(true)
-    expect(goalActionSupported(['set', 'clear'], 'pause')).toBe(false)
-    expect(goalActionSupported([], 'set')).toBe(false)
-  })
-})
-
-describe('goalActionDisabledReason', () => {
+describe('hasGoalSurface', () => {
   const active = protoGoalToStore(protoGoal({ status: AgentGoalStatus.ACTIVE }))
 
-  it('says nothing for an action that is available', () => {
-    expect(goalActionDisabledReason(active, ['pause'], 'pause')).toBeUndefined()
+  // The shell and the work panel both ask this, so an agent whose section
+  // appears always has a Goal tab that can hold something.
+  it('is true for a goal that exists, and for an agent that can be given one', () => {
+    expect(hasGoalSurface({ current: active, progress: {}, actions: [] })).toBe(true)
+    expect(hasGoalSurface({ progress: {}, actions: ['set'] })).toBe(true)
   })
 
-  // Only asked about a SUPPORTED action, because an unsupported one is never
-  // rendered -- so every answer here is about the goal's current state.
-  it('explains a pause that the goal state refuses', () => {
-    const paused = protoGoalToStore(protoGoal({ status: AgentGoalStatus.PAUSED }))
-    expect(goalActionDisabledReason(paused, ['pause', 'resume'], 'pause'))
-      .toBe('Only an active goal can be paused')
-    expect(goalActionDisabledReason(paused, ['pause', 'resume'], 'resume')).toBeUndefined()
+  // A provider LeapMux reads no goal from and accepts no goal action for.
+  it('is false when there is no goal and none can be set', () => {
+    expect(hasGoalSurface({ progress: {}, actions: [] })).toBe(false)
+    expect(hasGoalSurface({ progress: {}, actions: ['clear', 'pause'] })).toBe(false)
+  })
+})
+
+describe('goalStatusFromWire', () => {
+  // The transcript renderer reads the token the worker PERSISTS, which is a
+  // different vocabulary from the proto enum it broadcasts.
+  it('reads every stored token', () => {
+    expect(goalStatusFromWire('active')).toBe('active')
+    expect(goalStatusFromWire('paused')).toBe('paused')
+    expect(goalStatusFromWire('blocked')).toBe('blocked')
+    expect(goalStatusFromWire('done')).toBe('done')
+    expect(goalStatusFromWire('dormant')).toBe('dormant')
   })
 
-  it('explains an action that needs a goal when there is none', () => {
-    expect(goalActionDisabledReason(undefined, ['clear'], 'clear')).toBe('This session has no goal')
+  // Undefined rather than a guess, so the caller can fall back instead of
+  // asserting something the worker did not say.
+  it('answers undefined for a token it does not know', () => {
+    expect(goalStatusFromWire('')).toBeUndefined()
+    expect(goalStatusFromWire(undefined)).toBeUndefined()
+    expect(goalStatusFromWire('somethingNew')).toBeUndefined()
   })
 })
 
@@ -140,5 +161,8 @@ describe('goalStatusLabel', () => {
     expect(goalStatusLabel('paused')).toBe('Paused')
     expect(goalStatusLabel('done')).toBe('Achieved')
     expect(goalStatusLabel('blocked')).toBe('Needs attention')
+    // A dormant goal is WAITING, not failing. Labelling it "Needs attention"
+    // would report a fault every time a worker restarts.
+    expect(goalStatusLabel('dormant')).toBe('Not running')
   })
 })

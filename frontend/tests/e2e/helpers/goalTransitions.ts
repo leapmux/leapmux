@@ -30,12 +30,20 @@ export interface PersistedMessageContent {
  * And it counts TYPE TOKENS, not messages. Adjacent notifications fold into one
  * notification_thread row that carries each entry inside it, so counting rows
  * would report four transitions as one.
+ *
+ * The pattern is anchored to the `type` KEY rather than to the bare token. An
+ * unanchored match counts any occurrence of the quoted word anywhere in the
+ * body -- a goal objective, a tool call's arguments, an assistant reply about
+ * this feature -- which inflates the count and fails the ceiling assertion for a
+ * reason that has nothing to do with the transcript.
  */
+const GOAL_TRANSITION_TYPE = /"type"\s*:\s*"goal_(?:updated|cleared)"/g
+
 export function countGoalTransitionsInMessages(messages: PersistedMessageContent[]): number {
   let count = 0
   for (const message of messages) {
     const body = decompressContentToString(message.content, message.contentCompression)
-    count += body?.match(/"goal_(?:updated|cleared)"/g)?.length ?? 0
+    count += body?.match(GOAL_TRANSITION_TYPE)?.length ?? 0
   }
   return count
 }

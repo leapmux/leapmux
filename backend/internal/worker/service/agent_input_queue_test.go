@@ -387,7 +387,7 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, messages, 3)
 	assert.Equal(t, "clear-1", messages[0].ID)
-	assert.Equal(t, []string{agent.NotificationTypeContextCleared}, decodeMessageTypes(t, messageToProto(&messages[1])))
+	assert.Equal(t, []string{contracts.NotificationTypeContextCleared}, decodeMessageTypes(t, messageToProto(&messages[1])))
 	assert.Equal(t, "message-1", messages[2].ID)
 	assert.Less(t, messages[0].Seq, messages[1].Seq)
 	assert.Less(t, messages[1].Seq, messages[2].Seq)
@@ -402,7 +402,7 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 			userIndex = index
 		}
 		for _, messageType := range decodeMessageTypes(t, message) {
-			if messageType == agent.NotificationTypeContextCleared {
+			if messageType == contracts.NotificationTypeContextCleared {
 				boundaryIndex = index
 			}
 		}
@@ -437,7 +437,7 @@ func TestQueuedClearFailureKeepsInputOutOfTranscript(t *testing.T) {
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
-	assert.Equal(t, []string{agent.NotificationTypeAgentError}, decodeMessageTypes(t, messageToProto(&messages[0])))
+	assert.Equal(t, []string{contracts.NotificationTypeAgentError}, decodeMessageTypes(t, messageToProto(&messages[0])))
 }
 
 func TestChildSteerReturnsOwnerDeliveryError(t *testing.T) {

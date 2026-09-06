@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
@@ -387,7 +388,7 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 		if err != nil {
 			slog.Error("pi prompt failed", "agent_id", a.agentID, "error", err)
 			a.sink.PersistLeapMuxNotification(map[string]any{
-				"type":  NotificationTypeAgentError,
+				"type":  contracts.NotificationTypeAgentError,
 				"error": err.Error(),
 			})
 		}

@@ -44,9 +44,11 @@ func SanitizePath(value, homeDir string) (string, error) {
 	// to overflow today, so this is a repair of the mechanism and not of a
 	// reported failure.
 	//
-	// ToValidUTF8 rather than a hand decode, because this function has no scan
-	// limit for a whole-string copy to defeat: it already builds one.
-	s := strings.ToValidUTF8(value, "")
+	// WireString rather than a hand decode, because this function has no scan
+	// limit for a whole-string copy to defeat: it already builds one. It is also
+	// the one statement of what a proto-safe string is, shared with the bgtask
+	// and session-goal projections.
+	s := WireString(value)
 	if strings.IndexFunc(s, unicode.IsControl) >= 0 {
 		var b strings.Builder
 		b.Grow(len(s))

@@ -10,7 +10,7 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
+import type { GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -62,10 +62,7 @@ export interface SidebarElementsOpts {
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
-  activeGoal?: SessionGoal
-  activeGoalProgress: GoalProgress
-  activeGoalActions: GoalAction[]
-  onGoalAction?: (action: GoalAction) => void
+  activeGoal: GoalSurface
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */

@@ -161,7 +161,7 @@ func TestCodexGoal_ClearedForAChildThreadIsDropped(t *testing.T) {
 
 // The regression this whole change exists to prevent: a goal frame must never
 // reach the transcript as a raw message. Codex sends one after every completed
-// tool call, so the `default:` arm turned a long turn into a wall of raw JSON.
+// tool call, so the `default:` case wrote one raw-JSON row per tool call.
 func TestCodexGoal_NeverPersistsARawTranscriptRow(t *testing.T) {
 	t.Parallel()
 

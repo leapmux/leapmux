@@ -329,6 +329,11 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	// rows live under the root), so this delete is a safe no-op for children.
 	// A root close reaps the root's own registry cache.
 	h.bgtasks.Delete(agentID)
+	// goalMu is keyed by ROOT id for the same reason: agentOutputSink.ownsGoal
+	// refuses a child sink's goal write, so no child ever mints an entry. Every
+	// agent that reported or cleared a goal leaves one mutex here, and this is
+	// the only place that reclaims it.
+	h.goalMu.Delete(agentID)
 	// Prune the child-sink cache so a closed child's SpanTracker + sink ref are
 	// not retained for the parent's lifetime. A root id is its own root: clear
 	// its whole childSinks map (every child dies with the root). A child id is
@@ -443,7 +448,11 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	// agent was closed through a path that bypassed ClearAgentRuntimeState --
 	// otherwise the root sink (and every cached child sink) leaks for the
 	// worker's lifetime.
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks} {
+	//
+	// goalMu is here for exactly that reason too: it is the only trace a closed
+	// agent leaves when its close bypassed CleanupAgent, so a sweep that omitted
+	// it could not see the residue it exists to reclaim.
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks, &h.goalMu} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -901,7 +910,7 @@ func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 			optionGroupLabelInGroups(groups, agent.OptionIDPermissionMode))
 	}
 	s.PersistLeapMuxNotification(map[string]interface{}{
-		"type": agent.NotificationTypeSettingsChanged,
+		"type": contracts.NotificationTypeSettingsChanged,
 		"changes": map[string]interface{}{
 			agent.OptionIDPermissionMode: change,
 		},
@@ -1448,6 +1457,28 @@ func (s *agentOutputSink) BroadcastSessionInfo(info map[string]interface{}) {
 		return
 	}
 	s.h.broadcastAgentSessionInfo(s.agentID, changed)
+}
+
+// sessionInfoSnapshot returns the last value this sink broadcast for every
+// CACHED key, as the JSON bytes it shipped. json.RawMessage re-marshals those
+// bytes unchanged, so the replayed frame carries the exact encoding the live
+// one did.
+//
+// A dedup-exempt key is absent by construction, and that is what a replay
+// wants. `thinking_tokens` and `running_tool` are per-turn state that the
+// frontend drops at boundaries the worker cannot all observe, so replaying
+// either one restores a counter or a tool badge that already ended.
+func (s *agentOutputSink) sessionInfoSnapshot() map[string]interface{} {
+	s.sessionInfoMu.Lock()
+	defer s.sessionInfoMu.Unlock()
+	if len(s.lastSessionInfo) == 0 {
+		return nil
+	}
+	info := make(map[string]interface{}, len(s.lastSessionInfo))
+	for key, encoded := range s.lastSessionInfo {
+		info[key] = json.RawMessage(encoded)
+	}
+	return info
 }
 
 func (s *agentOutputSink) PersistLeapMuxNotification(content map[string]interface{}) {
@@ -2219,25 +2250,67 @@ func (h *OutputHandler) broadcastMessage(agentID string, msg *leapmuxv1.AgentCha
 	})
 }
 
-// broadcastAgentSessionInfo broadcasts ephemeral agent session metadata.
-func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[string]interface{}) {
+// sessionInfoEvent builds the ephemeral agent_session_info frame, or nil when
+// the payload does not marshal.
+//
+// Two callers share it: the live broadcast below, which fans it out to every
+// watcher, and SessionInfoReplayEvent, which sends it to one (re)subscriber.
+// One builder, so the replayed frame cannot differ from the live one.
+func sessionInfoEvent(agentID string, info map[string]interface{}) *leapmuxv1.AgentEvent {
 	content := map[string]interface{}{
-		"type": agent.NotificationTypeAgentSessionInfo,
+		"type": contracts.NotificationTypeAgentSessionInfo,
 		"info": info,
 	}
 	contentJSON, err := json.Marshal(content)
 	if err != nil {
 		slog.Warn("marshal agent session info", "agent_id", agentID, "error", err)
-		return
+		return nil
 	}
 	compressed, compressionType := msgcodec.Compress(contentJSON)
-	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-		Id:                 id.Generate(),
-		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		Seq:                -1, // Ephemeral sentinel
-	})
+	return &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_AgentMessage{
+			AgentMessage: &leapmuxv1.AgentChatMessage{
+				Id:                 id.Generate(),
+				Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
+				Content:            compressed,
+				ContentCompression: compressionType,
+				Seq:                -1, // Ephemeral sentinel
+			},
+		},
+	}
+}
+
+// broadcastAgentSessionInfo broadcasts ephemeral agent session metadata.
+func (h *OutputHandler) broadcastAgentSessionInfo(agentID string, info map[string]interface{}) {
+	if event := sessionInfoEvent(agentID, info); event != nil {
+		h.watcher.BroadcastAgentEvent(agentID, event)
+	}
+}
+
+// SessionInfoReplayEvent rebuilds the agent_session_info that a (re)subscribing
+// client missed, or nil when no process runs for the root and when the sink
+// broadcast nothing yet.
+//
+// agent_session_info is EPHEMERAL: it ships at seq -1 and no message row keeps
+// it, so a browser reload leaves every counter blank until the provider reports
+// the next one. The wait is a full turn for `goal_progress`, because Codex
+// advances those counters after a completed tool call, so a reloaded goal card
+// showed the objective with no progress under it. The same gap emptied the cost
+// and the context-usage readouts.
+//
+// The sink already keeps the last value of each key for the dedup, so this
+// costs one map copy and adds no new state to keep in step.
+func (h *OutputHandler) SessionInfoReplayEvent(rootID string) *leapmuxv1.AgentEvent {
+	sink, ok := h.rootSinks.Load(rootID)
+	if !ok {
+		return nil
+	}
+	info := sink.(*agentOutputSink).sessionInfoSnapshot()
+	if len(info) == 0 {
+		return nil
+	}
+	return sessionInfoEvent(rootID, info)
 }
 
 // PersistLeapMuxNotification persists and broadcasts a LEAPMUX notification.
@@ -2373,7 +2446,7 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 	}
 
 	payload := map[string]interface{}{
-		"type":           agent.NotificationTypePlanUpdated,
+		"type":           contracts.NotificationTypePlanUpdated,
 		"plan_title":     title,
 		"plan_file_path": canonicalPath,
 	}
@@ -2452,7 +2525,7 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		}
 
 		switch env.Type {
-		case agent.NotificationTypeSettingsChanged:
+		case contracts.NotificationTypeSettingsChanged:
 			for key, val := range env.Changes {
 				if existing, ok := mergedChanges[key]; ok {
 					mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
@@ -2462,16 +2535,16 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 			}
 			settings.idx = i
 
-		case agent.NotificationTypeContextCleared:
+		case contracts.NotificationTypeContextCleared:
 			contextCleared = indexedRaw{idx: i, raw: raw}
 			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
 				return ir.kind == agent.NotificationKindCompactionBoundary
 			})
 
-		case agent.NotificationTypePlanExecution:
+		case contracts.NotificationTypePlanExecution:
 			planExec = indexedRaw{idx: i, raw: raw}
 
-		case agent.NotificationTypePlanUpdated:
+		case contracts.NotificationTypePlanUpdated:
 			// Multiple plan_updated entries within one notification thread
 			// fold to the most recent — same pattern as plan_execution. The
 			// frontend extractor already prefers the latest, but keeping
@@ -2479,7 +2552,7 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 			// chat readable when an agent iterates on a plan title.
 			planUpdated = indexedRaw{idx: i, raw: raw}
 
-		// goal_updated and goal_cleared have NO arm here, and the omission is
+		// goal_updated and goal_cleared have NO case here, and the omission is
 		// deliberate: they fall to `default:`, where no Classify recognizes
 		// them, and every entry is kept.
 		//
@@ -2497,17 +2570,17 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		// A plan title iterating toward its final wording is the opposite case,
 		// which is why the two are treated differently.
 
-		case agent.NotificationTypeInterrupted:
+		case contracts.NotificationTypeInterrupted:
 			interrupted = indexedRaw{idx: i, raw: raw}
 
-		case agent.NotificationTypeRateLimit:
+		case contracts.NotificationTypeRateLimit:
 			key := "unknown"
 			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
 				key = env.RLInfo.RateLimitType
 			}
 			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
 
-		case agent.NotificationTypeCompacting:
+		case contracts.NotificationTypeCompacting:
 			status = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
 
 		default:
@@ -2554,7 +2627,7 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 		}
 		if len(effective) > 0 {
 			entry := map[string]interface{}{
-				"type":    agent.NotificationTypeSettingsChanged,
+				"type":    contracts.NotificationTypeSettingsChanged,
 				"changes": effective,
 			}
 			if data, err := json.Marshal(entry); err == nil {

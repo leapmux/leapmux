@@ -1,28 +1,25 @@
 import type { Component } from 'solid-js'
-import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
+import type { GoalAction, GoalSurface, SessionGoal } from '~/stores/chatGoal'
 import { createMemo, For, Show } from 'solid-js'
 import { formatSecondsParts } from '~/components/chat/rendererUtils'
 import { StatusDot } from '~/components/common/StatusDot'
 import { Tooltip } from '~/components/common/Tooltip'
-import { goalActionDisabledReason, goalActionSupported, goalStatusLabel } from '~/stores/chatGoal'
+import { goalActionState, goalStatusLabel } from '~/stores/chatGoal'
+import { srOnly } from '~/styles/shared.css'
 import * as taskStyles from './BackgroundTaskList.css'
 import * as styles from './GoalCard.css'
 
 export interface GoalCardProps {
-  goal?: SessionGoal
-  progress: GoalProgress
+  /** The goal, its counters, the live actions and their handler. */
+  goal: GoalSurface
   /**
-   * What the RUNNING agent can do. Empty when no process is running, or when the
-   * provider reports a goal but cannot change one -- either way every control is
-   * disabled with the reason on it.
+   * Whether THIS card owns the live region that announces a status change.
    *
-   * Apart from `goal` because it must exist when a goal does not: the empty
-   * state's "Set a goal" button asks exactly this question. A goal also SURVIVES
-   * a restart (the worker keeps the objective and blanks the status), so the card
-   * can still say what was being attempted while nothing can act on it.
+   * Two cards can be on screen at once: the sidebar section and an open
+   * ThinkingIndicator popover render the same panel. A live region in each
+   * announces one goal change twice, so exactly one instance sets this.
    */
-  supportedActions: GoalAction[]
-  onAction?: (action: GoalAction) => void
+  announce?: boolean
 }
 
 /** The verb buttons, in the order they read. */
@@ -45,6 +42,11 @@ function statusDotClass(goal: SessionGoal): string {
       return taskStyles.statusDotSuccess
     case 'blocked':
       return taskStyles.statusDotDanger
+    // A dormant goal is WAITING, not failing: no live process pursues it, so
+    // the muted dot says "nothing is happening here" without the alarm a
+    // danger dot raises.
+    case 'dormant':
+      return taskStyles.statusDotMuted
   }
 }
 
@@ -66,7 +68,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
   // holds ONE stable text node. A `<Show>` that swapped nodes would make a
   // screen reader re-announce on every rebuild.
   const announcement = createMemo(() => {
-    const goal = props.goal
+    const goal = props.goal.current
     if (!goal)
       return 'No session goal'
     const detail = goal.statusDetail ? `, ${goal.statusDetail}` : ''
@@ -77,7 +79,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
   // out rather than shown as zero: no two providers report the same set, and a
   // "0 tokens" row would state a number nobody gave.
   const metaParts = createMemo(() => {
-    const p = props.progress
+    const p = props.goal.progress
     const parts: string[] = []
     if (p.tokensUsed !== undefined) {
       parts.push(p.tokenBudget !== undefined && p.tokenBudget > 0
@@ -97,26 +99,45 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
   // dead controls says less than no row. A supported action that the current
   // goal state refuses still renders, disabled with its reason, because that one
   // comes back.
+  // FILTER, never map. `<For>` reconciles rows by REFERENCE, so returning fresh
+  // objects would tear down and rebuild every button whenever the goal's status
+  // moved -- losing the tooltip under the pointer and the focus a screen-reader
+  // user had on a disabled control, at the exact moment the goal changed. The
+  // module-level ACTIONS entries are stable, so a row survives while it stays
+  // offered.
   const offeredActions = createMemo(() =>
-    ACTIONS.filter(({ action }) => goalActionSupported(props.supportedActions, action)),
+    ACTIONS.filter(({ action }) =>
+      goalActionState(props.goal.current, props.goal.actions, action).kind !== 'hidden'),
   )
 
   return (
     <div class={styles.card} data-testid="goal-card">
       <div class={styles.heading}>Session goal</div>
-      {/* Always mounted with changing text -- see `announcement`. */}
-      <div class={styles.liveRegion} role="status" aria-live="polite">{announcement()}</div>
+      {/* Offscreen rather than hidden: `display: none` and `visibility: hidden`
+          both take a live region out of the accessibility tree, so nothing is
+          announced. `srOnly` is the shared spelling of that.
+
+          Always mounted with changing text -- see `announcement`.
+
+          ONLY when `announce` is set. Up to two cards can be on screen at once
+          (the sidebar section and an open ThinkingIndicator popover render the
+          same panel), and a live region in each announces one goal change
+          twice. The sidebar owns the announcement; the popover renders the same
+          card silently. */}
+      <Show when={props.announce}>
+        <div class={srOnly} role="status" aria-live="polite">{announcement()}</div>
+      </Show>
       <Show
-        when={props.goal}
+        when={props.goal.current}
         fallback={(
           <div class={styles.empty} data-testid="goal-card-empty">
             <span>No session goal</span>
-            <Show when={props.onAction && goalActionSupported(props.supportedActions, 'set')}>
+            <Show when={props.goal.onAction && goalActionState(props.goal.current, props.goal.actions, 'set').kind === 'enabled'}>
               <button
                 type="button"
                 class={styles.action}
                 data-testid="goal-action-set"
-                onClick={() => props.onAction?.('set')}
+                onClick={() => props.goal.onAction?.('set')}
               >
                 Set a goal
               </button>
@@ -149,14 +170,17 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
             <Show when={metaParts().length > 0}>
               <div class={styles.meta} data-testid="goal-progress">{metaParts().join(' · ')}</div>
             </Show>
-            <Show when={props.onAction && offeredActions().length > 0}>
+            <Show when={props.goal.onAction && offeredActions().length > 0}>
               <div class={styles.actions}>
                 <For each={offeredActions()}>
                   {({ action, label }) => {
-                    // The reason is computed per render of the button, so a
-                    // capability that changes when the process restarts updates
-                    // the tooltip with it.
-                    const reason = () => goalActionDisabledReason(props.goal, props.supportedActions, action)
+                    // Re-asked per render, so a capability that changes when the
+                    // process restarts updates the control and its tooltip
+                    // together -- one question, so the two can never disagree.
+                    const reason = () => {
+                      const state = goalActionState(props.goal.current, props.goal.actions, action)
+                      return state.kind === 'disabled' ? state.reason : undefined
+                    }
                     return (
                       <Show
                         when={reason()}
@@ -165,7 +189,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
                             type="button"
                             class={styles.action}
                             data-testid={`goal-action-${action}`}
-                            onClick={() => props.onAction?.(action)}
+                            onClick={() => props.goal.onAction?.(action)}
                           >
                             {label}
                           </button>

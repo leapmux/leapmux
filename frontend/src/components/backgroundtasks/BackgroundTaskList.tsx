@@ -47,32 +47,32 @@ const LOAD_FAILED_MESSAGE = 'Could not load background tasks from the worker'
 // the guard compares against the string the row ACTUALLY shows: two copies of
 // this fallback chain could drift and silently disable the guard.
 //
-// Each arm is cleaned, and the fallback reads the CLEANED arm, so an arm that
-// holds nothing a reader can see falls through to the next one instead of
-// rendering as a blank line.
+// Each candidate is cleaned, and the fallback reads the CLEANED text, so a
+// candidate that holds nothing a reader can see falls through to the next one
+// instead of rendering as a blank line.
 //
-// The row key arm is why the clean is here. A row key is an IDENTITY, and the
-// worker never REWRITES one: an unusable key is replaced whole by a digest of
-// itself (bgtask.NormalizeRowKey), and every usable key reaches the browser
+// The row key candidate is why the clean is here. A row key is an IDENTITY, and
+// the worker never REWRITES one: an unusable key is replaced whole by a digest
+// of itself (bgtask.NormalizeRowKey), and every usable key reaches the browser
 // byte for byte, because a rewrite would merge two provider keys into one
 // registry row. Unreadable is not unusable -- at least one provider (Cursor)
 // writes toolCallIds with an embedded newline, and those arrive verbatim. So
 // cleaning at the READER is what lets the identity stay exact. `title` is
-// already cleaned by the worker and `cleanName` is idempotent, so that arm
-// passes through unchanged.
+// already cleaned by the worker and `cleanName` is idempotent, so that
+// candidate passes through unchanged.
 function rowTitle(item: BackgroundTaskItem): string {
-  // `description` is optional, so the arm is guarded rather than passed as
-  // `?? ''` -- an absent arm does no regex work at all.
-  const arm = (text: string | undefined): string => (text ? cleanName(text) : '')
-  // A fourth arm, because the third can clean to nothing as easily as the
+  // `description` is optional, so the candidate is guarded rather than passed
+  // as `?? ''` -- an absent candidate does no regex work at all.
+  const readable = (text: string | undefined): string => (text ? cleanName(text) : '')
+  // A fourth candidate, because the third can clean to nothing as easily as the
   // first two: a row key that holds control characters only survives the
   // worker (ValidateRowKey refuses an unusable key rather than rewriting it,
   // and a bidirectional override IS usable as an identity) and reaches this
-  // function as a non-empty string that `cleanName` empties. Every earlier arm
-  // then falls through and the row draws a blank first line with a status dot
-  // beside it. "Untitled" is what the workspace surfaces already show for a
-  // title that resolves to nothing.
-  return arm(item.title) || arm(item.description) || arm(item.rowKey) || 'Untitled'
+  // function as a non-empty string that `cleanName` empties. Every earlier
+  // candidate then falls through and the row draws a blank first line with a
+  // status dot beside it. "Untitled" is what the workspace surfaces already
+  // show for a title that resolves to nothing.
+  return readable(item.title) || readable(item.description) || readable(item.rowKey) || 'Untitled'
 }
 
 // The group heading, cleaned for the reason `rowTitle` is.
@@ -83,9 +83,9 @@ function rowTitle(item: BackgroundTaskItem): string {
 // the READER keeps the key verbatim for the lookup that groups by it.
 //
 // `groupLabel` is model-written -- Claude sends its workflow name -- and the
-// worker now folds it with the title rule (`Upsert.Clean`), so this arm is
-// idempotent on it rather than load-bearing. It stays because the ARM cannot
-// tell which of the two it received, and because a heading is one line: a
+// worker now folds it with the title rule (`Upsert.Clean`), so this call is
+// idempotent on it rather than load-bearing. It stays because this function
+// cannot tell which of the two it received, and because a heading is one line: a
 // bidirectional override in a workflow name would otherwise reorder the text
 // that sits above every row of that group.
 function groupHeading(label: string): string {
@@ -109,7 +109,7 @@ function titleClass(item: BackgroundTaskItem): string {
 // is covered too.
 //
 // `activity` and `description` arrive from the provider UNCLEANED -- the worker
-// cleans `title` alone (bgtask.Upsert.CleanTitle) -- so this arm cleans them for
+// cleans `title` alone (bgtask.Upsert.CleanTitle) -- so this call cleans them for
 // the same reason `rowTitle` does, and a bidirectional override in an activity
 // string can no longer reorder the line.
 //
@@ -117,7 +117,7 @@ function titleClass(item: BackgroundTaskItem): string {
 // raw copy defeats the guard for every string the fold rewrites: `npm test  -x`
 // folds its double space and stops matching the title it IS. Trimming alone
 // cannot see an interior run. `cleanName` is idempotent, so cleaning the title
-// arm again costs nothing and keeps the two sides symmetric.
+// again costs nothing and keeps the two sides symmetric.
 //
 // The caller passes the title it already computed, so the row cleans once.
 function secondary(item: BackgroundTaskItem, title: string): string {

@@ -3,6 +3,7 @@ import type { JSXElement } from 'solid-js'
 import type { NotificationThreadEntry } from './providers/registry'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { CompactionDetail } from '~/lib/messageParser'
+import type { GoalStatus } from '~/stores/chatGoal'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
 import Check from 'lucide-solid/icons/check'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
@@ -10,11 +11,12 @@ import OctagonMinus from 'lucide-solid/icons/octagon-minus'
 import RotateCcw from 'lucide-solid/icons/rotate-ccw'
 import X from 'lucide-solid/icons/x'
 import { Icon } from '~/components/common/Icon'
-import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { GOAL_TRANSITION, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messageParser'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { backgroundTaskStatusFromWire } from '~/stores/chatBackgroundTasks'
+import { goalStatusFromWire } from '~/stores/chatGoal'
 import { spinner } from '~/styles/animations.css'
 import {
   controlResponseMessage,
@@ -130,6 +132,25 @@ function planUpdatedLabel(source: Record<string, unknown>): string | null {
     : `Plan updated: ${title}`
 }
 
+/** What each transition DID, in the worker's own vocabulary. */
+const GOAL_TRANSITION_VERBS: Partial<Record<string, string>> = {
+  [GOAL_TRANSITION.Set]: 'Goal set',
+  [GOAL_TRANSITION.Replaced]: 'Goal replaced',
+  [GOAL_TRANSITION.Resumed]: 'Goal resumed',
+  [GOAL_TRANSITION.Paused]: 'Goal paused',
+  [GOAL_TRANSITION.Blocked]: 'Goal blocked',
+  [GOAL_TRANSITION.Achieved]: 'Goal achieved',
+}
+
+/** The fallback verb, from the resulting status alone. */
+const GOAL_STATUS_VERBS: Record<GoalStatus, string> = {
+  active: 'Goal set',
+  paused: 'Goal paused',
+  blocked: 'Goal blocked',
+  done: 'Goal achieved',
+  dormant: 'Goal paused',
+}
+
 /**
  * The transcript label for a session-goal transition.
  *
@@ -146,15 +167,25 @@ function goalUpdatedLabel(source: Record<string, unknown>): string | null {
   if (!objective)
     return null
   const status = pickString(source, 'goal_status')
-  // The verb states what changed, so a status flip does not read as a fresh
-  // goal. `active` is the only one that means "this is now the objective".
-  const verb = status === 'done'
-    ? 'Goal achieved'
-    : status === 'paused'
-      ? 'Goal paused'
-      : status === 'blocked'
-        ? 'Goal blocked'
-        : 'Goal set'
+  // The verb comes from what the change DID, not from the state it left behind.
+  // Several changes end in one status -- a resume and a first set both end
+  // `active` -- and only the worker, which holds the row from before the write,
+  // can tell them apart, so it writes the answer here.
+  //
+  // The status is the fallback for a row written without a transition -- an
+  // older worker, or a NEWER one whose transition token this build does not
+  // know. It is narrowed through the store's wire reader so the five tokens are
+  // spelled in one place rather than re-listed here.
+  //
+  // `Object.hasOwn`, not a bare index. The token comes off a persisted payload,
+  // and a plain-object lookup answers `Object.prototype` for `__proto__` and a
+  // function for `constructor` -- both truthy, so `??` would not fall through
+  // and the row would render "[object Object]: <objective>".
+  const transition = pickString(source, 'goal_transition')
+  const transitionVerb = transition && Object.hasOwn(GOAL_TRANSITION_VERBS, transition)
+    ? GOAL_TRANSITION_VERBS[transition]
+    : undefined
+  const verb = transitionVerb ?? GOAL_STATUS_VERBS[goalStatusFromWire(status) ?? 'active']
   // The provider's own word, when it says more than the neutral status does --
   // "usageLimited" and "notSatisfied" are both `blocked`.
   const detail = pickString(source, 'status_detail')

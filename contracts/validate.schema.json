@@ -11,7 +11,8 @@
     "session",
     "password",
     "branch",
-    "usernames"
+    "usernames",
+    "goal"
   ],
   "properties": {
     "_readme": {
@@ -133,6 +134,24 @@
         },
         "publicReserved": {
           "$ref": "#/$defs/reservedUsernames"
+        }
+      }
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objectiveByteLimit",
+        "statusDetailByteLimit"
+      ],
+      "properties": {
+        "objectiveByteLimit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "statusDetailByteLimit": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

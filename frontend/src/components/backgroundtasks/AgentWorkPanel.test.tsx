@@ -1,5 +1,5 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { SessionGoal } from '~/stores/chatGoal'
+import type { GoalAction, SessionGoal } from '~/stores/chatGoal'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentWorkPanel } from './AgentWorkPanel'
@@ -18,14 +18,19 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
   return { objective: 'every test passes', status: 'active', ...over }
 }
 
-function renderPanel(props: { tasks?: BackgroundTaskItem[], goal?: SessionGoal } = {}) {
+function renderPanel(props: {
+  tasks?: BackgroundTaskItem[]
+  goal?: SessionGoal
+  goalActions?: GoalAction[]
+} = {}) {
   return render(() => (
     <AgentWorkPanel
       variant="sidebar"
       tasks={props.tasks ?? []}
-      goal={props.goal}
-      goalProgress={{}}
-      goalActions={[]}
+      // `set` by default, because that is what a goal-capable provider reports
+      // and it is what gives the panel a Goal tab at all. A test that wants the
+      // no-surface case passes [].
+      goal={{ current: props.goal, progress: {}, actions: props.goalActions ?? ['set'] }}
     />
   ))
 }
@@ -87,14 +92,38 @@ describe('agentWorkPanel', () => {
   })
 
   /**
-   * The Goals tab is always present because it is where a goal gets SET -- its
-   * empty state is a control, not dead weight, which is why it does not appear
-   * only when a goal already exists.
+   * The Goal tab appears for an agent that HAS a goal or that can be given one,
+   * and its empty state is a control rather than dead weight -- so it does not
+   * wait for a goal to exist.
    */
   it('offers the empty state on the Goal tab when there is no goal', () => {
     const { container, getByTestId } = renderPanel()
     fireEvent.click(tab(container, 'goal'))
     expect(getByTestId('goal-card-empty')).not.toBeNull()
+  })
+
+  /**
+   * Five providers report no goal and accept no goal action (OpenCode, Pi,
+   * Cursor, Kilo, Goose). For them a Goal tab could only ever say "No session
+   * goal" and the All tab would carry a dead card above the rows.
+   */
+  it('offers no Goal tab and no card for an agent with no goal surface', () => {
+    const { container, queryByTestId } = renderPanel({
+      tasks: [row({ rowKey: 'a' })],
+      goalActions: [],
+    })
+    expect(tab(container, 'goal')).toBeNull()
+    const labels = [...container.querySelectorAll('[role="tab"]')].map(t => t.textContent)
+    expect(labels).toEqual(['All', 'Subagents', 'Shell'])
+    expect(queryByTestId('goal-card')).toBeNull()
+  })
+
+  // A goal that EXISTS gives the surface even when the agent can change
+  // nothing: Reasonix reports a goal and implements no control at all.
+  it('offers the Goal tab for a read-only goal', () => {
+    const { container, getByTestId } = renderPanel({ goal: goal(), goalActions: [] })
+    expect(tab(container, 'goal')).not.toBeNull()
+    expect(getByTestId('goal-card')).not.toBeNull()
   })
 
   // The goal must never enter the registry's kind union: doing so would enrol it

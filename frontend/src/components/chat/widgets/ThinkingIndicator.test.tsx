@@ -1,6 +1,6 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 /// <reference types="vitest/globals" />
-import type { GoalAction, SessionGoal } from '~/stores/chatGoal'
+import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -160,12 +160,24 @@ describe('thinking indicator chips', () => {
     todos?: TodoItem[]
     thinkingTokens?: number
     goal?: SessionGoal
+    goalProgress?: GoalProgress
     goalActions?: GoalAction[]
+    onGoalAction?: (action: GoalAction) => void
   }) {
     globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
     try {
       return render(() => (
-        <ThinkingIndicator visible={true} paused={true} {...props} />
+        <ThinkingIndicator
+          visible={true}
+          paused={true}
+          {...props}
+          goal={{
+            current: props.goal,
+            progress: props.goalProgress ?? {},
+            actions: props.goalActions ?? [],
+            onAction: props.onGoalAction,
+          }}
+        />
       ))
     }
     finally {
@@ -283,6 +295,73 @@ describe('thinking indicator chips', () => {
     })
     const row = container.querySelector('[data-testid="bg-task-row"]')!
     expect(row.tagName).toBe('DIV')
+  })
+
+  // SET opens a modal dialog on top of this popover, and `as="card"` keeps a
+  // popover open on an inside click on purpose -- so without the dismiss the
+  // panel stays open underneath the dialog and is still there when the dialog
+  // closes.
+  it('closes the goal popover when the user starts to set a goal', async () => {
+    const onGoalAction = vi.fn()
+    const { getByTestId } = renderChips({
+      goal: { objective: 'Ship it', status: 'active' },
+      goalActions: ['set', 'clear', 'pause'],
+      onGoalAction,
+    })
+    const popover = getByTestId('goal-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(getByTestId('goal-action-set'))
+
+    expect(hide).toHaveBeenCalled()
+    expect(onGoalAction).toHaveBeenCalledWith('set')
+  })
+
+  // The other three act IN PLACE and their result shows in this panel, so
+  // dismissing on them would hide the change the user asked for.
+  it('keeps the goal popover open for an action that acts in place', async () => {
+    const onGoalAction = vi.fn()
+    const { getByTestId } = renderChips({
+      goal: { objective: 'Ship it', status: 'active' },
+      goalActions: ['set', 'clear', 'pause'],
+      onGoalAction,
+    })
+    const popover = getByTestId('goal-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(getByTestId('goal-action-pause'))
+
+    expect(hide).not.toHaveBeenCalled()
+    expect(onGoalAction).toHaveBeenCalledWith('pause')
+  })
+
+  // The popover rebuilds the surface to wrap that one handler, so the other
+  // three fields have to pass through it untouched. A spread that dropped one
+  // would draw a card with no counters, or with every control disabled, and
+  // neither reads as a bug in the wrapper that caused it.
+  it('passes the rest of the goal surface through to the card', () => {
+    const { getByTestId } = renderChips({
+      goal: { objective: 'Keep the suite green', status: 'active' },
+      goalProgress: { tokensUsed: 1200 },
+      goalActions: ['set', 'clear', 'pause'],
+      onGoalAction: vi.fn(),
+    })
+    const card = getByTestId('goal-card')
+    expect(card).toHaveTextContent('Keep the suite green')
+    expect(card).toHaveTextContent('1,200 tokens')
+    expect(getByTestId('goal-action-pause')).toBeInTheDocument()
+  })
+
+  // The card renders its verb buttons on the strength of the handler being
+  // present, so a wrapper that was always defined would offer controls for a
+  // host that supplies no way to act on them.
+  it('offers no goal controls when the host supplies no handler', () => {
+    const { queryByTestId } = renderChips({
+      goal: { objective: 'Ship it', status: 'active' },
+      goalActions: ['set', 'clear', 'pause'],
+    })
+    expect(queryByTestId('goal-action-pause')).toBeNull()
+    expect(queryByTestId('goal-action-set')).toBeNull()
   })
 
   it('renders the todos counter as done/total plus a noun', () => {

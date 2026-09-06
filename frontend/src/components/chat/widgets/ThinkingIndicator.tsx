@@ -1,6 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
+import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { AgentWorkPanel } from '~/components/backgroundtasks/AgentWorkPanel'
@@ -8,7 +8,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { TodoList } from '~/components/todo/TodoList'
 import { pluralize } from '~/lib/plural'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
-import { goalStatusLabel } from '~/stores/chatGoal'
+import { EMPTY_GOAL_SURFACE, goalStatusLabel } from '~/stores/chatGoal'
 import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
@@ -78,11 +78,7 @@ export interface ThinkingIndicatorProps {
    * sidebar section is the reachable surface, and it stays visible for a goal
    * with no running work.
    */
-  goal?: SessionGoal
-  goalProgress?: GoalProgress
-  /** What the running agent can do with its goal; empty disables every control. */
-  goalActions?: GoalAction[]
-  onGoalAction?: (action: GoalAction) => void
+  goal?: GoalSurface
 }
 
 // How often the verb rotates while the indicator is visible (and not
@@ -307,7 +303,10 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   const showTokens = () => countTokens() !== undefined
   const showBgTasks = () => activeBgTaskCount() > 0
   const showTodos = () => todoCount().total > 0
-  const showGoal = () => props.goal !== undefined
+  // The stored GOAL decides, not the surface: the surface exists for every
+  // agent, because it also carries "this agent can be given a goal". Testing it
+  // would show a chip reading "Goal: active" on every agent alive.
+  const showGoal = () => props.goal?.current !== undefined
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -492,10 +491,25 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     <AgentWorkPanel
       variant="popover"
       tasks={props.backgroundTasks ?? []}
-      goal={props.goal}
-      goalProgress={props.goalProgress ?? {}}
-      goalActions={props.goalActions ?? []}
-      onGoalAction={props.onGoalAction}
+      // SET opens a modal dialog on top of this popover, and `as="card"` keeps
+      // a popover open on an inside click on purpose -- so without the dismiss
+      // the panel stays open underneath the dialog and is still there when the
+      // dialog closes. The other three act IN PLACE and their result shows in
+      // this panel, so they must keep it open.
+      //
+      // The handler is wrapped only when the host supplies one, for the reason
+      // onOpenSubagent is: the card renders its buttons on the strength of it
+      // being present. The rest of the surface passes through unchanged.
+      goal={{
+        ...(props.goal ?? EMPTY_GOAL_SURFACE),
+        onAction: props.goal?.onAction
+          ? (action: GoalAction) => {
+              if (action === 'set')
+                hostPopover()?.hidePopover()
+              props.goal?.onAction?.(action)
+            }
+          : undefined,
+      }}
       // Wrapped only when the host actually supplies a handler. The list
       // renders a subagent row as a BUTTON on the strength of this prop being
       // present, so an always-defined wrapper would give a host that passes
@@ -538,7 +552,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
                   place already de-tuned twice for render cost, and a live
                   duration here re-renders it every second for the life of the
                   goal. */}
-              {`Goal: ${goalStatusLabel(props.goal?.status ?? 'active').toLowerCase()}`}
+              {`Goal: ${goalStatusLabel(props.goal?.current?.status ?? 'active').toLowerCase()}`}
             </button>
           )}
         >

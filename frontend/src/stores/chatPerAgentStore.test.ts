@@ -251,4 +251,41 @@ describe('createPerAgentStore', () => {
       dispose()
     })
   })
+
+  /**
+   * `set` must REPLACE an object leaf, not merge into it. Solid merges a plain
+   * object written at a store path, so a single write keeps every key the new
+   * value omits -- which would leave the previous goal's status detail and
+   * identity attached to a replacement.
+   */
+  it('set drops a key the new object omits', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<{ a?: number, b?: number }>({})
+      store.set('x', { a: 1, b: 2 })
+      store.set('x', { a: 3 })
+      expect(store.get('x')).toEqual({ a: 3 })
+      dispose()
+    })
+  })
+
+  /**
+   * The one case where `clear` and `remove` cannot be told apart. Solid DELETES
+   * a key written as `undefined`, so a store whose empty value is `undefined`
+   * leaves the same absent entry either way. The `remove` doc states this; the
+   * test is what keeps the statement true.
+   */
+  it('clear and remove are the same operation when the empty value is undefined', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<number | undefined>(undefined)
+      store.set('a', 1)
+      store.clear('a')
+      expect(store.byAgent.a).toBeUndefined()
+      expect(store.get('a')).toBeUndefined()
+
+      store.set('b', 2)
+      store.remove('b')
+      expect(store.byAgent.b).toBeUndefined()
+      dispose()
+    })
+  })
 })

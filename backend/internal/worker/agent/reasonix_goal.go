@@ -26,13 +26,21 @@ import (
 // every action.
 const reasonixMethodStatusUpdate = "_reasonix.io/session/status_update"
 
-// Reasonix's own goal status words.
+// Reasonix's own goal status words, as they reach the WIRE.
+//
+// Its Go enum also has `stopped`, but normalizeGoalStatus never emits it: the
+// status projection passes running, complete and blocked, and answers "none"
+// for everything else. Two words come from a different place -- a per-turn
+// override sets `cancelled` when the user cancels a turn and `failed` when a
+// turn returns an error -- so they appear here although the enum does not
+// list them.
 const (
-	reasonixGoalStatusNone     = "none"
-	reasonixGoalStatusRunning  = "running"
-	reasonixGoalStatusComplete = "complete"
-	reasonixGoalStatusBlocked  = "blocked"
-	reasonixGoalStatusStopped  = "stopped"
+	reasonixGoalStatusNone      = "none"
+	reasonixGoalStatusRunning   = "running"
+	reasonixGoalStatusComplete  = "complete"
+	reasonixGoalStatusBlocked   = "blocked"
+	reasonixGoalStatusCancelled = "cancelled"
+	reasonixGoalStatusFailed    = "failed"
 )
 
 type reasonixStatusUpdate struct {
@@ -40,9 +48,12 @@ type reasonixStatusUpdate struct {
 	Status    *struct {
 		Goal *reasonixGoal `json:"goal"`
 	} `json:"status"`
-	// The notification is also observed with the status fields hoisted to the
-	// top level rather than nested under `status`, so both shapes are read and
-	// whichever one arrives wins. Declaring only one silently reported no goal.
+	// Goal is the HOISTED shape, and it belongs to a different call: the
+	// `_reasonix.io/session/status` request answers with the status object
+	// flat, while this notification nests it under `status`. LeapMux reads only
+	// the notification, so this field is the tolerant path rather than a second
+	// observed shape of the same message -- it costs one struct field and
+	// removes a whole class of silent "no goal" if the two shapes ever converge.
 	Goal *reasonixGoal `json:"goal"`
 }
 
@@ -50,8 +61,15 @@ type reasonixGoal struct {
 	Status    string `json:"status"`
 	Objective string `json:"objective"`
 	Runtime   *struct {
-		TurnsUsed  *int32 `json:"turnsUsed"`
-		TokensUsed *int64 `json:"tokensUsed"`
+		TurnsUsed *int32 `json:"turnsUsed"`
+		// WorkDurationMs is MILLISECONDS. GoalUpdate.TimeUsedSeconds is
+		// seconds, so the report below divides. Assigning it directly would
+		// print a duration 1000 times too large.
+		WorkDurationMs *int64 `json:"workDurationMs"`
+		TokensUsed     *int64 `json:"tokensUsed"`
+		// requestsUsed has no neutral field. The card shows tokens, seconds and
+		// iterations, and a request count is a fourth unit that only Reasonix
+		// reports, so nothing would render it.
 		LastReason string `json:"lastReason"`
 		StopCause  string `json:"stopCause"`
 	} `json:"runtime"`
@@ -64,7 +82,11 @@ func reasonixGoalStatus(wire string) GoalStatus {
 		return GoalStatusActive
 	case reasonixGoalStatusComplete:
 		return GoalStatusDone
-	case reasonixGoalStatusBlocked, reasonixGoalStatusStopped:
+	// Blocked, cancelled and failed are all "not progressing, needs the user".
+	// They are listed rather than left to the default so the vocabulary this
+	// build knows is visible, and an unrecognized word still reads as blocked --
+	// a state LeapMux cannot understand is one it must not offer Pause for.
+	case reasonixGoalStatusBlocked, reasonixGoalStatusCancelled, reasonixGoalStatusFailed:
 		return GoalStatusBlocked
 	default:
 		return GoalStatusBlocked
@@ -107,7 +129,10 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 		return
 	}
 	if goal.Status == "" || goal.Status == reasonixGoalStatusNone {
-		a.sink.ClearGoal()
+		// Not a snapshot, for the reason the upsert below is not one: Reasonix
+		// reports a change only by restating its whole status, so marking this
+		// a restatement would silence every Reasonix goal removal.
+		a.sink.ClearGoal(false)
 		return
 	}
 	report := GoalUpdate{
@@ -129,6 +154,10 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 	if rt := goal.Runtime; rt != nil {
 		report.Iterations = rt.TurnsUsed
 		report.TokensUsed = rt.TokensUsed
+		if rt.WorkDurationMs != nil {
+			seconds := *rt.WorkDurationMs / 1000
+			report.TimeUsedSeconds = &seconds
+		}
 		// The stop cause says more than the status word when there is one:
 		// "goal_stuck" and "budget_spend" are both `stopped`.
 		if rt.StopCause != "" {
@@ -142,9 +171,17 @@ func (a *ReasonixAgent) handleReasonixStatusUpdate(params json.RawMessage) {
 
 // isCurrentACPSession reports whether sessionID is the session this agent is
 // serving right now.
+//
+// It takes b.mu only, because b.mu is what guards b.sessionID: newSessionLocked
+// writes the field under b.mu and withSessionID reads it under b.mu.
+//
+// It must NOT take b.sessionMu. That lock is held across a whole session/new
+// round trip, and only the reader goroutine can deliver the response to it.
+// This function runs ON that reader goroutine, so an RLock here stops the
+// reader until the round trip finishes, and the round trip cannot finish until
+// the reader runs. ClearContext then hangs for the full API timeout, and every
+// notification behind the blocked line waits with it.
 func (b *acpBase) isCurrentACPSession(sessionID string) bool {
-	b.sessionMu.RLock()
-	defer b.sessionMu.RUnlock()
 	b.mu.Lock()
 	current := b.sessionID
 	b.mu.Unlock()

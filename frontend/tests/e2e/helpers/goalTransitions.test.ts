@@ -87,4 +87,30 @@ describe('countGoalTransitionsInMessages', () => {
       { content: new Uint8Array([1, 2, 3]), contentCompression: ContentCompression.UNSPECIFIED },
     ])).toBe(0)
   })
+
+  // The count is what the spec asserts a ceiling on, so a token that is not a
+  // notification type must not reach it. A suite about session goals is exactly
+  // where an objective or a tool call carries that quoted word.
+  it('counts only the type field, never the token elsewhere in the body', () => {
+    const body = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'grep for "goal_updated" in the worker' },
+          { type: 'tool_use', input: { pattern: '"goal_cleared"' } },
+        ],
+      },
+    })
+    expect(countGoalTransitionsInMessages([
+      { content: new TextEncoder().encode(body), contentCompression: ContentCompression.NONE },
+    ])).toBe(0)
+  })
+
+  // And a real type field still counts, whatever spacing the encoder used.
+  it('counts a type field however it is spaced', () => {
+    const spaced = '{"type" : "goal_updated","objective":"ship it"}'
+    expect(countGoalTransitionsInMessages([
+      { content: new TextEncoder().encode(spaced), contentCompression: ContentCompression.NONE },
+    ])).toBe(1)
+  })
 })

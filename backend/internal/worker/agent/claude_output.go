@@ -178,8 +178,8 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 			a.handlePersistableMessage(content, msgType)
 		}
 
-	case NotificationTypeContextCleared, NotificationTypeInterrupted, NotificationTypePlanExecution:
-		if msgType == NotificationTypeInterrupted {
+	case contracts.NotificationTypeContextCleared, contracts.NotificationTypeInterrupted, contracts.NotificationTypePlanExecution:
+		if msgType == contracts.NotificationTypeInterrupted {
 			a.sink.ResetSpans()
 		}
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
@@ -195,7 +195,7 @@ func (a *ClaudeCodeAgent) handleClaudeOutput(content []byte, msgType string) {
 	case claudeMsgTypeControlResponse:
 		a.claudeCodeHandleControlResponse(content)
 
-	case NotificationTypeRateLimitEvent:
+	case contracts.NotificationTypeRateLimitEvent:
 		a.claudeCodeHandleRateLimitEvent(content)
 
 	case claudeMsgTypeToolProgress:
@@ -1314,12 +1314,12 @@ func isNotificationThreadable(content []byte, source leapmuxv1.MessageSource) bo
 			return false
 		}
 		switch msg.Type {
-		case NotificationTypeSettingsChanged,
-			NotificationTypeContextCleared,
-			NotificationTypeInterrupted,
-			NotificationTypeRateLimit,
-			NotificationTypeAgentError,
-			NotificationTypeCompacting:
+		case contracts.NotificationTypeSettingsChanged,
+			contracts.NotificationTypeContextCleared,
+			contracts.NotificationTypeInterrupted,
+			contracts.NotificationTypeRateLimit,
+			contracts.NotificationTypeAgentError,
+			contracts.NotificationTypeCompacting:
 			return true
 		}
 		return false

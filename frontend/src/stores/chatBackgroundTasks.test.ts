@@ -307,7 +307,7 @@ describe('filterBackgroundTasksByKind', () => {
 /**
  * Whether the Background tasks section belongs on screen.
  *
- * The failure arm is the one worth pinning: the section is hidden when the
+ * The failure case is the one worth pinning: the section is hidden when the
  * registry is empty, so a worker that cannot answer used to render exactly like
  * an agent that had run nothing -- and the section left the screen with only a
  * warn in the worker log to explain it.
@@ -333,7 +333,7 @@ describe('shouldShowBackgroundTasksSection', () => {
   })
 
   /**
-   * The goal arm, and the two reasons it exists. The ThinkingIndicator's goal
+   * The goal case, and the two reasons it exists. The ThinkingIndicator's goal
    * chip is hidden whenever the agent is not ACTIVE or a permission prompt is
    * pending -- which is exactly the states a goal needs acting on. And the panel
    * is where a FIRST goal is set, so a section that appeared only once a goal

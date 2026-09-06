@@ -207,13 +207,13 @@ UPDATE agents
 SET goal_objective = '', goal_status = '', goal_status_detail = '', goal_created_at = NULL, goal_updated_at = ?
 WHERE id = ?;
 
--- ClearAllAgentGoalStatuses runs once at worker boot. A goal that survived a
--- restart is not being pursued by any process, so leaving its status set would
--- draw live Pause and Clear buttons for a goal nothing is running. The
--- objective text stays so the panel can still show what was being attempted;
--- the provider's own snapshot re-arms the status when a session resumes.
--- name: ClearAllAgentGoalStatuses :exec
-UPDATE agents SET goal_status = '', goal_status_detail = '' WHERE goal_status <> '';
+-- GetAgentGoal reads only the goal columns. `SELECT *` would deserialize the
+-- options / option_groups JSON blobs on a path a provider drives after every
+-- completed tool call, exactly the cost GetAgentID and GetAgentTitle above
+-- exist to avoid.
+-- name: GetAgentGoal :one
+SELECT id, goal_objective, goal_status, goal_status_detail, goal_created_at, goal_updated_at, parent_agent_id
+FROM agents WHERE id = ?;
 
 -- name: ListAgentsByIDs :many
 SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;

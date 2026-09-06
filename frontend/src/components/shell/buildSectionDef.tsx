@@ -11,7 +11,7 @@ import type { Worker } from '~/generated/proto/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
+import type { GoalSurface } from '~/stores/chatGoal'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -100,12 +100,8 @@ export interface SectionDefContext {
 
   // Background tasks section
   showBackgroundTasks: boolean
-  /** The active root's session goal, or undefined when it has none. */
-  activeGoal?: SessionGoal
-  activeGoalProgress: GoalProgress
-  /** What the running agent can do with its goal; empty disables every control. */
-  activeGoalActions: GoalAction[]
-  onGoalAction?: (action: GoalAction) => void
+  /** The active root's session goal, with its counters, actions and handler. */
+  activeGoal: GoalSurface
   activeBackgroundTasks: BackgroundTaskItem[]
   /** The worker could not answer for this root's registry. */
   activeBackgroundTasksFailed: boolean
@@ -347,8 +343,14 @@ export function buildSectionDef(
     // Visible whenever the root has ANY rows (past rows keep the section alive
     // -- viewing finished subagents is a first-class use case), and whenever the
     // LOAD FAILED, so a worker that cannot answer says so rather than taking the
-    // section off screen. Hidden only when the registry is truly empty. The
-    // badge counts active (pending/running) rows.
+    // section off screen.
+    //
+    // Visible ALSO whenever this agent has a goal surface: a goal to show, or
+    // the ability to be given one. The panel's empty state is the only route to
+    // a first goal, so a section hidden until a goal exists could never gain
+    // one. Hidden only when all three are absent.
+    //
+    // The badge counts active (pending/running) rows.
     const activeCount = countActiveBackgroundTasks(ctx.activeBackgroundTasks)
     return {
       id: sectionId,
@@ -366,11 +368,12 @@ export function buildSectionDef(
           variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
           goal={ctx.activeGoal}
-          goalProgress={ctx.activeGoalProgress}
-          goalActions={ctx.activeGoalActions}
           loadFailed={ctx.activeBackgroundTasksFailed}
           onOpenSubagent={ctx.onOpenBackgroundTask}
-          onGoalAction={ctx.onGoalAction}
+          // The sidebar owns the goal's live region. The ThinkingIndicator
+          // popover renders the SAME panel, and a live region in each would
+          // announce one goal change twice.
+          announceGoal
         />
       ),
     }

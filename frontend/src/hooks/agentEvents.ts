@@ -28,7 +28,7 @@ import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
-import { assignDefined, isObject, pickBoolean, pickNumber, pickString } from '~/lib/jsonPick'
+import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
@@ -154,11 +154,11 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
     return undefined
 
   const update: ToolProgressUpdate = { spanId }
-  // Finite and non-negative, not just `typeof number`: a NaN or an Infinity
-  // reaches the duration formatter and renders as "NaNs" on the card, and a
-  // negative elapsed time is not a duration at all.
-  const elapsed = pickNumber(value, RUNNING_TOOL_FIELD.ElapsedSeconds, undefined)
-  if (elapsed !== undefined && Number.isFinite(elapsed) && elapsed >= 0)
+  // pickCounter, not a bare pickNumber: a NaN or an Infinity reaches the
+  // duration formatter and renders as "NaNs" on the card, and a negative
+  // elapsed time is not a duration at all.
+  const elapsed = pickCounter(value, RUNNING_TOOL_FIELD.ElapsedSeconds)
+  if (elapsed !== undefined)
     update.elapsedSeconds = elapsed
   if (RUNNING_TOOL_FIELD.Retry in value) {
     const retry = wireRunningToolRetry(value[RUNNING_TOOL_FIELD.Retry])
@@ -187,22 +187,10 @@ export function wireGoalProgressToUpdate(value: unknown): GoalProgress | undefin
   if (!isObject(value))
     return undefined
   const update: GoalProgress = {}
-  const read = (field: string): number | undefined => {
-    const n = pickNumber(value, field, undefined)
-    return n !== undefined && Number.isFinite(n) && n >= 0 ? n : undefined
-  }
-  const tokensUsed = read(GOAL_PROGRESS_FIELD.TokensUsed)
-  if (tokensUsed !== undefined)
-    update.tokensUsed = tokensUsed
-  const tokenBudget = read(GOAL_PROGRESS_FIELD.TokenBudget)
-  if (tokenBudget !== undefined)
-    update.tokenBudget = tokenBudget
-  const timeUsedSeconds = read(GOAL_PROGRESS_FIELD.TimeUsedSeconds)
-  if (timeUsedSeconds !== undefined)
-    update.timeUsedSeconds = timeUsedSeconds
-  const iterations = read(GOAL_PROGRESS_FIELD.Iterations)
-  if (iterations !== undefined)
-    update.iterations = iterations
+  assignDefined(update, 'tokensUsed', pickCounter(value, GOAL_PROGRESS_FIELD.TokensUsed))
+  assignDefined(update, 'tokenBudget', pickCounter(value, GOAL_PROGRESS_FIELD.TokenBudget))
+  assignDefined(update, 'timeUsedSeconds', pickCounter(value, GOAL_PROGRESS_FIELD.TimeUsedSeconds))
+  assignDefined(update, 'iterations', pickCounter(value, GOAL_PROGRESS_FIELD.Iterations))
   return Object.keys(update).length > 0 ? update : undefined
 }
 

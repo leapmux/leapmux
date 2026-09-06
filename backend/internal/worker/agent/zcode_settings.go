@@ -550,6 +550,19 @@ type zcodeStatePatchBody struct {
 	Goal json.RawMessage `json:"goal"`
 }
 
+// isCurrentZCodeSession reports whether sessionID is the session this agent
+// serves right now. An empty id passes: a notification that states no session
+// cannot contradict the current one.
+func (a *zcodeAgent) isCurrentZCodeSession(sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+	a.mu.Lock()
+	current := a.sessionID
+	a.mu.Unlock()
+	return current == "" || current == sessionID
+}
+
 // hasSettings reports whether the patch carried any settings axis at all. A patch
 // that changed only `status` must not reach applySettingsSnapshotLocked, because an
 // all-nil snapshot would compare equal and persist a pointless settings refresh.
@@ -580,16 +593,34 @@ func (a *zcodeAgent) handleZCodeStateUpdated(params json.RawMessage) {
 		slog.Debug("zcode state.updated patch not a session patch", "agent_id", a.agentID, "scope", notif.Scope)
 		return
 	}
+	// Only the session scope carries SESSION state. The workspace scope patches
+	// `modelCatalog`, and a workspace patch that happened to carry a `goal` key
+	// would otherwise reach the session goal -- a `"goal": null` there would
+	// clear a live goal and write a "Goal cleared" row for a change the user
+	// never made. The runtime state is session state for the same reason.
+	if notif.Scope != ZCodeScopeSession {
+		return
+	}
+	// And only THIS session's state. ClearContext mints a new session without
+	// stopping the old one, so a patch already in flight for the replaced
+	// session arrives after the swap; applying it resurrects the goal the user
+	// just cleared and writes a "Goal set" row for it. Reasonix guards the same
+	// hazard with isCurrentACPSession and Codex with isMainThreadID.
+	//
+	// An empty id cannot contradict the current session, so it passes -- the
+	// same rule those two guards use.
+	if !a.isCurrentZCodeSession(notif.SessionID) {
+		return
+	}
 	if body.Runtime != nil {
 		a.applyZCodeRuntimeState(body.Runtime)
 	}
 	// A patch reports a change as it happens, so it is NOT a snapshot: this is
 	// the path that announces a goal transition in the transcript.
 	a.reportZCodeGoal(body.Goal, false)
-	// Only the session scope carries settings. The workspace scope patches
-	// `modelCatalog`, whose keys this struct does not read, so it must not be
-	// mistaken for an all-absent settings patch.
-	if notif.Scope != ZCodeScopeSession || !body.hasSettings() {
+	// A patch that changed something this struct does not read carries no
+	// settings axis, and must not be mistaken for an all-absent settings patch.
+	if !body.hasSettings() {
 		return
 	}
 	a.mu.Lock()
