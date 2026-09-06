@@ -1,5 +1,7 @@
+import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { flushStorageWrites, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet, resetBrowserStorageForTests, setStorageAccountForTests } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
@@ -223,6 +225,58 @@ describe('createPersistedSeq', () => {
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     expect(next()).toBeGreaterThan(0)
     expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(1)
+  })
+
+  // THE ONLY DIAGNOSTIC for the hazard this module exists to prevent, and it
+  // replaced a real check. The old code read the mark back and compared, which
+  // worked because `setItem` either threw or committed. Reading back now would
+  // only re-read the in-memory mirror the write just updated -- true for a mark
+  // that never reached disk. So durability is the check, and it lands a
+  // microtask later.
+  //
+  // What it warns about is the NEXT reload: this session's ids are correct
+  // regardless, because the in-memory mark is authoritative and only advances.
+  // A reload that reads a stale lower mark can mint an id below the owner the
+  // still-live sidecar holds, and the relay then refuses every open until an
+  // app restart.
+  describe('when the mark cannot be persisted', () => {
+    it('warns once the write has settled', async () => {
+      installCryptoMock()
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      // No `indexedDB` in this file, so every write is refused at the flush.
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      next()
+
+      // NOTHING yet: the durability answer is a microtask away, and a warning
+      // raised before the write was even attempted would be a guess.
+      expect(warn).not.toHaveBeenCalled()
+
+      await flushStorageWrites()
+      expect(warn).toHaveBeenCalledWith(
+        '[persistedSeq]',
+        expect.stringContaining('did not persist'),
+        expect.objectContaining({ key: KEY_CHANNEL_RELAY_SEQ }),
+      )
+      warn.mockRestore()
+    })
+
+    it('stays quiet when the write reaches disk', async () => {
+      installCryptoMock()
+      vi.stubGlobal('indexedDB', new IDBFactory())
+      resetBrowserStorageForTests()
+      setStorageAccountForTests(TEST_USER_ID)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      next()
+      await flushStorageWrites()
+
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+      resetBrowserStorageForTests()
+      vi.unstubAllGlobals()
+      setStorageAccountForTests(TEST_USER_ID)
+    })
   })
 
   // The mark is a plain monotonic counter, NOT derived from the wall clock. This
