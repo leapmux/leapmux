@@ -1,10 +1,12 @@
 import type { TabBusyReason } from '~/components/shell/tabBusyProbe'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
+import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
+import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channelError'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -537,7 +539,10 @@ describe('useTabOperations', () => {
 
     const RUNNING_PROCESS: TabBusyReason = {
       kind: 'terminal-processes',
-      processes: [{ pid: 51234, name: 'node' }] as TabBusyReason extends { processes: infer P } ? P : never,
+      // Through the generated schema: a conditional type over this union does
+      // not distribute, so the cast it replaces resolved to `never` and checked
+      // the fixture against nothing.
+      processes: [create(TerminalProcessSchema, { pid: 51234, name: 'node' })],
       totalCount: 1,
     }
 
@@ -618,11 +623,15 @@ describe('useTabOperations', () => {
 
           const closePromise = ops.handleTabClose(tab)
           await flush()
-          // The two prompts are mutually exclusive and the worktree one wins:
-          // its "Close anyway" already covers this, and raising both would make
-          // one click answer two dialogs.
+          // The two prompts are mutually exclusive and the worktree one wins,
+          // because one click must not answer two dialogs.
           expect(ops.busyTabConfirmDialog.value()).toBeNull()
           expect(ops.lastTabConfirmDialog.value()).not.toBeNull()
+          // It wins by ABSORBING the busy fact, not by dropping it. That dialog
+          // offers "Delete worktree", and the user picking it is the one who
+          // most needs to hear that a process is still writing into that
+          // directory -- BranchStatusInfo only counts the tab.
+          expect(ops.lastTabConfirmDialog.value()!.busyReason).toEqual(RUNNING_PROCESS)
           ops.lastTabConfirmDialog.value()!.resolve('cancel')
           expect(await closePromise).toBe(false)
         }

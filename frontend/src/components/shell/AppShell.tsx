@@ -92,6 +92,7 @@ import { TabDragProvider } from './TabDragContext'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
+import { useAgentSettled } from './useAgentSettled'
 import { useCrdtRuntime } from './useCrdtRuntime'
 import { useCrossWorkspaceMove } from './useCrossWorkspaceMove'
 import { useFloatingWindowOps } from './useFloatingWindowOps'
@@ -101,7 +102,6 @@ import { useTabOperations } from './useTabOperations'
 import { useTabPersistence } from './useTabPersistence'
 import { useTerminalOperations } from './useTerminalOperations'
 import { useTileDragDrop } from './useTileDragDrop'
-import { useTurnEnd } from './useTurnEnd'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 import { useWorkerSection } from './useWorkerSection'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
@@ -125,7 +125,7 @@ export const AppShell: Component = () => {
 
   // Per-(workspace_id) active-client tracker fed by PresenceUpdate events off
   // the `/ws/userevents` WebSocket. Created here because the CRDT runtime feeds
-  // it and `handleTurnEnd` reads it to gate the turn-end ding.
+  // it and `handleAgentSettled` reads it, so only the active client dings.
   const activeClient = createActiveClientStore()
 
   // Late-bound reload trigger for workspace-lifecycle events. Bound once
@@ -324,7 +324,7 @@ export const AppShell: Component = () => {
 
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
-  const handleAgentSettled = useTurnEnd({
+  const handleAgentSettled = useAgentSettled({
     preferences: {
       turnEndSound: () => preferences.turnEndSound(),
       turnEndSoundVolume: () => preferences.turnEndSoundVolume(),
@@ -349,7 +349,7 @@ export const AppShell: Component = () => {
     settingsLoading,
     repoGitStore,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    onTurnEnd: handleAgentSettled,
+    onAgentSettled: handleAgentSettled,
     // Per TURN, not per settle: the working tree changed even when a subagent
     // keeps the agent busy afterwards. Still skipped for an agent that is
     // closing, which is the gate this shared with the alert before the two
@@ -697,6 +697,7 @@ export const AppShell: Component = () => {
     agentInputQueueStore,
     chatStore,
     controlStore,
+    agentActivityStore,
     view: tabView,
     metadata: tabMetadata,
     selection,
@@ -731,12 +732,18 @@ export const AppShell: Component = () => {
   // Answers "would closing this tab interrupt running work". Reads the pushed
   // activity state for an agent and asks the worker for a terminal's process
   // tree; see the probe's own header for why the two differ.
+  // One definition of "this tab's registry rows", and one instance of it. The
+  // tab chip and the close guard must not scope the same question differently,
+  // so the renderer takes this object rather than building a second one from
+  // hand-copied deps.
+  const taskScope = createTabTaskScope({
+    getAgentTab: (id: string) => tabView.getAgentTab(id),
+    tasksForRoot: (rootId: string) => chatStore.backgroundTasks.get(rootId),
+  })
+
   const busyProbe = createTabBusyProbe({
     activity: agentActivityStore,
-    tasksFor: createTabTaskScope({
-      getAgentTab: (id: string) => tabView.getAgentTab(id),
-      tasksForRoot: (rootId: string) => chatStore.backgroundTasks.get(rootId),
-    }).tasksForTab,
+    tasksFor: taskScope.tasksForTab,
   })
 
   // Tab operations (select, close, file open, worktree confirm).
@@ -1262,6 +1269,7 @@ export const AppShell: Component = () => {
       agentActivityStore,
       repoGitStore,
     },
+    taskScope,
     ops: { agentOps, termOps },
     clientId: ownClientId,
     workspace: {
@@ -1604,6 +1612,7 @@ export const AppShell: Component = () => {
         <AppShellDialogs
           dialogs={dialogs}
           onSetGoal={(agentId, objective) => void agentOps.handleGoalAction(agentId, 'set', objective)}
+          busyProbe={busyProbe}
           loadSections={loadSections}
           onBranchChanged={(repo, newBranch) => handleBranchChanged(
             { repoGitStore },

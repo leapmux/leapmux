@@ -657,6 +657,18 @@ func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title 
 	}
 	if pendingBroadcast != nil {
 		s.h.broadcastBackgroundTasks(s.rootAgentID, pendingBroadcast)
+		// Linking a row to a child is the moment that row starts standing for a
+		// subagent, so it changes that subagent's own answer -- the same reason
+		// applyAndBroadcast refreshes the tree for every other registry
+		// mutation. This site reached the cache through ensureRegistryRowLocked
+		// rather than applyAndBroadcast, so without this the freshly linked
+		// child got no AgentActivityChanged for its whole run: a refresh
+		// triggered by the preceding upsert saw the row while its
+		// child_agent_id was still empty, and skipped it.
+		//
+		// Safe here and not one line earlier: the lock is released above, and
+		// refreshing reads that same cache.
+		s.h.refreshActivityTree(s.rootAgentID)
 	}
 	return childID, nil
 }

@@ -1,4 +1,5 @@
 import { createStore, produce } from 'solid-js/store'
+import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
 
 /**
  * Whether each agent is working, as the WORKER derives it.
@@ -13,7 +14,7 @@ import { createStore, produce } from 'solid-js/store'
  *
  * Three writers, matching how background tasks are already fed:
  *
- * - hydration, from `AgentInfo.busy` on a list read. The only leg that reaches a
+ * - hydration, from `AgentInfo.busy` on a list read. The only path that reaches a
  *   tab watching in NOTIFY mode, which gets no catch-up replay at all.
  * - catch-up replay, on the transition into FULL, so a tab renders the right
  *   spinner BEFORE the message burst rather than after it.
@@ -28,26 +29,46 @@ import { createStore, produce } from 'solid-js/store'
  *
  * Nothing here restores state either. A restart does not resume a turn.
  */
-interface AgentActivityState {
-  busyByAgent: Record<string, boolean>
+interface AgentActivityStoreState {
+  stateByAgent: Record<string, AgentActivityState>
 }
 
+/** An agent nothing has reported on yet. */
+const UNKNOWN = AgentActivityState.IDLE
+
 export function createAgentActivityStore() {
-  const [state, setState] = createStore<AgentActivityState>({ busyByAgent: {} })
+  const [state, setState] = createStore<AgentActivityStoreState>({ stateByAgent: {} })
+
+  const stateOf = (agentId: string): AgentActivityState => state.stateByAgent[agentId] ?? UNKNOWN
 
   return {
     /**
-     * Whether the agent is working. An agent nothing has reported on yet is not
-     * busy: a spinner that appears before any evidence is worse than one that
+     * Whether the agent is working, which is what the thinking indicator and the
+     * Interrupt button read. An agent nothing has reported on yet is not
+     * working: a spinner that appears before any evidence is worse than one that
      * appears a beat late.
+     *
+     * WAITING_FOR_USER answers false here on purpose. The user is looking
+     * straight at the permission prompt, so spinning an indicator at them says
+     * nothing -- but see interruptsWork, which the close guard reads instead.
      */
     isBusy(agentId: string): boolean {
-      return state.busyByAgent[agentId] === true
+      return stateOf(agentId) === AgentActivityState.WORKING
     },
 
     /**
-     * Apply the worker's answer. Returns whether this write was the busy -> idle
-     * EDGE -- the settle the turn-end alert rings on.
+     * Whether closing this tab would stop something. Differs from isBusy for an
+     * agent blocked on a permission prompt: its turn is still in flight, and the
+     * close kills it along with every background task under it.
+     */
+    interruptsWork(agentId: string): boolean {
+      const current = stateOf(agentId)
+      return current === AgentActivityState.WORKING || current === AgentActivityState.WAITING_FOR_USER
+    },
+
+    /**
+     * Apply the worker's answer. Returns whether this write was the SETTLE edge
+     * -- working -> not working, which the turn-end alert rings on.
      *
      * The edge, not the arrival of an idle report, and not merely a changed
      * value. The worker broadcasts on transition, but the same value still
@@ -56,18 +77,25 @@ export function createAgentActivityStore() {
      * an idle report can arrive for an agent this client never saw working (a
      * NOTIFY-mode tab that subscribed mid-turn). Ringing on either announces a
      * settle the user never saw start, or announces one settle twice.
+     *
+     * A move into WAITING_FOR_USER is a settle: the turn stops making progress
+     * and the user is the one who must act, which is the alert that used to ride
+     * on busy -> false.
      */
-    setBusy(agentId: string, busy: boolean): boolean {
-      const settled = state.busyByAgent[agentId] === true && !busy
-      if (state.busyByAgent[agentId] !== busy)
-        setState('busyByAgent', agentId, busy)
+    apply(agentId: string, next: AgentActivityState): boolean {
+      const settled = stateOf(agentId) === AgentActivityState.WORKING && next !== AgentActivityState.WORKING
+      if (state.stateByAgent[agentId] !== next)
+        setState('stateByAgent', agentId, next)
       return settled
     },
 
-    /** Drop one agent's state, on tab close. */
+    /**
+     * Drop one agent's state. Called when a tab retires and when the worker
+     * goes offline, so the map holds only agents a tab still shows.
+     */
     forget(agentId: string) {
       setState(produce((s) => {
-        delete s.busyByAgent[agentId]
+        delete s.stateByAgent[agentId]
       }))
     },
 

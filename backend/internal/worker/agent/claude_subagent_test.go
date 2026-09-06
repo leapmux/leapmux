@@ -52,6 +52,90 @@ func TestClaude_PendingTaskEndIgnoresEmptySpan(t *testing.T) {
 	assert.Nil(t, a.tasks.pendingTaskEnd, "no entry recorded for an empty spawn span")
 }
 
+// A forwarded child envelope can arrive BEFORE its task_started -- the same
+// reorder recordPendingTaskEnd exists for on the result side. With no task id
+// there was no registry row, and a child's row IS its run: the subagent read
+// idle for the whole window, so its tab showed no thinking indicator while its
+// transcript streamed.
+func TestClaude_AForwardedEnvelopeBeforeTaskStartedOpensARunningRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "the reordered envelope opens the row the task id could not")
+	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status,
+		"the envelope that got here IS the subagent working")
+	assert.Equal(t, "child-of-tu-spawn", tasks[0].ChildAgentID,
+		"linked, or the child's own tab cannot find its run")
+}
+
+// And the late task_started folds that row onto the task id, so the run keeps
+// ONE row rather than gaining a second that leaves the first orphaned and
+// counts the child twice.
+func TestClaude_TheLateTaskStartedRenamesTheReorderedRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}
+	}`))
+	require.Len(t, sink.BackgroundTasks(), 1)
+
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-1",
+		"tool_use_id": "tu-spawn",
+		"task_type": "local_agent",
+		"description": "SCAN triage angle"
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "one run, one row")
+	assert.Equal(t, "task-1", tasks[0].RowKey)
+	assert.Equal(t, "SCAN triage angle", tasks[0].Title, "the real title lands on the renamed row")
+	assert.Equal(t, "child-of-tu-spawn", tasks[0].ChildAgentID, "and it keeps its child")
+}
+
+// The ordinary order must be untouched: task_started first opens exactly one row
+// under the task id, and its unconditional rename finds nothing to move.
+func TestClaude_TaskStartedFirstOpensOneRowUnderTheTaskID(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-1",
+		"tool_use_id": "tu-spawn",
+		"task_type": "local_agent",
+		"description": "SCAN triage angle"
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "task-1", tasks[0].RowKey)
+}
+
 // A subagent tab must open on the instruction the subagent was given, not on
 // its first reply. task_started is the only Claude event carrying the spawn
 // prompt, and it lands before any forwarded envelope, so the prompt becomes the

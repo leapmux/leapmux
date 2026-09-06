@@ -1,7 +1,8 @@
 import type { Component } from 'solid-js'
+import type { BusyTab } from '~/components/shell/tabBusyProbe'
 import type { InspectBranchDeletionResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
-import { createMemo, createSignal, createUniqueId, Show } from 'solid-js'
+import { createMemo, createResource, createSignal, createUniqueId, For, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
@@ -9,6 +10,8 @@ import { Spinner } from '~/components/common/Spinner'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
+import { TabBusyDetails } from '~/components/shell/TabBusyDetails'
+import { busyGroupList } from '~/components/shell/TabBusyDetails.css'
 import { WorkerDialogShell } from '~/components/shell/WorkerDialogShell'
 import { BranchSelect, partitionBranches } from '~/components/workspace/BranchSelect'
 import { resolveStampedBranch } from '~/components/workspace/branchStamp'
@@ -86,6 +89,19 @@ interface DeleteBranchDialogProps {
    * definitive worker outcome.
    */
   closeWorktreeTabs: (tabs: readonly Tab[], action: WorktreeAction, trackedAtInspect: boolean) => void
+
+  /**
+   * What closing this group would interrupt, per tab.
+   *
+   * This flow closes MANY tabs at once and deletes their working directory, and
+   * it runs below `handleTabClose` -- so nothing else asks. BranchStatusInfo
+   * counts the tabs and says they "will be stopped"; it never names the turn,
+   * the background tasks or the processes. The single-tab and tile closes both
+   * name them, and the last-tab dialog was given the same fact for the same
+   * reason: the user about to delete a worktree is the one who most needs to
+   * hear that a process is still writing into it.
+   */
+  probeBusy: (tabs: readonly Tab[]) => Promise<BusyTab[]>
 
   /**
    * Notified after a non-worktree delete with the branch the working
@@ -203,9 +219,16 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
     return i?.isWorktree ? i.worktreeRemovalBlockedReason : ''
   })
 
+  // The busy scan for the group, resolved once per tab set. Delete stays
+  // disabled while it runs: this dialog destroys a directory, and confirming
+  // before the warning lands is the one order that makes the warning useless.
+  const [busyTabs] = createResource(() => props.tabs, tabs => props.probeBusy(tabs))
+
   const canSubmit = () => {
     const i = info()
     if (!i)
+      return false
+    if (busyTabs.loading)
       return false
     // Refuse re-clicks while either delete is in flight (both paths drive
     // `run`, so the busy overlay is up and a second confirm must no-op).
@@ -451,6 +474,20 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
                 willStop: isWorktree(),
               }}
             />
+            {/* The running work this close would interrupt, named the way every
+                other close surface names it. */}
+            <Show when={busyTabs()?.length}>
+              <div class={busyGroupList} data-testid="branch-delete-busy">
+                <For each={busyTabs()}>
+                  {busy => (
+                    <div>
+                      <strong>{busy.title}</strong>
+                      <TabBusyDetails reason={busy.reason} />
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
             {/* What Delete actually does, which is the one fact that separates
                 the two paths and the one the old copy never stated: a worktree
                 delete destroys a directory, a branch delete moves this one to

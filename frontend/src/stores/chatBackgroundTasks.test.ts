@@ -334,9 +334,9 @@ describe('createTabTaskScope', () => {
 
   it('hands a child tab its OWNER\'s registry, not an empty one', () => {
     const rows = [row({ rowKey: 'mine', parentAgentId: 'child-1' })]
-    // The whole reason the resolution exists: `tasksForRoot('child-1')` answers
+    // The whole reason the resolution exists: the dependency's `tasksForRoot('child-1')` answers
     // nothing, because only a root keys a registry.
-    expect(scope(rows).tasksForRoot('child-1').map(t => t.rowKey)).toEqual(['mine'])
+    expect(scope(rows).rootTasksFor('child-1').map(t => t.rowKey)).toEqual(['mine'])
   })
 
   it('scopes a tab to the rows IT spawned, and a root to all of them', () => {

@@ -4,7 +4,7 @@ import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
@@ -1550,7 +1550,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleResultDivider does not fire onTurnEnd — AgentTurnEnd owns that', () => {
+  it('handleResultDivider rehydrates cost without alerting — the settle edge owns the alert', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
       const stores = {
@@ -1562,13 +1562,15 @@ describe('agentMessage sub-handlers', () => {
         selection: tabs.selection,
         getActiveWorkspaceId: () => WS,
       }
-      const turnEnds: string[] = []
       const msg = agentMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.25 })
       const parsed = parseMessageContent(msg)
 
       handleResultDivider('a1', msg, parsed, stores, 'catchingUp')
       handleResultDivider('a1', msg, parsed, stores, 'live')
-      expect(turnEnds).toEqual([])
+
+      // The divider carries no alert of its own. `stores` has no onAgentSettled
+      // field at all, which is the point: the only route to the sound and the
+      // badge is handleActivityChanged's busy -> idle edge.
       expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0.25)
       dispose()
     })
@@ -1892,14 +1894,14 @@ describe('extracted handleAgentEvent arm handlers', () => {
     const activityStores = (
       tabs: ReturnType<typeof makeTabStores>,
       agentActivityStore: ReturnType<typeof createAgentActivityStore>,
-      onTurnEnd?: (id: string, uses?: number) => void,
+      onAgentSettled?: (id: string, uses?: number) => void,
     ) => ({
       metadata: tabs.metadata,
       selection: tabs.selection,
       getActiveWorkspaceId: () => WS,
       view: tabs.view,
       agentActivityStore,
-      onTurnEnd,
+      onAgentSettled,
     })
 
     it('stores what the worker says, and rings only on the busy -> idle edge', () => {
@@ -1912,11 +1914,11 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const ended: Array<{ id: string, uses?: number }> = []
         const stores = activityStores(tabs, activity, (id, uses) => ended.push({ id, uses }))
 
-        handleActivityChanged('a1', { busy: true }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores, 'live')
         expect(activity.isBusy('a1')).toBe(true)
         expect(ended, 'going busy is not a settle').toEqual([])
 
-        handleActivityChanged('a1', { busy: false, numToolUses: 3 }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE, numToolUses: 3 }, stores, 'live')
         expect(activity.isBusy('a1')).toBe(false)
         expect(ended).toEqual([{ id: 'a1', uses: 3 }])
         expect(tabs.view.getAgentTab('a1')?.hasNotification, 'a1 is off screen').toBe(true)
@@ -1932,12 +1934,12 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const ended: string[] = []
         const stores = activityStores(tabs, activity, id => ended.push(id))
 
-        handleActivityChanged('a1', { busy: true }, stores, 'live')
-        handleActivityChanged('a1', { busy: false }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores, 'live')
         // A catch-up replay lands beside the live event, and a subprocess
         // teardown drops the worker's "already published" mark, so the same
         // value reaches a client twice.
-        handleActivityChanged('a1', { busy: false }, stores, 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores, 'live')
 
         expect(ended).toEqual(['a1'])
         dispose()
@@ -1953,7 +1955,7 @@ describe('extracted handleAgentEvent arm handlers', () => {
 
         // A NOTIFY-mode tab can subscribe after the turn started and receive the
         // idle report alone. Nothing the user watched finished.
-        handleActivityChanged('a1', { busy: false }, activityStores(tabs, activity, id => ended.push(id)), 'live')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, activityStores(tabs, activity, id => ended.push(id)), 'live')
 
         expect(ended).toEqual([])
         expect(activity.isBusy('a1'), 'the write still lands').toBe(false)
@@ -1969,8 +1971,8 @@ describe('extracted handleAgentEvent arm handlers', () => {
         const ended: string[] = []
         const stores = activityStores(tabs, activity, id => ended.push(id))
 
-        handleActivityChanged('a1', { busy: true }, stores, 'catchingUp')
-        handleActivityChanged('a1', { busy: false }, stores, 'catchingUp')
+        handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores, 'catchingUp')
+        handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores, 'catchingUp')
 
         expect(ended, 'a reconnect must not greet the user with a burst').toEqual([])
         expect(activity.isBusy('a1'), 'the state still hydrates').toBe(false)
@@ -1980,12 +1982,12 @@ describe('extracted handleAgentEvent arm handlers', () => {
   })
 
   describe('handleAgentSettled', () => {
-    const settledStores = (tabs: ReturnType<typeof makeTabStores>, onTurnEnd?: (id: string, uses?: number) => void) => ({
+    const settledStores = (tabs: ReturnType<typeof makeTabStores>, onAgentSettled?: (id: string, uses?: number) => void) => ({
       metadata: tabs.metadata,
       selection: tabs.selection,
       getActiveWorkspaceId: () => WS,
       view: tabs.view,
-      onTurnEnd,
+      onAgentSettled,
     })
 
     it('alerts with and without a tool count, and badges only an off-screen tab', () => {
@@ -2563,7 +2565,7 @@ describe('clearOfflineAgentState', () => {
     chatStore.applyToolProgress('a1', { spanId: 'toolu_A', elapsedSeconds: 30 })
     chatStore.applyToolProgress('a1', { spanId: 'toolu_B', elapsedSeconds: 90 })
     agentSessionStore.updateInfo('a1', { thinkingTokens: 500 })
-    agentActivityStore.setBusy('a1', true)
+    agentActivityStore.apply('a1', AgentActivityState.WORKING)
     return { chatStore, agentSessionStore, agentActivityStore }
   }
 
@@ -2592,7 +2594,7 @@ describe('clearOfflineAgentState', () => {
       const s = seededStores()
       s.chatStore.applyToolProgress('a2', { spanId: 'toolu_A', elapsedSeconds: 60 })
       s.agentSessionStore.updateInfo('a2', { thinkingTokens: 700 })
-      s.agentActivityStore.setBusy('a2', true)
+      s.agentActivityStore.apply('a2', AgentActivityState.WORKING)
 
       clearOfflineAgentState('a1', s)
 

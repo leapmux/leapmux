@@ -3,7 +3,7 @@ import { monotonicNow } from '~/lib/monotonicNow'
 
 /**
  * Builds the debounced handler that drives:
- *   - the active-client-gated ding sound,
+ *   - the ding sound, which only the active client plays,
  *   - the `leapmux:turn-end-played` test hook event.
  *
  * Called when an agent SETTLES -- the Worker's busy -> idle edge -- not when a
@@ -31,7 +31,7 @@ import { monotonicNow } from '~/lib/monotonicNow'
  * `turnEndAudio` is lazily mounted on the first construction in the
  * module — every workspace switch reuses the same Audio element.
  */
-export interface UseTurnEndOpts {
+export interface UseAgentSettledOpts {
   preferences: {
     turnEndSound: () => string
     turnEndSoundVolume: () => number
@@ -47,7 +47,7 @@ const TURN_END_SOUND_COOLDOWN_MS = 60_000
 
 let turnEndAudio: HTMLAudioElement | undefined
 
-export function useTurnEnd(opts: UseTurnEndOpts): (agentId: string, numToolUses?: number) => void {
+export function useAgentSettled(opts: UseAgentSettledOpts): (agentId: string, numToolUses?: number) => void {
   if (!turnEndAudio)
     turnEndAudio = new Audio('/sounds/benkirb-electronic-doorbell-262895.mp3')
 

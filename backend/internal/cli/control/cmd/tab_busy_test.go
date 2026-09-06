@@ -97,7 +97,7 @@ func TestRunTabClose_IdleTabIsNotRefused(t *testing.T) {
 		"the guard still asks; it just finds nothing running")
 }
 
-// The two gates are mutually exclusive and the worktree one wins: its forced
+// The two guards are mutually exclusive and the worktree one wins: its forced
 // --worktree choice already makes the user state an intent for this close, and
 // stacking a second required flag would send them back twice for one close.
 func TestRunTabClose_LastTabPromptWinsOverTheBusyGate(t *testing.T) {
@@ -127,13 +127,42 @@ func TestAgentBusyDetail(t *testing.T) {
 	t.Parallel()
 
 	assert.Empty(t, agentBusyDetail(nil))
-	assert.Empty(t, agentBusyDetail(&leapmuxv1.AgentInfo{Busy: false, ActiveBackgroundTasks: 3}),
+	assert.Empty(t, agentBusyDetail(&leapmuxv1.AgentInfo{ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, ActiveBackgroundTasks: 3}),
 		"an idle agent is idle whatever its registry holds")
-	assert.Equal(t, "agent turn is in progress", agentBusyDetail(&leapmuxv1.AgentInfo{Busy: true}))
-	assert.Equal(t, "agent turn is in progress, 1 background task active",
-		agentBusyDetail(&leapmuxv1.AgentInfo{Busy: true, ActiveBackgroundTasks: 1}))
-	assert.Equal(t, "agent turn is in progress, 2 background tasks active",
-		agentBusyDetail(&leapmuxv1.AgentInfo{Busy: true, ActiveBackgroundTasks: 2}))
+	assert.Equal(t, "agent turn is in progress", agentBusyDetail(&leapmuxv1.AgentInfo{ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING}))
+
+	// The turn is claimed only when nothing else explains the busy state. The
+	// Worker reports a root busy for a turn OR for a running background task and
+	// sends only the answer, so a turn that ended while a subagent kept running
+	// would otherwise be reported as in progress after it finished.
+	assert.Equal(t, "agent is working, 1 background task active",
+		agentBusyDetail(&leapmuxv1.AgentInfo{ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, ActiveBackgroundTasks: 1}))
+	assert.Equal(t, "agent is working, 2 background tasks active",
+		agentBusyDetail(&leapmuxv1.AgentInfo{ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, ActiveBackgroundTasks: 2}))
+
+	// WAITING_FOR_USER is the state the old single boolean could not express. The
+	// indicator does not spin -- the user is looking straight at the prompt --
+	// but the turn IS in flight, and closing the tab kills it along with every
+	// background task under it. Reading one "not working" flag let that close
+	// through unwarned.
+	assert.Equal(t, "agent turn is waiting for a permission answer",
+		agentBusyDetail(&leapmuxv1.AgentInfo{
+			ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		}))
+	assert.Equal(t, "agent turn is waiting for a permission answer, 2 background tasks active",
+		agentBusyDetail(&leapmuxv1.AgentInfo{
+			ActivityState:         leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+			ActiveBackgroundTasks: 2,
+		}))
+
+	// A SUBAGENT tab closes in the UI only: CloseAgent on a child keeps the row
+	// and the transcript and stops no process. Nothing is interrupted, whatever
+	// the child's own registry row says, so refusing the close would fail a
+	// script over work the close never touches. The browser's probe carves out
+	// the same case.
+	assert.Empty(t, agentBusyDetail(&leapmuxv1.AgentInfo{
+		ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, ActiveBackgroundTasks: 1, ParentAgentId: "root-1",
+	}), "closing a subagent tab stops nothing")
 }
 
 func TestTerminalBusyDetail(t *testing.T) {
@@ -179,14 +208,14 @@ func TestErrTabBusyRefused_NamesEveryBusyTab(t *testing.T) {
 	assert.Contains(t, msg, "pass --allow-busy to close anyway")
 }
 
-// The agent leg of the same gate. `tab close` on an AGENT reads AgentInfo.busy
+// The agent half of the same guard. `tab close` on an AGENT reads AgentInfo.busy
 // off the row ListAgents already returns, so a busy agent takes an entirely
 // different round trip from a busy terminal and needs its own end-to-end case.
 func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 	disp := &closeDispatcher{
 		inspect: &leapmuxv1.InspectLastTabCloseResponse{ShouldPrompt: false},
 		agents: []*leapmuxv1.AgentInfo{
-			{Id: "agent-2", Busy: true, ActiveBackgroundTasks: 2},
+			{Id: "agent-2", ActivityState: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, ActiveBackgroundTasks: 2},
 		},
 	}
 	hub := &recordingHub{
@@ -214,13 +243,13 @@ func TestRunTabClose_BusyAgentTabRefused(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &env))
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "tab_busy_refused", env.Error["code"])
-	assert.Contains(t, env.Error["message"], "agent turn is in progress, 2 background tasks active")
+	assert.Contains(t, env.Error["message"], "agent is working, 2 background tasks active")
 	assert.NotContains(t, hub.called(), "SubmitOps",
 		"the refusal must land BEFORE the CRDT tombstone")
 }
 
 // FAILS OPEN. A guard that cannot get an answer must let the close through: the
-// alternative strands a tab the user has no other way to shut. Both legs are
+// alternative strands a tab the user has no other way to shut. Both halves are
 // covered, because each is a separate call that can fail on its own.
 func TestInspectTabsBusy_FailsOpenWhenTheWorkerCannotAnswer(t *testing.T) {
 	t.Parallel()

@@ -9,8 +9,10 @@ import (
 // maxReportedProcesses caps how many descendants one walk returns. A `make -j64`
 // or a dev server with a worker pool trivially produces dozens, and a
 // close-confirmation dialog listing two hundred rows tells the user less than
-// one listing five. The walk still COUNTS everything it finds, so the caller can
-// say "and N more".
+// one listing five. The walk still counts every process it REPORTS, so the
+// caller can say "and N more". It counts none that the report filter hides,
+// because those are the shell's own work and no count of them means anything to
+// the user.
 //
 // Worker policy, not a request field: a client-supplied cap is one more value to
 // validate and to keep in step with what the dialog can render.
@@ -20,9 +22,9 @@ const maxReportedProcesses = 32
 type ProcessInfo struct {
 	PID int32
 	// Name is the executable name only. CAN BE EMPTY: on macOS a name longer
-	// than 14 characters resolves through a second syscall that fails for
-	// another user's process, and reporting the pid with no name beats dropping
-	// a process the user is about to kill.
+	// than 14 characters resolves through a second syscall, and that syscall
+	// fails for another user's process. The pid alone is still worth reporting,
+	// because the user is about to kill that process.
 	Name string
 }
 
@@ -48,7 +50,7 @@ type procSnapshot struct {
 // tab's subtree -- typically almost all of them.
 //
 // process.Status() is never called: on macOS it forks /bin/ps once per process,
-// which would turn one tab close into a subprocess storm.
+// so one tab close would fork /bin/ps once for every process on the machine.
 func snapshotProcesses(ctx context.Context) ([]procSnapshot, func(int32) string, error) {
 	procs, err := process.ProcessesWithContext(ctx)
 	if err != nil {
@@ -96,8 +98,13 @@ func snapshotProcesses(ctx context.Context) ([]procSnapshot, func(int32) string,
 // itself: two passes taken milliseconds apart can show a process under one tab
 // and not the other.
 type processScan struct {
-	snap   []procSnapshot
-	nameOf func(int32) string
+	// byParent indexes the table children-by-parent ONCE. The index is derived
+	// from the same read every terminal in the request walks, so it belongs to
+	// the request too: building it per terminal made the batch pay one full pass
+	// over the process table per tab, which is the cost this type exists to pay
+	// only once.
+	byParent map[int32][]int32
+	nameOf   func(int32) string
 }
 
 func newProcessScan(ctx context.Context) (*processScan, error) {
@@ -105,13 +112,26 @@ func newProcessScan(ctx context.Context) (*processScan, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &processScan{snap: snap, nameOf: nameOf}, nil
+	return &processScan{byParent: indexByParent(snap), nameOf: nameOf}, nil
+}
+
+// indexByParent groups a scan's entries by parent pid.
+func indexByParent(snap []procSnapshot) map[int32][]int32 {
+	byParent := make(map[int32][]int32, len(snap))
+	for _, p := range snap {
+		byParent[p.ppid] = append(byParent[p.ppid], p.pid)
+	}
+	return byParent
 }
 
 // descendantsOf walks the process tree below shellPID, excluding the shell and
 // everything that belongs to the shell ITSELF rather than to the user's work.
 func (s *processScan) descendantsOf(shellPID int, limit int) ([]ProcessInfo, int) {
-	pids, total := descendantPIDs(s.snap, int32(shellPID), limit, reportsAsWork(shellPID))
+	// The shell's own name comes out of the same table read, so asking costs
+	// nothing. reportsAsWork needs it because the group filter only means
+	// anything for a shell that implements job control.
+	pids, total := descendantPIDs(s.byParent, int32(shellPID), limit,
+		reportsAsWork(shellPID, s.nameOf(int32(shellPID))))
 	out := make([]ProcessInfo, 0, len(pids))
 	for _, pid := range pids {
 		out = append(out, ProcessInfo{PID: pid, Name: s.nameOf(pid)})
@@ -134,23 +154,62 @@ func (s *processScan) descendantsOf(shellPID int, limit int) ([]ProcessInfo, int
 // list, and a process group is what the shell itself uses to tell a job from
 // its own work.
 //
-// FAILS TOWARD REPORTING. A process group the OS will not give up -- Windows,
-// which has none, or a process that exited between the scan and this read --
-// reports the process. The guard exists to warn, so an unanswerable question
-// must not silence it.
-func reportsAsWork(shellPID int) func(int32) bool {
-	shellGroup, ok := processGroupOf(shellPID)
-	if !ok {
+// FAILS TOWARD REPORTING, but only for a question the OS REFUSES to answer:
+// Windows, which has no process group at all, or a read that fails for any
+// reason other than "no such process". The guard exists to warn, so an
+// unanswerable question must not silence it.
+//
+// A process that is GONE is a different answer, not an unanswerable one. The
+// walk judges pids from a snapshot taken earlier, so a compiler that finished
+// in between is simply absent now -- and reporting it names a dead pid in the
+// dialog and refuses a CLI close over work that already stopped.
+func reportsAsWork(shellPID int, shellName string) func(int32) bool {
+	// The filter rests entirely on POSIX job control, and not every shell this
+	// worker offers implements it. PowerShell starts a native command through
+	// .NET's process API, which never calls setpgid, so every command the user
+	// runs INHERITS pwsh's own group -- and comparing groups would then hide all
+	// of it. That is the one direction this guard must never fail in, so a shell
+	// whose job control we cannot vouch for reports everything, exactly like a
+	// group the OS refuses to give up.
+	//
+	// A name we could not read is treated the same way, for the same reason.
+	if shellName == "" || IsPwsh(ShellBaseName(shellName)) {
+		return func(int32) bool { return true }
+	}
+	shellGroup, res := processGroupOf(shellPID)
+	if res != processGroupFound {
 		return func(int32) bool { return true }
 	}
 	return func(pid int32) bool {
-		group, ok := processGroupOf(int(pid))
-		return !ok || group != shellGroup
+		group, res := processGroupOf(int(pid))
+		switch res {
+		case processGroupFound:
+			return group != shellGroup
+		case processGroupGone:
+			return false
+		default:
+			return true
+		}
 	}
 }
 
-// descendantPIDs is the pure traversal: breadth-first from root over a parent
-// index built from snap, returning at most limit pids and the total found.
+// processGroupResult says how to read processGroupOf's answer. The three cases
+// are genuinely different, and collapsing the last two reports dead processes as
+// running work.
+type processGroupResult int
+
+const (
+	// processGroupRefused means the OS will not answer. Windows has no process
+	// group, and a Unix read can fail for a reason of its own.
+	processGroupRefused processGroupResult = iota
+	// processGroupGone means there is no such process any more.
+	processGroupGone
+	// processGroupFound means the returned group is the pid's own.
+	processGroupFound
+)
+
+// descendantPIDs is the pure traversal: breadth-first from root over the parent
+// index, returning at most limit pids and the total REPORTED.
 //
 // Breadth-first so the shell's OWN children lead. That ordering is what makes
 // the limit useful -- the processes a user recognises (`npm`, `make`) are the ones
@@ -165,11 +224,7 @@ func reportsAsWork(shellPID int) func(int32) bool {
 // parent index is not an atomic snapshot of the machine, so a stale ppid
 // pointing at a recycled pid can close a loop; that costs nothing to exclude
 // here and hangs the worker if it is not.
-func descendantPIDs(snap []procSnapshot, root int32, limit int, report func(int32) bool) ([]int32, int) {
-	byParent := make(map[int32][]int32, len(snap))
-	for _, p := range snap {
-		byParent[p.ppid] = append(byParent[p.ppid], p.pid)
-	}
+func descendantPIDs(byParent map[int32][]int32, root int32, limit int, report func(int32) bool) ([]int32, int) {
 	visited := map[int32]struct{}{root: {}}
 	var kept []int32
 	total := 0

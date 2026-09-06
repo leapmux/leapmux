@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// startShellPastInit spawns a real PTY and waits until the shell has echoed a
+// startShellPastInit spawns a real PTY and waits until the shell echoes a
 // marker, which is the only reliable proof it is past its init scripts and
 // accepting input. Every case below sends a command, so it needs a shell that
 // will run one.
@@ -211,8 +211,9 @@ func TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups(t *testing.T) {
 	startShellPastInit(t, m, id)
 
 	shellPID := terminalOf(t, m, id).ShellPID()
-	shellGroup, ok := processGroupOf(shellPID)
-	require.True(t, ok, "the shell's own group must be readable, or the filter degrades to reporting everything")
+	shellGroup, res := processGroupOf(shellPID)
+	require.Equal(t, processGroupFound, res,
+		"the shell's own group must be readable, or the filter degrades to reporting everything")
 
 	line, _ := testutil.TestSleepCommand()
 	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
@@ -228,8 +229,8 @@ func TestProcessGroupOf_ShellAndItsJobsAreInDifferentGroups(t *testing.T) {
 	}, "expected the backgrounded child to appear beneath the shell")
 
 	for _, p := range got {
-		group, ok := processGroupOf(int(p.PID))
-		require.True(t, ok)
+		group, res := processGroupOf(int(p.PID))
+		require.Equal(t, processGroupFound, res)
 		assert.NotEqual(t, shellGroup, group,
 			"a job the user started gets its own group; sharing the shell's would hide it from the guard")
 	}
@@ -275,6 +276,49 @@ func TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan(t *testing.T) 
 	// readiness echo, and that job can still be finishing -- a real descendant
 	// with its own process group. TestDescendantProcesses_IdleShellReportsNothing
 	// AndNeverItself covers the idle case without racing a command.
+}
+
+func TestDescendantProcesses_RepeatedIDsAreWalkedOnce(t *testing.T) {
+	m := NewManager()
+	const id = "batch-repeat"
+	startShellPastInit(t, m, id)
+
+	line, _ := testutil.TestSleepCommand()
+	require.NoError(t, m.SendInput(id, []byte(line+testutil.TestShellEnter())))
+
+	var out []TerminalProcesses
+	testutil.AssertEventually(t, func() bool {
+		got, err := m.DescendantProcesses(context.Background(), []string{id, id, id, id})
+		if err != nil {
+			return false
+		}
+		out = got
+		return len(got) > 0
+	}, "expected the terminal to report its child")
+
+	// The answer for one terminal is the same however many times the request
+	// names it, and each repeat costs a full walk of the process table. The
+	// reply is keyed by terminal id, so a duplicate could only produce a
+	// duplicate row for the close dialog to render twice.
+	require.Len(t, out, 1, "a repeated id is walked once and reported once")
+	assert.Equal(t, id, out[0].TerminalID)
+}
+
+func TestDescendantProcesses_StopsOnACancelledContext(t *testing.T) {
+	m := NewManager()
+	const id = "batch-cancelled"
+	startShellPastInit(t, m, id)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// The walk itself takes no context, so the caller's deadline reaches it only
+	// through the per-target check. Without that, the scan's own timeout bounds
+	// the table read alone and a wide request keeps walking long after the
+	// answer can still be delivered.
+	_, err := m.DescendantProcesses(ctx, []string{id})
+
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestDescendantProcesses_EmptyRequestAsksNothing(t *testing.T) {

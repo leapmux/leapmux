@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -53,7 +53,7 @@ function agentInfo(id: string, over: Record<string, unknown> = {}) {
     startupError: '',
     startupMessage: '',
     gitStatus: undefined,
-    busy: false,
+    activityState: AgentActivityState.IDLE,
     activeBackgroundTasks: 0,
     ...over,
   }
@@ -160,16 +160,24 @@ describe('useTabHydrators', () => {
       d()
     })
 
-    // The hydration leg of the activity state. It is the ONLY leg that reaches
-    // a tab watching in NOTIFY mode, which gets no catch-up replay at all --
-    // without it a background tab shows no spinner until its agent's next
-    // transition, and the close guard lets a working agent go unwarned.
+    // The hydration path of the activity state. It is the ONLY path that
+    // reaches a tab watching in NOTIFY mode, which gets no catch-up replay at
+    // all -- without it a background tab shows no spinner until its agent's
+    // next transition, and the close guard lets a working agent go unwarned.
     it('seeds the worker-derived busy state from the reply', async () => {
       mockListAgents.mockResolvedValue({
-        agents: [agentInfo('a1', { busy: true }), agentInfo('a2', { busy: false })],
+        agents: [
+          agentInfo('a1', { activityState: AgentActivityState.WORKING }),
+          agentInfo('a2', { activityState: AgentActivityState.IDLE }),
+        ],
         verdicts: [],
       })
       const s = setup()
+      // a2 starts BUSY in the store. An unseen agent already reads idle, so
+      // asserting `false` on a fresh store passes whether or not the reply is
+      // ever applied -- and clearing a stale flag is exactly what this path owes
+      // a tab whose agent stopped while the previous connection was down.
+      s.agentActivityStore.apply('a2', AgentActivityState.WORKING)
       const d = createRoot((dispose) => {
         s.add(TabType.AGENT, 'a1')
         s.add(TabType.AGENT, 'a2')

@@ -18,6 +18,7 @@ import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { TabTaskScope } from '~/stores/chatBackgroundTasks'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
@@ -46,7 +47,6 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { createTabTaskScope } from '~/stores/chatBackgroundTasks'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab } from '~/stores/tab.helpers'
@@ -55,11 +55,11 @@ import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 import * as styles from './AppShell.css'
-import { TabBusyDetails } from './BusyTabCloseDialog'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
 import { renameTab } from './renameTab'
 import { TabBar } from './TabBar'
+import { TabBusyDetails } from './TabBusyDetails'
 import { Tile } from './Tile'
 import { cleanupAfterWindowDisposal, focusTile as focusTileShared } from './tileLifecycle'
 
@@ -90,6 +90,13 @@ interface TileRendererOpts {
     agentActivityStore: AgentActivityStore
     repoGitStore: ReturnType<typeof createRepoGitStore>
   }
+  /**
+   * "This tab's registry rows", built ONCE by the shell and shared with the
+   * close guard. The chip and the prompt that lists what a close interrupts must
+   * not scope the same question differently, and two constructions of the same
+   * helper are two places a later change can update only one of.
+   */
+  taskScope: TabTaskScope
   /** Tab/agent/terminal lifecycle hooks. */
   ops: {
     agentOps: ReturnType<typeof useAgentOperations>
@@ -568,12 +575,9 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // Background-task registry helpers. The registry is keyed by ROOT owner id,
   // so resolve up to the root for a child tab. Only roots key a registry, so a
   // child ChatView correctly shows no chip (empty).
-  // One definition of "this tab's registry rows", shared with the close guard so
-  // the chip and the prompt cannot scope the same question differently.
-  const taskScope = createTabTaskScope({
-    getAgentTab: (id: string) => view.getAgentTab(id),
-    tasksForRoot: (rootId: string) => chatStore.backgroundTasks.get(rootId),
-  })
+  // One definition of "this tab's registry rows", and one INSTANCE of it: the
+  // shell builds it and hands the same object to the close guard.
+  const taskScope = opts.taskScope
   const bgRootFor = taskScope.rootFor
   // The store DATA ops an IMAGE tab resolves its reference through. Built once
   // and shared by every image pane, mirroring how the scroll rail hands the same
@@ -583,7 +587,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     getLoadedMessageBySeq: chatStore.getLoadedMessageBySeq,
     fetchMessageBySeq: chatStore.fetchMessageBySeq,
   }
-  const bgTasksFor = taskScope.tasksForRoot
+  const bgTasksFor = taskScope.rootTasksFor
   // The session goal is ROOT state, like the registry: a child tab shows its
   // root's, because a subagent has no goal of its own.
   const goalFor = (agentId: string) => chatStore.goal.get(bgRootFor(agentId))

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func (r *activityRecorder) busyStates() []bool {
 	defer r.mu.Unlock()
 	out := make([]bool, 0, len(r.events))
 	for _, e := range r.events {
-		out = append(out, e.GetBusy())
+		out = append(out, e.GetState() == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING)
 	}
 	return out
 }
@@ -73,7 +74,7 @@ func (r *activityRecorder) agentIDs() []string {
 
 // newActivityHandler wires a handler whose process-running check always answers
 // true, so a test can drive the other inputs in isolation. `agents` is nil here,
-// which computeBusy reads as "no process": the fake below replaces that.
+// which the derivation reads as "no process": the fake below replaces that.
 func newActivityHandler(t *testing.T, agentID string) (*OutputHandler, *activityRecorder) {
 	t.Helper()
 	m := NewWatcherManager()
@@ -139,6 +140,39 @@ func TestActivity_PendingControlRequestMakesAnAgentIdleMidTurn(t *testing.T) {
 	h.noteControlRequestsRemoved("agent-1", "agent-1", "req-1")
 	assert.Equal(t, []bool{true, false, true}, rec.busyStates(),
 		"answering the prompt hands the turn back")
+}
+
+func TestActivity_APromptMidTurnIsWaitingRatherThanIdle(t *testing.T) {
+	t.Parallel()
+
+	// The indicator and the close guard need OPPOSITE answers here, which one
+	// boolean could not give: the spinner must stop, because the user is looking
+	// straight at the prompt, but the turn is still in flight and closing the tab
+	// kills it along with every subagent under it.
+	h, rec := newActivityHandler(t, "agent-1")
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+
+	got := h.AgentActivitySnapshot("agent-1", "agent-1")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER, got.State)
+	assert.False(t, got.Working(), "the indicator must not spin at somebody being asked a question")
+	assert.True(t, got.InterruptsWork(), "but a close would still kill the turn")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		rec.last().GetState(), "and the state reaches the wire, so both surfaces read the same rule")
+}
+
+func TestActivity_APromptWithNoTurnBehindItIsPlainIdle(t *testing.T) {
+	t.Parallel()
+
+	// A shell task can ask for permission after its agent's turn ended. What a
+	// close interrupts there is the task, which the count already reports -- so
+	// claiming a turn is waiting would name work that does not exist.
+	h, _ := newActivityHandler(t, "agent-1")
+	h.noteControlRequestAdded("agent-1", "agent-1", "req-1")
+
+	got := h.AgentActivitySnapshot("agent-1", "agent-1")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, got.State)
+	assert.False(t, got.InterruptsWork())
 }
 
 func TestActivity_DuplicateControlRequestPublishesOnce(t *testing.T) {
@@ -248,9 +282,9 @@ func TestActivity_RestartWhileBlockedOnAPromptAlsoStartsIdle(t *testing.T) {
 	// Nothing will ever answer a prompt whose process is gone, so a retained one
 	// would pin the agent idle-because-blocked rather than genuinely idle -- and
 	// the next real turn could not report busy through it.
-	assert.False(t, h.computeBusy("agent-1", "agent-1"))
+	assert.False(t, h.AgentBusy("agent-1", "agent-1"))
 	h.setTurnActive("agent-1", "agent-1", true)
-	assert.True(t, h.computeBusy("agent-1", "agent-1"), "the restarted agent can report a turn again")
+	assert.True(t, h.AgentBusy("agent-1", "agent-1"), "the restarted agent can report a turn again")
 }
 
 func TestActivity_SettleCarriesTheToolCountOfTheTurnThatEnded(t *testing.T) {
@@ -259,12 +293,12 @@ func TestActivity_SettleCarriesTheToolCountOfTheTurnThatEnded(t *testing.T) {
 	h, rec := newActivityHandler(t, "agent-1")
 	h.setTurnActive("agent-1", "agent-1", true)
 
-	h.noteTurnEnded("agent-1", 3, true)
+	h.noteTurnEnded("agent-1", "agent-1", 3, true)
 	h.setTurnActive("agent-1", "agent-1", false)
 
 	last := rec.last()
 	require.NotNil(t, last)
-	assert.False(t, last.GetBusy())
+	assert.NotEqual(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, last.GetState())
 	require.NotNil(t, last.NumToolUses, "the settle spends the count the turn end recorded")
 	assert.Equal(t, int32(3), last.GetNumToolUses())
 }
@@ -277,7 +311,7 @@ func TestActivity_ZeroToolTurnStaysDistinguishableFromNoCount(t *testing.T) {
 	// interrupting the user for".
 	h, rec := newActivityHandler(t, "agent-1")
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteTurnEnded("agent-1", 0, true)
+	h.noteTurnEnded("agent-1", "agent-1", 0, true)
 	h.setTurnActive("agent-1", "agent-1", false)
 
 	last := rec.last()
@@ -290,7 +324,7 @@ func TestActivity_ProviderThatReportsNoCountLeavesItUnset(t *testing.T) {
 
 	h, rec := newActivityHandler(t, "agent-1")
 	h.setTurnActive("agent-1", "agent-1", true)
-	h.noteTurnEnded("agent-1", 0, false)
+	h.noteTurnEnded("agent-1", "agent-1", 0, false)
 	h.setTurnActive("agent-1", "agent-1", false)
 
 	assert.Nil(t, rec.last().NumToolUses, "unset, so the client rings rather than guessing 0")
@@ -313,7 +347,7 @@ func TestActivity_NewTurnDropsAnUnspentCount(t *testing.T) {
 	t.Parallel()
 
 	h, rec := newActivityHandler(t, "agent-1")
-	h.noteTurnEnded("agent-1", 9, true)
+	h.noteTurnEnded("agent-1", "agent-1", 9, true)
 
 	// A fresh turn supersedes whatever the previous one left unspent, so a stale
 	// count cannot silence the alert for the turn now starting.
@@ -321,6 +355,59 @@ func TestActivity_NewTurnDropsAnUnspentCount(t *testing.T) {
 	h.setTurnActive("agent-1", "agent-1", false)
 
 	assert.Nil(t, rec.last().NumToolUses)
+}
+
+func TestActivity_TreeRecomputesAChildTheDisplayCapDropped(t *testing.T) {
+	t.Parallel()
+
+	// The cap gives up the oldest ACTIVE row when the pool is full, which is
+	// exactly why the snapshot answers a missing child from the table instead.
+	// So a child can be published BUSY and then vanish from the display list.
+	// Enumerating only the listed rows leaves that child spinning forever, on a
+	// run that already ended.
+	h, _ := newActivityHandler(t, "root-1")
+	h.setTurnActive("child-1", "root-1", true)
+
+	// An empty list stands in for the cap having dropped every row.
+	assert.Equal(t, []string{"child-1"}, h.treeChildIDs("root-1", nil),
+		"the activity map is the one child source the cap cannot truncate")
+}
+
+func TestActivity_TreeChildrenUnionTheListAndTheMapWithoutDuplicates(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newActivityHandler(t, "root-1")
+	h.setTurnActive("child-1", "root-1", true)
+	h.setTurnActive("root-1", "root-1", true)
+	// A child of a DIFFERENT root must not leak into this tree.
+	h.setTurnActive("child-9", "root-2", true)
+
+	rows := []bgtask.Item{
+		{RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusRunning},
+		{RowKey: "b", ChildAgentID: "child-2", Status: bgtask.StatusRunning},
+		{RowKey: "c", Status: bgtask.StatusRunning},
+		{RowKey: "d", ChildAgentID: "root-1", Status: bgtask.StatusRunning},
+	}
+
+	got := h.treeChildIDs("root-1", rows)
+
+	assert.ElementsMatch(t, []string{"child-1", "child-2"}, got)
+	assert.Len(t, got, 2, "child-1 is in both sources, and a root is not its own child")
+}
+
+func TestActivity_ATurnEndRootsAChildEntryItCreates(t *testing.T) {
+	t.Parallel()
+
+	// A subagent's result envelope can arrive before its task_started, so no
+	// registry row links it yet and the turn end is the FIRST touch of its
+	// entry. An entry created with no root resolves against ITSELF, which asks
+	// whether a process named after the child runs. None ever does, so the
+	// subagent would read idle for the rest of its run.
+	h, _ := newActivityHandler(t, "child-1")
+	h.noteTurnEnded("child-1", "root-1", 2, true)
+
+	assert.Equal(t, "root-1", h.resolveRoot("child-1", ""),
+		"the turn end records the feeding process like every other mutator")
 }
 
 func TestCountActiveBackgroundTasks(t *testing.T) {
@@ -343,10 +430,10 @@ func TestCountActiveBackgroundTasks(t *testing.T) {
 	assert.Equal(t, int32(0), countActiveBackgroundTasks(nil, ""))
 }
 
-// --- The registry legs, against a real store -------------------------------
+// --- The registry inputs, against a real store -----------------------------
 //
 // The tests above drive the in-memory inputs with no database, so the
-// background-task leg of the derivation -- the one that carries the root/child
+// background-task input of the derivation -- the one that carries the root/child
 // split -- never runs there. These wire the real registry.
 
 // setupActivityRegistryTest gives a root, one linked child and a handler whose
@@ -361,6 +448,212 @@ func setupActivityRegistryTest(t *testing.T) (*Service, agent.OutputSink, string
 	return svc, svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), rootID, childID
 }
 
+// unspentToolCount reads the count waiting for an agent's next settle. The
+// latch is the mechanism behind NumToolUses, and reading it directly lets a case
+// pin WHICH settle may spend it without having to drive the settle itself.
+func unspentToolCount(h *OutputHandler, agentID string) *int32 {
+	st := h.activityFor(agentID, "")
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.settledToolUses
+}
+
+func TestActivity_ARootCountsTheRunningRowsTheCapHid(t *testing.T) {
+	t.Parallel()
+
+	// The cap is a DISPLAY limit. When a pool of 64 holds no finished row it
+	// gives up an ACTIVE one, and retention keeps that row running in the table.
+	// Reading the list alone then makes the root settle -- ringing the completion
+	// sound and letting the close guard pass -- while the subagent still runs.
+	svc, sink := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("spawn-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "SCAN", Status: bgtask.StatusRunning,
+	}))
+
+	// Every filler row is active too, so eviction has no finished row to take and
+	// gives up the oldest -- this child's.
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	require.False(t, hasRegistryRowFor(displayed, childID),
+		"the display list must actually have dropped the row, or this proves nothing")
+
+	got := svc.Output.AgentActivitySnapshot("root-1", "root-1")
+
+	assert.True(t, got.Working(), "the evicted subagent is still running")
+	assert.Equal(t, int32(bgtask.MaxTasks+1), got.ActiveTasks,
+		"the count adds back what the cap hid, so the root does not settle early")
+}
+
+func TestActivity_AReadmittedRowStopsBeingCountedTwice(t *testing.T) {
+	t.Parallel()
+
+	// The hidden-active count corrects for what the DISPLAY list cannot see, so
+	// a row that comes BACK into the list must leave the correction. Otherwise
+	// the list and the correction both speak for it, the count drifts up on
+	// every re-admit, and the root can never settle.
+	//
+	// The pool is full here, so a re-admit necessarily evicts another active row
+	// and the hidden COUNT stays 1. Which row is hidden changes; how many are
+	// running does not.
+	svc, sink := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("spawn-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	// A CHANGED title each time, so the upsert is a real mutation. An identical
+	// one is a no-op the registry never re-admits.
+	upsertChild := func(title string) {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+			Title: title, Status: bgtask.StatusRunning,
+		}))
+	}
+	upsertChild("SCAN")
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	require.Equal(t, int32(1), svc.Output.hiddenActiveTasks("root-1"), "the cap hid a row")
+	require.Equal(t, int32(bgtask.MaxTasks+1),
+		svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks)
+
+	// Its next mutation re-admits it, twice over.
+	upsertChild("SCAN two")
+	upsertChild("SCAN three")
+
+	assert.Equal(t, int32(1), svc.Output.hiddenActiveTasks("root-1"),
+		"one row is hidden, not one more per re-admit")
+	assert.Equal(t, int32(bgtask.MaxTasks+1),
+		svc.Output.AgentActivitySnapshot("root-1", "root-1").ActiveTasks,
+		"65 subagents run, however many times the cap swapped which one it hides")
+}
+
+func TestActivity_AStaleDerivationDoesNotLatchOverAFresherOne(t *testing.T) {
+	// Two refreshes for one agent derive from registry reads taken at different
+	// moments, and neither holds a lock across the derivation. Without the
+	// ticket the slower reader publishes LAST and its older answer wins.
+	//
+	// The edge trigger then makes that permanent: the next genuine change
+	// compares equal to what the stale publish recorded, so nothing is sent. The
+	// tab keeps no spinner for the whole turn AND misses its settle.
+	svc, sink, rootID, _ := setupActivityRegistryTest(t)
+
+	// The slow refresh, up to the point where it holds its inputs but has not
+	// published. Taking the ticket and reading the rows is exactly what
+	// refreshActivity does before it derives, so this is that refresh parked
+	// mid-flight -- driven directly, because a seam that parks the FIRST
+	// derivation cannot tell which caller it caught.
+	staleSeq := svc.Output.activitySeq.Add(1)
+	// An empty list is what that read returned: it happened before any task of
+	// this root's existed.
+	var staleRows []bgtask.Item
+	stale := svc.Output.activitySnapshotFrom(rootID, rootID, staleRows)
+	require.False(t, stale.Working(), "the slow refresh would derive idle from what it read")
+
+	// A task starts and publishes busy while that refresh is still in flight.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-shell", Kind: bgtask.KindShell,
+		Title: "npm run build", Status: bgtask.StatusRunning,
+	}))
+	require.True(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working(),
+		"the running task makes the agent busy")
+
+	// Now the slow refresh finishes, carrying its older rows.
+	svc.Output.refreshActivityFrom(rootID, rootID, staleRows, staleSeq)
+
+	st := svc.Output.activityFor(rootID, rootID)
+	st.mu.Lock()
+	published, hasPublished := st.published, st.hasPublished
+	st.mu.Unlock()
+	require.True(t, hasPublished)
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, published,
+		"the older derivation must not overwrite the answer a fresher one already published")
+}
+
+func TestActivity_ShutdownJoinsTheDeferredTreeRefresh(t *testing.T) {
+	// resetAgentActivity publishes on its own goroutine, so a relaunch is not
+	// stalled behind a slow watcher. Nothing joined that goroutine, so the
+	// refresh could still be reading the registry and broadcasting after
+	// Shutdown returned and the caller closed the database.
+	svc, _, rootID, _ := setupActivityRegistryTest(t)
+
+	var calls atomic.Int32
+	parked, release := make(chan struct{}), make(chan struct{})
+	// Only the FIRST derivation parks. refreshActivityTree asks once for the
+	// root and once per child, and sync.Once would block the second caller
+	// instead of letting it through.
+	svc.Output.processRunning = func(string) bool {
+		if calls.Add(1) == 1 {
+			close(parked)
+			<-release
+		}
+		return false
+	}
+
+	svc.Output.NoteAgentProcessExited(rootID)
+	<-parked
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.Shutdown()
+	}()
+	select {
+	case <-done:
+		t.Fatal("Shutdown returned while a deferred activity refresh was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-done
+}
+
+func TestActivity_AClearThatDoesNotSettleDropsTheCount(t *testing.T) {
+	t.Parallel()
+
+	// The count describes the turn that ENDED, and only the settle that turn's
+	// own clear produces may spend it.
+	//
+	// Here a shell task from an earlier turn is still running, so this turn's
+	// clear settles nothing. The settle arrives later, when that task ends, and
+	// it belongs to the task rather than to the zero-tool turn. Spending the
+	// stale 0 there makes the client suppress the alert, so the user never
+	// learns the long task finished.
+	svc, sink, rootID, _ := setupActivityRegistryTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "row-shell", Kind: bgtask.KindShell,
+		Title: "npm run build", Status: bgtask.StatusRunning,
+	}))
+
+	svc.Output.setTurnActive(rootID, rootID, true)
+	svc.Output.noteTurnEnded(rootID, rootID, 0, true)
+	svc.Output.setTurnActive(rootID, rootID, false)
+
+	require.True(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working(),
+		"the shell task holds the agent past its own turn end")
+	assert.Nil(t, unspentToolCount(svc.Output, rootID),
+		"the settle the shell task causes belongs to the task, so it must alert")
+}
+
+func TestActivity_AClearThatSettlesStillSpendsTheCount(t *testing.T) {
+	t.Parallel()
+
+	// The other half of the rule: when the clear DOES settle the agent, the
+	// count reaches that settle. Dropping it here would ring the completion
+	// sound for every turn that used no tool, which is the case it exists to
+	// suppress.
+	h, rec := newActivityHandler(t, "agent-1")
+	h.setTurnActive("agent-1", "agent-1", true)
+	h.noteTurnEnded("agent-1", "agent-1", 0, true)
+	h.setTurnActive("agent-1", "agent-1", false)
+
+	last := rec.last()
+	require.NotNil(t, last)
+	assert.NotEqual(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, last.GetState())
+	require.NotNil(t, last.NumToolUses, "the settle this clear produced spends the count")
+	assert.Equal(t, int32(0), last.GetNumToolUses())
+}
+
 func TestActivity_RootRollsUpDescendantsAndAChildReadsOnlyItsOwnRow(t *testing.T) {
 	t.Parallel()
 
@@ -373,12 +666,12 @@ func TestActivity_RootRollsUpDescendantsAndAChildReadsOnlyItsOwnRow(t *testing.T
 	// A subagent's registry row IS its run, so the child needs no turn of its
 	// own. The root rolls the same row up: its tab has always meant "anything
 	// under me is working".
-	rootBusy, rootTasks := svc.Output.AgentActivitySnapshot(rootID, rootID)
-	assert.True(t, rootBusy, "a running descendant makes the root busy with no turn of its own")
-	assert.Equal(t, int32(1), rootTasks)
-	childBusy, childTasks := svc.Output.AgentActivitySnapshot(childID, rootID)
-	assert.True(t, childBusy)
-	assert.Equal(t, int32(1), childTasks)
+	root := svc.Output.AgentActivitySnapshot(rootID, rootID)
+	assert.True(t, root.Working(), "a running descendant makes the root busy with no turn of its own")
+	assert.Equal(t, int32(1), root.ActiveTasks)
+	child := svc.Output.AgentActivitySnapshot(childID, rootID)
+	assert.True(t, child.Working())
+	assert.Equal(t, int32(1), child.ActiveTasks)
 }
 
 func TestActivity_AFinishedChildIsIdleWhileASiblingKeepsRunning(t *testing.T) {
@@ -401,13 +694,12 @@ func TestActivity_AFinishedChildIsIdleWhileASiblingKeepsRunning(t *testing.T) {
 	// Counting the root's whole registry for a child was the bug this split
 	// exists to prevent: it kept a finished subagent spinning for as long as any
 	// sibling ran.
-	childBusy, _ := svc.Output.AgentActivitySnapshot(childID, rootID)
-	assert.False(t, childBusy, "a child whose own row ended is done, whatever its siblings do")
-	siblingBusy, _ := svc.Output.AgentActivitySnapshot(siblingID, rootID)
-	assert.True(t, siblingBusy)
-	rootBusy, rootTasks := svc.Output.AgentActivitySnapshot(rootID, rootID)
-	assert.True(t, rootBusy, "the root still rolls up the sibling")
-	assert.Equal(t, int32(1), rootTasks, "the finished row drops out of the count")
+	child := svc.Output.AgentActivitySnapshot(childID, rootID)
+	assert.False(t, child.Working(), "a child whose own row ended is done, whatever its siblings do")
+	assert.True(t, svc.Output.AgentActivitySnapshot(siblingID, rootID).Working())
+	root := svc.Output.AgentActivitySnapshot(rootID, rootID)
+	assert.True(t, root.Working(), "the root still rolls up the sibling")
+	assert.Equal(t, int32(1), root.ActiveTasks, "the finished row drops out of the count")
 }
 
 func TestActivity_ChildIsIdleWhenTheFeedingProcessIsGone(t *testing.T) {
@@ -418,16 +710,15 @@ func TestActivity_ChildIsIdleWhenTheFeedingProcessIsGone(t *testing.T) {
 		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
-	// A child owns no process. Both legs ask about the root, because a child tab
+	// A child owns no process. Both paths ask about the root, because a child tab
 	// is working only while the process feeding it runs -- and a crash leaves
 	// registry rows that never reached a final status.
 	svc.Output.processRunning = func(string) bool { return false }
 
-	childBusy, childTasks := svc.Output.AgentActivitySnapshot(childID, rootID)
-	assert.False(t, childBusy)
-	assert.Equal(t, int32(1), childTasks, "the count still reports the stranded row")
-	rootBusy, _ := svc.Output.AgentActivitySnapshot(rootID, rootID)
-	assert.False(t, rootBusy)
+	child := svc.Output.AgentActivitySnapshot(childID, rootID)
+	assert.False(t, child.Working())
+	assert.Equal(t, int32(1), child.ActiveTasks, "the count still reports the stranded row")
+	assert.False(t, svc.Output.AgentActivitySnapshot(rootID, rootID).Working())
 }
 
 func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
@@ -440,25 +731,37 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
 
-	// The hydration leg. A tab watching in NOTIFY mode gets no catch-up replay,
+	// The hydration path. A tab watching in NOTIFY mode gets no catch-up replay,
 	// so a list read is the only place it learns the current value -- and both
 	// close guards start from a list read.
 	rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
 	require.NoError(t, err)
 	rootInfo := svc.agentToProto(&rootRow, true, nil)
-	assert.True(t, rootInfo.GetBusy())
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, rootInfo.GetActivityState())
 	assert.Equal(t, int32(1), rootInfo.GetActiveBackgroundTasks())
 
 	childRow, err := svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err)
 	childInfo := svc.agentToProto(&childRow, false, nil)
-	assert.True(t, childInfo.GetBusy(), "a child is busy while its own row runs")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, childInfo.GetActivityState(),
+		"a child is working while its own row runs")
 	assert.Equal(t, int32(1), childInfo.GetActiveBackgroundTasks())
 
 	require.NoError(t, sink.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
 	childRow, err = svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err)
-	assert.False(t, svc.agentToProto(&childRow, false, nil).GetBusy())
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+		svc.agentToProto(&childRow, false, nil).GetActivityState())
+
+	// The third state reaches the wire too. It is the one a close guard reading
+	// a single "is it working" boolean could not see, so a list read that
+	// flattened it back to IDLE would let a mid-turn tab close unwarned.
+	svc.Output.setTurnActive(rootID, rootID, true)
+	svc.Output.noteControlRequestAdded(rootID, rootID, "req-1")
+	rootRow, err = svc.Queries.GetAgentByID(ctx, rootID)
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		svc.agentToProto(&rootRow, true, nil).GetActivityState())
 }
 
 // --- The terminal half of the close guard ----------------------------------
@@ -506,9 +809,9 @@ func TestActivity_AChildStaysBusyAfterTheCapDropsItsRow(t *testing.T) {
 		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "SCAN", Status: bgtask.StatusRunning,
 	}))
-	busy, tasks := svc.Output.AgentActivitySnapshot(childID, "root-1")
-	require.True(t, busy, "the child is running before the cap moves")
-	require.Equal(t, int32(1), tasks)
+	before := svc.Output.AgentActivitySnapshot(childID, "root-1")
+	require.True(t, before.Working(), "the child is running before the cap moves")
+	require.Equal(t, int32(1), before.ActiveTasks)
 
 	// Every filler row is active too, so eviction has no finished row to take and
 	// gives up the oldest -- this child's.
@@ -518,10 +821,10 @@ func TestActivity_AChildStaysBusyAfterTheCapDropsItsRow(t *testing.T) {
 	require.False(t, hasRegistryRowFor(displayed, childID),
 		"the display list must actually have dropped the row, or this proves nothing")
 
-	busy, tasks = svc.Output.AgentActivitySnapshot(childID, "root-1")
+	after := svc.Output.AgentActivitySnapshot(childID, "root-1")
 
-	assert.True(t, busy, "the row left the sidebar, not the machine")
-	assert.Equal(t, int32(1), tasks)
+	assert.True(t, after.Working(), "the row left the sidebar, not the machine")
+	assert.Equal(t, int32(1), after.ActiveTasks)
 }
 
 // The mirror. The table fallback must not resurrect a subagent that really
@@ -537,10 +840,10 @@ func TestActivity_AFinishedChildStaysIdlePastTheCap(t *testing.T) {
 
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 
-	busy, tasks := svc.Output.AgentActivitySnapshot(childID, "root-1")
+	got := svc.Output.AgentActivitySnapshot(childID, "root-1")
 
-	assert.False(t, busy)
-	assert.Zero(t, tasks)
+	assert.False(t, got.Working())
+	assert.Zero(t, got.ActiveTasks)
 }
 
 // An agent id that owns no registry row at all -- a child whose spawn never
@@ -551,10 +854,10 @@ func TestActivity_AChildWithNoRowAnywhereIsIdle(t *testing.T) {
 	svc, _ := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
 
-	busy, tasks := svc.Output.AgentActivitySnapshot("never-spawned", "root-1")
+	got := svc.Output.AgentActivitySnapshot("never-spawned", "root-1")
 
-	assert.False(t, busy)
-	assert.Zero(t, tasks)
+	assert.False(t, got.Working())
+	assert.Zero(t, got.ActiveTasks)
 }
 
 func TestHasRegistryRowFor(t *testing.T) {
@@ -586,17 +889,17 @@ func TestActivity_AChildIsIdleWhenThereIsNoStoreToAsk(t *testing.T) {
 	// user can no longer close by any route.
 	h, rec := newActivityHandler(t, "child-1")
 
-	busy, tasks := h.AgentActivitySnapshot("child-1", "root-1")
+	got := h.AgentActivitySnapshot("child-1", "root-1")
 
-	assert.False(t, busy)
-	assert.Zero(t, tasks)
+	assert.False(t, got.Working())
+	assert.Zero(t, got.ActiveTasks)
 	assert.Empty(t, rec.busyStates(), "a read publishes nothing")
 }
 
 func TestActivity_APendingChildRowCountsAsWorkPastTheCap(t *testing.T) {
 	t.Parallel()
 
-	// A subagent that has been spawned but has not reported yet is PENDING, and
+	// A subagent that the agent spawned but that never reported yet is PENDING, and
 	// that is the state it sits in for the whole window where the user is most
 	// likely to close the tab by accident. The fallback has to treat it as work,
 	// not just `running`.
@@ -613,8 +916,8 @@ func TestActivity_APendingChildRowCountsAsWorkPastTheCap(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, hasRegistryRowFor(displayed, childID), "the cap must have dropped the row")
 
-	busy, tasks := svc.Output.AgentActivitySnapshot(childID, "root-1")
+	got := svc.Output.AgentActivitySnapshot(childID, "root-1")
 
-	assert.True(t, busy)
-	assert.Equal(t, int32(1), tasks)
+	assert.True(t, got.Working())
+	assert.Equal(t, int32(1), got.ActiveTasks)
 }

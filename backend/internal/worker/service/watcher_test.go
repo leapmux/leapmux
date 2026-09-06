@@ -1285,7 +1285,7 @@ func TestBroadcast_ActivityChangedReachesNotifyWatcher(t *testing.T) {
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
 		Event: &leapmuxv1.AgentEvent_ActivityChanged{
-			ActivityChanged: &leapmuxv1.AgentActivityChanged{Busy: false},
+			ActivityChanged: &leapmuxv1.AgentActivityChanged{State: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE},
 		},
 	})
 	// The whole point of the event is the tab nobody is looking at: that is the

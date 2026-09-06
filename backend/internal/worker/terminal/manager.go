@@ -57,9 +57,19 @@ func (m *Manager) DescendantProcesses(ctx context.Context, terminalIDs []string)
 	}
 	// IsExited is a lock-free channel read, so the leading check costs nothing
 	// to make here and saves the scan entirely when every id is already gone.
+	//
+	// Deduplicated: the answer for one terminal is the same however many times
+	// the request names it, and each repeat costs a full walk of the process
+	// table. The reply is keyed by terminal id, so a duplicate could only
+	// produce a duplicate row.
 	m.mu.RLock()
 	targets := make([]target, 0, len(terminalIDs))
+	seen := make(map[string]struct{}, len(terminalIDs))
 	for _, id := range terminalIDs {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
 		if t, ok := m.terminals[id]; ok && !t.IsExited() {
 			targets = append(targets, target{id: id, t: t})
 		}
@@ -75,6 +85,13 @@ func (m *Manager) DescendantProcesses(ctx context.Context, terminalIDs []string)
 	}
 	out := make([]TerminalProcesses, 0, len(targets))
 	for _, tg := range targets {
+		// The walk itself takes no context, so the caller's deadline reaches it
+		// only here. Without this check the scan's own timeout bounds the table
+		// read alone, and a wide request keeps walking long after the answer can
+		// still be delivered.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		procs, total := scan.descendantsOf(tg.t.ShellPID(), maxReportedProcesses)
 		if len(procs) == 0 || tg.t.IsExited() {
 			continue

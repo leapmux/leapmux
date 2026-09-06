@@ -1,11 +1,13 @@
 /// <reference types="vitest/globals" />
 import type { LastTabCloseChoice, LastTabConfirmState } from './LastTabCloseDialog'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
+import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
@@ -131,6 +133,34 @@ describe('lastTabCloseDialog', () => {
     expect(screen.getByText('Worktree branch')).toBeInTheDocument()
     expect(screen.getByTestId('working-tree-directory').textContent).toBe('/tmp/wt')
     expect(screen.getByRole('button', { name: 'Delete worktree' })).toBeInTheDocument()
+  })
+
+  it('names the running work when this prompt supersedes the busy one', () => {
+    // The two prompts are mutually exclusive and this one wins, so it has to
+    // carry the busy fact rather than drop it. The status rows only COUNT the
+    // tab ("1 terminal will be stopped"); the user about to click "Delete
+    // worktree" is the one who most needs to hear that a process is still
+    // writing into that directory.
+    renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      tabType: TabType.TERMINAL,
+      busyReason: {
+        kind: 'terminal-processes',
+        processes: [create(TerminalProcessSchema, { pid: 51234, name: 'node' })],
+        totalCount: 1,
+      },
+    }))
+
+    expect(screen.getByText(/1 process still runs in this terminal/)).toBeInTheDocument()
+    expect(screen.getByText('node (pid 51234)')).toBeInTheDocument()
+  })
+
+  it('shows no busy block when nothing is running', () => {
+    renderDialog(makeState({ target: LastTabCloseTarget.WORKTREE, worktreePath: '/tmp/wt' }))
+
+    expect(screen.queryByTestId('busy-processes')).toBeNull()
+    expect(screen.queryByTestId('busy-background-tasks')).toBeNull()
   })
 
   it('worktree variant states the kind once and omits the branch sentence', () => {

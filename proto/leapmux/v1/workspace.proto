@@ -385,30 +385,31 @@ message AgentTurnEnd {
   optional int32 num_tool_uses = 1;
 }
 
-// AgentActivityChanged carries the Worker's authoritative answer to "is this
-// agent busy". The Worker derives it from the provider's own turn bookkeeping,
-// the background-task registry, the pending control requests and the process
-// state, so no client re-derives it from the transcript.
+// AgentActivityChanged carries the Worker's authoritative answer to "what is
+// this agent doing". The Worker derives it from the provider's own turn
+// bookkeeping, the background-task registry, the pending control requests and
+// the process state, so no client re-derives it from the transcript.
 //
-// EDGE-TRIGGERED: the Worker sends this only when `busy` CHANGES, never per
+// EDGE-TRIGGERED: the Worker sends this only when the state CHANGES, never per
 // output line. NOTIFY-class, so the tab nobody is looking at still learns that
 // its agent settled -- which is the tab that most needs to ring and badge.
 //
-// The busy->false edge is the "settled" signal: the turn ended AND no
+// The WORKING -> not-WORKING edge is the "settled" signal: the turn ended AND no
 // background task of this agent's is still running.
 message AgentActivityChanged {
-  bool busy = 1;
+  AgentActivityState state = 1;
   // Tool calls in the turn that this settle completes. The Worker records the
-  // count when a turn ends and spends it on the NEXT busy->false edge, so a
-  // turn that leaves a subagent running still reports its own count when the
-  // subagent finally settles the agent.
+  // count when a turn ends and spends it on the NEXT settle, so a turn that
+  // leaves a subagent running still reports its own count when the subagent
+  // finally settles the agent.
   //
-  // UNSET on the busy->true edge, when the provider reports no count, and when
-  // the settle follows no turn end at all -- a control request that arrives
-  // mid-turn, or a process exit. Clients suppress the sound for a zero-tool
-  // turn, so unset and 0 must stay distinguishable: unset means "ring", 0 means
-  // "this turn did nothing worth interrupting the user for".
+  // UNSET when the agent starts working, when the provider reports no count,
+  // and when the settle follows no turn end at all -- a control request that
+  // arrives mid-turn, or a process exit. Clients suppress the sound for a
+  // zero-tool turn, so unset and 0 must stay distinguishable: unset means
+  // "ring", 0 means "this turn did nothing worth interrupting the user for".
   optional int32 num_tool_uses = 2;
+
 }
 
 // CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the

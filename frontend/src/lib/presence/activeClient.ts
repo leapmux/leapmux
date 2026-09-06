@@ -4,7 +4,7 @@ import { createSignal } from 'solid-js'
  * activeClientStore is the per-(workspace_id) reactive map of the
  * currently-active client id, fed by PresenceUpdate events arriving
  * over the `/ws/userevents` WebSocket subscription.
- * AppShell.handleTurnEnd consults this to gate the turn-end ding-dong:
+ * AppShell.handleAgentSettled consults this, so only the active client dings:
  * only the client whose id matches the active client for the workspace
  * plays the sound.
  */

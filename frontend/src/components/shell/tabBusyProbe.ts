@@ -5,6 +5,7 @@ import type { Tab } from '~/stores/tab.types'
 import * as workerRpc from '~/api/workerRpc'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
+import { isActiveBackgroundTaskStatus } from '~/stores/chatBackgroundTasks'
 import { tabDisplayLabel } from '~/stores/tab.helpers'
 
 const log = createLogger('tabBusyProbe')
@@ -51,11 +52,18 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
     // revived. Nothing stops, so there is nothing to warn about.
     if (tab.type !== TabType.AGENT || tab.parentAgentId)
       return null
-    if (!deps.activity.isBusy(tab.id))
+    // interruptsWork, not isBusy. They differ for an agent blocked on a
+    // permission prompt: the indicator must not spin at somebody who is being
+    // asked a question, but its turn is still in flight and this close kills it
+    // along with every background task under it.
+    if (!deps.activity.interruptsWork(tab.id))
       return null
     return {
       kind: 'agent-turn',
-      activeTasks: deps.tasksFor(tab.id).filter(t => t.status === 'pending' || t.status === 'running'),
+      // The same predicate the chip counts with. Re-spelling the statuses here
+      // would let the dialog list fewer running tasks than the chip beside it
+      // reports as soon as a new status joins the enum.
+      activeTasks: deps.tasksFor(tab.id).filter(t => isActiveBackgroundTaskStatus(t.status)),
     }
   }
 
@@ -102,14 +110,6 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
     return out
   }
 
-  const probe = async (tab: Tab): Promise<TabBusyReason | null> => {
-    if (tab.type === TabType.AGENT)
-      return agentReason(tab)
-    if (tab.type !== TabType.TERMINAL)
-      return null
-    return (await terminalReasons([tab])).get(tab.id) ?? null
-  }
-
   /**
    * The whole set at once, for the aggregated prompt a tile/grid/window close
    * shows before it starts closing.
@@ -124,6 +124,14 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
     }
     return out
   }
+
+  /**
+   * One tab, through the same dispatch the bulk probe uses, so the two cannot
+   * disagree about how a tab's reason is resolved. A tab that is not busy
+   * produces no row, so an empty answer means "nothing to warn about".
+   */
+  const probe = async (tab: Tab): Promise<TabBusyReason | null> =>
+    (await probeMany([tab]))[0]?.reason ?? null
 
   return { probe, probeMany }
 }

@@ -188,9 +188,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
   }
 
-  const askLastTabConfirmation = (workerId: string, tabType: TabType, tabId: string, status: InspectLastTabCloseResponse): Promise<LastTabCloseChoice> => {
+  const askLastTabConfirmation = (
+    workerId: string,
+    tabType: TabType,
+    tabId: string,
+    status: InspectLastTabCloseResponse,
+    busyReason: TabBusyReason | null,
+  ): Promise<LastTabCloseChoice> => {
     return new Promise((resolve) => {
-      lastTabConfirmDialog.open({ ...status, workerId, tabId, tabType, resolve })
+      lastTabConfirmDialog.open({ ...status, workerId, tabId, tabType, busyReason, resolve })
     })
   }
 
@@ -518,14 +524,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         closeOpts?.skipBusyConfirm ? Promise.resolve(null) : opts.busyProbe.probe(tab),
       ])
       trackedAtInspect = Boolean(status.worktreeId)
-      // The two prompts are mutually exclusive, and the worktree one wins. A tab
-      // that is the last one for its worktree already asks a question whose
-      // "Close anyway" covers this one, so raising both would make a single
-      // click answer two dialogs.
+      // The two prompts are mutually exclusive, and the worktree one wins: a
+      // single click must not answer two dialogs. But it wins by ABSORBING the
+      // busy fact, not by dropping it -- the busy reason goes into that dialog,
+      // which otherwise offers "Delete worktree" while saying nothing about the
+      // process still writing into that directory.
       if (!status.shouldPrompt && busyReason && !await askBusyTabConfirmation(tab, busyReason))
         return false
       if (status.shouldPrompt) {
-        const choice = await askLastTabConfirmation(workerId, tab.type, tab.id, status)
+        const choice = await askLastTabConfirmation(workerId, tab.type, tab.id, status, busyReason)
         if (choice === 'cancel') {
           return false
         }

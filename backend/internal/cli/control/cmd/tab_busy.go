@@ -74,14 +74,47 @@ func errTabBusyRefused(reasons []tabBusyReason) error {
 // the process state. The CLI does not re-derive any of that; there is one
 // definition and it lives on the Worker.
 func agentBusyDetail(info *leapmuxv1.AgentInfo) string {
-	if info == nil || !info.GetBusy() {
+	if info == nil {
 		return ""
 	}
-	detail := "agent turn is in progress"
-	if n := info.GetActiveBackgroundTasks(); n > 0 {
-		detail += fmt.Sprintf(", %s active", pluralize(int(n), "background task"))
+	// A SUBAGENT tab closes in the UI only. CloseAgent on a child keeps the row
+	// and the transcript and stops no process, so the run continues and the tab
+	// can be revived -- there is nothing for a close to interrupt, whatever the
+	// child's own registry row says. The browser's probe carves the same case
+	// out; without this the CLI refused a scripted close that destroys nothing,
+	// and a `tile close` refused the whole tile over one subagent transcript.
+	if info.GetParentAgentId() != "" {
+		return ""
 	}
-	return detail
+	n := info.GetActiveBackgroundTasks()
+	switch info.GetActivityState() {
+	case leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER:
+		// The indicator does not spin here, but a close still kills the turn and
+		// every background task under it. This is the state that used to close
+		// unwarned, because the browser and the CLI both read one boolean that
+		// said "not working".
+		return withTaskCount("agent turn is waiting for a permission answer", n)
+	case leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING:
+		// WORKING covers a turn OR a running background task, and the state
+		// alone does not say which. Claim the turn only when nothing else
+		// explains it: a turn that ended while a subagent kept running would
+		// otherwise be reported as in progress after it finished.
+		if n == 0 {
+			return "agent turn is in progress"
+		}
+		return withTaskCount("agent is working", n)
+	default:
+		return ""
+	}
+}
+
+// withTaskCount appends the active-task count to a reason, so a refusal names
+// what it protects rather than only that it refuses.
+func withTaskCount(detail string, n int32) string {
+	if n == 0 {
+		return detail
+	}
+	return fmt.Sprintf("%s, %s active", detail, pluralize(int(n), "background task"))
 }
 
 // terminalBusyDetail renders a terminal's running processes, or "" when nothing
@@ -192,9 +225,11 @@ func pluralize(count int, singular string, plural ...string) string {
 // up front, about every busy tab -- and this asks the same question in the same
 // place, before any op is submitted.
 //
-// One request per WORKER, in first-seen tab order so the refusal reads in the
-// order the close would have run. A worker that cannot answer contributes
-// nothing: the guard fails open rather than blocking a close nobody can confirm.
+// One PROBE per worker -- at most two RPCs, ListAgents and
+// InspectTerminalProcesses, as inspectTabsBusy states -- and in first-seen tab
+// order, so the refusal reads in the order the close would have run. A worker
+// that cannot answer contributes nothing: the guard fails open rather than
+// blocking a close nobody can confirm.
 func guardTabsBusy(cc *crdtCall, tabs []crdt.TabRef, allowBusy bool) error {
 	if allowBusy || len(tabs) == 0 {
 		return nil

@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { TabBusyReason } from './tabBusyProbe'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { TabType as TabTypeT } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createMemo, createUniqueId, Show } from 'solid-js'
@@ -18,6 +19,7 @@ import { flavorFromOs } from '~/lib/paths'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
+import { TabBusyDetails } from './TabBusyDetails'
 
 const log = createLogger('LastTabCloseDialog')
 
@@ -27,6 +29,15 @@ export interface LastTabConfirmState extends InspectLastTabCloseResponse {
   workerId: string
   tabId: string
   tabType: TabTypeT
+  /**
+   * What this close would interrupt, when the tab is also running work.
+   *
+   * This dialog supersedes the busy prompt -- one click must not answer two
+   * dialogs -- so it has to carry the busy fact itself. Otherwise the one user
+   * who most needs to hear that a process is still writing into the directory,
+   * the one about to pick "Delete worktree", is the one this path silences.
+   */
+  busyReason?: TabBusyReason | null
   resolve: (choice: LastTabCloseChoice) => void
 }
 
@@ -158,6 +169,13 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             willStop: !isPayloadBackedTabType(props.state.tabType),
           }}
         />
+        {/* The running work this close would interrupt. BranchStatusInfo above
+            counts the tab and says it "will be stopped"; it never names the
+            turn, the background tasks or the processes. Same component the
+            busy-only prompt uses, so both surfaces word the fact identically. */}
+        <Show when={props.state.busyReason}>
+          {reason => <TabBusyDetails reason={reason()} />}
+        </Show>
         {/* Why the Delete button below is unavailable. The worker's removal
             preflight rides on the same inspect response that opened this
             dialog, so it states the refusal while the tab is still open.

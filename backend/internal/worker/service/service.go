@@ -909,6 +909,12 @@ func (svc *Service) Shutdown() {
 	// it. Terminals the first pass already stamped are skipped by id.
 	svc.broadcastTerminalsDisconnected(notified)
 
+	// Join the deferred activity refreshes the exits above spawned. Each one
+	// reads the registry and broadcasts, so both must finish while the context
+	// below is still live and before the caller closes the database. After
+	// StopAll, which is what produces the exits that spawn them.
+	svc.Output.WaitActivityRefreshes()
+
 	// Cancel the background-task write context last, AFTER every drain. Any
 	// in-flight bgtask write the drains did not cover now fails fast
 	// (context.Canceled) instead of racing the caller's sqlDB.Close() and

@@ -71,12 +71,68 @@ type agentActivity struct {
 	// turn starts and consumed by the edge.
 	settledToolUses *int32
 
-	// published is the last value broadcast, and hasPublished distinguishes
-	// "published false" from "never published". Without the second field the
+	// published is the last state broadcast, and hasPublished distinguishes
+	// "published IDLE" from "never published". Without the second field the
 	// first genuine idle transition after startup would look like a no-op and
 	// never reach a client.
-	published    bool
+	published    leapmuxv1.AgentActivityState
 	hasPublished bool
+
+	// publishedSeq is the ticket of the refresh that recorded `published`. A
+	// refresh that read its registry rows EARLIER than one which already
+	// published carries a lower ticket and is dropped, so a slow reader cannot
+	// latch a stale answer. Without it the edge trigger then swallows the
+	// correction: the next real change compares equal to what the stale publish
+	// recorded, and the tab keeps a spinner for a whole turn and misses its
+	// settle.
+	publishedSeq uint64
+}
+
+// activityInputs are the derivation's inputs from OUTSIDE the entry. Reading
+// them takes the registry cache lock and can reach the database, so they are
+// read before the entry's own lock and never underneath it.
+type activityInputs struct {
+	activeTasks  int32
+	processAlive bool
+	// childID is empty for a root, which is what selects the roll-up rule.
+	childID string
+}
+
+// activityStateLocked is THE rule, against inputs the caller already gathered.
+// Caller must hold st.mu, so the entry's own inputs are read in the same
+// critical section that records the answer.
+//
+// The order is not arbitrary. A dead process is idle whatever else is recorded.
+// An agent blocked on a permission prompt is WAITING even mid-turn, because the
+// user is the one holding it up -- the indicator must not spin, and the close
+// guard must still warn. Only then does running work count.
+func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentActivityState {
+	if !in.processAlive {
+		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
+	}
+	// A CHILD is never WAITING: a subagent owns no turn and no process, and its
+	// prompts are recorded against the root that feeds it. Its registry row IS
+	// its run, so it needs no turn-start signal of its own.
+	if in.childID != "" {
+		return idleOrWorking(in.activeTasks > 0)
+	}
+	// A prompt with no turn behind it does NOT make the agent wait: a shell task
+	// can ask for permission after its agent's turn ended, and what a close would
+	// interrupt there is the task, which activeTasks already reports.
+	if len(st.pendingControl) > 0 && st.turnActive {
+		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
+	}
+	if len(st.pendingControl) > 0 {
+		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
+	}
+	return idleOrWorking(st.turnActive || in.activeTasks > 0)
+}
+
+func idleOrWorking(working bool) leapmuxv1.AgentActivityState {
+	if working {
+		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
+	}
+	return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
 }
 
 // activityFor returns agentID's entry, creating it on first sight. A non-empty
@@ -121,36 +177,76 @@ func (h *OutputHandler) ForgetActivity(agentID string) {
 	h.activity.Delete(agentID)
 }
 
-// AgentBusy reports the current derived activity for agentID without
-// broadcasting. The READ leg behind AgentInfo.busy, so a list query and a live
-// event can never disagree about the rule.
+// AgentActivity is what the Worker knows about one agent's work: the state, and
+// the count that lets a close guard name what it would interrupt.
+type AgentActivity struct {
+	State       leapmuxv1.AgentActivityState
+	ActiveTasks int32
+}
+
+// Working reports whether a turn or a background task is in flight. The
+// thinking indicator and the Interrupt button read this one, and a permission
+// prompt deliberately turns it off: the user is looking straight at the prompt.
+func (a AgentActivity) Working() bool {
+	return a.State == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
+}
+
+// InterruptsWork reports whether closing this tab would stop something. Both
+// close guards resolve to it, so they cannot answer differently -- and it
+// differs from Working precisely for a blocked agent, whose turn a close still
+// kills.
+func (a AgentActivity) InterruptsWork() bool {
+	return a.State == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING ||
+		a.State == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER
+}
+
+// AgentBusy reports whether agentID is working, without broadcasting. The READ
+// path behind the thinking indicator, so a list query and a live event can never
+// disagree about the rule.
 func (h *OutputHandler) AgentBusy(agentID, rootAgentID string) bool {
-	busy, _ := h.AgentActivitySnapshot(agentID, rootAgentID)
-	return busy
+	return h.AgentActivitySnapshot(agentID, rootAgentID).Working()
 }
 
-// ActiveBackgroundTaskCount reports how many pending/running rows this agent's
-// work occupies. Reported on AgentInfo so a close guard can name what it refuses
-// to interrupt rather than only that it refuses.
-func (h *OutputHandler) ActiveBackgroundTaskCount(agentID, rootAgentID string) int32 {
-	_, n := h.AgentActivitySnapshot(agentID, rootAgentID)
-	return n
-}
-
-// AgentActivitySnapshot is THE definition of "is this agent working". Every
+// AgentActivitySnapshot is THE definition of "what is this agent doing". Every
 // surface -- the thinking indicator, the Interrupt button, the close guard in
 // the browser and in the CLI -- resolves to this one rule.
 //
-// It returns the count alongside the flag because every caller that wants one
-// wants the other: AgentInfo carries both, and the CLI's refusal message states
-// both. Asking separately read the registry twice per agent, on a path that runs
-// for every row of a ListAgents reply.
+// It returns all three answers together because every caller that wants one
+// wants another: AgentInfo carries all three, and the CLI's refusal message
+// states two. Asking separately read the registry twice per agent, on a path
+// that runs for every row of a ListAgents reply.
 //
 // The order is not arbitrary. A dead process is idle whatever else is recorded.
 // An agent blocked on a permission prompt is idle even mid-turn, because the
 // user is the one holding it up. Only then does running work count.
-func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) (busy bool, activeTasks int32) {
+func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) AgentActivity {
 	rootAgentID = h.resolveRoot(agentID, rootAgentID)
+	return h.activitySnapshotFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID))
+}
+
+// activitySnapshotFrom is AgentActivitySnapshot against a root the caller
+// already resolved and registry rows it already holds. refreshActivityTree
+// derives a whole tree through it from ONE read, so two sibling tabs cannot be
+// published from lists taken at different moments.
+func (h *OutputHandler) activitySnapshotFrom(agentID, rootAgentID string, rows []bgtask.Item) AgentActivity {
+	in := h.externalActivityInputs(agentID, rootAgentID, rows)
+	if !in.processAlive {
+		// Answered without touching the entry, so a pure read of a dead agent
+		// creates none. A process that is gone waits for nobody either.
+		return AgentActivity{
+			State:       leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
+			ActiveTasks: in.activeTasks,
+		}
+	}
+	st := h.activityFor(agentID, rootAgentID)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return AgentActivity{State: activityStateLocked(st, in), ActiveTasks: in.activeTasks}
+}
+
+// externalActivityInputs gathers everything the derivation needs from outside
+// the entry.
+func (h *OutputHandler) externalActivityInputs(agentID, rootAgentID string, rows []bgtask.Item) activityInputs {
 	// A root counts every descendant's row, which is the roll-up its tab has
 	// always meant. A child counts only its own, because a subagent's registry
 	// row IS its run -- and counting the root's whole registry kept a finished
@@ -159,8 +255,7 @@ func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) (busy
 	if agentID != rootAgentID {
 		childID = agentID
 	}
-	rows := h.backgroundTaskRows(rootAgentID)
-	activeTasks = countActiveBackgroundTasks(rows, childID)
+	activeTasks := countActiveBackgroundTasks(rows, childID)
 	if childID != "" && !hasRegistryRowFor(rows, childID) {
 		// The display list holds no row for this child, and that is not yet an
 		// answer: the cap gives up its oldest ACTIVE row when the pool is full of
@@ -173,57 +268,77 @@ func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) (busy
 		// is almost always in the list, so this costs nothing in the common case.
 		activeTasks = h.storedChildActiveTasks(childID)
 	}
-
-	// The feeding process. A child never owns one, so both legs ask about the
-	// root -- a child tab is busy only while the process feeding it runs.
-	if !h.isProcessRunning(rootAgentID) {
-		return false, activeTasks
-	}
-	st := h.activityFor(agentID, rootAgentID)
-	st.mu.Lock()
-	blocked := len(st.pendingControl) > 0
-	turnActive := st.turnActive
-	st.mu.Unlock()
-	if blocked {
-		return false, activeTasks
-	}
 	if childID == "" {
-		return turnActive || activeTasks > 0, activeTasks
+		// The display cap gives up an ACTIVE row when a pool of 64 holds no
+		// finished one, and retention keeps that row running in the table. The
+		// list can no longer see it, so a root that fanned out that wide would
+		// settle -- ringing the completion sound and letting the close guard pass
+		// -- while a subagent still ran. The registry is the only thing that knows
+		// what it hid, so it is the only thing that can add it back.
+		//
+		// The CHILD path needs none of this: it already answers a missing row from
+		// the table above.
+		activeTasks += h.hiddenActiveTasks(rootAgentID)
 	}
-	// A subagent needs no turn-start signal of its own; its row is its run.
-	return activeTasks > 0, activeTasks
+	return activityInputs{
+		activeTasks: activeTasks,
+		// The feeding process. A child never owns one, so both paths ask about
+		// the root -- a child tab is busy only while the process feeding it runs.
+		processAlive: h.isProcessRunning(rootAgentID),
+		childID:      childID,
+	}
 }
 
-// computeBusy is the internal shorthand for the flag alone.
-func (h *OutputHandler) computeBusy(agentID, rootAgentID string) bool {
-	busy, _ := h.AgentActivitySnapshot(agentID, rootAgentID)
-	return busy
+// hiddenActiveTasks reports how many still-running rows the display cap dropped
+// from this root's list.
+func (h *OutputHandler) hiddenActiveTasks(rootAgentID string) int32 {
+	if h.queries == nil {
+		return 0
+	}
+	cache := h.bgTaskCache(rootAgentID)
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	return cache.EvictedActiveCount()
 }
 
-// isProcessRunning answers the process leg through the seam, falling back to the
-// agent manager. A handler with neither reports idle: no process, no work.
+// isProcessRunning answers the process path through the seam, falling back to
+// the agent manager. A handler with neither reports idle: no process, no work.
+//
+// AgentAlive, not HasAgent. The Manager keeps the slot registered through the
+// whole exit callback, so that callback can pause durable input before another
+// process starts -- and the same callback clears the pending prompts and ends
+// the registry rows. HasAgent answers yes for all of it, so the removal of the
+// LAST prompt derives busy (the turn flag is still set) and broadcasts it. The
+// client then shows the spinner and the Interrupt button again, for an agent
+// whose process already died.
 func (h *OutputHandler) isProcessRunning(rootAgentID string) bool {
 	if h.processRunning != nil {
 		return h.processRunning(rootAgentID)
 	}
-	return h.agents != nil && h.agents.HasAgent(rootAgentID)
+	return h.agents != nil && h.agents.AgentAlive(rootAgentID)
 }
 
 // backgroundTaskRows returns the root's registry display list.
 //
-// The DISPLAY list rather than a table count, which is exact for the ROOT's
-// question and cheap. "Is any descendant running" cannot be changed by the cap:
-// the cap drops a row only when the pool is FULL, and a full pool of active rows
-// still answers yes. So the root pays no DB round trip on the registry
-// chokepoint, and its answer stays identical to the Background tasks list the
-// client renders.
+// The DISPLAY list rather than a table count, so the root pays no DB round trip
+// on the registry chokepoint and its answer matches the Background tasks list
+// the client renders. The COUNT saturates at bgtask.MaxTasks per kind, which is
+// what a display count should do -- it is the number the sidebar shows.
 //
-// The COUNT it reports saturates at bgtask.MaxTasks per kind for the same
-// reason, which is what a display count should do -- it is the number the
-// sidebar shows.
+// The list alone is NOT exact for the root, and the caller corrects it. The cap
+// gives up an ACTIVE row when a full pool of 64 holds no finished one
+// (makeRoomLocked falls through to evictOldestInBucketLocked), and a row that
+// arrives already final evicts a running one the same way. A LINKED row survives
+// that in the table (retention.keep), so the subagent keeps running with no row
+// here. externalActivityInputs adds those back from the registry's own count of
+// what it hid -- see hiddenActiveTasks -- because without it a root that fanned
+// out that wide settles while a subagent still runs.
 //
-// A CHILD's question is different, and the cap CAN change it: see the miss path
-// in AgentActivitySnapshot.
+// An UNLINKED row -- a shell task -- is deleted outright rather than retained,
+// so nothing can report it and the count does not try.
+//
+// A CHILD's question is different, and the cap changes it sooner: see the miss
+// path in AgentActivitySnapshot.
 func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
 	if h.queries == nil {
 		// No store, so no registry: there is no work to report.
@@ -231,9 +346,15 @@ func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
 	}
 	rows, err := h.LoadBackgroundTasks(h.bgTaskCtx(), rootAgentID)
 	if err != nil {
-		// Report idle rather than guessing busy. A wrong busy pins the spinner
-		// and, worse, keeps the close guard refusing a tab the user can no
-		// longer close by any route.
+		// Report idle rather than guessing busy, and the seeding rule is what
+		// makes that safe rather than merely convenient. LoadBackgroundTasks
+		// fails only while the cache is unseeded, because ensureSeededLocked
+		// returns early once `seeded` is set and nothing ever clears it. At that
+		// point no row this process wrote can exist -- every write seeds first --
+		// and the boot sweep already interrupted every row the previous process
+		// left. So there is no active row to miss, and guessing busy would pin a
+		// spinner on an agent that owns no work. A turn in progress is unaffected
+		// either way: turnActive is a separate input.
 		slog.Warn("activity: load background tasks", "agent_id", rootAgentID, "error", err)
 		return nil
 	}
@@ -260,13 +381,14 @@ func hasRegistryRowFor(rows []bgtask.Item, childAgentID string) bool {
 	return false
 }
 
-// storedChildActiveTasks answers the child leg from the TABLE, for a child whose
-// row left the display list.
+// storedChildActiveTasks answers the child path from the TABLE, for a child
+// whose row left the display list.
 //
-// A read failure answers 0. That is the same stance backgroundTaskRows takes and
-// for the same reason: a wrong busy pins the spinner and leaves the close guard
-// refusing a tab the user can no longer close by any route, while a wrong idle
-// costs one missing warning.
+// A read failure answers 0, which costs one child tab its spinner and its
+// Interrupt button. It costs no close warning: both close guards exempt a
+// subagent tab outright, because closing one is a UI-only act that stops
+// nothing. So the trade is a missing spinner against an Interrupt button
+// offered for a run that already ended, and the first is the cheaper mistake.
 func (h *OutputHandler) storedChildActiveTasks(childAgentID string) int32 {
 	if h.queries == nil {
 		return 0
@@ -313,31 +435,67 @@ func (h *OutputHandler) refreshActivity(agentID, rootAgentID string) {
 		return
 	}
 	rootAgentID = h.resolveRoot(agentID, rootAgentID)
-	busy := h.computeBusy(agentID, rootAgentID)
+	// The ticket is taken BEFORE the rows are read, so it orders refreshes by
+	// the age of the inputs they derive from.
+	seq := h.activitySeq.Add(1)
+	h.refreshActivityFrom(agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq)
+}
+
+// refreshActivityFrom is refreshActivity against a root the caller already
+// resolved, registry rows it already holds, and the ticket it took before
+// reading them.
+//
+// The entry's own inputs are read INSIDE the same critical section that records
+// the answer. Reading them separately let two refreshes derive, then publish in
+// the reverse order, so a stale value latched.
+//
+// One residual, stated because it is not free to close: the broadcast runs after
+// the unlock, because BroadcastAgentEvent can block on a slow transport and
+// holding a lock across it would serialize every registry op for the root behind
+// the slowest watcher. So two publishes that BOTH survive the ticket can still
+// reach the wire out of order. The ticket removes the case that mattered -- a
+// stale reader overwriting a fresher answer, which the edge trigger then made
+// permanent -- and leaves only a reordering of two genuine transitions.
+func (h *OutputHandler) refreshActivityFrom(agentID, rootAgentID string, rows []bgtask.Item, seq uint64) {
+	in := h.externalActivityInputs(agentID, rootAgentID, rows)
 
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
-	if st.hasPublished && st.published == busy {
+	if st.hasPublished && seq < st.publishedSeq {
+		// This refresh read its rows before the one that already published. Its
+		// answer is older, so it must not overwrite a fresher one.
+		st.mu.Unlock()
+		return
+	}
+	state := activityStateLocked(st, in)
+	if st.hasPublished && st.published == state {
+		st.publishedSeq = seq
 		st.mu.Unlock()
 		return
 	}
 	var toolUses *int32
-	if !busy {
+	working := leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
+	if state != working && st.published == working {
 		// The settle edge spends the count the last turn end recorded. A settle
 		// that follows no turn end -- a control request, a process exit -- leaves
 		// it unset, which is what tells the client to alert unconditionally.
+		//
+		// Only the WORKING -> not-WORKING edge spends it. A move between IDLE and
+		// WAITING_FOR_USER is not a settle, and consuming the count there would
+		// silence the settle the turn is still heading for.
 		toolUses = st.settledToolUses
+		st.settledToolUses = nil
 	}
-	st.settledToolUses = nil
-	st.published = busy
+	st.published = state
 	st.hasPublished = true
+	st.publishedSeq = seq
 	st.mu.Unlock()
 
 	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ActivityChanged{
 			ActivityChanged: &leapmuxv1.AgentActivityChanged{
-				Busy:        busy,
+				State:       state,
 				NumToolUses: toolUses,
 			},
 		},
@@ -352,26 +510,64 @@ func (h *OutputHandler) refreshActivityTree(rootAgentID string) {
 	if rootAgentID == "" {
 		return
 	}
-	h.refreshActivity(rootAgentID, rootAgentID)
-	if h.queries == nil {
-		return
+	// ONE read for the whole tree, and ONE ticket: every tab here derives from
+	// the same instant, so they share the age that orders them against a
+	// concurrent refresh. Asking per tab reloaded the same list once for the
+	// root and once more for every child, and each tab then derived from a
+	// different instant.
+	seq := h.activitySeq.Add(1)
+	rows := h.backgroundTaskRows(rootAgentID)
+	h.refreshActivityFrom(rootAgentID, rootAgentID, rows, seq)
+	for _, childID := range h.treeChildIDs(rootAgentID, rows) {
+		h.refreshActivityFrom(childID, rootAgentID, rows, seq)
 	}
-	rows, err := h.LoadBackgroundTasks(h.bgTaskCtx(), rootAgentID)
-	if err != nil {
-		return
-	}
+}
+
+// treeChildIDs lists every child that needs recomputing under this root.
+//
+// The display list alone does not answer this. Its cap gives up the oldest
+// ACTIVE row when the pool is full, which is exactly why
+// AgentActivitySnapshot answers a missing child from the TABLE instead -- so
+// the cap can hide a child that was already published BUSY. Recomputing only
+// the listed rows leaves that child with a spinner and an Interrupt button
+// that nothing ever clears, on a run that already ended.
+//
+// The activity map holds every child this worker published for, and the cap
+// cannot truncate it. Union the two: the list supplies a child whose row
+// arrived before any entry did, and the map supplies the child the cap
+// dropped.
+func (h *OutputHandler) treeChildIDs(rootAgentID string, rows []bgtask.Item) []string {
 	seen := make(map[string]struct{}, len(rows))
-	for i := range rows {
-		childID := rows[i].ChildAgentID
+	childIDs := make([]string, 0, len(rows))
+	add := func(childID string) {
+		// A root is not its own child, and an empty id is nobody.
 		if childID == "" || childID == rootAgentID {
-			continue
+			return
 		}
 		if _, dup := seen[childID]; dup {
-			continue
+			return
 		}
 		seen[childID] = struct{}{}
-		h.refreshActivity(childID, rootAgentID)
+		childIDs = append(childIDs, childID)
 	}
+	for i := range rows {
+		add(rows[i].ChildAgentID)
+	}
+	h.activity.Range(func(key, v any) bool {
+		agentID, ok := key.(string)
+		if !ok {
+			return true
+		}
+		st := v.(*agentActivity)
+		st.mu.Lock()
+		owner := st.rootAgentID
+		st.mu.Unlock()
+		if owner == rootAgentID {
+			add(agentID)
+		}
+		return true
+	})
+	return childIDs
 }
 
 // setTurnActive records the provider's turn bookkeeping and republishes.
@@ -391,13 +587,34 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 		return
 	}
 	h.refreshActivity(agentID, rootAgentID)
+	if active {
+		return
+	}
+	// Only the settle that THIS clear produces may spend the count. When the
+	// refresh above settled the agent it already spent it; when the agent
+	// stayed busy, the work still running belongs to some other turn, so the
+	// settle that eventually comes is not this turn's. Drop the count there and
+	// let that settle alert unconditionally.
+	//
+	// Without this, a turn that used no tool while an unrelated shell task ran
+	// left a zero behind, and the client suppresses a zero. The shell task then
+	// finished hours later in silence.
+	st.mu.Lock()
+	st.settledToolUses = nil
+	st.mu.Unlock()
 }
 
 // noteTurnEnded records the finished turn's tool-call count for the settle edge
 // this turn leads to. It publishes nothing itself: the turn may leave a subagent
 // running, in which case the agent stays busy and the count waits.
-func (h *OutputHandler) noteTurnEnded(agentID string, count int32, ok bool) {
-	st := h.activityFor(agentID, "")
+//
+// It takes the root like every other mutator. A child's FIRST touch can be a
+// turn end -- a subagent whose result envelope arrives before its task_started,
+// so no registry row links it yet -- and an entry created with no root resolves
+// against ITSELF. That asks whether a process named after the CHILD runs, and
+// none ever does, so the subagent reads idle for the rest of its run.
+func (h *OutputHandler) noteTurnEnded(agentID, rootAgentID string, count int32, ok bool) {
+	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	if ok {
 		v := count
@@ -464,10 +681,10 @@ func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string) {
 // NoteAgentProcessStarted forces the agent idle as a NEW process takes over.
 //
 // A restart NEVER resumes a turn, and nothing here tries to bring one back.
-// Whatever the old process was doing died with it: no envelope is coming to
-// close that turn, and the new process has not begun one. The only honest state
-// for a freshly started agent is idle, and it stays idle until its provider
-// reports a turn of its own.
+// Whatever the old process did died with it: no envelope arrives to close that
+// turn, and the new process never began one. The only honest state for a freshly
+// started agent is idle, and it stays idle until its provider reports a turn of
+// its own.
 //
 // This runs at the START rather than trusting the exit path to have run first.
 // The two are wired independently -- a worker that restarted while the agent was
@@ -506,5 +723,17 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	// always has.
 	st.settledToolUses = nil
 	st.mu.Unlock()
-	go h.refreshActivityTree(rootAgentID)
+	h.activityRefreshes.Add(1)
+	go func() {
+		defer h.activityRefreshes.Done()
+		h.refreshActivityTree(rootAgentID)
+	}()
+}
+
+// WaitActivityRefreshes joins the deferred tree refreshes resetAgentActivity
+// spawned. Shutdown calls it after the processes stop and before it cancels the
+// background-task context, so no refresh reads the registry or broadcasts after
+// the caller closes the database.
+func (h *OutputHandler) WaitActivityRefreshes() {
+	h.activityRefreshes.Wait()
 }

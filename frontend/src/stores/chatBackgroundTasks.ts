@@ -215,7 +215,11 @@ export function createTabTaskScope(deps: {
   const rootFor = (agentId: string): string => rootAgentIdFor(deps.getAgentTab, agentId)
   return {
     rootFor,
-    tasksForRoot: (agentId: string) => deps.tasksForRoot(rootFor(agentId)),
+    // Named for what it does rather than for the dependency it calls: the
+    // dependency takes a ROOT id, while this takes ANY tab's agent id and
+    // resolves the owner first. Sharing one name for both meanings made every
+    // reader decide which one they were looking at.
+    rootTasksFor: (agentId: string) => deps.tasksForRoot(rootFor(agentId)),
     tasksForTab: (agentId: string) => chipTasksFor(
       agentId,
       deps.tasksForRoot(rootFor(agentId)),
@@ -223,6 +227,9 @@ export function createTabTaskScope(deps: {
     ),
   }
 }
+
+/** One tab-scoped view of the background-task registry. */
+export type TabTaskScope = ReturnType<typeof createTabTaskScope>
 
 /**
  * Whether this row owns a subagent transcript that a click can open. A shell row

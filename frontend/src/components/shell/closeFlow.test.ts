@@ -1,3 +1,4 @@
+import type { BusyTab } from '~/components/shell/tabBusyProbe'
 import type { Tab } from '~/stores/tab.types'
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
@@ -228,6 +229,35 @@ describe('createCloseFlow', () => {
       await flow.request({ tileId: 't1' })
       await flow.closeAll()
       expect(observedBusy).toEqual([true, true])
+      dispose()
+    })
+  })
+
+  it('a second click during the scan starts no second scan, and cannot re-open a cancelled dialog', async () => {
+    await createRoot(async (dispose) => {
+      const pending: Array<(v: BusyTab[]) => void> = []
+      const flow = createCloseFlow<TestCtx>({
+        probeBusy: () => new Promise<BusyTab[]>(resolve => pending.push(resolve)),
+        handleTabClose: () => Promise.resolve(true),
+        plan: () => ({ tabs: [tab('a1')], preserve: () => {}, finalize: () => {} }),
+      })
+
+      // The close control carries no disabled state, and the scan made request()
+      // async, so a double click reaches it twice.
+      void flow.request({ tileId: 't1' })
+      void flow.request({ tileId: 't1' })
+      expect(pending).toHaveLength(1)
+
+      pending[0]?.([])
+      await Promise.resolve()
+      expect(flow.signal()).toEqual({ tileId: 't1' })
+
+      // The user dismisses it. A second scan resolving afterwards would re-open
+      // the dialog over a decision the user already made.
+      flow.cancel()
+      pending[1]?.([])
+      await Promise.resolve()
+      expect(flow.signal()).toBeNull()
       dispose()
     })
   })

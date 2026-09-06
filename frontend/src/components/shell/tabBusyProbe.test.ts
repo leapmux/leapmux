@@ -2,6 +2,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { Tab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTabBusyProbe } from '~/components/shell/tabBusyProbe'
+import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 
@@ -43,7 +44,7 @@ describe('createTabBusyProbe', () => {
   describe('agent tabs', () => {
     it('reports a working agent, with its active tasks', async () => {
       const { activity, probe } = makeProbe([task(), task({ rowKey: 'r2', status: 'completed' })])
-      activity.setBusy('a1', true)
+      activity.apply('a1', AgentActivityState.WORKING)
 
       const reason = await probe.probe(agentTab('a1'))
 
@@ -59,14 +60,25 @@ describe('createTabBusyProbe', () => {
 
     it('reports a working agent with no background tasks', async () => {
       const { activity, probe } = makeProbe()
-      activity.setBusy('a1', true)
+      activity.apply('a1', AgentActivityState.WORKING)
 
       expect(await probe.probe(agentTab('a1'))).toEqual({ kind: 'agent-turn', activeTasks: [] })
     })
 
+    it('warns about an agent waiting on a permission prompt', async () => {
+      // The state the indicator deliberately does NOT spin for. Its turn is
+      // still in flight, so this close kills it along with every background task
+      // under it -- which is why the guard reads interruptsWork and not isBusy.
+      const { activity, probe } = makeProbe([task()])
+      activity.apply('a1', AgentActivityState.WAITING_FOR_USER)
+
+      expect(activity.isBusy('a1')).toBe(false)
+      expect(await probe.probe(agentTab('a1'))).toEqual({ kind: 'agent-turn', activeTasks: [task()] })
+    })
+
     it('never reports a subagent tab, even a busy one', async () => {
       const { activity, probe } = makeProbe([task()])
-      activity.setBusy('child-1', true)
+      activity.apply('child-1', AgentActivityState.WORKING)
 
       // A child tab closes in the UI only: the worker treats CloseAgent on a
       // child as tab-close-only, the transcript survives and the tab can be
@@ -138,7 +150,7 @@ describe('createTabBusyProbe', () => {
         terminals: [{ terminalId: 't1', processes: [{ pid: 7, name: 'sleep' }], totalCount: 1 }],
       })
       const { activity, probe } = makeProbe()
-      activity.setBusy('a1', true)
+      activity.apply('a1', AgentActivityState.WORKING)
 
       const busy = await probe.probeMany([
         agentTab('a1', { title: 'Refactor' }),
@@ -164,7 +176,7 @@ describe('createTabBusyProbe', () => {
     it('still reports the agents when a terminal worker fails', async () => {
       mockInspect.mockRejectedValue(new Error('down'))
       const { activity, probe } = makeProbe()
-      activity.setBusy('a1', true)
+      activity.apply('a1', AgentActivityState.WORKING)
 
       const busy = await probe.probeMany([agentTab('a1'), terminalTab('t1')])
 

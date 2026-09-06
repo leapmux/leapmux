@@ -90,6 +90,9 @@ export function createCloseFlow<Ctx>(opts: CloseFlowOptions<Ctx>): CloseFlow<Ctx
   const [active, setActive] = createSignal<{ ctx: Ctx, plan: ClosePlan } | null>(null)
   const [busy, setBusy] = createSignal(false)
   const [busyTabs, setBusyTabs] = createSignal<BusyTab[]>([])
+  // One scan in flight at a time. Nothing renders from this, so a plain
+  // variable rather than a signal.
+  let probing = false
 
   const clear = () => {
     setActive(null)
@@ -102,6 +105,14 @@ export function createCloseFlow<Ctx>(opts: CloseFlowOptions<Ctx>): CloseFlow<Ctx
     busy,
     busyTabs,
     async request(ctx) {
+      // One dialog per flow. The busy scan below made this async, and every
+      // caller fires it from a close control that has no disabled state, so a
+      // second click starts a second scan. Its late answer would re-open a
+      // dialog the user already dismissed, or replace the plan that closeAll is
+      // draining. The dialog itself is a native modal, so a legitimate second
+      // target cannot be clicked while one is open.
+      if (probing || active())
+        return
       const plan = opts.plan(ctx)
       // Empty closeable: skip the dialog and finalize directly.
       if (plan.tabs.length === 0) {
@@ -112,8 +123,14 @@ export function createCloseFlow<Ctx>(opts: CloseFlowOptions<Ctx>): CloseFlow<Ctx
       // Opening first and patching the warning in would need a loading state and
       // a disabled "Close all tabs" -- and would still leave a window where the
       // user could confirm before the warning arrived.
-      setBusyTabs(await opts.probeBusy(plan.tabs))
-      setActive({ ctx, plan })
+      probing = true
+      try {
+        setBusyTabs(await opts.probeBusy(plan.tabs))
+        setActive({ ctx, plan })
+      }
+      finally {
+        probing = false
+      }
     },
     cancel: clear,
     primary() {

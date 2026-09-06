@@ -1,6 +1,8 @@
 import type { TabBusyReason } from './tabBusyProbe'
+import { create } from '@bufbuild/protobuf'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { BusyTabCloseDialog } from './BusyTabCloseDialog'
 
 // jsdom implements neither showModal nor close on <dialog>. Same shim
@@ -29,7 +31,11 @@ function renderDialog(reason: TabBusyReason, tabTitle = 'my tab') {
 function terminalReason(processes: Array<{ pid: number, name: string }>, totalCount = processes.length): TabBusyReason {
   return {
     kind: 'terminal-processes',
-    processes: processes as TabBusyReason extends { processes: infer P } ? P : never,
+    // Built through the generated schema, so the fixture is checked against the
+    // real TerminalProcess shape. A conditional type over this union does not
+    // distribute -- the agent arm has no `processes` -- so it resolves to
+    // `never`, and a cast to `never` type-checks the fixture against nothing.
+    processes: processes.map(p => create(TerminalProcessSchema, p)),
     totalCount,
   }
 }
@@ -110,6 +116,20 @@ describe('busyTabCloseDialog', () => {
       })
 
       expect(screen.getByText('1 background task is active:')).toBeTruthy()
+    })
+
+    it('does not claim a turn when a background task explains the busy state', () => {
+      // The Worker reports a root busy for a turn OR for a running background
+      // task, and the wire carries only the answer. A turn that ended while a
+      // subagent kept running is the state this branch exists to keep busy, and
+      // announcing it as "turn in progress" tells the user something false.
+      renderDialog({
+        kind: 'agent-turn',
+        activeTasks: [{ rowKey: 'r1', kind: 'subagent', title: 'Research', activity: 'a', status: 'running' }],
+      })
+
+      expect(screen.queryByText(/turn is in progress/)).toBeNull()
+      expect(screen.getByText('This agent is still working. Closing the tab stops it.')).toBeTruthy()
     })
   })
 

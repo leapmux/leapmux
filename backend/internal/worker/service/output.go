@@ -198,6 +198,17 @@ type OutputHandler struct {
 	// output_activity.go for the derivation and the edge-trigger rule.
 	activity sync.Map // agentID -> *agentActivity
 
+	// activitySeq tickets each activity refresh at the moment it reads its
+	// registry rows, so a publish can tell a stale derivation from a fresh one.
+	// See refreshActivityFrom.
+	activitySeq atomic.Uint64
+
+	// activityRefreshes tracks the deferred tree refreshes resetAgentActivity
+	// spawns, so Shutdown joins them. Each one reads the registry and
+	// broadcasts, and neither may run against a closed database or a stream
+	// that already flushed. The zero value works, so nothing constructs it.
+	activityRefreshes sync.WaitGroup
+
 	// processRunning reports whether the feeding process for a ROOT agent id is
 	// up. Defaults to the agent manager; a test replaces it to drive the other
 	// activity inputs in isolation, because a real subprocess is not a seam the
@@ -399,6 +410,12 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 	h.lastNotifThread.Delete(childID)
 	h.trackers.delete(childID)
 	h.todos.Delete(childID)
+	// A child owns an activity entry exactly like a root, because a subagent tab
+	// shows its own spinner and its own Interrupt button. CleanupAgent only ever
+	// runs for a root, and TrackedAgentIDs never ranges the activity map, so
+	// without this every subagent a worker ever spawned keeps its entry for the
+	// life of the process.
+	h.ForgetActivity(childID)
 	h.cleanupAutoContinue(childID)
 }
 
@@ -469,7 +486,13 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	// goalMu is here for exactly that reason too: it is the only trace a closed
 	// agent leaves when its close bypassed CleanupAgent, so a sweep that omitted
 	// it could not see the residue it exists to reclaim.
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks, &h.goalMu} {
+	//
+	// activity is keyed by AGENT id, children included, and a pure READ creates
+	// an entry: AgentActivitySnapshot records the resolved root so a later
+	// caller that knows only an agent id can still find the feeding process. So
+	// a ListAgents reply alone can leave an entry for an agent this worker never
+	// tore down, and only the sweep reclaims it.
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks, &h.goalMu, &h.activity} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -714,7 +737,7 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	// AFTER PersistTurnEnd returns, never before. A clear that lands first
 	// settles the agent with no count, and the client then rings the completion
 	// sound for a turn that used no tool.
-	s.h.noteTurnEnded(s.agentID, count, ok)
+	s.h.noteTurnEnded(s.agentID, s.rootAgentID, count, ok)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: turnEndEvent(count, ok)},

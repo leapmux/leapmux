@@ -2,6 +2,7 @@ import type { Component } from 'solid-js'
 import type { BusyTabConfirmState } from './BusyTabCloseDialog'
 import type { LastTabConfirmState } from './LastTabCloseDialog'
 import type { SectionNamePayload } from './SectionNameDialog'
+import type { TabBusyProbe } from './tabBusyProbe'
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTabOperations } from './useTabOperations'
@@ -199,6 +200,12 @@ interface AppShellDialogsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
   tabOps: ReturnType<typeof useTabOperations>
+  /**
+   * The busy scan, for the delete-branch dialog. That flow closes a whole branch
+   * group and deletes its working directory, and it runs below `handleTabClose`
+   * -- so it is the one close surface nothing else asks on the user's behalf.
+   */
+  busyProbe: TabBusyProbe
   view: TabView
   metadata: TabMetadataStore
   selection: TabSelectionStore
@@ -552,7 +559,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-
       <Show when={props.dialogs.keyPinConfirm.value()} keyed>
         {state => (
           <KeyPinMismatchDialog
@@ -619,6 +625,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             isWorktree={state.isWorktree}
             tabs={state.tabs}
             closeWorktreeTabs={props.tabOps.closeWorktreeTabsAndReport}
+            probeBusy={props.busyProbe.probeMany}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
             onClose={() => props.dialogs.deleteBranch.close()}
           />

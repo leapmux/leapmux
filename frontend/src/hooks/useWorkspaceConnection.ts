@@ -192,10 +192,10 @@ export interface WorkspaceConnectionParams {
   repoGitStore: ReturnType<typeof createRepoGitStore>
   getActiveWorkspaceId: () => string | null
   /** Alert + badge when an agent SETTLES. See handleAgentSettled. */
-  onTurnEnd?: (agentId: string, numToolUses?: number) => void
+  onAgentSettled?: (agentId: string, numToolUses?: number) => void
   /**
    * Refresh derived views after each TURN end -- git status and the directory
-   * tree. Separate from onTurnEnd because the two fire at different moments: a
+   * tree. Separate from onAgentSettled because the two fire at different moments: a
    * turn that leaves a subagent running changed the working tree but has not
    * settled the agent.
    */
@@ -401,7 +401,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           view,
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           agentActivityStore,
-          onTurnEnd: params.onTurnEnd,
+          onAgentSettled: params.onAgentSettled,
         }, catchUpPhase)
         break
       case 'catchUpStart':

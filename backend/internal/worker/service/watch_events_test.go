@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -885,8 +886,66 @@ func TestReplayIncludesActivitySnapshot(t *testing.T) {
 	// Under the WATCHED agent's own id, not the registry owner's: a child tab's
 	// answer is its own row, which differs from its root's.
 	assert.Equal(t, "root-1", activityAgentID)
-	assert.True(t, activity.GetBusy(), "a running registry row makes the agent busy")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, activity.GetState(), "a running registry row makes the agent working")
 	assert.Nil(t, activity.NumToolUses, "a replay completes no turn, so it carries no count")
+}
+
+// TestReplayActivityPrecedesTheMessageBurst pins the ORDER, which is the whole
+// reason this event is in the replay at all.
+//
+// The tab renders the replayed messages as they arrive. An activity frame that
+// lands after them leaves the burst painting with no thinking indicator and no
+// Interrupt button on an agent that is working -- exactly the window the event
+// exists to close.
+func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	svc.Output.processRunning = func(string) bool { return true }
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
+	}))
+	// A burst for the activity frame to precede. Without one, any order passes.
+	for i := range 3 {
+		_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+			ID:            fmt.Sprintf("msg-%d", i),
+			AgentID:       "root-1",
+			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+			Content:       []byte("hello"),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		})
+		require.NoError(t, err)
+	}
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
+
+	activityAt, firstMessageAt := -1, -1
+	for i, e := range decodeAgentEvents(w) {
+		if e.GetActivityChanged() != nil && activityAt < 0 {
+			activityAt = i
+		}
+		if e.GetAgentMessage() != nil && firstMessageAt < 0 {
+			firstMessageAt = i
+		}
+	}
+	require.GreaterOrEqual(t, activityAt, 0, "replay must include an AgentActivityChanged event")
+	require.GreaterOrEqual(t, firstMessageAt, 0, "this case needs a message burst to overtake")
+	assert.Less(t, activityAt, firstMessageAt,
+		"the tab must know it is busy before it renders the replayed messages")
 }
 
 // TestWatchChildAgentReplaysWithoutProcess pins that watching a CHILD agent

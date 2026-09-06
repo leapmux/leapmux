@@ -570,7 +570,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
         // explicit re-ask, never as a poll, so an agent that settled between
         // the two is not news the user asked for -- and the live event that
         // announced that settle already rang if this client was watching.
-        opts.agentActivityStore.setBusy(tab.id, agent.busy)
+        opts.agentActivityStore.apply(tab.id, agent.activityState)
         resolved.add(tab.id)
       }
       return { resolved, verdicts: resp.verdicts }
