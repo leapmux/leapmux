@@ -215,6 +215,7 @@ func TestZCodeTurnActive_BackgroundTurnStillClears(t *testing.T) {
 	require.True(t, published)
 	assert.False(t, last, "a background turn must publish its clear despite the early return")
 }
+
 // --- ACP family (OpenCode, Cursor, Copilot, Kilo, Goose, Reasonix) ------------
 
 // newACPTurnBase builds the base all six ACP providers embed, wired the way

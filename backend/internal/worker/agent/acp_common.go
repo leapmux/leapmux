@@ -85,8 +85,8 @@ type jsonrpcBase struct {
 	// never writes promptActive, so a nil hook is what stops this base from
 	// publishing a flag Codex does not use.
 	publishTurnActive func(active bool)
-	steerMethod  string
-	steerRunID   string
+	steerMethod       string
+	steerRunID        string
 }
 
 // acpModeChannel identifies how an ACP provider maps the configOptions `mode` select

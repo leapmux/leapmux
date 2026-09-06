@@ -259,9 +259,22 @@ func TestDescendantProcesses_BatchAnswersEveryTerminalFromOneScan(t *testing.T) 
 		return len(got) > 0
 	}, "expected the busy terminal to report its child")
 
-	require.Len(t, out, 1, "an idle terminal and an unknown id are both omitted")
-	assert.Equal(t, busyID, out[0].TerminalID, "the answer must name the tab it belongs to")
-	assert.Contains(t, namesOf(out[0].Processes), want)
+	ids := make([]string, 0, len(out))
+	byID := map[string][]ProcessInfo{}
+	for _, entry := range out {
+		ids = append(ids, entry.TerminalID)
+		byID[entry.TerminalID] = entry.Processes
+	}
+	// The answer must name the tab each process belongs to: reporting one tab's
+	// work under another's is what would make the close guard warn about the
+	// wrong terminal.
+	assert.Contains(t, ids, busyID)
+	assert.Contains(t, namesOf(byID[busyID]), want)
+	assert.NotContains(t, ids, "no-such-terminal", "an id the manager does not hold is omitted")
+	// idleID is deliberately not asserted absent. Its shell has just run the
+	// readiness echo, and that job can still be finishing -- a real descendant
+	// with its own process group. TestDescendantProcesses_IdleShellReportsNothing
+	// AndNeverItself covers the idle case without racing a command.
 }
 
 func TestDescendantProcesses_EmptyRequestAsksNothing(t *testing.T) {

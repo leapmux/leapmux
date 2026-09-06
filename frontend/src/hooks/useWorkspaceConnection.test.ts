@@ -13,7 +13,7 @@ import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotificati
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
-import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
+import { extractCompactionContextTokens, parseMessageContent } from '~/lib/messageParser'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
