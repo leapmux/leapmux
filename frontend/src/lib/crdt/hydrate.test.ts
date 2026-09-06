@@ -362,6 +362,11 @@ describe('loadHydrationState', () => {
   it('wipes both stores and returns null when the watermark is missing', async () => {
     // Seed a valid checkpoint + op-log, then overwrite the metadata row with a
     // malformed watermark via a direct IDB put (bypassing the validator).
+    //
+    // Every OTHER field carries what `writeDeltaInto` would write, `lastSeenAt`
+    // included: it is an indexed key path, and a row missing it is one no writer
+    // produces -- invisible to the owner sweep and to the seed scan. Only the
+    // watermark is malformed, which is what this case is about.
     await seed('u', CLIENT, stateOf('u', 5n))
     await opLog.append('u', CLIENT, [batchFrame('b1')])
     const db = await openDbRaw()
@@ -374,6 +379,7 @@ describe('loadHydrationState', () => {
         watermark: { physical: 5n, logical: 0n, clientId: 123 as never },
         currentEpoch: 1n,
         writtenAt: 0,
+        lastSeenAt: 0,
       })
       tx.oncomplete = () => resolve()
     })
@@ -396,6 +402,7 @@ describe('loadHydrationState', () => {
         watermark: { physical: 5n, logical: 0n, clientId: 'c' },
         currentEpoch: 2n ** 63n, // out of int64 range
         writtenAt: 0,
+        lastSeenAt: 0,
       })
       tx.oncomplete = () => resolve()
     })
