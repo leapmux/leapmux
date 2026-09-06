@@ -283,70 +283,8 @@ func TestTryGlob_PicksLastMatchAsHighestVersion(t *testing.T) {
 	assert.Contains(t, got.describe, "2024.2")
 }
 
-func TestTryMacOSApp_ProbesBothApplicationsRoots(t *testing.T) {
-	t.Parallel()
-	p := newFakeProber()
-	p.setHome("/Users/alice")
-	// Only the user-Applications copy exists.
-	p.addPath("/Users/alice/Applications/Visual Studio Code.app")
-
-	got := tryMacOSApp("Visual Studio Code")(p)
-	require.NotNil(t, got)
-	assert.Equal(t, []string{"open", "-a", "/Users/alice/Applications/Visual Studio Code.app", "/repo"},
-		argvOf(got, "/repo"), "`open -a` is the only route that RAISES the application")
-	assert.Equal(t, "/Users/alice/Applications/Visual Studio Code.app", filepath.ToSlash(got.describe),
-		"path field carries the RESOLVED bundle, so `open -a` addresses one exact copy")
-}
-
-func TestTryMacOSApp_PrefersSystemApplicationsOverUserCopy(t *testing.T) {
-	t.Parallel()
-	p := newFakeProber()
-	p.setHome("/Users/alice")
-	p.addPath("/Applications/Cursor.app")
-	p.addPath("/Users/alice/Applications/Cursor.app")
-
-	got := tryMacOSApp("Cursor")(p)
-	require.NotNil(t, got)
-	assert.Equal(t, "/Applications/Cursor.app", filepath.ToSlash(got.describe))
-}
-
-// JetBrains Toolbox installs one level below ~/Applications. Without that base
-// a Toolbox user falls through to the wrapper script, which starts the IDE
-// without raising it.
-func TestTryMacOSApp_FindsJetBrainsToolboxBundle(t *testing.T) {
-	t.Parallel()
-	p := newFakeProber()
-	p.setHome("/Users/alice")
-	p.addPath("/Users/alice/Applications/JetBrains Toolbox/GoLand.app")
-
-	got := tryMacOSApp("GoLand")(p)
-	require.NotNil(t, got)
-	assert.Equal(t, "/Users/alice/Applications/JetBrains Toolbox/GoLand.app", filepath.ToSlash(got.describe))
-}
-
-// One product, two bundle names: the website's download and the Toolbox copy
-// differ, and Zed ships a Preview channel beside the stable one.
-func TestTryMacOSApp_AcceptsAnyOfSeveralBundleNames(t *testing.T) {
-	t.Parallel()
-	p := newFakeProber()
-	p.setHome("/Users/alice")
-	p.addPath("/Applications/Zed Preview.app")
-
-	got := tryMacOSApp("Zed", "Zed Preview")(p)
-	require.NotNil(t, got)
-	assert.Equal(t, "/Applications/Zed Preview.app", filepath.ToSlash(got.describe))
-}
-
-// A "~" base with no home directory would otherwise expand to a RELATIVE path
-// and probe whatever the working directory happens to be.
-func TestTryMacOSApp_SkipsRelativeCandidateWhenHomeIsEmpty(t *testing.T) {
-	t.Parallel()
-	p := newFakeProber()
-	p.setHome("")
-	p.addPath("Applications/Cursor.app")
-
-	assert.Nil(t, tryMacOSApp("Cursor")(p))
-}
+// The tryMacOSApp tests live in the darwin-only test file, beside the darwin-
+// only detector. See the note above execMacOSApp there.
 
 // --- Registry behavior ---
 
@@ -596,17 +534,6 @@ func TestExecBinary_PassesTheDirectoryAlone(t *testing.T) {
 	plan := execBinary("/usr/bin/code").command("/repo")
 
 	assert.Equal(t, []string{"/usr/bin/code", "/repo"}, plan.cmd.Args)
-	assert.True(t, plan.exitMeaningful)
-}
-
-// Only `open -a` activates the target on macOS. Running the bundle's own
-// command hands the folder to the running instance and exits, leaving its
-// window behind this one -- which reads as the menu item doing nothing.
-func TestExecMacOSApp_GoesThroughOpenSoTheAppIsRaised(t *testing.T) {
-	t.Parallel()
-	plan := execMacOSApp("/Applications/Visual Studio Code.app").command("/repo")
-
-	assert.Equal(t, []string{"open", "-a", "/Applications/Visual Studio Code.app", "/repo"}, plan.cmd.Args)
 	assert.True(t, plan.exitMeaningful)
 }
 

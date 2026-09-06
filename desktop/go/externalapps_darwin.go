@@ -2,7 +2,10 @@
 
 package main
 
-import "os/exec"
+import (
+	"os/exec"
+	"path/filepath"
+)
 
 // jbToolboxScript is the macOS Toolbox default scripts directory.
 const jbToolboxScript = "~/Library/Application Support/JetBrains/Toolbox/scripts"
@@ -102,6 +105,74 @@ func jbSpec(id, displayName, cli, bundle string) ExternalAppSpec {
 			tryPath(jbToolboxScript+"/"+cli),
 			tryLookPath(cli),
 		),
+	}
+}
+
+// The bundle detector and its launcher stay in this darwin-only file, and they
+// cannot move to the portable one. They build .app paths, which are always
+// POSIX, but `filepath.Join` and `pathutil.ExpandHome` both follow the HOST
+// separator. On a Windows host the same code answers
+// `\Users\alice\Applications\X.app`, so a portable test of it asserts a path
+// that only a POSIX host produces. The build tag removes that host altogether.
+
+// execMacOSApp launches a directory through an .app bundle.
+//
+// `open -a <bundle> <dir>` asks the running instance to open the folder AND
+// activates it, which is the whole reason the detector probes the bundle
+// before the PATH command. The bundle's own command starts a second process
+// that forwards its argument to the first instance and exits. That leaves the
+// first instance where it was, usually behind this window, so the click looks
+// like it does nothing.
+//
+// No `-n`: a new instance is not wanted, only the front-most one.
+func execMacOSApp(bundle string) *detectedExec {
+	return &detectedExec{
+		describe: bundle,
+		command: func(dir string) launchPlan {
+			return launchPlan{exec.Command("open", "-a", bundle, dir), true}
+		},
+	}
+}
+
+// macOSAppBases are the directories tryMacOSApp probes, in order.
+//
+// The JetBrains Toolbox directory is one of them because Toolbox installs its
+// IDEs one level below ~/Applications. Without it a Toolbox user with no copy
+// in /Applications falls through to the Toolbox wrapper script, and a script
+// starts the IDE without ever bringing it to the front — see osLauncher.
+var macOSAppBases = []string{
+	"/Applications",
+	"~/Applications",
+	"~/Applications/JetBrains Toolbox",
+}
+
+// tryMacOSApp probes the standard application directories for any of the given
+// .app bundle names. On hit, the launch descriptor carries the RESOLVED bundle
+// path, so `open -a` addresses one exact copy: a bare name goes through
+// LaunchServices, which is free to pick a different install of the same app.
+//
+// Several names because one product ships under more than one bundle name --
+// "Zed" and "Zed Preview", or JetBrains' "IntelliJ IDEA" from the website
+// against Toolbox's "IntelliJ IDEA Ultimate". The function tries every name in
+// one base before it goes to the next base, so a direct install wins against a
+// Toolbox copy.
+func tryMacOSApp(bundleNames ...string) func(Prober) *detectedExec {
+	return func(p Prober) *detectedExec {
+		for _, base := range macOSAppBases {
+			for _, name := range bundleNames {
+				// expandPath answers "" for a "~" base with no home
+				// directory, so no candidate here can be working-directory
+				// relative.
+				full := expandPath(p, filepath.Join(base, name+".app"))
+				if full == "" {
+					continue
+				}
+				if _, err := p.Stat(full); err == nil {
+					return execMacOSApp(full)
+				}
+			}
+		}
+		return nil
 	}
 }
 
