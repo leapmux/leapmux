@@ -1,11 +1,12 @@
 import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
+import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
 import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { localStorageLoad, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
 import { createControlAnswerState } from './controls/types'
@@ -200,6 +201,98 @@ describe('handleSend', () => {
     const { result, onSendMessage } = setupWithAttachments([])
     expect(result.handleSend('')).toBe(false)
     expect(onSendMessage).not.toHaveBeenCalled()
+  })
+})
+
+// Saved answers survive a reload and a tab switch, and the read that restores
+// them is asynchronous. Two effects therefore run against a moving target: the
+// restore, which resets the state and then fills it in, and the persist, which
+// writes whatever the state holds.
+describe('restoring saved answers', () => {
+  /** A control request whose answers this hook will persist under its own key. */
+  function askRequest(requestId: string, claimToken: string): ControlRequest {
+    return {
+      requestId,
+      agentId: 'test-agent',
+      claimToken,
+      payload: {
+        request: {
+          tool_name: 'AskUserQuestion',
+          input: { questions: [{ header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }, { label: 'Test' }] }] },
+        },
+      },
+    }
+  }
+
+  function answerKey(request: ControlRequest): AsyncLocalKey {
+    return `${PREFIX_CONTROL_STATE}test-agent:${request.requestId}:${request.claimToken}`
+  }
+
+  it('fills the state in from the saved answers of the active request', async () => {
+    const request = askRequest('ask-1', 'tok-1')
+    localStorageStore(answerKey(request), { selections: { 0: ['Test'] }, currentPage: 0, customTexts: {}, switches: {} })
+    await flushStorageWrites()
+
+    const answerState = createControlAnswerState()
+    const dispose = createRoot((disposeRoot) => {
+      useControlResponseHandling(
+        { agentId: 'test-agent', controlRequests: [request], onSendMessage: vi.fn() },
+        answerState,
+        () => undefined,
+        vi.fn(),
+      )
+      return disposeRoot
+    })
+
+    await vi.waitFor(() => expect(answerState.selections()).toEqual({ 0: ['Test'] }))
+    dispose()
+  })
+
+  // THE RESTORE GUARD. A user clicking between two prompts swaps the active
+  // request while the first one's answers are still being read. Whichever read
+  // the database answers last must not decide what is on screen: landing the
+  // OUTGOING request's answers under the INCOMING prompt is how a user submits
+  // a choice they made for a different question.
+  it('lands the newer request\'s answers when two swaps arrive together', async () => {
+    const first = askRequest('ask-1', 'tok-1')
+    const second = askRequest('ask-2', 'tok-2')
+    localStorageStore(answerKey(first), { selections: { 0: ['Build'] }, currentPage: 0, customTexts: {}, switches: {} })
+    localStorageStore(answerKey(second), { selections: { 0: ['Test'] }, currentPage: 0, customTexts: {}, switches: {} })
+    await flushStorageWrites()
+
+    const answerState = createControlAnswerState()
+    const [requests, setRequests] = createSignal<ControlRequest[]>([first])
+    const dispose = createRoot((disposeRoot) => {
+      useControlResponseHandling(
+        {
+          agentId: 'test-agent',
+          get controlRequests() { return requests() },
+          onSendMessage: vi.fn(),
+        },
+        answerState,
+        () => undefined,
+        vi.fn(),
+      )
+      return disposeRoot
+    })
+
+    // The swap lands before the first restore's read can resolve, which is the
+    // ordering the token exists for.
+    setRequests([second])
+
+    await vi.waitFor(() => expect(answerState.selections()).toEqual({ 0: ['Test'] }))
+    // And it STAYS. The superseded read resolving afterwards must change
+    // nothing at all.
+    await flushStorageWrites()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(answerState.selections()).toEqual({ 0: ['Test'] })
+
+    // The outgoing request's answers are still on disk: a swap is not an
+    // answer, so nothing may overwrite them with the blank state the restore
+    // installs on its way in.
+    expect(await localStorageLoad(answerKey(first)))
+      .toMatchObject({ selections: { 0: ['Build'] } })
+    dispose()
   })
 })
 

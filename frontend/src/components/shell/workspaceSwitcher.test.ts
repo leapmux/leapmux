@@ -1,6 +1,6 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { KEY_ACTIVE_WORKSPACE, localStorageGet, resetStorageAccountForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { emitAddTab } from '~/stores/tabOps'
@@ -32,10 +32,6 @@ function setup() {
 }
 
 describe('createWorkspaceSwitcher', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
   it('persists the new workspace', () => {
     withTestBridge(() => {
       createRoot((dispose) => {

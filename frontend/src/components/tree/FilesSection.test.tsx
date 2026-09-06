@@ -2,7 +2,7 @@ import type { FilesSectionHandle } from './FilesSection'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { createRepoGitStore, GitFilterTab } from '~/stores/repoGit.store'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { localStorageGet, localStorageSet, PREFIX_FILES_SORT_ORDER } from '~/lib/browserStorage'
 import { DEFAULT_FILE_SORT_ORDER } from '~/lib/fileSort'
@@ -85,10 +85,6 @@ const FILES = [
   gitEntry({ path: 'src/banana.md', size: 10n, modTime: '2026-06-01T00:00:00Z' }),
   gitEntry({ path: 'src/cherry.js', size: 100n, modTime: '2023-01-01T00:00:00Z' }),
 ]
-
-beforeEach(() => {
-  localStorage.clear()
-})
 
 describe('filesSection git error hint', () => {
   it('shows errorHint when the focused repo probe failed', () => {

@@ -10,7 +10,8 @@
 //
 // Every key here is a per-workspace sessionStorage key. "Which workspace is
 // active" is NOT one of them: it has to outlive a tab close, so it lives in
-// localStorage under the exact `KEY_ACTIVE_WORKSPACE`. It used to be templated
+// the durable registry (`LOCAL_KEY_SPECS`) under the exact
+// `KEY_ACTIVE_WORKSPACE`. It used to be templated
 // by user id and to need a builder of its own here; `browserStorage` now scopes
 // every key to the signed-in account, so the user id is no longer part of any
 // name a caller writes.

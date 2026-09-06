@@ -969,12 +969,13 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   // an absolute path until some unrelated tab change happened to invalidate
   // the projection.
   //
-  // The cost per distinct worker is one `infoMap` read, PLUS one synchronous
-  // `localStorage.getItem` for a worker with no cached entry at all -- the
-  // store memoizes a positive hit and not a miss, so an offline worker pays
-  // that read on every recompute. The tabs of one workspace reference very few
-  // workers, and the alternative (freezing the tree until some unrelated
-  // change invalidates it) is the defect above.
+  // The cost per distinct worker is one `infoMap` read, plus -- for a worker
+  // with no cached entry at all -- a subscription to that worker's hydration.
+  // The stored read behind it is asynchronous and the store issues at most one
+  // at a time per worker, so an offline worker costs a recompute when its row
+  // lands and nothing on the recomputes after that. The tabs of one workspace
+  // reference very few workers, and the alternative (freezing the tree until
+  // some unrelated change invalidates it) is the defect above.
   //
   // It carries the WHOLE record, and `workerProjectionsEqual` compares every
   // field: an enumerated read-list here would be a second source of truth, and

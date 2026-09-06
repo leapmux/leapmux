@@ -87,7 +87,7 @@ export interface FontTier {
 }
 
 export interface PreferencesState {
-  /** Resolved theme preference (localStorage override → account default → hardcoded default). */
+  /** Resolved theme preference (browser override → account default → hardcoded default). */
   theme: () => ThemeValue
   /** Resolved terminal theme preference. */
   terminalTheme: () => TerminalThemeValue
@@ -292,7 +292,7 @@ function parseFontTier(raw: unknown): FontTier | undefined {
   // accessors and breaks the whole reactive computation that renders the
   // UI and terminal font family. And one parse guards BOTH tiers, so a
   // name the hub's `validateFontFamily` refuses must not reach the screen
-  // from a hand-edited localStorage document either.
+  // from a hand-edited stored document either.
   const fonts: string[] = []
   for (const name of stored) {
     if (typeof name !== 'string' || !isStorableFontName(name))
@@ -320,7 +320,7 @@ function parseFontTier(raw: unknown): FontTier | undefined {
  */
 function isStorableFontName(name: string): boolean {
   // The length guard runs FIRST, and it is what bounds the work on this path.
-  // `parseFontTier` calls this for every entry of the localStorage document on
+  // `parseFontTier` calls this for every entry of the stored document on
   // every mount, and a hand-edited document can carry a string of any size.
   // `sanitizeName` below runs three regex passes over the whole value, and the
   // Go copy stops appending at 129 bytes where this one has no such stop.
@@ -541,7 +541,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   }
 
   /**
-   * One browser-only boolean that lives in its OWN localStorage key.
+   * One browser-only boolean that lives in its OWN storage key.
    *
    * Its sibling above holds the same two rules for a field of the
    * consolidated document, and the rules are what matter. Store only the
@@ -857,7 +857,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     deviceTier.push({
       storageName: KEY_BROWSER_PREFS,
       // The stored browser value passes the SAME parse as a server document,
-      // so a corrupt localStorage entry cannot put a value on screen that the
+      // so a corrupt stored entry cannot put a value on screen that the
       // hub would refuse.
       seed: prefs => setSignal(() => (prefs === null ? null : opts.parse(prefs[opts.browserPrefKey]) ?? null)),
       // Runs from the `storage` handler and the sign-out reset, never a tracked
@@ -962,7 +962,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     }),
     // The Desktop tier. Each `parse` is at least as strict as the hub's
     // validator (usersettings/keys.go), and both sides read the SAME generated
-    // tokens, so the two cannot drift. A hand-edited localStorage document
+    // tokens, so the two cannot drift. A hand-edited stored document
     // therefore cannot put a value on screen -- or into a set_desktop_behavior
     // payload -- that the hub or the Rust shell would refuse.
     //
@@ -1128,6 +1128,11 @@ export const PreferencesProvider: ParentComponent = (props) => {
 
   // Follow a device-tier write made in another tab.
   //
+  // `onStorageChanged` rather than a `storage` listener: the document lives in
+  // IndexedDB now, which raises no event of its own, so `~/lib/browserStorage`
+  // carries committed changes over a BroadcastChannel and reports them here as
+  // the set of keys that moved.
+  //
   // The notification says only WHICH keys changed; the value is read back
   // through `loadBrowserPrefs`, so the reader takes it from the same mirror
   // every other read here does. The transport already updated that mirror with
@@ -1143,12 +1148,6 @@ export const PreferencesProvider: ParentComponent = (props) => {
   // for it. Dropping it left the signals showing values whose document was
   // gone, and the next write in this tab merged onto an empty one and silently
   // discarded them.
-  // Follow another tab's preference writes.
-  //
-  // `onStorageChanged` rather than a `storage` listener: the document lives in
-  // IndexedDB now, which raises no event of its own, so `~/lib/browserStorage`
-  // carries committed changes over a BroadcastChannel and reports them here as
-  // the set of keys that moved.
   onMount(() => {
     onCleanup(onStorageChanged(syncFromOtherTabs))
   })

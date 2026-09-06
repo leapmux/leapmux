@@ -12,6 +12,7 @@ import {
   localStorageRemove,
   localStorageSet,
   localStorageStore,
+  mirrorEntryForTests,
   onStorageChanged,
   PREFIX_EDITOR_DRAFT,
   PREFIX_FILES_SHOW_HIDDEN,
@@ -21,7 +22,7 @@ import {
   setStorageAccountForTests,
   storedKeyFor,
 } from '~/lib/browserStorage'
-import { readKvRow } from '~/lib/browserStorageDb'
+import { enqueueKvPut, readKvRow } from '~/lib/browserStorageDb'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
 // The IndexedDB half of the storage gateway: what the mirror loads, what the
@@ -137,6 +138,57 @@ describe('hydrateStorageAccount', () => {
     expect(localStorageGet(SYNC_KEY)).toBeUndefined()
   })
 
+  // A hydration is a read, and a read is where an expired value has always been
+  // noticed and removed. Installing it instead would serve it synchronously for
+  // the rest of the page's life, because nothing re-checks the mirror after this.
+  it('neither installs nor keeps a row that expired before it was read', async () => {
+    const stored = storedKeyFor(SYNC_KEY)!
+    enqueueKvPut({ k: stored, v: 'stale', e: Date.now() - 1 }, { publish: false })
+    await flushStorageWrites()
+
+    resetBrowserStorageForTests()
+    await hydrateStorageAccount(ACCOUNT)
+
+    // Checked BEFORE any read, so this is the hydration's own doing. A later
+    // `localStorageGet` would refuse the value too, which is why asserting only
+    // through the accessor would pass with this branch deleted.
+    expect(mirrorEntryForTests(stored)).toBeUndefined()
+    setStorageAccount(ACCOUNT)
+    expect(localStorageGet(SYNC_KEY)).toBeUndefined()
+    await flushStorageWrites()
+    expect(await readKvRow(stored)).toBeUndefined()
+  })
+
+  // The `catch` inside `hydrateStorageAccount`, which no failing OPEN can reach:
+  // every read below it answers empty rather than rejecting. What reaches it is
+  // an environment where merely TOUCHING the global throws, which Firefox's
+  // private windows did for years. A rejection here would land in
+  // `AuthContext.setUser` and turn a storage fault into a failed sign-in.
+  it('resolves with an empty mirror when reading the database throws', async () => {
+    resetBrowserStorageForTests()
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB')
+    Object.defineProperty(globalThis, 'indexedDB', {
+      configurable: true,
+      get() {
+        throw new Error('IndexedDB is disabled in this context')
+      },
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await expect(hydrateStorageAccount(ACCOUNT)).resolves.toBeUndefined()
+    }
+    finally {
+      warn.mockRestore()
+      if (original)
+        Object.defineProperty(globalThis, 'indexedDB', original)
+      else
+        Reflect.deleteProperty(globalThis, 'indexedDB')
+    }
+
+    expect(() => setStorageAccount(ACCOUNT)).not.toThrow()
+    expect(localStorageGet(SYNC_KEY)).toBeUndefined()
+  })
+
   // The invariant every synchronous reader rests on, checked at the one writer
   // rather than discovered at a random later read.
   it('is required before setStorageAccount', () => {
@@ -241,6 +293,21 @@ describe('the write queue', () => {
     localStorageStore(ASYNC_KEY, { content: 'flushed', cursor: 1 })
     await flushStorageWrites()
     expect(await localStorageLoad(ASYNC_KEY)).toEqual({ content: 'flushed', cursor: 1 })
+  })
+
+  // The unmirrored tier has no `readMirror` to notice an expiration for it, so
+  // the read is where an expired row is both refused and removed. Without the
+  // removal a draft nobody can read would occupy the quota until the hourly
+  // sweep came round.
+  it('refuses an expired unmirrored row and deletes it', async () => {
+    const stored = storedKeyFor(ASYNC_KEY)!
+    enqueueKvPut({ k: stored, v: { content: 'stale' }, e: Date.now() - 1 }, { publish: false })
+    await flushStorageWrites()
+    expect(await readKvRow(stored)).toBeDefined()
+
+    expect(await localStorageLoad(ASYNC_KEY)).toBeUndefined()
+    await flushStorageWrites()
+    expect(await readKvRow(stored)).toBeUndefined()
   })
 
   // A value read out of the queue is the object the queue is about to write, so
@@ -366,6 +433,34 @@ describe('cross-tab changes', () => {
     stop()
 
     expect(heard).toEqual([])
+  })
+
+  // Some embedded webviews expose the constructor and then refuse to construct
+  // one, which `~/lib/crdt/clientIdentity` documents at length. Losing cross-tab
+  // sync there is acceptable; throwing at module evaluation, which would take
+  // the whole app down, is not.
+  it('loads and stores with no BroadcastChannel at all', async () => {
+    // A FRESH module graph, because the channel is constructed once at module
+    // evaluation. The gateway this returns is a second instance of the one
+    // imported at the top of the file, which is why every call below goes
+    // through it rather than through the static bindings.
+    vi.resetModules()
+    vi.stubGlobal('BroadcastChannel', undefined)
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    const storage = await import('~/lib/browserStorage')
+    try {
+      storage.setStorageAccountForTests(ACCOUNT)
+      const stop = storage.onStorageChanged(() => {})
+      storage.localStorageSet(SYNC_KEY, true)
+      await storage.flushStorageWrites()
+
+      expect(storage.localStorageGet(SYNC_KEY)).toBe(true)
+      stop()
+    }
+    finally {
+      storage.resetBrowserStorageForTests()
+      vi.resetModules()
+    }
   })
 
   // A clear, or a database the scaffold had to rebuild: no key list describes

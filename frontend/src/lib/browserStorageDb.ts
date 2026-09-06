@@ -433,6 +433,14 @@ export type StorageChange
  * `changes: null` means "re-read everything": the store was cleared or rebuilt,
  * and no list of keys would describe it. It is the `event.key === null` of the
  * `storage` event this replaced, and the same subscriber branch answers for it.
+ *
+ * NO SENDER IN THIS BUILD PRODUCES IT, and the receiver stays total over it
+ * anyway. A BroadcastChannel carries messages between tabs that may be running
+ * DIFFERENT builds -- an older tab left open, a newer one after a deploy -- so
+ * a receiver that handled only the shapes its own build sends would break on
+ * the first one that adds a case. Dropping the branch also drops the only
+ * answer to a whole-store change, which is the case with the widest blast
+ * radius.
  */
 export interface StorageBroadcast {
   /** The sending tab's instance id, so a tab ignores its own echo. */
@@ -494,11 +502,6 @@ if (channel !== null) {
 export function onKvBroadcast(listener: BroadcastListener): () => void {
   broadcastListeners.add(listener)
   return () => broadcastListeners.delete(listener)
-}
-
-/** Tell the other tabs that everything changed -- a clear, or a rebuilt database. */
-export function publishKvReset(): void {
-  channel?.postMessage({ from: instanceId, changes: null } satisfies StorageBroadcast)
 }
 
 /** Tell the other tabs about a set of committed deletions (the sweep's). */

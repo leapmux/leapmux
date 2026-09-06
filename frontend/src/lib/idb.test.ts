@@ -1,5 +1,5 @@
-import type Dexie from 'dexie'
 import type { IdbStores } from './idb'
+import Dexie from 'dexie'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -511,13 +511,34 @@ describe('selectSweepVictims', () => {
   })
 })
 
+// The suite must key exactly as a browser does, and one module-evaluation
+// ordering decides whether it can.
+describe('dexie key-range setup', () => {
+  it('resolves maxKey to the real upper bound, not the string fallback', () => {
+    // `Dexie.maxKey` is computed ONCE, at dexie's module evaluation, from
+    // `Dexie.dependencies.IDBKeyRange`. `getMaxKey` self-replaces on the way:
+    // with no global IDBKeyRange it throws inside its own try and permanently
+    // rebinds itself to `'\uffff'`, which every later call gets -- including
+    // the Dexie constructor's `this._maxKey` and DBCore's MAX_KEY. Passing
+    // `IDBKeyRange` in the constructor options does not undo it, so compound
+    // index prefixes would pad differently here than in a browser and the whole
+    // suite would test something the app never does.
+    //
+    // `vitest.idbKeyRange.ts` installs the global ahead of every other setup
+    // file for exactly this. This assertion is what fails if it stops running
+    // first -- or if the install moves back into `vitest.setup.ts`, whose own
+    // imports reach dexie before its body can run.
+    expect(Dexie.maxKey).toEqual([[]])
+  })
+})
+
 describe('isIndexedDbAvailable', () => {
   it('is true when indexedDB is defined', () => {
     expect(isIndexedDbAvailable()).toBe(true)
   })
 
   it('is false without indexedDB (SSR / jsdom without the stub)', () => {
-    // A global IDBKeyRange stays installed by vitest.setup.ts for Dexie's
+    // A global IDBKeyRange stays installed by vitest.idbKeyRange.ts for Dexie's
     // module-scope maxKey, and deliberately does not make persistence
     // available: this answer reads `indexedDB` alone.
     vi.stubGlobal('indexedDB', undefined)

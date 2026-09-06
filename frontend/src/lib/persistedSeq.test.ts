@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from './browserStorage'
 import { createPersistedSeq } from './persistedSeq'
 
@@ -29,10 +29,6 @@ function installCryptoMock(): void {
 }
 
 describe('createPersistedSeq', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
   afterEach(() => {
     if (cryptoSpy) {
       cryptoSpy.mockRestore()
@@ -101,7 +97,7 @@ describe('createPersistedSeq', () => {
   })
 
   // The uniqueness property the per-process random exists for: two processes
-  // sharing localStorage (two Tauri windows, or two desktop apps on one
+  // sharing the browser store (two Tauri windows, or two desktop apps on one
   // machine) read the SAME persisted mark. Without the random low bits their
   // ids would collide and the sidecar's strict-greater owner fence would admit
   // both, letting one process's close tear down the other's relay. The low
@@ -109,7 +105,7 @@ describe('createPersistedSeq', () => {
   // mark.
   it('mints distinct ids for two processes sharing the same persisted mark', () => {
     // Pre-seed the mark so both allocators read the same starting value,
-    // simulating two processes that share localStorage and read the same mark
+    // simulating two processes that share the store and read the same mark
     // before either has written.
     const sharedMark = 1_000_000
     const writeShared = () => localStorageSet(KEY_CHANNEL_RELAY_SEQ, sharedMark)
@@ -119,7 +115,7 @@ describe('createPersistedSeq', () => {
     // Two allocator instances = two processes. Process A reads the shared mark,
     // then we RESTORE storage to the shared mark before process B reads --
     // simulating two processes whose reads both saw the same mark (in one JS
-    // runtime localStorage would otherwise serialize A's write ahead of B's
+    // runtime the mirror would otherwise serialize A's write ahead of B's
     // read).
     const nextA = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const a = nextA()

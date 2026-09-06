@@ -15,6 +15,7 @@ import {
   localStorageGet,
   localStorageRemove,
   localStorageSet,
+  mirrorEntryForTests,
   resetStorageAccountForTests,
   setStorageAccountForTests,
   storedKeyFor,
@@ -90,14 +91,14 @@ describe('preferencesContext — browser-level theme override', () => {
   const DARK_NORD = { name: 'nord', mode: 'dark' } as const
   const DEFAULTS = { name: 'default', mode: 'system' } as const
 
-  it('starts with no browser-level override when localStorage is empty', () => {
+  it('starts with no browser-level override when nothing is stored', () => {
     const ctx = captureContext()
     expect(ctx.get().dual.theme.browser()).toBeNull()
     // Theme should resolve to the hardcoded account default.
     expect(ctx.get().theme()).toEqual(DEFAULTS)
   })
 
-  it('persists a browser-level theme to localStorage', () => {
+  it('persists a browser-level theme to storage', () => {
     const ctx = captureContext()
     ctx.get().dual.theme.setBrowser({ ...DARK_NORD })
 
@@ -136,8 +137,8 @@ describe('preferencesContext — browser-level theme override', () => {
     expect(ctx.get().theme()).toEqual(DEFAULTS)
   })
 
-  it('hydrates the browser theme from localStorage on provider mount (simulated reload)', () => {
-    // Pre-seed localStorage with a stored preference and mount fresh.
+  it('hydrates the browser theme from storage on provider mount (simulated reload)', () => {
+    // Pre-seed the store with a preference and mount fresh.
     localStorageSet(KEY_BROWSER_PREFS, { theme: { ...DARK_NORD } })
     const ctx = captureContext()
     expect(ctx.get().dual.theme.browser()).toEqual(DARK_NORD)
@@ -231,7 +232,7 @@ describe('preferencesContext — browser-level diff view override', () => {
     expect(ctx.get().diffView()).toBe('unified')
   })
 
-  it('round-trips browser-level "unified" through localStorage', () => {
+  it('round-trips browser-level "unified" through storage', () => {
     const ctx = captureContext()
     ctx.get().dual.diffView.setBrowser('unified')
     expect(ctx.get().dual.diffView.browser()).toBe('unified')
@@ -239,7 +240,7 @@ describe('preferencesContext — browser-level diff view override', () => {
     expect(ctx.get().diffView()).toBe('unified')
   })
 
-  it('round-trips browser-level "split" through localStorage', () => {
+  it('round-trips browser-level "split" through storage', () => {
     const ctx = captureContext()
     ctx.get().dual.diffView.setBrowser('split')
     expect(ctx.get().dual.diffView.browser()).toBe('split')
@@ -257,7 +258,7 @@ describe('preferencesContext — browser-level diff view override', () => {
     expect('diffView' in loadBrowserPrefs()).toBe(false)
   })
 
-  it('hydrates the browser diff view from localStorage on provider mount', () => {
+  it('hydrates the browser diff view from storage on provider mount', () => {
     localStorageSet(KEY_BROWSER_PREFS, { diffView: 'split' })
     const ctx = captureContext()
     expect(ctx.get().dual.diffView.browser()).toBe('split')
@@ -294,7 +295,7 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
   // The save flow asks the OS to "reveal in Finder/Explorer" after
   // writing. Most users want it; we only persist an explicit `false`
   // when the user opts out — `undefined` is implicit consent.
-  it('defaults to true when localStorage is empty', () => {
+  it('defaults to true when nothing is stored', () => {
     const ctx = captureContext()
     expect(ctx.get().revealAfterDownload()).toBe(true)
     // Nothing serialized while no opt-out has happened.
@@ -319,7 +320,7 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
     expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
   })
 
-  it('hydrates a stored `false` from localStorage on provider mount', () => {
+  it('hydrates a stored `false` from storage on provider mount', () => {
     localStorageSet(KEY_BROWSER_PREFS, { revealAfterDownload: false })
     const ctx = captureContext()
     expect(ctx.get().revealAfterDownload()).toBe(false)
@@ -361,7 +362,7 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
     expect('showComposerStatusBar' in loadBrowserPrefs()).toBe(false)
   })
 
-  it('hydrates a stored `false` for showComposerStatusBar from localStorage', () => {
+  it('hydrates a stored `false` for showComposerStatusBar from storage', () => {
     localStorageSet(KEY_BROWSER_PREFS, { showComposerStatusBar: false })
     const ctx = captureContext()
     expect(ctx.get().showComposerStatusBar()).toBe(false)
@@ -552,7 +553,7 @@ describe('preferencesContext — font tiers', () => {
 })
 
 // One parse guards BOTH tiers of a preference. A stored browser value that
-// the hub would refuse must not reach the screen either: localStorage is
+// the hub would refuse must not reach the screen either: a stored value is
 // editable by hand, survives a downgrade, and outlives the value set it was
 // written against.
 describe('preferencesContext — a stored browser value passes the same parse', () => {
@@ -1005,7 +1006,7 @@ describe('preferencesContext — font tier parse', () => {
   })
 
   // `usersettings.validateFontFamily` refuses each of these on the write
-  // path. One parse guards BOTH tiers, so a hand-edited localStorage
+  // path. One parse guards BOTH tiers, so a hand-edited stored
   // document must not put on screen what the hub would refuse.
   it.each([
     ['a control character', '{"enabled":true,"fonts":["My\\nFont"]}'],
@@ -1072,7 +1073,7 @@ describe('preferencesContext — font tier parse', () => {
   // hold is not a document this side renders half of.
   //
   // The rule now FOLDS, so a repeated space is refused where it used to pass,
-  // and each of these reaches the parse from a hand-edited localStorage
+  // and each of these reaches the parse from a hand-edited stored
   // document that never passes the hub's validator at all.
   it.each([
     ['a repeated space', 'Fira  Code'],
@@ -1368,10 +1369,13 @@ describe('preferencesContext — cross-tab sync', () => {
     const ctx = captureContext()
     await flushMicrotasks()
 
-    localStorage.setItem(
-      accountStorageKey('someoneelse', KEY_BROWSER_PREFS),
-      JSON.stringify({ v: { theme: { name: 'nord', mode: 'dark' } }, e: Date.now() + 60_000 }),
-    )
+    // Written through the gateway UNDER THAT ACCOUNT, so the row is as
+    // well-formed as one of this account's own. Moving the namespace back
+    // leaves it in place and merely out of reach, which is what the disk does
+    // too.
+    setStorageAccountForTests('someoneelse')
+    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'nord', mode: 'dark' } })
+    setStorageAccountForTests(TEST_USER_ID)
     announceWrite(accountStorageKey('someoneelse', KEY_BROWSER_PREFS))
 
     expect(ctx.get().theme()).toEqual(DEFAULT_THEME_VALUE)
@@ -1401,28 +1405,20 @@ describe('preferencesContext — cross-tab sync', () => {
     await flushMicrotasks()
 
     localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
-    const writes = vi.spyOn(Storage.prototype, 'setItem')
+
+    // The MIRROR ENTRY's identity, not a `Storage.prototype.setItem` spy. The
+    // document lives in IndexedDB now, so no write on this path calls `setItem`
+    // whether the bug is present or not, and that spy would pass for the wrong
+    // reason. `localStorageSet` replaces the mirror entry with a fresh object
+    // on every write, so the same object afterwards proves no write happened.
+    const stored = storedKeyFor(KEY_BROWSER_PREFS)!
+    const before = mirrorEntryForTests(stored)
+    expect(before).toBeDefined()
+
     announceWrite()
 
     expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
-    expect(writes).not.toHaveBeenCalled()
-    writes.mockRestore()
-  })
-
-  // The match is on the key AS STORED, which carries the account. Another
-  // account's document changing next door says nothing about this one, and
-  // acting on it would put one user's palette on another user's screen.
-  it('ignores a change set naming another account\'s stored key', async () => {
-    const ctx = captureContext()
-    await flushMicrotasks()
-
-    localStorageSet(KEY_BROWSER_PREFS, { theme: { name: 'github', mode: 'light' } })
-    announceWrite()
-    expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
-
-    // The same logical key, under a different account.
-    deliverStorageChangeForTests(new Set([accountStorageKey('someoneelse', KEY_BROWSER_PREFS)]))
-    expect(ctx.get().theme()).toEqual({ name: 'github', mode: 'light' })
+    expect(mirrorEntryForTests(stored)).toBe(before)
   })
 
   // EVERY device-tier signal follows, not only the ones that have an account
@@ -1472,8 +1468,8 @@ describe('preferencesContext — cross-tab sync', () => {
     applied.mockRestore()
   })
 
-  // `localStorage.clear()` next door fires ONE event whose key is null, naming
-  // no key at all. Dropping it left every signal showing a value whose document
+  // A whole-store change next door names NO key at all -- a clear, or a
+  // database the scaffold had to rebuild. Dropping it left every signal showing a value whose document
   // was gone, and the next write in this tab merged onto the empty document and
   // silently discarded the rest.
   it('returns every signal to its default when another tab clears the store', async () => {

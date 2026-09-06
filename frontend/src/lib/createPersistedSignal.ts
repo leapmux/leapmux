@@ -4,7 +4,7 @@ import { createEffect, createSignal, on } from 'solid-js'
 import { localStorageGet, localStorageSet } from '~/lib/browserStorage'
 
 /**
- * A signal backed by localStorage under a key that may itself change.
+ * A signal backed by browser storage under a key that may itself change.
  *
  * Two rules make a per-scope preference behave, and both are easy to write
  * once and forget the next time:

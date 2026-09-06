@@ -75,6 +75,9 @@ export default defineConfig({
     // under NEITHER runner, because that pin keeps Playwright off them.
     // `src/test-support/testFileNaming.test.ts` fails the suite for it.
     exclude: ['tests/e2e/**/*.spec.ts', 'node_modules/**'],
-    setupFiles: ['./vitest.setup.ts'],
+    // ORDER MATTERS. `vitest.idbKeyRange.ts` must run before anything imports
+    // dexie, and `vitest.setup.ts` imports the storage gateway, which does.
+    // See `vitest.idbKeyRange.ts` for what goes wrong when it runs second.
+    setupFiles: ['./vitest.idbKeyRange.ts', './vitest.setup.ts'],
   },
 })

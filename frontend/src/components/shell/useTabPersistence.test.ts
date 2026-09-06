@@ -72,7 +72,7 @@ async function withPersistence(
  * their own -- they used to ride along in the registry snapshot.
  *
  * Which workspace is active is NOT persisted here; that moved to
- * `createWorkspaceSwitcher`, which writes it to localStorage.
+ * `createWorkspaceSwitcher`, which writes it to the durable registry.
  */
 describe('useTabPersistence', () => {
   it('persists the workspace active tab key', async () => {

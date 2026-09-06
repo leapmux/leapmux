@@ -417,7 +417,6 @@ describe('terminalView', () => {
   })
 
   it('re-applies a genuine terminal-theme change to every live instance', async () => {
-    localStorage.clear()
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
 
@@ -475,8 +474,6 @@ describe('terminalView', () => {
   })
 
   it('writes each instance theme once on a change, not once per mounted view', async () => {
-    localStorage.clear()
-
     // Two tiles (two TerminalView instances) share the module-level `instances`
     // map, so BOTH views' theme effects iterate BOTH instances on a theme flip.
     // The per-instance guard must collapse that to one write per instance

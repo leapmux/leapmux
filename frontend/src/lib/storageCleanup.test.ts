@@ -12,6 +12,8 @@ import {
   LOCAL_KEY_SPECS,
   localStorageGet,
   localStorageSet,
+  mirrorEntryForTests,
+  PREFIX_FILES_SHOW_HIDDEN,
   resetStorageAccountForTests,
   runCleanup,
   SESSION_KEY_SPECS,
@@ -345,6 +347,31 @@ describe('storageCleanup', () => {
     //
     // The samples are DERIVED from the registry rather than restated, so a key
     // added to the table is covered without anyone remembering to add it here.
+    // The mirror is the synchronous tier's whole answer, so a row the sweep
+    // deleted has to leave it too -- otherwise `localStorageGet` keeps serving a
+    // value that is no longer anywhere, for as long as the page lives. And the
+    // other tabs mirror the same row, so they are told.
+    it('drops what it deleted from the mirror and tells the other tabs', async () => {
+      const name = `${PREFIX_FILES_SHOW_HIDDEN}w1:/repo` as const
+      localStorageSet(name, true)
+      await flushStorageWrites()
+      const stored = storedKeyFor(name)!
+      expect(mirrorEntryForTests(stored)).toBeDefined()
+
+      const published = vi.spyOn(BroadcastChannel.prototype, 'postMessage')
+      // Past the family's 7-day TTL, so the sweep's expiry arm selects it.
+      vi.advanceTimersByTime(8 * DAY_MS)
+      await runCleanup()
+
+      expect(await readKvRow(stored)).toBeUndefined()
+      expect(mirrorEntryForTests(stored)).toBeUndefined()
+      expect(localStorageGet(name)).toBeUndefined()
+      expect(published).toHaveBeenCalledWith(expect.objectContaining({
+        changes: [{ k: stored, removed: true }],
+      }))
+      published.mockRestore()
+    })
+
     it('preserves every registered sessionStorage key under runCleanup', async () => {
       const names = Object.entries(SESSION_KEY_SPECS)
         .map(([name, spec]) => (spec.match === 'prefix' ? `${name}sample` : name))
@@ -448,6 +475,30 @@ describe('storageCleanup', () => {
       dispose()
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
       expect(localStorage.getItem('leapmux-stale2')).toBe('data')
+    })
+
+    // The latch. A sweep that is still reading the database has already walked
+    // every key the next one would, so a second pass is pure duplicate work --
+    // and the two would each report the other's deletions as their own.
+    it('does not start a second sweep while the first is still running', async () => {
+      const dispose = initStorageCleanup()
+
+      // Start the deferred first sweep and deliberately DO NOT settle it: its
+      // synchronous halves have run and its database half is still in flight,
+      // which is exactly the window the latch covers.
+      vi.advanceTimersByTime(0)
+
+      // Only the synchronous legacy pass deletes this, so its survival is proof
+      // that the hourly tick found the latch closed and did nothing.
+      localStorage.setItem('leapmux-old-key', 'stale')
+      vi.advanceTimersByTime(60 * 60 * 1000)
+      expect(localStorage.getItem('leapmux-old-key')).toBe('stale')
+
+      // Once the first sweep settles, the latch reopens and the next tick runs.
+      await settleSweep()
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+      expect(localStorage.getItem('leapmux-old-key')).toBeNull()
+      dispose()
     })
 
     it('sets up hourly interval', async () => {

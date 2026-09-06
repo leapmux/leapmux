@@ -1,5 +1,5 @@
 import { createRoot } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { compactionContextUsage, createAgentSessionStore } from './agentSession.store'
@@ -7,14 +7,6 @@ import { compactionContextUsage, createAgentSessionStore } from './agentSession.
 // The asynchronous storage tier has no in-memory mirror, so these round-trips
 // need a database to round-trip through.
 useTestStorage()
-
-// Isolate every test: unique-ID tests are unaffected (each does its own setup),
-// while the reused-'agent-1' tests rely on a clean slate. Reload tests drive
-// two roots inside one `it`, so the clear (per test, not per root) preserves
-// their cross-reload persistence.
-beforeEach(() => {
-  localStorage.clear()
-})
 
 describe('createAgentSessionStore', () => {
   it('should return empty object for unknown agent on getInfo', () => {

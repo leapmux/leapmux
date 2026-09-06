@@ -9,7 +9,9 @@ import {
   persistEditorMinHeight,
 } from '~/lib/editor/editorMinHeight'
 
-// In-memory cache of per-agent heights (avoids localStorage reads on every render).
+// In-memory cache of per-agent heights. The stored height is on the
+// ASYNCHRONOUS storage tier, which a render cannot await, so this cache is what
+// answers the render path after the first read lands.
 const editorMinHeightCache = new Map<string, number | undefined>()
 
 export interface UseEditorMinHeightOptions {
@@ -31,8 +33,9 @@ export interface UseEditorMinHeightResult {
 
 /**
  * Manages the per-agent editor minimum height: load on agent change, drag-to-resize,
- * double-click reset, and persist to localStorage. The cache avoids localStorage
- * reads on every render when the user is rapidly switching agents.
+ * double-click reset, and persist. The stored height is on the ASYNCHRONOUS
+ * tier, so the cache is what answers a render while a read is still in flight,
+ * and what keeps a rapid agent switch from issuing a read per frame.
  */
 export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMinHeightResult {
   const [isDragging, setIsDragging] = createSignal(false)

@@ -365,7 +365,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // this effect on hydration completing), and an in-session reconnect from
     // live state -- so there is no case where confirmedState is populated but
     // the watermark is missing, and hence nothing for a second persisted copy
-    // to rescue. There used to be one in localStorage; it could never be the
+    // to rescue. There used to be one in browser storage; it could never be the
     // source, because the token below requires confirmedPopulated and every
     // path that populates confirmedState also seeds the watermark.
     //

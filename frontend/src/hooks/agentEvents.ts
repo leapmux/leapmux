@@ -60,9 +60,11 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
     // One checked line per field. Each picker states the type it accepts, and
     // `assignDefined` leaves the key ABSENT when the tier omits it or carries the
     // wrong type -- which matters beyond tidiness: agentSession.store compares a
-    // tier with `shallowEqual`, which reads key COUNTS first, and a tier that
-    // round-tripped through localStorage has lost its undefined-valued keys. A
-    // form that wrote all eight keys would compare unequal on every broadcast.
+    // tier with `shallowEqual`, which reads key COUNTS first. A form that wrote
+    // all eight keys, with `undefined` for the ones the payload omits, would
+    // compare unequal against the STORED copy on every broadcast, because the
+    // two are not built the same way: the stored one is whatever the serializer
+    // left behind, and this one is whatever the payload carried.
     //
     // Every picker's fallback is an explicit `undefined`, so a field's type still
     // comes from RateLimitInfo and a mismatched picker fails to compile.

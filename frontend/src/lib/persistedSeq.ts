@@ -11,7 +11,7 @@
 // the stale owner the sidecar still holds.
 //
 // Uniqueness across concurrent processes: the high-water mark is the ONLY
-// shared state, persisted to localStorage -- and localStorage is shared by
+// shared state, persisted to browser storage -- and that store is shared by
 // every process on the same origin (two Tauri windows, or two desktop apps on
 // one machine). Two processes that read the same mark would compute the same
 // id, and the sidecar's `current.owner > relayID` strict-greater tie-break
@@ -83,7 +83,7 @@ function randomLowBits(): number {
  * Returns an allocator for `key`'s persisted monotonic sequence. The mark is
  * seeded lazily from the persisted value on the first call, and every allocated
  * id is persisted as the new high-water mark. The id carries a per-process
- * random in its low bits so two processes sharing the origin (same localStorage)
+ * random in its low bits so two processes sharing the origin (same store)
  * cannot mint the same id. The key must be registered in browserStorage's TTL
  * tables.
  */
@@ -146,7 +146,7 @@ export function createPersistedSeq(key: SyncLocalKey): () => number {
         log.warn('relay-seq mark did not persist; reload after this session may wedge the relay until restart', { key })
     })
     // High bits = monotonic mark (reload-safe, shared across processes via
-    // localStorage); low bits = per-process random (distinguishes concurrent
+    // browser storage); low bits = per-process random (distinguishes concurrent
     // processes that read the same mark). Multiplication, not <<, because the
     // mark exceeds 32 bits and JS bitwise ops truncate to Int32.
     return mark * (TAB_MASK + 1) + processBits

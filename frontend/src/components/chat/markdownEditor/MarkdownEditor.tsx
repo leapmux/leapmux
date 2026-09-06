@@ -16,7 +16,7 @@ import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
-import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
+import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
@@ -30,7 +30,7 @@ const logger = createLogger('MarkdownEditor')
 export { clearDraft }
 
 /**
- * Identifies the localStorage draft key. Only one of `key` or
+ * Identifies the stored draft key. Only one of `key` or
  * (`agentId` + optional `controlRequestId`) needs to be set; if `key` is set
  * it takes precedence.
  */
@@ -156,7 +156,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // its two-zone row always renders below the text with the separator above it.
   const isExpanded = () => layout.contentExpanded() || props.actions?.layout === 'fullWidth'
 
-  /** Compute the localStorage draft key, incorporating controlRequestId when present. */
+  /** Compute the stored draft key, incorporating controlRequestId when present. */
   const getDraftKey = () => {
     const dk = props.draftKey
     if (dk?.key)
@@ -652,10 +652,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // Swap editor content when the effective draft key changes. This covers
   // agent switches, control-request switches, and per-question draft scopes.
 
-  // Bumped per draft-key swap. The load below is asynchronous, so a swap that
-  // starts while an earlier one is still reading must be able to say so -- the
-  // earlier read would otherwise replace the document with an older key's prose.
-  let draftSwapToken = 0
+  // Owns the generation token that drops a read a newer swap superseded. See
+  // `createDraftSwapper` for why the token lives there and not here.
+  const swapDraft = createDraftSwapper()
   createEffect(on(
     getDraftKey,
     (newDraftKeyRaw) => {
@@ -696,18 +695,13 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // the incoming document under the outgoing key.
       prevDraftKey = newDraftKey
       props.onDraftKeyChanged?.(newDraftKey)
-      const swapToken = ++draftSwapToken
       const swapTarget = editorInstance
       // Captured before the await. `props` is reactive, and reading a prop off
       // it inside the callback below would read it outside any tracked scope --
       // which is what solid/reactivity flags, and it is right: the handler this
       // swap belongs to is the one that was installed when the swap started.
       const notifyContentChange = props.onContentChange
-      void (newDraftKey ? loadDraft(newDraftKey) : Promise.resolve({ content: '', cursor: -1 })).then((draft) => {
-        // A later swap won. Replacing the document now would install an older
-        // key's prose over the one the user is looking at.
-        if (swapToken !== draftSwapToken)
-          return
+      void swapDraft(newDraftKey, (draft) => {
         try {
           swapTarget.action(replaceAll(draft.content))
           restoreCursor(swapTarget, draft.cursor)

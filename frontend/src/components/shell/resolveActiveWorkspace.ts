@@ -7,7 +7,7 @@ export interface ResolveActiveWorkspaceArgs {
   userId: string
   workspaceState: ReturnType<typeof createWorkspaceStore>['state']
   /**
-   * The workspace this user was last on, read from localStorage. Undefined
+   * The workspace this user was last on, read from browser storage. Undefined
    * on a first visit, or after the key expired.
    */
   savedWorkspaceId: string | undefined

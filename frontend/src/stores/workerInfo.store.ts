@@ -22,7 +22,7 @@ type InfoMap = Record<string, WorkerInfo>
  * on dialog open. System info (homeDir, OS, version) is slow-changing —
  * a one-minute TTL is short enough to pick up worker restarts but long
  * enough that opening three dialogs back-to-back only forks one RPC per
- * worker. The localStorage entry survives past this window for offline-
+ * worker. The stored entry survives past this window for offline-
  * display fallback; only the freshness probe gate is bounded here.
  */
 const FRESH_TTL_MS = 60_000
@@ -112,9 +112,9 @@ export function createWorkerInfoStore(): WorkerInfoStore {
    *
    * The read is asynchronous (worker info is an unbounded family on the
    * unmirrored storage tier), so a cached name appears one microtask after the
-   * first render rather than during it. It is published through `infoMap`, the
-   * store's reactive channel, so the rows that already rendered without it
-   * re-render when it arrives.
+   * first render rather than during it. It is published through THAT WORKER's
+   * revision signal, never through `infoMap`, so the rows that already rendered
+   * without it re-render and no consumer of another id is disturbed.
    */
   function startPersistedRead(workerId: string): void {
     if (reading.has(workerId))
@@ -135,10 +135,10 @@ export function createWorkerInfoStore(): WorkerInfoStore {
 
   /**
    * Reactive read of cached info. On a miss it starts a persisted read through
-   * the shared cache and answers null for now; the reactive `infoMap` is only
-   * ever written from `fetchWorkerInfo` and that read, so a workspace full of
-   * tabs reading `workerInfo(id)` for distinct ids does not cascade-notify
-   * every other consumer of `infoMap()`.
+   * the shared cache and answers null for now, then re-runs when that read
+   * lands. The reactive `infoMap` is only ever written from `fetchWorkerInfo`,
+   * so a workspace full of tabs reading `workerInfo(id)` for distinct ids does
+   * not cascade-notify every other consumer of `infoMap()`.
    */
   function workerInfo(workerId: string): WorkerInfo | null {
     const map = infoMap()

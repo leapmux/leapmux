@@ -52,6 +52,13 @@
  * `hydrateStorageAccount` loads the sync tier, and `setStorageAccount` refuses an
  * account it was not run for.
  *
+ * ONE THING IS WEAKER THAN IT WAS, AND IT IS NOT REPAIRABLE HERE. Writes go
+ * through a write-behind queue, so a write issued in the last moments before a
+ * reload can be lost where the synchronous `setItem` it replaces could not be.
+ * `App` flushes on `pagehide`, which narrows that window to what an unload can
+ * interrupt rather than closing it. A caller that must know whether its value
+ * reached disk reads `StorageWrite.durable`; `persistedSeq` is the one that does.
+ *
  * `sessionStorage` STAYS on the Web Storage API. IndexedDB is per-origin and
  * shared by every tab, while sessionStorage is per-tab and dies with the tab --
  * and that lifetime is load-bearing for every key registered there: the CRDT
@@ -1619,15 +1626,17 @@ function whenIdle(body: () => void): () => void {
  * Start the storage cleanup: one sweep when the browser next goes idle, then
  * one every hour. Returns a dispose function that cancels both.
  *
- * THE FIRST SWEEP IS DEFERRED, because `App` starts it in its own body and both
- * stores are synchronous: a sweep walks every key in the origin, and every key
- * is partitioned per account, so a browser several accounts have signed in to
- * pays for all of them on the critical path to first paint.
+ * THE FIRST SWEEP IS DEFERRED, because `App` starts it in its own body: it
+ * walks every key in the origin, and every key is partitioned per account, so a
+ * browser several accounts have signed in to pays for all of them on the
+ * critical path to first paint. The sessionStorage half and the legacy
+ * localStorage pass are both SYNCHRONOUS main-thread walks, which is what makes
+ * that cost land on the frame rather than behind it.
  *
  * Deferring is safe because the sweep reclaims SPACE and is not a correctness
- * gate. A read cannot see a value the sweep would have deleted: `readDynamic`
- * checks the same expiration and removes the entry itself, and a flat key from
- * an earlier build has no name any accessor composes.
+ * gate. A read cannot see a value the sweep would have deleted: `readMirror` and
+ * `readDynamic` check the same expiration and remove the entry themselves, and a
+ * flat key from an earlier build has no name any accessor composes.
  */
 export function initStorageCleanup(): () => void {
   // A latch, not a queue: a sweep that is still running has already read every

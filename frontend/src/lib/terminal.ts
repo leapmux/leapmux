@@ -128,12 +128,12 @@ export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
 
 export const DEFAULT_FONT_SIZE = 13
 
-/** Get the stored terminal theme preference from localStorage. */
+/** Get the stored terminal theme preference from browser storage. */
 export function getTerminalThemePreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalThemeValue {
   return parseTerminalThemeValue(prefs.terminalTheme) ?? DEFAULT_TERMINAL_THEME_VALUE
 }
 
-/** Get the stored terminal renderer preference from localStorage. */
+/** Get the stored terminal renderer preference from browser storage. */
 export function getTerminalRendererPreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalRendererPreference {
   const stored = prefs.terminalRenderer
   if (stored === 'auto' || stored === 'webgl' || stored === 'canvas')

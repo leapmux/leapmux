@@ -219,12 +219,6 @@ class FakeSocket {
 }
 
 beforeEach(() => {
-  // Clear persisted state so the relay-id allocator tests below start from a
-  // fresh seed (mark = null), independent of whatever the bridge-path tests
-  // above persisted to KEY_USER_EVENTS_RELAY_SEQ. Without this, the first test
-  // in the nextusereventsrelayid block reads a non-null mark left by prior
-  // tests and its assertions become order-dependent.
-  localStorage.clear()
   bridge.isTauri = false
   bridge.handlers.clear()
   bridge.registrations.length = 0

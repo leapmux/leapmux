@@ -34,7 +34,6 @@ let clipboardContent: string | null = null
 
 beforeEach(() => {
   clipboardContent = null
-  localStorage.clear()
   Object.assign(navigator, {
     clipboard: {
       writeText: vi.fn((text: string) => {

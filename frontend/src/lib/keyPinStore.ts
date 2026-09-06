@@ -142,9 +142,9 @@ export class KeyPinStore {
    * map and mutates only this worker's entry, all synchronously, and no snapshot
    * ever crosses an await.
    *
-   * This closes the intra-tab race only; localStorage offers no compare-and-swap, so
-   * two browser TABS opening channels at the same instant can still clobber each
-   * other's pin. Narrowing the window to a single synchronous block is as far as this
+   * This closes the intra-tab race only; the synchronous storage tier offers no
+   * compare-and-swap, so two browser TABS opening channels at the same instant
+   * can still clobber each other's pin. Narrowing the window to a single synchronous block is as far as this
    * API goes.
    *
    * Throws KeyPinRejectedError when the user rejects the new key.
