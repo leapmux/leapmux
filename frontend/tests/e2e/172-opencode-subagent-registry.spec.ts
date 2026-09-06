@@ -1,6 +1,6 @@
 import {
+  expectNoRegistryRows,
   expectRegistryOnlySubagentEnds,
-  expectRegistrySectionAbsent,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -23,7 +23,7 @@ opencodeTest.describe('OpenCode subagent registry', () => {
   }) => {
     void authenticatedOpencodeWorkspace
 
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     await sendMessage(page, 'Use your task tool to spawn one subagent whose prompt is: reply with the single word PONG. Report what it said.')
 

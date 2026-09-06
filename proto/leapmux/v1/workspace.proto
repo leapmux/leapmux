@@ -369,6 +369,7 @@ message AgentEvent {
     AgentTurnEnd turn_end = 13;
     AgentBackgroundTasksChanged background_tasks_changed = 14;
     AgentInputQueueChanged input_queue_changed = 15;
+    AgentGoalChanged goal_changed = 16;
   }
 }
 

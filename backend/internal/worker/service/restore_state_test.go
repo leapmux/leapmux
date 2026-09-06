@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -118,7 +118,7 @@ func TestRestoreStateWritesADividerForEachInterruptedChild(t *testing.T) {
 	for _, childID := range []string{liveID, otherID} {
 		msgs := transcriptMessages(t, svc, childID)
 		require.Len(t, msgs, 1, "each interrupted child transcript is closed exactly once")
-		assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+		assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 		assert.Equal(t, "interrupted", msgs[0]["status"])
 	}
 	assert.Len(t, transcriptMessages(t, svc, doneID), doneBefore,

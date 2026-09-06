@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -455,6 +456,25 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 			}
 
+			// Session goal, same explicit-presence contract again. The
+			// projection answers an empty snapshot for a CHILD agent for the
+			// reason the registry does: a child owns no goal, and goal_loaded
+			// stays TRUE so the client overwrites with the correct empty answer
+			// instead of keeping whatever its previous root put there.
+			//
+			// Projected from agentRow, which the dispatcher already loaded.
+			// Re-reading through LoadGoal would run a second full-row query per
+			// cold chat load for columns that are right here, which is what the
+			// registry leg above avoids by reading agentRow.ParentAgentID.
+			var goalSnapshot GoalSnapshot
+			var goalActions []leapmuxv1.AgentGoalAction
+			goalLoaded := false
+			if isLatestPage {
+				goalSnapshot = svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(agentRow))
+				goalLoaded = true
+				goalActions = svc.Output.SupportedGoalActions(agentID)
+			}
+
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
 			dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
 			if queryErr != nil {
@@ -501,6 +521,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				LatestSeq:             latestSeq,
 				BackgroundTasks:       bgtask.ItemsToProto(bgItems),
 				BackgroundTasksLoaded: bgTasksLoaded,
+				Goal:                  goalSnapshot.Goal,
+				GoalLoaded:            goalLoaded,
+				// Gated with the rest of the goal answer. The client applies
+				// these fields only when goal_loaded is true, so computing the
+				// capability for a scroll page asks the Manager a question
+				// nobody reads.
+				GoalSupportedActions: goalActions,
+				GoalUpdatedAt:        goalSnapshot.UpdatedAt,
 			})
 		})
 
@@ -733,7 +761,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			changes := svc.buildSettingsChanges(&dbAgent, oldOptions, settledOptions, sortedOptionKeys(oldOptions, settledOptions), true)
 			if len(changes) > 0 {
 				svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-					"type":    agent.NotificationTypeSettingsChanged,
+					"type":    contracts.NotificationTypeSettingsChanged,
 					"changes": changes,
 				})
 			}
@@ -828,6 +856,72 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+		})
+
+	// UpdateAgentGoal sets, clears, pauses or resumes the session goal.
+	//
+	// It writes NO optimistic local state, which is the same discipline
+	// InterruptAgent keeps and for a sharper reason here: the provider echoes
+	// every goal change back as a notification, so a local write would race an
+	// echo already in flight and the user would watch the button flip back. The
+	// provider's report is the sole writer of goal state.
+	//
+	// A child agent has no goal of its own (see OutputSink.UpsertGoal), so it is
+	// refused rather than redirected to its root -- silently acting on a
+	// different agent than the one addressed is worse than saying no.
+	registerAgentGatedByID(d, "UpdateAgentGoal", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.UpdateAgentGoalRequest, sender channel.ResponseWriter) {
+			agentID := r.GetAgentId()
+			action, ok := agent.GoalActionFromProto(r.GetAction())
+			if !ok {
+				sendInvalidArgument(sender, "unknown session-goal action")
+				return
+			}
+			// Sanitized, then REFUSED when it is too long -- not truncated.
+			//
+			// A truncation here would store and send text the user did not
+			// write, and they would have no way to see that it happened: the
+			// dialog would show one objective and the card another. The browser
+			// measures the same limit in the same unit and disables its submit
+			// button, so reaching this branch means a client that did not.
+			//
+			// GoalUpdate.Clean still truncates on the report path, and that
+			// asymmetry is deliberate: there the writer is a PROVIDER whose
+			// report cannot be refused without losing the goal entirely.
+			objective := strings.TrimSpace(validate.StripUnreadable(r.GetObjective(), 0))
+			if action == agent.GoalActionSet && objective == "" {
+				sendInvalidArgument(sender, "a session goal needs an objective")
+				return
+			}
+			if len(objective) > contracts.GoalObjectiveByteLimit {
+				sendInvalidArgument(sender, fmt.Sprintf(
+					"a session goal is limited to %d bytes", contracts.GoalObjectiveByteLimit))
+				return
+			}
+			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+			if err != nil {
+				sendNotFoundError(sender, "agent not found")
+				return
+			}
+			if dbAgent.ParentAgentID.Valid {
+				sendFailedPrecondition(sender, "a subagent has no session goal")
+				return
+			}
+			// The provider performs the action AND writes the resulting state.
+			// Almost every one of them writes it by reporting the change back,
+			// which this worker reads; Claude Code reports nothing and writes
+			// its own row instead. Either way the decision belongs to the
+			// provider, so nothing here needs to know which kind it holds.
+			if err := svc.Agents.UpdateGoal(agentID, action, objective); err != nil {
+				if errors.Is(err, agent.ErrGoalControlUnsupported) {
+					sendFailedPrecondition(sender, "this agent cannot perform that session-goal action")
+					return
+				}
+				slog.Warn("update agent goal failed", "agent_id", agentID, "action", r.GetAction(), "error", err)
+				sendNotFoundError(sender, "agent not found or not running")
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.UpdateAgentGoalResponse{})
 		})
 
 	// WatchWorkerPrivateEvents streams this worker's private tab events
@@ -1003,7 +1097,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			return
 		}
 		// The method gate is file:read because the registry row is tab
-		// bookkeeping, but the WORKTREE_ACTION_REMOVE leg runs `git worktree
+		// bookkeeping, but the WORKTREE_ACTION_REMOVE case runs `git worktree
 		// remove --force` and `git branch -D` -- a destructive write that
 		// scope.proto places under git:write ("manage a worktree"), the same
 		// family rule every other destructive verb follows (CloseTerminal ->
@@ -1215,7 +1309,7 @@ func (svc *Service) replayAgentCatchUp(
 	}
 
 	// Refresh the background-task registry on (re)subscribe, same rationale as
-	// the todos leg above. The registry is keyed by ROOT owner id, so a child
+	// the todos stage above. The registry is keyed by ROOT owner id, so a child
 	// tab's replay ships its root's registry under the root id (the sidebar
 	// resolves the root from the active tab).
 	if !sink.alive() {
@@ -1239,14 +1333,55 @@ func (svc *Service) replayAgentCatchUp(
 		})
 	}
 
+	// Refresh the session goal on (re)subscribe, same rationale as the two stages
+	// above. It ships under the ROOT id, reusing the root already resolved for
+	// the registry: a child owns no goal, so a child tab's replay carries its
+	// root's, and LoadGoal answers nil for the child id itself.
 	if !sink.alive() {
 		return
+	}
+	// Projected from dbAgent when this tab IS the root, which is every provider
+	// except a Codex collab child: the row is already in hand, so re-reading it
+	// would run a second query on every (re)subscribe. A child tab carries its
+	// ROOT's goal, and that root's row is not here, so it is read.
+	goal := svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(dbAgent))
+	if rootID != agentID {
+		loaded, goalErr := svc.Output.LoadGoal(bgCtx(), rootID)
+		if goalErr != nil {
+			slog.Warn("failed to load agent goal for replay", "agent_id", agentID, "error", goalErr)
+			return
+		}
+		goal = loaded
+	}
+	broadcastReplayAgentEvent(sink, svc.Output.GoalChangedEvent(rootID, goal.Goal, goal.UpdatedAt))
+
+	if !sink.alive() {
+		return
+	}
+
+	// Then the VOLATILE half, and every other ephemeral counter beside it.
+	//
+	// agent_session_info never reaches a message row, so message replay above
+	// carries none of it and a reloaded browser holds blank counters until the
+	// provider reports the next value. The goal card is where that shows most:
+	// its progress row measures the goal the event above just restored, and
+	// Codex advances those numbers only after a completed tool call.
+	//
+	// It ships under the ROOT id for the reason the goal does -- a child owns no
+	// goal, and the sink that caches these counters is the root's. Nil when no
+	// process runs, which is the correct answer: an inactive agent has no live
+	// counters to restore.
+	if event := svc.Output.SessionInfoReplayEvent(rootID); event != nil {
+		broadcastReplayAgentEvent(sink, event)
+		if !sink.alive() {
+			return
+		}
 	}
 
 	// Send a statusChange marker (signals end of message replay).
 	// A child tab derives ACTIVE from its feeding (root) process rather than
 	// its own (a virtual child never owns a process). Reuse the root resolved
-	// above for the registry leg so a child does not run the recursive root
+	// above for the registry stage so a child does not run the recursive root
 	// CTE a second time inside agentProcessRunning.
 	hasAgent := svc.agentsHasAgentFor(&dbAgent, rootID)
 	// Preload the cached option-group catalog from DB for inactive agents.
@@ -1636,7 +1771,7 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 	if !running {
 		svc.broadcastAgentInactive(&activeDbAgent)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  agent.NotificationTypeAgentError,
+			"type":  contracts.NotificationTypeAgentError,
 			"error": "Failed to apply the settings changed during startup; the agent stopped. Send a message to start it again.",
 		})
 		return
@@ -2300,7 +2435,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 	if err != nil {
 		slog.Error("failed to pause input before agent settings restart", "agent_id", agentID, "error", err)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  agent.NotificationTypeAgentError,
+			"type":  contracts.NotificationTypeAgentError,
 			"error": "Failed to restart the agent because the input queue could not pause: " + err.Error(),
 		})
 		return newOptions, unresolvedSettingsResult(newOptions)
@@ -2350,7 +2485,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 		// non-existent session on the next message.
 		svc.clearAgentSessionID(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, provider, map[string]interface{}{
-			"type":  agent.NotificationTypeAgentError,
+			"type":  contracts.NotificationTypeAgentError,
 			"error": "Failed to restart agent with new settings: " + err.Error(),
 		})
 		return newOptions, unresolvedSettingsResult(newOptions)
@@ -2631,7 +2766,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		svc.persistAgentStartupError(agentID, errMsg)
 		svc.broadcastAgentFailed(&dbAgent, errMsg, nil)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  agent.NotificationTypeAgentError,
+			"type":  contracts.NotificationTypeAgentError,
 			"error": "Failed to restart agent after clearing context: " + errMsg,
 		})
 		return nil, err
@@ -2655,7 +2790,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 		// STARTUP_FAILED pair above stands on its own so clients do not see a
 		// "cleared" UI state for an agent that is down.
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": agent.NotificationTypeContextCleared,
+			"type": contracts.NotificationTypeContextCleared,
 		})
 
 		// Broadcast ACTIVE explicitly so the frontend leaves STARTING even if
@@ -3060,7 +3195,7 @@ func (svc *Service) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec 
 	changes := svc.buildSettingsChanges(&dbAgent, oldVals, opts, sortedOptionKeys(applied), spec.notifyFirstSet)
 	if len(changes) > 0 {
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":    agent.NotificationTypeSettingsChanged,
+			"type":    contracts.NotificationTypeSettingsChanged,
 			"changes": changes,
 		})
 	}
@@ -3107,7 +3242,7 @@ func (svc *Service) initiatePlanExecution(agentID string, targetMode string) {
 		slog.Warn("plan exec: no plan content found, broadcasting notification without restart",
 			"agent_id", agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":           agent.NotificationTypePlanExecution,
+			"type":           contracts.NotificationTypePlanExecution,
 			"plan_file_path": dbAgent.PlanFilePath,
 		})
 		return
@@ -3137,10 +3272,10 @@ func (svc *Service) preparePlanExecutionContext(agentID, targetMode string, dbAg
 		}
 		svc.Output.ResetSpanTracker(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": agent.NotificationTypeContextCleared,
+			"type": contracts.NotificationTypeContextCleared,
 		})
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type": agent.NotificationTypePlanExecution, "plan_file_path": dbAgent.PlanFilePath,
+			"type": contracts.NotificationTypePlanExecution, "plan_file_path": dbAgent.PlanFilePath,
 		})
 		return nil
 	}
@@ -3164,10 +3299,10 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 
 	// Broadcast context_cleared and plan_execution as separate notifications.
 	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type": agent.NotificationTypeContextCleared,
+		"type": contracts.NotificationTypeContextCleared,
 	})
 	svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-		"type":           agent.NotificationTypePlanExecution,
+		"type":           contracts.NotificationTypePlanExecution,
 		"plan_file_path": dbAgent.PlanFilePath,
 	})
 
@@ -3188,7 +3323,7 @@ func (svc *Service) initiatePlanExecutionRestart(agentID, targetMode string, dbA
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)
 		svc.clearAgentSessionID(agentID)
 		svc.Output.PersistLeapMuxNotification(agentID, dbAgent.AgentProvider, map[string]interface{}{
-			"type":  agent.NotificationTypeAgentError,
+			"type":  contracts.NotificationTypeAgentError,
 			"error": "Failed to restart agent for plan execution: " + err.Error(),
 		})
 		return err

@@ -1,3 +1,4 @@
+import { batch } from 'solid-js'
 import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,13 @@ export interface PerAgentStore<T> {
    * value as `clear` does), so a closed agent leaves no residue in `byAgent`.
    * Unlike `clear`, this also makes a `byAgent[agentId] !== undefined` presence
    * check report the agent as gone. Called from the agent-close cleanup.
+   *
+   * ONE exception, and it is structural: when the configured empty value IS
+   * `undefined`, Solid deletes the key rather than storing it, so `clear` and
+   * `remove` leave the same absent entry and the presence check cannot tell
+   * them apart. That covers the saved viewport scroll and every
+   * `createPerAgentValueStore`. A slice that needs the distinction must not use
+   * `undefined` as its empty value.
    */
   remove: (agentId: string) => void
   /**
@@ -57,17 +65,75 @@ export interface PerAgentStore<T> {
 // because the LIST factory needs the one write that does not replace a leaf.
 function createSpine<T>(empty: T) {
   const [state, setState] = createStore<{ byAgent: Record<string, T> }>({ byAgent: {} })
-  // Replace the leaf with the value form of the path setter (NOT the updater
-  // form -- `(prev) => value` reconciles/merges an object or array leaf into the
-  // old one, so a shorter array would keep stale trailing entries). The `as never`
-  // selects the value overload for a generic T; the slices' leaf values are never
-  // functions, so this is the same direct replace each slice spelled inline.
-  const write = (agentId: string, value: T) =>
+  // Replace the leaf, whole.
+  //
+  // TWO writes, not one, and the pair is what makes "replace" true. Solid MERGES
+  // a plain object written at a store path into the object already there
+  // (`setStore` calls `mergeStoreNode` when both sides are wrappable and the new
+  // value is not an array), so a single write KEEPS every key the new value
+  // omits: replacing `{objective, statusDetail, createdAt}` with
+  // `{objective}` left the previous goal's detail and identity in place.
+  // Writing `undefined` first leaves nothing to merge into, so the second write
+  // lands whole.
+  //
+  // `batch`, because each setStore call is its own update cycle: without it a
+  // reader wakes on the intermediate absent leaf and sees a value that never
+  // existed.
+  //
+  // An array or primitive leaf replaces correctly on its own -- Solid excludes
+  // arrays from the merge -- which is why this went unnoticed until the first
+  // object leaf (the session goal's counters). The rule is on the ONE write
+  // path rather than on `clear` alone, so no caller can reach the merge.
+  const write = (agentId: string, value: T) => {
+    // A plain OBJECT needs two writes; nothing else does. Solid merges an
+    // object written at a store path into the object already there
+    // (`updatePath` merges only when both sides are wrappable and the new value
+    // is not an array), so one write KEEPS every key the new value omits.
+    // Writing `undefined` first leaves nothing to merge into.
+    //
+    // Scoped to that case on purpose. The pair costs a second path traversal
+    // AND defeats Solid's identical-value early return (`if (!deleting &&
+    // state[property] === value) return`), because the delete step always
+    // passes it. On a primitive leaf that would turn free no-op writes into
+    // full invalidations on the hottest path in the app: streaming text writes
+    // once per delta chunk, and the live tail re-writes a sequence number that
+    // is usually already equal.
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // `batch`, so a reader never observes the intermediate absent leaf.
+      batch(() => {
+        setState('byAgent', agentId, undefined as never)
+        setState('byAgent', agentId, value as never)
+      })
+      return
+    }
     setState('byAgent', agentId, value as never)
+  }
+  // Reset a leaf to the empty value.
+  //
+  // The value written must never be `empty` ITSELF. Solid wraps whatever is
+  // stored, so a later write for that agent could reach the shared default and
+  // land on the value every other unset agent reads. A fresh copy makes that
+  // impossible rather than merely unlikely; `createPerAgentListStore` guards
+  // the same hazard on its own write path.
+  //
+  // The copy is SHALLOW, and one caller already exceeds that: chatMessageMarks
+  // builds this spine with `{ loaded, minSeq, seedMaxSeq, marks: [] }`, whose
+  // `marks` array every cleared agent would then share with the default. It is
+  // inert only because that slice replaces `marks` on every write and never
+  // reconciles into it. A nested default that is written THROUGH needs its own
+  // copy here, and the honest fix is to take the empty value as a factory.
+  const freshEmpty = (): T => {
+    if (Array.isArray(empty))
+      return [] as unknown as T
+    if (empty !== null && typeof empty === 'object')
+      return { ...empty }
+    return empty
+  }
+  const clear = (agentId: string) => write(agentId, freshEmpty())
   const api: PerAgentStore<T> = {
     get: agentId => state.byAgent[agentId] ?? empty,
     set: write,
-    clear: agentId => write(agentId, empty),
+    clear,
     remove: agentId => setState('byAgent', produce((map) => {
       delete map[agentId]
     })),
@@ -80,6 +146,59 @@ function createSpine<T>(empty: T) {
 
 export function createPerAgentStore<T>(empty: T): PerAgentStore<T> {
   return createSpine(empty).api
+}
+
+/**
+ * A per-agent store whose leaf is ONE object the UI renders as a card.
+ *
+ * The list store exists because `<For>` reconciles rows by reference. This one
+ * exists for the same hazard one level down: `set` replaces the leaf whole, so
+ * every field read becomes a new value and the whole card rebuilds. A card that
+ * rebuilds loses the tooltip under the pointer and restarts the CSS animation on
+ * its status dot -- exactly what `setReconciled` was written to stop for rows.
+ *
+ * The session goal hits this on every turn: its counters move while its
+ * objective and status sit still, so a plain `set` would rebuild the card for a
+ * number in one corner of it.
+ */
+export interface PerAgentValueStore<T extends object> extends PerAgentStore<T | undefined> {
+  /**
+   * Replace an agent's value, preserving the identity of every field that did
+   * not change. Pass `undefined` to drop the value.
+   *
+   * Like `setReconciled`, this is a write path that MUTATES the stored object
+   * rather than replacing it, so `value` must be an object this store may own:
+   * a fresh one per call, never one another agent's leaf also holds.
+   */
+  setReconciled: (agentId: string, value: T | undefined) => void
+}
+
+/**
+ * A per-agent store over a single optional object, reconciled on write.
+ *
+ * The empty value is `undefined`, which is also how "this agent has none" is
+ * spelled -- so unlike the list store there is no shared empty object a
+ * reconcile could write into, and the guard that one needs is not needed here.
+ */
+export function createPerAgentValueStore<T extends object>(): PerAgentValueStore<T> {
+  const { api, setState } = createSpine<T | undefined>(undefined)
+  return {
+    ...api,
+    setReconciled: (agentId, value) => {
+      const prev = api.byAgent[agentId]
+      // Nothing to preserve when either side is absent, and `reconcile` cannot
+      // diff against or produce `undefined` -- so both directions are a plain
+      // replace.
+      if (prev === undefined || value === undefined) {
+        api.set(agentId, value)
+        return
+      }
+      setState('byAgent', agentId, reconcile(value) as never)
+    },
+    get byAgent() {
+      return api.byAgent
+    },
+  }
 }
 
 /** A per-agent store whose leaf is a LIST the UI renders as rows. */
@@ -130,9 +249,11 @@ export function createPerAgentListStore<E extends object>(key: keyof E & string)
       // anyway, so a plain replace is also the whole answer here.
       //
       // `unwrap`, not a bare `===`: a read through the store hands back a PROXY
-      // of the empty value, which is never identical to the value itself. A
-      // cleared agent holds exactly that, so the bare comparison let the
-      // reconcile through on the second write to any agent that was cleared.
+      // of the empty value, which is never identical to the value itself, so the
+      // bare comparison let the reconcile through for a leaf that held the
+      // default. `clear` now stores a fresh copy rather than the shared default
+      // (see freshEmpty), so this case no longer fires for a cleared agent -- it
+      // remains the guard for a leaf that was SET to the shared empty directly.
       if (prev === undefined || unwrap(prev) === empty) {
         api.set(agentId, value)
         return

@@ -14,7 +14,7 @@
 import { expect, test } from './fixtures'
 import {
   backgroundTasksSection,
-  expectRegistrySectionAbsent,
+  expectNoRegistryRows,
   expectRowBecomesFinal,
   expectSectionPersists,
   listAgents,
@@ -33,7 +33,7 @@ test.describe('Claude subagent background tasks', () => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
 
     // 1. Precondition: no registry section yet.
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     // 2. Spawn a subagent.
     //

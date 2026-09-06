@@ -85,3 +85,33 @@ func TestTestSinkRecordsDistinctBackgroundTaskStatuses(t *testing.T) {
 		bgtask.StatusRunning, bgtask.StatusCompleted, bgtask.StatusRunning,
 	}, log)
 }
+
+// A goal is ROOT-only state, and the production sink refuses a child's write
+// rather than redirecting it: a child's objective must never replace the
+// session's. The fake has to refuse too.
+//
+// A fake that ACCEPTED would hide exactly the bug the guard exists to catch. A
+// provider that resolved a per-child sink and wrote a goal through it would
+// still show up in Goals(), and every provider's goal test in this package
+// would pass; only one service-level test exercises the real sink, and no
+// parser test reaches it.
+func TestSinkFakeParity_AChildSinkRefusesEveryGoalWrite(t *testing.T) {
+	t.Parallel()
+	sink := &testSink{}
+	child, ok := sink.ChildSink("child-1").(*testSink)
+	require.True(t, ok)
+
+	child.UpsertGoal(GoalUpdate{Objective: "subagent objective", Status: GoalStatusActive})
+	child.ClearGoal(false)
+	child.PublishGoalCapabilities()
+
+	assert.Empty(t, child.Goals(), "a child sink records no goal")
+	assert.Zero(t, child.GoalClears())
+	assert.Zero(t, child.GoalCapabilityPublishes())
+	assert.Empty(t, sink.Goals(), "and it must not redirect the write to its root either")
+
+	// The root itself still accepts, so the guard refuses a child and nothing
+	// else.
+	sink.UpsertGoal(GoalUpdate{Objective: "session objective", Status: GoalStatusActive})
+	assert.Len(t, sink.Goals(), 1)
+}

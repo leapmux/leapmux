@@ -8,7 +8,7 @@
  */
 import { codexTest, expect } from './codex-fixtures'
 import {
-  expectRegistrySectionAbsent,
+  expectNoRegistryRows,
   expectRowBecomesFinal,
   listAgents,
   openChildTabFromRow,
@@ -26,7 +26,7 @@ codexTest.describe('Codex subagent steering', () => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
 
     // 1. Precondition.
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     // 2. Spawn a collab subagent with a long-enough task to stay running.
     await sendMessage(page, 'Use your spawnAgent/subagent tool to spawn a subagent that writes a 500-word essay about the ocean. Wait for it to start.')

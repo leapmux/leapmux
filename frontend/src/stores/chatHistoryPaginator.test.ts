@@ -65,6 +65,7 @@ function harness(init: {
   const applyMessages = vi.fn()
   const replaceBackgroundTasks = vi.fn()
   const markBackgroundTasksLoadFailed = vi.fn()
+  const replaceGoal = vi.fn()
 
   const paginator = createHistoryPaginator({
     state,
@@ -107,9 +108,10 @@ function harness(init: {
     replaceTodos: vi.fn(),
     replaceBackgroundTasks,
     markBackgroundTasksLoadFailed,
+    replaceGoal,
   })
 
-  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed }
+  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed, replaceGoal }
 }
 
 describe('chathistorypaginator', () => {
@@ -584,5 +586,64 @@ describe('chathistorypaginator background-task snapshot', () => {
     await expect(h.paginator.loadInitialMessages('w', 'a')).rejects.toThrow('worker unreachable')
 
     expect(h.markBackgroundTasksLoadFailed).toHaveBeenCalledWith('a')
+  })
+
+  /**
+   * The session goal travels with its ORDERING STAMP, and this is the path the
+   * stamp exists for: the worker reads the row here, and the browser applies
+   * the answer a round trip later, so a goal change in between must win. The
+   * store drops a strictly older stamp -- but only if this hand-off carries it.
+   */
+  it('applies the goal and the stamp that orders it', async () => {
+    const h = harness({ messages: [] })
+    const goal = { objective: 'ship it' }
+    listAgentMessages.mockResolvedValue({
+      ...latestPage(true),
+      goal,
+      goalLoaded: true,
+      goalSupportedActions: [1],
+      goalUpdatedAt: '2026-09-06T10:00:00.000Z',
+    })
+
+    await h.paginator.loadInitialMessages('w', 'a')
+
+    expect(h.replaceGoal).toHaveBeenCalledWith('a', goal, [1], '2026-09-06T10:00:00.000Z')
+  })
+
+  /**
+   * A CHILD agent answers loaded=true with an ABSENT goal, and that write is
+   * what clears a goal a tab inherited from a previous root -- so an absent goal
+   * still has to be applied, with its stamp.
+   */
+  it('applies an absent goal, so a tab does not keep a previous root\'s', async () => {
+    const h = harness({ messages: [] })
+    listAgentMessages.mockResolvedValue({
+      ...latestPage(true),
+      goal: undefined,
+      goalLoaded: true,
+      goalSupportedActions: [],
+      goalUpdatedAt: '2026-09-06T10:00:00.000Z',
+    })
+
+    await h.paginator.loadInitialMessages('w', 'a')
+
+    expect(h.replaceGoal).toHaveBeenCalledWith('a', undefined, [], '2026-09-06T10:00:00.000Z')
+  })
+
+  // A DB error leaves goal_loaded false, and skipping the write is what stops a
+  // transient failure from blanking a live card.
+  it('leaves the goal alone when the worker could not read it', async () => {
+    const h = harness({ messages: [] })
+    listAgentMessages.mockResolvedValue({
+      ...latestPage(true),
+      goal: undefined,
+      goalLoaded: false,
+      goalSupportedActions: [],
+      goalUpdatedAt: '',
+    })
+
+    await h.paginator.loadInitialMessages('w', 'a')
+
+    expect(h.replaceGoal).not.toHaveBeenCalled()
   })
 })

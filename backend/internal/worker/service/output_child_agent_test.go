@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -552,7 +553,7 @@ func TestCloseBackgroundTask_WritesTheSubagentEndDivider(t *testing.T) {
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1)
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	assert.Equal(t, "completed", msgs[0]["status"])
 	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX), msgs[0]["__source"])
 }
@@ -642,7 +643,7 @@ func TestSubagentEndDivider_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 
 			msgs := transcriptMessages(t, svc, childID)
 			require.Len(t, msgs, 1, "exactly one closing divider, whichever applier ended the row")
-			assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+			assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 			assert.Equal(t, "stopped", msgs[0]["status"])
 		})
 	}
@@ -672,7 +673,7 @@ func TestSubagentEndDivider_ExactlyOneInEitherArrivalOrder(t *testing.T) {
 
 		msgs := transcriptMessages(t, svc, childID)
 		require.Len(t, msgs, 1, "the forwarded result must stand down, not stack")
-		assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+		assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	})
 
 	t.Run("forwarded result first, then the registry close", func(t *testing.T) {
@@ -734,7 +735,7 @@ func TestSubagentEndDivider_RepeatedFinalStatusWritesOnlyOne(t *testing.T) {
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1, "only the active -> final transition owes a divider")
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 }
 
 // A ROOT turn end is not a subagent boundary: it must never be suppressed, and
@@ -797,7 +798,7 @@ func TestMarkBackgroundTasksExited_WritesTheSubagentEndDivider(t *testing.T) {
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1)
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	assert.Equal(t, "interrupted", msgs[0]["status"])
 }
 
@@ -823,7 +824,7 @@ func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1, "the retained row's transcript is closed too")
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	assert.Equal(t, "interrupted", msgs[0]["status"])
 }
 
@@ -897,7 +898,7 @@ func TestCloseBackgroundTask_WritesTheDividerWhenTheSubagentStoppedMidFlight(t *
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 2)
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[1]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[1]["type"])
 	assert.Equal(t, "stopped", msgs[1]["status"])
 }
 
@@ -937,7 +938,7 @@ func TestMarkBackgroundTasksExited_ClosesEveryChildTranscript(t *testing.T) {
 	for _, childID := range []string{childA, childB} {
 		msgs := transcriptMessages(t, svc, childID)
 		require.Len(t, msgs, 1, "child %s", childID)
-		assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+		assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 		assert.Equal(t, "interrupted", msgs[0]["status"])
 	}
 }
@@ -1074,9 +1075,9 @@ func TestSubagentEndDivider_WrittenAgainAfterARevive(t *testing.T) {
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 2, "one divider for each run")
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	assert.Equal(t, "completed", msgs[0]["status"])
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[1]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[1]["type"])
 	assert.Equal(t, "failed", msgs[1]["status"], "the second divider reports the SECOND run's outcome")
 }
 
@@ -1098,7 +1099,7 @@ func TestChildTranscript_AppendsBelowTheEndDivider(t *testing.T) {
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 2)
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	assert.Equal(t, "keep going", msgs[1]["content"], "the later message sits below the divider")
 }
 

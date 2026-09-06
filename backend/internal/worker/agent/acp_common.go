@@ -452,6 +452,15 @@ func (b *acpBase) ClearContext() (string, bool) {
 		b.clearProviderState()
 	}
 
+	// A goal belongs to a SESSION, and this call replaced the session. Codex and
+	// ZCode clear it in their own ClearContext for the same reason; this is the
+	// ACP half, and it covers every provider on this base -- Reasonix reports a
+	// goal today, and Copilot's autopilot objective would ride here too.
+	//
+	// A provider that never reports a goal pays nothing: clearGoal reads the row
+	// first and returns before the broadcast when there was no goal to remove.
+	b.sink.ClearGoal(false)
+
 	b.sink.UpdateSessionID(sessionID)
 
 	// reapplySettings re-applies model/mode/options against the NEW session; it runs
@@ -1282,7 +1291,7 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 		if err != nil {
 			if !b.IsStopped() {
 				slog.Error("acp prompt failed", "agent_id", b.agentID, "error", err)
-				b.sink.PersistLeapMuxNotification(map[string]interface{}{"type": NotificationTypeAgentError, "error": fmt.Sprintf("prompt failed: %v", err)})
+				b.sink.PersistLeapMuxNotification(map[string]interface{}{"type": contracts.NotificationTypeAgentError, "error": fmt.Sprintf("prompt failed: %v", err)})
 			}
 		} else {
 			b.handleACPPromptResponse(resp)

@@ -505,8 +505,11 @@ func (u Upsert) ToItem() Item {
 //
 // It drops the byte rather than writing U+FFFD, the same answer
 // `validate.CleanNameChars` gives an invalid byte, so the two rules agree.
+//
+// One line, delegating: `validate.WireString` is the single statement of what a
+// proto-safe string is, and the session-goal projection reads the same one.
 func wireString(s string) string {
-	return strings.ToValidUTF8(s, "")
+	return validate.WireString(s)
 }
 
 // ToProto converts an in-memory Item to the wire-format proto message.

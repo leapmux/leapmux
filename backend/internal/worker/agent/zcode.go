@@ -46,10 +46,15 @@ type zcodeAgent struct {
 
 	// --- guarded by mu ---
 
-	sessionID    string
-	model        string // the composite catalog id, providerId/modelId
-	thoughtLevel string
-	mode         string
+	sessionID string
+	// stateRevision is the app-server's optimistic-concurrency counter, taken
+	// from the last runtime state observed. session/goal sends it as
+	// expectedRevision so a goal write that races a change the agent just made
+	// is refused rather than silently overwriting it.
+	stateRevision int64
+	model         string // the composite catalog id, providerId/modelId
+	thoughtLevel  string
+	mode          string
 	// modeObserved is true once the RUNNING session reported its own mode through
 	// `settings.mode.current`. Until then `mode` holds what the launch asked for, not
 	// what the app-server settled on, and the two must not be compared. It resets with
@@ -274,13 +279,25 @@ type zcodeStateSnapshot struct {
 		Title     string `json:"title"`
 	} `json:"session"`
 	Settings *zcodeSettingsSnapshot `json:"settings"`
-	Runtime  struct {
-		EventSeq int64 `json:"eventSeq"`
+	// Runtime carries stateRevision as well as eventSeq, because session/create
+	// and session/resume are the ONLY places a resumed session learns its
+	// revision before a turn ends. Reading eventSeq alone left stateRevision at
+	// 0, and session/goal then sent expectedRevision 0 against a live session
+	// whose revision was higher -- the app-server refused every goal action
+	// with a conflict that did not exist.
+	Runtime struct {
+		EventSeq      int64 `json:"eventSeq"`
+		StateRevision int64 `json:"stateRevision"`
 	} `json:"runtime"`
 	Projection struct {
 		ContextUsed   int64 `json:"contextUsed"`
 		ContextWindow int64 `json:"contextWindow"`
 	} `json:"projection"`
+	// Goal is RAW so the three cases stay distinct: absent (key missing),
+	// null (no goal), and an object. A decoded pointer would fold the first
+	// two together, and a snapshot with no goal must CLEAR one that a previous
+	// process stored.
+	Goal json.RawMessage `json:"goal"`
 }
 
 // openSession creates a fresh session, or resumes the one the client specified.
@@ -307,6 +324,11 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 			return resumeFailedError(resumeID, fmt.Errorf("%s returned no session id", ZCodeMethodSessionResume))
 		}
 		a.applyParsedStateSnapshot(snap)
+		// A resume RESTATES the session's goal, so it is reported as a snapshot:
+		// it updates the panel and writes no transcript row for a goal that may
+		// be hours old. Outside applyParsedStateSnapshot, which holds a.mu for
+		// its whole body and must not call into the sink.
+		a.reportZCodeGoal(snap.Goal, true)
 		return nil
 	}
 
@@ -324,7 +346,10 @@ func (a *zcodeAgent) openSession(resumeID string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	a.applyStateSnapshot(raw)
+	snap, _ := a.applyStateSnapshot(raw)
+	// A create RESTATES the session's goal -- normally that it has none, which
+	// is what clears one a previous session left on the row.
+	a.reportZCodeGoal(snap.Goal, true)
 	a.mu.Lock()
 	created := a.sessionID != ""
 	a.mu.Unlock()
@@ -435,6 +460,18 @@ func (a *zcodeAgent) subscribe(timeout time.Duration) error {
 }
 
 // applyStateSnapshot folds a state document into the agent's own state.
+//
+// It does NOT report the goal, and that omission is the point. Three settings
+// setters fold their reply documents through here -- applyZCodeModel,
+// applyZCodeThoughtLevel and applyZCodeMode -- so reporting the goal from this
+// function would let a model, effort or permission-mode change write the goal
+// columns. Worse, reportZCodeGoal reads a `null` goal as "the goal is gone", so
+// a settings reply that spells it would DELETE a live goal and broadcast the
+// removal with no transcript row.
+//
+// The goal is reported from the two calls that genuinely restate a session,
+// openSession's create and resume branches, which is where a session snapshot
+// is the authority on what the goal is.
 func (a *zcodeAgent) applyStateSnapshot(raw json.RawMessage) (zcodeStateSnapshot, bool) {
 	if snap, ok := a.parseStateSnapshot(raw); ok {
 		a.applyParsedStateSnapshot(snap)
@@ -470,6 +507,11 @@ func (a *zcodeAgent) applyParsedStateSnapshot(snap zcodeStateSnapshot) {
 	}
 	if snap.Runtime.EventSeq > a.lastSeq {
 		a.lastSeq = snap.Runtime.EventSeq
+	}
+	// Monotonic, for the reason noteZCodeStateRevision gives. Written inline
+	// rather than through it because this function already holds a.mu.
+	if snap.Runtime.StateRevision > a.stateRevision {
+		a.stateRevision = snap.Runtime.StateRevision
 	}
 	if snap.Projection.ContextWindow > 0 {
 		a.contextWindow = snap.Projection.ContextWindow
@@ -645,6 +687,12 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	a.mu.Lock()
 	a.sessionID = ""
 	a.lastSeq = 0
+	// The fresh session starts its own revision counter, so the replaced
+	// session's value must not survive. The guard in applyZCodeRuntimeState is
+	// monotonic, so a retained higher value would refuse every lower revision
+	// the new session reports, and session/goal would never send a revision the
+	// app-server accepts again.
+	a.stateRevision = 0
 	// The replaced session's report says nothing about the mode the fresh one runs in.
 	a.modeObserved = false
 	// The three axes the user currently runs on are the request for the fresh session.
@@ -678,6 +726,11 @@ func (a *zcodeAgent) ClearContext() (string, bool) {
 	// context that no longer exists.
 	a.thinkingTokens.reset()
 	a.sink.ResetSpans()
+	// A goal belongs to a SESSION, and this call replaced the session. The
+	// create snapshot omits the `goal` key rather than spelling it null, and
+	// reportZCodeGoal returns early on an absent key, so nothing else removes
+	// the previous session's goal.
+	a.sink.ClearGoal(false)
 
 	if sessionID == "" {
 		return "", false

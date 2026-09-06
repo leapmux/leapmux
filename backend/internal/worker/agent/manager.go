@@ -303,6 +303,12 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 	}
 	m.mu.Unlock()
 
+	// The first moment SupportedGoalActions can answer for this process: it
+	// type-asserts the agent this map now holds, and every earlier publication
+	// ran while the lookup still missed. See OutputSink.PublishGoalCapabilities
+	// for why an early answer is worse than a late one here.
+	sink.PublishGoalCapabilities()
+
 	// Wait for the agent to exit in the background, then clean up.
 	go func() {
 		// Close `done` last -- AFTER onExit has run -- so a stopAndWait blocked on it observes
@@ -537,6 +543,88 @@ func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
 		return ErrChildSteeringUnsupported
 	}
 	return steerer.InterruptChild(childKey)
+}
+
+// SupportedGoalActions reports the session-goal actions the RUNNING agent can
+// perform, by type-asserting it to GoalController.
+//
+// An agent that is not running answers with nothing, and so does a provider
+// that reports its goal without being able to change it (Reasonix). The browser
+// disables every control it does not find here, so "nothing" is the safe answer
+// in both cases -- and it is why this is read from the live process rather than
+// a per-provider table: goal support is version-dependent (Claude Code shipped
+// /goal in 2.1.139, ZCode in 3.10.2), so a table would offer a button that does
+// nothing against an older CLI.
+//
+// Same shape as the AgentInfo.accepts_messages decision, which type-asserts
+// ChildSteerer for the same reason: the capability cannot drift from the code
+// that implements it.
+// It reads the agent map DIRECTLY rather than through providerAfterLifecycle,
+// and that is deliberate: StartAgent publishes the capabilities while a
+// lifecycle caller holds LockAgent, and the ExitHandler broadcasts them while
+// RestartAgent waits on it. The lifecycle lock is not reentrant, so taking it
+// here deadlocks both paths. A capability read is safe on a stale entry -- the
+// worst answer is one extra broadcast that names what the old process could do.
+func (m *Manager) SupportedGoalActions(agentID string) []GoalAction {
+	m.mu.RLock()
+	p, ok := m.agents[agentID]
+	_, exiting := m.exiting[p]
+	m.mu.RUnlock()
+	// An EXITING process can do nothing, and the exit handler is exactly when
+	// this is asked: onExit runs before the map entry is deleted, so a bare
+	// lookup still finds the dying process and answers with its full action
+	// list. The broadcast that exists to settle the controls would then ship
+	// live Pause and Clear for a process that is gone.
+	if !ok || exiting {
+		return nil
+	}
+	controller, ok := p.(GoalController)
+	if !ok {
+		return nil
+	}
+	return controller.SupportedGoalActions()
+}
+
+// UpdateGoal performs one session-goal action on the running agent.
+//
+// It refuses an action the agent does not list in SupportedGoalActions, so a
+// browser acting on a stale capability list gets a refusal instead of a call
+// the provider silently ignores. That check lives here, beside the dispatch,
+// rather than in the service: the two answers must come from the same agent
+// instance, and a service-side check would read the capability through a second
+// lookup that could resolve a different process.
+func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string) error {
+	// providerAfterLifecycle, like every other command dispatch here: the map
+	// read must happen AFTER a restart finishes, or it hands back the process
+	// that restart is destroying. A bare read can also miss the window between
+	// stopAndWait clearing the old entry and StartAgent registering the new
+	// one, and answer ErrAgentNotFound for an agent the user can see running.
+	//
+	// The two capability queries beside this one must NOT take that lock. Read
+	// their comment: both run from callers that already hold it.
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
+	}
+	controller, ok := p.(GoalController)
+	if !ok {
+		return ErrGoalControlUnsupported
+	}
+	if !slices.Contains(controller.SupportedGoalActions(), action) {
+		return ErrGoalControlUnsupported
+	}
+	switch action {
+	case GoalActionSet:
+		return controller.SetGoal(objective)
+	case GoalActionClear:
+		return controller.ClearGoal()
+	case GoalActionPause:
+		return controller.PauseGoal()
+	case GoalActionResume:
+		return controller.ResumeGoal()
+	default:
+		return ErrGoalControlUnsupported
+	}
 }
 
 // StopAgent stops the agent with the given agent ID.

@@ -339,6 +339,7 @@ export const SESSION_INFO_TABLES = [
   { json: 'rateLimitFields', goPrefix: 'RateLimitField', ts: 'RATE_LIMIT_FIELD', tsType: 'RateLimitField', what: 'fields of one rate_limits tier' },
   { json: 'runningToolFields', goPrefix: 'RunningToolField', ts: 'RUNNING_TOOL_FIELD', tsType: 'RunningToolField', what: 'fields of the running_tool object' },
   { json: 'runningToolRetryFields', goPrefix: 'RunningToolRetryField', ts: 'RUNNING_TOOL_RETRY_FIELD', tsType: 'RunningToolRetryField', what: 'fields of running_tool.retry' },
+  { json: 'goalProgressFields', goPrefix: 'GoalProgressField', ts: 'GOAL_PROGRESS_FIELD', tsType: 'GoalProgressField', what: 'fields of the goal_progress object' },
 ]
 
 export function checkSessionInfo(v) {
@@ -424,12 +425,24 @@ export function checkWorkerVocab(v) {
     mustBe(v.notificationTypes[key] != null, 'worker-vocab.json', `workerAuthoredNotificationTypes specifies ${key}, which is not a notificationTypes key`)
   }
   mustBe(v.modelSentinels.accountDefaultModel !== v.modelSentinels.effortAuto, 'worker-vocab.json', 'the model sentinels must be distinct values')
+  // The goal status tokens ARE the agents.goal_status CHECK list, which no
+  // generator emits, so a duplicate here would silently make two statuses read
+  // back as one.
+  const statusTokens = Object.values(v.goalStatusTokens)
+  mustBe(new Set(statusTokens).size === statusTokens.length, 'worker-vocab.json', 'two goal statuses share one wire token')
+  mustBe(v.goalStatusTokens.None === '', 'worker-vocab.json', 'goalStatusTokens.None must be the empty token -- the agents row stores "" for "no goal", and every reader tests for it')
+  const transitions = Object.values(v.goalTransitions)
+  mustBe(new Set(transitions).size === transitions.length, 'worker-vocab.json', 'two goal transitions share one wire token')
   return {}
 }
 
 export function emitGoWorkerVocab(v) {
   const notif = goConstBlock(Object.entries(v.notificationTypes)
     .map(([key, token]) => ({ name: `NotificationType${key}`, value: jsonString(token) })))
+  const goalStatusBlock = goConstBlock(Object.entries(v.goalStatusTokens)
+    .map(([key, token]) => ({ name: `GoalStatusToken${key}`, value: jsonString(token) })))
+  const goalTransitionBlock = goConstBlock(Object.entries(v.goalTransitions)
+    .map(([key, token]) => ({ name: `GoalTransition${key}`, value: jsonString(token) })))
   return `${GO_HEADER('worker-vocab.json')}package contracts
 
 // The worker's wire vocabulary: notification-type tokens persisted inside
@@ -451,6 +464,20 @@ const NotificationThreadWrapperType = ${jsonString(v.notificationThreadWrapperTy
 // lifts on the rolling-window timer (the others are billing/usage caps).
 const CodexRateLimitReachedTimeWindow = ${jsonString(v.codexRateLimitReachedTimeWindow)}
 
+// GoalStatusToken* are the tokens stored in agents.goal_status and shipped in
+// the goal_updated notification payload. The column's CHECK constraint lists
+// the same tokens; the generator emits no SQL, so keep that spelling in step.
+const (
+${goalStatusBlock}
+)
+
+// GoalTransition* name what a goal change DID. The applier holds the row from
+// before the write, so it is the only place that can tell a resume from a fresh
+// set -- both end with the status "active".
+const (
+${goalTransitionBlock}
+)
+
 // Model sentinels: the account-default model resolves to a different concrete
 // model on relaunch; "auto" is the effort a catalog default falls back to.
 const (
@@ -468,6 +495,12 @@ export function emitTsWorkerVocab(v) {
     .join('\n')
   const authored = v.workerAuthoredNotificationTypes
     .map(key => `  ${jsonString(v.notificationTypes[key])},`)
+    .join('\n')
+  const goalStatusEntries = Object.entries(v.goalStatusTokens)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
+    .join('\n')
+  const goalTransitionEntries = Object.entries(v.goalTransitions)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
   return `${TS_HEADER('worker-vocab.json')}
 // The worker's wire vocabulary, generated from contracts/worker-vocab.json
@@ -491,6 +524,23 @@ export const NOTIFICATION_THREAD_TYPE = ${jsonString(v.notificationThreadWrapper
 
 /** The one Codex rateLimitReachedType that lifts on the rolling-window timer. */
 export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimitReachedTimeWindow)} as const
+
+/**
+ * The tokens the worker stores in agents.goal_status and ships in the
+ * goal_updated payload. The empty token means "no goal".
+ */
+export const GOAL_STATUS_TOKEN = {
+${goalStatusEntries}
+} as const
+
+export type GoalStatusToken = typeof GOAL_STATUS_TOKEN[keyof typeof GOAL_STATUS_TOKEN]
+
+/** What a goal change DID, decided by the worker from the row before the write. */
+export const GOAL_TRANSITION = {
+${goalTransitionEntries}
+} as const
+
+export type GoalTransitionToken = typeof GOAL_TRANSITION[keyof typeof GOAL_TRANSITION]
 
 /** Model sentinels: the account-default model, and the auto effort. */
 export const ACCOUNT_DEFAULT_MODEL = ${jsonString(v.modelSentinels.accountDefaultModel)} as const
@@ -1191,6 +1241,8 @@ ${goConstBlock([
   { name: 'SessionIDByteLimit', value: String(v.session.byteLimit) },
   { name: 'SessionFilePathByteLimit', value: String(v.session.filePathByteLimit) },
   { name: 'BranchByteLimit', value: String(v.branch.byteLimit) },
+  { name: 'GoalObjectiveByteLimit', value: String(v.goal.objectiveByteLimit) },
+  { name: 'GoalStatusDetailByteLimit', value: String(v.goal.statusDetailByteLimit) },
   { name: 'MinPasswordLength', value: String(v.password.minLength) },
   { name: 'MaxPasswordLength', value: String(v.password.maxLength) },
   { name: 'MinPrintableASCII', value: String(v.password.printableAsciiMin) },
@@ -1326,6 +1378,8 @@ export const NAME_BYTE_LIMIT = ${v.name.byteLimit} as const
 export const SESSION_ID_BYTE_LIMIT = ${v.session.byteLimit} as const
 export const SESSION_FILE_PATH_BYTE_LIMIT = ${v.session.filePathByteLimit} as const
 export const BRANCH_NAME_BYTE_LIMIT = ${v.branch.byteLimit} as const
+export const GOAL_OBJECTIVE_BYTE_LIMIT = ${v.goal.objectiveByteLimit} as const
+export const GOAL_STATUS_DETAIL_BYTE_LIMIT = ${v.goal.statusDetailByteLimit} as const
 export const MIN_PASSWORD_LENGTH = ${v.password.minLength} as const
 export const MAX_PASSWORD_LENGTH = ${v.password.maxLength} as const
 

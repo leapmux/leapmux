@@ -7,14 +7,15 @@ import type { DialogState } from '~/hooks/createDialogState'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { GoalAction } from '~/stores/chatGoal'
 import type { ControlRequest, createControlStore } from '~/stores/control.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
+
 import * as workerRpc from '~/api/workerRpc'
 import { forgetAgentAttachments } from '~/components/chat/attachments'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
@@ -25,6 +26,7 @@ import { AgentOptionSettlementState, AgentProvider } from '~/generated/proto/lea
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
+import { goalActionToProto } from '~/stores/chatGoal'
 import { openedAgentTabFields, planOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
@@ -318,6 +320,31 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  /**
+   * Set, clear, pause or resume an agent's session goal.
+   *
+   * Writes nothing locally on success. Every provider echoes a goal change back
+   * as a notification, so an optimistic write would race an echo already in
+   * flight and the control would visibly flip back -- the same discipline
+   * handleInterrupt keeps.
+   *
+   * The worker refuses an action the running agent does not support, so a stale
+   * capability list produces a toast rather than a silent no-op.
+   */
+  const handleGoalAction = async (agentId: string, action: GoalAction, objective?: string) => {
+    try {
+      const workerId = getAgentWorkerId(agentId)
+      await workerRpc.updateAgentGoal(workerId, {
+        agentId,
+        action: goalActionToProto(action),
+        objective: objective ?? '',
+      })
+    }
+    catch (err) {
+      showWarnToast('Failed to update the session goal', err)
+    }
+  }
+
   const settingVersions = new Map<string, Map<string, number>>()
   const pendingSettingRequests = new Map<string, number>()
 
@@ -569,6 +596,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleOpenAgent,
     handleControlResponse,
     handleInterrupt,
+    handleGoalAction,
     handleAgentSettingChange,
     handleAgentClose,
     retireAgentTabLocally,

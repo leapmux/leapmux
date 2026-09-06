@@ -128,6 +128,7 @@ func (a *zcodeAgent) applyZCodeRuntimeState(runtime *zcodeRuntimeState) {
 	if runtime == nil {
 		return
 	}
+	a.noteZCodeStateRevision(runtime.StateRevision)
 	info := map[string]any{}
 
 	if usage := zcodeContextUsageFromRuntime(runtime.ContextUsage); len(usage) > 0 {
@@ -289,4 +290,26 @@ func zcodeAugmentWithUsage(raw []byte, snap zcodeUsageSnapshot) []byte {
 		return raw
 	}
 	return augmented
+}
+
+// noteZCodeStateRevision records the app-server's optimistic-concurrency
+// counter, monotonically.
+//
+// MONOTONIC because a stale document that arrives out of order must not move it
+// backwards: the next session/goal would then send an expectedRevision the
+// app-server already passed, and the write would be refused for a conflict that
+// does not exist. A zero means the document carried no revision, which is not
+// an answer.
+//
+// One writer for three sources -- the session snapshot, a runtime state patch,
+// and the reply to a session/goal -- so the rule is stated once.
+func (a *zcodeAgent) noteZCodeStateRevision(revision int64) {
+	if revision <= 0 {
+		return
+	}
+	a.mu.Lock()
+	if revision > a.stateRevision {
+		a.stateRevision = revision
+	}
+	a.mu.Unlock()
 }

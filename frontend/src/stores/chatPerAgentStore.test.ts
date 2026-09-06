@@ -3,6 +3,68 @@ import { describe, expect, it } from 'vitest'
 import { createPerAgentListStore, createPerAgentStore } from '~/stores/chatPerAgentStore'
 
 describe('createPerAgentStore', () => {
+  /**
+   * The one Solid trap this spine has to hide: an OBJECT written at a store
+   * path is MERGED into the object already there, so the obvious one-line clear
+   * silently kept every key it was meant to drop. An array leaf replaces
+   * correctly and a primitive one trivially does, which is why it went
+   * unnoticed until the first object leaf (the session goal's counters).
+   */
+  it('really empties an object leaf, rather than merging the empty over it', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<Record<string, number>>({})
+      store.set('a', { tokensUsed: 900, iterations: 3 })
+      store.clear('a')
+      expect(store.get('a')).toEqual({})
+      dispose()
+    })
+  })
+
+  it('empties an array leaf and a primitive one', () => {
+    createRoot((dispose) => {
+      const list = createPerAgentStore<number[]>([])
+      list.set('a', [1, 2, 3])
+      list.clear('a')
+      expect(list.get('a')).toEqual([])
+      const text = createPerAgentStore<string>('')
+      text.set('a', 'hello')
+      text.clear('a')
+      expect(text.get('a')).toBe('')
+      dispose()
+    })
+  })
+
+  /**
+   * The second half of the same trap: a cleared leaf must not BE the shared
+   * default. Solid wraps whatever is stored, so a later write for that agent
+   * would merge into the default every other unset agent reads -- one agent's
+   * value appearing under all of them, with nothing to trace it by.
+   */
+  it('does not let a write after a clear reach the shared empty value', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<Record<string, number>>({})
+      store.set('a', { x: 1 })
+      store.clear('a')
+      store.set('a', { y: 2 })
+      expect(store.get('b')).toEqual({})
+      dispose()
+    })
+  })
+
+  // `clear` resets the value but keeps the KEY, which is what separates it from
+  // `remove`; the two are documented as different answers to a presence check.
+  it('keeps the agent present after a clear', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<Record<string, number>>({})
+      store.set('a', { x: 1 })
+      store.clear('a')
+      expect(store.byAgent.a).not.toBeUndefined()
+      store.remove('a')
+      expect(store.byAgent.a).toBeUndefined()
+      dispose()
+    })
+  })
+
   it('returns the configured empty value for an unset agent', () => {
     createRoot((dispose) => {
       const store = createPerAgentStore<string>('')
@@ -186,6 +248,43 @@ describe('createPerAgentStore', () => {
       expect(store.get('a')).toEqual([9])
       store.clear('a')
       expect(store.get('a')).toEqual([])
+      dispose()
+    })
+  })
+
+  /**
+   * `set` must REPLACE an object leaf, not merge into it. Solid merges a plain
+   * object written at a store path, so a single write keeps every key the new
+   * value omits -- which would leave the previous goal's status detail and
+   * identity attached to a replacement.
+   */
+  it('set drops a key the new object omits', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<{ a?: number, b?: number }>({})
+      store.set('x', { a: 1, b: 2 })
+      store.set('x', { a: 3 })
+      expect(store.get('x')).toEqual({ a: 3 })
+      dispose()
+    })
+  })
+
+  /**
+   * The one case where `clear` and `remove` cannot be told apart. Solid DELETES
+   * a key written as `undefined`, so a store whose empty value is `undefined`
+   * leaves the same absent entry either way. The `remove` doc states this; the
+   * test is what keeps the statement true.
+   */
+  it('clear and remove are the same operation when the empty value is undefined', () => {
+    createRoot((dispose) => {
+      const store = createPerAgentStore<number | undefined>(undefined)
+      store.set('a', 1)
+      store.clear('a')
+      expect(store.byAgent.a).toBeUndefined()
+      expect(store.get('a')).toBeUndefined()
+
+      store.set('b', 2)
+      store.remove('b')
+      expect(store.byAgent.b).toBeUndefined()
       dispose()
     })
   })

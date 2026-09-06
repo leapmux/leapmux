@@ -11,7 +11,8 @@
     "contextUsageFields",
     "rateLimitFields",
     "runningToolFields",
-    "runningToolRetryFields"
+    "runningToolRetryFields",
+    "goalProgressFields"
   ],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
@@ -19,7 +20,8 @@
     "contextUsageFields": { "$ref": "#/$defs/table" },
     "rateLimitFields": { "$ref": "#/$defs/table" },
     "runningToolFields": { "$ref": "#/$defs/table" },
-    "runningToolRetryFields": { "$ref": "#/$defs/table" }
+    "runningToolRetryFields": { "$ref": "#/$defs/table" },
+    "goalProgressFields": { "$ref": "#/$defs/table" }
   },
   "$defs": {
     "table": {

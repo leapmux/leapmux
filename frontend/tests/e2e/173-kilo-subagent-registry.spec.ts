@@ -1,6 +1,6 @@
 import {
+  expectNoRegistryRows,
   expectRegistryOnlySubagentEnds,
-  expectRegistrySectionAbsent,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
@@ -22,7 +22,7 @@ kiloTest.describe('Kilo subagent registry', () => {
   }) => {
     void authenticatedKiloWorkspace
 
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     await sendMessage(page, 'Use your task tool to spawn a subagent that runs `echo kilo-done` and reports the result.')
     await waitForAgentIdle(page, 180_000)

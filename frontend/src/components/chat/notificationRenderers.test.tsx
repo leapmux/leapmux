@@ -455,6 +455,102 @@ describe('single-message notification labels', () => {
   })
 })
 
+/**
+ * The session-goal transitions.
+ *
+ * The worker writes these rows only when the goal actually CHANGES -- never for
+ * the progress reports Codex sends after every completed tool call -- and it
+ * writes them NEUTRAL, so this one renderer serves all five providers that
+ * report a goal rather than a copy in each provider plugin.
+ */
+describe('renderNotificationThread: goal transitions', () => {
+  it('announces a new goal with its objective', () => {
+    expect(renderText([{ type: 'goal_updated', objective: 'every test passes', goal_status: 'active' }]))
+      .toBe('Goal set: every test passes')
+  })
+
+  // The verb states WHAT changed, so a status flip does not read as a fresh
+  // goal being set.
+  it('names the transition for each terminal status', () => {
+    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'done' }]))
+      .toBe('Goal achieved: x')
+    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'paused' }]))
+      .toBe('Goal paused: x')
+    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'blocked' }]))
+      .toBe('Goal blocked: x')
+  })
+
+  // The provider's own word, when it says more than the neutral status does:
+  // usageLimited and notSatisfied are both `blocked`.
+  it('appends the provider status detail when it differs', () => {
+    expect(renderText([{
+      type: 'goal_updated',
+      objective: 'x',
+      goal_status: 'blocked',
+      status_detail: 'usageLimited',
+    }])).toBe('Goal blocked: x (usageLimited)')
+  })
+
+  it('omits a detail that only repeats the neutral status', () => {
+    expect(renderText([{
+      type: 'goal_updated',
+      objective: 'x',
+      goal_status: 'active',
+      status_detail: 'active',
+    }])).toBe('Goal set: x')
+  })
+
+  it('renders nothing for a transition with no readable objective', () => {
+    expect(renderText([{ type: 'goal_updated', goal_status: 'active' }])).toBe('')
+  })
+
+  /**
+   * A RESUME ends in `active`, and so does a first set, so the status alone
+   * cannot tell them apart -- and reading the status alone announced "Goal set:
+   * x" two rows under "Goal paused: x", for an objective nobody replaced. The
+   * worker holds the row from before the write, so it writes the answer.
+   */
+  it('names what the change DID, not the status it left behind', () => {
+    expect(renderText([{
+      type: 'goal_updated',
+      objective: 'x',
+      goal_status: 'active',
+      goal_transition: 'resumed',
+    }])).toBe('Goal resumed: x')
+    expect(renderText([{
+      type: 'goal_updated',
+      objective: 'x',
+      goal_status: 'active',
+      goal_transition: 'replaced',
+    }])).toBe('Goal replaced: x')
+    expect(renderText([{
+      type: 'goal_updated',
+      objective: 'x',
+      goal_status: 'active',
+      goal_transition: 'set',
+    }])).toBe('Goal set: x')
+  })
+
+  // A row an older worker wrote carries no transition, and a token this build
+  // does not know is the same situation. Both fall back to the status rather
+  // than rendering nothing.
+  it('falls back to the status when the transition is absent or unknown', () => {
+    expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'paused' }]))
+      .toBe('Goal paused: x')
+    expect(renderText([{
+      type: 'goal_updated',
+      objective: 'x',
+      goal_status: 'done',
+      goal_transition: 'somethingNew',
+    }])).toBe('Goal achieved: x')
+  })
+
+  it('announces a cleared goal, with and without its objective', () => {
+    expect(renderText([{ type: 'goal_cleared', objective: 'x' }])).toBe('Goal cleared: x')
+    expect(renderText([{ type: 'goal_cleared' }])).toBe('Goal cleared')
+  })
+})
+
 describe('renderNotificationThread: plan_updated', () => {
   it('without update_agent_title shows "Plan updated: <title>"', () => {
     const messages = [{ type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' }]

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -1049,7 +1050,7 @@ func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bg
 		return
 	}
 	content, err := json.Marshal(map[string]string{
-		"type":   agent.NotificationTypeSubagentEnded,
+		"type":   contracts.NotificationTypeSubagentEnded,
 		"status": bgtask.StatusWire(status),
 	})
 	if err != nil {

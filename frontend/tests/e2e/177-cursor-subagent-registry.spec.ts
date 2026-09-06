@@ -9,8 +9,8 @@
  */
 import { CURSOR_E2E_SKIP_REASON, cursorTest, expect } from './cursor-fixtures'
 import {
+  expectNoRegistryRows,
   expectRegistryOnlySubagentEnds,
-  expectRegistrySectionAbsent,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
@@ -24,7 +24,7 @@ cursorTest.describe('Cursor subagent registry', () => {
   }) => {
     void authenticatedCursorWorkspace
 
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     await sendMessage(page, 'Delegate this to a subagent: reply with the single word PONG.')
     await waitForAgentIdle(page, 180_000)

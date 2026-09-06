@@ -1,6 +1,6 @@
 import {
+  expectNoRegistryRows,
   expectRegistryOnlySubagentEnds,
-  expectRegistrySectionAbsent,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -24,7 +24,7 @@ piTest.describe('Pi subagent registry', () => {
   }) => {
     void authenticatedPiWorkspace
 
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     // A multi-step foreground subagent task.
     await sendMessage(page, 'Use the Agent tool to spawn a subagent that lists three fruits, then counts to five, then reports done.')

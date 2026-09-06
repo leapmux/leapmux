@@ -9,7 +9,7 @@
  */
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import {
-  expectRegistrySectionAbsent,
+  expectNoRegistryRows,
   expectRowBecomesFinal,
   expectSectionPersists,
   listAgents,
@@ -28,7 +28,7 @@ gooseTest.describe('Goose subagent registry', () => {
     void authenticatedGooseWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
 
-    await expectRegistrySectionAbsent(page)
+    await expectNoRegistryRows(page)
 
     // A task that uses Goose's delegate/summon tool and runs at least one tool.
     await sendMessage(page, 'Use your delegate/subagent tool to spawn a subagent that runs a shell command `echo goose-done` and tells you the result.')

@@ -5,12 +5,14 @@ import type { SectionActions } from './sectionUtils'
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
+import type { SetGoalState } from '~/components/shell/AppShellDialogs'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
 import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
+import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
@@ -54,6 +56,7 @@ import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
+import { hasGoalSurface } from '~/stores/chatGoal'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
@@ -185,6 +188,9 @@ export const AppShell: Component = () => {
   const sectionNameDialog = createDialogState<SectionNamePayload>()
   const confirmDeleteSectionDialog = createDialogState<SectionConfirmPayload>()
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
+  // The session-goal editor. Carries the agent it acts on and the objective to
+  // start from, so REPLACE opens with the current text rather than an empty box.
+  const setGoalDialog = createDialogState<SetGoalState>()
   const changeBranchDialog = createDialogState<ChangeBranchState>()
   const deleteBranchDialog = createDialogState<DeleteBranchState>()
   // Both branch surfaces -- the sidebar's branch row and the composer's branch
@@ -741,6 +747,7 @@ export const AppShell: Component = () => {
     confirmDeleteSection: confirmDeleteSectionDialog,
     lastTabConfirm: tabOps.lastTabConfirmDialog,
     keyPinConfirm: keyPinConfirmDialog,
+    setGoal: setGoalDialog,
     changeBranch: changeBranchDialog,
     deleteBranch: deleteBranchDialog,
   }
@@ -1013,8 +1020,57 @@ export const AppShell: Component = () => {
   const activeBackgroundTasksFailed = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
   )
+  // ONE goal-action rule, for both surfaces.
+  //
+  // SET is the one action that needs input, so it opens the editor and the RPC
+  // fires from the dialog's submit. The other three act immediately -- clearing
+  // destroys no artifact, and the editor reopens prefilled with the objective it
+  // cleared, which is a better undo than a confirmation.
+  //
+  // Written once, because the two surfaces differ only in how they name the
+  // agent: two copies could prefill the dialog differently.
+  const runGoalAction = (agentId: string, action: GoalAction) => {
+    if (action === 'set') {
+      setGoalDialog.open({ agentId, initialObjective: chatStore.goal.get(agentId)?.objective ?? '' })
+      return
+    }
+    void agentOps.handleGoalAction(agentId, action)
+  }
+  // The active root's session goal: the goal itself, the counters that ride the
+  // ephemeral session-info channel beside it, and what the running process can
+  // do with it. Read from the ROOT for the reason the registry is -- a child tab
+  // shows its root's goal, because a subagent has none of its own.
+  //
+  // ONE surface rather than three memos and a loose handler, so the sidebar and
+  // the section-visibility test below read the same object and cannot disagree
+  // about which goal they describe.
+  const activeGoalSurface = createMemo<GoalSurface>(() => {
+    const rootId = activeRootAgentId()
+    return {
+      current: rootId ? chatStore.goal.get(rootId) : undefined,
+      progress: rootId ? chatStore.goal.progress(rootId) : {},
+      actions: rootId ? chatStore.goal.supportedActions(rootId) : [],
+      // The sidebar acts on the ACTIVE root, so it resolves the agent at CLICK
+      // time and defers to the shared rule below rather than restating it.
+      // Resolving it here instead would bind the handler to whichever tab was
+      // active when the surface was built.
+      onAction: (action: GoalAction) => {
+        const agentId = activeRootAgentId()
+        if (agentId)
+          runGoalAction(agentId, action)
+      },
+    }
+  })
   const showBackgroundTasks = createMemo(() =>
-    shouldShowBackgroundTasksSection(activeBackgroundTasks(), activeBackgroundTasksFailed()),
+    shouldShowBackgroundTasksSection(
+      activeBackgroundTasks(),
+      activeBackgroundTasksFailed(),
+      // "There is a goal, OR one can be set here." The second half is what makes
+      // the first goal reachable at all. The work panel asks the SAME helper to
+      // decide whether to offer a Goal tab, so a visible section always has a
+      // tab that can hold something.
+      hasGoalSurface(activeGoalSurface()),
+    ),
   )
   // Open a subagent tab from a Background tasks row. Built once here and shared
   // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
@@ -1211,6 +1267,7 @@ export const AppShell: Component = () => {
     },
     settingsLoading,
     onOpenBackgroundTask,
+    onGoalAction: runGoalAction,
     onOpenChatImage: tabOps.handleChatImageOpen,
     branch: {
       actions: branchActions,
@@ -1288,6 +1345,7 @@ export const AppShell: Component = () => {
     get showBackgroundTasks() { return showBackgroundTasks() },
     get activeBackgroundTasks() { return activeBackgroundTasks() },
     get activeBackgroundTasksFailed() { return activeBackgroundTasksFailed() },
+    get activeGoal() { return activeGoalSurface() },
     onOpenBackgroundTask: item => onOpenBackgroundTask(item),
     termOps,
     gitStatusStore: repoGitStore,
@@ -1515,6 +1573,7 @@ export const AppShell: Component = () => {
 
         <AppShellDialogs
           dialogs={dialogs}
+          onSetGoal={(agentId, objective) => void agentOps.handleGoalAction(agentId, 'set', objective)}
           loadSections={loadSections}
           onBranchChanged={(repo, newBranch) => handleBranchChanged(
             { repoGitStore },

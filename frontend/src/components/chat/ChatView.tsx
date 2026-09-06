@@ -6,6 +6,7 @@ import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { GoalSurface } from '~/stores/chatGoal'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
@@ -230,6 +231,8 @@ export interface AgentLifecycleProps {
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
+  /** The ROOT session goal, for the goal chip and the popover's Goal tab. */
+  goal?: GoalSurface
 }
 
 /**
@@ -1338,6 +1341,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       backgroundTasks={props.agentLifecycle?.backgroundTasks}
                       onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
                       todos={props.agentLifecycle?.todos}
+                      goal={props.agentLifecycle?.goal}
                       onExpandTick={() => {
                         if (scroll.isAtBottomFresh())
                           scroll.jumpToBottom()

@@ -29,6 +29,7 @@ import type {
   SendControlResponseResponse,
   SetAgentInputQueuePausedResponse,
   SteerQueuedAgentInputResponse,
+  UpdateAgentGoalResponse,
   UpdateAgentSettingsResponse,
   UpdateQueuedAgentInputResponse,
 } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -124,6 +125,8 @@ import {
   SetAgentInputQueuePausedResponseSchema,
   SteerQueuedAgentInputRequestSchema,
   SteerQueuedAgentInputResponseSchema,
+  UpdateAgentGoalRequestSchema,
+  UpdateAgentGoalResponseSchema,
   UpdateAgentSettingsRequestSchema,
   UpdateAgentSettingsResponseSchema,
   UpdateQueuedAgentInputRequestSchema,
@@ -475,6 +478,22 @@ export function renameAgent(workerId: string, req: MessageInitShape<typeof Renam
 
 export function interruptAgent(workerId: string, req: MessageInitShape<typeof InterruptAgentRequestSchema>): Promise<InterruptAgentResponse> {
   return callWorker(workerId, 'InterruptAgent', InterruptAgentRequestSchema, InterruptAgentResponseSchema, req)
+}
+
+/**
+ * Set, clear, pause or resume the agent's session goal.
+ *
+ * ONE call for all four actions rather than four wrappers: they share a
+ * response, a scope and an idempotency story, and the worker refuses an action
+ * the running agent does not support -- so a browser acting on a stale
+ * capability list gets a refusal instead of a silent no-op.
+ *
+ * Nothing is written locally on success. The provider echoes every goal change
+ * back as a notification, so an optimistic write would race an echo already in
+ * flight and the control would visibly flip back.
+ */
+export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof UpdateAgentGoalRequestSchema>): Promise<UpdateAgentGoalResponse> {
+  return callWorker(workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, req)
 }
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {

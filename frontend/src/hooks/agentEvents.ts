@@ -12,6 +12,7 @@ import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
 import type { createControlStore } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
@@ -22,12 +23,12 @@ import type { TabView } from '~/stores/tabView'
 import { classifyAgentMessage, shouldClearStreamingText } from '~/components/chat/messageClassification'
 import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
+import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { isTabOnScreen } from '~/hooks/watchPlan'
-import { assignDefined, isObject, pickBoolean, pickNumber, pickString } from '~/lib/jsonPick'
+import { assignDefined, isObject, pickBoolean, pickCounter, pickNumber, pickString } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
@@ -153,11 +154,11 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
     return undefined
 
   const update: ToolProgressUpdate = { spanId }
-  // Finite and non-negative, not just `typeof number`: a NaN or an Infinity
-  // reaches the duration formatter and renders as "NaNs" on the card, and a
-  // negative elapsed time is not a duration at all.
-  const elapsed = pickNumber(value, RUNNING_TOOL_FIELD.ElapsedSeconds, undefined)
-  if (elapsed !== undefined && Number.isFinite(elapsed) && elapsed >= 0)
+  // pickCounter, not a bare pickNumber: a NaN or an Infinity reaches the
+  // duration formatter and renders as "NaNs" on the card, and a negative
+  // elapsed time is not a duration at all.
+  const elapsed = pickCounter(value, RUNNING_TOOL_FIELD.ElapsedSeconds)
+  if (elapsed !== undefined)
     update.elapsedSeconds = elapsed
   if (RUNNING_TOOL_FIELD.Retry in value) {
     const retry = wireRunningToolRetry(value[RUNNING_TOOL_FIELD.Retry])
@@ -167,6 +168,30 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
       update.retry = retry
   }
   return update
+}
+
+/**
+ * The `goal_progress` payload as the goal store holds it, or undefined when the
+ * broadcast carried no readable counter.
+ *
+ * Each field is read INDEPENDENTLY and omitted when absent. No two providers
+ * report the same set -- Codex has no iteration count, ZCode and Claude Code no
+ * token usage -- so a missing field must stay missing: a zero here renders as
+ * "0 tokens used", a number the provider never gave.
+ *
+ * Finite and non-negative for the same reason the running-tool elapsed time is:
+ * a NaN reaches the formatter and renders as "NaN", and a negative count is not
+ * a count.
+ */
+export function wireGoalProgressToUpdate(value: unknown): GoalProgress | undefined {
+  if (!isObject(value))
+    return undefined
+  const update: GoalProgress = {}
+  assignDefined(update, 'tokensUsed', pickCounter(value, GOAL_PROGRESS_FIELD.TokensUsed))
+  assignDefined(update, 'tokenBudget', pickCounter(value, GOAL_PROGRESS_FIELD.TokenBudget))
+  assignDefined(update, 'timeUsedSeconds', pickCounter(value, GOAL_PROGRESS_FIELD.TimeUsedSeconds))
+  assignDefined(update, 'iterations', pickCounter(value, GOAL_PROGRESS_FIELD.Iterations))
+  return Object.keys(update).length > 0 ? update : undefined
 }
 
 /**
@@ -263,6 +288,15 @@ export function handleAgentSessionInfo(
   const runningTool = wireRunningToolToUpdate(info?.[SESSION_INFO_KEY.RunningTool])
   if (runningTool)
     chatStore.applyToolProgress(agentId, runningTool)
+  // goal_progress is the VOLATILE half of the session goal and belongs beside
+  // the goal itself in the chat store, not among the scalar AgentSessionInfo
+  // fields -- same reason running_tool takes its own path above. It rides this
+  // channel rather than AgentGoalChanged because Codex advances these counters
+  // after every completed tool call, and the goal event fires only on a real
+  // transition.
+  const goalProgress = wireGoalProgressToUpdate(info?.[SESSION_INFO_KEY.GoalProgress])
+  if (goalProgress)
+    chatStore.goal.setProgress(agentId, goalProgress)
   // Pi (and any future provider) may broadcast session_info payloads whose keys are all
   // dropped here -- skip the store write so reactive consumers aren't woken for nothing.
   if (Object.keys(updates).length > 0)

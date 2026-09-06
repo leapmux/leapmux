@@ -125,14 +125,28 @@ export function isActiveBackgroundTaskStatus(s: BackgroundTaskItem['status']): b
  * the screen with nothing to say why. A worker database missing a column did
  * exactly that, and the only trace was a warn in the worker log.
  *
+ * The GOAL SURFACE keeps it alive as well, and that is the only reachable route
+ * to one. The ThinkingIndicator's goal chip is hidden whenever the agent is not
+ * ACTIVE or a permission prompt is pending (see shouldShowThinkingIndicator) --
+ * which is exactly the set of states a goal most needs acting on: paused,
+ * blocked, achieved.
+ *
+ * `hasGoalSurface` is "there is a goal, OR this agent can be given one", not
+ * merely "there is a goal". The weaker rule deadlocks: the panel is where a
+ * first goal is set, so a section that appeared only once a goal existed could
+ * never be opened to create the first one. It stays false for a provider with
+ * no goal support at all (OpenCode, Pi, Cursor), which keeps the section hidden
+ * for them exactly as before.
+ *
  * Here rather than inline in the shell, so the rule sits with the registry's
  * other rules and can be tested without mounting AppShell.
  */
 export function shouldShowBackgroundTasksSection(
   tasks: BackgroundTaskItem[],
   loadFailed: boolean,
+  hasGoalSurface: boolean,
 ): boolean {
-  return tasks.length > 0 || loadFailed
+  return tasks.length > 0 || loadFailed || hasGoalSurface
 }
 
 /**

@@ -594,7 +594,7 @@ func (claudeProvider) Classify(raw json.RawMessage) NotificationClassification {
 		return NotificationClassification{}
 	}
 	switch env.Type {
-	case NotificationTypeRateLimitEvent:
+	case contracts.NotificationTypeRateLimitEvent:
 		// Consolidate by keeping only the latest rate-limit snapshot in
 		// the thread; older entries collapse so the UI shows one current
 		// status, not a wall of repeated tier updates.

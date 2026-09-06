@@ -231,6 +231,23 @@ func CleanNameChars(name string, scanLimit int) string {
 	return b.String()
 }
 
+// WireString returns s with every invalid UTF-8 byte removed, so a stored value
+// can never fail proto.Marshal.
+//
+// ONE invalid byte makes proto.Marshal fail the WHOLE message, not the field,
+// so a projection that skips this loses every value the message carries and
+// gives the reader nothing on screen to explain it. sqlite stores a bad byte
+// verbatim, so a value that reached a column before its writer sanitized it is
+// read back on every boot -- which is why the repair belongs on the READ path
+// as well as the write path.
+//
+// It DROPS the byte rather than writing U+FFFD, the same answer StripUnreadable
+// and CleanNameChars give, so all three rules agree on what a repaired string
+// looks like.
+func WireString(s string) string {
+	return strings.ToValidUTF8(s, "")
+}
+
 // StripUnreadable removes from s every character that a reader cannot see --
 // a control character, an invisible format character, and an invalid byte --
 // and cuts the result to byteLimit UTF-8 bytes at a rune boundary. A

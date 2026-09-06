@@ -48,6 +48,37 @@ CREATE TABLE agents (
     -- silently skip the new message. Maintained by the triggers on `messages` below.
     message_seq_hwm  INTEGER NOT NULL DEFAULT 0,
     startup_error    TEXT NOT NULL DEFAULT '',
+    -- Session goal. Every agent CLI that has this feature (Codex, ZCode, Claude
+    -- Code, Copilot, Reasonix) allows AT MOST ONE goal per session, so the goal
+    -- is 1:1 with the agent and lives here rather than in a table whose primary
+    -- key would equal this one.
+    --
+    -- These columns hold only the DURABLE half. The progress counters
+    -- (tokens used, seconds spent, iterations) change after every tool call and
+    -- ride the ephemeral agent_session_info broadcast instead, so a long turn
+    -- costs no writes here. What is stored is what a transition changes.
+    --
+    -- goal_created_at is part of the row's IDENTITY, not decoration. Codex puts
+    -- no goal id on the wire: a replacement goal arrives as another
+    -- thread/goal/updated with a fresh createdAt, so a user who restarts the
+    -- same objective is invisible without it.
+    --
+    -- goal_status is '' when no goal exists, and otherwise holds the last
+    -- status the PROVIDER reported. Nothing else writes it.
+    --
+    -- 'dormant' is deliberately absent. It means "the objective is stored and
+    -- no live process pursues it", which the projection derives from the
+    -- running-agent map at read time (see GoalSnapshotFrom). Storing it would
+    -- put the same fact in two places, and the copy went stale the moment a
+    -- process exited without the sweep that wrote it.
+    goal_objective     TEXT NOT NULL DEFAULT '',
+    goal_status        TEXT NOT NULL DEFAULT '' CHECK (goal_status IN ('','active','paused','blocked','done')),
+    -- The provider's OWN word for the status ('usageLimited', 'notSatisfied',
+    -- 'verifying'). The neutral enum above branches the UI; this preserves the
+    -- precision that mapping five vocabularies onto four values loses.
+    goal_status_detail TEXT NOT NULL DEFAULT '',
+    goal_created_at    DATETIME,
+    goal_updated_at    DATETIME,
     workspace_archived INTEGER NOT NULL DEFAULT 0,
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME

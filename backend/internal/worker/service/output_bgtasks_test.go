@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -1398,7 +1399,7 @@ func TestBgTask_CloseReachesARetainedRowAndEndsItsTranscript(t *testing.T) {
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1, "the child transcript gets its closing divider")
-	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, contracts.NotificationTypeSubagentEnded, msgs[0]["type"])
 	assert.Equal(t, "completed", msgs[0]["status"])
 }
 

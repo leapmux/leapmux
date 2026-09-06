@@ -2,15 +2,19 @@
  * Shared helpers for the subagent / background-task E2E specs (170-177).
  *
  * These wrap the common registry assertions so each per-provider spec stays
- * small. All locators are `:visible`-scoped (chat rows + the sidebar render
- * twice) and all worker-state reads go through the E2EE test channel (never
- * optimistic CRDT state). No per-call timeout overrides -- Playwright's global
- * expect timeout (playwright.config.ts) applies.
+ * small. A locator that must MATCH an element is `:visible`-scoped, because the
+ * chat rows and the sidebar both render twice; a locator that asserts a count of
+ * ZERO is not, because `:visible` also reads zero for a collapsed section. All
+ * worker-state reads go through the E2EE test channel (never optimistic CRDT
+ * state). No per-call timeout overrides -- Playwright's global expect timeout
+ * (playwright.config.ts) applies. `./subagentRegistry.test.ts` holds both halves
+ * of the `:visible` rule as a source-level guard.
  */
 import type { Locator, Page } from '@playwright/test'
-import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
+import { countGoalTransitionsInMessages } from './goalTransitions'
 
 const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
 
@@ -32,16 +36,74 @@ export async function expandBackgroundTasksSection(page: Page): Promise<void> {
 }
 
 /**
- * Verify the registry section is absent before a spawn (an empty registry hides
- * the section). Uses a short timeout so it fails fast if a stale row leaked in
- * from a previous test, rather than swallowing the isVisible() result silently.
- * A provider can briefly surface startup activity, so this is a best-effort
- * assertion -- the post-spawn row assertions are the real gate.
+ * The session-goal card inside the work panel.
+ *
+ * `:visible`-scoped for the reason every locator in this file is: the sidebar is
+ * mounted twice, so the bare test id matches two elements.
  */
-export async function expectRegistrySectionAbsent(page: Page): Promise<void> {
+export function goalCard(page: Page): Locator {
+  return page.locator('[data-testid="goal-card"]:visible')
+}
+
+/** One of the panel's tabs, by key (`all`, `subagent`, `shell`, `goal`). */
+export function workPanelTab(page: Page, key: string): Locator {
+  return page.locator(`[data-testid="bg-task-filter-${key}"]:visible`)
+}
+
+/** A verb button on the goal card, by action (`set`, `clear`, `pause`, `resume`). */
+export function goalAction(page: Page, action: string): Locator {
+  return page.locator(`[data-testid="goal-action-${action}"]:visible`)
+}
+
+/**
+ * Wait for the goal card to report a status.
+ *
+ * Polls rather than asserting once: the status is worker state that arrives on a
+ * broadcast, so the card can be on screen before the status it will settle on
+ * is.
+ */
+export async function expectGoalStatus(page: Page, status: string): Promise<void> {
+  await expect
+    .poll(async () => await page.locator('[data-testid="goal-status-dot"]:visible').getAttribute('data-status'))
+    .toBe(status)
+}
+
+/**
+ * Verify the registry holds no ROWS, and reports no load failure, before a
+ * spawn.
+ *
+ * It asserts on the rows rather than on the section, because the section is no
+ * longer a proxy for them: it also opens for an agent that has a session goal,
+ * or that can be given one, and the panel's empty state is the only route to a
+ * first goal. Every goal-capable provider therefore shows the section from the
+ * moment its process registers, with nothing in the registry.
+ *
+ * The load-failure assertion is what the row count alone loses. A worker that
+ * cannot answer for the registry renders the failure message with ZERO rows, so
+ * a row count of nothing passes in exactly the state the old section assertion
+ * caught. Without it a schema-drifted worker database reaches the post-spawn
+ * step and fails there as "the model did not spawn a subagent" -- a skip, not a
+ * failure -- and the real regression never surfaces.
+ *
+ * NOT `:visible`-scoped, unlike the row locators below. A count of zero is
+ * already immune to the double mount, and the bare test id also fails when the
+ * section is COLLAPSED, where `:visible` would match nothing and pass for the
+ * wrong reason.
+ *
+ * Waits a beat first, so a stale row that leaked in from a previous test fails
+ * fast rather than passing before the initial broadcast lands.
+ */
+export async function expectNoRegistryRows(page: Page): Promise<void> {
   // Wait a beat for the initial registry broadcast to settle, then assert.
   await page.waitForTimeout(1000)
-  await expect(backgroundTasksSection(page), 'registry section should be absent before spawn').not.toBeVisible()
+  await expect(
+    page.locator('[data-testid="bg-task-row"]'),
+    'the registry should hold no rows before a spawn',
+  ).toHaveCount(0)
+  await expect(
+    page.locator('[data-testid="bg-task-load-failed"]'),
+    'the worker should be able to answer for the registry',
+  ).toHaveCount(0)
 }
 
 export interface RowFilter {
@@ -277,6 +339,39 @@ export async function waitForChildAgent(
 export async function expectSectionPersists(page: Page): Promise<void> {
   await expect(backgroundTasksSection(page)).toBeVisible()
   await expect(page.locator('[data-testid="bg-task-row"]:visible').first()).toBeVisible()
+}
+
+/**
+ * Count the session-goal TRANSITIONS the worker persisted, read over the E2EE
+ * test channel.
+ *
+ * Worker-backed rather than read off the screen, for the reason every registry
+ * assertion in this file is: the chat is a virtual list, so a row scrolled out
+ * of view is not in the DOM at all and a text count would report whatever the
+ * viewport happens to hold.
+ *
+ * Returns null while the channel is re-establishing, so a caller polls.
+ */
+export async function countGoalTransitions(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  agentId: string,
+): Promise<number | null> {
+  const channel = await getTestChannel(hubUrl, token)
+  try {
+    const resp = await channel.callWorker(
+      workerId,
+      'ListAgentMessages',
+      ListAgentMessagesRequestSchema,
+      ListAgentMessagesResponseSchema,
+      { agentId, limit: 200 },
+    )
+    return countGoalTransitionsInMessages(resp.messages ?? [])
+  }
+  catch {
+    return null
+  }
 }
 
 /**

@@ -307,6 +307,66 @@ type OutputSink interface {
 	StorePlanModeToolUse(toolUseID, targetMode string)
 	LoadAndDeletePlanModeToolUse(toolUseID string) (targetMode string, ok bool)
 	UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string)
+	// UpsertGoal records the provider's current session goal (see goal.go for the
+	// neutral shape and why there is only ever one).
+	//
+	// It takes the WHOLE goal every time, because every provider that reports one
+	// restates it in full -- these are last-write-wins snapshots, not deltas.
+	//
+	// The sink splits the report by how fast each half changes. The objective,
+	// the status and the identity are durable: they go to the agents row and, on
+	// a real transition, to one neutral transcript notification. The progress
+	// counters ride the ephemeral session-info broadcast. That split is the
+	// point of this method: Codex reports after EVERY completed tool call, so a
+	// design that persisted the counters would cost a database write and a
+	// broadcast per tool call for state nobody keeps.
+	//
+	// A GoalUpdate marked Snapshot updates state and writes no transcript row.
+	//
+	// A ROOT sink only. This is where the goal parts company with every other
+	// registry primitive on this interface: those redirect a CHILD sink's write
+	// to its root owner, and this one REFUSES it and logs.
+	//
+	// Redirecting is the bug, not the service. Codex collab children are real
+	// threads and can carry a goal of their own, so a redirect would replace the
+	// session's objective with a subagent's -- under an agent that never had one.
+	// A provider drops its child goals before calling this (the Codex handler
+	// requires the main thread id), so a refusal here means that provider has a
+	// bug, and the log is how it is found.
+	//
+	// A provider that later wants a per-child goal must change that decision
+	// here, not work around it.
+	UpsertGoal(update GoalUpdate)
+	// ClearGoal removes the session goal. A root sink only, like UpsertGoal.
+	//
+	// The WRITE is unconditional, and a caller must NOT skip it because its own
+	// copy is already empty. Codex's thread/resume pushes thread/goal/cleared to
+	// mean "this thread has no goal", which is exactly the case where the
+	// worker's in-memory copy is cold and the DATABASE still holds a goal from a
+	// previous process. Short-circuiting there would strand that goal forever.
+	//
+	// `snapshot` marks a clear that RESTATES the absence rather than announcing
+	// a removal, the same distinction GoalUpdate.Snapshot draws for the upsert
+	// half, and it exists for the same resume. Without it the clear that Codex
+	// pushes on resume writes "Goal cleared: X" into the transcript, dated now,
+	// for a goal the user removed before the restart. It suppresses the
+	// transcript row only; the write and the broadcast still run.
+	ClearGoal(snapshot bool)
+	// PublishGoalCapabilities re-broadcasts the goal together with the actions
+	// the now-registered process supports. A root sink only, like UpsertGoal.
+	//
+	// It exists because that capability is read from the LIVE agent, and the
+	// agent is not reachable until the Manager registers it -- which happens
+	// after the provider's start function returns. Every earlier chance
+	// to answer (the cold-load response, the WatchEvents replay, the
+	// status-active broadcast a provider makes during its own handshake) can run
+	// before that, and each would report an agent that can do nothing.
+	//
+	// Getting this wrong is not a cosmetic loss: the work panel is the only
+	// route to a FIRST goal, and it is hidden for an agent that reports no goal
+	// capability -- so an answer that is merely early leaves the feature
+	// unreachable for the life of the session.
+	PublishGoalCapabilities()
 	ScheduleAutoContinue(schedule AutoContinueSchedule)
 	CancelAutoContinue(reason AutoContinueReason)
 

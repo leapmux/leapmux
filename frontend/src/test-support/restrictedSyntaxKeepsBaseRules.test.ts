@@ -83,10 +83,22 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   let resolved: Record<string, unknown>
   let baseline: string[]
 
+  // The timeout is explicit because the DEFAULT one does not fit the work.
+  //
+  // This hook boots a Node subprocess, loads `eslint.config.ts` through jiti,
+  // and resolves three files against antfu's whole plugin tree. That measures
+  // around ten seconds on a developer machine -- which is vitest's default hook
+  // timeout exactly, so the suite passed or failed on machine load rather than
+  // on anything about the config it guards.
+  //
+  // Sixty seconds is not a workaround for a slow test. The cost is inherent and
+  // bounded: the subprocess is the point of the probe (see
+  // resolveRestrictedSyntax), and the budget is sized so only a genuine hang
+  // trips it.
   beforeAll(() => {
     resolved = resolveRestrictedSyntax([BASELINE_FILE, ...SCOPED_FILES])
     baseline = selectorsFor(resolved[BASELINE_FILE])
-  })
+  }, 60_000)
 
   it('reads a baseline that actually holds selectors', () => {
     // An empty baseline would make the superset check below pass for every

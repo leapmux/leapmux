@@ -767,6 +767,12 @@ func (svc *Service) RestoreState() {
 func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
 	svc.Output.ClearPendingControlRequests(agentID)
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
+	// Re-publish the session goal, which now reads DORMANT: the projection
+	// derives that from the running-agent map, and AgentAlive already answers
+	// false inside this callback. Nothing is written -- this only tells a browser
+	// holding the tab open, which would otherwise keep a live Active dot and
+	// working Pause and Clear buttons until its next cold load.
+	svc.Output.publishGoalCapabilities(agentID)
 	if !stopped {
 		for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
 			if _, err := svc.InputQueue.Pause(bgCtx(), queueAgentID, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED); err != nil {

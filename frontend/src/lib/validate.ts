@@ -130,6 +130,20 @@ const INTERIOR_NON_PLAIN_WHITESPACE = new RegExp(
 const UTF8 = new TextEncoder()
 
 /**
+ * The size of `value` in UTF-8 BYTES, which is the unit every worker-side limit
+ * counts in.
+ *
+ * A form that measures `value.length` instead measures UTF-16 code units, and
+ * the two differ by up to 4x: 2000 CJK characters are 2000 code units and about
+ * 6000 bytes. A field capped by `maxlength` therefore accepts text the worker
+ * then truncates, and the stored value silently differs from what the user
+ * typed.
+ */
+export function utf8ByteLength(value: string): number {
+  return UTF8.encode(value).length
+}
+
+/**
  * The character rule that every name and title shares: strip what a reader
  * cannot see, fold each run of whitespace to one space, and trim both ends.
  *
