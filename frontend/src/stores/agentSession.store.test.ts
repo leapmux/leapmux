@@ -344,6 +344,43 @@ describe('agentSessionStore clearContextUsage', () => {
     })
   })
 
+  // THE MERGE ORDER, which only an asynchronous read can get wrong. `ensureLoaded`
+  // spreads `{...stored, ...prev}` -- `prev` LAST -- because a live update can
+  // land while the read is in flight (a token count off the socket, a clear),
+  // and the stored snapshot is older than any of them by construction. The
+  // synchronous read this replaced could not race, so nothing pinned the order.
+  it('lets a live update that landed during the read win over the stored row', async () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('a-racing', { totalCostUsd: 1, planFilePath: '/from-disk' })
+      dispose()
+    })
+    await vi.waitFor(async () => {
+      expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-racing`)).toBeDefined()
+    })
+
+    await createRoot(async (dispose) => {
+      const store = createAgentSessionStore()
+      // Starts the read for this agent and answers from the still-empty entry.
+      expect(store.getInfo('a-racing')).toEqual({})
+      // The live update lands BEFORE the read resolves. With the spread the
+      // other way round, the stored `/from-disk` would overwrite it a moment
+      // later and the user would watch the value revert.
+      store.updateInfo('a-racing', { planFilePath: '/from-the-socket' })
+      expect(store.getInfo('a-racing').planFilePath).toBe('/from-the-socket')
+
+      await vi.waitFor(() => {
+        // The read has landed once a key only the stored row carries appears.
+        expect(store.getInfo('a-racing').totalCostUsd).toBe(1)
+      })
+      expect(
+        store.getInfo('a-racing').planFilePath,
+        'the newer live value must survive the read it raced',
+      ).toBe('/from-the-socket')
+      dispose()
+    })
+  })
+
   it('is a no-op that preserves siblings when there is no context usage to clear', async () => {
     // Persist an agent that never carried contextUsage/cost, only rateLimits.
     createRoot((dispose) => {
