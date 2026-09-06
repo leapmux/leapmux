@@ -122,3 +122,49 @@ export async function deleteStorageDatabase(page: Page): Promise<void> {
     request.onblocked = () => resolve()
   }), DB_NAME)
 }
+
+/**
+ * The object stores `dbName` holds, sorted, or null when the database does not
+ * exist.
+ *
+ * Versionless like the readers above, so the probe can never trigger the app's
+ * schema repair. It tells "absent" from "empty" by `onupgradeneeded`: that fires
+ * only when the open CREATED the database, which means it was not there.
+ */
+export async function databaseStores(page: Page, dbName: string): Promise<string[] | null> {
+  return page.evaluate(name => new Promise<string[] | null>((resolve) => {
+    const request = indexedDB.open(name)
+    let created = false
+    request.onerror = () => resolve(null)
+    request.onupgradeneeded = () => {
+      created = true
+    }
+    request.onsuccess = () => {
+      const db = request.result
+      const stores = Array.from(db.objectStoreNames).sort()
+      db.close()
+      if (created) {
+        // Undo the probe's own creation, so a later assertion still sees the
+        // database as absent.
+        indexedDB.deleteDatabase(name)
+        resolve(null)
+        return
+      }
+      resolve(stores)
+    }
+  }), dbName)
+}
+
+/** Every key in one Web Storage area, sorted. */
+export async function webStorageKeys(page: Page, area: 'local' | 'session'): Promise<string[]> {
+  return page.evaluate((which) => {
+    const store = which === 'local' ? localStorage : sessionStorage
+    const keys: string[] = []
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i)
+      if (key !== null)
+        keys.push(key)
+    }
+    return keys.sort()
+  }, area)
+}
