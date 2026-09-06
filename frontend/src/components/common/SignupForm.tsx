@@ -38,7 +38,16 @@ interface SignupFormProps {
    * setup flow. Defaults to false for public signup paths.
    */
   allowAdminUsername?: boolean
-  onSuccess: (resp: SignupResult) => void
+  /**
+   * Runs once the account exists and the session is live.
+   *
+   * It may return a promise, and this form AWAITS it: every caller adopts the
+   * identity through `auth.setAuth`, which now has to load the account's stored
+   * preferences before it publishes the identity. A caller that navigated
+   * without waiting would mount the next route on the previous account's
+   * namespace.
+   */
+  onSuccess: (resp: SignupResult) => void | Promise<void>
 }
 
 export const SignupForm: Component<SignupFormProps> = (props) => {
@@ -138,7 +147,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
       // two fields, and the `?? false` defaults were spelled twice.
       if (!resp.user)
         throw new Error('sign-up response missing user')
-      props.onSuccess({
+      await props.onSuccess({
         user: resp.user,
         verificationRequired: resp.emailVerification?.verificationRequired ?? false,
         nextResendAvailableAt: resp.emailVerification?.nextResendAvailableAt,

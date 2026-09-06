@@ -176,6 +176,11 @@ export default defineConfig({
         '@noble/hashes/utils.js',
         '@noble/post-quantum/ml-kem.js',
         '@noble/post-quantum/slh-dsa.js',
+        // Persistence (IndexedDB). Reached through lazily-imported render-cache
+        // paths, so the initial dep scan can miss it and re-optimize
+        // mid-session, which costs a full page reload. Its `exports` map also
+        // carries development and production conditions; pre-bundling pins one.
+        'dexie',
         // UI / misc
         '@knadh/oat/oat.min.js',
         '@tauri-apps/api/core',

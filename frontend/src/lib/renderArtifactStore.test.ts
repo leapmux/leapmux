@@ -1,4 +1,4 @@
-import { IDBFactory, IDBObjectStore } from 'fake-indexeddb'
+import { IDBFactory, IDBIndex, IDBObjectStore } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   _resetArtifactStoreForTest,
@@ -77,6 +77,29 @@ describe('renderartifactstore', () => {
     expect(deleted).toBe(1)
     await expect(getArtifact('ns', 'old')).resolves.toBeUndefined()
     await expect(getArtifact('ns', 'fresh')).resolves.toBe('fresh-value')
+  })
+
+  // The sweep decides what to DELETE, so it must not materialize what it is
+  // deciding about: an artifact's value is a whole rendered payload, and a
+  // value cursor would deserialize every cached render just to read a
+  // timestamp off the index. `eachKey` is what keeps the walk key-only, and a
+  // stray `.filter()` or `.and()` on the chain sets Dexie's isMatch flag and
+  // silently switches it back -- with no other symptom than a slower sweep.
+  //
+  // The sibling store on the same scaffold pins this for both of its walks;
+  // this is the same hazard on the store where the payloads are largest.
+  it('decides what to sweep without ever opening a value cursor', async () => {
+    await putArtifact('ns', 'old', 'old-value', 1000)
+    await putArtifact('ns', 'fresh', 'fresh-value', 2000)
+    const valueCursor = vi.spyOn(IDBIndex.prototype, 'openCursor')
+    const keyCursor = vi.spyOn(IDBIndex.prototype, 'openKeyCursor')
+
+    await sweepArtifacts({ now: 3000, ttlMs: 500 })
+
+    expect(keyCursor).toHaveBeenCalled()
+    expect(valueCursor).not.toHaveBeenCalled()
+    valueCursor.mockRestore()
+    keyCursor.mockRestore()
   })
 
   it('sweeps the oldest-used entries past the cap', async () => {

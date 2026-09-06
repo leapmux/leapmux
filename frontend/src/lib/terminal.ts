@@ -1,5 +1,5 @@
 import type { ITheme } from '@xterm/xterm'
-import type { BrowserPreferences, TerminalRendererPreference } from './browserStorage'
+import type { BrowserPreferences, TerminalRendererPreference } from './browserPreferences'
 import type { TerminalImeHandle } from './terminalIme'
 import type {
   ResolvedThemeMode,
@@ -13,7 +13,7 @@ import { SerializeAddon } from '@xterm/addon-serialize'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, resolveVariant, themeById } from '~/styles/themes'
-import { loadBrowserPrefs } from './browserStorage'
+import { loadBrowserPrefs } from './browserPreferences'
 import { copyTextToClipboard } from './clipboard'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'
@@ -128,12 +128,12 @@ export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
 
 export const DEFAULT_FONT_SIZE = 13
 
-/** Get the stored terminal theme preference from localStorage. */
+/** Get the stored terminal theme preference from browser storage. */
 export function getTerminalThemePreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalThemeValue {
   return parseTerminalThemeValue(prefs.terminalTheme) ?? DEFAULT_TERMINAL_THEME_VALUE
 }
 
-/** Get the stored terminal renderer preference from localStorage. */
+/** Get the stored terminal renderer preference from browser storage. */
 export function getTerminalRendererPreference(prefs: BrowserPreferences = loadBrowserPrefs()): TerminalRendererPreference {
   const stored = prefs.terminalRenderer
   if (stored === 'auto' || stored === 'webgl' || stored === 'canvas')

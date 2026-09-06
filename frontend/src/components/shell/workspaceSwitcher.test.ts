@@ -1,8 +1,8 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { KEY_ACTIVE_WORKSPACE, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
+import { KEY_ACTIVE_WORKSPACE, localStorageGet, resetStorageAccountForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { emitAddTab } from '~/stores/tabOps'
 import { TEST_USER_ID, withTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
@@ -32,10 +32,6 @@ function setup() {
 }
 
 describe('createWorkspaceSwitcher', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
   it('persists the new workspace', () => {
     withTestBridge(() => {
       createRoot((dispose) => {
@@ -57,11 +53,11 @@ describe('createWorkspaceSwitcher', () => {
         const { switchWorkspace } = setup()
         switchWorkspace('w1')
 
-        setStorageAccount('bob')
+        setStorageAccountForTests('bob')
         switchWorkspace('w2')
         expect(localStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('w2')
 
-        setStorageAccount(TEST_USER_ID)
+        setStorageAccountForTests(TEST_USER_ID)
         expect(localStorageGet<string>(KEY_ACTIVE_WORKSPACE)).toBe('w1')
         dispose()
       })
@@ -93,7 +89,7 @@ describe('createWorkspaceSwitcher', () => {
         expect(() => switchWorkspace('w1')).toThrow(/No storage account is set/)
         // The signal still flipped: the write is the last statement.
         expect(active).toEqual(['w1'])
-        setStorageAccount(TEST_USER_ID)
+        setStorageAccountForTests(TEST_USER_ID)
         dispose()
       })
     })

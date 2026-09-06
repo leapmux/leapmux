@@ -1,7 +1,8 @@
 import type { Accessor } from 'solid-js'
 import type { PersistableRowHeight, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
+import type { AsyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, onCleanup, untrack } from 'solid-js'
-import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
@@ -61,7 +62,7 @@ export const PERSISTED_ROW_HEIGHTS_MAX = MAX_LOADED_CHAT_MESSAGES_CEILING
 
 /**
  * Save debounce. Measurements arrive in bursts (a premeasure band, a resize
- * re-measure sweep); one write per quiet second keeps localStorage traffic
+ * re-measure sweep); one write per quiet second keeps storage traffic
  * negligible while staying well inside "toggle the sidebar then reload".
  */
 export const ROW_HEIGHT_SAVE_DEBOUNCE_MS = 1000
@@ -70,6 +71,13 @@ export interface RowHeightPersistenceDeps {
   /**
    * Stable per-chat identity for the storage key (the agent id). Undefined
    * disables persistence entirely (nothing loads, nothing saves).
+   *
+   * STABLE MEANS STABLE FOR THE INSTANCE'S LIFE. The load runs once and its
+   * result is adopted with no identity recheck, and `pending` plus
+   * `attemptedAdoptions` accumulate against this one chat, so an accessor that
+   * moved would adopt one chat's heights into another and save them back under
+   * the wrong key. `ChatView` satisfies this: `<For>` gives each agent tab its
+   * own instance and disposes it rather than re-pointing it.
    */
   storageId: () => string | undefined
   virtualItems: Accessor<VirtualItem[]>
@@ -118,7 +126,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   let loaded = false
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
-  const storageKey = (id: string) => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
+  const storageKey = (id: string): AsyncLocalKey => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
   const adoptionAttemptKey = (id: string, digest: string) => `${id}\0${digest}`
 
   const tryAdopt = (items: readonly VirtualItem[]): void => {
@@ -205,28 +213,42 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
     // measurements -- and the eviction bound can't drift from the render/token caches'.
     capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
-    localStorageSet(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
+    localStorageStore(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
   }
 
   // Load once, as soon as the storage identity is available.
+  //
+  // The read is ASYNCHRONOUS -- a stored payload is tens of KB, so this family
+  // is on the unmirrored tier -- so the effect returns before the rows arrive.
+  //
+  // ONE LOAD PER INSTANCE IS THE WHOLE CONTRACT, and it rests on `storageId`
+  // being stable for the instance's life: `ChatView` passes `() => props.agentId`
+  // and is rendered one instance per agent tab by a `<For>`, which binds the id
+  // as a constant per row and disposes the pane rather than re-pointing it. A
+  // post-await identity recheck would therefore be unreachable code, and keying
+  // the latch by id would not be enough on its own to support a changing id:
+  // `pending` and `attemptedAdoptions` still hold the previous chat's rows, and
+  // the debounced save would write them under the new key. If `storageId` ever
+  // becomes movable, all three have to move with it.
   createEffect(() => {
     const id = deps.storageId()
     if (id === undefined || loaded)
       return
     loaded = true
-    const stored = localStorageGet<StoredRowHeights>(storageKey(id))
-    if (stored !== undefined) {
-      const rows = parseStoredRows(stored)
-      // A payload from an older version parses to nothing. Drop it now rather
-      // than leaving it: the read that just returned it also refreshed its
-      // expiry, so a chat that never commits a height (one the reader opens and
-      // leaves) would keep tens of KB of dead rows alive indefinitely.
-      if (rows.size === 0)
-        localStorageRemove(storageKey(id))
-      for (const [rowId, entry] of rows)
-        pending.set(rowId, entry)
-    }
-    tryAdopt(untrack(deps.virtualItems))
+    void localStorageLoad<StoredRowHeights>(storageKey(id)).then((stored) => {
+      if (stored !== undefined) {
+        const rows = parseStoredRows(stored)
+        // A payload from an older version parses to nothing. Drop it now rather
+        // than leaving it: the read that just returned it also refreshed its
+        // expiry, so a chat that never commits a height (one the reader opens and
+        // leaves) would keep tens of KB of dead rows alive indefinitely.
+        if (rows.size === 0)
+          localStorageDrop(storageKey(id))
+        for (const [rowId, entry] of rows)
+          pending.set(rowId, entry)
+      }
+      tryAdopt(untrack(deps.virtualItems))
+    })
   })
 
   // Retry hydration whenever the item list changes (pagination brings older

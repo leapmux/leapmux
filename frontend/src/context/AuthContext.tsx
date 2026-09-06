@@ -12,7 +12,7 @@ import { loadTimeouts, setElevationAdoptionOpener, setOnAuthError } from '~/api/
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/proto/leapmux/v1/auth_pb'
 import { setBootPhase, setBootShell } from '~/lib/bootSplashTheme'
-import { setStorageAccount } from '~/lib/browserStorage'
+import { hydrateStorageAccount, setStorageAccount } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { dropElevation as dropElevationRequest, elevateWithPasskey as elevateWithPasskeyRequest, elevateWithPassword as elevateWithPasswordRequest } from '~/lib/elevation'
 import { formatErrorMessage } from '~/lib/errors'
@@ -100,7 +100,7 @@ export interface AuthState {
    * it, instead of from a following refresh whose failure would prompt the
    * operator for the password they just chose.
    */
-  setAuth: (user: User, elevation?: Timestamp) => void
+  setAuth: (user: User, elevation?: Timestamp) => Promise<void>
   /**
    * Adopt a user the hub returned for the SESSION THAT IS ALREADY SIGNED IN.
    *
@@ -110,7 +110,7 @@ export interface AuthState {
    * its response carries the updated user, and clearing the window there made
    * Preferences report a verified session as unverified.
    */
-  adoptSameIdentityUser: (user: User) => void
+  adoptSameIdentityUser: (user: User) => Promise<void>
   refreshUser: () => Promise<void>
   isAuthenticated: () => boolean
 }
@@ -220,9 +220,21 @@ export const AuthProvider: ParentComponent = (props) => {
    * render effect runs ahead of a user effect in the same flush, so `AppShell`
    * could mount and read the previous account's tab state.
    *
+   * ASYNCHRONOUS, and only for a non-null user. The synchronous storage tier is
+   * an in-memory mirror of an IndexedDB-backed store, so the rows have to be
+   * READ before the namespace may point at them -- `setStorageAccount` refuses
+   * an account it was not hydrated for. Every caller of this already awaits the
+   * hub round trip that produced the User, so the gate costs no extra hop; and
+   * `hydrateStorageAccount` never rejects, so a browser with no IndexedDB signs
+   * in on defaults rather than failing to sign in.
+   *
+   * The two writes after that await stay ADJACENT and synchronous, which is the
+   * property everything downstream rests on.
+   *
    * A null user does NOT clear the namespace -- see `setStorageAccount`. The
    * writes a sign-out triggers during the tear-down belong to the account that
-   * leaves.
+   * leaves. It also takes no await, so a sign-out still moves the signal in the
+   * same turn -- which `setOnAuthError` and `logout`'s `finally` depend on.
    *
    * AN IDENTITY WITH NO ID IS NOT AN IDENTITY. `setStorageAccount` refuses an
    * empty id, because there is no namespace to key by, and letting that throw
@@ -233,15 +245,24 @@ export const AuthProvider: ParentComponent = (props) => {
    * of a User the app cannot key anything by, and it routes to `/login` -- with
    * the fault recorded, because a hub that answers this way has a real bug.
    */
-  const setUser = (next: User | null) => {
-    authGeneration++
+  const setUser = async (next: User | null): Promise<boolean> => {
+    const generation = ++authGeneration
     if (next && !next.id) {
       log.error('the hub returned a user with no id; treating the session as signed out', { user: next })
       next = null
     }
-    if (next)
+    if (next) {
+      await hydrateStorageAccount(next.id)
+      // A later identity superseded this one while its rows were loading. It
+      // owns the mirror now, so publishing this one would point the namespace
+      // at an account the mirror no longer holds -- which `setStorageAccount`
+      // would refuse anyway, loudly, in the middle of a sign-in.
+      if (generation !== authGeneration)
+        return false
       setStorageAccount(next.id)
+    }
     setUserSignal(next)
+    return true
   }
 
   /**
@@ -286,7 +307,9 @@ export const AuthProvider: ParentComponent = (props) => {
   }, { defer: true }))
 
   const clearAuthUser = () => {
-    setUser(null)
+    // No await: the null branch takes none, so the signal still moves in this
+    // turn. See `setUser`.
+    void setUser(null)
     setVerificationResendAvailableAt(undefined)
     // The elevation belongs to the session that just ended. Leaving it would
     // make /elevate redirect a signed-out visitor away immediately.
@@ -310,8 +333,16 @@ export const AuthProvider: ParentComponent = (props) => {
    * `readCurrentUser` is the only caller, and it decides whether the response
    * is still the newest before it gets here.
    */
-  const adoptCurrentUser = (resp: GetCurrentUserResponse) => {
-    setUser(resp.user ?? null)
+  const adoptCurrentUser = async (resp: GetCurrentUserResponse) => {
+    // EVERY write below belongs to `resp`, so none of them may run once a newer
+    // identity has taken over. `setUser` is asynchronous now -- it reads the
+    // account's stored rows before it publishes -- and a sign-in or a sign-out
+    // landing inside that await supersedes this response. Publishing its
+    // elevation window then mirrors a dead session's deadline onto the live one,
+    // which is what makes `/elevate` redirect a visitor it should have prompted.
+    // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
+    if (!await setUser(resp.user ?? null))
+      return
     setElevationExpiresAt(resp.elevationExpiresAt)
     // The only response the /verify-email page's own bootstrap reads. Seeding
     // the cooldown from it is what lets a hard reload of that page resume the
@@ -332,7 +363,7 @@ export const AuthProvider: ParentComponent = (props) => {
     const resp = await authClient.getCurrentUser({})
     if (generation !== authGeneration)
       return
-    adoptCurrentUser(resp)
+    await adoptCurrentUser(resp)
   }
 
   /**
@@ -345,8 +376,11 @@ export const AuthProvider: ParentComponent = (props) => {
    * belongs to nobody in this document, redirects without prompting, and the
    * hub's consent gate then answers with a page that has no way forward.
    */
-  const adoptSignedInUser = (u: User | null) => {
-    setUser(u)
+  const adoptSignedInUser = async (u: User | null) => {
+    // See `adoptCurrentUser`: nothing below may run for an identity a newer one
+    // superseded during the hydration await.
+    if (!await setUser(u))
+      return
     setElevationExpiresAt(undefined)
     // Enter the shell checklist before AppShell mounts so login does not flash
     // the finished signed-out `ready` phase, then jump to `workspaces`.
@@ -364,8 +398,8 @@ export const AuthProvider: ParentComponent = (props) => {
    * touched no elevation column, so clearing the mirror here reports a live
    * window as closed.
    */
-  const adoptSameIdentityUser = (u: User) => {
-    setUser(u)
+  const adoptSameIdentityUser = async (u: User) => {
+    await setUser(u)
   }
 
   /**
@@ -528,7 +562,7 @@ export const AuthProvider: ParentComponent = (props) => {
       // (which evicts one channel per request while the shared WebSocket
       // stays held for the old user) -- and it clears the elevation the
       // previous identity held.
-      adoptSignedInUser(resp.user ?? null)
+      await adoptSignedInUser(resp.user ?? null)
       loadTimeouts().catch(() => {})
       return loginResultFromResponse(resp.emailVerification)
     }
@@ -584,11 +618,11 @@ export const AuthProvider: ParentComponent = (props) => {
     }
   }
 
-  const setAuth = (u: User, elevation?: Timestamp) => {
+  const setAuth = async (u: User, elevation?: Timestamp) => {
     // The same identity transition runSignIn makes: /auth/idp/complete-signup
     // and the verify-email page both land a NEW user in a document that may
     // still hold the previous one's elevation.
-    adoptSignedInUser(u)
+    await adoptSignedInUser(u)
     // AFTER the adopt, which cleared it. The only caller that passes one is the
     // reply that granted the elevation inside the same transaction as the
     // session, so this restores a window this document owns rather than one it

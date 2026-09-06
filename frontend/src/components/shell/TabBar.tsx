@@ -15,7 +15,7 @@ import PanelRight from 'lucide-solid/icons/panel-right'
 import Plus from 'lucide-solid/icons/plus'
 import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
-import { createEffect, createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, ErrorBoundary, For, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor, DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
@@ -130,7 +130,14 @@ interface TabBarProps {
    */
   archived?: boolean
   closingTabKeys?: Set<string>
-  isEditingRef?: (fn: () => boolean) => void
+  /**
+   * Publish "a rename is open in this tile" to the shell, so an automatic focus
+   * elsewhere can stand down. It hands back the DEREGISTER, which this bar calls
+   * on cleanup -- that is what stops a closed tile from reporting a rename
+   * forever, and what keeps a remount from removing the accessor its
+   * replacement just installed.
+   */
+  isEditingRef?: (fn: () => boolean) => () => void
   onSelect: (tab: Tab) => void
   onClose: (tab: Tab) => void
   onRename: (tab: Tab, title: string) => void
@@ -178,7 +185,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
   // Expose editing state to parent so it can avoid stealing focus during rename.
   // This is intentionally called once during setup (not reactive).
   // eslint-disable-next-line solid/reactivity
-  props.isEditingRef?.(() => editingTabKey() !== null)
+  const deregisterEditing = props.isEditingRef?.(() => editingTabKey() !== null)
+  // Deregister on the way out. Without this a closed tile leaves an accessor
+  // over a disposed signal, which keeps answering whatever it last held -- and
+  // a tile closed mid-rename would suppress every automatic focus from then on.
+  onCleanup(() => deregisterEditing?.())
 
   let editCancelled = false
   let tabListRef: HTMLDivElement | undefined
@@ -209,6 +220,14 @@ export const TabBar: Component<TabBarProps> = (props) => {
   }
 
   /**
+   * The element the rename is being typed into, while one is open.
+   *
+   * Held so the document-level listeners below can ask whether a gesture landed
+   * inside it. Cleared with the edit, so a stale node can never answer.
+   */
+  let renameInputEl: HTMLInputElement | undefined
+
+  /**
    * Rows keyed on TAB KEYS, not on the `Tab` objects -- see {@link createKeyedRows}.
    *
    * This strip is where that matters most: a row holds the inline rename
@@ -216,6 +235,50 @@ export const TabBar: Component<TabBarProps> = (props) => {
    * typing into, and it holds `createSortable`'s drag handle.
    */
   const { keys: ids, byKey: tabByKey } = createKeyedRows(() => props.tabs, tabKey)
+
+  /**
+   * Commit on a USER GESTURE outside the input, never on a bare blur.
+   *
+   * A blur says the input lost the keyboard; it does not say the user finished.
+   * The shell focuses things on its own -- a terminal after a layout change, the
+   * composer after a new agent or a closed dialog, the editor after its draft
+   * loads -- and committing on any of those ends the rename mid-typing and sends
+   * the next keystrokes somewhere else. Every one of those paths had to learn
+   * about renames to avoid it, and the newest of them lives in a component that
+   * has no business knowing what a tab is.
+   *
+   * `relatedTarget` cannot tell the two apart: it names the element RECEIVING
+   * focus for a programmatic `focus()` exactly as for a click. So the question
+   * is asked of the GESTURE instead. A pointerdown, or a focus change a gesture
+   * caused, is the user leaving; a focus the app took leaves the rename open,
+   * and the user gets the caret back by clicking it.
+   *
+   * Capture phase, so a handler that stops propagation cannot swallow it.
+   */
+  createEffect(() => {
+    if (editingTabKey() === null)
+      return
+    const leaveIfOutside = (event: Event): void => {
+      const target = event.target
+      if (renameInputEl && target instanceof Node && renameInputEl.contains(target))
+        return
+      // Resolved at GESTURE time, not at setup: the strip can re-key its rows
+      // while the rename is open, and the tab to rename is whichever one the
+      // edit still names.
+      const tab = untrack(() => {
+        const key = editingTabKey()
+        return key === null ? undefined : tabByKey().get(key)
+      })
+      if (tab)
+        commitEdit(tab)
+    }
+    document.addEventListener('pointerdown', leaveIfOutside, true)
+    document.addEventListener('focusin', leaveIfOutside, true)
+    onCleanup(() => {
+      document.removeEventListener('pointerdown', leaveIfOutside, true)
+      document.removeEventListener('focusin', leaveIfOutside, true)
+    })
+  })
 
   const handleTabChange = (value: string) => {
     const tab = props.tabs.find(t => tabKey(t) === value)
@@ -265,9 +328,13 @@ export const TabBar: Component<TabBarProps> = (props) => {
           cancelEdit()
         }
       }}
-      onBlur={() => commitEdit(renameProps.tab())}
       onClick={e => e.stopPropagation()}
       ref={(el) => {
+        renameInputEl = el
+        onCleanup(() => {
+          if (renameInputEl === el)
+            renameInputEl = undefined
+        })
         requestAnimationFrame(() => {
           el.focus()
           el.select()

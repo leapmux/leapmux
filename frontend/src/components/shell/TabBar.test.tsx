@@ -7,7 +7,8 @@ import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { loadBrowserPrefs, localStorageClearForTests } from '~/lib/browserStorage'
+import { loadBrowserPrefs } from '~/lib/browserPreferences'
+import { localStorageClearForTests } from '~/lib/browserStorage'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { tabKey } from '~/stores/tab.helpers'
@@ -989,6 +990,63 @@ describe('tabBar mobile variant', () => {
     expect(onRename.mock.calls[0][1]).toBe('Terminal Liam II')
     // The edit ended: the row shows a label again, not an input.
     expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
+  })
+
+  // A blur says the input lost the keyboard; it does not say the user finished.
+  // The shell focuses a terminal, a composer or a freshly built editor on its
+  // own, and committing on any of those ends the rename mid-typing and sends the
+  // next keystrokes somewhere else. Each such path used to need its own guard.
+  it('keeps the rename open when something else takes the focus', () => {
+    const onRename = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    fireEvent.click(within(row).getByTestId('tab-menu-rename'))
+    const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
+    fireEvent.input(input, { target: { value: 'half-typed' } })
+
+    // Exactly what an automatic focus does: the input blurs, and nothing else.
+    fireEvent.blur(input)
+
+    expect(onRename).not.toHaveBeenCalled()
+    expect(within(row).getByTestId('tab-rename-input')).toBeInTheDocument()
+  })
+
+  // The other half: a gesture OUTSIDE the input is the user leaving, and it
+  // still commits. Without this the rename would only ever end on Enter.
+  it('commits the rename when the user points at something else', () => {
+    const onRename = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    fireEvent.click(within(row).getByTestId('tab-menu-rename'))
+    const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
+    fireEvent.input(input, { target: { value: 'Terminal Liam III' } })
+
+    fireEvent.pointerDown(document.body)
+
+    expect(onRename).toHaveBeenCalledOnce()
+    expect(onRename.mock.calls[0][1]).toBe('Terminal Liam III')
+    expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
+  })
+
+  // A pointerdown INSIDE the input is the user placing the caret, not leaving.
+  it('does not commit when the gesture lands inside the input', () => {
+    const onRename = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    fireEvent.click(within(row).getByTestId('tab-menu-rename'))
+    const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
+    fireEvent.input(input, { target: { value: 'still typing' } })
+
+    fireEvent.pointerDown(input)
+
+    expect(onRename).not.toHaveBeenCalled()
+    expect(within(row).getByTestId('tab-rename-input')).toBeInTheDocument()
   })
 })
 

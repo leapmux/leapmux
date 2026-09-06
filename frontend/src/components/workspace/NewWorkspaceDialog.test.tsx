@@ -8,7 +8,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
-import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccount } from '~/lib/browserStorage'
+import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccountForTests } from '~/lib/browserStorage'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
@@ -404,7 +404,7 @@ describe('newWorkspaceDialog', () => {
 
     beforeEach(() => {
       localStorageClearForTests()
-      setStorageAccount('u-1')
+      setStorageAccountForTests('u-1')
     })
 
     it('opens ready to submit, with no directory to pick', async () => {

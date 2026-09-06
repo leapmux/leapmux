@@ -123,7 +123,8 @@ interface TileRendererOpts {
     handleTabClose: (tab: Tab, opts?: { skipBusyConfirm?: boolean }) => Promise<boolean>
     /** Which of a set of tabs are running work; see tabBusyProbe. */
     probeBusy: (tabs: readonly Tab[]) => Promise<BusyTab[]>
-    setIsTabEditing: (fn: () => boolean) => void
+    setIsTabEditing: (tileId: string, fn: () => boolean) => () => void
+    isTabEditing: () => boolean
     closingTabKeys: () => Set<string>
   }
   /** New-tab loading flags + dialog handles. */
@@ -237,7 +238,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     getCurrentTabContext,
     getMruAgentContext,
   } = opts.workspace
-  const { handleTabSelect, handleTabClose, probeBusy, setIsTabEditing, closingTabKeys } = opts.tab
+  const { handleTabSelect, handleTabClose, probeBusy, setIsTabEditing, isTabEditing, closingTabKeys } = opts.tab
   const {
     newAgentLoadingProvider,
     newTerminalLoading,
@@ -651,7 +652,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         activeTabKey={selection.activeKeyForTile(tileId)}
         archived={isActiveWorkspaceArchived()}
         closingTabKeys={closingTabKeys()}
-        isEditingRef={(fn) => { setIsTabEditing(fn) }}
+        isEditingRef={fn => setIsTabEditing(tileId, fn)}
         onSelect={(tab) => {
           focusTile(tileId)
           handleTabSelect(tab)
@@ -728,6 +729,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           activeTerminalId={props.activeTerminalId}
           visible={props.visible}
           tileFocused={props.tileFocused}
+          tabEditing={isTabEditing}
           onInput={termOps.handleTerminalInput}
           onResize={termOps.handleTerminalResize}
           onContentReady={id => metadata.patch(id, { contentReady: true })}
@@ -1228,6 +1230,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     const focusedAgentTab = () => view.getAgentTab(agentId())
     return (
       <AgentEditorPanel
+        suppressAutoFocus={isTabEditing}
         agentId={agentId()}
         agent={agentTabToInfo(focusedAgentTab())}
         inputQueue={agentInputQueueStore.get(agentId())}

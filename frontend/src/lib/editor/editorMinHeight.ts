@@ -1,10 +1,11 @@
-import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_EDITOR_MIN_HEIGHT } from '~/lib/browserStorage'
+import type { AsyncLocalKey } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_EDITOR_MIN_HEIGHT } from '~/lib/browserStorage'
 
 /** Minimum height (px) of the markdown editor wrapper. */
 export const EDITOR_MIN_HEIGHT = 38
 
-/** Build the localStorage key for a per-agent editor min-height override. */
-export function editorMinHeightKey(agentId: string): string {
+/** Build the storage key for a per-agent editor min-height override. */
+export function editorMinHeightKey(agentId: string): AsyncLocalKey {
   return `${PREFIX_EDITOR_MIN_HEIGHT}${agentId}`
 }
 
@@ -22,8 +23,8 @@ export function clampEditorHeight(rawHeight: number, maxHeight: number): number 
  * override exists or if the stored value is below the minimum (corrupt /
  * pre-clamp data).
  */
-export function getStoredEditorMinHeight(agentId: string): number | undefined {
-  const stored = localStorageGet<number>(editorMinHeightKey(agentId))
+export async function getStoredEditorMinHeight(agentId: string): Promise<number | undefined> {
+  const stored = await localStorageLoad<number>(editorMinHeightKey(agentId))
   if (stored !== undefined && stored >= EDITOR_MIN_HEIGHT)
     return stored
   return undefined
@@ -38,12 +39,12 @@ export function getStoredEditorMinHeight(agentId: string): number | undefined {
 export function persistEditorMinHeight(agentId: string, value: number | undefined): void {
   const key = editorMinHeightKey(agentId)
   if (value !== undefined && value > EDITOR_MIN_HEIGHT)
-    localStorageSet(key, value)
+    localStorageStore(key, value)
   else
-    localStorageRemove(key)
+    localStorageDrop(key)
 }
 
 /** Unconditionally clear a per-agent override (used by the double-click reset). */
 export function clearEditorMinHeight(agentId: string): void {
-  localStorageRemove(editorMinHeightKey(agentId))
+  localStorageDrop(editorMinHeightKey(agentId))
 }

@@ -6,7 +6,7 @@ import { WorkspaceProvider } from '~/context/WorkspaceContext'
  * Authenticated app shell. `/` is the group's only route: there is no
  * per-workspace path, so switching workspaces never remounts anything. Which
  * workspace is active lives in `WorkspaceProvider`'s signal, persisted per user
- * to localStorage by `createWorkspaceSwitcher`.
+ * to browser storage by `createWorkspaceSwitcher`.
  *
  * This layout deliberately renders NO route outlet: AppShell owns the entire
  * authenticated UI, and the single leaf under `(app)/` returns null, existing

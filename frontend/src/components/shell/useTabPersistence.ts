@@ -21,8 +21,9 @@ import { activeTabKey, focusedTileKey, tileActiveTabsKey } from './tabPersistenc
  *   - `leapmux:u:<userId>:focusedTile:${wsId}`    → `layoutStore.focusedTileId()`
  *
  * WHICH workspace is active is deliberately not here: it is written by
- * `createWorkspaceSwitcher` at the moment of the switch, to localStorage,
- * because unlike these three it has to survive a tab close.
+ * `createWorkspaceSwitcher` at the moment of the switch, to the DURABLE half
+ * of `browserStorage` (`LOCAL_KEY_SPECS`), because unlike these three it has to
+ * survive a tab close.
  *
  * `hasWorkspace` gates every write until the CRDT bootstrap has delivered THIS
  * workspace. The gate matters because before it lands the projected tree is a

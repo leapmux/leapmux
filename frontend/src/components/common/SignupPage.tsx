@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { SignupResult } from './SignupForm'
 import type { OAuthProviderInfo } from '~/generated/proto/leapmux/v1/auth_pb'
 
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
@@ -25,6 +26,31 @@ export const SignupPage: Component = () => {
     setOAuthProviders(await loadOAuthProviders())
     setReady(true)
   })
+
+  /**
+   * Adopt the new session, then route.
+   *
+   * A named handler rather than an inline arrow, because it is asynchronous
+   * now: `setAuth` reads the account's stored preferences before it publishes
+   * the identity, and an async arrow written directly into JSX reads to
+   * solid/reactivity as an async tracked scope.
+   */
+  const handleSignedUp = async (resp: SignupResult) => {
+    // The signup RPC creates a session even when verification
+    // is required, so the user can call the authenticated
+    // VerifyEmail RPC directly. Send them to the verify page to
+    // click the email link or paste the code.
+    await auth.setAuth(resp.user)
+    if (resp.verificationRequired) {
+      auth.setVerificationResendAvailableAt(resp.nextResendAvailableAt)
+      setVerificationSent(true)
+      navigate('/verify-email', { replace: true })
+      return
+    }
+    // Same redirect contract as login (see safeRedirect):
+    // a safe in-app path wins, anything else goes home.
+    postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
+  }
 
   return (
     <Show when={ready()} fallback={null}>
@@ -62,22 +88,7 @@ export const SignupPage: Component = () => {
                     />
                   </Show>
                 )}
-                onSuccess={(resp) => {
-                  // The signup RPC creates a session even when verification
-                  // is required, so the user can call the authenticated
-                  // VerifyEmail RPC directly. Send them to the verify page to
-                  // click the email link or paste the code.
-                  auth.setAuth(resp.user)
-                  if (resp.verificationRequired) {
-                    auth.setVerificationResendAvailableAt(resp.nextResendAvailableAt)
-                    setVerificationSent(true)
-                    navigate('/verify-email', { replace: true })
-                    return
-                  }
-                  // Same redirect contract as login (see safeRedirect):
-                  // a safe in-app path wins, anything else goes home.
-                  postAuthNavigate(navigate, stringParam(searchParams.redirect), '/')
-                }}
+                onSuccess={handleSignedUp}
               />
               <div class={styles.authFooter}>
                 Already have an account?

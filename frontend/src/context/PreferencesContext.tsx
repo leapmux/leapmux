@@ -1,6 +1,7 @@
 import type { Accessor, ParentComponent } from 'solid-js'
 import type { SettingDescriptor, SettingValue } from '~/generated/proto/leapmux/v1/settings_pb'
-import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
+import type { BrowserPreferences, BrowserPrefValue, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserPreferences'
+import type { SyncLocalKey } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { batch, createEffect, createSignal, onCleanup, onMount, useContext } from 'solid-js'
@@ -14,20 +15,8 @@ import {
   TRAY_ON_MINIMIZE_TRAY,
 } from '~/generated/contracts/desktop'
 import { NAME_BYTE_LIMIT } from '~/generated/contracts/validate'
-import {
-  batchBrowserPrefWrites,
-  hasStorageAccount,
-  KEY_BROWSER_PREFS,
-  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
-  KEY_PREFERRED_EXTERNAL_APP,
-  loadBrowserPrefs,
-  localStorageGet,
-  localStorageRemove,
-  localStorageSet,
-  onStorageAccountChange,
-  storedKeyFor,
-  updateBrowserPref,
-} from '~/lib/browserStorage'
+import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
+import { hasStorageAccount, KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, KEY_PREFERRED_EXTERNAL_APP, localStorageGet, localStorageRemove, localStorageSet, onStorageAccountChange, onStorageChanged, storedKeyFor } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { buildFontFamily, DEFAULT_MONO_FONT_FAMILY } from '~/lib/fontStack'
@@ -86,7 +75,7 @@ export interface FontTier {
 }
 
 export interface PreferencesState {
-  /** Resolved theme preference (localStorage override → account default → hardcoded default). */
+  /** Resolved theme preference (browser override → account default → hardcoded default). */
   theme: () => ThemeValue
   /** Resolved terminal theme preference. */
   terminalTheme: () => TerminalThemeValue
@@ -291,7 +280,7 @@ function parseFontTier(raw: unknown): FontTier | undefined {
   // accessors and breaks the whole reactive computation that renders the
   // UI and terminal font family. And one parse guards BOTH tiers, so a
   // name the hub's `validateFontFamily` refuses must not reach the screen
-  // from a hand-edited localStorage document either.
+  // from a hand-edited stored document either.
   const fonts: string[] = []
   for (const name of stored) {
     if (typeof name !== 'string' || !isStorableFontName(name))
@@ -319,7 +308,7 @@ function parseFontTier(raw: unknown): FontTier | undefined {
  */
 function isStorableFontName(name: string): boolean {
   // The length guard runs FIRST, and it is what bounds the work on this path.
-  // `parseFontTier` calls this for every entry of the localStorage document on
+  // `parseFontTier` calls this for every entry of the stored document on
   // every mount, and a hand-edited document can carry a string of any size.
   // `sanitizeName` below runs three regex passes over the whole value, and the
   // Go copy stops appending at 129 bytes where this one has no such stop.
@@ -493,11 +482,11 @@ export const PreferencesProvider: ParentComponent = (props) => {
   /**
    * Follow the device-tier writes another tab made under `stored`.
    *
-   * `stored` is the key AS STORED, so the match carries the account: another
+   * `stored` holds keys AS STORED, so the match carries the account: another
    * account's document changing next door says nothing about this one. A null
-   * key is a whole-store clear, which every entry has to answer for.
+   * set is a whole-store change, which every entry has to answer for.
    */
-  const syncFromOtherTab = (stored: string | null) => {
+  const syncFromOtherTabs = (stored: ReadonlySet<string> | null) => {
     // No account, no document to read: every account-scoped read throws, and
     // nothing another tab wrote can belong to a page that has no identity.
     if (!hasStorageAccount())
@@ -505,13 +494,12 @@ export const PreferencesProvider: ParentComponent = (props) => {
     const prefs = loadBrowserPrefs()
     batch(() => {
       for (const entry of deviceTier) {
-        if (stored !== null && storedKeyFor(entry.storageName) !== stored)
+        if (stored !== null && !stored.has(storedKeyFor(entry.storageName) ?? ''))
           continue
         entry.seed(prefs)
         // The applier, WITHOUT the write that a `set` performs. Echoing the
-        // value back to storage would raise a `storage` event in the tab that
-        // wrote it, and the two tabs would write to each other for as long as
-        // both are open.
+        // value back would publish it again from the tab that received it, and
+        // the two tabs would write to each other for as long as both are open.
         entry.apply?.()
       }
     })
@@ -541,7 +529,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
   }
 
   /**
-   * One browser-only boolean that lives in its OWN localStorage key.
+   * One browser-only boolean that lives in its OWN storage key.
    *
    * Its sibling above holds the same two rules for a field of the
    * consolidated document, and the rules are what matter. Store only the
@@ -554,7 +542,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
    * `"true"` read as truthy everywhere except the toggle bound to it,
    * which compares against `true` and rendered OFF.
    */
-  function createOwnKeyToggle(storageKey: string, defaultOn: boolean) {
+  function createOwnKeyToggle(storageKey: SyncLocalKey, defaultOn: boolean) {
     const [value, setSignal] = createSignal(defaultOn)
     deviceTier.push({
       storageName: storageKey,
@@ -857,7 +845,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     deviceTier.push({
       storageName: KEY_BROWSER_PREFS,
       // The stored browser value passes the SAME parse as a server document,
-      // so a corrupt localStorage entry cannot put a value on screen that the
+      // so a corrupt stored entry cannot put a value on screen that the
       // hub would refuse.
       seed: prefs => setSignal(() => (prefs === null ? null : opts.parse(prefs[opts.browserPrefKey]) ?? null)),
       // Runs from the `storage` handler and the sign-out reset, never a tracked
@@ -962,7 +950,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
     }),
     // The Desktop tier. Each `parse` is at least as strict as the hub's
     // validator (usersettings/keys.go), and both sides read the SAME generated
-    // tokens, so the two cannot drift. A hand-edited localStorage document
+    // tokens, so the two cannot drift. A hand-edited stored document
     // therefore cannot put a value on screen -- or into a set_desktop_behavior
     // payload -- that the hub or the Rust shell would refuse.
     //
@@ -1128,24 +1116,28 @@ export const PreferencesProvider: ParentComponent = (props) => {
 
   // Follow a device-tier write made in another tab.
   //
-  // The event says only WHICH key changed; the value is read back through
-  // `loadBrowserPrefs`, so the reader unwraps the `{ v, e }` TTL envelope
-  // exactly as every other read does. `event.newValue` carries the raw envelope,
-  // so a field read straight off it is always `undefined`.
+  // `onStorageChanged` rather than a `storage` listener: the document lives in
+  // IndexedDB now, which raises no event of its own, so `~/lib/browserStorage`
+  // carries committed changes over a BroadcastChannel and reports them here as
+  // the set of keys that moved.
+  //
+  // The notification says only WHICH keys changed; the value is read back
+  // through `loadBrowserPrefs`, so the reader takes it from the same mirror
+  // every other read here does. The transport already updated that mirror with
+  // the committed value before it called, so the read is not a second trip.
   //
   // It matches the key AS STORED, which carries the account: another account's
   // document changing in another tab says nothing about this one. Before an
-  // identity resolves `storedKeyFor` answers null, which matches no event -- the
+  // identity resolves `storedKeyFor` answers null, which matches no key -- the
   // right answer, and the reason it does not throw here.
   //
-  // A null `event.key` is a whole-store `clear()` next door, and it identifies
-  // no key, so every entry answers for it. Dropping it left the signals showing
-  // values whose document was gone, and the next write in this tab merged onto
-  // an empty one and silently discarded them.
+  // A null set is a whole-store change next door -- a clear, or a database the
+  // scaffold had to rebuild -- and it identifies no key, so every entry answers
+  // for it. Dropping it left the signals showing values whose document was
+  // gone, and the next write in this tab merged onto an empty one and silently
+  // discarded them.
   onMount(() => {
-    const onStorage = (event: StorageEvent) => syncFromOtherTab(event.key)
-    window.addEventListener('storage', onStorage)
-    onCleanup(() => window.removeEventListener('storage', onStorage))
+    onCleanup(onStorageChanged(syncFromOtherTabs))
   })
 
   onMount(() => {

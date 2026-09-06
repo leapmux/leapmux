@@ -1,5 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet, storedKeyFor } from './browserStorage'
+import { IDBFactory } from 'fake-indexeddb'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { flushStorageWrites, KEY_CHANNEL_RELAY_SEQ, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet, resetBrowserStorageForTests, setStorageAccountForTests } from './browserStorage'
+import { readKvRow } from './browserStorageDb'
 import { createPersistedSeq } from './persistedSeq'
 
 // The seeding/clock-regression behavior is pinned through both consumers
@@ -29,10 +32,6 @@ function installCryptoMock(): void {
 }
 
 describe('createPersistedSeq', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
   afterEach(() => {
     if (cryptoSpy) {
       cryptoSpy.mockRestore()
@@ -101,7 +100,7 @@ describe('createPersistedSeq', () => {
   })
 
   // The uniqueness property the per-process random exists for: two processes
-  // sharing localStorage (two Tauri windows, or two desktop apps on one
+  // sharing the browser store (two Tauri windows, or two desktop apps on one
   // machine) read the SAME persisted mark. Without the random low bits their
   // ids would collide and the sidecar's strict-greater owner fence would admit
   // both, letting one process's close tear down the other's relay. The low
@@ -109,7 +108,7 @@ describe('createPersistedSeq', () => {
   // mark.
   it('mints distinct ids for two processes sharing the same persisted mark', () => {
     // Pre-seed the mark so both allocators read the same starting value,
-    // simulating two processes that share localStorage and read the same mark
+    // simulating two processes that share the store and read the same mark
     // before either has written.
     const sharedMark = 1_000_000
     const writeShared = () => localStorageSet(KEY_CHANNEL_RELAY_SEQ, sharedMark)
@@ -119,7 +118,7 @@ describe('createPersistedSeq', () => {
     // Two allocator instances = two processes. Process A reads the shared mark,
     // then we RESTORE storage to the shared mark before process B reads --
     // simulating two processes whose reads both saw the same mark (in one JS
-    // runtime localStorage would otherwise serialize A's write ahead of B's
+    // runtime the mirror would otherwise serialize A's write ahead of B's
     // read).
     const nextA = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const a = nextA()
@@ -196,26 +195,119 @@ describe('createPersistedSeq', () => {
     expect(mark).toBe(1)
   })
 
-  // A stored NaN/Infinity (or any value JSON coerces to null) reaches the
-  // allocator as `null`, not as the original value -- JSON has no NaN/Infinity
-  // literal, so JSON.stringify({v: NaN}) writes `{"v":null}`. The allocator must
-  // reject `null` (via `typeof === 'number'`) exactly as it rejects a non-number,
-  // re-seeding from 0. This pins the arrival-as-null reality the JSON path
-  // produces, distinct from the real-number corruptions above.
-  it('rejects a NaN that JSON coerced to null and re-seeds from 0', () => {
+  // A stored NaN reaches the allocator AS NaN. Values are structured-cloned
+  // rather than serialized as JSON, and structured clone carries NaN and
+  // Infinity where JSON had no literal for either and wrote `null` instead. So
+  // the guard that catches this is `Number.isSafeInteger`, not the
+  // `typeof === 'number'` test that used to catch the null -- and a change that
+  // dropped it would now let NaN poison the sequence for the install's life.
+  it('rejects a stored NaN and re-seeds from 0', () => {
     installCryptoMock()
     localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.NaN)
-    // Sanity-check the arrival path the test depends on: JSON serialized NaN
-    // to null, so the cell the allocator reads holds null, not NaN. (KEY_*
-    // is a logical name, so the stored key has to be composed.)
-    const raw = localStorage.getItem(storedKeyFor(KEY_CHANNEL_RELAY_SEQ)!)
-    expect(raw).toContain('"v":null')
+    // Sanity-check the arrival path the test depends on: the value survives as
+    // NaN, so it is a number and only the range guard rejects it.
+    const stored = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
+    expect(typeof stored).toBe('number')
+    expect(Number.isNaN(stored)).toBe(true)
     const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
     const first = next()
     expect(Number.isSafeInteger(first)).toBe(true)
     expect(first).toBeGreaterThan(0)
     const persisted = localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)
     expect(persisted).toBe(1)
+  })
+
+  // Infinity is the other value JSON flattened to null and structured clone
+  // keeps. Same guard, same outcome.
+  // THE REPAIR REACHES DISK, which is the half a mirror-only assertion misses.
+  // The key merges as a high-water mark, so a poisoned value -- Infinity, a
+  // fraction, a mark past the composition ceiling -- compares greater than every
+  // real one and no ordinary write can replace it. Without the delete the row
+  // keeps the bad value, every reload lands here again, and the allocator mints
+  // 1 for ever while the sidecar's fence sits somewhere else entirely.
+  it('clears the poisoned row so the re-seeded mark reaches disk', async () => {
+    installCryptoMock()
+    // A real database, because this asserts what is ON DISK. The mirror-only
+    // assertions above pass either way: the mirror takes the re-seeded 1 while
+    // the row keeps the poison, and that split is the defect.
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    resetBrowserStorageForTests()
+    setStorageAccountForTests(TEST_USER_ID)
+    try {
+      localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.POSITIVE_INFINITY)
+      await flushStorageWrites()
+
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      expect(next()).toBeGreaterThan(0)
+      await flushStorageWrites()
+
+      expect(await readKvRow('leapmux:channel-relay-seq')).toMatchObject({ v: 1 })
+    }
+    finally {
+      resetBrowserStorageForTests()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('rejects a stored Infinity and re-seeds from 0', () => {
+    installCryptoMock()
+    localStorageSet(KEY_CHANNEL_RELAY_SEQ, Number.POSITIVE_INFINITY)
+    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(Number.POSITIVE_INFINITY)
+    const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+    expect(next()).toBeGreaterThan(0)
+    expect(localStorageGet<number>(KEY_CHANNEL_RELAY_SEQ)).toBe(1)
+  })
+
+  // THE ONLY DIAGNOSTIC for the hazard this module exists to prevent, and it
+  // replaced a real check. The old code read the mark back and compared, which
+  // worked because `setItem` either threw or committed. Reading back now would
+  // only re-read the in-memory mirror the write just updated -- true for a mark
+  // that never reached disk. So durability is the check, and it lands a
+  // microtask later.
+  //
+  // What it warns about is the NEXT reload: this session's ids are correct
+  // regardless, because the in-memory mark is authoritative and only advances.
+  // A reload that reads a stale lower mark can mint an id below the owner the
+  // still-live sidecar holds, and the relay then refuses every open until an
+  // app restart.
+  describe('when the mark cannot be persisted', () => {
+    it('warns once the write has settled', async () => {
+      installCryptoMock()
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      // No `indexedDB` in this file, so every write is refused at the flush.
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      next()
+
+      // NOTHING yet: the durability answer is a microtask away, and a warning
+      // raised before the write was even attempted would be a guess.
+      expect(warn).not.toHaveBeenCalled()
+
+      await flushStorageWrites()
+      expect(warn).toHaveBeenCalledWith(
+        '[persistedSeq]',
+        expect.stringContaining('did not persist'),
+        expect.objectContaining({ key: KEY_CHANNEL_RELAY_SEQ }),
+      )
+      warn.mockRestore()
+    })
+
+    it('stays quiet when the write reaches disk', async () => {
+      installCryptoMock()
+      vi.stubGlobal('indexedDB', new IDBFactory())
+      resetBrowserStorageForTests()
+      setStorageAccountForTests(TEST_USER_ID)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const next = createPersistedSeq(KEY_CHANNEL_RELAY_SEQ)
+      next()
+      await flushStorageWrites()
+
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+      resetBrowserStorageForTests()
+      vi.unstubAllGlobals()
+      setStorageAccountForTests(TEST_USER_ID)
+    })
   })
 
   // The mark is a plain monotonic counter, NOT derived from the wall clock. This

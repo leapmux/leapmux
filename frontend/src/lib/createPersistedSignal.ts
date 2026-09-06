@@ -1,9 +1,10 @@
 import type { Accessor, Setter } from 'solid-js'
+import type { SyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, createSignal, on } from 'solid-js'
 import { localStorageGet, localStorageSet } from '~/lib/browserStorage'
 
 /**
- * A signal backed by localStorage under a key that may itself change.
+ * A signal backed by browser storage under a key that may itself change.
  *
  * Two rules make a per-scope preference behave, and both are easy to write
  * once and forget the next time:
@@ -27,7 +28,7 @@ import { localStorageGet, localStorageSet } from '~/lib/browserStorage'
  * which is a framework-free key registry and imports nothing from `solid-js`.
  */
 export function createPersistedSignal<T>(
-  key: Accessor<string>,
+  key: Accessor<SyncLocalKey>,
   parse: (stored: unknown) => T,
 ): [Accessor<T>, Setter<T>] {
   const [value, setValue] = createSignal<T>(parse(localStorageGet(key())))

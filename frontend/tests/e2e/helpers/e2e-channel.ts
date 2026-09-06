@@ -9,7 +9,7 @@
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from '../../../src/lib/channel'
 import { Buffer } from 'node:buffer'
 import { EncryptionMode } from '../../../src/generated/proto/leapmux/v1/channel_pb'
-import { setStorageAccount } from '../../../src/lib/browserStorage'
+import { hydrateStorageAccount, setStorageAccount } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { authedHeaders, getUserId } from './api'
 
@@ -110,6 +110,13 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   // AuthProvider ever runs. Every `leapmux:` key is scoped to an account and an
   // access with none set throws, so the harness makes the same statement the
   // app's auth context makes: these calls are this user's.
+  //
+  // HYDRATE FIRST, exactly as `AuthContext` does. The synchronous tier reads an
+  // in-memory mirror of an IndexedDB-backed store, and `setStorageAccount`
+  // refuses an account it was not run for. Node has no IndexedDB, so this
+  // resolves immediately with an empty mirror -- which is the right answer here:
+  // the harness starts from nothing and pins whatever the worker serves.
+  await hydrateStorageAccount(userId)
   setStorageAccount(userId)
   // Use a longer RPC timeout for e2e tests since OpenAgent spawns a subprocess
   // that can take up to 30s to start, and the E2EE round-trip adds overhead.

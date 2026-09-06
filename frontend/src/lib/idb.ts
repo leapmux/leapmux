@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
-// Shared IndexedDB connection scaffold
+// Shared IndexedDB connection scaffold, over Dexie
 //
 // Every IDB-backed store in the app needs the same four things: an
 // availability probe, a lazily-opened singleton connection whose promise is
-// dropped on failure so a later call retries, a request->promise adapter, and
-// a test hook to forget the cached connection after the IDBFactory is swapped.
-// This module owns that skeleton so each store only declares its own schema.
+// dropped on failure so a later call retries, a shape check, and a test hook to
+// forget the cached connection after the IDBFactory is swapped. This module
+// owns that skeleton so each store only declares its own schema.
 //
 // SCHEMA CHANGES RECREATE THE DATABASE. THERE ARE NO MIGRATIONS.
 //
@@ -15,96 +15,45 @@
 // migrations with that would mean writing, testing and forever maintaining an
 // upgrade path per revision to protect data that is already safe elsewhere.
 //
-// So a store declares its shape ONCE, as an `IdbSchema`, and this module
-// derives both halves from it:
+// DEXIE DOES NOT IMPLEMENT THAT POLICY, SO THE CHECK BELOW STILL DOES.
 //
-//   - the upgrade, which builds exactly those stores and indexes, and
+// Dexie's own `verifyInstalledSchema` tests only whether parts are MISSING
+// (`diff.add`, `change.add`, `change.change`). Three drifts therefore pass it
+// silently and leave Dexie running against a wrong-shaped database:
+//
+//   - a removed object store        (`diff.del`, never consulted)
+//   - a removed index               (`change.del`, never consulted)
+//   - a changed primary key         (`change.recreate`, whose add/change
+//                                    arrays are empty)
+//
+// And the one drift it does see -- a missing store or index -- it answers by
+// MIGRATING: it reopens at native version + 1 and adds the missing parts. That
+// is exactly the upgrade path this module exists to not have.
+//
+// So a store declares its shape ONCE, as a Dexie `.stores()` spec, and this
+// module derives both halves from it:
+//
+//   - the build, which Dexie performs, and
 //   - the check, which asserts an opened database still matches and otherwise
 //     deletes and rebuilds it.
 //
-// Deriving both from one declaration is the point. When they were two
-// hand-written functions, adding an index meant remembering to update the
-// checker too, and forgetting made the repair silently stop repairing -- the
-// database would open, be wrong, and fail at the first cursor instead.
+// The check compares two fingerprints. The EXPECTED one is read from Dexie's
+// own parse of the declaration, and the ACTUAL one from the raw IDBDatabase.
 //
-// This also catches what a version number CANNOT. A database left half-built
-// by an aborted upgrade (a tab killed mid-versionchange, a quota failure part
-// way) carries the RIGHT version and the wrong stores, so no future bump would
-// ever revisit it; a shape check sees it immediately. `version` is therefore a
-// constant that never has to move, and the VersionError arm below still handles
-// the reverse case -- a database left NEWER by a rollback or a stale bundle.
+// A shape check catches what a version number CANNOT. A database left
+// half-built by an aborted upgrade (a tab killed mid-versionchange, a quota
+// failure part way) carries the RIGHT version and the wrong stores, so no
+// future bump would ever revisit it. The declared version is therefore a
+// constant that never has to move -- structurally so now, since
+// `createIdbConnection` takes no version at all.
 // ---------------------------------------------------------------------------
+
+import type { DBCoreCursor } from 'dexie'
+import Dexie from 'dexie'
 
 /** Whether persistence can work here at all -- callers short-circuit synchronously on false. */
 export function isIndexedDbAvailable(): boolean {
   return typeof indexedDB !== 'undefined'
-}
-
-/** Adapt a one-shot IDBRequest to a promise. */
-export function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
-  })
-}
-
-/**
- * Walk a cursor request, calling `visit` for each position until it returns
- * false or the cursor is exhausted.
- *
- * The stopping form exists because an unbounded walk is a hazard in its own
- * right: a store whose rows are appended faster than they are compacted grows
- * without bound, and a walk that only decides what to keep AFTER materializing
- * everything has already paid the memory it was meant to cap. Callers that
- * genuinely want the whole range use `forEachCursor` below.
- *
- * `C` infers per call site: `openCursor()` is `IDBRequest<IDBCursorWithValue |
- * null>` (so `visit` sees `.value`), `openKeyCursor()` is
- * `IDBRequest<IDBCursor | null>` (primary keys only).
- *
- * Resolves when the walk ends (exhausted or stopped). Rejects on a cursor
- * error, which inside a readwrite transaction leaves that transaction to abort
- * as usual.
- */
-export function forEachCursorWhile<C extends IDBCursor>(
-  request: IDBRequest<C | null>,
-  visit: (cursor: C) => boolean,
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    request.onsuccess = () => {
-      const cursor = request.result
-      if (!cursor || !visit(cursor)) {
-        resolve()
-        return
-      }
-      cursor.continue()
-    }
-    request.onerror = () => reject(request.error ?? new Error('indexedDB cursor failed'))
-  })
-}
-
-/**
- * Walk a cursor request to exhaustion, calling `visit` for each position.
- *
- * The `onsuccess` / `cursor.continue()` / `onerror`-reject dance is identical
- * for every cursor walk and differs only in the loop body, so it lives here
- * next to `requestToPromise` rather than being hand-rolled per store. Callers
- * keep their own accumulator (push into a local array) or side effect (delete
- * by primary key); the key range stays in the request the caller builds, so
- * this needs no options.
- *
- * `visit`'s return value is ignored — deliberately typed `void` so a concise
- * arrow body (`cursor => rows.push(cursor.value)`, which returns a number) is
- * accepted. Use `forEachCursorWhile` when the walk needs to stop early.
- */
-export function forEachCursor<C extends IDBCursor>(
-  request: IDBRequest<C | null>,
-  visit: (cursor: C) => void,
-): Promise<void> {
-  return forEachCursorWhile(request, (cursor) => {
-    visit(cursor)
-    return true
-  })
 }
 
 /**
@@ -115,8 +64,8 @@ export function forEachCursor<C extends IDBCursor>(
  * read their candidates off a `writtenAt`/`at` index key cursor, which yields
  * exactly that ascending order:
  *
- *   - TTL — anything last touched at or before `now - ttlMs` goes.
- *   - CAP — of the survivors, the oldest go until at most `maxEntries` remain,
+ *   - TTL -- anything last touched at or before `now - ttlMs` goes.
+ *   - CAP -- of the survivors, the oldest go until at most `maxEntries` remain,
  *     counting `reserved` entries that are exempt from collection but still
  *     occupy the budget (the sweeping tab's own row, its live siblings').
  *
@@ -146,290 +95,423 @@ export function selectSweepVictims<T extends { at: number }>(
 }
 
 /**
- * Adapt a transaction's terminal events to a promise: resolves on `complete`,
- * rejects on `error` or `abort`.
+ * Stop a Dexie cursor walk from inside `each` / `eachKey`.
  *
- * Every readwrite transaction needs the identical three-handler dance and they
- * differ only in the label that names the failure, so it lives here beside
- * `requestToPromise` and `forEachCursor` rather than being hand-rolled per
- * store.
+ * Dexie's public `Collection.until()` cannot serve either walk that needs this.
+ * It filters on `cursor.value`, which a keys-only walk never fetches, and it
+ * decides from the row alone, while the op-log walk decides from an
+ * accumulator (the running frame and byte totals). The DBCoreCursor handed to
+ * the callback exposes `stop()`; the public `each` typing narrows that argument
+ * to `{key, primaryKey}`, hence the cast.
  *
- * Register this in the SAME task that created the transaction — an `await`
- * before it lets the transaction auto-deactivate at the microtask checkpoint
- * and the `complete` event can be missed entirely.
+ * `stop()` rebinds `cursor.continue` to a thrower, and Dexie's iterator calls
+ * it right after the callback returns -- but that throw lands in Dexie's own
+ * guarded callback and the walk terminates cleanly.
  */
-export function txToPromise(tx: IDBTransaction, label: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve()
-    tx.onerror = () => reject(tx.error ?? new Error(`indexedDB ${label} failed`))
-    tx.onabort = () => reject(tx.error ?? new Error(`indexedDB ${label} aborted`))
-  })
+export function stopWalk(cursor: { primaryKey: unknown }): void {
+  (cursor as unknown as DBCoreCursor).stop()
 }
 
-/** One object store's shape. */
-export interface IdbStoreSchema {
-  /** Primary key path. Omit for an out-of-line key. */
-  keyPath?: string | string[]
-  /** Whether the store assigns the primary key. */
-  autoIncrement?: boolean
-  /** Index name -> its key path. */
-  indexes?: Record<string, string | string[]>
-}
-
-/** A database's whole shape: object-store name -> that store's schema. */
-export type IdbSchema = Record<string, IdbStoreSchema>
-
-/**
- * Build every store and index in `schema`, dropping whatever is already there.
- *
- * Runs inside the versionchange transaction. Recreating rather than reconciling
- * is the module's policy (see the header): these databases are caches, so a
- * rebuild costs a cold start and nothing else, and it makes the resulting shape
- * a function of the declaration alone rather than of the path taken to reach it.
- *
- * Stores NOT in the schema are dropped too -- they are leftovers from an earlier
- * shape, and keeping them would let the database accumulate every store the app
- * ever had.
- */
-function applySchema(db: IDBDatabase, schema: IdbSchema): void {
-  for (const existing of Array.from(db.objectStoreNames))
-    db.deleteObjectStore(existing)
-  for (const [name, spec] of Object.entries(schema)) {
-    const store = db.createObjectStore(name, {
-      keyPath: spec.keyPath,
-      autoIncrement: spec.autoIncrement ?? false,
-    })
-    for (const [indexName, indexKeyPath] of Object.entries(spec.indexes ?? {}))
-      store.createIndex(indexName, indexKeyPath)
-  }
-}
-
-/** Key paths compare structurally: IndexedDB returns a string or a string[]. */
-function samePath(a: string | string[] | null, b: string | string[] | undefined): boolean {
-  if (Array.isArray(a) || Array.isArray(b))
-    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i])
-  return (a ?? undefined) === b
-}
-
-/**
- * Whether `db` matches `schema` exactly -- same stores, same key paths, same
- * indexes. A false answer deletes and rebuilds the database.
- *
- * Derived from the SAME declaration `applySchema` builds from, so the two
- * cannot disagree about what the schema is.
- */
-function schemaMatches(db: IDBDatabase, schema: IdbSchema): boolean {
-  const expected = Object.keys(schema)
-  if (db.objectStoreNames.length !== expected.length)
-    return false
-  if (!expected.every(name => db.objectStoreNames.contains(name)))
-    return false
-  // indexNames and keyPath are only reachable through an object store, which is
-  // only reachable through a transaction. Read-only and request-free, so it
-  // commits on its own without touching a row.
-  const tx = db.transaction(expected, 'readonly')
-  return expected.every((name) => {
-    const spec = schema[name]!
-    const store = tx.objectStore(name)
-    if (!samePath(store.keyPath, spec.keyPath) || store.autoIncrement !== (spec.autoIncrement ?? false))
-      return false
-    const indexes = Object.entries(spec.indexes ?? {})
-    if (store.indexNames.length !== indexes.length)
-      return false
-    return indexes.every(([indexName, indexKeyPath]) =>
-      store.indexNames.contains(indexName) && samePath(store.index(indexName).keyPath, indexKeyPath),
-    )
-  })
-}
+/** A database's whole shape: object-store name -> that store's Dexie index spec. */
+export type IdbStores = Record<string, string>
 
 /** A lazily-opened, cached connection to one database. */
-export interface IdbConnection {
+export interface IdbConnection<T extends Dexie = Dexie> {
   /** Open (or reuse) the connection. Rejects on open failure; the cache is cleared so a later call retries. */
-  open: () => Promise<IDBDatabase>
+  open: () => Promise<T>
   /** Visible for testing: forget the cached connection (e.g. after swapping the IDBFactory). */
   reset: () => void
 }
 
 /**
- * Create a cached connection to `name` at `version`, built from `schema`.
+ * The one version any database behind this scaffold declares.
  *
- * `schema` is the single declaration of the database's shape: it builds the
- * stores on creation AND is checked against every handle handed out, so a
- * database that does not match is deleted and rebuilt. Change the schema and
- * existing databases repair themselves on next open -- `version` does not have
- * to move. See the module header for why that is the permanent policy here.
+ * It never moves: a schema change is a rebuild, not an upgrade. See the header.
+ */
+const DECLARED_VERSION = 1
+
+/**
+ * Dexie stores its declared version TIMES TEN (`db.verno = idbdb.version / 10`),
+ * leaving the units digit for its own intermediate upgrades.
+ */
+const NATIVE_VERSION_FACTOR = 10
+
+const EXPECTED_NATIVE_VERSION = DECLARED_VERSION * NATIVE_VERSION_FACTOR
+
+/**
+ * The open failures that mean "the stored database is unusable", and so are
+ * answered by deleting and rebuilding it.
+ *
+ *   - VersionError  -- the stored database is NEWER than this build asks for.
+ *     Dexie already retried versionless before surfacing this, so reaching here
+ *     means even attaching to it failed.
+ *   - UpgradeError  -- Dexie's own upgrader refused, which a changed primary
+ *     key on a pre-Dexie database produces ("Not yet support for changing
+ *     primary key").
+ *   - SchemaError   -- Dexie rejected the declaration against what it found.
+ *   - NotFoundError -- a store the declaration names was absent when Dexie
+ *     built its middleware stacks.
+ *
+ * Deliberately NOT an unconditional retry. A QuotaExceededError, an
+ * UnknownError or an AbortError still rejects WITHOUT deleting, so a transient
+ * problem never destroys a cache that is merely unreachable right now.
+ */
+const RECREATE_ON_OPEN_ERROR: ReadonlySet<string> = new Set([
+  'VersionError',
+  'UpgradeError',
+  'SchemaError',
+  'NotFoundError',
+])
+
+/** Key paths compare as text: IndexedDB and Dexie both give a string or a string[]. */
+function keyPathText(keyPath: string | readonly string[] | null | undefined): string {
+  if (keyPath == null)
+    return ''
+  return Array.isArray(keyPath) ? `[${keyPath.join('+')}]` : String(keyPath)
+}
+
+/** One object store's shape, in the form both sides of the check can produce. */
+interface StoreShape {
+  name: string
+  primKeyPath: string | readonly string[] | null | undefined
+  autoIncrement: boolean
+  indexes: Array<{
+    name: string
+    keyPath: string | readonly string[] | null | undefined
+    unique: boolean
+    multiEntry: boolean
+  }>
+}
+
+/**
+ * Reduce a whole database's shape to one comparable string.
+ *
+ * Total by construction: an extra or missing store, an extra or missing index,
+ * a changed key path, a changed index NAME, and a changed autoIncrement /
+ * unique / multiEntry flag all move it. Both lists are sorted, so declaration
+ * order is not part of the identity.
+ *
+ * It deliberately omits the PRIMARY key's `unique` and `multi`. Dexie's parser
+ * forces `primKey.unique = true` while IndexedDB exposes no such attribute for
+ * a primary key at all, so comparing them could only ever produce a mismatch
+ * that is not one.
+ */
+function fingerprint(stores: readonly StoreShape[]): string {
+  return stores
+    .map(store => [
+      store.name,
+      keyPathText(store.primKeyPath),
+      store.autoIncrement ? '++' : '',
+      store.indexes
+        .map(index => `${index.name}=${keyPathText(index.keyPath)}${index.unique ? '&' : ''}${index.multiEntry ? '*' : ''}`)
+        .sort()
+        .join(','),
+    ].join('|'))
+    .sort()
+    .join('\n')
+}
+
+/**
+ * The shape the declaration asks for, read from Dexie's own parse of it.
+ *
+ * CALL THIS BETWEEN `.stores()` AND `.open()`, NEVER AFTER. `.stores()` fills
+ * `db.tables` synchronously, but Dexie's `adjustToExistingIndexNames` runs on
+ * EVERY open and RENAMES these very IndexSpec objects in place, to whatever the
+ * database it just opened calls the same key path. A fingerprint taken
+ * afterwards would therefore agree with any database whose key paths match --
+ * including one still carrying an older build's index names, which is exactly
+ * the drift the check exists to catch.
+ */
+function declaredFingerprint(db: Dexie): string {
+  return fingerprint(db.tables.map(table => ({
+    name: table.name,
+    primKeyPath: table.schema.primKey.keyPath,
+    autoIncrement: !!table.schema.primKey.auto,
+    indexes: table.schema.indexes.map(index => ({
+      name: index.name,
+      keyPath: index.keyPath,
+      unique: !!index.unique,
+      multiEntry: !!index.multi,
+    })),
+  })))
+}
+
+/**
+ * The shape the stored database actually has, read from the raw handle.
+ *
+ * NOT from `db.table(name).core.schema`: Dexie's virtual-index middleware
+ * replaces that list with synthetic prefix entries of the compound primary key,
+ * so it describes what Dexie can query, not what is on disk.
+ *
+ * `indexNames` and `keyPath` are only reachable through an object store, which
+ * is only reachable through a transaction. Read-only and request-free, so it
+ * commits on its own without touching a row.
+ */
+function installedFingerprint(idb: IDBDatabase): string {
+  const names = Array.from(idb.objectStoreNames)
+  if (names.length === 0)
+    return ''
+  const tx = idb.transaction(names, 'readonly')
+  return fingerprint(names.map((storeName) => {
+    const store = tx.objectStore(storeName)
+    return {
+      name: storeName,
+      primKeyPath: store.keyPath,
+      autoIncrement: store.autoIncrement,
+      indexes: Array.from(store.indexNames).map((indexName) => {
+        const index = store.index(indexName)
+        return {
+          name: indexName,
+          keyPath: index.keyPath,
+          unique: index.unique,
+          multiEntry: index.multiEntry,
+        }
+      }),
+    }
+  }))
+}
+
+/**
+ * What one open attempt produced: a connection that passed the shape check, or
+ * the fact that it did not.
+ *
+ * A VALUE rather than a thrown carrier. Schema drift is an ordinary outcome of
+ * this module's policy, not an error, and returning it keeps the close of the
+ * drifted handle at the one place that knows the handle is unusable -- instead
+ * of obliging every catcher to remember.
+ */
+type OpenAttempt = { ok: true, db: Dexie } | { ok: false }
+
+function errorName(err: unknown): string {
+  return (err as { name?: string } | null | undefined)?.name ?? ''
+}
+
+/**
+ * Delete a database outright, by name. Best-effort: every outcome resolves,
+ * because the only callers are already on a degraded path and a failed delete
+ * just means the reopen below fails too.
+ *
+ * `blocked` fires when another connection (another tab) still holds the
+ * database. We do NOT wait for it: that tab is running the newer build and will
+ * keep the handle open indefinitely, so blocking here would hang the open
+ * forever instead of degrading to a cold start.
+ *
+ * This is why the repair path does not use Dexie's `db.delete()`, which is
+ * otherwise the natural call: its promise settles on success or error only, and
+ * a `blocked` delete leaves it PENDING FOREVER. Close the instance first, then
+ * come here.
+ */
+function deleteDatabaseByName(name: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const request = indexedDB.deleteDatabase(name)
+    request.onsuccess = () => resolve()
+    request.onerror = () => resolve()
+    request.onblocked = () => resolve()
+  })
+}
+
+/**
+ * Create a cached connection to `name`, built from `stores`.
+ *
+ * `stores` is the single declaration of the database's shape: Dexie builds from
+ * it AND it is checked against every handle handed out, so a database that does
+ * not match is deleted and rebuilt. Change the declaration and existing
+ * databases repair themselves on next open. See the module header for why that
+ * is the permanent policy here.
  *
  * A rejected open drops the cached promise, so the next call retries rather
  * than latching the failure for the page's lifetime.
  */
-export function createIdbConnection(
+export function createIdbConnection<T extends Dexie = Dexie>(
   name: string,
-  version: number,
-  schema: IdbSchema,
-): IdbConnection {
-  let dbPromise: Promise<IDBDatabase> | null = null
+  stores: IdbStores,
+): IdbConnection<T> {
+  let dbPromise: Promise<Dexie> | null = null
 
   /**
-   * Delete the database outright. Best-effort: every outcome resolves, because
-   * the only caller is already on a degraded path and a failed delete just
-   * means the retry below fails too.
+   * Whether `db` is the database the declaration asks for.
    *
-   * `blocked` fires when another connection (another tab) still holds the
-   * database. We do NOT wait for it: that tab is running the newer build and
-   * will keep the handle open indefinitely, so blocking here would hang the
-   * open forever instead of degrading to a full snapshot.
+   * Two independent tests, and neither alone is sufficient.
    */
-  function deleteDatabase(): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const request = indexedDB.deleteDatabase(name)
-      request.onsuccess = () => resolve()
-      request.onerror = () => resolve()
-      request.onblocked = () => resolve()
-    })
+  function shapeMatches(db: Dexie, expected: string): boolean {
+    const idb = db.backendDB()
+    // The VERSION. There is no legitimate path to a native version other than
+    // DECLARED_VERSION * 10 for a database this module built, so any other
+    // value proves something else wrote it:
+    //   - Dexie's own auto-patch, which reopens at version + 1 to ADD the parts
+    //     its verify found missing. That is a migration; see the header.
+    //   - a NEWER build, whose `version(2)` is native 20. Dexie does not fail
+    //     on that: it swallows the VersionError and RETRIES VERSIONLESS, so it
+    //     attaches happily and this is the only place that notices.
+    //
+    // ONE CASE THIS CANNOT REACH, deliberately. The hand-rolled scaffold this
+    // replaced wrote native version 1, and Dexie upgrades such a database to 10
+    // DURING `open()` -- before anything here can look -- so a legacy database
+    // whose shape already matches the declaration is carried forward with its
+    // rows. Catching it would need a second raw open before every Dexie open,
+    // on every cold start, forever; what that buys is deleting a cache whose
+    // shape IS the declaration and whose rows this build reads identically. A
+    // legacy database whose shape has since MOVED is still rebuilt, by the
+    // fingerprint below.
+    if (idb.version !== EXPECTED_NATIVE_VERSION)
+      return false
+    // And the SHAPE, because the version alone cannot see the three drifts
+    // Dexie's own verify passes silently -- a removed store, a removed index,
+    // and a changed primary key all leave the version at 10.
+    try {
+      return installedFingerprint(idb) === expected
+    }
+    catch {
+      return false
+    }
   }
 
   /**
-   * One open attempt. `invalidate` drops the cached promise IF it still refers
-   * to the attempt that owns this handle -- see `open()` for why the identity
-   * check is load-bearing.
+   * One open attempt. Resolves the connection when it passed the shape check,
+   * and `{ ok: false }` -- with the drifted handle already closed -- when it did
+   * not. Rejects only when the open itself failed.
    */
-  function openOnce(invalidate: () => void): Promise<IDBDatabase> {
-    return new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(name, version)
-      // An IDBOpenDBRequest cannot be cancelled. `onblocked` below rejects, but
-      // the request stays LIVE: once the other tab yields its connection, the
-      // very same request goes on to fire onupgradeneeded and then onsuccess.
-      // Without this flag that late success resolves an already-settled promise
-      // (a no-op) while leaving a real IDBDatabase that nothing captures and
-      // nothing ever closes -- one leaked connection per blocked open, each of
-      // which still answers `versionchange` and would null the SHARED cached
-      // promise. Closing it here is the only handle we will ever have on it.
-      let settled = false
-      request.onupgradeneeded = () => {
-        // Builds the declared shape from scratch, whether this is a first
-        // creation or a rebuild after a mismatch. No migration path exists to
-        // get wrong -- see the module header.
-        applySchema(request.result, schema)
-      }
-      request.onsuccess = () => {
-        const db = request.result
-        if (settled) {
-          db.close()
-          return
-        }
-        settled = true
-        // Yield when ANOTHER tab starts an upgrade. Without this, our open
-        // connection blocks that tab's versionchange forever -- it only sees
-        // `onblocked` below and gives up, which silently disables persistence
-        // for it.
-        //
-        // In production that upgrade is NOT a version bump: `version` is a
-        // constant here by design (see the module header), and both stores pass
-        // the same literal. The trigger is the `deleteDatabase()` in the
-        // schema-repair path below -- a peer tab that opened this database,
-        // found a stale schema, and is dropping it to rebuild. So this handler
-        // is on the normal repair route, not a someday-migration route.
-        //
-        // Dropping the cached promise is REQUIRED, not tidiness: db.close()
-        // only sets the close-pending flag (in-flight transactions still run
-        // to completion, so nothing is aborted), but every later open() would
-        // otherwise hand back this now-closed handle, whose transaction()
-        // throws InvalidStateError -- and every caller here swallows, so both
-        // stores would go quietly dead for the page's lifetime.
-        db.onversionchange = () => {
-          db.close()
-          invalidate()
-        }
-        resolve(db)
-      }
-      request.onerror = () => {
-        if (settled)
-          return
-        settled = true
-        reject(request.error ?? new Error('indexedDB open failed'))
-      }
-      // Blocked by another tab holding an older connection: degrade now; the
-      // cached promise is dropped below so a later call retries. With
-      // onversionchange in place above, that retry now succeeds once the
-      // other tab yields, instead of re-blocking forever.
-      request.onblocked = () => {
-        if (settled)
-          return
-        settled = true
-        reject(new Error('indexedDB open blocked'))
-      }
+  async function openOnce(): Promise<OpenAttempt> {
+    // CONSTRUCTED PER ATTEMPT, never once at module scope. Dexie snapshots
+    // `indexedDB` and `IDBKeyRange` into `db._deps` in its CONSTRUCTOR, from the
+    // options given here -- and its own `Dexie.dependencies` defaults were read
+    // off the globals at MODULE EVALUATION. Passing them explicitly, from a
+    // constructor that runs per attempt, is what lets a test swap the
+    // IDBFactory after import and still get a connection into the new universe.
+    const db = new Dexie(name, {
+      indexedDB,
+      IDBKeyRange,
+      // Load-bearing: nothing may run against a database that has not passed
+      // shapeMatches. It also disables Dexie's `idbdb.onclose` auto-reopen,
+      // which would otherwise reopen WITHOUT the check.
+      autoOpen: false,
+      // There is no liveQuery here, so Dexie's query cache buys nothing and
+      // costs a second consistency surface plus a deep clone per read.
+      cache: 'disabled',
     })
+    db.version(DECLARED_VERSION).stores(stores)
+    // BEFORE open(). See declaredFingerprint for why the order is not a style
+    // choice.
+    const expected = declaredFingerprint(db)
+
+    let settled = false
+    const opened = await new Promise<Dexie>((resolve, reject) => {
+      // Dexie does NOT reject a blocked open. It fires this event and leaves
+      // the request pending while another tab holds an older connection, so
+      // without this the caller waits forever instead of degrading.
+      //
+      // IT DOES NOT CLOSE HERE, and that is the whole repair. `close()` runs
+      // Dexie's `cancelOpen`, which makes the pending `db.open()` REJECT with
+      // DatabaseClosedError -- while the raw request underneath keeps running
+      // and, once the peer tab yields, fires its own `onsuccess` and re-assigns
+      // `db.idbdb`. The result is an OPEN connection this module closed and
+      // therefore believes is gone. Leaving the promise alone lets the
+      // fulfilled branch below run for real, which is the only place that can
+      // close the handle the late open produced.
+      db.on('blocked', () => {
+        if (settled)
+          return
+        settled = true
+        reject(new Error(`indexedDB ${name} open blocked`))
+      })
+      db.open().then(
+        () => {
+          // A `blocked` event already rejected for us and the open completed
+          // anyway. Close the connection nothing will ever hold: it would
+          // otherwise answer `versionchange` for an instance no caller holds,
+          // and block the next schema repair's deleteDatabase.
+          if (settled) {
+            db.close({ disableAutoOpen: true })
+            return
+          }
+          settled = true
+          resolve(db)
+        },
+        (err: unknown) => {
+          if (settled)
+            return
+          settled = true
+          reject(err)
+        },
+      )
+    })
+
+    if (!shapeMatches(opened, expected)) {
+      // Closed HERE, at the one place that knows the handle is unusable, so no
+      // catcher has to remember to do it.
+      opened.close({ disableAutoOpen: true })
+      return { ok: false }
+    }
+    return { ok: true, db: opened }
   }
 
-  function open(): Promise<IDBDatabase> {
+  /**
+   * Delete and rebuild, exactly ONCE.
+   *
+   * A freshly built database that still fails the check means Dexie and
+   * `installedFingerprint` disagree about the same declaration, which is a bug
+   * in this module -- and no amount of deleting fixes it, so spinning would
+   * just hang every caller.
+   */
+  async function recreate(): Promise<Dexie> {
+    await deleteDatabaseByName(name)
+    const attempt = await openOnce()
+    if (!attempt.ok)
+      throw new Error(`indexedDB ${name}: schema still unusable after recreate`)
+    return attempt.db
+  }
+
+  function open(): Promise<T> {
     if (!dbPromise) {
       // Every path that drops the cache compares against THIS attempt first.
       // Nulling the shared variable unconditionally let a stale attempt clobber
-      // a newer, healthy connection: a rejection (or a `versionchange` on a
-      // superseded handle) settling after `reset()` had already installed a
-      // different promise would drop that one instead, and the next caller
-      // reopened for no reason while the discarded handle stayed open.
-      let attempt: Promise<IDBDatabase>
+      // a newer, healthy connection: a rejection (or a `close` on a superseded
+      // handle) settling after `reset()` had already installed a different
+      // promise would drop that one instead, and the next caller reopened for
+      // no reason while the discarded handle stayed open.
+      let attempt: Promise<Dexie>
       const invalidate = (): void => {
         if (dbPromise === attempt)
           dbPromise = null
       }
-      /**
-       * Hand back a database that matches the declaration, rebuilding it if the
-       * one we opened does not. This is how a schema change lands without a
-       * version bump; see the module header for why that is the policy.
-       *
-       * Exactly ONE retry. A freshly built database that still fails the check
-       * means applySchema and schemaMatches disagree about the same
-       * declaration, which is a bug in this module -- and no amount of deleting
-       * fixes it, so spinning would just hang every caller.
-       */
-      const ensureSchema = async (db: IDBDatabase): Promise<IDBDatabase> => {
-        if (schemaMatches(db, schema))
+      attempt = openOnce()
+        .catch(async (err: unknown) => {
+          if (!RECREATE_ON_OPEN_ERROR.has(errorName(err)))
+            throw err
+          return { ok: false } as const
+        })
+        .then(async result => (result.ok ? result.db : await recreate()))
+        .then((db) => {
+          // Registered only now, AFTER the repair path above, so the deliberate
+          // closes in it cannot invalidate a cache entry they do not own.
+          //
+          // `close` fires when a peer tab's schema repair deletes this database
+          // (versionchange -> Dexie's default handler closes) and when the
+          // browser closes the connection abnormally. Dropping the cached
+          // promise is REQUIRED, not tidiness: every later open() would
+          // otherwise hand back this closed handle, whose operations reject
+          // DatabaseClosedError -- and every call site here swallows, so both
+          // stores would go quietly dead for the page's lifetime.
+          db.on('close', invalidate)
+          // Closes the window between the shape check and the line above: a
+          // close that landed in it fired no handler and would leave a dead
+          // handle cached.
+          if (!db.isOpen())
+            invalidate()
           return db
-        db.close()
-        await deleteDatabase()
-        const fresh = await openOnce(invalidate)
-        if (schemaMatches(fresh, schema))
-          return fresh
-        fresh.close()
-        throw new Error(`indexedDB ${name}: schema still unusable after recreate`)
-      }
-      attempt = openOnce(invalidate).catch(async (err: unknown) => {
-        // The stored database is NEWER than the version this build asks for.
-        //
-        // IndexedDB does not downgrade: opening at a lower version fails the
-        // request outright with a VersionError, and because every call site
-        // here swallows, persistence would be silently and PERMANENTLY off for
-        // that profile. It is a routine situation, not an exotic one -- a
-        // rollback to a previous deploy, a stale cached bundle, or an older
-        // desktop build launched after a newer one all produce it.
-        //
-        // Both databases behind this scaffold are pure caches over data that
-        // can be rebuilt (render artifacts re-render; the CRDT checkpoint
-        // re-fetches as one full snapshot), so discarding the newer schema
-        // costs a cold start and nothing else -- strictly better than running
-        // with persistence dead. It is the same reasoning as the schema-mismatch
-        // rebuild above: no database here holds anything the hub cannot re-supply.
-        //
-        // NOTE this is deliberately NOT an unconditional retry: only a
-        // VersionError is recreated from. A quota failure or a genuine open
-        // error still rejects, so a transient problem does not destroy the
-        // cache.
-        if ((err as DOMException | undefined)?.name !== 'VersionError')
-          throw err
-        await deleteDatabase()
-        return openOnce(invalidate)
-      }).then(ensureSchema)
+        })
       void attempt.catch(invalidate)
       dbPromise = attempt
     }
-    return dbPromise
+    return dbPromise as Promise<T>
   }
 
   function reset(): void {
-    void dbPromise?.then(db => db.close()).catch(() => {})
+    // Nulled FIRST, so the `close` handler's identity check sees a mismatch and
+    // does not clear a promise a concurrent open() may already have installed.
+    const current = dbPromise
     dbPromise = null
+    void current?.then(db => db.close({ disableAutoOpen: true })).catch(() => {})
   }
 
   return { open, reset }

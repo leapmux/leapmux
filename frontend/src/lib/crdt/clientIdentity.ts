@@ -1,4 +1,5 @@
 import { createSignal } from 'solid-js'
+import { tryCreateBroadcastChannel } from '~/lib/broadcastChannel'
 import { KEY_CLIENT_ID, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { randomUUID } from '~/lib/idGenerator'
 import { createLogger } from '~/lib/logger'
@@ -104,20 +105,17 @@ function mintClientId(): string {
 export function createClientIdentity(): ClientIdentity {
   const [clientId, setClientId] = createSignal(sessionStorageGet<string>(KEY_CLIENT_ID) || mintClientId())
 
-  if (typeof BroadcastChannel === 'undefined')
+  // `tryCreateBroadcastChannel` owns BOTH ways the class can be absent: missing
+  // outright, and present but refusing to construct, which some embedded
+  // webviews do. Without one there is no duplicate-tab handshake and the
+  // incumbent's id simply stands.
+  let channel = tryCreateBroadcastChannel(CHANNEL_NAME)
+  if (channel === null)
     return { clientId, dispose: () => {} }
 
   // Minted in memory AFTER any sessionStorage copy, so a duplicated tab and its
   // source always disagree here even though they agree on clientId.
   const instance = randomUUID()
-  let channel: BroadcastChannel | null
-  try {
-    channel = new BroadcastChannel(CHANNEL_NAME)
-  }
-  catch {
-    // Some webviews expose the constructor but refuse to construct it.
-    return { clientId, dispose: () => {} }
-  }
 
   const post = (type: ClaimMessage['type'], replyTo?: string): void => {
     try {

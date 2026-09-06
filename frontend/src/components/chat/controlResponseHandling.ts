@@ -3,10 +3,11 @@ import type { FileAttachment } from './attachments'
 import type { ControlAnswerSeed, ControlAnswerState, EditorContentRef } from './controls/types'
 import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
 import { createEffect, createMemo, on } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
-import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
 import { requestInstanceId } from '~/stores/control.store'
 import { controlQuestion, trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
@@ -43,6 +44,19 @@ export interface ControlResponseHandlingResult {
   /** Builds the responder that answers as ONE request instance. See `respondTo` below. */
   respondTo: (request: ControlRequest) => (bytes: Uint8Array) => Promise<void>
   togglePlanMode: () => void
+}
+
+/**
+ * Whether `value` is the empty answer a request opens with.
+ *
+ * The one write the restore path must not make is this exact value, so telling
+ * it apart is what lets everything else through.
+ */
+function isBlankAnswer(value: ControlAnswerSeed): boolean {
+  return (value.currentPage ?? 0) === 0
+    && Object.keys(value.selections ?? {}).length === 0
+    && Object.keys(value.customTexts ?? {}).length === 0
+    && Object.keys(value.switches ?? {}).length === 0
 }
 
 export function useControlResponseHandling(
@@ -108,12 +122,28 @@ export function useControlResponseHandling(
   // The saved answer of ONE request instance -- its selections, its typed notes,
   // its page and its switches. `requestInstanceId` states why a request id alone
   // is not enough.
-  const answerKey = (request: ControlRequest) =>
+  const answerKey = (request: ControlRequest): AsyncLocalKey =>
     `${PREFIX_CONTROL_STATE}${props.agentId}:${requestInstanceId(request)}`
 
   // The request whose answer `answerState` holds right now. The restore effect
   // below assigns it; the persist effect reads it. See both for why.
   let answerOwner: ControlRequest | null = null
+
+  // The request a restore is currently READING for, or null when none is. The
+  // persist effect skips ONE write while it is set; see both effects for why.
+  let restoringFor: ControlRequest | null = null
+
+  // Bumped per restore, so a read that resolves after a newer one started
+  // neither applies its answers nor clears the newer run's `restoringFor`.
+  let restoreToken = 0
+
+  /** The answer state as one record, which is also what gets persisted. */
+  const currentAnswer = (): ControlAnswerSeed => ({
+    selections: answerState.selections(),
+    customTexts: answerState.customTexts(),
+    currentPage: answerState.currentPage(),
+    switches: answerState.switches(),
+  })
 
   // Reset the user's in-progress answer when the active request INSTANCE changes.
   //
@@ -141,25 +171,54 @@ export function useControlResponseHandling(
     activeControlRequest,
     (request) => {
       answerOwner = request
-      if (request && props.agentId) {
-        const saved = localStorageGet<ControlAnswerSeed>(answerKey(request))
-        if (saved) {
-          answerState.setSelections(saved.selections ?? {})
-          answerState.setCustomTexts(saved.customTexts ?? {})
-          answerState.setCurrentPage(saved.currentPage ?? 0)
-          answerState.setSwitches(saved.switches ?? {})
-          return
-        }
-      }
+      // RESET FIRST, then fill in from storage if there is anything to fill in.
+      // The read is asynchronous (saved answers are an unbounded family on the
+      // unmirrored storage tier), and leaving the previous request's answers on
+      // screen for the length of that read is what would let a user submit them
+      // against the new prompt.
+      //
+      // `restoringFor` suppresses the persist effect below for the length of
+      // that read, and it is not tidiness. Without it the reset itself is a
+      // change, so the persist effect writes an EMPTY answer set under this
+      // request's key -- and if that write commits before the read lands, the
+      // read returns the empty set and the user's saved answers are gone. The
+      // window is small and the loss is total, which is the worst shape a race
+      // can have.
+      const token = ++restoreToken
+      restoringFor = request
       answerState.setSelections({})
       answerState.setCustomTexts({})
       answerState.setCurrentPage(0)
       answerState.setSwitches({})
+      if (!request || !props.agentId) {
+        restoringFor = null
+        return
+      }
+      void localStorageLoad<ControlAnswerSeed>(answerKey(request)).then((saved) => {
+        // A newer request started restoring while this read was in flight.
+        // Applying now would seed the incoming prompt with the outgoing one's
+        // answers -- the same confusion the owner variable below exists to
+        // prevent, reached from the read side. The newer run owns
+        // `restoringFor`, so this one must not clear it.
+        if (token !== restoreToken)
+          return
+        restoringFor = null
+        if (!saved)
+          return
+        // The user answered something while the read was in flight. What they
+        // just did is newer than what was on disk, so the saved copy loses --
+        // and the persist effect has already stored theirs.
+        if (!isBlankAnswer(currentAnswer()))
+          return
+        answerState.setSelections(saved.selections ?? {})
+        answerState.setCustomTexts(saved.customTexts ?? {})
+        answerState.setCurrentPage(saved.currentPage ?? 0)
+        answerState.setSwitches(saved.switches ?? {})
+      })
     },
   ))
 
-  // Persist the answers to localStorage, under the key of the request they
-  // BELONG to.
+  // Persist the answers under the key of the request they BELONG to.
   //
   // The owner is a plain variable, not the active request. A swap makes this
   // effect and the restore effect above both stale, and Solid gives no order
@@ -173,18 +232,24 @@ export function useControlResponseHandling(
   // together: the restore effect writes both, so this effect re-runs after it
   // and stores the new owner's own answers.
   createEffect(() => {
-    const value: ControlAnswerSeed = {
-      selections: answerState.selections(),
-      customTexts: answerState.customTexts(),
-      currentPage: answerState.currentPage(),
-      switches: answerState.switches(),
-    }
+    const value = currentAnswer()
     const owner = answerOwner
     // EVERY control request, not only a question. A permission prompt and a plan
     // approval carry switches, and those are exactly what a rebuild discards.
     if (!owner || !props.agentId)
       return
-    localStorageSet(answerKey(owner), value)
+    // Skip exactly ONE write: the BLANK answer the restore installs on its way
+    // in, while its own read is still in flight. Storing that would destroy the
+    // saved copy the read is about to return -- and if the write commits first,
+    // the read returns the blank one and the user's answers are gone for good.
+    //
+    // Narrowed to the blank value rather than to "a restore is running",
+    // because the user can answer during that window and what they do must
+    // still be saved. The restore checks the same predicate before applying, so
+    // whichever of the two lands second defers to the newer state.
+    if (restoringFor === owner && isBlankAnswer(value))
+      return
+    localStorageStore(answerKey(owner), value)
   })
 
   // Answers as ONE request instance: the one the caller captured before it acted.
@@ -213,7 +278,7 @@ export function useControlResponseHandling(
     for (let page = 0; page < pages; page++) {
       clearDraft(`${props.agentId}-ctrl-${instanceId}-q-${page}`)
     }
-    localStorageRemove(answerKey(request))
+    localStorageDrop(answerKey(request))
     // Release the ownership too. The persist effect is deferred, so it runs
     // AFTER this cleanup: `trySubmitAskUserQuestion` writes `answerState` on its
     // way in, and the effect would then re-write the key that the line above

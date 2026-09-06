@@ -2,7 +2,7 @@ import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
 import type { Node as ProseMirrorNode } from '@milkdown/prose/model'
 import type { Component, JSX } from 'solid-js'
-import type { EnterKeyMode } from '~/lib/browserStorage'
+import type { EnterKeyMode } from '~/lib/browserPreferences'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { LinkRange } from '~/lib/editor/linkPlugin'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
@@ -16,7 +16,7 @@ import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
-import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
+import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
@@ -30,7 +30,7 @@ const logger = createLogger('MarkdownEditor')
 export { clearDraft }
 
 /**
- * Identifies the localStorage draft key. Only one of `key` or
+ * Identifies the stored draft key. Only one of `key` or
  * (`agentId` + optional `controlRequestId`) needs to be set; if `key` is set
  * it takes precedence.
  */
@@ -69,6 +69,16 @@ export interface MarkdownEditorImperative {
 }
 
 interface MarkdownEditorProps {
+  /**
+   * Whether the composer must NOT take the keyboard when it finishes building.
+   * Absent means "go ahead", for a caller with no competing focus.
+   *
+   * The shell sets it while an inline tab rename is open: the rename input is in
+   * the tab strip, and a composer that grabbed focus would send the user's next
+   * keystrokes into the message box instead. Same contract as
+   * `TerminalView.tabEditing`.
+   */
+  suppressAutoFocus?: () => boolean
   draftKey?: MarkdownEditorDraftKey
   attachments?: MarkdownEditorAttachments
   imperative?: MarkdownEditorImperative
@@ -139,6 +149,11 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    * its ResizeObservers, and its paste/drop listeners.
    */
   let disposed = false
+  // Owns the generation token that drops a read a newer swap superseded. See
+  // `createDraftSwapper` for why the token lives there and not here. Declared
+  // with the other per-editor state, because `onMount` runs its own initial
+  // replace through it: every path to a document replacement takes one token.
+  const swapDraft = createDraftSwapper()
 
   /**
    * The box's expand/collapse decision and the three DOM measurements it needs.
@@ -156,7 +171,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // its two-zone row always renders below the text with the separator above it.
   const isExpanded = () => layout.contentExpanded() || props.actions?.layout === 'fullWidth'
 
-  /** Compute the localStorage draft key, incorporating controlRequestId when present. */
+  /** Compute the stored draft key, incorporating controlRequestId when present. */
   const getDraftKey = () => {
     const dk = props.draftKey
     if (dk?.key)
@@ -415,10 +430,16 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   const applyEditorState = (editor: Editor) => {
     try {
       const disabled = disabledRef
+      // The composer takes the keyboard when it finishes building, and this
+      // diff moved that moment behind an awaited draft read -- so it can now
+      // land while something else already owns the keyboard. `suppressAutoFocus`
+      // is how the shell says so; the editor is still made editable either way,
+      // because only the FOCUS is in question.
+      const suppressed = props.suppressAutoFocus?.() === true
       editor.action((ctx: Ctx) => {
         const view = ctx.get(editorViewCtx)
         view.setProps({ editable: () => !disabled })
-        if (!disabled) {
+        if (!disabled && !suppressed) {
           view.focus()
         }
       })
@@ -451,7 +472,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     layout.observe()
 
     const initialDraftKey = getDraftKey()
-    const initialDraft = initialDraftKey ? loadDraft(initialDraftKey) : { content: '', cursor: -1 }
+    // Awaited here, ahead of `buildEditor`, so the editor is still constructed
+    // with its content in hand. The draft read is asynchronous now, and this
+    // `onMount` already awaits `buildEditor`, so it costs no extra round trip.
+    const initialDraft = initialDraftKey ? await loadDraft(initialDraftKey) : { content: '', cursor: -1 }
 
     const editor = await buildEditor({
       editorRoot: editorRef,
@@ -494,18 +518,39 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
 
     editorInstance = editor
-    const readyDraftKey = getDraftKey()
-    const draftKeyChangedDuringStart = readyDraftKey !== initialDraftKey
+    // `buildEditor` was handed `initialDraft`, so THIS is the key whose document
+    // the editor holds. It moves again below only if a replace actually lands.
+    prevDraftKey = initialDraftKey ?? null
+    // A one-time snapshot ON PURPOSE: the question is which key the editor
+    // should be showing at the instant the build finished, and the swap effect
+    // owns every change after that.
+    const initialReadyDraftKey = getDraftKey()
     let readyDraft = initialDraft
-    if (draftKeyChangedDuringStart) {
-      readyDraft = readyDraftKey ? loadDraft(readyDraftKey) : { content: '', cursor: -1 }
-      editor.action(replaceAll(readyDraft.content))
-      setMarkdown(readyDraft.content)
-      props.onContentChange?.(readyDraft.content.trim().length > 0)
+    if (initialReadyDraftKey !== initialDraftKey) {
+      // THROUGH THE SWAPPER, like every other document replacement. The key
+      // changed while `buildEditor` was pending, and the swap effect may already
+      // be reading for a THIRD key -- so this replace has to take a token too,
+      // or the mount's older prose lands last. Routing it here is also what
+      // makes `createDraftSwapper`'s stated invariant true.
+      await swapDraft(initialReadyDraftKey ?? null, (draft) => {
+        // The read is another await, so it re-opens the window the check above
+        // closed: dispatching into an editor `onCleanup` already destroyed
+        // throws out of ProseMirror as an unhandled rejection.
+        if (disposed)
+          return
+        readyDraft = draft
+        editor.action(replaceAll(draft.content))
+        setMarkdown(draft.content)
+        props.onContentChange?.(draft.content.trim().length > 0)
+        prevDraftKey = initialReadyDraftKey ?? null
+      })
+      // Checked AGAIN, for the same reason it is checked after `buildEditor`:
+      // nothing below this line would ever be torn down.
+      if (disposed) {
+        editor.destroy()
+        return
+      }
     }
-    // The key effect can run while buildEditor waits. Align its prior key with
-    // the document that this startup path loaded.
-    prevDraftKey = readyDraftKey ?? null
     // Seed docStats from the parsed draft so the expand/collapse decision is
     // correct before any transaction fires. Without this a multi-line draft
     // starts collapsed until the user types. It classifies the real
@@ -551,8 +596,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         resizeObserver.disconnect()
       }))
     }
-    // Notify parent if we loaded a draft with content, and restore cursor position
-    if ((draftKeyChangedDuringStart ? readyDraftKey : initialDraftKey) && readyDraft.content) {
+    // Notify parent if we loaded a draft with content, and restore cursor
+    // position. `prevDraftKey` is the key whose document the editor now holds,
+    // whichever of the two reads above produced it.
+    if (prevDraftKey && readyDraft.content) {
       props.onContentChange?.(true)
       try {
         restoreCursor(editor, readyDraft.cursor)
@@ -646,6 +693,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
   // Swap editor content when the effective draft key changes. This covers
   // agent switches, control-request switches, and per-question draft scopes.
+
   createEffect(on(
     getDraftKey,
     (newDraftKeyRaw) => {
@@ -678,18 +726,47 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       setCodeLangPopoverOpen(false)
       setCodeLangNodePos(-1)
 
-      // Load draft for the new key and replace editor content.
-      const draft = newDraftKey ? loadDraft(newDraftKey) : { content: '', cursor: -1 }
-      try {
-        editorInstance.action(replaceAll(draft.content))
-        restoreCursor(editorInstance, draft.cursor)
-        setMarkdown(draft.content)
-        props.onContentChange?.(draft.content.trim().length > 0)
-      }
-      catch { /* editor may not be ready */ }
-
-      prevDraftKey = newDraftKey
-      props.onDraftKeyChanged?.(newDraftKey)
+      // Load the draft for the new key and replace the editor content.
+      //
+      // `prevDraftKey` MOVES WITH THE DOCUMENT, inside `apply` below, never
+      // here. It names the key whose text the editor is holding, and the read is
+      // asynchronous -- so until it lands the editor still shows the OUTGOING
+      // key's prose. Moving the pointer up front made a second swap arriving
+      // during this read save that outgoing prose under the incoming key, which
+      // destroys the incoming key's saved draft. The `save` above is correct
+      // either way, because it always saves what is on screen under the key that
+      // owns it.
+      const swapTarget = editorInstance
+      // Captured before the await. `props` is reactive, and reading a prop off
+      // it inside the callback below would read it outside any tracked scope --
+      // which is what solid/reactivity flags, and it is right: the handlers this
+      // swap belongs to are the ones that were installed when the swap started.
+      const notifyContentChange = props.onContentChange
+      const notifyDraftKeyChanged = props.onDraftKeyChanged
+      void swapDraft(newDraftKey, (draft) => {
+        // The component unmounted while the read was in flight. `onCleanup`
+        // destroyed `swapTarget` and cancelled the draft debounce, so replacing
+        // the document now would re-arm that debounce against a disposed editor
+        // -- and the notify below would hand a destroyed editor to
+        // `AgentEditorPanel`, which answers it by writing into one.
+        if (disposed)
+          return
+        try {
+          swapTarget.action(replaceAll(draft.content))
+          restoreCursor(swapTarget, draft.cursor)
+          setMarkdown(draft.content)
+          notifyContentChange?.(draft.content.trim().length > 0)
+          prevDraftKey = newDraftKey
+        }
+        catch { /* editor may not be ready */ }
+        // AFTER the document is replaced, never before. `AgentEditorPanel`
+        // answers this by writing the queue-edit text into the editor, and the
+        // replace above would then wipe what it just wrote -- the saved draft
+        // for a freshly opened queue edit is empty. The read is asynchronous,
+        // so "notify first" is no longer the same instant as "document ready";
+        // it was, when the draft load was synchronous.
+        notifyDraftKeyChanged?.(newDraftKey)
+      })
     },
   ))
 

@@ -82,7 +82,7 @@ test.describe('Theme picker', () => {
     // ...and it survives a reload, which is the journey the deleted setup-page
     // case used to cover. A better anchor than that one was: the empty state
     // carries no device override, so the pick routes to the ACCOUNT tier and
-    // the reload proves the hub round-trip rather than a localStorage one.
+    // the reload proves the hub round-trip rather than a device-tier one.
     await page.reload()
     await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'gruvbox')
   })

@@ -90,7 +90,7 @@ const OAuthCompleteSignupPage: Component = () => {
         email: email().trim(),
         ...captcha.fields(),
       })
-      auth.setAuth(resp.user!)
+      await auth.setAuth(resp.user!)
       // OAuth signup mirrors the SignUp flow: when the provider returned
       // an unverified email and verification is enabled, send the user
       // to /verify-email so they can paste the code (or click the emailed

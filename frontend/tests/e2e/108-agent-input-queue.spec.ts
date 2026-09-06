@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer'
-import { loginViaToken, openWorkspace, sendMessage } from './helpers/ui'
+import { getUserId } from './helpers/api'
+import { loginViaToken, openWorkspace, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('agent input queue', () => {
@@ -64,14 +65,14 @@ test.describe('agent input queue', () => {
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
       await expect(editor).toHaveText('edited first')
       await editor.fill('unsaved queue edit')
-      await expect.poll(() => page.evaluate(() => {
-        for (let index = 0; index < localStorage.length; index++) {
-          const value = localStorage.getItem(localStorage.key(index) ?? '')
-          if (value?.includes('unsaved queue edit'))
-            return true
-        }
-        return false
-      })).toBe(true)
+      // The draft has to reach the store before the reload, or the reload
+      // races the write and the assertion below fails for the wrong reason.
+      // Drafts live in IndexedDB (see `~/lib/browserStorage`), so a
+      // localStorage walk would poll a store the value never reaches and time
+      // out. `waitForEditorDraft` scans this account's draft rows, which is
+      // where a queue edit lands: its key carries the `editor-draft:` prefix.
+      const adminUserId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
+      await waitForEditorDraft(page, adminUserId, 'unsaved queue edit')
       await page.reload()
       await expect(editor).toHaveText('unsaved queue edit')
       await expect(page.getByTestId('attachment-pill')).toContainText('queued-input.txt')

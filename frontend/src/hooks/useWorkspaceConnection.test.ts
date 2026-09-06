@@ -530,8 +530,8 @@ describe('context usage refresh on compaction boundary', () => {
 
   const compactBoundary = (meta: Record<string, unknown>) => ({ type: 'system', subtype: 'compact_boundary', compact_metadata: meta })
 
-  // Distinct agent ids per case: the store persists through localStorage, so a
-  // shared id would leak one case's contextWindow into the next.
+  // Distinct agent ids per case: the store persists through browser storage,
+  // so a shared id would leak one case's contextWindow into the next.
   it('drops the grid to the post-compaction size and preserves the context window', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
@@ -621,8 +621,8 @@ describe('applyNotificationMetadata usage folding', () => {
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
   }
 
-  // Distinct agent ids per case: the session store persists through localStorage, so a shared id
-  // would leak one case's usage into the next.
+  // Distinct agent ids per case: the session store persists through browser storage,
+  // so a shared id would leak one case's usage into the next.
 
   it('applies a plan auto-title from a LIVE plan_updated', () => {
     createRoot((dispose) => {
@@ -1544,7 +1544,7 @@ describe('agentMessage sub-handlers', () => {
       expect(handleAgentSessionInfo('a1', parseMessageContent(msg), stores)).toBe(true)
       expect(stores.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
       // It is span-keyed state, so it must not leak into AgentSessionInfo (which is
-      // persisted to localStorage minus its ephemeral keys).
+      // persisted minus its ephemeral keys).
       expect(stores.agentSessionStore.getInfo('a1')).toEqual({})
       dispose()
     })
@@ -2391,10 +2391,11 @@ describe('wireSessionInfoToUpdates', () => {
    * A field the tier does not carry is ABSENT from the result, not present and
    * undefined. That is load-bearing and `toEqual` cannot see it: `toEqual`
    * ignores an undefined-valued key, but `agentSession.store.ts` decides whether
-   * a tier changed with `shallowEqual`, which compares key COUNTS first. A tier
-   * rehydrated from localStorage has lost its undefined keys (JSON.stringify
-   * drops them), so a translation that emitted all eight keys would compare
-   * unequal on every broadcast and write the store each time.
+   * a tier changed with `shallowEqual`, which compares key COUNTS first. The
+   * stored copy carries whatever the serializer left behind, so a translation
+   * that emitted all eight keys -- `undefined` for the ones the payload omits
+   * -- would compare unequal on every broadcast and write the store each
+   * time.
    *
    * Asserted on Object.keys for exactly that reason.
    */

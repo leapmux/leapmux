@@ -4,7 +4,7 @@ import { expect, test } from './fixtures'
  * Per-agent draft isolation, the load/save/clear contract, and the empty-string
  * removal behavior are unit-tested in `src/lib/editor/draftPersistence.test.ts`.
  * What only a real browser can verify end-to-end is that the debounced save
- * fires, the localStorage write survives a page reload, and Milkdown restores
+ * fires, the stored draft survives a page reload, and Milkdown restores
  * the persisted markdown into the editor on remount.
  */
 test.describe('Draft Persistence', () => {

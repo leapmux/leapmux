@@ -5,6 +5,7 @@ import process from 'node:process'
 
 import { expect } from '@playwright/test'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT } from '../../../src/lib/browserStorage'
+import { readEntry, storageKeys, writeEntry } from './storage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
 export async function isMaybeVisible(locator: Locator, timeout?: number): Promise<boolean> {
@@ -953,7 +954,7 @@ function browserPrefsTtlMs(): number {
 const BROWSER_PREFS_TTL_MS = browserPrefsTtlMs()
 
 /**
- * Read a single field from the consolidated browser preferences in localStorage.
+ * Read a single field from the consolidated browser preferences.
  *
  * Pass `leapmuxServer.adminUserId`. See `getBrowserPrefValue`.
  */
@@ -976,48 +977,36 @@ export async function getBrowserPref(page: Page, userId: string, field: string):
  * browser, and there is no test-visible signal when it does.
  */
 export async function getBrowserPrefValue(page: Page, userId: string, field: string): Promise<unknown> {
-  return page.evaluate(([storedKey, f]) => {
-    const raw = localStorage.getItem(storedKey)
-    if (!raw)
-      return null
-    try {
-      // The `{ v, e }` TTL envelope, unwrapped exactly as the app's own reader
-      // does -- including its tolerance of a malformed one, so a hand-seeded or
-      // half-written entry fails the assertion rather than the harness.
-      const prefs = JSON.parse(raw)?.v
-      if (prefs == null || typeof prefs !== 'object')
-        return null
-      return prefs[f] !== undefined ? prefs[f] : null
-    }
-    catch {
-      return null
-    }
-  }, [accountStorageKey(userId, KEY_BROWSER_PREFS), field] as const)
+  const row = await readEntry(page, accountStorageKey(userId, KEY_BROWSER_PREFS))
+  const prefs = row?.v
+  if (prefs == null || typeof prefs !== 'object')
+    return null
+  const value = (prefs as Record<string, unknown>)[field]
+  return value === undefined ? null : value
 }
 
 /**
- * Set a single field in the consolidated browser preferences via addInitScript.
+ * Set a single field in the consolidated browser preferences.
  *
- * Pass `leapmuxServer.adminUserId`: it runs BEFORE the page signs in, so there
- * is nothing in storage to find the key from.
+ * Pass `leapmuxServer.adminUserId`: the caller seeds before the page signs in,
+ * so there is nothing in storage to find the key from.
+ *
+ * AWAITED rather than installed as an init script. The preferences live in
+ * IndexedDB, which is durable across a navigation, so the seed only has to land
+ * before the app READS it -- and every caller reloads immediately afterwards,
+ * which is what supplies that ordering. An init script was compensating for a
+ * `page.evaluate` seed happening after the first load; nothing needs it now.
+ *
+ * The page must already be on the app's origin, which every caller satisfies.
  */
 export async function setInitialBrowserPref(page: Page, userId: string, field: string, value: string) {
-  await page.addInitScript(([key, f, v, ttlMs]) => {
-    let prefs: Record<string, unknown> = {}
-    const raw = localStorage.getItem(key)
-    if (raw) {
-      try {
-        const wrapper = JSON.parse(raw)
-        if (wrapper?.v != null && typeof wrapper.v === 'object')
-          prefs = wrapper.v as Record<string, unknown>
-      }
-      catch {
-        // Malformed: start from empty, exactly as the app's reader does.
-      }
-    }
-    prefs[f] = v
-    localStorage.setItem(key, JSON.stringify({ v: prefs, e: Date.now() + ttlMs }))
-  }, [accountStorageKey(userId, KEY_BROWSER_PREFS), field, value, BROWSER_PREFS_TTL_MS] as const)
+  const storedKey = accountStorageKey(userId, KEY_BROWSER_PREFS)
+  const existing = await readEntry(page, storedKey)
+  const prefs = (existing?.v != null && typeof existing.v === 'object')
+    ? { ...existing.v as Record<string, unknown> }
+    : {}
+  prefs[field] = value
+  await writeEntry(page, storedKey, prefs, Date.now() + BROWSER_PREFS_TTL_MS)
 }
 
 /** The hub's session cookie name, as `readSessionCookie` looks it up. */
@@ -1308,32 +1297,34 @@ export function treeRowNames(page: Page): Locator {
 }
 
 /**
- * Wait until the chat editor's draft for `text` has actually reached
- * localStorage.
+ * Wait until the chat editor's draft for `text` has actually reached storage.
  *
- * The draft is written on a debounce, so a reload issued before that timer
- * fires drops it. Sleeping "the debounce plus a margin" is what made the draft
- * specs flaky: the margin is sized against a real timer, and under a loaded
- * machine the debounce itself lands late, so the sleep expires first and the
- * reload races the write. Poll the state the reload depends on instead.
+ * The draft is written on a debounce and then flushed behind, so a reload
+ * issued before both land drops it. Sleeping "the debounce plus a margin" is
+ * what made the draft specs flaky: the margin is sized against a real timer,
+ * and under a loaded machine the debounce itself lands late, so the sleep
+ * expires first and the reload races the write. Poll the state the reload
+ * depends on instead.
+ *
+ * The draft key carries the agent id, which the caller does not know, so this
+ * scans the account's draft rows rather than naming one. The prefix is COMPOSED
+ * by the app's own `accountStorageKey`, which is why the match is a
+ * `startsWith` and not a regex: splicing a key name into a regex source hands
+ * every metacharacter in it to the matcher.
  */
 export async function waitForEditorDraft(page: Page, userId: string, text: string) {
-  await expect.poll(async () => page.evaluate(
-    ([prefix, needle]) => {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i)
-        // The stored value is the `{ v, e }` wrapper browserStorage writes, so
-        // the draft text sits inside its JSON. The prefix is COMPOSED by the
-        // app's own `accountStorageKey`, which is why this is a `startsWith`
-        // and not a regex: splicing a key name into a regex source hands every
-        // metacharacter in it to the matcher.
-        if (key?.startsWith(prefix) && (localStorage.getItem(key) ?? '').includes(needle))
-          return true
-      }
-      return false
-    },
-    [accountStorageKey(userId, PREFIX_EDITOR_DRAFT), text] as const,
-  ), `the editor draft "${text}" must be persisted before the reload`).toBe(true)
+  const prefix = accountStorageKey(userId, PREFIX_EDITOR_DRAFT)
+  await expect.poll(async () => {
+    for (const key of await storageKeys(page)) {
+      if (!key.startsWith(prefix))
+        continue
+      const row = await readEntry(page, key)
+      const content = (row?.v as { content?: unknown } | undefined)?.content
+      if (typeof content === 'string' && content.includes(text))
+        return true
+    }
+    return false
+  }, `the editor draft "${text}" must be persisted before the reload`).toBe(true)
 }
 
 /**

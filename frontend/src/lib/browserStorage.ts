@@ -21,131 +21,79 @@
  * match type, its scope and its TTL. An unregistered key throws, so a missed
  * registration fails loudly instead of disappearing on the next sweep.
  *
- * Every value is wrapped as `{ v: T, e: number }` with an expiration
- * timestamp; reads unwrap and may refresh the timestamp on access.
- * Long-lived preferences use a 1-year TTL plus the refresh-on-read
- * mechanism, so opening the app at any point in a year keeps them
- * alive; total inactivity for a year is the only way they expire.
+ * Every value carries an expiration; reads may refresh it on access. Long-lived
+ * preferences use a 1-year TTL plus that refresh, so opening the app at any
+ * point in a year keeps them alive; total inactivity for a year is the only way
+ * they expire.
  *
- * `runCleanup` sweeps both stores on a timer, deleting any `leapmux:`-family
- * key that is unregistered, that carries a scope its registration does not
- * allow, or whose wrapper is missing/malformed/expired. It keeps OTHER
- * accounts' keys, which is the whole point of scoping them.
+ * `runCleanup` sweeps on a timer, deleting any `leapmux:`-family key that is
+ * unregistered, that carries a scope its registration does not allow, or whose
+ * expiration has passed. It keeps OTHER accounts' keys, which is the whole point
+ * of scoping them.
  *
  * A module that MIRRORS an account-scoped key in memory subscribes to
  * `onStorageAccountChange`, so the mirror moves with the namespace instead of
  * serving the previous account's copy.
+ *
+ * TWO BACKENDS, AND THE SPLIT IS NOT ARBITRARY.
+ *
+ * The `localStorage` family moved to IndexedDB (see `~/lib/browserStorageDb`).
+ * localStorage is synchronous main-thread I/O under a ~5 MB origin cap, and
+ * several families here are unbounded -- a multi-KB composite public key per
+ * worker, tens of KB of measured row heights per chat, base64 attachments,
+ * arbitrary draft prose. Writing those on the main thread costs frames and the
+ * cap is a real ceiling.
+ *
+ * IndexedDB is asynchronous, and many readers here cannot await: a
+ * `createSignal` initializer, a `createMemo`, the synchronous
+ * `onStorageAccountChange` callback, an xterm constructor. So every key
+ * declares an `access` tier. The `sync` tier is MIRRORED IN MEMORY and keeps the
+ * synchronous accessors; the `async` tier is not mirrored and returns promises.
+ * `hydrateStorageAccount` loads the sync tier, and `setStorageAccount` refuses an
+ * account it was not run for.
+ *
+ * ONE THING IS WEAKER THAN IT WAS, AND IT IS NOT REPAIRABLE HERE. Writes go
+ * through a write-behind queue, so a write issued in the last moments before a
+ * reload can be lost where the synchronous `setItem` it replaces could not be.
+ * `App` flushes on `pagehide`, which narrows that window to what an unload can
+ * interrupt rather than closing it. A caller that must know whether its value
+ * reached disk reads `StorageWrite.durable`; `persistedSeq` is the one that does.
+ *
+ * `sessionStorage` STAYS on the Web Storage API. IndexedDB is per-origin and
+ * shared by every tab, while sessionStorage is per-tab and dies with the tab --
+ * and that lifetime is load-bearing for every key registered there: the CRDT
+ * client identity (`checkpointStore` keys its records by `[userId, clientId]`),
+ * the tab / tile / focus / sidebar pointers, the MRU stamps. Reproducing it on
+ * IndexedDB needs a tab id plus a collector for dead tabs, and the tab id itself
+ * would have to live in sessionStorage.
  */
+import type { KvRow, StorageWrite } from './browserStorageDb'
+import { browserPrefBatchOpen } from './browserPreferences'
+import {
+  enqueueKvDelete,
+  enqueueKvPut,
+  flushKvWrites,
+  kvWriteEpoch,
+  onKvBroadcast,
+  peekKvPending,
+  publishKvRemovals,
+  readKvPrefix,
+  readKvRow,
+  readKvRows,
+  REFUSED_WRITE,
+  resetKvForTests,
+  sweepKv,
+} from './browserStorageDb'
+import { cancelIdle, requestIdle } from './idleCallback'
 import { createLogger } from './logger'
 
 const log = createLogger('browserStorage')
 
+export type { StorageWrite } from './browserStorageDb'
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export type EnterKeyMode = 'enter-sends' | 'cmd-enter-sends'
-export type TerminalRendererPreference = 'auto' | 'webgl' | 'canvas'
-
-/**
- * Browser-level preferences stored as a single JSON object.
- * Fields that are undefined mean "use account default."
- * Dual-tier keys override the matching account setting from
- * UserService; browser-only keys have no account half.
- */
-/**
- * The stored shape of one appearance preference, as it sits in localStorage.
- *
- * Every field is optional and every field is a bare `string`, because this is
- * UNTRUSTED: it is whatever a previous build, or a hand-edited storage entry,
- * left behind. `parseThemeValue` / `parseTerminalThemeValue` in `~/lib/themeStore`
- * validate it into the `ThemeValue` / `TerminalThemeValue` the app actually
- * uses, so this type deliberately is NOT those -- naming it separately is what
- * keeps a validated value and a stored one from being confused.
- *
- * Stated once because all three appearance surfaces store the same document; it
- * was written out inline three times, so a fourth field had three places to be
- * added and two of them could be forgotten.
- */
-export interface StoredThemeDocument {
-  name?: string
-  mode?: string
-  variant?: { light?: string, dark?: string }
-}
-
-export interface BrowserPreferences {
-  /**
-   * Whole-object browser override of the account `theme` tier
-   * ({name, mode}). Absent means "use the account value". The palette name and
-   * its light/dark mode override together because they are one appearance
-   * choice, presented by one control under one scope chip. `variant` pins which
-   * look of that palette each polarity wears; see ~/styles/themes/types.ts.
-   */
-  theme?: StoredThemeDocument
-  /**
-   * Whole-object browser override of the account `terminal_theme` tier
-   * ({name, mode}). The `match-ui` sentinel fills both halves or neither; see
-   * ~/styles/themes/types.ts.
-   */
-  terminalTheme?: StoredThemeDocument
-  /**
-   * Whole-object browser override of the account `syntax_theme` tier
-   * ({name, mode}). Same shape and same `match-ui` sentinel as
-   * {@link terminalTheme}.
-   */
-  syntaxTheme?: StoredThemeDocument
-  diffView?: string
-  turnEndSound?: string
-  turnEndSoundVolume?: number
-  debugLogging?: boolean
-  expandAgentThoughts?: boolean
-  showHiddenMessages?: boolean
-  enterKeyMode?: EnterKeyMode
-  terminalRenderer?: TerminalRendererPreference
-  /**
-   * Whole-object browser override of the account `ui_fonts` tier
-   * ({enabled, fonts}). Absent means "use the account value"; the whole
-   * object is the override unit because overriding the toggle and the list
-   * independently gives incoherent states.
-   */
-  uiFontOverride?: { enabled: boolean, fonts: string[] }
-  /**
-   * Whole-object browser override of the account `mono_fonts` tier. Same
-   * contract as {@link uiFontOverride}.
-   */
-  monoFontOverride?: { enabled: boolean, fonts: string[] }
-  /**
-   * Whether to reveal the saved file in the OS file manager (Finder /
-   * Explorer / Files) after a successful download. Only applies in
-   * desktop mode; ignored in the browser. Defaults to true — set to
-   * `false` explicitly to opt out.
-   */
-  revealAfterDownload?: boolean
-  /** Desktop/browser terminal OSC notifications (OSC 9 / 777 / 99). Default off. */
-  terminalOsNotifications?: boolean
-  /**
-   * Device overrides of the five Desktop account keys. Absent means "use the
-   * account value", like every other dual tier, and they ride inside this same
-   * consolidated document so `LOCAL_KEY_SPECS` needs no entry of its own.
-   *
-   * FIVE SCALARS, not one object: the user makes five choices under five scope
-   * chips, so an object would make an override of any one of them drag the
-   * other four onto the device tier. The enums are typed as bare `string` for
-   * the reason {@link diffView} is -- this is untrusted storage, and the parse
-   * in PreferencesContext is what narrows it.
-   */
-  trayEnabled?: boolean
-  trayOnClose?: string
-  trayOnMinimize?: string
-  startOnLogin?: boolean
-  startMinimized?: string
-  /**
-   * Whether the composer status bar (branch/model/effort/mode +
-   * rate-limit/context chips) is shown beneath the input box. Default on;
-   * toggled from the composer's `[+]` menu.
-   */
-  showComposerStatusBar?: boolean
-}
 
 // ---------------------------------------------------------------------------
 // Key registry
@@ -253,6 +201,61 @@ export interface KeySpec {
 }
 
 /**
+ * How a localStorage-family key is READ.
+ *
+ * The backing store is IndexedDB, which is asynchronous, so this is the one
+ * decision the move forced on every key.
+ *
+ * `sync` keys are MIRRORED IN MEMORY and keep `localStorageGet` /
+ * `localStorageSet`. The mirror is the price: every tab holds every sync value
+ * for the session and pays for them all on the sign-in path. So the tier is for
+ * keys whose reader genuinely cannot await -- a `createSignal` initializer, a
+ * `createMemo`, a synchronous `onStorageAccountChange` callback, a constructor.
+ *
+ * `async` keys are not mirrored and use `localStorageLoad` / `localStorageStore`.
+ * It is the answer for everything else, and the answer a NEW key should take
+ * unless it can name the reader that cannot await.
+ *
+ * THE TIER IS ABOUT THE READER, NOT ABOUT THE SIZE. Every family whose VALUE is
+ * large is `async`, because a value big enough to matter already had something
+ * asynchronous around it. But the converse does not hold: three `sync` families
+ * are prefix families with no cap -- `files-show-hidden:`, `files-sort-order:`
+ * and `workspace-git-mode:` grow one small row per (worker, directory) or per
+ * repository the user ever opens, and the TTL is all that limits them. They keep
+ * the synchronous tier because their readers are a `createSignal` initializer
+ * and a `createMemo`, and a mirror that evicted one would serve that reader a
+ * default it cannot correct.
+ */
+export type KeyAccess = 'sync' | 'async'
+
+/**
+ * One localStorage-family key's registration.
+ *
+ * `access` is deliberately not optional, for the same reason `scope` is not:
+ * `satisfies` below turns a new key that omits it into a COMPILE error, so the
+ * question is answered when the key is added rather than discovered later by
+ * whoever finds a `createSignal` initializer reading `undefined`.
+ *
+ * sessionStorage keys carry no `access`. They are still on the Web Storage API,
+ * which is synchronous by nature, so the tier is a property of this store alone.
+ */
+export type LocalKeySpec
+  /**
+   * A `sync` key MAY declare `monotonic`: merge the value as a HIGH-WATER MARK
+   * rather than last-write-wins. Only the two relay sequence marks do. See
+   * `KvWriteOptions.monotonic` in `~/lib/browserStorageDb` for what it prevents.
+   */
+  = | (KeySpec & { readonly access: 'sync', readonly monotonic?: true })
+  /**
+   * An `async` key MAY NOT, and the union is what makes that a COMPILE error
+   * rather than a silent nothing. Only `localStorageSet` forwards the flag;
+   * `localStorageStore` writes last-write-wins, so an `async` key that declared
+   * `monotonic` would read as fenced and be written unfenced -- which is the
+   * relay wedge the flag exists to prevent, arriving through the registry.
+   */
+    | (KeySpec & { readonly access: 'async', readonly monotonic?: never })
+
+/**
  * Every localStorage key, by logical name.
  *
  * The `account` entries are the ordinary case and need no argument: a
@@ -274,48 +277,75 @@ export interface KeySpec {
 export const LOCAL_KEY_SPECS = {
   // User-level preferences and trust state -- values that should outlive
   // ordinary idle gaps but still self-clean if the app goes unopened for a
-  // year. The on-read refresh in `readDynamic` pushes the expiration forward on
-  // every access, so a user who opens the app at any point during the year
+  // year. The on-read refresh -- `readMirror` for the `sync` tier and
+  // `localStorageLoad` for the `async` one -- pushes the expiration forward once
+  // it is within REFRESH_THRESHOLD_MS of the full TTL, so a user who opens the
+  // app at any point during the year
   // keeps these forever; a year of total inactivity expires them.
-  [KEY_BROWSER_PREFS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
-  [KEY_MRU_AGENT_PROVIDERS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
-  [KEY_KEY_PINS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
-  [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
-  [KEY_PREFERRED_EXTERNAL_APP]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
+  // `sync`: read inside the synchronous `onStorageAccountChange` callback (see
+  // PreferencesContext.reseedBrowserTier), and by `~/lib/terminal` while it
+  // constructs an xterm instance.
+  [KEY_BROWSER_PREFS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  // `sync`: read from `useMruProviders.mruProviders()`, a plain accessor the
+  // render path calls, and from the synchronous `pickDefaultProvider`.
+  [KEY_MRU_AGENT_PROVIDERS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  // `sync`: `KeyPinStore.resolve` hands back a `commit` closure that re-reads
+  // and rewrites the map with NO await between, which is what closes the
+  // intra-tab pin-clobber race.
+  [KEY_KEY_PINS]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  // `sync`: seeded eagerly from the synchronous account-change callback.
+  [KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
+  [KEY_PREFERRED_EXTERNAL_APP]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
   // The workspace this account was last on. A year rather than the days its
   // templated table-mates get: this is a preference, not a cache -- it is the
   // only record of where the app should reopen, since the URL no longer carries
   // the workspace id.
-  [KEY_ACTIVE_WORKSPACE]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
+  //
+  // `sync` is the one judgement call in this table. Its reader is a tracked
+  // effect that COULD await, but only by hoisting five reactive reads above the
+  // first await and adding a re-entrancy guard, for one short string.
+  [KEY_ACTIVE_WORKSPACE]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
   // How the sidebar orders every workspace section. A preference the user set
   // once, like the browser preferences above -- so a year, not the seven days a
-  // per-directory cache takes.
-  [KEY_WORKSPACE_SORT]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS },
+  // per-directory cache takes. `sync`: `createAccountScopedSignal` seeds it from
+  // a synchronous `get()`.
+  [KEY_WORKSPACE_SORT]: { match: 'exact', scope: 'account', ttlMs: YEAR_MS, access: 'sync' },
   // High-water mark for the desktop userevents relay ids (see useUserEvents).
-  // Device-scoped: see the note above the table.
-  [KEY_USER_EVENTS_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS },
+  // Device-scoped: see the note above the table. `sync` because the allocator is
+  // a synchronous `() => number`, and `monotonic` because a smaller mark must
+  // never overwrite a larger one.
+  [KEY_USER_EVENTS_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS, access: 'sync', monotonic: true },
   // High-water mark for the desktop channel relay ids (see relayClaim). Same
   // reason, same sidecar fence.
-  [KEY_CHANNEL_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS },
+  [KEY_CHANNEL_RELAY_SEQ]: { match: 'exact', scope: 'device', ttlMs: YEAR_MS, access: 'sync', monotonic: true },
 
-  [PREFIX_EDITOR_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-  [PREFIX_EDITOR_MIN_HEIGHT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-  [PREFIX_AGENT_SESSION]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-  [PREFIX_CONTROL_STATE]: { match: 'prefix', scope: 'account', ttlMs: 1 * DAY_MS },
-  [PREFIX_WORKER_INFO]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-  [PREFIX_FILES_SHOW_HIDDEN]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-  [PREFIX_FILES_SORT_ORDER]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
+  // Every `async` entry below is an unbounded family whose reader already sits
+  // inside an effect or an async function. They are the reason the tier split
+  // exists: mirroring them would read a user's whole draft and row-height
+  // history into every tab on the sign-in path, which is exactly the cost the
+  // move off localStorage was meant to stop paying.
+  [PREFIX_EDITOR_DRAFT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  [PREFIX_EDITOR_MIN_HEIGHT]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  [PREFIX_AGENT_SESSION]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  [PREFIX_CONTROL_STATE]: { match: 'prefix', scope: 'account', ttlMs: 1 * DAY_MS, access: 'async' },
+  [PREFIX_WORKER_INFO]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+  // `sync`: both are read inside a `createSignal` initializer (see
+  // `createPersistedSignal`), so the file list would paint with the wrong
+  // hidden-file state and then flip.
+  [PREFIX_FILES_SHOW_HIDDEN]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'sync' },
+  [PREFIX_FILES_SORT_ORDER]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'sync' },
   // The git mode a repository was last started with, keyed by
   // `<workerId>:<gitToplevel>` (see `gitModeStickyKey`). The TTL is the only
   // thing limiting growth -- there is one entry per repository the user ever
-  // starts a workspace in -- and `readDynamic` refreshes it on read, so a
-  // repository in weekly use never expires while an abandoned one does.
-  [PREFIX_WORKSPACE_GIT_MODE]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
+  // starts a workspace in -- and a read refreshes it, so a repository in weekly
+  // use never expires while an abandoned one does. `sync`: read from a
+  // `createMemo` in WorkspaceSectionMenu, which cannot await.
+  [PREFIX_WORKSPACE_GIT_MODE]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'sync' },
   // Measured chat-row heights (see chatRowHeightPersistence). A warm-start
   // cache: stale entries are harmless (each row's key digest must match its
   // live heightKey to hydrate), so the TTL only limits storage growth.
-  [PREFIX_CHAT_ROW_HEIGHTS]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS },
-} as const satisfies Record<string, KeySpec>
+  [PREFIX_CHAT_ROW_HEIGHTS]: { match: 'prefix', scope: 'account', ttlMs: 7 * DAY_MS, access: 'async' },
+} as const satisfies Record<string, LocalKeySpec>
 
 /**
  * Every sessionStorage key, by logical name.
@@ -339,7 +369,8 @@ export const SESSION_KEY_SPECS = {
   // The set of expanded workspaces in the sidebar tree. Matches the 30-day
   // lifetime of the per-workspace UI snapshot. Its sibling "which workspace is
   // active" is deliberately NOT here: that one has to survive a tab close, so
-  // it lives in localStorage under `KEY_ACTIVE_WORKSPACE`.
+  // it lives in the durable half (`LOCAL_KEY_SPECS`) under
+  // `KEY_ACTIVE_WORKSPACE`.
   [KEY_EXPANDED_WORKSPACES]: { match: 'exact', scope: 'account', ttlMs: 30 * DAY_MS },
   // Per-session CRDT client identity. Long-lived so a refresh keeps the same
   // id; the TTL limits retention if the tab survives for weeks without being
@@ -395,9 +426,9 @@ const RETIRED_NAMESPACE = 'leapmux-'
  * describes and the table to register a key in. They are properties of the
  * table, so an index and its labels cannot be paired incorrectly.
  */
-function indexSpecs(specs: Record<string, KeySpec>, store: string, table: string) {
-  const exact = new Map<string, KeySpec>()
-  const prefixes: Array<{ name: string, spec: KeySpec }> = []
+function indexSpecs<S extends KeySpec>(specs: Record<string, S>, store: string, table: string) {
+  const exact = new Map<string, S>()
+  const prefixes: Array<{ name: string, spec: S }> = []
   for (const [name, spec] of Object.entries(specs)) {
     if (spec.match === 'exact')
       exact.set(name, spec)
@@ -407,10 +438,10 @@ function indexSpecs(specs: Record<string, KeySpec>, store: string, table: string
   return { exact, prefixes, store, table }
 }
 
-const LOCAL_INDEX = indexSpecs(LOCAL_KEY_SPECS, 'localStorage', 'LOCAL_KEY_SPECS')
-const SESSION_INDEX = indexSpecs(SESSION_KEY_SPECS, 'sessionStorage', 'SESSION_KEY_SPECS')
+const LOCAL_INDEX = indexSpecs<LocalKeySpec>(LOCAL_KEY_SPECS, 'localStorage', 'LOCAL_KEY_SPECS')
+const SESSION_INDEX = indexSpecs<KeySpec>(SESSION_KEY_SPECS, 'sessionStorage', 'SESSION_KEY_SPECS')
 
-type SpecIndex = ReturnType<typeof indexSpecs>
+type SpecIndex<S extends KeySpec = KeySpec> = ReturnType<typeof indexSpecs<S>>
 
 /**
  * The registration for a logical name, or null when nothing registers it.
@@ -418,7 +449,7 @@ type SpecIndex = ReturnType<typeof indexSpecs>
  * Exact entries are consulted FIRST and never prefix-match, so a singleton
  * cannot inherit a TTL because some prefix happens to be its leading substring.
  */
-function specFor(name: string, index: SpecIndex): KeySpec | null {
+function specFor<S extends KeySpec>(name: string, index: SpecIndex<S>): S | null {
   const exact = index.exact.get(name)
   if (exact !== undefined)
     return exact
@@ -428,6 +459,34 @@ function specFor(name: string, index: SpecIndex): KeySpec | null {
   }
   return null
 }
+
+// ---------------------------------------------------------------------------
+// The two localStorage key vocabularies
+// ---------------------------------------------------------------------------
+
+type LocalSpecs = typeof LOCAL_KEY_SPECS
+
+type ExactNamesOf<A extends KeyAccess> = {
+  [K in keyof LocalSpecs]: LocalSpecs[K] extends { match: 'exact', access: A } ? K : never
+}[keyof LocalSpecs] & string
+
+type PrefixNamesOf<A extends KeyAccess> = {
+  [K in keyof LocalSpecs]: LocalSpecs[K] extends { match: 'prefix', access: A } ? K : never
+}[keyof LocalSpecs] & string
+
+/**
+ * A name the SYNCHRONOUS accessors take: an exact `sync` name, or a `sync`
+ * prefix followed by anything.
+ *
+ * A composed key such as `` `${PREFIX_FILES_SHOW_HIDDEN}${workerId}` `` infers
+ * as a template literal type and matches with no cast. Using the wrong accessor
+ * is therefore a COMPILE error -- and `resolveLocalKey` throws for it too,
+ * because a type cannot reach a key built from a runtime `string`.
+ */
+export type SyncLocalKey = ExactNamesOf<'sync'> | `${PrefixNamesOf<'sync'>}${string}`
+
+/** A name the ASYNCHRONOUS accessors take. See {@link SyncLocalKey}. */
+export type AsyncLocalKey = ExactNamesOf<'async'> | `${PrefixNamesOf<'async'>}${string}`
 
 /** Returns the TTL in ms for a registered localStorage name, or null if unknown. */
 export function getTtlForKey(name: string): number | null {
@@ -440,6 +499,33 @@ export function getTtlForKey(name: string): number | null {
 
 /** The account every `account`-scoped key resolves under, or null before sign-in. */
 let storageAccount: string | null = null
+
+/** One mirrored row, exactly as the database holds it. */
+interface MirrorEntry {
+  v: unknown
+  e: number
+}
+
+/**
+ * The synchronous tier, in memory, keyed by the STORED key.
+ *
+ * By the stored key rather than the logical name, because every other party
+ * that talks about a row speaks stored keys: the write queue, the cross-tab
+ * message (which may name an account that is not this one), the sweep, and
+ * `parseStoredKey`. Keying by name would need a translation at each of those,
+ * and each translation is a place to answer the account question differently.
+ *
+ * Holds the DEVICE rows plus the CURRENT account's synchronous rows. Another
+ * account's rows stay on disk untouched, which is exactly what the sweep already
+ * means by "keeps another account's fresh keys".
+ */
+const mirror = new Map<string, MirrorEntry>()
+
+/** Which account's rows the mirror holds, or null before the first hydration. */
+let mirroredAccount: string | null = null
+
+/** Bumped by every hydration; one whose token went stale discards its rows. */
+let hydrationToken = 0
 
 /**
  * The stored key for `name` under `userId`.
@@ -519,6 +605,20 @@ export function setStorageAccount(userId: string): void {
   // document into the incoming account's key.
   if (browserPrefBatchOpen())
     throw new Error('Cannot change the storage account while a browser-preference batch is open.')
+  // THE MIRROR IS THE SYNCHRONOUS TIER, so pointing the namespace at an account
+  // whose rows were never loaded would serve every consumer its built-in default
+  // and then overwrite the stored values with those defaults on the first write.
+  //
+  // The invariant this establishes -- `hasStorageAccount()` implies the mirror
+  // holds that account's rows -- is what every synchronous reader in the app
+  // rests on, so it is checked HERE, at the one writer, rather than discovered
+  // later at some unrelated read.
+  if (mirroredAccount !== userId) {
+    throw new Error(
+      `Storage account "${userId}" is not hydrated. `
+      + `Await hydrateStorageAccount(userId) before setStorageAccount(userId).`,
+    )
+  }
   storageAccount = userId
   for (const listener of accountListeners)
     listener()
@@ -537,6 +637,27 @@ export function hasStorageAccount(): boolean {
 export function resetStorageAccountForTests(): void {
   storageAccount = null
   accountListeners.clear()
+}
+
+/**
+ * Move the namespace to `userId` synchronously, without reading a database.
+ * FOR TESTS.
+ *
+ * Production must `await hydrateStorageAccount` first, because it has rows on
+ * disk to load and a synchronous reader downstream that would otherwise take
+ * its default. A test has none unless it wrote them, and it wrote them into the
+ * mirror -- which is keyed by the STORED key, so the outgoing account's rows
+ * simply become unreachable rather than needing to be dropped. That models the
+ * disk exactly: another account's rows are still there, and only its own
+ * namespace can name them.
+ *
+ * A test that seeds a DATABASE and wants it read awaits `hydrateStorageAccount`
+ * itself.
+ */
+export function setStorageAccountForTests(userId: string): void {
+  hydrationToken++
+  mirroredAccount = userId
+  setStorageAccount(userId)
 }
 
 /**
@@ -583,7 +704,7 @@ export function storedKeyFor(name: string): string | null {
  * the first would write a key the sweep deletes on the next load, and the second
  * would write one account's value where no account can own it.
  */
-function resolveKey(name: string, index: SpecIndex): { key: string, ttl: number } {
+function resolveKey<S extends KeySpec>(name: string, index: SpecIndex<S>): { key: string, ttl: number, spec: S } {
   const spec = specFor(name, index)
   if (spec === null) {
     throw new Error(
@@ -597,7 +718,28 @@ function resolveKey(name: string, index: SpecIndex): { key: string, ttl: number 
       + `once the identity resolves, or register the key as scope: 'device' in browserStorage.ts.`,
     )
   }
-  return { key, ttl: spec.ttlMs }
+  return { key, ttl: spec.ttlMs, spec }
+}
+
+/**
+ * `resolveKey` for the localStorage family, plus the tier check.
+ *
+ * The tier is enforced at RUNTIME as well as in the types, because the types
+ * cannot reach a key composed from a runtime `string`, a JavaScript caller, or
+ * an E2E helper. The message names the accessor to use, so a mismatch reads as
+ * an instruction rather than a puzzle.
+ */
+function resolveLocalKey(name: string, access: KeyAccess): { key: string, ttl: number, spec: LocalKeySpec } {
+  const resolved = resolveKey(name, LOCAL_INDEX)
+  if (resolved.spec.access !== access) {
+    const use = resolved.spec.access === 'sync'
+      ? 'localStorageGet / localStorageSet / localStorageRemove'
+      : 'localStorageLoad / localStorageStore / localStorageDrop'
+    throw new Error(
+      `Storage key "${name}" is registered as access: '${resolved.spec.access}'. Use ${use}.`,
+    )
+  }
+  return resolved
 }
 
 // ---------------------------------------------------------------------------
@@ -739,13 +881,18 @@ function writeWrapped(storage: Storage, key: string, value: unknown, ttl: number
 }
 
 /**
- * Report a write that failed, and continue.
+ * Report a sessionStorage write that failed, and continue.
  *
- * A failed write is still not an error a caller can act on -- a draft, a layout
- * snapshot or a key pin has nowhere else to go -- so it stays swallowed. But a
- * REFUSAL must not be silent: the usual cause is the origin quota, every key is
- * partitioned per account, and the symptom a user reports is "my preferences
- * stop saving" with nothing anywhere to point at the cause.
+ * ONLY sessionStorage reaches here. The localStorage family moved to IndexedDB,
+ * whose write queue reports its own refusals; see `reportWriteFailure` in
+ * `~/lib/browserStorageDb`, which is a separate function for a separate store
+ * and shares no wording this one could drift from.
+ *
+ * A failed write is still not an error a caller can act on -- a tab pointer or a
+ * sidebar layout has nowhere else to go -- so it stays swallowed. But a REFUSAL
+ * must not be silent: the usual cause is the origin quota, every key is
+ * partitioned per account, and the symptom a user reports is "my layout stops
+ * saving" with nothing anywhere to point at the cause.
  *
  * A `ReferenceError` is the other case and it is not a refusal: it means the
  * environment has no such global at all, which is true of Node -- server-side
@@ -753,58 +900,399 @@ function writeWrapped(storage: Storage, key: string, value: unknown, ttl: number
  * That is an expected property of where the code runs, so it stays at debug and
  * does not put a warning on the console for every write.
  */
-function reportWriteFailure(store: string, name: string, err: unknown): void {
-  const message = `${store} write failed for "${name}"; the value is not persisted`
+function reportWriteFailure(name: string, err: unknown): void {
+  const message = `sessionStorage write failed for "${name}"; the value is not persisted`
   if (err instanceof ReferenceError)
     log.debug(message, err)
   else
     log.warn(message, err)
 }
 
-/** Read and unwrap a value from localStorage. Returns undefined on missing/expired/malformed. */
-export function localStorageGet<T>(name: string): T | undefined {
-  const { key, ttl } = resolveKey(name, LOCAL_INDEX)
-  try {
-    return readDynamic(localStorage, key, ttl) as T | undefined
-  }
-  catch { /* ignore parse errors */ }
-  return undefined
+// ---------------------------------------------------------------------------
+// The mirror: the synchronous tier's view of the database
+// ---------------------------------------------------------------------------
+
+/** The local names whose registration satisfies `predicate`, computed once. */
+function namesWhere(predicate: (spec: LocalKeySpec) => boolean): string[] {
+  return Object.entries(LOCAL_KEY_SPECS)
+    .filter(([, spec]) => predicate(spec))
+    .map(([name]) => name)
 }
 
-/** Stringify and write a value to localStorage wrapped with a TTL. Write errors are logged, not thrown. */
-export function localStorageSet(name: string, value: unknown): void {
-  const { key, ttl } = resolveKey(name, LOCAL_INDEX)
+/**
+ * The three name lists the hydration reads, PARTITIONED so no name appears in
+ * two of them.
+ *
+ * The two relay marks are `exact`, `sync` AND `device` at once, so a plain
+ * "every sync exact name" list and a separate "every device name" list both
+ * hold them -- and the hydration then asks for each of those keys twice.
+ * Scoping the account list to `scope: 'account'` is what makes the three lists
+ * disjoint, and it is also what lets each one compose its keys with the one
+ * function that answers for its scope.
+ */
+const SYNC_EXACT_ACCOUNT_NAMES = namesWhere(spec => spec.match === 'exact' && spec.access === 'sync' && spec.scope === 'account')
+
+/** Every `sync` local prefix. Every prefix family is account-scoped. */
+const SYNC_PREFIX_NAMES = namesWhere(spec => spec.match === 'prefix' && spec.access === 'sync')
+
+/** The device-scoped names, which every account shares. */
+const DEVICE_NAMES = namesWhere(spec => spec.scope === 'device')
+
+/**
+ * Load `userId`'s synchronous rows, plus the device rows, into the mirror.
+ *
+ * AWAIT THIS BEFORE `setStorageAccount(userId)`. It deliberately does NOT move
+ * the namespace itself: that move must stay synchronous and adjacent to the
+ * identity write, which is the ordering `AuthContext` and `PreferencesContext`
+ * are built on.
+ *
+ * IT NEVER REJECTS. No IndexedDB, an open that failed and a read that threw all
+ * leave an empty mirror for this account, which reads as "no stored value" and
+ * takes every consumer's built-in default -- the same outcome as a fresh
+ * profile, and never a reason a user cannot sign in.
+ *
+ * The device rows are loaded here too rather than at module evaluation. Their
+ * one reader, `relayClaim.claim()`, runs in a channel-wrapper constructor with
+ * no lifecycle hook to wait on -- but a channel only opens for an authenticated
+ * session, so this gate is already ahead of it, and doing the work here keeps
+ * the module free of asynchronous side effects at import time.
+ */
+export async function hydrateStorageAccount(userId: string): Promise<void> {
+  const token = ++hydrationToken
+  // ALREADY HYDRATED FOR THIS ACCOUNT: nothing to do. The token still moves
+  // first, so a hydration for a DIFFERENT account that is still in flight
+  // cannot install its rows over the mirror this one is keeping.
+  //
+  // This is not only an optimization. `AuthContext.setUser` runs on every
+  // `refreshUser`, and ten settings call sites make one -- so without this a
+  // routine profile save re-reads the whole synchronous tier and rebuilds the
+  // mirror from disk, discarding any write this tab issued but has not flushed.
+  // The BroadcastChannel keeps the mirror current across tabs, and the sweep
+  // publishes its own evictions, so a re-read buys nothing.
+  if (mirroredAccount === userId)
+    return
+  let rows: KvRow[] = []
   try {
-    writeWrapped(localStorage, key, value, ttl)
+    rows = await readSyncRows(userId)
   }
   catch (err) {
-    reportWriteFailure('localStorage', name, err)
+    log.warn('browser storage hydration failed; this session runs on defaults', err)
   }
+  // A newer identity started hydrating while this one was in flight. Installing
+  // now would put the outgoing account's rows under the incoming account's
+  // namespace -- the exact leak the scoping exists to close.
+  if (token !== hydrationToken)
+    return
+  installMirror(userId, rows)
 }
 
 /**
- * Remove a key from localStorage. Silently ignores errors.
+ * The rows the mirror needs: one keyed lookup for the exact names, one bound
+ * range per synchronous prefix family.
  *
- * It validates the name, unlike the version that took a whole stored key:
- * composing the stored key requires the registration that says which namespace
- * the name lives in, so an unregistered name has no key to remove and a
- * silent no-op would leave the caller believing it deleted something.
+ * Deliberately NOT one scan of `accountStorageKeyPrefix(userId)`. That would
+ * also materialize every `chat-row-heights:` and `local-messages:` row -- the
+ * unbounded families -- on the sign-in path, which is precisely the cost the
+ * tier split exists to avoid. A handful of index ranges is cheap; reading a
+ * megabyte of drafts is not.
  */
-export function localStorageRemove(name: string): void {
-  const { key } = resolveKey(name, LOCAL_INDEX)
-  try {
-    localStorage.removeItem(key)
-  }
-  catch { /* ignore errors */ }
+async function readSyncRows(userId: string): Promise<KvRow[]> {
+  // The two lists are disjoint by construction, so each name composes under the
+  // one function that answers for its scope and no key is requested twice.
+  const exactKeys = [
+    ...SYNC_EXACT_ACCOUNT_NAMES.map(name => accountStorageKey(userId, name)),
+    ...DEVICE_NAMES.map(name => deviceStorageKey(name)),
+  ]
+  const accountPrefix = accountStorageKeyPrefix(userId)
+  const [exact, ...families] = await Promise.all([
+    readKvRows(exactKeys),
+    ...SYNC_PREFIX_NAMES.map(prefix => readKvPrefix(accountPrefix + prefix)),
+  ])
+  return [...exact, ...families.flat()]
 }
 
 /**
- * Clear localStorage. For tests only: production code removes keys by name
- * (`localStorageRemove`); a wholesale clear is a test-fixture reset, which
- * still routes through this module so no call site touches localStorage
- * directly. `sessionStorageClearForTests` is its twin -- a fixture resets both
- * stores, so a module that forwards one and not the other pushes the caller
- * straight back to a raw `clear()`.
+ * Replace the mirror with `rows`, dropping whatever the previous account left.
+ *
+ * A row that already expired is not installed and its deletion is queued: a
+ * hydration is a read, and a read has always been where an expired value is
+ * noticed and removed.
+ */
+function installMirror(userId: string, rows: readonly KvRow[]): void {
+  const now = Date.now()
+  mirror.clear()
+  for (const row of rows) {
+    // A WRITE THIS TAB ISSUED DURING THE READ WINS. The read started before it,
+    // so the row it returned is older by construction -- and the write already
+    // reached the queue, so installing the older row would leave the mirror
+    // disagreeing with what is about to be on disk. The device rows reach this
+    // path in production: `persistedSeq`'s allocator runs from a channel-wrapper
+    // constructor with no lifecycle hook to wait on.
+    const queued = peekKvPending(row.k)
+    if (queued !== undefined) {
+      if (!('removed' in queued) && queued.row.e > now)
+        mirror.set(row.k, { v: queued.row.v, e: queued.row.e })
+      continue
+    }
+    if (row.e <= now) {
+      enqueueKvDelete(row.k, { publish: true })
+      continue
+    }
+    mirror.set(row.k, { v: row.v, e: row.e })
+  }
+  mirroredAccount = userId
+}
+
+/**
+ * Read a mirrored row, applying the same expiration and refresh rules the
+ * `{v, e}` envelope carried.
+ *
+ * No `try` of its own, unlike the localStorage version: the refresh moves a
+ * number in a Map and appends to the write queue, neither of which can throw. A
+ * refused FLUSH settles that write's durability false without touching the
+ * value, which is the property the old inner `try` existed to guarantee.
+ */
+function readMirror(key: string, spec: LocalKeySpec): unknown | undefined {
+  const entry = mirror.get(key)
+  if (entry === undefined)
+    return undefined
+  const now = Date.now()
+  if (entry.e <= now) {
+    mirror.delete(key)
+    enqueueKvDelete(key, { publish: true })
+    return undefined
+  }
+  if (shouldRefreshExpiration(entry.e, spec.ttlMs)) {
+    entry.e = now + spec.ttlMs
+    // `monotonic` travels with the KEY, not with the call. This refresh writes
+    // the same row `localStorageSet` writes, so it must carry the same merge
+    // policy: without it a refresh of a high-water mark whose mirror sits below
+    // disk would write the smaller value back and un-fence the relay.
+    enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: false, monotonic: spec.monotonic })
+  }
+  return cloneForRead(entry.v)
+}
+
+/**
+ * A private copy of a mirrored value, so a caller cannot mutate the mirror.
+ *
+ * The synchronous tier used to answer from `JSON.parse`, which produced a fresh
+ * object per read by construction. The mirror holds ONE object, and several
+ * callers do a read-modify-write in place -- `KeyPinStore.resolve`'s `commit`
+ * assigns into the map it read, `updateBrowserPref` deletes a field of the
+ * document it read. Without this they would mutate the mirror, and the queued
+ * row beside it, before their own write validated anything.
+ *
+ * A primitive cannot be mutated, so it is returned as it is. Everything else is
+ * already structured-cloneable, because `snapshotValue` cloned it on the way in.
+ */
+function cloneForRead(value: unknown): unknown {
+  return typeof value === 'object' && value !== null ? structuredClone(value) : value
+}
+
+/**
+ * Snapshot `value` for storage, or report that it cannot be stored.
+ *
+ * A snapshot rather than a reference, because the write is behind: without it a
+ * caller that mutates the object before the flush would persist the mutation,
+ * where the JSON serialization this replaces captured the value on the spot.
+ *
+ * TWO STRATEGIES, AND THE SECOND IS NOT A FALLBACK FOR RARE INPUT. Structured
+ * clone is exact and cheap, and it is what widens a stored value beyond JSON --
+ * `NaN`, a `Uint8Array`, a `Map` all survive it. But it REFUSES A PROXY, and
+ * several callers here hand over a value read out of a Solid store, whose
+ * nested objects are proxies: `agentSession.store` persists its `rateLimits`
+ * and `contextUsage` straight from the reactive state. Those are ordinary data,
+ * not a mistake, so a JSON round trip serializes them -- which is exactly what
+ * every write here did before, so nothing regresses by taking it.
+ *
+ * THE SECOND STRATEGY IS LOSSY, and it cannot tell which loss it is taking.
+ * `JSON.stringify` does not refuse a function, a DOM node or a `Symbol` -- it
+ * DROPS the key and serializes the rest -- so the fallback stores a truncated
+ * value where structured clone refused the whole one. It also undoes the
+ * widening that made structured clone worth taking: `NaN` and `Infinity` become
+ * `null`, a `Map` and a `Set` become `{}`, a `Date` becomes a string, and a
+ * `Uint8Array` becomes an object keyed by index. A value that merely CONTAINS a
+ * Solid proxy takes all of that for its other fields too.
+ *
+ * So the fallback WARNS. It is the expected path for the store-backed writers
+ * and there is nothing a caller can do about it, which is why it stores rather
+ * than refuses -- but a field that silently stopped round-tripping is exactly
+ * the defect nobody finds by reading the code. Only a value neither strategy can
+ * serialize (a cycle survives structured clone, so in practice a `BigInt`) is a
+ * refusal.
+ */
+function snapshotValue(name: string, value: unknown): { ok: true, value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: structuredClone(value) }
+  }
+  catch {
+    // Fall through to the serializer that reads properties rather than
+    // inspecting the object's internals.
+  }
+  try {
+    const serialized = { ok: true, value: JSON.parse(JSON.stringify(value)) as unknown } as const
+    log.debug(
+      `browser storage value for "${name}" is not structured-cloneable; stored through JSON, `
+      + 'which drops a function or a DOM node and narrows NaN, Map, Set, Date and a typed array',
+    )
+    return serialized
+  }
+  catch (err) {
+    log.error(`browser storage value for "${name}" cannot be stored; it must be plain data`, err)
+    return { ok: false }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The synchronous tier
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a mirrored value. Returns undefined when it is missing or expired.
+ *
+ * Synchronous, and answers entirely from memory: no IndexedDB request is issued
+ * on this path at all.
+ */
+export function localStorageGet<T>(name: SyncLocalKey): T | undefined {
+  const { key, spec } = resolveLocalKey(name, 'sync')
+  return readMirror(key, spec) as T | undefined
+}
+
+/**
+ * Write a mirrored value.
+ *
+ * The mirror moves SYNCHRONOUSLY and the row is queued, so a read-after-write in
+ * the same turn already sees the new value. That total ordering against the
+ * mirror is what keeps `KeyPinStore.resolve`'s no-await read-modify-write
+ * correct.
+ */
+export function localStorageSet(name: SyncLocalKey, value: unknown): StorageWrite {
+  const { key, ttl, spec } = resolveLocalKey(name, 'sync')
+  const snapshot = snapshotValue(name, value)
+  if (!snapshot.ok)
+    return REFUSED_WRITE
+  const entry: MirrorEntry = { v: snapshot.value, e: Date.now() + ttl }
+  // THE MIRROR OBEYS THE SAME MERGE POLICY THE TRANSACTION DOES. `applyBatch`
+  // skips a monotonic put that would lower the row, and it neither publishes
+  // that skip nor reports it, so a mirror updated unconditionally here keeps the
+  // smaller value for the rest of the session -- and the next read serves it and
+  // refreshes it back onto disk. The expiration still moves, because the row
+  // stays in use whichever value won.
+  const existing = mirror.get(key)
+  if (spec.monotonic === true && typeof existing?.v === 'number' && typeof entry.v === 'number' && existing.v >= entry.v)
+    entry.v = existing.v
+  mirror.set(key, entry)
+  return enqueueKvPut({ k: key, v: entry.v, e: entry.e }, { publish: true, monotonic: spec.monotonic })
+}
+
+/**
+ * Remove a mirrored value.
+ *
+ * It validates the name, unlike a call that took a whole stored key: composing
+ * the stored key requires the registration that says which namespace the name
+ * lives in, so an unregistered name has no key to remove and a silent no-op
+ * would leave the caller believing it deleted something.
+ */
+export function localStorageRemove(name: SyncLocalKey): StorageWrite {
+  const { key } = resolveLocalKey(name, 'sync')
+  mirror.delete(key)
+  return enqueueKvDelete(key, { publish: true })
+}
+
+// ---------------------------------------------------------------------------
+// The asynchronous tier
+// ---------------------------------------------------------------------------
+
+/**
+ * Read an unmirrored value straight from the database.
+ *
+ * Consults the write queue first, so a read issued before the flush sees what
+ * the caller just wrote. The synchronous tier gets that from the mirror; this
+ * tier has none, and two of its callers do a read-modify-write over a list.
+ */
+export async function localStorageLoad<T>(name: AsyncLocalKey): Promise<T | undefined> {
+  const { key, ttl } = resolveLocalKey(name, 'async')
+  const now = Date.now()
+  const epoch = kvWriteEpoch()
+  const queued = peekKvPending(key)
+  if (queued !== undefined) {
+    if ('removed' in queued || queued.row.e <= now)
+      return undefined
+    // CLONED, because the queue still holds this exact object and will write it.
+    // Handing the reference out would let a caller that mutates what it read --
+    // which a read-modify-write over a list does by construction -- mutate the
+    // pending row underneath the flush. A read from disk is already a fresh
+    // structured clone, so this is what makes the two paths behave alike.
+    return structuredClone(queued.row.v) as T
+  }
+  // NO WAIT FOR THE QUEUE. `peekKvPending` above consults the in-flight batch as
+  // well as the pending map, so it already answered for every write this tab has
+  // issued for this key, whichever side of the drain it sits on. Waiting for a
+  // commit could therefore only ever be a wait for OTHER keys.
+  const row = await readKvRow(key)
+  // A WRITE LANDED WHILE THIS READ WAS AWAITING, so none of the housekeeping
+  // below may run. `enqueue` supersedes by key, so a refresh put or an expiry
+  // delete issued now would REPLACE the caller's row -- and its settle is
+  // appended to the winner's list, so the discarded write still reports itself
+  // durable and nothing anywhere says the value was dropped.
+  //
+  // The epoch is deliberately global: any write is enough to make this read's
+  // view of the row untrustworthy, and skipping a best-effort expiry refresh
+  // costs nothing. `peekKvPending` then answers for THIS key, consulting the
+  // in-flight batch as well as the queue, because a write can be in neither the
+  // queue nor the database while its transaction commits.
+  if (kvWriteEpoch() !== epoch) {
+    const raced = peekKvPending(key)
+    if (raced !== undefined) {
+      if ('removed' in raced || raced.row.e <= Date.now())
+        return undefined
+      return structuredClone(raced.row.v) as T
+    }
+    return row === undefined || row.e <= now ? undefined : structuredClone(row.v) as T
+  }
+  if (row === undefined)
+    return undefined
+  if (row.e <= now) {
+    enqueueKvDelete(key, { publish: false })
+    return undefined
+  }
+  if (shouldRefreshExpiration(row.e, ttl))
+    enqueueKvPut({ k: key, v: row.v, e: now + ttl }, { publish: false })
+  // CLONED for the same reason the queued branch above clones: the row object
+  // is the one the refresh put just queued, so a caller that mutates what it
+  // read would mutate the row underneath the flush.
+  return structuredClone(row.v) as T
+}
+
+/** Write an unmirrored value. See {@link localStorageSet} for the shared contract. */
+export function localStorageStore(name: AsyncLocalKey, value: unknown): StorageWrite {
+  const { key, ttl } = resolveLocalKey(name, 'async')
+  const snapshot = snapshotValue(name, value)
+  if (!snapshot.ok)
+    return REFUSED_WRITE
+  return enqueueKvPut({ k: key, v: snapshot.value, e: Date.now() + ttl }, { publish: false })
+}
+
+/** Remove an unmirrored value. See {@link localStorageRemove}. */
+export function localStorageDrop(name: AsyncLocalKey): StorageWrite {
+  const { key } = resolveLocalKey(name, 'async')
+  return enqueueKvDelete(key, { publish: false })
+}
+
+/** Wait for every queued write to reach disk. For a teardown, and for tests. */
+export function flushStorageWrites(): Promise<void> {
+  return flushKvWrites()
+}
+
+/**
+ * Clear the legacy localStorage entries. For tests only.
+ *
+ * The `leapmux:` family no longer lives in localStorage at all; this exists so
+ * the retirement sweep has something to test against, and so a fixture that
+ * resets both Web Storage stores still routes through this module rather than
+ * reaching for a raw `clear()`. `resetBrowserStorageForTests` is what resets the
+ * IndexedDB-backed half.
  */
 export function localStorageClearForTests(): void {
   try {
@@ -813,87 +1301,28 @@ export function localStorageClearForTests(): void {
   catch { /* ignore errors */ }
 }
 
-/** Load the consolidated browser preferences from localStorage. */
-export function loadBrowserPrefs(): BrowserPreferences {
-  return localStorageGet<BrowserPreferences>(KEY_BROWSER_PREFS) ?? {}
-}
-
-/** Any value a browser preference field can hold. */
-export type BrowserPrefValue = NonNullable<BrowserPreferences[keyof BrowserPreferences]>
-
 /**
- * The document every browser-preference write shares while a batch is open, or
- * null while each write owns its own read and write.
- */
-let batchedPrefs: BrowserPreferences | null = null
-
-/**
- * Whether a batch is open, for `setStorageAccount`'s guard.
+ * The mirrored entry at `storedKey`, or undefined. FOR TESTS ONLY.
  *
- * A function rather than a direct read of `batchedPrefs`, because the guard sits
- * above this declaration: the account namespace is the earlier concept and
- * reads better first, and a hoisted function keeps that order without the
- * use-before-define a bare reference would be.
+ * The expiration is not readable as text any more -- a value is a structured
+ * row, not a JSON envelope -- so a test that means to assert a TTL reads it
+ * here rather than parsing something out of a store.
  */
-function browserPrefBatchOpen(): boolean {
-  return batchedPrefs !== null
+export function mirrorEntryForTests(storedKey: string): { v: unknown, e: number } | undefined {
+  return mirror.get(storedKey)
 }
 
 /**
- * Update a single field in the consolidated browser preferences.
+ * Drop the mirror, the write queue and the cached connection. FOR TESTS ONLY.
  *
- * `undefined` DELETES the field, which is what "use the account default" means
- * on disk -- storing a null instead would read back as a device override that
- * pins the value to nothing.
- *
- * This lives beside the key and the interface rather than in
- * PreferencesContext, because the document's SHAPE is this module's to state:
- * the interface above, the field-deletion rule here and the batch below are one
- * contract, and a writer that restated any part of it elsewhere could drift
- * from the reader beside it.
+ * Synchronous, and it touches no database: see `resetKvForTests` for why
+ * awaiting an in-flight flush here would hang the wrong test.
  */
-export function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPrefValue | undefined): void {
-  const prefs = batchedPrefs ?? loadBrowserPrefs()
-  if (value === undefined) {
-    delete prefs[key]
-  }
-  else {
-    (prefs as Record<string, unknown>)[key] = value
-  }
-  // The batch owns the write while one is open. Storing here as well would
-  // defeat it and publish a half-applied document to the other tabs.
-  if (batchedPrefs === null)
-    localStorageSet(KEY_BROWSER_PREFS, prefs)
-}
-
-/**
- * Run `body` with every browser-preference write applied to ONE document,
- * stored once at the end.
- *
- * "Reset all browser overrides" clears seventeen fields, and each one is
- * otherwise a full read, parse, serialize and write of the whole document. One
- * write is also one `storage` event for the other tabs rather than seventeen.
- *
- * Both guards are required. The `finally` closes the batch even when a write
- * inside `body` throws; without it every later write in the page would
- * accumulate into a document that nothing stores. The re-entrancy check holds
- * the same invariant from the other side: a nested call must not adopt a second
- * document and store it over the outer one.
- */
-export function batchBrowserPrefWrites(body: () => void): void {
-  if (batchedPrefs !== null) {
-    body()
-    return
-  }
-  batchedPrefs = loadBrowserPrefs()
-  try {
-    body()
-  }
-  finally {
-    const written = batchedPrefs
-    batchedPrefs = null
-    localStorageSet(KEY_BROWSER_PREFS, written)
-  }
+export function resetBrowserStorageForTests(): void {
+  resetKvForTests()
+  mirror.clear()
+  mirroredAccount = null
+  hydrationToken++
 }
 
 // ---------------------------------------------------------------------------
@@ -917,7 +1346,7 @@ export function sessionStorageSet(name: string, value: unknown): void {
     writeWrapped(sessionStorage, key, value, ttl)
   }
   catch (err) {
-    reportWriteFailure('sessionStorage', name, err)
+    reportWriteFailure(name, err)
   }
 }
 
@@ -956,37 +1385,52 @@ export function sessionStorageClearForTests(): void {
 // Cleanup
 // ---------------------------------------------------------------------------
 
+/**
+ * Delete every `leapmux:`-family key of one Web Storage store that `isRegistered`
+ * rejects, or whose wrapper is missing, malformed or expired.
+ *
+ * `() => false` makes it an unconditional retirement of the whole family, which
+ * is what the localStorage half now wants: nothing registers there any more.
+ *
+ * The WHOLE walk is guarded, not each access. A store that throws on `length`
+ * -- Node and server-side rendering have no such global at all -- must not
+ * reject `runCleanup`, because that would skip every sweep after it.
+ */
 function sweepStorage(
-  storage: Storage,
+  storage: () => Storage,
   isRegistered: (key: string) => boolean,
 ): void {
-  const now = Date.now()
-  const keysToDelete: string[] = []
-  for (let i = 0; i < storage.length; i++) {
-    const key = storage.key(i)
-    if (!key)
-      continue
-    if (!key.startsWith(NAMESPACE) && !key.startsWith(RETIRED_NAMESPACE))
-      continue
-    if (isRegistered(key)) {
-      try {
-        const raw = storage.getItem(key)
-        if (raw !== null) {
-          const parsed = JSON.parse(raw)
-          if (isWrappedValue(parsed) && parsed.e > now)
-            continue
+  try {
+    const store = storage()
+    const now = Date.now()
+    const keysToDelete: string[] = []
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i)
+      if (!key)
+        continue
+      if (!key.startsWith(NAMESPACE) && !key.startsWith(RETIRED_NAMESPACE))
+        continue
+      if (isRegistered(key)) {
+        try {
+          const raw = store.getItem(key)
+          if (raw !== null) {
+            const parsed = JSON.parse(raw)
+            if (isWrappedValue(parsed) && parsed.e > now)
+              continue
+          }
         }
+        catch { /* parse error → treat as stale */ }
       }
-      catch { /* parse error → treat as stale */ }
+      keysToDelete.push(key)
     }
-    keysToDelete.push(key)
-  }
-  for (const key of keysToDelete) {
-    try {
-      storage.removeItem(key)
+    for (const key of keysToDelete) {
+      try {
+        store.removeItem(key)
+      }
+      catch { /* ignore removal errors */ }
     }
-    catch { /* ignore removal errors */ }
   }
+  catch { /* no such store here (Node, SSR): nothing to sweep */ }
 }
 
 /**
@@ -1005,43 +1449,171 @@ function sweepStorage(
  * unknown -- which is how the move to scoped keys retires the old ones without
  * a migration step.
  */
-export function runCleanup(): void {
-  sweepStorage(localStorage, isRegisteredLocalKey)
-  sweepStorage(sessionStorage, isRegisteredSessionKey)
+export async function runCleanup(opts: { checkRegistrations: boolean } = { checkRegistrations: true }): Promise<void> {
+  sweepStorage(() => sessionStorage, isRegisteredSessionKey)
+  // The `leapmux:` family no longer lives in localStorage at all, so nothing
+  // there is registered and every namespaced key goes. No values are copied
+  // across: the local UI state, drafts and worker key pins a browser holds are
+  // re-earned on the next load, and carrying them would mean maintaining a
+  // translation between two layouts for the sake of one release.
+  sweepStorage(() => localStorage, () => false)
+  const deleted = await sweepKv(Date.now(), isRegisteredLocalKey, opts)
+  if (deleted.length === 0)
+    return
+  // Drop what the sweep deleted from the mirror, so a synchronous read cannot
+  // serve a value that is no longer on disk.
+  for (const key of deleted)
+    mirror.delete(key)
+  // Tell the other tabs about EVERY deletion, not only the ones this tab
+  // mirrored. The sweep's expiry arm reaches across accounts, so a peer signed
+  // in as somebody else is exactly the tab that still holds the row this one
+  // just reclaimed -- and it would serve it from memory, then refresh it back
+  // onto disk. A removal carries no value, so the reason the unmirrored tier
+  // publishes nothing (a user's draft prose on a channel every tab receives)
+  // does not apply, and the receiver already drops what it does not mirror.
+  publishKvRemovals(deleted)
+}
+
+// ---------------------------------------------------------------------------
+// Cross-tab changes
+// ---------------------------------------------------------------------------
+
+/** Subscribers to another tab's committed changes. */
+const changeListeners = new Set<(storedKeys: ReadonlySet<string> | null) => void>()
+
+/**
+ * Run `listener` when ANOTHER tab changes a mirrored key.
+ *
+ * It receives the set of STORED keys, so a subscriber matches with
+ * `storedKeyFor` exactly as the `storage` listener this replaced did -- and
+ * therefore ignores another account's change for the same reason. `null` means
+ * the whole store changed and every entry must answer for it, which is the
+ * `event.key === null` case.
+ *
+ * This exists because IndexedDB raises no event of its own; the transport is a
+ * BroadcastChannel. See `~/lib/browserStorageDb` for why the value travels in
+ * the message rather than being re-read.
+ */
+export function onStorageChanged(listener: (storedKeys: ReadonlySet<string> | null) => void): () => void {
+  changeListeners.add(listener)
+  return () => changeListeners.delete(listener)
+}
+
+onKvBroadcast((changes) => {
+  if (changes === null) {
+    for (const listener of changeListeners)
+      listener(null)
+    return
+  }
+  const touched = new Set<string>()
+  for (const change of changes) {
+    // Only rows THIS tab mirrors. An unmirrored key, an unregistered key and
+    // another ACCOUNT's key all fall out here -- matched on the key as stored,
+    // which is the same rule a subscriber matches on.
+    if (!mirror.has(change.k) && !isMirroredKey(change.k))
+      continue
+    if ('removed' in change)
+      mirror.delete(change.k)
+    else
+      mirror.set(change.k, { v: change.v, e: change.e })
+    touched.add(change.k)
+  }
+  if (touched.size > 0) {
+    for (const listener of changeListeners)
+      listener(touched)
+  }
+})
+
+/**
+ * Deliver a change notification as if another tab had sent one. FOR TESTS.
+ *
+ * The values are assumed to be in the mirror already, which is what a test that
+ * wrote them through the ordinary accessors has. It exists so a SUBSCRIBER's
+ * test can drive the callback synchronously and stay about the subscriber; the
+ * transport itself -- the channel, the echo suppression, the key filtering --
+ * is covered in this module's own tests.
+ */
+export function deliverStorageChangeForTests(storedKeys: ReadonlySet<string> | null): void {
+  for (const listener of changeListeners)
+    listener(storedKeys)
+}
+
+/** Whether `stored` is a key this tab's mirror is responsible for holding. */
+function isMirroredKey(stored: string): boolean {
+  const parsed = parseStoredKey(stored)
+  if (parsed === null)
+    return false
+  const spec = specFor(parsed.name, LOCAL_INDEX)
+  if (spec === null || spec.scope !== parsed.scope || spec.access !== 'sync')
+    return false
+  if (spec.scope === 'device')
+    return true
+  return mirroredAccount !== null && stored.startsWith(accountStorageKeyPrefix(mirroredAccount))
 }
 
 /**
- * Run `body` once the browser is idle, or on the next timer tick where
- * `requestIdleCallback` is absent. Returns the cancel.
+ * Run `body` once the browser is idle. Returns the cancel.
+ *
+ * `~/lib/idleCallback` owns the fallback, and the reason to route through it
+ * rather than to test `requestIdleCallback` here is its `hasIdleCallback`: it
+ * requires BOTH halves of the pair, so a webview that exposes the request and
+ * not the cancel takes the timer path for both. Scheduling with one mechanism
+ * and cancelling with the other throws out of the dispose that `App` registers.
  */
 function whenIdle(body: () => void): () => void {
-  if (typeof requestIdleCallback === 'function') {
-    const handle = requestIdleCallback(body, { timeout: IDLE_SWEEP_TIMEOUT_MS })
-    return () => cancelIdleCallback(handle)
-  }
-  const handle = setTimeout(body, 0)
-  return () => clearTimeout(handle)
+  const handle = requestIdle(body, { timeout: IDLE_SWEEP_TIMEOUT_MS })
+  return () => cancelIdle(handle)
 }
 
 /**
  * Start the storage cleanup: one sweep when the browser next goes idle, then
  * one every hour. Returns a dispose function that cancels both.
  *
- * THE FIRST SWEEP IS DEFERRED, because `App` starts it in its own body and both
- * stores are synchronous: a sweep walks every key in the origin, and every key
- * is partitioned per account, so a browser several accounts have signed in to
- * pays for all of them on the critical path to first paint.
+ * THE FIRST SWEEP IS DEFERRED, because `App` starts it in its own body: it
+ * walks every key in the origin, and every key is partitioned per account, so a
+ * browser several accounts have signed in to pays for all of them on the
+ * critical path to first paint. The sessionStorage half and the legacy
+ * localStorage pass are both SYNCHRONOUS main-thread walks, which is what makes
+ * that cost land on the frame rather than behind it.
  *
  * Deferring is safe because the sweep reclaims SPACE and is not a correctness
- * gate. A read cannot see a value the sweep would have deleted: `readDynamic`
- * checks the same expiration and removes the entry itself, and a flat key from
- * an earlier build has no name any accessor composes.
+ * gate. A read cannot see a value the sweep would have deleted: `readMirror` and
+ * `readDynamic` check the same expiration and remove the entry themselves, and a
+ * flat key from an earlier build has no name any accessor composes.
  */
 export function initStorageCleanup(): () => void {
-  const cancelFirst = whenIdle(runCleanup)
-  const id = setInterval(runCleanup, CLEANUP_INTERVAL_MS)
+  // A latch, not a queue: a sweep that is still running has already read every
+  // key the next one would, so starting a second is pure duplicate work -- and
+  // two concurrent passes would each report the other's deletions as their own.
+  let sweeping = false
+  let cancelIdleSweep: (() => void) | null = null
+  // The registration pass runs ONCE per page, on the first sweep. It walks every
+  // primary key in the table (see `sweepKv` for why it cannot be ranged), and
+  // what it looks for changes only when a deploy changes the registry.
+  let checkRegistrations = true
+  const sweep = (): void => {
+    if (sweeping)
+      return
+    sweeping = true
+    const withRegistrations = checkRegistrations
+    checkRegistrations = false
+    void runCleanup({ checkRegistrations: withRegistrations }).finally(() => {
+      sweeping = false
+    })
+  }
+  // EVERY sweep waits for an idle window, not only the first. The two Web
+  // Storage walks are synchronous main-thread work, so an hourly one that fired
+  // straight off the timer would land in the middle of whatever the user is
+  // doing. `IDLE_SWEEP_TIMEOUT_MS` caps the wait, so a page that never idles
+  // still sweeps.
+  const scheduleIdleSweep = (): void => {
+    cancelIdleSweep?.()
+    cancelIdleSweep = whenIdle(sweep)
+  }
+  scheduleIdleSweep()
+  const id = setInterval(scheduleIdleSweep, CLEANUP_INTERVAL_MS)
   return () => {
-    cancelFirst()
+    cancelIdleSweep?.()
     clearInterval(id)
   }
 }

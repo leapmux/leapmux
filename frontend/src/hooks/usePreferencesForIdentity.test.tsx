@@ -1,16 +1,28 @@
 import type { AuthState } from '~/context/AuthContext'
 import type { PreferencesState } from '~/context/PreferencesContext'
 import type { User } from '~/generated/proto/leapmux/v1/auth_pb'
-import type { BrowserPreferences } from '~/lib/browserStorage'
+import type { BrowserPreferences } from '~/lib/browserPreferences'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { cleanup, render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, useAuth } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
+import {
+  flushStorageWrites,
+  KEY_BROWSER_PREFS,
+  localStorageClearForTests,
+  localStorageSet,
+  resetStorageAccountForTests,
+  setStorageAccountForTests,
+} from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { resetSystemInfoMock } from '~/test-support/systemInfoMock'
 import { usePreferencesForIdentity } from './usePreferencesForIdentity'
+
+// These cases drive the real sign-in path, which re-reads the account's stored
+// preferences before it publishes the identity. That needs a database.
+useTestStorage()
 
 const getCurrentUser = vi.hoisted(() => vi.fn())
 const login = vi.hoisted(() => vi.fn())
@@ -119,9 +131,13 @@ function renderApp() {
  * The provider reads the device tier from the account-change notification.
  * Therefore, the seed must exist before the identity arrives.
  */
-function seedDeviceTierFor(userId: string, prefs: BrowserPreferences) {
-  setStorageAccount(userId)
+async function seedDeviceTierFor(userId: string, prefs: BrowserPreferences) {
+  setStorageAccountForTests(userId)
   localStorageSet(KEY_BROWSER_PREFS, prefs)
+  // FLUSHED to the database. Sign-in re-reads the account's rows from there
+  // before it moves the namespace, so a seed that is only in this tab's mirror
+  // would be discarded by the very hydration these cases are about.
+  await flushStorageWrites()
   resetStorageAccountForTests()
 }
 
@@ -150,7 +166,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   localStorageClearForTests()
-  setStorageAccount(TEST_USER_ID)
+  setStorageAccountForTests(TEST_USER_ID)
 })
 
 describe('usePreferencesForIdentity', () => {
@@ -313,21 +329,21 @@ describe('usePreferencesForIdentity', () => {
   })
 
   // This hook does not control the device tier. The provider subscribes to
-  // `onStorageAccountChange`, which runs inside `setStorageAccount`. Thus, the
+  // `onStorageAccountChange`, which runs inside `setStorageAccountForTests`. Thus, the
   // device tier changes with the identity write. These cases verify that
   // behavior through `login`.
   it('seeds the device tier as the first identity is written, with no reload', async () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
     // Write the document for u1 before sign-in. A normal page starts without an
     // identity and receives the account later.
-    seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
+    await seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
 
     const app = await renderBootstrapped()
     expect(app.prefs().theme()).toEqual({ name: 'default', mode: 'system' })
 
     await app.auth().login('u1', 'pw')
 
-    // Do not use `waitFor` here. `AuthContext` calls `setStorageAccount` as it
+    // Do not use `waitFor` here. `AuthContext` calls `setStorageAccountForTests` as it
     // writes the identity. The seed therefore exists before a consumer can
     // observe the new identity.
     expect(app.prefs().theme()).toEqual({ name: 'nord', mode: 'dark' })
@@ -337,7 +353,7 @@ describe('usePreferencesForIdentity', () => {
   // device tier. Otherwise, each signal keeps the previous user's values.
   it('re-seeds the device tier when one user replaces another', async () => {
     listUserSettings.mockResolvedValue({ descriptors: [], values: [] })
-    seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
+    await seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' } })
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')
@@ -358,7 +374,7 @@ describe('usePreferencesForIdentity', () => {
       descriptors: [],
       values: [{ key: 'diff_view', effectiveJson: JSON.stringify('split'), customized: true }],
     })
-    seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' }, enterKeyMode: 'enter-sends' })
+    await seedDeviceTierFor('u1', { theme: { name: 'nord', mode: 'dark' }, enterKeyMode: 'enter-sends' })
     const app = await renderBootstrapped()
 
     await app.auth().login('u1', 'pw')

@@ -121,7 +121,7 @@ export const VerifyEmailPage: Component = () => {
       // consent bounce back through /elevate for a factor the hub would not
       // have asked for.
       if (resp.user)
-        auth.adoptSameIdentityUser(resp.user)
+        await auth.adoptSameIdentityUser(resp.user)
       // The refresh stays for the two signals the response does NOT carry: the
       // resend cooldown and the elevation deadline.
       await auth.refreshUser()

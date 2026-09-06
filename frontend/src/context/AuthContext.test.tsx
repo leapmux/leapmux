@@ -4,11 +4,13 @@ import type { User } from '~/generated/proto/leapmux/v1/auth_pb'
 import { timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { render, screen } from '@solidjs/testing-library'
-import { Show } from 'solid-js'
+import { IDBFactory } from 'fake-indexeddb'
+import { createEffect, createRoot, Show } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { elevationDeadlineInterceptor } from '~/api/transport'
 import { BOOT_SPLASH_PHASE_ATTRIBUTE } from '~/lib/bootSplashTheme'
-import { hasStorageAccount, KEY_BROWSER_PREFS, resetStorageAccountForTests, setStorageAccount, storedKeyFor } from '~/lib/browserStorage'
+import { loadBrowserPrefs } from '~/lib/browserPreferences'
+import { flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, localStorageSet, resetBrowserStorageForTests, resetStorageAccountForTests, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 
@@ -539,7 +541,7 @@ describe('authContext', () => {
       mockGetCurrentUser.mockReturnValue(inFlight.promise)
       const refreshing = auth().refreshUser()
 
-      auth().adoptSameIdentityUser(
+      await auth().adoptSameIdentityUser(
         { id: 'u1', username: 'alice', emailVerified: true } as unknown as User,
       )
       expect(auth().user()?.emailVerified).toBe(true)
@@ -798,7 +800,7 @@ describe('authContext', () => {
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
-    auth().adoptSameIdentityUser({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
+    await auth().adoptSameIdentityUser({ id: 'u1', username: 'alice', emailVerified: true } as unknown as User)
 
     expect(auth().user()?.emailVerified).toBe(true)
     expect(auth().elevationExpiresAt()).toBe(deadline)
@@ -842,9 +844,30 @@ describe('authContext storage namespace', () => {
   })
 
   afterEach(() => {
+    // The connection is dropped BEFORE the factory is unstubbed, so a cached
+    // handle into a discarded universe never outlives the test that made it.
+    resetBrowserStorageForTests()
+    vi.unstubAllGlobals()
     resetStorageAccountForTests()
-    setStorageAccount(TEST_USER_ID)
+    setStorageAccountForTests(TEST_USER_ID)
   })
+
+  /**
+   * Put `prefs` on disk under `userId`, then forget everything in memory.
+   *
+   * What is left is the state a fresh page load starts from: rows in the
+   * database, an empty mirror, and no account. Only `hydrateStorageAccount` can
+   * bridge the two, which is the point of the tests that use this.
+   */
+  async function seedStoredPrefs(userId: string, prefs: Record<string, unknown>): Promise<void> {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    resetBrowserStorageForTests()
+    setStorageAccountForTests(userId)
+    localStorageSet(KEY_BROWSER_PREFS, prefs)
+    await flushStorageWrites()
+    resetBrowserStorageForTests()
+    resetStorageAccountForTests()
+  }
 
   it('points storage at the account before anything can render for it', async () => {
     mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
@@ -867,6 +890,108 @@ describe('authContext storage namespace', () => {
 
     await vi.waitFor(() => expect(seenWhileRendering).toBeDefined())
     expect(seenWhileRendering).toBe('leapmux:u:alice:browser-prefs')
+  })
+
+  // The namespace alone is not the point of moving it early: the VALUES have to
+  // be there too. `setStorageAccount` refuses an account the mirror was not
+  // hydrated for, so a stored preference is readable at the same first render
+  // the key for it is.
+  it('serves a stored preference from the first render that can ask for one', async () => {
+    await seedStoredPrefs('alice', { diffView: 'split' })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+
+    let seenWhileRendering: unknown
+    function Guarded() {
+      seenWhileRendering = loadBrowserPrefs().diffView
+      return null
+    }
+    function Gate() {
+      const auth = useAuth()
+      return <Show when={auth.isAuthenticated()}><Guarded /></Show>
+    }
+    render(() => <AuthProvider><Gate /></AuthProvider>)
+
+    await vi.waitFor(() => expect(seenWhileRendering).toBeDefined())
+    expect(seenWhileRendering).toBe('split')
+  })
+
+  // THE MOST IMPORTANT ONE. Hydration sits on the sign-in path, so a browser
+  // whose storage cannot be opened at all -- a corrupt profile, a private
+  // window that refuses IndexedDB, a quota wall -- must lose its stored
+  // preferences and NOTHING ELSE. Reporting it as a failed bootstrap would lock
+  // such a user out of an app whose session is a cookie.
+  it('signs the user in when the storage database cannot be opened', async () => {
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        throw new Error('the profile is corrupt')
+      },
+    })
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+
+    const { auth } = renderWithAuthCapture()
+
+    await vi.waitFor(() => expect(auth().loading()).toBe(false))
+    expect(auth().isAuthenticated()).toBe(true)
+    expect(auth().bootstrapError()).toBeNull()
+    // Signed in, on defaults: the mirror is empty, which reads as "nothing
+    // stored" everywhere.
+    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:alice:browser-prefs')
+    expect(loadBrowserPrefs()).toEqual({})
+  })
+
+  // Two identities landing in one turn. The first one's rows are still loading
+  // when the second starts, and publishing it afterwards would point the
+  // namespace at an account the mirror no longer holds -- which
+  // `setStorageAccount` refuses, loudly, in the middle of a sign-in.
+  it('does not publish an identity a newer one superseded mid-hydration', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+
+    const published: Array<string | undefined> = []
+    const stop = createRoot((dispose) => {
+      createEffect(() => published.push(auth().user()?.id))
+      return dispose
+    })
+
+    // Both calls run their synchronous half before either hydration resolves,
+    // so the second one owns the identity from that moment on.
+    const first = auth().adoptSameIdentityUser({ id: 'bob', username: 'bob' } as unknown as User)
+    const second = auth().adoptSameIdentityUser({ id: 'carol', username: 'carol' } as unknown as User)
+    await Promise.all([first, second])
+    await vi.waitFor(() => expect(auth().user()?.id).toBe('carol'))
+
+    expect(published).not.toContain('bob')
+    expect(storedKeyFor(KEY_BROWSER_PREFS)).toBe('leapmux:u:carol:browser-prefs')
+    stop()
+  })
+
+  // The identity is not the only thing a stale adopt would publish. `setUser`
+  // returns early when a newer one superseded it mid-hydration, but its CALLERS
+  // continue -- and `adoptCurrentUser` then mirrors the dead response's elevation
+  // window onto whatever session is live now. That window is what `/elevate`
+  // reads to decide whether to prompt, so a signed-out visitor is redirected
+  // away and the hub's consent gate answers with a page that has no way forward.
+  // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
+  it('does not apply a superseded response\'s elevation window', async () => {
+    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    const { auth } = renderWithAuthCapture()
+    await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
+    expect(auth().elevationExpiresAt()).toBeUndefined()
+
+    // A refresh carrying an elevation, superseded mid-flight by a sign-out.
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+      elevationExpiresAt: { seconds: 4_102_444_800n, nanos: 0 },
+    })
+    // `logout` runs `clearAuthUser` in its `finally`, which is the ordinary
+    // production path into the null branch of `setUser`.
+    const stale = auth().refreshUser()
+    await auth().logout()
+    await stale
+
+    expect(auth().isAuthenticated()).toBe(false)
+    expect(auth().elevationExpiresAt()).toBeUndefined()
   })
 
   // Signing out tears down the authenticated tree, and the writes that teardown

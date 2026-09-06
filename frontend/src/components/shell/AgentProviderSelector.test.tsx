@@ -24,10 +24,6 @@ vi.mock('~/components/common/DropdownMenu', () => ({
 }))
 
 describe('agentProviderSelector', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
   it('sorts providers alphabetically by label', () => {
     expect(sortAgentProvidersByName([
       AgentProvider.CODEX,

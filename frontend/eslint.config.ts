@@ -55,14 +55,58 @@ export default antfu({
   // `src/test-support/storageKeysAreRegistered.test.ts` is the guard, and it
   // also holds the two registry rules that have no lint equivalent.
   //
+  // `indexedDB` is confined the same way, one layer down: a raw `indexedDB.open`
+  // skips the schema check that deletes and rebuilds a drifted database, so the
+  // store opens, is the wrong shape, and fails at the first cursor instead.
+  //
+  // THE THREE STORAGE MODULES ARE EXEMPTED PER RULE, NOT BY `ignores`. An
+  // `ignores` at this level removes a file from the WHOLE config object, so
+  // listing `browserStorageDb.ts` and `idb.ts` there also lifted the `dexie`
+  // import ban off them -- and the ban exists to keep `new Dexie(...)` in the
+  // one module that pairs it with the shape check. Each module now loses only
+  // the rule it must: the gateway pair may name the raw globals, and `~/lib/idb`
+  // may also import Dexie.
+  //
   // Tests and E2E specs are exempt. A unit test drives the gateway's own
   // behaviour, and an E2E `page.evaluate` body runs in the browser, where the
   // module does not exist.
   files: ['src/**/*.ts', 'src/**/*.tsx'],
-  ignores: ['src/lib/browserStorage.ts', 'src/**/*.test.ts', 'src/**/*.test.tsx'],
+  ignores: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   rules: {
-    'no-restricted-globals': ['error', { name: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { name: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }],
-    'no-restricted-properties': ['error', { object: 'window', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }],
+    'no-restricted-globals': ['error', { name: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { name: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { name: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' }],
+    'no-restricted-properties': ['error', { object: 'window', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'window', property: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' }, { object: 'globalThis', property: 'localStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'sessionStorage', message: 'Route browser storage through ~/lib/browserStorage.' }, { object: 'globalThis', property: 'indexedDB', message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).' }],
+    // Every store declares a schema and takes a connection from the scaffold;
+    // nobody else constructs a Dexie. This is the import-level statement of the
+    // rule `no-restricted-globals` makes for the raw API above.
+    //
+    // TYPE imports stay allowed, and that is the point of using the
+    // TypeScript-aware rule: a store still has to name `Table<Row>` to type the
+    // tables its connection hands back, and a type cannot open a database.
+    'ts/no-restricted-imports': ['error', {
+      paths: [{
+        name: 'dexie',
+        message: 'Open IndexedDB through ~/lib/idb (createIdbConnection).',
+        allowTypeImports: true,
+      }],
+    }],
+  },
+}, {
+  // The gateway pair IS the browser-storage layer, so it names the raw globals
+  // the rule above confines. It still may not construct a Dexie: that is
+  // `~/lib/idb`'s job, and only there is an open paired with the shape check.
+  files: ['src/lib/browserStorage.ts', 'src/lib/browserStorageDb.ts'],
+  rules: {
+    'no-restricted-globals': 'off',
+    'no-restricted-properties': 'off',
+  },
+}, {
+  // `~/lib/idb` is where Dexie is constructed, so it is the one module that may
+  // import it -- and it wraps the raw `indexedDB` global, so it names that too.
+  files: ['src/lib/idb.ts'],
+  rules: {
+    'no-restricted-globals': 'off',
+    'no-restricted-properties': 'off',
+    'ts/no-restricted-imports': 'off',
   },
 }, {
   // `title` on a DOM element is banned. Use `<Tooltip>` (or a component that

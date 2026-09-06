@@ -195,28 +195,43 @@ handler.
 
 ### Browser storage
 
-Never call `localStorage` or `sessionStorage` directly. Route every read, write, and delete through `~/lib/browserStorage` (`localStorageGet`/`localStorageSet`/`localStorageRemove` for localStorage; `sessionStorageGet`/`sessionStorageSet`/`sessionStorageHas`/`sessionStorageRemove` for sessionStorage). A test resets a store with `localStorageClearForTests` / `sessionStorageClearForTests`, not with `clear()`.
+Never call `localStorage`, `sessionStorage` or `indexedDB` directly. Route every read, write, and delete through `~/lib/browserStorage`, and open every database through `~/lib/idb` (`createIdbConnection`). A test resets a store with `localStorageClearForTests` / `sessionStorageClearForTests` / `resetBrowserStorageForTests`, not with `clear()`.
 
 Callers pass a LOGICAL name (`'key-pins'`, `'worker-info:w-1'`). The module owns the physical layout and composes the whole stored key, so no call site builds one by hand.
 
-Why: every key is scoped to one account, and every value is wrapped as `{ v, e }` with an expiration timestamp. Reads unwrap the value and refresh the timestamp, so a key stays alive as long as the app is touched within its TTL. `runCleanup` sweeps both stores and deletes any `leapmux:`-family key that is unregistered, that carries a scope its registration does not allow, or whose wrapper is missing, malformed, or expired. It KEEPS another account's fresh key, which is the point of the scope. A raw `setItem(...)` write skips both the scope and the envelope, so a second account on the browser reads it and the next sweep deletes it.
+TWO BACKENDS. The `leapmux:` family lives in **IndexedDB** (`~/lib/browserStorageDb`), because several of its families are unbounded and localStorage is synchronous main-thread I/O under a ~5 MB cap. `sessionStorage` stays on the Web Storage API, because its per-tab lifetime is load-bearing for the CRDT client identity and the tab pointers.
+
+IndexedDB is asynchronous, so every localStorage-family key declares an `access` tier, and that picks the accessor:
+
+- `sync` — MIRRORED in memory, so `localStorageGet` / `localStorageSet` / `localStorageRemove` stay synchronous. For a reader that cannot await: a `createSignal` initializer, a `createMemo`, the `onStorageAccountChange` callback, a constructor.
+- `async` — not mirrored: `localStorageLoad` / `localStorageStore` / `localStorageDrop`, which return promises. The answer for everything else, and for every unbounded family.
+
+Using the wrong accessor is a compile error (`SyncLocalKey` / `AsyncLocalKey`) and also throws at runtime.
+
+`sessionStorage` keeps `sessionStorageGet` / `sessionStorageSet` / `sessionStorageHas` / `sessionStorageRemove`, and carries no `access`.
+
+Why: every key is scoped to one account, and every row carries an expiration. Reads refresh it once it is within three hours of the full TTL, so a key stays alive as long as the app is touched within that TTL. `runCleanup` deletes any expired row, any row no registration matches, and any `leapmux:`-family key left in localStorage by a build that predates the move. It KEEPS another account's fresh key, which is the point of the scope.
+
+Writes go through a coalescing write-behind queue, so a write is not durable the instant it returns. A caller that must know reads `StorageWrite.durable`; `persistedSeq` is the one that does. `App` flushes on `pagehide`.
 
 Two registries hold every key, by logical name:
 
-- `LOCAL_KEY_SPECS` — localStorage.
+- `LOCAL_KEY_SPECS` — the IndexedDB-backed durable half.
 - `SESSION_KEY_SPECS` — sessionStorage.
 
-Each entry states `match` (`exact` or `prefix`), `scope` and `ttlMs`. A `scope: 'account'` key is stored at `leapmux:u:<userId>:<name>`, and that is the answer for anything a user owns. A `scope: 'device'` key is stored at `leapmux:<name>`, for state that guards a resource shared by every account on the origin; the two relay sequence marks are the only entries today.
+A local entry states `match` (`exact` or `prefix`), `scope`, `ttlMs` and `access`; a session entry omits `access`. A `scope: 'account'` key is stored at `leapmux:u:<userId>:<name>`, and that is the answer for anything a user owns. A `scope: 'device'` key is stored at `leapmux:<name>`, for state that guards a resource shared by every account on the origin; the two relay sequence marks are the only entries today, and they are also the only `monotonic` ones (a high-water merge, which the types allow on a `sync` key alone).
 
-`setStorageAccount(userId)` points the account namespace at the signed-in user, and `AuthContext` is its one caller. An account-scoped access before that call throws. A module that MIRRORS an account-scoped key in memory subscribes to `onStorageAccountChange` so the mirror moves with the namespace.
+`hydrateStorageAccount(userId)` loads the synchronous tier and MUST be awaited before `setStorageAccount(userId)`, which refuses an account it was not hydrated for. `AuthContext` is the one caller of both. An account-scoped access before that throws. A module that MIRRORS an account-scoped key in memory subscribes to `onStorageAccountChange` so the mirror moves with the namespace.
+
+Cross-tab changes travel on a BroadcastChannel (IndexedDB raises no event), delivered by `onStorageChanged` as the set of stored keys that moved.
 
 Adding a new key:
 
 1. Add the constant (`KEY_*`) or the prefix (`PREFIX_*`) to `browserStorage.ts`.
-2. Register it in `LOCAL_KEY_SPECS` or `SESSION_KEY_SPECS` with a `match`, a `scope` and a TTL. `satisfies Record<string, KeySpec>` turns a missing `scope` into a compile error.
-3. Read and write through the helpers. They throw for an unregistered name, so a missed registration fails visibly instead of disappearing on the next sweep.
+2. Register it in `LOCAL_KEY_SPECS` or `SESSION_KEY_SPECS`. `satisfies` turns a missing `scope` — or, for a local key, a missing `access` — into a compile error.
+3. Read and write through the helpers for its tier. They throw for an unregistered name and for the wrong tier, so a mistake fails visibly instead of disappearing on the next sweep.
 
-Two guards enforce what the types cannot: `no-restricted-globals` in `eslint.config.ts` rejects any reference to the storage globals outside the gateway, and `src/test-support/storageKeysAreRegistered.test.ts` fails the suite for an exported key constant that neither table registers, and for a name registered in both.
+Two guards enforce what the types cannot: `no-restricted-globals` / `no-restricted-properties` in `eslint.config.ts` reject any reference to the storage globals outside the gateway (and any `dexie` import outside `~/lib/idb`), and `src/test-support/storageKeysAreRegistered.test.ts` fails the suite for an exported key constant that neither table registers, and for a name registered in both.
 
 ## Git
 

@@ -2,9 +2,10 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach } from 'vitest'
 import {
   localStorageClearForTests,
+  resetBrowserStorageForTests,
   resetStorageAccountForTests,
   sessionStorageClearForTests,
-  setStorageAccount,
+  setStorageAccountForTests,
 } from './src/lib/browserStorage'
 import { setCRDTBridge } from './src/lib/crdt'
 import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
@@ -43,6 +44,9 @@ beforeEach(() => {
   // stores safe to construct anywhere.
   sessionStorageClearForTests()
   localStorageClearForTests()
+  // Drop the mirror, discard the write queue and forget the cached connection,
+  // so nothing the previous test stored is visible to this one.
+  resetBrowserStorageForTests()
   // Sign the suite in. Every `leapmux:` key is scoped to an account, and a read
   // or write with none set throws, so without this every test that touches
   // storage -- directly or through a store that seeds itself -- would fail on
@@ -50,7 +54,22 @@ beforeEach(() => {
   // different account, or none, calls `setStorageAccount` /
   // `resetStorageAccountForTests` itself.
   resetStorageAccountForTests()
-  setStorageAccount(TEST_USER_ID)
+  // The TEST prime, which installs an empty mirror without opening a database.
+  //
+  // NO `indexedDB` FACTORY IS STUBBED, here or anywhere global. The synchronous
+  // storage tier answers entirely from the mirror, so a test that writes a
+  // preference and reads it back needs no database at all -- and installing one
+  // for every test would (a) hang under fake timers, because fake-indexeddb's
+  // requests never complete when their timer source is frozen, and (b) flip
+  // `isIndexedDbAvailable`, which the render-artifact tests assert on. A test
+  // that genuinely needs persistence calls `useTestStorage()` from
+  // `~/test-support/persistentStorage`, or stubs its own `IDBFactory`.
+  //
+  // `IDBKeyRange` is a separate question and IS installed globally, by
+  // `vitest.idbKeyRange.ts` ahead of this file. It is only the key-range class,
+  // whose presence says nothing about whether persistence is available:
+  // `isIndexedDbAvailable` reads `indexedDB` alone.
+  setStorageAccountForTests(TEST_USER_ID)
 })
 
 afterEach(() => {

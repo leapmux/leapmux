@@ -1,6 +1,6 @@
 import { render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccount } from '~/lib/browserStorage'
+import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageGet, resetStorageAccountForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { applyTheme, DEFAULT_THEME_VALUE } from '~/lib/themeStore'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { LauncherView } from './LauncherView'
@@ -85,7 +85,7 @@ describe('launcherView', () => {
       expect(document.documentElement.getAttribute('data-ui-theme')).toBe('default')
     }
     finally {
-      setStorageAccount(TEST_USER_ID)
+      setStorageAccountForTests(TEST_USER_ID)
     }
     expect(localStorageGet(KEY_BROWSER_PREFS)).toBeUndefined()
   })

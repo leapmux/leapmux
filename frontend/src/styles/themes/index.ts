@@ -74,7 +74,7 @@ export function isThemeId(id: string): boolean {
  *
  * Never throws and never returns undefined. An unknown name reaches this
  * function on two ordinary paths -- a preference written by a newer build, and
- * a hand-edited localStorage document -- and neither is a reason to leave the
+ * a hand-edited storage entry -- and neither is a reason to leave the
  * app with no palette at all.
  */
 export function themeById(id: string | undefined | null): ThemeDefinition {

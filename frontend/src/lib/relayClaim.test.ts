@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
+import { flushStorageWrites } from '~/lib/browserStorage'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { relayClaim } from './relayClaim'
+
+// The reload cases below flush the relay mark to disk and re-import the
+// storage gateway, so they need a real database to reload it from.
+useTestStorage()
 
 describe('relayClaim', () => {
   it('hands out a distinct, increasing id per claim', () => {
@@ -79,8 +86,14 @@ describe('relayClaim', () => {
     expect(second).toBeGreaterThan(first)
 
     // Simulate a reload: the module's in-memory counter resets to null, but the
-    // persisted mark in localStorage survives (as the sidecar's owner does).
+    // persisted mark survives on disk (as the sidecar's owner does). The mark
+    // has to be FLUSHED first -- a real reload happens after the write reaches
+    // the database -- and the fresh gateway has to hydrate, which is what a real
+    // page load does before anything can read a stored value.
+    await flushStorageWrites()
     vi.resetModules()
+    const storage = await import('~/lib/browserStorage')
+    await storage.hydrateStorageAccount(TEST_USER_ID)
     const { relayClaim: reloaded } = await import('./relayClaim')
 
     expect(reloaded.claim()).toBeGreaterThan(second)

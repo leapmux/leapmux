@@ -12,7 +12,7 @@ import {
 } from '~/components/workspace/workspaceListState'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { TabType, WorkspaceArchiveState } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { localStorageClearForTests, setStorageAccount } from '~/lib/browserStorage'
+import { localStorageClearForTests, setStorageAccountForTests } from '~/lib/browserStorage'
 import { createSectionStore } from '~/stores/section.store'
 
 interface TabRefLike { tabType: TabType, tabId: string }
@@ -860,7 +860,7 @@ function viewOrder(
 describe('useWorkspaceOperations getWorkspacesForGroup', () => {
   beforeEach(() => {
     localStorageClearForTests()
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     resetWorkspaceListStateForTests()
   })
 
@@ -973,7 +973,7 @@ describe('useWorkspaceOperations handleWorkspaceDragEnd', () => {
     mockMoveWorkspace.mockResolvedValue({})
     mockSetWorkspaceArchiveState.mockResolvedValue({ workerTabs: [] })
     localStorageClearForTests()
-    setStorageAccount('u-1')
+    setStorageAccountForTests('u-1')
     resetWorkspaceListStateForTests()
   })
 

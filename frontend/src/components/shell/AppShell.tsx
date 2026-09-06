@@ -709,7 +709,7 @@ export const AppShell: Component = () => {
     getCurrentTabContext,
     newAgentDialog,
     setNewAgentLoadingProvider,
-    focusEditor: () => focusEditorRef()?.(),
+    focusEditor,
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
     repoGitStore,
   })
@@ -762,13 +762,39 @@ export const AppShell: Component = () => {
     termOps,
     activeTab: () => activeTab() ?? undefined,
     getCurrentTabContext,
-    focusEditor: () => focusEditorRef()?.(),
+    focusEditor,
     getScrollState: () => getScrollStateRef()?.(),
     setFileTreePath,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
     workerOnlineState: workerId => workerOnlineState(workerSection.workers(), workerId),
     repoGitStore,
   })
+
+  /**
+   * Focus the composer, unless a tab rename is open.
+   *
+   * ONE GUARD FOR EVERY AUTOMATIC FOCUS OF THE EDITOR, at the source rather than
+   * at each caller. The inline rename input lives in the tab strip, and the
+   * shell focuses the composer on its own after a new agent, after a dialog
+   * closes and after the editor finishes building -- each of which would take
+   * the keyboard from a rename in progress. Guarding here means a new caller
+   * inherits the rule instead of having to know about it.
+   *
+   * A rename no longer COMMITS on a focus steal (see `TabBar`), so this is about
+   * the caret rather than the text: without it the user's next keystrokes go to
+   * the composer while the rename input still sits open on screen.
+   *
+   * Deliberately not `untrack`ed: every caller is an event handler or a
+   * `requestAnimationFrame`, so this read is outside a tracked scope already.
+   */
+  // A function declaration, not a const: `tabOps` is declared below and this is
+  // only ever CALLED from a later event, so hoisting is what lets the guard sit
+  // beside the ref it wraps rather than a hundred lines further down.
+  function focusEditor(): void {
+    if (tabOps.isTabEditing())
+      return
+    focusEditorRef()?.()
+  }
   // Build the final dialog map now that tabOps owns its handle.
   const dialogs: AppShellDialogStates = {
     newAgent: newAgentDialog,
@@ -1284,6 +1310,7 @@ export const AppShell: Component = () => {
       handleTabClose: tabOps.handleTabClose,
       probeBusy: busyProbe.probeMany,
       setIsTabEditing: tabOps.setIsTabEditing,
+      isTabEditing: tabOps.isTabEditing,
       closingTabKeys: tabOps.closingTabKeys,
     },
     newTab: {
@@ -1630,7 +1657,7 @@ export const AppShell: Component = () => {
           selection={selection}
           layoutStore={layoutStore}
           sectionStore={sectionStore}
-          focusEditor={() => focusEditorRef()?.()}
+          focusEditor={focusEditor}
           loadWorkspaces={loadWorkspaces}
           onSelectWorkspace={id => handleSelectWorkspace(id)}
           availableProviders={agentOps.availableProviders()}

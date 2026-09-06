@@ -224,13 +224,20 @@ func TestAdminIdPService_OIDCRefusals(t *testing.T) {
 
 	// A PRESET carries its own answer, so neither flag is required, and its
 	// stored row never carries the client secret back.
+	//
+	// THE SECRET CARRIES A HYPHEN ON PURPOSE. The row this searches holds a
+	// generated id, and `id.Generate` draws 48 characters from A-Za-z0-9 -- so a
+	// needle of three alphanumerics occurs in it by chance, and one did: the id
+	// "HnonlqAghsDC68wCoDLgjlntSET5hnM6XORHYGKcLd3iDanO" failed this assertion
+	// on CI. A hyphen cannot appear in that alphabet, which makes the search
+	// answer for the secret alone.
 	require.NoError(t, add(&leapmuxv1.AddOAuthProviderRequest{
-		ProviderType: "github", Name: "github", ClientId: "gh", ClientSecret: "ghs",
+		ProviderType: "github", Name: "github", ClientId: "gh", ClientSecret: "ghs-preset-secret",
 	}))
 	listed, err := env.client.ListOAuthProviders(ctx, authedReq(&leapmuxv1.ListOAuthProvidersRequest{}, env.token))
 	require.NoError(t, err)
 	require.Len(t, listed.Msg.GetProviders(), 1)
-	assert.NotContains(t, listed.Msg.GetProviders()[0].String(), "ghs",
+	assert.NotContains(t, listed.Msg.GetProviders()[0].String(), "ghs-preset-secret",
 		"the client secret never crosses back")
 }
 

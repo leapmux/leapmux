@@ -22,10 +22,16 @@ import {
 } from '~/generated/proto/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
-import { KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from '~/lib/browserStorage'
+import { flushStorageWrites, KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { isStatePopulated } from '~/lib/crdt/pendingOps'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
+import { TEST_USER_ID } from '~/test-support/crdtBridge'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { nextUserEventsRelayId, useUserEvents } from './useUserEvents'
+
+// The reload cases below flush the relay mark to disk and re-import the
+// storage gateway, so they need a real database to reload it from.
+useTestStorage()
 
 // Controllable stand-in for the Tauri sidecar bridge so a test can drive the
 // desktop relay path (isTauriApp() true, no buildWsUrl override) and assert the
@@ -213,12 +219,6 @@ class FakeSocket {
 }
 
 beforeEach(() => {
-  // Clear persisted state so the relay-id allocator tests below start from a
-  // fresh seed (mark = null), independent of whatever the bridge-path tests
-  // above persisted to KEY_USER_EVENTS_RELAY_SEQ. Without this, the first test
-  // in the nextusereventsrelayid block reads a non-null mark left by prior
-  // tests and its assertions become order-dependent.
-  localStorage.clear()
   bridge.isTauri = false
   bridge.handlers.clear()
   bridge.registrations.length = 0
@@ -1544,7 +1544,13 @@ describe('nextUserEventsRelayId', () => {
     // simulated with a fresh module registry -- and must continue above it.
     const staleOwner = 1_000_000
     localStorageSet(KEY_USER_EVENTS_RELAY_SEQ, staleOwner)
+    // Flushed and re-hydrated, which is what a real reload does: the mark
+    // reaches the database before the page goes away, and the fresh gateway
+    // reads it back before anything can ask for an id.
+    await flushStorageWrites()
     vi.resetModules()
+    const storage = await import('~/lib/browserStorage')
+    await storage.hydrateStorageAccount(TEST_USER_ID)
     const fresh = await import('./useUserEvents')
     expect(fresh.nextUserEventsRelayId()).toBeGreaterThan(staleOwner)
   })
@@ -1554,7 +1560,10 @@ describe('nextUserEventsRelayId', () => {
     // and the next id advances from it, regardless of the (much larger) wall
     // clock.
     localStorageSet(KEY_USER_EVENTS_RELAY_SEQ, 1234)
+    await flushStorageWrites()
     vi.resetModules()
+    const storage = await import('~/lib/browserStorage')
+    await storage.hydrateStorageAccount(TEST_USER_ID)
     const fresh = await import('./useUserEvents')
     const id = fresh.nextUserEventsRelayId()
     // The id advances from the persisted mark (1235 * stride), which for any

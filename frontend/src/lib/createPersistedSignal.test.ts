@@ -1,11 +1,12 @@
+import type { SyncLocalKey } from '~/lib/browserStorage'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { localStorageGet, localStorageSet, PREFIX_FILES_SHOW_HIDDEN } from '~/lib/browserStorage'
 import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSignal'
 import { flush } from '~/test-support/async'
 
-const KEY_A = `${PREFIX_FILES_SHOW_HIDDEN}w1:/a`
-const KEY_B = `${PREFIX_FILES_SHOW_HIDDEN}w1:/b`
+const KEY_A: SyncLocalKey = `${PREFIX_FILES_SHOW_HIDDEN}w1:/a`
+const KEY_B: SyncLocalKey = `${PREFIX_FILES_SHOW_HIDDEN}w1:/b`
 
 describe('createPersistedSignal', () => {
   it('seeds from the stored value under the initial key', async () => {
@@ -57,7 +58,7 @@ describe('createPersistedSignal', () => {
     localStorageSet(KEY_A, false)
     localStorageSet(KEY_B, true)
     await createRoot(async (dispose) => {
-      const [key, setKey] = createSignal(KEY_A)
+      const [key, setKey] = createSignal<SyncLocalKey>(KEY_A)
       const [value, setValue] = createPersistedSignal(key, persistedBoolean(true))
       await flush()
       expect(value()).toBe(false)
@@ -78,7 +79,7 @@ describe('createPersistedSignal', () => {
   it('re-reads the default when the new key has nothing stored', async () => {
     localStorageSet(KEY_A, false)
     await createRoot(async (dispose) => {
-      const [key, setKey] = createSignal(KEY_A)
+      const [key, setKey] = createSignal<SyncLocalKey>(KEY_A)
       const [value] = createPersistedSignal(key, persistedBoolean(true))
       await flush()
       expect(value()).toBe(false)

@@ -562,7 +562,12 @@ func TestManagerRetryRefusesDuringAPlannedRestart(t *testing.T) {
 	_, store := newStoreFixture(t)
 	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
 	ctx := context.Background()
-	_, err := manager.Enqueue(ctx, NewItem{
+	// THROUGH THE STORE, like the two calls below it. `Manager.Enqueue` starts a
+	// drain goroutine, which claims the item with its own `PrepareDispatch` --
+	// so the one here answers nil whenever that goroutine reaches the store
+	// first, which a loaded CI runner does. The subject is what `Retry` refuses,
+	// and the item it refuses for is store state, so the setup belongs there.
+	_, err := store.Enqueue(ctx, NewItem{
 		ID: "one", AgentID: "agent-1", Text: "hello",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})

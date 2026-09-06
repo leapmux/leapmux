@@ -31,14 +31,14 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(dialog.getByRole('radio', { name: 'Ding Dong' })).toBeVisible()
   })
 
-  test('should persist browser-level turn end sound in localStorage', async ({ page, leapmuxServer }) => {
+  test('should persist browser-level turn end sound in browser storage', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
     const dialog = await openSettingsAt(page, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
 
     // The dual row edits whichever tier the scope chip selects; persisting to
-    // localStorage means switching to the this-device override first.
+    // browser storage means switching to the this-device override first.
     await overrideOnDevice(page)
 
     // Click "Ding Dong"

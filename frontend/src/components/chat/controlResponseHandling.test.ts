@@ -1,13 +1,19 @@
 import type { FileAttachment } from './attachments'
 import type { ControlResponseHandlingProps } from './controlResponseHandling'
+import type { AsyncLocalKey } from '~/lib/browserStorage'
 import type { ControlRequest } from '~/stores/control.store'
 import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { showWarnToast } from '~/components/common/Toast'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { localStorageGet, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
 import { createControlAnswerState } from './controls/types'
+
+// The asynchronous storage tier has no in-memory mirror, so these round-trips
+// need a database to round-trip through.
+useTestStorage()
 
 // The no-plugin bail surfaces a toast; mock the module so it doesn't reach the
 // runtime `window.ot` global (absent in jsdom) and we can assert it fired.
@@ -72,13 +78,13 @@ function makeControlRequest(requestId: string, agentId: string, payload: Record<
 }
 
 describe('handleSend', () => {
-  it('returns false for empty string', () => {
+  it('returns false for empty string', async () => {
     const { result, onSendMessage } = setup()
     expect(result.handleSend('')).toBe(false)
     expect(onSendMessage).not.toHaveBeenCalled()
   })
 
-  it('returns false for whitespace-only string', () => {
+  it('returns false for whitespace-only string', async () => {
     const { result, onSendMessage } = setup()
     expect(result.handleSend('   ')).toBe(false)
     expect(onSendMessage).not.toHaveBeenCalled()
@@ -169,20 +175,20 @@ describe('handleSend', () => {
     expect(onSendMessage).toHaveBeenCalledTimes(2)
   })
 
-  it('passes attachments when present', () => {
+  it('passes attachments when present', async () => {
     const attachments = [makeAttachment()]
     const { result, onSendMessage } = setupWithAttachments(attachments)
     result.handleSend('look at this')
     expect(onSendMessage).toHaveBeenCalledWith('look at this', attachments)
   })
 
-  it('passes undefined attachments when array is empty', () => {
+  it('passes undefined attachments when array is empty', async () => {
     const { result, onSendMessage } = setupWithAttachments([])
     result.handleSend('hello')
     expect(onSendMessage).toHaveBeenCalledWith('hello', undefined)
   })
 
-  it('allows sending with empty text when attachments present', () => {
+  it('allows sending with empty text when attachments present', async () => {
     const attachments = [makeAttachment()]
     const { result, onSendMessage } = setupWithAttachments(attachments)
     const returned = result.handleSend('')
@@ -191,10 +197,102 @@ describe('handleSend', () => {
     expect(onSendMessage).toHaveBeenCalledWith('', attachments)
   })
 
-  it('blocks sending with empty text and no attachments', () => {
+  it('blocks sending with empty text and no attachments', async () => {
     const { result, onSendMessage } = setupWithAttachments([])
     expect(result.handleSend('')).toBe(false)
     expect(onSendMessage).not.toHaveBeenCalled()
+  })
+})
+
+// Saved answers survive a reload and a tab switch, and the read that restores
+// them is asynchronous. Two effects therefore run against a moving target: the
+// restore, which resets the state and then fills it in, and the persist, which
+// writes whatever the state holds.
+describe('restoring saved answers', () => {
+  /** A control request whose answers this hook will persist under its own key. */
+  function askRequest(requestId: string, claimToken: string): ControlRequest {
+    return {
+      requestId,
+      agentId: 'test-agent',
+      claimToken,
+      payload: {
+        request: {
+          tool_name: 'AskUserQuestion',
+          input: { questions: [{ header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }, { label: 'Test' }] }] },
+        },
+      },
+    }
+  }
+
+  function answerKey(request: ControlRequest): AsyncLocalKey {
+    return `${PREFIX_CONTROL_STATE}test-agent:${request.requestId}:${request.claimToken}`
+  }
+
+  it('fills the state in from the saved answers of the active request', async () => {
+    const request = askRequest('ask-1', 'tok-1')
+    localStorageStore(answerKey(request), { selections: { 0: ['Test'] }, currentPage: 0, customTexts: {}, switches: {} })
+    await flushStorageWrites()
+
+    const answerState = createControlAnswerState()
+    const dispose = createRoot((disposeRoot) => {
+      useControlResponseHandling(
+        { agentId: 'test-agent', controlRequests: [request], onSendMessage: vi.fn() },
+        answerState,
+        () => undefined,
+        vi.fn(),
+      )
+      return disposeRoot
+    })
+
+    await vi.waitFor(() => expect(answerState.selections()).toEqual({ 0: ['Test'] }))
+    dispose()
+  })
+
+  // THE RESTORE GUARD. A user clicking between two prompts swaps the active
+  // request while the first one's answers are still being read. Whichever read
+  // the database answers last must not decide what is on screen: landing the
+  // OUTGOING request's answers under the INCOMING prompt is how a user submits
+  // a choice they made for a different question.
+  it('lands the newer request\'s answers when two swaps arrive together', async () => {
+    const first = askRequest('ask-1', 'tok-1')
+    const second = askRequest('ask-2', 'tok-2')
+    localStorageStore(answerKey(first), { selections: { 0: ['Build'] }, currentPage: 0, customTexts: {}, switches: {} })
+    localStorageStore(answerKey(second), { selections: { 0: ['Test'] }, currentPage: 0, customTexts: {}, switches: {} })
+    await flushStorageWrites()
+
+    const answerState = createControlAnswerState()
+    const [requests, setRequests] = createSignal<ControlRequest[]>([first])
+    const dispose = createRoot((disposeRoot) => {
+      useControlResponseHandling(
+        {
+          agentId: 'test-agent',
+          get controlRequests() { return requests() },
+          onSendMessage: vi.fn(),
+        },
+        answerState,
+        () => undefined,
+        vi.fn(),
+      )
+      return disposeRoot
+    })
+
+    // The swap lands before the first restore's read can resolve, which is the
+    // ordering the token exists for.
+    setRequests([second])
+
+    await vi.waitFor(() => expect(answerState.selections()).toEqual({ 0: ['Test'] }))
+    // And it STAYS. The superseded read resolving afterwards must change
+    // nothing at all.
+    await flushStorageWrites()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(answerState.selections()).toEqual({ 0: ['Test'] })
+
+    // The outgoing request's answers are still on disk: a swap is not an
+    // answer, so nothing may overwrite them with the blank state the restore
+    // installs on its way in.
+    expect(await localStorageLoad(answerKey(first)))
+      .toMatchObject({ selections: { 0: ['Build'] } })
+    dispose()
   })
 })
 
@@ -208,7 +306,7 @@ describe('handleControlSend', () => {
   // cleanup just deleted. The answers of an instance the user already answered
   // would then outlive it. The cleanup therefore releases the ownership too, so
   // the effect writes nothing back in either arrangement.
-  it('leaves no saved answers behind after answering a question', () => {
+  it('leaves no saved answers behind after answering a question', async () => {
     const answerState = createControlAnswerState({ selections: { 0: ['Build'] } })
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     const key = `${PREFIX_CONTROL_STATE}test-agent:ask-1:tok-1`
@@ -238,17 +336,17 @@ describe('handleControlSend', () => {
     // OUTSIDE the root, so the restore effect has already claimed the request as
     // the owner of the answers -- which is the state a real session answers in.
     answerState.setSelections({ 0: ['Build'] })
-    expect(localStorageGet(key)).toBeDefined()
+    expect(await localStorageLoad(key)).toBeDefined()
 
     batch(() => result.handleControlSend(''))
 
     expect(onControlResponse).toHaveBeenCalledOnce()
-    expect(localStorageGet(key)).toBeUndefined()
+    expect(await localStorageLoad(key)).toBeUndefined()
 
     dispose()
   })
 
-  it('uses Claude AskUserQuestion response format keyed by question text', () => {
+  it('uses Claude AskUserQuestion response format keyed by question text', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -295,7 +393,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('threads the active request\'s per-instance claimToken to onControlResponse', () => {
+  it('threads the active request\'s per-instance claimToken to onControlResponse', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const props: ControlResponseHandlingProps = {
@@ -378,7 +476,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('does not pass attachments to control responses', () => {
+  it('does not pass attachments to control responses', async () => {
     const onControlResponse = vi.fn().mockResolvedValue(undefined)
     const attachments = [makeAttachment()]
     const onSendMessage = vi.fn()
@@ -405,7 +503,7 @@ describe('handleControlSend', () => {
     expect(onControlResponse).toHaveBeenCalled()
   })
 
-  it('refuses to send a control response when the agent provider has no plugin', () => {
+  it('refuses to send a control response when the agent provider has no plugin', async () => {
     // No agent provider -> no plugin. We removed the Claude fallback, so rather
     // than encoding the response through the wrong provider's builder we bail
     // (returning false to keep the editor content), surface a toast so the send
@@ -424,7 +522,7 @@ describe('handleControlSend', () => {
     expect(showWarnToast).toHaveBeenCalledWith(expect.stringContaining('unsupported agent provider'))
   })
 
-  it('uses Pi-native extension_ui_response values for select prompts', () => {
+  it('uses Pi-native extension_ui_response values for select prompts', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -458,7 +556,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('uses Codex-native request_user_input responses', () => {
+  it('uses Codex-native request_user_input responses', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -502,7 +600,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('advances Codex multi-question requests instead of submitting incomplete answers', () => {
+  it('advances Codex multi-question requests instead of submitting incomplete answers', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -542,7 +640,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('uses OpenCode-native question responses', () => {
+  it('uses OpenCode-native question responses', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -581,7 +679,7 @@ describe('handleControlSend', () => {
     })
   })
 
-  it('advances OpenCode multi-question requests instead of submitting incomplete answers', () => {
+  it('advances OpenCode multi-question requests instead of submitting incomplete answers', async () => {
     createRoot((dispose) => {
       const onControlResponse = vi.fn().mockResolvedValue(undefined)
       const answerState = createControlAnswerState()
@@ -624,7 +722,7 @@ describe('handleControlSend', () => {
  * message, so the request would come back FailedPrecondition.
  */
 describe('showInterrupt', () => {
-  it('shows the button while the agent works and nothing is being asked', () => {
+  it('shows the button while the agent works and nothing is being asked', async () => {
     createRoot((dispose) => {
       const { result } = setup({ agentWorking: true })
       expect(result.showInterrupt()).toBe(true)
@@ -632,7 +730,7 @@ describe('showInterrupt', () => {
     })
   })
 
-  it('hides the button when the agent is idle', () => {
+  it('hides the button when the agent is idle', async () => {
     createRoot((dispose) => {
       const { result } = setup({ agentWorking: false })
       expect(result.showInterrupt()).toBe(false)
@@ -640,7 +738,7 @@ describe('showInterrupt', () => {
     })
   })
 
-  it('hides the button while a control request is pending', () => {
+  it('hides the button while a control request is pending', async () => {
     createRoot((dispose) => {
       const request = { requestId: 'r1', payload: {}, agentId: 'test-agent' } as unknown as ControlRequest
       const { result } = setup({ agentWorking: true, controlRequests: [request] })
@@ -649,7 +747,7 @@ describe('showInterrupt', () => {
     })
   })
 
-  it('hides the button when this agent cannot be interrupted on its own', () => {
+  it('hides the button when this agent cannot be interrupted on its own', async () => {
     createRoot((dispose) => {
       const { result } = setup({ agentWorking: true, canInterrupt: false })
       expect(result.showInterrupt()).toBe(false)
@@ -657,7 +755,7 @@ describe('showInterrupt', () => {
     })
   })
 
-  it('treats an unset capability as interruptible (the root-agent default)', () => {
+  it('treats an unset capability as interruptible (the root-agent default)', async () => {
     createRoot((dispose) => {
       const { result } = setup({ agentWorking: true, canInterrupt: undefined })
       expect(result.showInterrupt()).toBe(true)
@@ -685,7 +783,7 @@ describe('activeControlRequest', () => {
   // banner and the footer each time an unrelated request joins or leaves the
   // queue. That rebuild discards the plan switches that the user already
   // checked.
-  it('notifies on a new head only, not on every write to the list', () => {
+  it('notifies on a new head only, not on every write to the list', async () => {
     const head = makeControlRequest('req-head', 'agent-A')
     // A RENDER effect, because that is how the composer subscribes: `insert()`
     // builds one. Solid queues it in `Effects`, and `completeUpdates` drains
@@ -722,7 +820,7 @@ describe('activeControlRequest', () => {
   // reset must key on the INSTANCE: an id dependency does not notify for that
   // swap, and the new prompt then opens with the answers the user gave for the
   // instance that went away.
-  it('resets the ask state for a sibling that reuses the request id', () => {
+  it('resets the ask state for a sibling that reuses the request id', async () => {
     const first = makeControlRequest('req-1', 'agent-A', { tool_name: 'AskUserQuestion', tool_input: {} })
     first.claimToken = 'claim-1'
     const second = makeControlRequest('req-1', 'agent-A', { tool_name: 'AskUserQuestion', tool_input: {} })
@@ -754,7 +852,7 @@ describe('activeControlRequest', () => {
     dispose()
   })
 
-  it('reports no active request for an empty or absent list', () => {
+  it('reports no active request for an empty or absent list', async () => {
     createRoot((dispose) => {
       const { result, setControlRequests } = reactiveController([])
 

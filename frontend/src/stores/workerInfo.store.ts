@@ -9,20 +9,20 @@
  */
 
 import type { WorkerInfo } from '~/lib/workerInfoCache'
-import { createSignal, untrack } from 'solid-js'
+import { untrack } from 'solid-js'
+import { createStore, reconcile } from 'solid-js/store'
 import { getWorkerSystemInfo } from '~/api/workerRpc'
+import { onStorageAccountChange } from '~/lib/browserStorage'
 import { createInflightCache } from '~/lib/inflightCache'
 import { shallowEqualExcept } from '~/lib/shallowEqual'
 import { getWorkerInfo, setWorkerInfo } from '~/lib/workerInfoCache'
-
-type InfoMap = Record<string, WorkerInfo>
 
 /**
  * How long a cached snapshot stays "fresh enough" to skip the round trip
  * on dialog open. System info (homeDir, OS, version) is slow-changing —
  * a one-minute TTL is short enough to pick up worker restarts but long
  * enough that opening three dialogs back-to-back only forks one RPC per
- * worker. The localStorage entry survives past this window for offline-
+ * worker. The stored entry survives past this window for offline-
  * display fallback; only the freshness probe gate is bounded here.
  */
 const FRESH_TTL_MS = 60_000
@@ -74,66 +74,135 @@ export interface WorkerInfoStore {
  * test isolation; production code reads {@link workerInfoStore} instead.
  */
 export function createWorkerInfoStore(): WorkerInfoStore {
-  const [infoMap, setInfoMap] = createSignal<InfoMap>({})
-  // Non-reactive memoization of the localStorage lookup: skips the
-  // `getWorkerInfo` round trip for workers we've already seen. Only
-  // POSITIVE hits are cached — negative reads always re-check localStorage
-  // because a sibling store's `fetchWorkerInfo` may have written a fresh
-  // value via `setWorkerInfo` between the first lookup and now. Caching
-  // `null` poisoned this store's read forever and made the
-  // cross-store sharing the comment advertises a lie. The cost: one
-  // synchronous getItem per `workerInfo()` call for as-yet-unfetched
-  // workers, paid until that worker's first successful fetch lands.
-  const hydrated = new Map<string, WorkerInfo>()
+  /**
+   * Everything this store knows about a worker, keyed by id.
+   *
+   * ONE STRUCTURE, and a `createStore` rather than a `createSignal` because the
+   * whole difficulty here is per-KEY notification. A signal holding one record
+   * notifies every consumer of every OTHER worker on any write, so a workspace
+   * full of tabs would re-render each other N times -- which is why this used to
+   * be three structures: a signal for fetched rows, a plain Map for rows read
+   * off disk, and a signal PER worker to notify about the second without
+   * disturbing the first. A store's proxy subscribes a reader to the one key it
+   * touched, so the library supplies what those three were built to fake.
+   *
+   * A row's `updatedAt` is what ranks two readings, so the source no longer has
+   * to be tracked separately: a fetch stamps `Date.now()`, and a row read off
+   * disk carries the stamp of the fetch that wrote it.
+   */
+  const [infoByWorker, setInfoByWorker] = createStore<Record<string, WorkerInfo>>({})
+  // Workers whose read is in flight, so a column of rows asking for the same
+  // id in one render issues ONE read rather than one each.
+  const reading = new Set<string>()
 
-  function readLocalStorage(workerId: string): WorkerInfo | null {
-    const cached = hydrated.get(workerId)
-    if (cached)
-      return cached
-    const fromStorage = getWorkerInfo(workerId) ?? null
-    if (fromStorage)
-      hydrated.set(workerId, fromStorage)
-    return fromStorage
+  // `worker-info:` is an account-scoped family, so this cache belongs to the
+  // account it was read for -- the rule `~/lib/browserStorage` states for any
+  // module that mirrors one in memory. An in-tab account switch needs no reload,
+  // so without this the next account reads the previous one's rows.
+  // `reconcile` drops every key and notifies the readers of each, which is what
+  // makes a still-mounted consumer re-ask rather than sit on a stale row.
+  onStorageAccountChange(() => {
+    setInfoByWorker(reconcile({}))
+  })
+
+  /**
+   * A worker's record as a PLAIN COPY, never the store's own proxy.
+   *
+   * THE SPREAD IS LOAD-BEARING. `WorkspaceTabTree.workersProjection` holds the
+   * previous reading and compares it field by field against the next one
+   * (`workerProjectionsEqual`) to decide whether to rebuild the tree. Handing
+   * out the proxy makes both sides the SAME live object, so every field compares
+   * equal however much the record changed -- and the tree freezes showing the
+   * row it first painted, which is exactly the defect that memo's comment
+   * records fixing. `workerInfo.store.test.ts` pins it.
+   */
+  function snapshot(workerId: string): WorkerInfo | null {
+    const row = infoByWorker[workerId]
+    return row ? { ...row } : null
   }
 
   /**
-   * Reactive read of cached info. On a miss we hydrate from
-   * localStorage via the shared cache; the reactive `infoMap` is only
-   * ever written from `fetchWorkerInfo` so a workspace full of tabs
-   * reading `workerInfo(id)` for distinct ids does not cascade-notify
-   * every other consumer of `infoMap()`.
+   * Start a persisted read for `workerId` and publish it when it lands.
+   *
+   * The read is asynchronous (worker info is an unbounded family on the
+   * unmirrored storage tier), so a cached name appears one microtask after the
+   * first render rather than during it. Writing the store's own key is what
+   * notifies the rows that already rendered without it, and only those: a
+   * consumer of another worker is not disturbed.
+   */
+  function startPersistedRead(workerId: string): void {
+    if (reading.has(workerId))
+      return
+    reading.add(workerId)
+    void getWorkerInfo(workerId)
+      .then((fromStorage) => {
+        if (!fromStorage)
+          return
+        // A newer reading may have landed while this one was in flight -- a
+        // fetch, or another consumer's read. `updatedAt` ranks them, so the
+        // comparison no longer depends on knowing which cache each came from.
+        const current = untrack(() => infoByWorker[workerId])
+        if (current && current.updatedAt >= fromStorage.updatedAt)
+          return
+        setInfoByWorker(workerId, fromStorage)
+      })
+      // A failed read is a MISS, which this store already has an answer for.
+      // `localStorageLoad` resolves the account key synchronously and throws for
+      // a name it cannot resolve, which an `async` function turns into a
+      // rejection -- so without this it would also be an unhandled one.
+      .catch(() => {})
+      // In a `finally`, so a rejected read releases the id too. Leaving it in
+      // `reading` makes every later `workerInfo(id)` return early and answer
+      // null for the rest of the session -- one read poisoning the store for
+      // ever, which is the defect the negative-caching rule below exists for.
+      .finally(() => {
+        reading.delete(workerId)
+      })
+  }
+
+  /**
+   * Reactive read of cached info. On a miss it starts a persisted read and
+   * answers null for now, then re-runs when that read lands.
+   *
+   * ONLY A POSITIVE HIT SHORT-CIRCUITS. A miss re-checks storage every time,
+   * because a sibling store's `fetchWorkerInfo` may have written a fresh row
+   * through `setWorkerInfo` since the last look. Caching the miss poisoned this
+   * store's read for ever and made the cross-store sharing a lie.
+   *
+   * Reading `infoByWorker[workerId]` subscribes to THAT WORKER's key and nothing
+   * else, so a workspace full of tabs reading distinct ids does not
+   * cascade-notify every other consumer.
    */
   function workerInfo(workerId: string): WorkerInfo | null {
-    const map = infoMap()
-    if (map[workerId])
-      return map[workerId]
-    return readLocalStorage(workerId)
+    const cached = snapshot(workerId)
+    if (cached)
+      return cached
+    startPersistedRead(workerId)
+    return null
   }
 
   async function fetchWorkerInfo(workerId: string): Promise<WorkerInfo | null> {
-    // Warm path: a freshly-resolved info already sits in the reactive
-    // map (this dialog open, or a sibling dialog open within the TTL
-    // window).
+    // Warm path: a reading already in the store is fresh enough (this dialog
+    // open, or a sibling dialog open within the TTL window).
     //
     // `untrack` keeps a reactive caller (e.g. `createEffect` →
-    // `fetchWorkerInfo`) from subscribing to `infoMap` here — only the
-    // call sites that explicitly read `workerInfo(id)` should
-    // subscribe.
-    const inMem = untrack(infoMap)[workerId]
+    // `fetchWorkerInfo`) from subscribing here — only the call sites that
+    // explicitly read `workerInfo(id)` should subscribe.
+    const inMem = untrack(() => snapshot(workerId))
     if (inMem && Date.now() - inMem.updatedAt < FRESH_TTL_MS)
       return inMem
-    const cached = readLocalStorage(workerId)
+    // This one AWAITS the persisted read rather than starting it and moving
+    // on: it is already an async function, and its answer decides whether to
+    // spend a worker round trip.
+    const cached = inMem ?? await getWorkerInfo(workerId)
     if (cached && Date.now() - cached.updatedAt < FRESH_TTL_MS) {
-      if (inMem !== cached)
-        setInfoMap(prev => ({ ...prev, [workerId]: cached }))
+      setInfoByWorker(workerId, cached)
       return cached
     }
-    // `pending.run` lives at module scope; the body runs once even
-    // when multiple stores call in parallel. The localStorage write +
-    // hydrated cache update happen inside the body (process-wide
-    // side effects); the reactive map update happens outside so each
-    // store's own `infoMap` signal is notified — the body closes over
-    // only the first caller's setInfoMap.
+    // `pending.run` lives at module scope; the body runs once even when
+    // multiple stores call in parallel. The persisted write happens inside the
+    // body (a process-wide side effect); each store writes its OWN state
+    // outside, because the body closes over only the first caller's setter.
     const info = await processSession.pending.run(workerId, async () => {
       try {
         const resp = await getWorkerSystemInfo(workerId)
@@ -155,13 +224,12 @@ export function createWorkerInfoStore(): WorkerInfoStore {
       }
     })
     if (info) {
-      hydrated.set(workerId, info)
-      setInfoMap((prev) => {
-        const existing = prev[workerId]
-        if (existing && shallowEqualExcept(existing, info, ['updatedAt']))
-          return prev
-        return { ...prev, [workerId]: info }
-      })
+      // `updatedAt` alone is not a change worth notifying about: a re-fetch that
+      // confirms the same system info would otherwise re-run every reader of
+      // this worker on the TTL cadence, for a stamp nothing displays.
+      const existing = untrack(() => infoByWorker[workerId])
+      if (!existing || !shallowEqualExcept(existing, info, ['updatedAt']))
+        setInfoByWorker(workerId, info)
     }
     return info
   }

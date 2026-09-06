@@ -417,7 +417,6 @@ describe('terminalView', () => {
   })
 
   it('re-applies a genuine terminal-theme change to every live instance', async () => {
-    localStorage.clear()
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)
 
@@ -475,8 +474,6 @@ describe('terminalView', () => {
   })
 
   it('writes each instance theme once on a change, not once per mounted view', async () => {
-    localStorage.clear()
-
     // Two tiles (two TerminalView instances) share the module-level `instances`
     // map, so BOTH views' theme effects iterate BOTH instances on a theme flip.
     // The per-instance guard must collapse that to one write per instance
@@ -1010,5 +1007,67 @@ describe('terminalView IME wiring', () => {
     expect(preview()).toBeNull()
 
     disposeTerminalInstance('term-ime-dispose')
+  })
+})
+
+// Automatic focus must stand down while a tab rename is open. The inline rename
+// input commits on BLUR, so anything that takes the keyboard from it ends the
+// rename -- and this effect re-runs on any change to active / visible /
+// tileFocused, which a sidebar toggle or a closing tile produces at any moment.
+describe('terminalView focus while a tab is being renamed', () => {
+  function renderWith(tabEditing: () => boolean) {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{ id: 'focus-guard', ...baseTab }]}
+          activeTerminalId="focus-guard"
+          visible
+          tileFocused
+          tabEditing={tabEditing}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+    return instance
+  }
+
+  it('takes the keyboard when no rename is open', async () => {
+    const instance = renderWith(() => false)
+    await waitFor(() => expect(instance.terminal.focus).toHaveBeenCalled())
+  })
+
+  it('leaves the keyboard alone while a rename is open', async () => {
+    const instance = renderWith(() => true)
+    // The FIT still runs -- the geometry has to stay right either way -- so
+    // waiting on it is what proves the frame happened and the focus was
+    // deliberately skipped, rather than the assertion racing an effect that
+    // never ran.
+    await waitFor(() => expect(instance.fitAddon.fit).toHaveBeenCalled())
+    expect(instance.terminal.focus).not.toHaveBeenCalled()
+  })
+
+  it('takes the keyboard when the prop is absent, for a caller with no tab bar', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{ id: 'no-tabbar', ...baseTab }]}
+          activeTerminalId="no-tabbar"
+          visible
+          tileFocused
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(instance.terminal.focus).toHaveBeenCalled())
   })
 })

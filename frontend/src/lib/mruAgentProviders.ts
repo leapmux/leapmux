@@ -1,7 +1,7 @@
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 
-/** Read the ordered MRU provider list from localStorage. */
+/** Read the ordered MRU provider list from browser storage. */
 export function getMruProviders(): AgentProvider[] {
   return localStorageGet<AgentProvider[]>(KEY_MRU_AGENT_PROVIDERS) ?? []
 }

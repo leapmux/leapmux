@@ -1,6 +1,6 @@
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { showInfoToast } from '~/components/common/Toast'
-import { loadBrowserPrefs } from '~/lib/browserStorage'
+import { loadBrowserPrefs } from '~/lib/browserPreferences'
 
 /** Dedupe window for the same notification tag (ms). */
 const TAG_DEDUPE_MS = 3_000

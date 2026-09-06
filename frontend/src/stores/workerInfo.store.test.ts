@@ -1,7 +1,14 @@
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { createEffect, createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flush } from '~/test-support/async'
+import { workerProjectionsEqual } from '~/components/workspace/WorkspaceTabTree'
+import { deferred, flush } from '~/test-support/async'
+import { useTestStorage } from '~/test-support/persistentStorage'
+
+// Worker info is on the ASYNCHRONOUS storage tier -- one row per worker the
+// user has ever reached, so the family is unbounded and deliberately not
+// mirrored in memory. These round-trips therefore need a database.
+useTestStorage()
 
 const mockGetWorkerSystemInfo = vi.fn()
 vi.mock('~/api/workerRpc', () => ({
@@ -10,7 +17,8 @@ vi.mock('~/api/workerRpc', () => ({
 
 // Imported after the mock so the store closure binds to the mocked RPC.
 const { createWorkerInfoStore, workerInfoStore, resetOnlinePrefetch } = await import('~/stores/workerInfo.store')
-const { getWorkerInfo, setWorkerInfo, clearWorkerInfo } = await import('~/lib/workerInfoCache')
+const workerInfoCache = await import('~/lib/workerInfoCache')
+const { getWorkerInfo, setWorkerInfo, clearWorkerInfo } = workerInfoCache
 
 function makeRespFor(id: string, overrides: Partial<WorkerInfo> = {}) {
   return {
@@ -25,8 +33,8 @@ function makeRespFor(id: string, overrides: Partial<WorkerInfo> = {}) {
   }
 }
 
-// Each test uses a fresh workerId so the module-scope sharedPending /
-// localStorage don't carry state across runs.
+// Each test uses a fresh workerId so the module-scope sharedPending / stored
+// rows don't carry state across runs.
 let nextId = 0
 function uniqueWorkerId(): string {
   nextId++
@@ -43,7 +51,7 @@ beforeEach(() => {
 })
 
 describe('workerInfoStore', () => {
-  it('issues the RPC when localStorage is empty and caches the result', async () => {
+  it('issues the RPC when nothing is stored and caches the result', async () => {
     await createRoot(async (dispose) => {
       const id = uniqueWorkerId()
       mockGetWorkerSystemInfo.mockResolvedValueOnce(makeRespFor(id))
@@ -55,16 +63,16 @@ describe('workerInfoStore', () => {
       expect(info?.homeDir).toBe(`/home/${id}`)
       // Reactive accessor reflects the fetched info.
       expect(store.workerInfo(id)?.homeDir).toBe(`/home/${id}`)
-      // localStorage hydrated for cross-store sharing.
-      expect(getWorkerInfo(id)?.homeDir).toBe(`/home/${id}`)
+      // The stored row is written for cross-store sharing.
+      expect((await getWorkerInfo(id))?.homeDir).toBe(`/home/${id}`)
       dispose()
     })
   })
 
-  it('skips the RPC when localStorage holds an entry within the freshness TTL', async () => {
+  it('skips the RPC when the stored row is within the freshness TTL', async () => {
     await createRoot(async (dispose) => {
       const id = uniqueWorkerId()
-      // Seed a fresh snapshot directly into localStorage.
+      // Seed a fresh snapshot straight into storage.
       setWorkerInfo(id, {
         name: 'cached',
         os: 'darwin',
@@ -81,14 +89,14 @@ describe('workerInfoStore', () => {
 
       expect(mockGetWorkerSystemInfo).not.toHaveBeenCalled()
       expect(info?.homeDir).toBe('/home/cached')
-      // Reactive map is hydrated from localStorage so downstream reads
+      // Reactive map is hydrated from the stored row so downstream reads
       // pick up the cached value without an extra dance.
       expect(store.workerInfo(id)?.homeDir).toBe('/home/cached')
       dispose()
     })
   })
 
-  it('issues the RPC when localStorage holds a stale entry past the freshness TTL', async () => {
+  it('issues the RPC when the stored row is past the freshness TTL', async () => {
     await createRoot(async (dispose) => {
       const id = uniqueWorkerId()
       // Snapshot older than the 60 000 ms freshness window.
@@ -109,9 +117,9 @@ describe('workerInfoStore', () => {
 
       expect(mockGetWorkerSystemInfo).toHaveBeenCalledTimes(1)
       expect(info?.homeDir).toBe('/home/fresh')
-      // localStorage is overwritten so the next dialog within the
+      // The stored row is overwritten so the next dialog within the
       // freshness window will see the refreshed payload.
-      expect(getWorkerInfo(id)?.homeDir).toBe('/home/fresh')
+      expect((await getWorkerInfo(id))?.homeDir).toBe('/home/fresh')
       dispose()
     })
   })
@@ -133,7 +141,9 @@ describe('workerInfoStore', () => {
       const fetchB = storeB.fetchWorkerInfo(id)
 
       // Only one RPC is in flight even though both stores called fetch.
-      expect(mockGetWorkerSystemInfo).toHaveBeenCalledTimes(1)
+      // Polled, because each fetch first reads the persisted cache to decide
+      // whether the round trip is needed at all.
+      await vi.waitFor(() => expect(mockGetWorkerSystemInfo).toHaveBeenCalledTimes(1))
 
       resolveRpc(makeRespFor(id))
       const [infoA, infoB] = await Promise.all([fetchA, fetchB])
@@ -148,7 +158,7 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('returns null on RPC failure and does not poison the localStorage cache', async () => {
+  it('returns null on RPC failure and does not poison the stored cache', async () => {
     await createRoot(async (dispose) => {
       const id = uniqueWorkerId()
       clearWorkerInfo(id)
@@ -158,19 +168,19 @@ describe('workerInfoStore', () => {
       const info = await store.fetchWorkerInfo(id)
 
       expect(info).toBeNull()
-      // No localStorage write on failure — a future fetch attempt must
+      // No write on failure — a future fetch attempt must
       // still hit the RPC instead of falling for a stale "success".
-      expect(getWorkerInfo(id)).toBeNull()
+      expect((await getWorkerInfo(id))).toBeNull()
       dispose()
     })
   })
 
-  it('workerInfo() hydrates a fresh store from localStorage on first access', async () => {
+  it('workerInfo() hydrates a fresh store from the stored row on first access', async () => {
     // Across a page reload (or a new dialog opening with a fresh store),
-    // the reactive infoMap starts empty but localStorage already holds
+    // the reactive infoMap starts empty but storage already holds
     // the prior snapshot — workerInfo() must surface it transparently
     // (via its non-reactive hydration cache).
-    await createRoot((dispose) => {
+    await createRoot(async (dispose) => {
       const id = uniqueWorkerId()
       setWorkerInfo(id, {
         name: 'persisted',
@@ -185,7 +195,11 @@ describe('workerInfoStore', () => {
 
       const store = createWorkerInfoStore()
       expect(mockGetWorkerSystemInfo).not.toHaveBeenCalled()
-      expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted')
+      // `workerInfo` stays SYNCHRONOUS for the reactive readers that call it,
+      // so a cold store answers null and starts the read; the row arrives
+      // through `infoMap`, which is what re-renders the readers.
+      expect(store.workerInfo(id)).toBeNull()
+      await vi.waitFor(() => expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted'))
       expect(store.getHomeDir(id)).toBe('/home/persisted')
       dispose()
     })
@@ -219,7 +233,7 @@ describe('workerInfoStore', () => {
         workerInfoStore.fetchWorkerInfo(id),
         workerInfoStore.fetchWorkerInfo(id),
       ]
-      expect(mockGetWorkerSystemInfo).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(mockGetWorkerSystemInfo).toHaveBeenCalledTimes(1))
 
       resolveRpc(makeRespFor(id))
       const [infoA, infoB] = await Promise.all([fetchA, fetchB])
@@ -232,12 +246,12 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo() still notifies subscribers after a workerInfo() read hydrated from localStorage', async () => {
+  it('fetchWorkerInfo() still notifies subscribers after a workerInfo() read hydrated from storage', async () => {
     // Regression guard for the non-reactive hydration cache. workerInfo()
-    // now routes localStorage hits through a non-reactive Map, so a
+    // now routes stored hits through a non-reactive Map, so a
     // careless refactor could end up shadowing future writes (subscriber
     // reads stale cached value forever). This test pins that:
-    //   1. The initial workerInfo() read returns the localStorage value.
+    //   1. The initial workerInfo() read returns the stored value.
     //   2. The reactive subscription is still live — when fetchWorkerInfo
     //      lands a fresh payload, the subscriber re-runs and sees the new
     //      value from `infoMap`, not the cached one.
@@ -261,8 +275,12 @@ describe('workerInfoStore', () => {
         createEffect(() => {
           observed.push(store.workerInfo(id)?.homeDir)
         })
-        await flush()
-        expect(observed).toEqual(['/home/stale'])
+        // TWO observations, and the first is the cold answer. `workerInfo` is
+        // synchronous, so the effect runs once before the persisted row has
+        // been read and once after this worker's revision signal announces it
+        // -- which is precisely the reactive notification this test exists to
+        // prove is still live.
+        await vi.waitFor(() => expect(observed).toEqual([undefined, '/home/stale']))
 
         mockGetWorkerSystemInfo.mockResolvedValueOnce(
           makeRespFor(id, { homeDir: '/home/fresh' }),
@@ -272,19 +290,19 @@ describe('workerInfoStore', () => {
 
         // Subscriber observed the post-fetch value: the non-reactive
         // hydration cache did not block the reactive `infoMap` write.
-        expect(observed).toEqual(['/home/stale', '/home/fresh'])
+        expect(observed).toEqual([undefined, '/home/stale', '/home/fresh'])
         dispose()
         done()
       })
     })
   })
 
-  it('fetchWorkerInfo populates the hydrated cache so a later workerInfo() read survives a localStorage wipe', async () => {
+  it('fetchWorkerInfo populates the hydrated cache so a later workerInfo() read survives a storage wipe', async () => {
     // The `hydrated` cache is shared between workerInfo() and
     // fetchWorkerInfo. A successful fetch must seed the cache so a
-    // subsequent workerInfo() — say, after a sweep wiped localStorage
+    // subsequent workerInfo() — say, after a sweep wiped the row
     // — still surfaces the prior result instead of re-hitting
-    // localStorage and observing the gap. Pairs with the in-memory
+    // storage and observing the gap. Pairs with the in-memory
     // short-circuit test below, which covers the reactive infoMap;
     // this one specifically covers the non-reactive hydration cache.
     await createRoot(async (dispose) => {
@@ -295,7 +313,7 @@ describe('workerInfoStore', () => {
       const store = createWorkerInfoStore()
       await store.fetchWorkerInfo(id)
 
-      // Wipe localStorage. workerInfo() must still return the value
+      // Wipe the stored row. workerInfo() must still return the value
       // (it goes through `infoMap` first, which is reactive and held).
       clearWorkerInfo(id)
       expect(store.workerInfo(id)?.homeDir).toBe(`/home/${id}`)
@@ -303,12 +321,12 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('fetchWorkerInfo short-circuits on the in-memory map without re-reading localStorage', async () => {
+  it('fetchWorkerInfo short-circuits on the in-memory map without re-reading storage', async () => {
     // The warm path: an entry that's already in the reactive `infoMap`
-    // (a sibling dialog just fetched it) must not trigger a localStorage
-    // parse — the in-memory check happens first. The `clearWorkerInfo`
+    // (a sibling dialog just fetched it) must not trigger a stored read
+    // — the in-memory check happens first. The `clearWorkerInfo`
     // call between the two fetches pins this: if the code re-reads
-    // localStorage, the second fetch would fall through to the RPC.
+    // storage, the second fetch would fall through to the RPC.
     await createRoot(async (dispose) => {
       const id = uniqueWorkerId()
       clearWorkerInfo(id)
@@ -318,7 +336,7 @@ describe('workerInfoStore', () => {
       await store.fetchWorkerInfo(id)
       expect(mockGetWorkerSystemInfo).toHaveBeenCalledTimes(1)
 
-      // Wipe localStorage. The in-memory map is the only remaining
+      // Wipe the stored row. The in-memory map is the only remaining
       // source of truth for this id.
       clearWorkerInfo(id)
 
@@ -369,15 +387,15 @@ describe('workerInfoStore', () => {
     })
   })
 
-  it('workerInfo() does NOT cache null reads — a sibling store writing to localStorage is visible on the next call', async () => {
+  it('workerInfo() does NOT cache null reads — a sibling store writing to storage is visible on the next call', async () => {
     // Regression: an earlier revision cached null returns from the
-    // localStorage probe in a per-store `hydrated` Map forever. Once a
+    // stored probe in a per-store `hydrated` Map forever. Once a
     // store had observed "no cached info" for a worker id, a sibling
-    // store's successful fetchWorkerInfo (which writes localStorage)
+    // store's successful fetchWorkerInfo (which writes the row)
     // could not reach the original store's read — the poisoned null
     // pinned `workerInfo(id) === null` for the lifetime of the store.
     // The fix caches only positive hits; negative reads re-check
-    // localStorage on every call.
+    // storage on every call.
     await new Promise<void>((done) => {
       createRoot(async (dispose) => {
         const id = uniqueWorkerId()
@@ -387,7 +405,7 @@ describe('workerInfoStore', () => {
         // this verdict forever.
         expect(storeA.workerInfo(id)).toBeNull()
 
-        // Sibling write to localStorage (simulating storeB.fetchWorkerInfo
+        // Sibling write to storage (simulating storeB.fetchWorkerInfo
         // landing while storeA was idle).
         const fresh = {
           name: 'sibling-write',
@@ -401,8 +419,69 @@ describe('workerInfoStore', () => {
         }
         setWorkerInfo(id, fresh)
 
-        // storeA must now see the sibling-written value.
-        expect(storeA.workerInfo(id)?.homeDir).toBe('/home/sibling')
+        // storeA must now see the sibling-written value. Polled, because the
+        // re-read is asynchronous; the invariant is that it happens AT ALL --
+        // a cached null would pin `workerInfo(id)` at null forever.
+        await vi.waitFor(() => expect(storeA.workerInfo(id)?.homeDir).toBe('/home/sibling'))
+        dispose()
+        done()
+      })
+    })
+  })
+
+  // THE LATE-FILL GUARD. `workerInfo()` starts a persisted read and answers
+  // null for now, so a fetch can land while that read is still in flight -- and
+  // the fetch is newer than anything on disk BY CONSTRUCTION. The stored row
+  // must lose.
+  //
+  // What this pins is the PUBLISHING CHANNEL, which is where the mistake is
+  // easy to make: a late read that published through `infoMap` -- the obvious
+  // reading of "so the rows re-render" -- would replace the fetched value with
+  // the older stored one. It publishes through the worker's own revision signal
+  // instead, and `workerInfo` reads `infoMap` ahead of it.
+  //
+  // The read is held open by hand. Left to real timing the fetch is the slower
+  // of the two -- it reads the same row before it decides to spend an RPC -- so
+  // this ordering would never occur here.
+  it('drops a persisted read that lands after a fresher fetch', async () => {
+    await new Promise<void>((done) => {
+      createRoot(async (dispose) => {
+        const id = uniqueWorkerId()
+        const held = deferred<WorkerInfo | null>()
+        const read = vi.spyOn(workerInfoCache, 'getWorkerInfo').mockReturnValueOnce(held.promise)
+
+        const store = createWorkerInfoStore()
+        const observed: (string | null | undefined)[] = []
+        createEffect(() => observed.push(store.workerInfo(id)?.homeDir ?? null))
+        await flush()
+        expect(observed).toEqual([null])
+
+        // The fetch overtakes the held read. Only this call reaches the real
+        // reader, which is what `mockReturnValueOnce` leaves behind.
+        read.mockRestore()
+        mockGetWorkerSystemInfo.mockResolvedValueOnce(makeRespFor(id, { homeDir: '/home/fresh' }))
+        await store.fetchWorkerInfo(id)
+        await flush()
+        expect(observed).toEqual([null, '/home/fresh'])
+
+        // The read finally answers, with what was on disk BEFORE the fetch.
+        held.resolve({
+          name: 'stale-on-disk',
+          os: 'linux',
+          arch: 'x64',
+          homeDir: '/home/stale',
+          version: '1.0',
+          commitHash: 'old',
+          buildTime: '2025-01-01',
+          updatedAt: Date.now() - 5 * 60 * 1000,
+        })
+        await flush()
+        await flush()
+
+        // Unchanged, and NOT re-notified: a third entry here would be a
+        // re-render of every row showing this worker, for the same value.
+        expect(observed).toEqual([null, '/home/fresh'])
+        expect(store.workerInfo(id)?.homeDir).toBe('/home/fresh')
         dispose()
         done()
       })
@@ -410,7 +489,7 @@ describe('workerInfoStore', () => {
   })
 
   it('workerInfo() reads never write to infoMap, so subscribers to unrelated entries stay quiet', async () => {
-    // Localstorage-hydrated reads route through a non-reactive cache.
+    // Storage-hydrated reads route through a non-reactive cache.
     // A subscriber tracking `getHomeDir(unrelated)` (an entry the read
     // never touches) must not re-fire when an unrelated worker is hydrated
     // — otherwise a workspace full of tabs reading per-id `workerInfo`
@@ -439,9 +518,11 @@ describe('workerInfoStore', () => {
         await flush()
         expect(unrelatedRuns).toBe(1)
 
-        // Repeated reads must never re-fire — the hydration cache is
-        // non-reactive and never replaces `infoMap`'s identity.
-        expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted')
+        // Hydrating THIS worker must not re-fire the unrelated subscriber, and
+        // repeated reads must not either: the persisted row lands in a
+        // non-reactive cache plus a revision signal scoped to its own id, never
+        // in `infoMap`, whose identity every consumer shares.
+        await vi.waitFor(() => expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted'))
         expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted')
         expect(store.workerInfo(id)?.homeDir).toBe('/home/persisted')
         await flush()
@@ -449,6 +530,55 @@ describe('workerInfoStore', () => {
         dispose()
         done()
       })
+    })
+  })
+})
+
+// THE CONTRACT `WorkspaceTabTree` RESTS ON, pinned at the store rather than at
+// the component that consumes it.
+//
+// `workersProjection` builds `{ id, info: workerInfo(id) }` per worker and gates
+// its own recompute on `workerProjectionsEqual`. So a worker's info changing
+// must make the OLD and NEW reads compare UNEQUAL -- otherwise the memo keeps
+// its previous value, `buildTree` never re-runs, and the tree shows the stale
+// record. That is the exact freeze the memo's comment records fixing: every row
+// reads `homeDir` to shorten its directory, and the system info arrives on its
+// own RPC after the first paint.
+//
+// It holds today because `workerInfo` answers with a plain record and each write
+// installs a new one. It would STOP holding the moment the store handed out a
+// live reference into its own state -- both sides of the comparison would then
+// be the same object, every field would compare equal, and the tree would freeze
+// with nothing to show for it.
+describe('workerInfo feeds a projection that can tell a change happened', () => {
+  it('compares unequal after the worker info changes', async () => {
+    await createRoot(async (dispose) => {
+      const id = uniqueWorkerId()
+      // ONE store, because that is what `workersProjection` holds: a single
+      // `workerInfoFn` it calls before and after. Two instances would compare
+      // two separate caches and could not see a shared reference at all.
+      const store = createWorkerInfoStore()
+
+      // The first reading arrives from disk, which is how a worker's info shows
+      // up before any RPC. Stamped past the freshness window, so the fetch below
+      // actually spends its round trip instead of answering from the row.
+      setWorkerInfo(id, { ...makeRespFor(id, { homeDir: '/home/before' }), updatedAt: Date.now() - 10 * 60_000 })
+      expect(store.workerInfo(id)).toBeNull()
+      await flush()
+      const before = store.workerInfo(id)
+      expect(before?.homeDir).toBe('/home/before')
+
+      // The system-info RPC then lands with a different home directory, which is
+      // the case the tree froze on: every row shortens its directory with it.
+      mockGetWorkerSystemInfo.mockResolvedValueOnce(makeRespFor(id, { homeDir: '/home/after' }))
+      const after = await store.fetchWorkerInfo(id)
+      expect(after?.homeDir).toBe('/home/after')
+
+      expect(
+        workerProjectionsEqual([{ id, info: before }], [{ id, info: after }]),
+        'the projection must see the change, or the tab tree freezes on the stale record',
+      ).toBe(false)
+      dispose()
     })
   })
 })
