@@ -1,6 +1,8 @@
 package service
 
 import (
+	"database/sql"
+	"errors"
 	"log/slog"
 	"sync"
 
@@ -157,7 +159,20 @@ func (h *OutputHandler) AgentActivitySnapshot(agentID, rootAgentID string) (busy
 	if agentID != rootAgentID {
 		childID = agentID
 	}
-	activeTasks = countActiveBackgroundTasks(h.backgroundTaskRows(rootAgentID), childID)
+	rows := h.backgroundTaskRows(rootAgentID)
+	activeTasks = countActiveBackgroundTasks(rows, childID)
+	if childID != "" && !hasRegistryRowFor(rows, childID) {
+		// The display list holds no row for this child, and that is not yet an
+		// answer: the cap gives up its oldest ACTIVE row when the pool is full of
+		// running work, so a subagent that is still going can be missing from it.
+		// Reading that as idle drops the spinner and hides the Interrupt button on
+		// a run the user can see, which is the same failure
+		// resolveChildRegistryRow's point lookup exists to prevent for messaging.
+		//
+		// One indexed lookup, and only on the miss. A child tab the user has open
+		// is almost always in the list, so this costs nothing in the common case.
+		activeTasks = h.storedChildActiveTasks(childID)
+	}
 
 	// The feeding process. A child never owns one, so both legs ask about the
 	// root -- a child tab is busy only while the process feeding it runs.
@@ -196,11 +211,19 @@ func (h *OutputHandler) isProcessRunning(rootAgentID string) bool {
 
 // backgroundTaskRows returns the root's registry display list.
 //
-// The DISPLAY list rather than a table count, because the two agree on exactly
-// this question: the cap evicts finished rows only (see bgtask.MaxTasks), so an
-// ACTIVE row is always in the list. That keeps the answer free of a DB round
-// trip on the registry chokepoint, and keeps it identical to what the client
-// sees in its own Background tasks list.
+// The DISPLAY list rather than a table count, which is exact for the ROOT's
+// question and cheap. "Is any descendant running" cannot be changed by the cap:
+// the cap drops a row only when the pool is FULL, and a full pool of active rows
+// still answers yes. So the root pays no DB round trip on the registry
+// chokepoint, and its answer stays identical to the Background tasks list the
+// client renders.
+//
+// The COUNT it reports saturates at bgtask.MaxTasks per kind for the same
+// reason, which is what a display count should do -- it is the number the
+// sidebar shows.
+//
+// A CHILD's question is different, and the cap CAN change it: see the miss path
+// in AgentActivitySnapshot.
 func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
 	if h.queries == nil {
 		// No store, so no registry: there is no work to report.
@@ -215,6 +238,45 @@ func (h *OutputHandler) backgroundTaskRows(rootAgentID string) []bgtask.Item {
 		return nil
 	}
 	return rows
+}
+
+// hasRegistryRowFor reports whether the display list holds a row for this child
+// at all, which is what separates "this subagent finished" from "the list cannot
+// say".
+func hasRegistryRowFor(rows []bgtask.Item, childAgentID string) bool {
+	for i := range rows {
+		if rows[i].ChildAgentID == childAgentID {
+			return true
+		}
+	}
+	return false
+}
+
+// storedChildActiveTasks answers the child leg from the TABLE, for a child whose
+// row left the display list.
+//
+// A read failure answers 0. That is the same stance backgroundTaskRows takes and
+// for the same reason: a wrong busy pins the spinner and leaves the close guard
+// refusing a tab the user can no longer close by any route, while a wrong idle
+// costs one missing warning.
+func (h *OutputHandler) storedChildActiveTasks(childAgentID string) int32 {
+	if h.queries == nil {
+		return 0
+	}
+	row, err := h.queries.GetAgentBackgroundTaskByChildAgentID(h.bgTaskCtx(), childAgentID)
+	if err != nil {
+		// ErrNoRows is the ordinary answer for an agent that owns no registry row
+		// -- every root reaches this only through the childID guard above, so a
+		// miss here really means "no such subagent run".
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("activity: read child background task", "child_agent_id", childAgentID, "error", err)
+		}
+		return 0
+	}
+	if bgItemFromRow(row).Status.IsFinished() {
+		return 0
+	}
+	return 1
 }
 
 // countActiveBackgroundTasks counts the pending/running rows -- every row when

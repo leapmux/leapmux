@@ -486,3 +486,73 @@ func TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout(t *testing.T) {
 	lastResponse(t, w, &resp)
 	assert.Empty(t, resp.GetTerminals())
 }
+
+// TestActivity_AChildStaysBusyAfterTheCapDropsItsRow is the boundary the display
+// list cannot answer on its own.
+//
+// The registry cap gives up its oldest ACTIVE row when the pool is full of
+// running work, so a subagent that is still going can be missing from the list.
+// Reading that as idle drops the spinner and hides the Interrupt button on a run
+// the user can watch happening -- the load-bearing case, because the button is
+// how they cancel it.
+func TestActivity_AChildStaysBusyAfterTheCapDropsItsRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
+		Title: "SCAN", Status: bgtask.StatusRunning,
+	}))
+	busy, tasks := svc.Output.AgentActivitySnapshot(childID, "root-1")
+	require.True(t, busy, "the child is running before the cap moves")
+	require.Equal(t, int32(1), tasks)
+
+	// Every filler row is active too, so eviction has no finished row to take and
+	// gives up the oldest -- this child's.
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+	displayed, err := svc.Output.LoadBackgroundTasks(context.Background(), "root-1")
+	require.NoError(t, err)
+	require.False(t, hasRegistryRowFor(displayed, childID),
+		"the display list must actually have dropped the row, or this proves nothing")
+
+	busy, tasks = svc.Output.AgentActivitySnapshot(childID, "root-1")
+
+	assert.True(t, busy, "the row left the sidebar, not the machine")
+	assert.Equal(t, int32(1), tasks)
+}
+
+// The mirror. The table fallback must not resurrect a subagent that really
+// finished, or a closed child tab would spin for the life of the session.
+func TestActivity_AFinishedChildStaysIdlePastTheCap(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
+
+	busy, tasks := svc.Output.AgentActivitySnapshot(childID, "root-1")
+
+	assert.False(t, busy)
+	assert.Zero(t, tasks)
+}
+
+// An agent id that owns no registry row at all -- a child whose spawn never
+// reached the registry, or one the caller made up -- is idle, not an error.
+func TestActivity_AChildWithNoRowAnywhereIsIdle(t *testing.T) {
+	t.Parallel()
+
+	svc, _ := setupRootSink(t, "root-1")
+	svc.Output.processRunning = func(string) bool { return true }
+
+	busy, tasks := svc.Output.AgentActivitySnapshot("never-spawned", "root-1")
+
+	assert.False(t, busy)
+	assert.Zero(t, tasks)
+}

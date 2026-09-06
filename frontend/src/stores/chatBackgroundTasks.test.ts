@@ -8,6 +8,7 @@ import {
   backgroundTaskStatusLabel,
   chipTasksFor,
   countActiveBackgroundTasks,
+  createTabTaskScope,
   filterBackgroundTasksByKind,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
@@ -296,5 +297,58 @@ describe('opensSubagentTranscript', () => {
 
   it('reports a shell row as no transcript, whatever it carries', () => {
     expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'shell', childAgentId: 'c1' }))).toBe(false)
+  })
+})
+
+describe('createTabTaskScope', () => {
+  const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
+    kind: 'subagent',
+    title: 't',
+    activity: '',
+    status: 'running',
+    ...over,
+  })
+
+  // A registry keyed by ROOT owner, and two tabs reading it: `root-1` owns it,
+  // `child-1` is a subagent transcript under it.
+  const tabs: Record<string, { id: string, parentAgentId?: string, rootAgentId?: string }> = {
+    'root-1': { id: 'root-1' },
+    'child-1': { id: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' },
+  }
+  const scope = (rows: BackgroundTaskItem[]) => createTabTaskScope({
+    getAgentTab: id => tabs[id] as never,
+    tasksForRoot: rootId => (rootId === 'root-1' ? rows : []),
+  })
+
+  it('resolves a child tab to its registry owner', () => {
+    const s = scope([])
+    expect(s.rootFor('child-1')).toBe('root-1')
+    expect(s.rootFor('root-1')).toBe('root-1')
+  })
+
+  it('reads a root agent nothing knows about as its own owner', () => {
+    // An optimistic tab, or one hydration has not reached yet. It owns no
+    // registry, so resolving it to anything else would read a stranger's rows.
+    expect(scope([]).rootFor('never-seen')).toBe('never-seen')
+  })
+
+  it('hands a child tab its OWNER\'s registry, not an empty one', () => {
+    const rows = [row({ rowKey: 'mine', parentAgentId: 'child-1' })]
+    // The whole reason the resolution exists: `tasksForRoot('child-1')` answers
+    // nothing, because only a root keys a registry.
+    expect(scope(rows).tasksForRoot('child-1').map(t => t.rowKey)).toEqual(['mine'])
+  })
+
+  it('scopes a tab to the rows IT spawned, and a root to all of them', () => {
+    const rows = [
+      row({ rowKey: 'self', childAgentId: 'child-1', parentAgentId: 'root-1' }),
+      row({ rowKey: 'mine', parentAgentId: 'child-1' }),
+    ]
+    const s = scope(rows)
+    // One definition, shared by the chip on the tab and the close guard that
+    // lists what a close would interrupt. The two must not disagree about
+    // whose work a tab is running.
+    expect(s.tasksForTab('child-1').map(t => t.rowKey)).toEqual(['mine'])
+    expect(s.tasksForTab('root-1').map(t => t.rowKey)).toEqual(['self', 'mine'])
   })
 })
