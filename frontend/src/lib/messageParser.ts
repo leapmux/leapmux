@@ -37,8 +37,8 @@ const EMPTY_PARSED: ParsedMessageContent = {
 
 // AgentChatMessage is immutable once persisted, so caching by message
 // reference avoids the repeated decompress + JSON.parse cost across
-// every caller of parseMessageContent (isAgentWorking scans, the
-// MessageBubble render path, the to-do extractor, etc.). The WeakMap
+// every caller of parseMessageContent (the MessageBubble render path,
+// the to-do extractor, the result-divider hook, etc.). The WeakMap
 // lets trimmed/replaced messages get GC'd without manual eviction.
 const parseCache = new WeakMap<AgentChatMessage, ParsedMessageContent>()
 

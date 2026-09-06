@@ -55,8 +55,56 @@ func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 	return startupCtx, h
 }
 
+// terminalProcessScanTimeout caps one InspectTerminalProcesses call. The scan is
+// a few thousand cheap syscalls on a busy machine, but it reads a table the
+// Worker does not own, so it gets a deadline rather than the caller's patience.
+const terminalProcessScanTimeout = 5 * time.Second
+
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d registrar, svc *Service) {
+	// InspectTerminalProcesses names what is running inside each terminal, so a
+	// close guard can state the reason before it tears the tab down. Batched:
+	// closing a tile asks about every terminal it holds at once.
+	//
+	// registerOwnerGated rather than registerTerminalGatedByID: the request
+	// carries a LIST, and a gate keyed to one id cannot answer for a list. The
+	// owner gate is the whole access decision here -- a Worker's terminals all
+	// belong to its one owner -- and an id that names no live PTY simply drops
+	// out of the response, which is the same answer an idle terminal gets.
+	registerOwnerGated(d, "InspectTerminalProcesses", leapmuxv1.Scope_SCOPE_TERMINAL_READ, dispatchPlain,
+		func(ctx context.Context, _ channel.Caller, r *leapmuxv1.InspectTerminalProcessesRequest, sender channel.ResponseWriter) {
+			ctx, cancel := context.WithTimeout(ctx, terminalProcessScanTimeout)
+			defer cancel()
+			ids := make([]string, 0, len(r.GetTerminalIds()))
+			for _, terminalID := range r.GetTerminalIds() {
+				if terminalID != "" {
+					ids = append(ids, terminalID)
+				}
+			}
+			// One process-table scan for the whole batch, and the manager omits
+			// every terminal that is running nothing.
+			running, err := svc.Terminals.DescendantProcesses(ctx, ids)
+			if err != nil {
+				// A scan the OS refused answers "nothing running" rather than an
+				// error. A guard that cannot answer has to let the close through,
+				// and an error here would instead make the whole close fail.
+				slog.Warn("inspect terminal processes", "terminal_ids", len(ids), "error", err)
+			}
+			out := make([]*leapmuxv1.TerminalProcesses, 0, len(running))
+			for _, t := range running {
+				wire := make([]*leapmuxv1.TerminalProcess, 0, len(t.Processes))
+				for _, proc := range t.Processes {
+					wire = append(wire, &leapmuxv1.TerminalProcess{Pid: proc.PID, Name: proc.Name})
+				}
+				out = append(out, &leapmuxv1.TerminalProcesses{
+					TerminalId: t.TerminalID,
+					Processes:  wire,
+					TotalCount: int32(t.Total),
+				})
+			}
+			sendProtoResponse(sender, &leapmuxv1.InspectTerminalProcessesResponse{Terminals: out})
+		})
+
 	// OpenTerminal starts a new PTY terminal session.
 	registerOwnerGated(d, "OpenTerminal", leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dispatchPlain,
 		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {

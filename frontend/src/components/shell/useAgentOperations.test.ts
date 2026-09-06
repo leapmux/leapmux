@@ -8,11 +8,12 @@ import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { useAgentOperations } from '~/components/shell/useAgentOperations'
-import { AgentInfoSchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { KEY_MRU_AGENT_PROVIDERS, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
@@ -116,9 +117,11 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
 
   const repoGitStore = createRepoGitStore()
   const agentInputQueueStore = { clearAgent: vi.fn() } as any
+  const agentActivityStore = createAgentActivityStore()
   const ops = useAgentOperations({
     agentSessionStore,
     agentInputQueueStore,
+    agentActivityStore,
     chatStore,
     controlStore,
     view: stores.view,
@@ -142,6 +145,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     controlStore,
     chatStore,
     agentInputQueueStore,
+    agentActivityStore,
     repoGitStore,
     ops,
     /** Place an agent on the seeded root tile — the only tile that exists. */
@@ -405,6 +409,7 @@ describe('useAgentOperations', () => {
       const ops = useAgentOperations({
         agentSessionStore: createAgentSessionStore(),
         agentInputQueueStore: { clearAgent: vi.fn() } as any,
+        agentActivityStore: createAgentActivityStore(),
         chatStore,
         controlStore: createControlStore(),
         view: stores.view,
@@ -520,14 +525,13 @@ describe('useAgentOperations', () => {
           })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockResolvedValue({})
-          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
+          agentSessionStore.updateInfo('codex-1', { thinkingTokens: 100 })
 
           await ops.handleInterrupt('codex-1')
 
           expect(mockInterruptAgent).toHaveBeenCalledWith('w-1', {
             agentId: 'codex-1',
           })
-          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
           expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
           expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
           expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
@@ -550,11 +554,10 @@ describe('useAgentOperations', () => {
           })
           add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
           mockInterruptAgent.mockRejectedValue(new Error('interrupt failed'))
-          agentSessionStore.updateInfo('codex-1', { codexTurnId: 'turn-1', thinkingTokens: 100 })
+          agentSessionStore.updateInfo('codex-1', { thinkingTokens: 100 })
 
           await ops.handleInterrupt('codex-1')
 
-          expect(agentSessionStore.getInfo('codex-1').codexTurnId).toBe('turn-1')
           expect(agentSessionStore.getInfo('codex-1').thinkingTokens).toBe(100)
           expect(chatStore.streamingText.clear).not.toHaveBeenCalled()
           expect(chatStore.clearToolProgress).not.toHaveBeenCalled()
@@ -727,6 +730,30 @@ describe('useAgentOperations', () => {
           expect(agentInputQueueStore.clearAgent).toHaveBeenCalledWith('a-1')
           // RPC was dispatched with KEEP as the default worktree action.
           expect(mockCloseAgent).toHaveBeenCalledWith('w-1', { agentId: 'a-1', worktreeAction: WorktreeAction.KEEP })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('forgets the worker-derived busy flag when the tab retires', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { agentActivityStore, ops, add } = setup()
+          const agent = create(AgentInfoSchema, { id: 'a-busy', workerId: 'w-1' })
+          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          agentActivityStore.apply('a-busy', AgentActivityState.WORKING)
+          mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
+
+          ops.handleAgentClose('a-busy')
+
+          // A subagent close is UI-only, so its run continues and the flag stays
+          // true. Reviving that tab -- the same agent id -- would otherwise paint
+          // a spinner and an Interrupt button before any hydration reply, on a
+          // run that may already have ended. The map also grew one entry per
+          // agent ever opened, for the life of the page.
+          expect(agentActivityStore.isBusy('a-busy')).toBe(false)
         }
         finally {
           dispose()

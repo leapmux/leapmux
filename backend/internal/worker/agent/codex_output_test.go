@@ -36,7 +36,7 @@ func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 	return a
 }
 
-func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
+func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingControlSink{}
@@ -47,13 +47,20 @@ func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
 
 	sink.mu.Lock()
 	statusActiveCount := len(sink.statusActives)
-	sessionInfos := append([]map[string]interface{}(nil), sink.sessionInfos...)
+	sessionInfoCount := len(sink.sessionInfos)
 	sink.mu.Unlock()
+	agent.mu.Lock()
+	turnID := agent.turnID
+	agent.mu.Unlock()
 	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
-	require.Equal(t, 1, len(sessionInfos), "turn/started should broadcast the codex_turn_id session info")
-	assert.Equal(t, "turn-42", sessionInfos[0]["codex_turn_id"])
+	assert.Equal(t, "turn-42", turnID, "interrupts and steering target this turn")
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "the Worker's activity state opens with the turn")
 	assert.Equal(t, 1, sink.InputStartedCount(),
 		"turn/started must reactivate a queue after uncertain delivery")
+	// The turn id used to ride an ephemeral session-info frame as well, for a
+	// browser-side working-state heuristic that no longer exists. Nothing reads
+	// it now, so nothing sends it.
+	assert.Equal(t, 0, sessionInfoCount, "turn/started broadcasts no session info")
 }
 
 func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
@@ -72,7 +79,7 @@ func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
 	sessionInfoCount := len(sink.sessionInfos)
 	sink.mu.Unlock()
 	assert.Equal(t, 0, statusActiveCount, "turn/started fallback must NOT re-broadcast full status")
-	assert.Equal(t, 0, sessionInfoCount, "turn/started fallback should not broadcast a turn ID")
+	assert.Equal(t, 0, sessionInfoCount, "turn/started fallback broadcasts no session info")
 }
 
 func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
@@ -1668,7 +1675,7 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *
 	agent := newCodexAgentWithSink(sink)
 
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
-	require.Equal(t, "main-turn", sink.LastSessionInfo()["codex_turn_id"])
+	require.Equal(t, []bool{true}, sink.TurnActives())
 
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
 
@@ -1676,7 +1683,10 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *
 	turnID := agent.turnID
 	agent.mu.Unlock()
 	assert.Equal(t, "main-turn", turnID, "interrupts and steering must keep targeting the active main-thread turn")
-	assert.Equal(t, 1, sink.SessionInfoCount(), "child turns must not replace the frontend turn id")
+	// A collab child's run is its background-task registry row, which the Worker
+	// reads for the child tab. It never touches the root's turn, so the root
+	// publishes nothing here.
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "a child turn must not republish the root's turn state")
 }
 
 func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly(t *testing.T) {

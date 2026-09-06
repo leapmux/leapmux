@@ -54,7 +54,6 @@ function runStatus(
     },
     createLoadingSignal(),
     () => {},
-    undefined,
     streamWorkerId,
   )
 }

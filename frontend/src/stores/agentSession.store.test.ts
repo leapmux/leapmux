@@ -147,13 +147,16 @@ describe('createAgentSessionStore', () => {
     })
   })
 
-  it('should allow codexTurnId to be reset to an empty string', () => {
+  it('should allow a field to be reset to an empty string', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('agent-1', { codexTurnId: 'turn-stale' })
-      store.updateInfo('agent-1', { codexTurnId: '' })
+      // An empty string is a VALUE, not an absent field: a lifecycle patch
+      // clears streamingType by writing one, and a store that dropped empties
+      // would leave the previous marker standing.
+      store.updateInfo('agent-1', { streamingType: 'plan' })
+      store.updateInfo('agent-1', { streamingType: '' })
       const info = store.getInfo('agent-1')
-      expect(info.codexTurnId).toBe('')
+      expect(info.streamingType).toBe('')
       dispose()
     })
   })

@@ -1,3 +1,5 @@
+import type { BusyTabConfirmState } from './BusyTabCloseDialog'
+import type { TabBusyProbe, TabBusyReason } from './tabBusyProbe'
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
@@ -22,12 +24,12 @@ import { awaitCloseResult, summarizeWorktreeCloses, warnWorktreeUnreachable, wor
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { createUpdatableDialogState } from '~/hooks/createDialogState'
+import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename, isAbsolute } from '~/lib/paths'
 import { fileTabPayload, imageTabPayload } from '~/lib/tabPayload'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { descendantAgentTabs, planOptimisticRepoGit, tabKey } from '~/stores/tab.helpers'
+import { descendantAgentTabs, planOptimisticRepoGit, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
@@ -72,6 +74,8 @@ interface UseTabOperationsOpts {
    * from reaching the path that retires a tab.
    */
   workerOnlineState: (workerId: string) => boolean | undefined
+  /** Answers "would closing this tab interrupt running work". */
+  busyProbe: TabBusyProbe
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
@@ -96,6 +100,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
 
   const lastTabConfirmDialog = createUpdatableDialogState<LastTabConfirmState>()
+  // Keyed <Show>, unlike lastTabConfirm: this payload is never patched in place.
+  const busyTabConfirmDialog = createDialogState<BusyTabConfirmState>()
 
   let isTabEditing: () => boolean = () => false
 
@@ -182,9 +188,21 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     }
   }
 
-  const askLastTabConfirmation = (workerId: string, tabType: TabType, tabId: string, status: InspectLastTabCloseResponse): Promise<LastTabCloseChoice> => {
+  const askLastTabConfirmation = (
+    workerId: string,
+    tabType: TabType,
+    tabId: string,
+    status: InspectLastTabCloseResponse,
+    busyReason: TabBusyReason | null,
+  ): Promise<LastTabCloseChoice> => {
     return new Promise((resolve) => {
-      lastTabConfirmDialog.open({ ...status, workerId, tabId, tabType, resolve })
+      lastTabConfirmDialog.open({ ...status, workerId, tabId, tabType, busyReason, resolve })
+    })
+  }
+
+  const askBusyTabConfirmation = (tab: Tab, reason: TabBusyReason): Promise<boolean> => {
+    return new Promise((resolve) => {
+      busyTabConfirmDialog.open({ tabTitle: tabDisplayLabel(tab), reason, resolve })
     })
   }
 
@@ -448,7 +466,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * FILE-only worktree close goes through the same `git worktree
    * remove` pipeline as an AGENT- or TERMINAL-only one.
    */
-  const handleTabClose = async (tab: Tab): Promise<boolean> => {
+  const handleTabClose = async (tab: Tab, closeOpts?: { skipBusyConfirm?: boolean }): Promise<boolean> => {
     const key = tabKey(tab)
     if (closingTabKeys().has(key))
       return false
@@ -497,10 +515,24 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     let trackedAtInspect = false
     try {
       const workerId = tab.workerId ?? ''
-      const status = await workerRpc.inspectLastTabClose(workerId, { tabType: tab.type, tabId: tab.id })
+      // Concurrent, because the two probes are independent reads and a serial
+      // second round trip would double the click-to-dialog latency on every
+      // terminal close. The busy probe fails open on its own, so it needs no
+      // branch in the catch below.
+      const [status, busyReason] = await Promise.all([
+        workerRpc.inspectLastTabClose(workerId, { tabType: tab.type, tabId: tab.id }),
+        closeOpts?.skipBusyConfirm ? Promise.resolve(null) : opts.busyProbe.probe(tab),
+      ])
       trackedAtInspect = Boolean(status.worktreeId)
+      // The two prompts are mutually exclusive, and the worktree one wins: a
+      // single click must not answer two dialogs. But it wins by ABSORBING the
+      // busy fact, not by dropping it -- the busy reason goes into that dialog,
+      // which otherwise offers "Delete worktree" while saying nothing about the
+      // process still writing into that directory.
+      if (!status.shouldPrompt && busyReason && !await askBusyTabConfirmation(tab, busyReason))
+        return false
       if (status.shouldPrompt) {
-        const choice = await askLastTabConfirmation(workerId, tab.type, tab.id, status)
+        const choice = await askLastTabConfirmation(workerId, tab.type, tab.id, status, busyReason)
         if (choice === 'cancel') {
           return false
         }
@@ -850,6 +882,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
   return {
     closingTabKeys,
+    busyTabConfirmDialog,
     lastTabConfirmDialog,
     handleTabSelect,
     handleTabClose,

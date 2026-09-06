@@ -1,11 +1,14 @@
+import type { BusyTab } from '~/components/shell/tabBusyProbe'
 /// <reference types="vitest/globals" />
 import type { DeleteBranchResponse, GitBranchEntry, InspectBranchDeletionResponse, InspectWorktreeRemovalResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import type { Tab } from '~/stores/tab.types'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
+import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
 import { menuOptionValues, pickMenuValue } from '~/test-support/menu'
@@ -81,6 +84,8 @@ function renderDialog(props: Partial<Parameters<typeof DeleteBranchDialog>[0]> =
     isWorktree: false,
     tabs,
     closeWorktreeTabs: makeCloseWorktreeTabs(),
+    // Nothing running, unless a case says otherwise.
+    probeBusy: async () => [],
     onClose: vi.fn(),
   }
   const merged = { ...defaults, ...props }
@@ -220,6 +225,52 @@ describe('deleteBranchDialog', () => {
     expect(screen.getByText(/Inspecting branch state/)).toBeInTheDocument()
     // Unblock the resource so the dialog doesn't leak the promise.
     resolve(makeInspectResp({ isWorktree: true, worktreePath: '/wt' }))
+  })
+
+  it('names the running work the delete would interrupt', async () => {
+    // This flow closes a whole branch group AND deletes its working directory,
+    // and it runs below handleTabClose, so nothing else asks. BranchStatusInfo
+    // only counts the tabs ("2 terminals will be stopped"); it never names the
+    // process still writing into the directory about to be removed.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    const busyTab = makeTerminalTab('t-busy')
+    renderDialog({
+      tabs: [busyTab],
+      probeBusy: async () => [{
+        tab: busyTab,
+        title: 'dev server',
+        reason: {
+          kind: 'terminal-processes',
+          processes: [create(TerminalProcessSchema, { pid: 51234, name: 'node' })],
+          totalCount: 1,
+        },
+      }],
+    })
+
+    await waitFor(() => expect(screen.getByTestId('branch-delete-busy')).toBeInTheDocument())
+    expect(screen.getByText('dev server')).toBeInTheDocument()
+    expect(screen.getByText('node (pid 51234)')).toBeInTheDocument()
+  })
+
+  it('keeps Delete disabled until the busy scan answers', async () => {
+    // Confirming before the warning lands is the one order that makes the
+    // warning useless, and this dialog destroys a directory.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    let release: (v: BusyTab[]) => void = () => {}
+    const pending = new Promise<BusyTab[]>((resolve) => {
+      release = resolve
+    })
+    renderDialog({ probeBusy: () => pending })
+
+    await waitFor(() => expect(deleteButton()).toBeInTheDocument())
+    expect(deleteButton()).toBeDisabled()
+
+    release([])
+    await waitFor(() => expect(deleteButton()).toBeEnabled())
   })
 
   it('worktree variant hands the whole tab group off with REMOVE', async () => {

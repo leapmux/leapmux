@@ -170,6 +170,26 @@ func (a *zcodeAgent) persistZCodeNotification(event zcodeEventEnvelope) {
 
 // --- turn lifecycle ---
 
+// publishTurnActive republishes the Worker-visible turn state from turnActive,
+// the single source. Call it after EVERY critical section that writes that
+// field.
+//
+// It re-reads rather than taking a value, so a caller cannot publish something
+// the field does not say, and a missing call is the only way the two can drift.
+// Never called with a.mu held: the sink broadcasts, and a broadcast can block on
+// a slow transport.
+//
+// A BACKGROUND turn counts as active here, deliberately. It persists no divider
+// and closes none of the user's spans, but the agent IS processing, and
+// turnActive is already what Interrupt and Stop read to decide the session is
+// live.
+func (a *zcodeAgent) publishTurnActive() {
+	a.mu.Lock()
+	active := a.turnActive
+	a.mu.Unlock()
+	publishTurnActiveTo(a.sink, active)
+}
+
 // zcodeTurnStarted is the turn.started payload.
 type zcodeTurnStarted struct {
 	TurnNumber  int64  `json:"turnNumber"`
@@ -201,6 +221,7 @@ func (a *zcodeAgent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 		a.turnToolUses = 0
 	}
 	a.mu.Unlock()
+	a.publishTurnActive()
 
 	if !background {
 		// A fresh user turn begins: restart the thinking-token estimate from zero.
@@ -293,6 +314,15 @@ func (a *zcodeAgent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int
 	}
 	a.backgroundTurn = false
 	a.mu.Unlock()
+	// Deferred, for two reasons at once. It runs on EVERY path, including the
+	// two early returns below -- a background turn, and a turn whose event
+	// carries no persistable content -- and a turn that published no clear would
+	// latch the agent busy for the life of the process. And it runs AFTER
+	// PersistTurnEnd, which hands this turn's tool-call count to the activity
+	// latch: the clear is what produces the settle edge that spends the count,
+	// so publishing it first would settle the agent with no count and ring the
+	// completion sound for a turn that used no tool.
+	defer a.publishTurnActive()
 
 	content := event.persistBytes()
 	if content == nil {

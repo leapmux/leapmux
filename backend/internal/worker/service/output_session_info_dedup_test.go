@@ -363,7 +363,6 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		contracts.SessionInfoKeyTotalCostUsd:  {},
 		contracts.SessionInfoKeyContextUsage:  {},
 		contracts.SessionInfoKeyRateLimits:    {},
-		contracts.SessionInfoKeyCodexTurnId:   {},
 		contracts.SessionInfoKeyStreamingType: {},
 		// The goal counters are CUMULATIVE spend against a standing objective,
 		// not per-turn state the frontend drops at a turn boundary, so they

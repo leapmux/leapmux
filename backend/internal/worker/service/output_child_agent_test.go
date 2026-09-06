@@ -98,11 +98,21 @@ func TestCleanupChildAgent_ReclaimsPerChildState(t *testing.T) {
 	_, _, spanLoaded := svc.Output.trackers.get(childID)
 	require.True(t, spanLoaded, "child span tracker populated")
 
+	// A child owns an activity entry exactly like a root, because a subagent tab
+	// shows its own spinner and its own Interrupt button.
+	svc.Output.setTurnActive(childID, "root-1", true)
+	_, activityLoaded := svc.Output.activity.Load(childID)
+	require.True(t, activityLoaded, "child activity entry populated")
+
 	// A closing update drives CleanupChildAgent via the provider's sink.
 	sink.CleanupChildAgent(childID)
 
 	_, _, spanLoaded = svc.Output.trackers.get(childID)
 	assert.False(t, spanLoaded, "child span tracker reclaimed on final close")
+	// CleanupAgent only ever runs for a ROOT, so without this the entry of every
+	// subagent a worker ever spawned survives for the life of the process.
+	_, activityLoaded = svc.Output.activity.Load(childID)
+	assert.False(t, activityLoaded, "child activity entry reclaimed on final close")
 	// The child AGENT row and its transcript survive (only in-memory caches are reclaimed).
 	child, err := svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err, "child agent row survives the in-memory cleanup")

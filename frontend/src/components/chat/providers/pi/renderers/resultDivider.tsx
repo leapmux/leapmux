@@ -23,10 +23,15 @@ function lastAssistantMessage(messages: unknown): Record<string, unknown> | null
  * same way. `pickNumber` returns null for an absent field, which is what tells
  * an unmeasured turn (no time shown) from a real zero ("(0ms)").
  *
- * `willRetry` is Pi's statement that it restarts this run itself. The divider
- * still draws, marked `auto-retry`, and `turnContinues` keeps the thinking
- * indicator up for the backoff. "auto-retry" is the term the Pi notification
- * renderer already uses for the `auto_retry_start` line that follows.
+ * `willRetry` is Pi's statement that it restarts this run itself, so the
+ * divider draws marked `auto-retry`. "auto-retry" is the term the Pi
+ * notification renderer already uses for the `auto_retry_start` line that
+ * follows.
+ *
+ * The label is all it drives now. Keeping the thinking indicator up for the
+ * backoff is the WORKER's job: Pi's provider holds its turn flag open across a
+ * retry it drives itself (currentTurnActive = willRetry), so the client needs
+ * no say in it.
  */
 export function piResultDivider(parsed: unknown): ResultDividerModel | null {
   if (!isObject(parsed) || pickString(parsed, 'type') !== PI_EVENT.AgentEnd)
@@ -38,20 +43,19 @@ export function piResultDivider(parsed: unknown): ResultDividerModel | null {
 
   const durationMs = pickNumber(parsed, 'duration_ms')
   const suffix = durationMs !== null ? ` (${formatDuration(durationMs)})` : ''
-  const turnContinues = pickBool(parsed, 'willRetry')
+  const willRetry = pickBool(parsed, 'willRetry')
   const label = (base: string): string =>
-    joinMetaParts([base + suffix, turnContinues && 'auto-retry'])
+    joinMetaParts([base + suffix, willRetry && 'auto-retry'])
 
   if (stopReason === 'error') {
     return {
       label: label(errorMessage ? `Turn failed — ${errorMessage}` : 'Turn failed'),
       isError: true,
-      turnContinues,
     }
   }
   if (stopReason === 'aborted')
-    return { label: label('Turn aborted'), isError: true, turnContinues }
+    return { label: label('Turn aborted'), isError: true }
   if (stopReason === 'length')
-    return { label: label('Turn ended (length limit)'), turnContinues }
-  return { label: label('Turn ended'), turnContinues }
+    return { label: label('Turn ended (length limit)') }
+  return { label: label('Turn ended') }
 }

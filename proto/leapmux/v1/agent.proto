@@ -20,6 +20,29 @@ enum AgentProvider {
 }
 
 // AgentStatus tracks the lifecycle state of an agent.
+// AgentActivityState is what an agent is doing, as the Worker derives it. One
+// definition, read by the thinking indicator, the Interrupt button and the close
+// guards in both the browser and the CLI.
+//
+// ONE field, because the states exclude each other by construction: WORKING
+// requires that no permission prompt is pending, and WAITING_FOR_USER requires
+// that one is. A pair of booleans could encode "working AND waiting", which the
+// derivation never produces and no surface knows how to render.
+//
+// The distinction WAITING_FOR_USER carries is that the indicator must not spin
+// -- the user is looking straight at the prompt -- while a close still must
+// warn, because the turn is in flight and closing the tab kills it along with
+// every subagent under it.
+enum AgentActivityState {
+  AGENT_ACTIVITY_STATE_UNSPECIFIED = 0;
+  // Nothing a close would interrupt.
+  AGENT_ACTIVITY_STATE_IDLE = 1;
+  // A turn is in flight, or a background task of this agent's is running.
+  AGENT_ACTIVITY_STATE_WORKING = 2;
+  // Mid-turn and blocked on a permission prompt.
+  AGENT_ACTIVITY_STATE_WAITING_FOR_USER = 3;
+}
+
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
   AGENT_STATUS_ACTIVE = 1;
@@ -249,6 +272,20 @@ message AgentInfo {
   // True when the running provider can safely add the queue head to an active
   // regular turn. The Worker computes this from the live provider capability.
   bool supports_steering = 20;
+
+  // What the agent is doing, derived by the Worker from the provider's turn
+  // bookkeeping, the background-task registry, the pending control requests and
+  // the process state. This is the hydration path for the same state
+  // AgentActivityChanged pushes on change: a tab watching in NOTIFY mode gets
+  // no catch-up replay, so the list read is where it learns the current value.
+  // See AgentActivityState for the rule.
+  AgentActivityState activity_state = 21;
+
+  // Rows in pending/running state in this tab's background-task registry. For a
+  // root that is every descendant's work; for a subagent tab it is that
+  // subagent's own row, which is 1 exactly while it runs. Reported so a close
+  // guard can say WHAT it is refusing to interrupt, not just that it refuses.
+  int32 active_background_tasks = 22;
 }
 
 // AvailableOption describes a single selectable value within an option group

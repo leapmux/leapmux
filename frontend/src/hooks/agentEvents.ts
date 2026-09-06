@@ -7,9 +7,10 @@
  * 1700-line module without changing a line of behaviour.
  */
 import type { Provider } from '~/components/chat/providers/registry'
-import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentActivityState, AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentSessionStore, RateLimitInfo } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
@@ -112,9 +113,6 @@ export function wireSessionInfoToUpdates(
   const rateLimits = info[SESSION_INFO_KEY.RateLimits]
   if (rateLimits !== undefined)
     updates.rateLimits = wireRateLimitsToCamel(rateLimits)
-  const codexTurnId = info[SESSION_INFO_KEY.CodexTurnId]
-  if (codexTurnId !== undefined)
-    updates.codexTurnId = codexTurnId as string
   const streamingType = info[SESSION_INFO_KEY.StreamingType]
   if (streamingType !== undefined)
     updates.streamingType = streamingType as string
@@ -317,7 +315,7 @@ export function handleAgentSessionInfo(
 /**
  * Whether an agent event is being delivered LIVE or replayed during catch-up.
  *
- * Every imperative side effect in this module is gated on it: replaying a
+ * Every imperative side effect in this module depends on it: replaying a
  * historical `plan_updated` used to re-apply the plan-derived title on each
  * page load, silently overwriting a tab the user had renamed by hand. It is a
  * REQUIRED parameter everywhere rather than one defaulting to 'live', so a
@@ -409,7 +407,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
       // here that writes over a user's own choice: replaying history on reload
       // re-applied the plan's title and silently undid a manual rename. Every
       // other side effect in this function is derived state that catch-up
-      // should restore, which is why only this one is gated. (planFilePath
+      // should restore, which is why only this one is restricted. (planFilePath
       // above is derived, so it still restores.)
       if (catchUpPhase === 'live' && planUpdate.updateAgentTitle && planUpdate.planTitle)
         metadata.patch(agentId, { title: planUpdate.planTitle })
@@ -421,10 +419,10 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
  * Handle a turn-end result divider (the caller gates on category.kind ===
  * 'result_divider'). Clears the per-turn thinking-token estimate and rehydrates
  * contextWindow / total_cost_usd. Turn-end sound and tab badging are owned by
- * the worker's AgentTurnEnd event (`handleTurnEnd`), not this divider — leaving
+ * the worker's busy -> idle edge (`handleAgentSettled`), not this divider — leaving
  * both would ring a visible tab twice.
  *
- * Each provider plugin classifies its terminal envelope (Claude type:"result",
+ * Each provider plugin classifies its FINAL envelope (Claude type:"result",
  * Codex turn/completed, ACP stopReason, Pi agent_end) as `result_divider`, so
  * this is provider-agnostic.
  */
@@ -438,9 +436,9 @@ export function handleResultDivider(
   const { agentSessionStore, chatStore, view } = stores
   // Clear every live indicator on the turn-end divider itself, not just via the
   // per-message clear above. The divider is the structural turn boundary for every
-  // provider; a clear gated on message source/status would miss a terminal envelope
+  // provider; a clear that depended on message source or status would miss a FINAL envelope
   // whose source is not AGENT, or a catch-up replay where the INACTIVE-driven
-  // onTurnEnd is skipped. It is also the backstop for a tool whose result row never
+  // cleanup is skipped. It is also the backstop for a tool whose result row never
   // arrived (an interrupt, a crashed CLI), whose badge would otherwise stay on that
   // card for the rest of the session.
   clearPerTurnLiveState(agentId, stores)
@@ -454,16 +452,10 @@ export function handleResultDivider(
   const meta = extractResultMetadata(parsed, modelId, p => plugin?.resultSubtype?.(p))
   if (!meta)
     return
-  // A persisted turn-end result divider clears the provider's tracked live turn-id
-  // (only Codex tracks one), so the thinking indicator stops after a reconnect or
-  // missed live event. The provider plugin owns WHICH subtype ends a turn; the hook
-  // owns the action (clearing the session-info field).
-  if (plugin?.resultDividerEndsActiveTurn?.(meta.subtype)) {
-    agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
-  }
   if (meta.subtype && catchUpPhase === 'live') {
-    // Turn-end sound is owned by AgentTurnEnd (worker NOTIFY event); do not
-    // also ring here or a visible tab dings twice.
+    // No alert here. The Worker owns it, from its busy -> idle edge
+    // (handleAgentSettled) -- a divider is a turn boundary, and a turn that
+    // leaves a subagent running has not settled the agent.
     chatStore.sweepOrphanedBufferedSpans(agentId)
   }
   if (meta.contextUsage) {
@@ -603,7 +595,6 @@ export function handleAgentMessage(
   agentId: string,
   msg: AgentChatMessage,
   stores: AgentMessageStores,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
   catchUpPhase: CatchUpPhase,
 ): void {
   const { agentSessionStore, chatStore, view, selection } = stores
@@ -671,13 +662,13 @@ export function handleAgentMessage(
   if (messageInWindow)
     clearCompletedSpanStream(agentId, msg, parsed, chatStore)
 
-  // Method-specific lifecycle handling (self-gated on AGENT source so a lifecycle item that
+  // Method-specific lifecycle handling (it restricts itself to AGENT source, so a lifecycle item that
   // classifies as `hidden` isn't skipped). Usage/cost already folded in applyNotificationMetadata.
   applyAgentLifecycle(agentId, msg, parsed, agentSessionStore)
 
   // Play turn-end sound when a result divider (with subtype) arrives, and
   // rehydrate contextWindow / total_cost_usd. Each provider plugin classifies its
-  // terminal envelope (Claude type:"result", Codex turn/completed, ACP stopReason,
+  // final envelope (Claude type:"result", Codex turn/completed, ACP stopReason,
   // Pi agent_end) as `result_divider`, so this gate is provider-agnostic.
   if (category.kind === 'result_divider')
     handleResultDivider(agentId, msg, parsed, stores, catchUpPhase)
@@ -795,7 +786,7 @@ export function buildAgentStatusTabUpdate(
  * definitively over -- reclaim any command-stream buffer a mid-stream trim spared as
  * orphaned (an agent that exits mid-turn emits INACTIVE but no result divider, so the
  * divider's turn-end sweep never fires for it, leaking the buffer) and signal turn-end.
- * Both 'live'-gated like the result-divider sweep; the catch-up phase is reclaimed by
+ * Both restricted to the 'live' phase like the result-divider sweep; the catch-up phase is reclaimed by
  * the catchUpComplete sweep instead.
  */
 export function handleAgentInactive(
@@ -805,14 +796,20 @@ export function handleAgentInactive(
   // The shared message-stores bag plus the controlStore only this handler needs --
   // reuse AgentMessageStores rather than re-spelling its three members inline.
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
-  onTurnEnd: ((agentId: string) => void) | undefined,
 ): void {
   stores.controlStore.clearAgent(agentId)
   clearPerTurnLiveState(agentId, stores)
   if (catchUpPhase === 'live')
     stores.chatStore.sweepOrphanedBufferedSpans(agentId)
-  if (catchUpPhase === 'live' && sc.agentSessionId && stores.view.getAgentTab(agentId))
-    onTurnEnd?.(agentId)
+  // No alert here: a process exit drives the Worker's busy state to false, and
+  // handleAgentSettled owns every settle. See its doc comment.
+  //
+  // No git refresh here either. The refresh belongs to the TURN boundary, which
+  // `onTurnEndRefresh` owns, and an INACTIVE status change is not one: the two
+  // live broadcasters of this status are an archive teardown and a failed
+  // startup relaunch, and both pass a nil gitStatus (see
+  // broadcastAgentInactive). Neither ran the agent, so neither changed the
+  // working tree.
 }
 
 /**
@@ -841,7 +838,7 @@ export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chat
 
 /**
  * The `streamEnd` case: close the streaming buffer (command stream or free-form
- * text). Tab badging for a finished turn is owned by `handleTurnEnd`.
+ * text). Tab badging for a finished turn is owned by `handleAgentSettled`.
  */
 export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: Pick<AgentMessageStores, 'chatStore'>): void {
   const { chatStore } = stores
@@ -856,7 +853,7 @@ export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: 
  * only on a LIVE frame -- badge a backgrounded tab and end the turn (the agent paused to
  * wait on the user, which may produce no agent message and no INACTIVE). During catch-up a
  * replayed request for an already-INACTIVE agent is skipped so the user isn't stuck on an
- * unanswerable prompt, and the live-only side effects are gated so a page-reload replay of
+ * unanswerable prompt, and the live-only side effects are restricted so a page-reload replay of
  * a still-pending row doesn't re-alert. The caller marks the agent live BEFORE this.
  */
 export function handleControlRequest(
@@ -864,7 +861,6 @@ export function handleControlRequest(
   cr: AgentControlRequest,
   catchUpPhase: CatchUpPhase,
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
 ): void {
   const { view, metadata, selection, getActiveWorkspaceId, controlStore } = stores
   // During catch-up, the INACTIVE statusChange may have already been processed before
@@ -908,13 +904,24 @@ export function handleControlRequest(
     // Nothing leaks: the result divider, agent-inactive, context-cleared, the
     // worker-offline sweep and forgetAgent all still reclaim every span.
     stores.agentSessionStore.clearThinkingTokens(agentId)
-    onTurnEnd?.(agentId)
+    // No alert here. A pending control request drives the Worker's busy state to
+    // false, so handleAgentSettled raises it from the one edge -- and raising it
+    // in both places rang twice for one pause.
+    //
+    // No git / directory-tree refresh either, which this site used to trigger as
+    // a side effect of the same call. That refresh now belongs to the TURN
+    // boundary alone (onTurnEndRefresh): a prompt arrives mid-turn, so the tree
+    // it would show is half-written, and the turn end that follows refreshes it
+    // for real.
   }
 }
 
 /**
- * AgentTurnEnd NOTIFY event: badge when the tab is not on-screen (tile-active),
- * then play the turn-end sound (unless numToolUses is explicitly zero).
+ * Whether this agent's tab is the one the user is looking at: it exists, it is
+ * in the active workspace, and it is the selected tab of its tile.
+ *
+ * "On screen" is a property of the TILE's selection, not of the tab alone --
+ * a tab in a background tile is mounted and invisible.
  */
 export function isAgentTabOnScreen(
   agentId: string,
@@ -925,17 +932,67 @@ export function isAgentTabOnScreen(
   return isTabOnScreen(view.getAgentTab(agentId), getActiveWorkspaceId(), tileId => selection.activeKeyForTile(tileId))
 }
 
-export function handleTurnEnd(
+/**
+ * The AgentActivityChanged branch: store the Worker's answer, and alert on the
+ * edge.
+ *
+ * One function so the store write and the alert cannot separate. The store
+ * answers whether this write was the busy -> idle EDGE, which is not the same
+ * as an idle report arriving: the same value reaches a client twice when a
+ * catch-up replay lands beside a live event, and an idle report can arrive for
+ * an agent this client never saw working. See AgentActivityStore.setBusy.
+ */
+export function handleActivityChanged(
   agentId: string,
-  value: { numToolUses?: number },
-  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'>,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
+  value: { state: AgentActivityState, numToolUses?: number },
+  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
+    agentActivityStore: AgentActivityStore
+    onAgentSettled?: (agentId: string, numToolUses?: number) => void
+  },
+  catchUpPhase: CatchUpPhase,
 ): void {
+  if (stores.agentActivityStore.apply(agentId, value.state))
+    handleAgentSettled(agentId, value.numToolUses, stores, catchUpPhase)
+}
+
+/**
+ * The agent settled: badge an off-screen tab and play the turn-end sound.
+ *
+ * Driven by the WORKER's busy -> idle edge, not by a turn end. Those differ, and
+ * the difference is the point: a turn that spawns a subagent ends while the
+ * subagent keeps working, and ringing there told the user their agent was done
+ * while it was still running. A settle means the turn ended AND no background
+ * task of this agent's is still going.
+ *
+ * This one edge also subsumes the two alerts that used to be raised separately.
+ * A pending control request drives busy to false, so a permission prompt still
+ * rings; a process exit drives it to false, so a crash still rings.
+ *
+ * `numToolUses` is the count of the turn this settle completes, when a turn
+ * completed it and the provider reported one. Unset means "ring" -- a settle
+ * caused by a prompt or an exit carries no count, and neither does a provider
+ * that cannot report one. Explicit 0 means the turn did nothing worth
+ * interrupting the user for.
+ *
+ * Restricted to the 'live' phase: a catch-up replay would otherwise ring for
+ * every agent that settled while the tab was closed.
+ */
+export function handleAgentSettled(
+  agentId: string,
+  numToolUses: number | undefined,
+  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
+    onAgentSettled?: (agentId: string, numToolUses?: number) => void
+  },
+  catchUpPhase: CatchUpPhase,
+): void {
+  if (catchUpPhase !== 'live')
+    return
   const { metadata, selection, getActiveWorkspaceId, view } = stores
+  if (!view.getAgentTab(agentId))
+    return
   if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
     metadata.patch(agentId, { hasNotification: true })
-  const uses = value.numToolUses
-  onTurnEnd?.(agentId, uses === undefined ? undefined : uses)
+  stores.onAgentSettled?.(agentId, numToolUses)
 }
 
 /**
@@ -958,7 +1015,6 @@ export function handleAgentStatusChange(
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore>, repoGitStore: ReturnType<typeof createRepoGitStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   setWorkerOnline: (online: boolean) => void,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
   streamWorkerId = '',
 ): void {
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
@@ -982,7 +1038,7 @@ export function handleAgentStatusChange(
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)
-    handleAgentInactive(agentId, sc, catchUpPhase, stores, onTurnEnd)
+    handleAgentInactive(agentId, sc, catchUpPhase, stores)
 }
 
 /**

@@ -1,6 +1,7 @@
 /// <reference types="vitest/globals" />
 import type { ComponentProps } from 'solid-js'
 import type { AppShellDialogStates } from './AppShellDialogs'
+import type { TabBusyProbe } from './tabBusyProbe'
 import type { useTabOperations } from './useTabOperations'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
@@ -175,6 +176,7 @@ function makeDialogs(): AppShellDialogStates {
     sectionName: createDialogState(),
     confirmDeleteSection: createDialogState(),
     lastTabConfirm: createUpdatableDialogState(),
+    busyTabConfirm: createDialogState(),
     keyPinConfirm: createDialogState(),
     changeBranch: createDialogState(),
     deleteBranch: createDialogState(),
@@ -223,6 +225,9 @@ function renderDialogs(
     dialogs,
     onBranchChanged,
     tabOps: tabOps as unknown as ReturnType<typeof useTabOperations>,
+    // The delete-branch dialog scans its group for running work. Nothing is
+    // running in these cases; DeleteBranchDialog's own suite covers the scan.
+    busyProbe: { probe: async () => null, probeMany: async () => [] } as unknown as TabBusyProbe,
     activeWorkspace,
     onSelectWorkspace,
     isWorkspaceMutatable: () => opts.mutatable ?? true,

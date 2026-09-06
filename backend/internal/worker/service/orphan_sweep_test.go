@@ -80,6 +80,30 @@ func TestTrackedAgentIDsIncludesRootSinks(t *testing.T) {
 		"a root sink is tracked so the orphan sweep can reclaim it")
 }
 
+// TestTrackedAgentIDsIncludesActivityEntries verifies the sweep can see an agent
+// whose ONLY leftover state is an activity entry.
+//
+// A pure READ creates one: AgentActivitySnapshot records the resolved root so a
+// later caller that knows just an agent id can still find the feeding process.
+// So a ListAgents reply alone leaves an entry for an agent this worker never
+// tore down, and the sweep is the only thing that reclaims it.
+func TestTrackedAgentIDsIncludesActivityEntries(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	// No DB row, no sink, no tracker: an activity entry and nothing else.
+	svc.Output.setTurnActive("agent-read-only", "agent-read-only", true)
+	require.Contains(t, svc.Output.TrackedAgentIDs(), "agent-read-only",
+		"an activity entry must be visible to the sweep, or nothing ever reclaims it")
+
+	svc.SweepOrphanedAgentState()
+
+	assert.NotContains(t, svc.Output.TrackedAgentIDs(), "agent-read-only",
+		"the agent is in no open list, so its entry is reclaimed")
+}
+
 // TestCleanupChildAgentsBatchPrunesWithoutRootScan verifies the root-teardown
 // batch path (ForgetChildSinks + CleanupChildAgents) prunes per-child tracker
 // state and clears the root's childSinks map in one pass, without the

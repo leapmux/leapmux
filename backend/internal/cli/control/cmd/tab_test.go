@@ -571,6 +571,10 @@ func TestDiscardRefusalMessage_EmptyReasonAllowsDiscard(t *testing.T) {
 // reached.
 type closeDispatcher struct {
 	inspect *leapmuxv1.InspectLastTabCloseResponse
+	// agents / terminals arm the busy gate's two reads. Both empty by default,
+	// which is what an idle tab looks like.
+	agents    []*leapmuxv1.AgentInfo
+	terminals []*leapmuxv1.TerminalProcesses
 
 	mu      sync.Mutex
 	methods []string
@@ -580,11 +584,20 @@ func (d *closeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req 
 	d.mu.Lock()
 	d.methods = append(d.methods, req.GetMethod())
 	d.mu.Unlock()
-	if req.GetMethod() != "InspectLastTabClose" {
+	var reply proto.Message
+	switch req.GetMethod() {
+	case "InspectLastTabClose":
+		reply = d.inspect
+	case "ListAgents":
+		// The busy gate's agent leg. Empty (an idle agent) unless a test arms it.
+		reply = &leapmuxv1.ListAgentsResponse{Agents: d.agents}
+	case "InspectTerminalProcesses":
+		reply = &leapmuxv1.InspectTerminalProcessesResponse{Terminals: d.terminals}
+	default:
 		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
 		return
 	}
-	payload, err := proto.Marshal(d.inspect)
+	payload, err := proto.Marshal(reply)
 	if err != nil {
 		_ = w.SendError(int32(codes.Internal), err.Error())
 		return

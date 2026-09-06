@@ -33,6 +33,29 @@ export async function waitForTerminalText(page: Page, text: string, timeout?: nu
 }
 
 /**
+ * Wait until the shell is actually accepting input.
+ *
+ * A terminal renders before its shell finishes sourcing its init files, and a
+ * command typed into that window silently loses its leading characters --
+ * `sleep 120 &` arrives as `eep 120 &`, which the shell then reports as a
+ * command not found. Echoing a marker in a retry loop is what proves the shell
+ * is past it: the attempts that get eaten simply fail the check, and the first
+ * one that survives round-trips the marker back.
+ *
+ * The marker is split by a quote pair so the shell REASSEMBLES it. The typed
+ * line therefore never contains the marker, only the output does -- otherwise a
+ * mangled `ho MARKER` would still show the marker and pass while characters
+ * were being dropped.
+ */
+export async function waitForTerminalReady(page: Page): Promise<void> {
+  const marker = `RDY${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+  await expect(async () => {
+    await typeInTerminal(page, `echo ${marker.slice(0, 3)}""${marker.slice(3)}`)
+    expect(await getTerminalText(page)).toContain(marker)
+  }).toPass()
+}
+
+/**
  * Focus the helper textarea of the active terminal, so keyboard input (and a
  * real input method driven over CDP) lands in xterm.
  */

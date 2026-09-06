@@ -1,6 +1,8 @@
 import type { Component } from 'solid-js'
+import type { BusyTabConfirmState } from './BusyTabCloseDialog'
 import type { LastTabConfirmState } from './LastTabCloseDialog'
 import type { SectionNamePayload } from './SectionNameDialog'
+import type { TabBusyProbe } from './tabBusyProbe'
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
 import type { useTabOperations } from './useTabOperations'
@@ -28,6 +30,7 @@ import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit } from '~/stores/tab.helpers'
+import { BusyTabCloseDialog } from './BusyTabCloseDialog'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
@@ -161,6 +164,7 @@ export interface AppShellDialogStates {
   // The only updatable one: LastTabCloseDialog patches its own payload after
   // a status refresh. That capability is what keeps its <Show> non-keyed.
   lastTabConfirm: UpdatableDialogState<LastTabConfirmState>
+  busyTabConfirm: DialogState<BusyTabConfirmState>
   keyPinConfirm: DialogState<KeyPinConfirmState>
   setGoal: DialogState<SetGoalState>
   changeBranch: DialogState<ChangeBranchState>
@@ -196,6 +200,12 @@ interface AppShellDialogsProps {
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
   tabOps: ReturnType<typeof useTabOperations>
+  /**
+   * The busy scan, for the delete-branch dialog. That flow closes a whole branch
+   * group and deletes its working directory, and it runs below `handleTabClose`
+   * -- so it is the one close surface nothing else asks on the user's behalf.
+   */
+  busyProbe: TabBusyProbe
   view: TabView
   metadata: TabMetadataStore
   selection: TabSelectionStore
@@ -537,6 +547,18 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
+      {/* Keyed: this payload is never patched in place, unlike lastTabConfirm.
+          Raised only for a tab the worktree prompt does NOT cover, so one click
+          never answers two dialogs. */}
+      <Show when={props.dialogs.busyTabConfirm.value()} keyed>
+        {state => (
+          <BusyTabCloseDialog
+            state={state}
+            onDismiss={() => props.dialogs.busyTabConfirm.close()}
+          />
+        )}
+      </Show>
+
       <Show when={props.dialogs.keyPinConfirm.value()} keyed>
         {state => (
           <KeyPinMismatchDialog
@@ -603,6 +625,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             isWorktree={state.isWorktree}
             tabs={state.tabs}
             closeWorktreeTabs={props.tabOps.closeWorktreeTabsAndReport}
+            probeBusy={props.busyProbe.probeMany}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
             onClose={() => props.dialogs.deleteBranch.close()}
           />

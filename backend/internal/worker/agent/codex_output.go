@@ -175,6 +175,7 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// can't leak across turns (e.g. a reasoning item left open by an abort).
 		clear(a.reasoningStreamKind)
 		a.mu.Unlock()
+		a.publishTurnActive()
 		// A fresh turn begins: restart the thinking-token estimate from zero. The
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
@@ -182,11 +183,6 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// The queue normally marks a turn active before delivery. This callback
 		// repairs that state when a delayed acceptance follows an uncertain result.
 		notifyInputStarted(a.sink)
-
-		// Broadcast the turn ID so the frontend can use it for interrupts.
-		a.sink.BroadcastSessionInfo(map[string]interface{}{
-			contracts.SessionInfoKeyCodexTurnId: notif.Turn.ID,
-		})
 	}
 }
 
@@ -653,6 +649,13 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	a.mu.Unlock()
+	// Deferred, so it lands AFTER the PersistTurnEnd below. That call hands the
+	// finished turn's tool-call count to the Worker's activity latch, and the
+	// clear published here is the settle edge that spends it -- publishing at
+	// the assignment above would settle the agent with no count and ring the
+	// completion sound for a turn that used no tool. The turn state itself
+	// still clears early, which is what lets the next queued input start a turn.
+	defer a.publishTurnActive()
 	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Persist as a result divider.
@@ -690,11 +693,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			}
 		}
 	}
-
-	// Clear the turn ID in session info.
-	a.sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyCodexTurnId: "",
-	})
 	// The app-server submits compaction before it sends the RPC response. A
 	// fast compaction turn can end while CompactContext's caller holds the
 	// queue coordinator. Keep this reader free to deliver the RPC response.

@@ -4,7 +4,7 @@ import { getBrowserPref, loginViaToken, openAgentViaUI, openSettingsAt, sendMess
 
 /**
  * A prompt the agent cannot answer from the prompt alone, so the turn reports
- * `numToolUses > 0`. That matters: `useTurnEnd` deliberately suppresses the
+ * `numToolUses > 0`. That matters: `useAgentSettled` deliberately suppresses the
  * ding for trivial single-exchange turns, so a plain arithmetic question would
  * make every assertion below pass for the wrong reason.
  */

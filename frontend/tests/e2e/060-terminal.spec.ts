@@ -1,9 +1,57 @@
 import { expect, test } from './fixtures'
-import { focusActiveTerminal, getTerminalText, typeInTerminal, waitForTerminalText } from './helpers/terminal'
+import { focusActiveTerminal, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI } from './helpers/worktree'
 
 test.describe('Terminal', () => {
+  // Closing a terminal that is running something is the case the close guard
+  // exists for: the tab strip's X is one click, and the work it kills leaves no
+  // trace. The dialog has to name the process, because "something is running"
+  // tells a user nothing they can act on.
+  test('warns before closing a terminal that is still running a process', async ({ page, authenticatedWorkspace }) => {
+    await openTerminalViaUI(page)
+    await expect(page.locator('.xterm')).toBeVisible()
+    await waitForTerminalReady(page)
+
+    // Backgrounded on purpose: a foreground-process-group probe cannot see this,
+    // and it is exactly the work a user loses without a warning.
+    await typeInTerminal(page, 'sleep 120 &')
+    await waitForTerminalText(page, 'sleep 120')
+
+    const tab = page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible').first()
+    await tab.locator('[data-testid="tab-close"]').click()
+
+    const dialog = page.locator('dialog[data-testid="busy-tab-close-dialog"]')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByTestId('busy-processes')).toContainText('sleep')
+    await expect(dialog.getByTestId('busy-processes')).toContainText('pid')
+
+    // Cancel keeps the tab: a guard that closed anyway would be worse than none.
+    await dialog.getByTestId('busy-tab-close-cancel').click()
+    await expect(dialog).toBeHidden()
+    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(1)
+
+    // Then the override. `danger` makes it a two-click ConfirmButton.
+    await tab.locator('[data-testid="tab-close"]').click()
+    await expect(page.locator('dialog[data-testid="busy-tab-close-dialog"]')).toBeVisible()
+    await page.getByTestId('busy-tab-close-confirm').click()
+    await page.getByRole('button', { name: 'Confirm?' }).click()
+    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(0)
+  })
+
+  // The mirror. A guard that prompted for every close would pass the test above
+  // and make the app unusable.
+  test('closes an idle terminal with no prompt', async ({ page, authenticatedWorkspace }) => {
+    await openTerminalViaUI(page)
+    await expect(page.locator('.xterm')).toBeVisible()
+    await waitForTerminalReady(page)
+
+    await page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible').first().locator('[data-testid="tab-close"]').click()
+
+    await expect(page.locator('[data-testid="tab"][data-tab-type="terminal"]:visible')).toHaveCount(0)
+    await expect(page.locator('dialog[data-testid="busy-tab-close-dialog"]')).toBeHidden()
+  })
+
   test('should open a terminal and render xterm', async ({ page, authenticatedWorkspace }) => {
     // Open a new terminal via the tab bar + button
     await openTerminalViaUI(page)

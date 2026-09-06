@@ -52,10 +52,11 @@ import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
 import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
-import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
+import { createTabTaskScope, shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { hasGoalSurface } from '~/stores/chatGoal'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -86,10 +87,12 @@ import { createTabSelectionRestorer } from './restoreTabSelection'
 import { SectionDragProvider } from './SectionDragContext'
 import { isShellReady } from './shellReady'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
+import { createTabBusyProbe } from './tabBusyProbe'
 import { TabDragProvider } from './TabDragContext'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
 import { useAgentOperations } from './useAgentOperations'
+import { useAgentSettled } from './useAgentSettled'
 import { useCrdtRuntime } from './useCrdtRuntime'
 import { useCrossWorkspaceMove } from './useCrossWorkspaceMove'
 import { useFloatingWindowOps } from './useFloatingWindowOps'
@@ -99,7 +102,6 @@ import { useTabOperations } from './useTabOperations'
 import { useTabPersistence } from './useTabPersistence'
 import { useTerminalOperations } from './useTerminalOperations'
 import { useTileDragDrop } from './useTileDragDrop'
-import { useTurnEnd } from './useTurnEnd'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 import { useWorkerSection } from './useWorkerSection'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
@@ -123,7 +125,7 @@ export const AppShell: Component = () => {
 
   // Per-(workspace_id) active-client tracker fed by PresenceUpdate events off
   // the `/ws/userevents` WebSocket. Created here because the CRDT runtime feeds
-  // it and `handleTurnEnd` reads it to gate the turn-end ding.
+  // it and `handleAgentSettled` reads it, so only the active client dings.
   const activeClient = createActiveClientStore()
 
   // Late-bound reload trigger for workspace-lifecycle events. Bound once
@@ -158,6 +160,10 @@ export const AppShell: Component = () => {
   const agentInputQueueStore = createAgentInputQueueStore(agentId => tabView.getAgentTab(agentId) !== undefined)
   const controlStore = createControlStore()
   const agentSessionStore = createAgentSessionStore()
+  // The Worker's answer to "is this agent working", pushed on change and seeded
+  // on hydration. Replaced a client-side derivation over six inputs; see the
+  // store's own header.
+  const agentActivityStore = createAgentActivityStore()
   const layoutStore = createLayoutStore({
     getWorkspaceId: () => workspace.activeWorkspaceId(),
     projection,
@@ -273,6 +279,7 @@ export const AppShell: Component = () => {
     view: tabView,
     metadata: tabMetadata,
     repoGitStore,
+    agentActivityStore,
     // Worker liveness, so a worker coming back re-arms the tabs that gave up on
     // it. The sidebar already tracks this off `WORKERS_CHANGED`; hydration had
     // no other way to learn it, because a worker reconnecting changes nothing
@@ -317,7 +324,7 @@ export const AppShell: Component = () => {
 
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
   let isAgentClosing: (agentId: string) => boolean = () => false
-  const handleTurnEnd = useTurnEnd({
+  const handleAgentSettled = useAgentSettled({
     preferences: {
       turnEndSound: () => preferences.turnEndSound(),
       turnEndSoundVolume: () => preferences.turnEndSoundVolume(),
@@ -326,7 +333,6 @@ export const AppShell: Component = () => {
     effectiveClientId,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     ownClientId,
-    setTurnEndTrigger,
     isAgentClosing: agentId => isAgentClosing(agentId),
   })
 
@@ -339,10 +345,19 @@ export const AppShell: Component = () => {
     selection,
     controlStore,
     agentSessionStore,
+    agentActivityStore,
     settingsLoading,
     repoGitStore,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    onTurnEnd: handleTurnEnd,
+    onAgentSettled: handleAgentSettled,
+    // Per TURN, not per settle: the working tree changed even when a subagent
+    // keeps the agent busy afterwards. Still skipped for an agent that is
+    // closing, which is the gate this shared with the alert before the two
+    // split -- a tab being torn down has nothing to refresh for.
+    onTurnEndRefresh: (agentId: string) => {
+      if (!isAgentClosing(agentId))
+        setTurnEndTrigger(v => v + 1)
+    },
   })
 
   // Auto-open new workspace dialog from URL search params
@@ -682,6 +697,7 @@ export const AppShell: Component = () => {
     agentInputQueueStore,
     chatStore,
     controlStore,
+    agentActivityStore,
     view: tabView,
     metadata: tabMetadata,
     selection,
@@ -713,11 +729,29 @@ export const AppShell: Component = () => {
     repoGitStore,
   })
 
+  // Answers "would closing this tab interrupt running work". Reads the pushed
+  // activity state for an agent and asks the worker for a terminal's process
+  // tree; see the probe's own header for why the two differ.
+  // One definition of "this tab's registry rows", and one instance of it. The
+  // tab chip and the close guard must not scope the same question differently,
+  // so the renderer takes this object rather than building a second one from
+  // hand-copied deps.
+  const taskScope = createTabTaskScope({
+    getAgentTab: (id: string) => tabView.getAgentTab(id),
+    tasksForRoot: (rootId: string) => chatStore.backgroundTasks.get(rootId),
+  })
+
+  const busyProbe = createTabBusyProbe({
+    activity: agentActivityStore,
+    tasksFor: taskScope.tasksForTab,
+  })
+
   // Tab operations (select, close, file open, worktree confirm).
   // Owns the LastTabConfirmDialog because the close-flow drives it; hoist
   // the handle into the shared `dialogs` record so AppShellDialogs sees
   // one flat dialog map.
   const tabOps = useTabOperations({
+    busyProbe,
     view: tabView,
     metadata: tabMetadata,
     selection,
@@ -746,6 +780,7 @@ export const AppShell: Component = () => {
     sectionName: sectionNameDialog,
     confirmDeleteSection: confirmDeleteSectionDialog,
     lastTabConfirm: tabOps.lastTabConfirmDialog,
+    busyTabConfirm: tabOps.busyTabConfirmDialog,
     keyPinConfirm: keyPinConfirmDialog,
     setGoal: setGoalDialog,
     changeBranch: changeBranchDialog,
@@ -1231,8 +1266,10 @@ export const AppShell: Component = () => {
       controlStore,
       layoutStore,
       agentSessionStore,
+      agentActivityStore,
       repoGitStore,
     },
+    taskScope,
     ops: { agentOps, termOps },
     clientId: ownClientId,
     workspace: {
@@ -1245,6 +1282,7 @@ export const AppShell: Component = () => {
     tab: {
       handleTabSelect: tabOps.handleTabSelect,
       handleTabClose: tabOps.handleTabClose,
+      probeBusy: busyProbe.probeMany,
       setIsTabEditing: tabOps.setIsTabEditing,
       closingTabKeys: tabOps.closingTabKeys,
     },
@@ -1574,6 +1612,7 @@ export const AppShell: Component = () => {
         <AppShellDialogs
           dialogs={dialogs}
           onSetGoal={(agentId, objective) => void agentOps.handleGoalAction(agentId, 'set', objective)}
+          busyProbe={busyProbe}
           loadSections={loadSections}
           onBranchChanged={(repo, newBranch) => handleBranchChanged(
             { repoGitStore },

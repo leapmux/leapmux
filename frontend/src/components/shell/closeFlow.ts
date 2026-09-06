@@ -1,4 +1,5 @@
 import type { Accessor } from 'solid-js'
+import type { BusyTab } from './tabBusyProbe'
 import type { Tab } from '~/stores/tab.types'
 import { createSignal } from 'solid-js'
 
@@ -36,7 +37,14 @@ export interface ClosePlan {
 export interface CloseFlow<Ctx> {
   signal: Accessor<Ctx | null>
   busy: Accessor<boolean>
-  request: (ctx: Ctx) => void
+  /**
+   * The tabs in this plan that are running work, scanned once before the dialog
+   * opened. Asked and answered UP FRONT so the user decides about the whole
+   * closeable at once, rather than being interrupted per tab partway through a
+   * close that has already destroyed some of them.
+   */
+  busyTabs: Accessor<BusyTab[]>
+  request: (ctx: Ctx) => Promise<void>
   cancel: () => void
   primary: () => void
   closeAll: () => Promise<void>
@@ -46,7 +54,9 @@ export interface CloseFlowOptions<Ctx> {
   /** Build the plan for `ctx`. Called once per `request()`. */
   plan: (ctx: Ctx) => ClosePlan
   /** Per-tab close. Returns false to bail (user cancelled). */
-  handleTabClose: (tab: Tab) => Promise<boolean>
+  handleTabClose: (tab: Tab, opts?: { skipBusyConfirm?: boolean }) => Promise<boolean>
+  /** Which of these tabs are running work. Awaited before the dialog opens. */
+  probeBusy: (tabs: readonly Tab[]) => Promise<BusyTab[]>
 }
 
 /**
@@ -79,23 +89,48 @@ export function createCloseFlow<Ctx>(opts: CloseFlowOptions<Ctx>): CloseFlow<Ctx
   // accessor projects out only the ctx so call sites keep their typed view.
   const [active, setActive] = createSignal<{ ctx: Ctx, plan: ClosePlan } | null>(null)
   const [busy, setBusy] = createSignal(false)
+  const [busyTabs, setBusyTabs] = createSignal<BusyTab[]>([])
+  // One scan in flight at a time. Nothing renders from this, so a plain
+  // variable rather than a signal.
+  let probing = false
 
   const clear = () => {
     setActive(null)
     setBusy(false)
+    setBusyTabs([])
   }
 
   return {
     signal: () => active()?.ctx ?? null,
     busy,
-    request(ctx) {
+    busyTabs,
+    async request(ctx) {
+      // One dialog per flow. The busy scan below made this async, and every
+      // caller fires it from a close control that has no disabled state, so a
+      // second click starts a second scan. Its late answer would re-open a
+      // dialog the user already dismissed, or replace the plan that closeAll is
+      // draining. The dialog itself is a native modal, so a legitimate second
+      // target cannot be clicked while one is open.
+      if (probing || active())
+        return
       const plan = opts.plan(ctx)
       // Empty closeable: skip the dialog and finalize directly.
       if (plan.tabs.length === 0) {
         plan.finalize()
         return
       }
-      setActive({ ctx, plan })
+      // Scan BEFORE opening, so the dialog is complete the moment it appears.
+      // Opening first and patching the warning in would need a loading state and
+      // a disabled "Close all tabs" -- and would still leave a window where the
+      // user could confirm before the warning arrived.
+      probing = true
+      try {
+        setBusyTabs(await opts.probeBusy(plan.tabs))
+        setActive({ ctx, plan })
+      }
+      finally {
+        probing = false
+      }
     },
     cancel: clear,
     primary() {
@@ -118,7 +153,11 @@ export function createCloseFlow<Ctx>(opts: CloseFlowOptions<Ctx>): CloseFlow<Ctx
       // depends on the running tab count. Closing in parallel would race
       // dialogs and could mis-classify which close is the last-tab one.
       for (const tab of a.plan.tabs) {
-        const ok = await opts.handleTabClose(tab)
+        // The dialog already listed every busy tab and the user answered for all
+        // of them, so the per-tab prompt would ask the same question twice. The
+        // per-tab WORKTREE prompt still runs: that one asks something this
+        // dialog never covered.
+        const ok = await opts.handleTabClose(tab, { skipBusyConfirm: true })
         if (!ok) {
           // Bail without finalizing so the user can retry; another cancel()
           // could have raced the await, so guard the busy reset on still-active.

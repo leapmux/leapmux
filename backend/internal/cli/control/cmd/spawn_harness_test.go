@@ -107,6 +107,11 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 			}
 		}
 		return proto.Marshal(&leapmuxv1.LocateTabResponse{Tab: tab})
+	// The layout verbs resolve a TILE the same way `tab` verbs resolve a tab.
+	// The snapshot already states which workspace the tile is in, so answering
+	// from it keeps one source of truth for the tree in a test.
+	case method == "LocateTile" && h.materialized != nil:
+		return proto.Marshal(&leapmuxv1.LocateTileResponse{WorkspaceId: "ws-1"})
 	case method == "GetMaterialized" && h.materialized != nil:
 		return proto.Marshal(&leapmuxv1.GetMaterializedResponse{State: h.materialized})
 	case method == "ListWorkers" && h.listWorkers != nil:

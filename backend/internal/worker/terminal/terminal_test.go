@@ -1546,6 +1546,13 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 
 	newTerm := m.terminals[id]
 	require.NotSame(t, preTerm, newTerm, "manager should swap in a fresh *Terminal on restart")
+	// The restart's new pid falls out of that swap, which is the whole reason
+	// shellPID is captured in the constructor and mirrored nowhere else. This
+	// fails loudly if anyone ever caches the pid in TerminalMeta or
+	// TerminalEntry, where a restart path could forget to update it and the
+	// descendant walk would enumerate a dead shell's recycled pid.
+	assert.NotEqual(t, preTerm.ShellPID(), newTerm.ShellPID(), "a restart forks a new shell")
+	assert.NotZero(t, newTerm.ShellPID())
 	// Observable contract: cumulative offset doesn't regress across the
 	// restart, and the retained bytes from the prior session remain
 	// visible. Together these prove the ScreenBuffer was carried over —

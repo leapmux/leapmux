@@ -1,11 +1,12 @@
 /// <reference types="vitest/globals" />
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabHydrationStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { isFileTab, isImageTab } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
@@ -52,6 +53,8 @@ function agentInfo(id: string, over: Record<string, unknown> = {}) {
     startupError: '',
     startupMessage: '',
     gitStatus: undefined,
+    activityState: AgentActivityState.IDLE,
+    activeBackgroundTasks: 0,
     ...over,
   }
 }
@@ -97,10 +100,12 @@ function setup(workspaceId = 'ws-test') {
   const harness = installTestBridge({ workspaceId })
   const stores = createTestTabStores(workspaceId)
   const repoGitStore = createRepoGitStore()
+  const agentActivityStore = createAgentActivityStore()
   let seq = 0
   return {
     ...stores,
     repoGitStore,
+    agentActivityStore,
     harness,
     mount: (
       onlineWorkerIds?: () => ReadonlySet<string>,
@@ -110,6 +115,7 @@ function setup(workspaceId = 'ws-test') {
         view: stores.view,
         metadata: stores.metadata,
         repoGitStore,
+        agentActivityStore,
         onlineWorkerIds,
         settingsPendingAxes,
       }),
@@ -151,6 +157,38 @@ describe('useTabHydrators', () => {
 
       expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
       expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      d()
+    })
+
+    // The hydration path of the activity state. It is the ONLY path that
+    // reaches a tab watching in NOTIFY mode, which gets no catch-up replay at
+    // all -- without it a background tab shows no spinner until its agent's
+    // next transition, and the close guard lets a working agent go unwarned.
+    it('seeds the worker-derived busy state from the reply', async () => {
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1', { activityState: AgentActivityState.WORKING }),
+          agentInfo('a2', { activityState: AgentActivityState.IDLE }),
+        ],
+        verdicts: [],
+      })
+      const s = setup()
+      // a2 starts BUSY in the store. An unseen agent already reads idle, so
+      // asserting `false` on a fresh store passes whether or not the reply is
+      // ever applied -- and clearing a stale flag is exactly what this path owes
+      // a tab whose agent stopped while the previous connection was down.
+      s.agentActivityStore.apply('a2', AgentActivityState.WORKING)
+      const d = createRoot((dispose) => {
+        s.add(TabType.AGENT, 'a1')
+        s.add(TabType.AGENT, 'a2')
+        s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(s.agentActivityStore.isBusy('a1')).toBe(true)
+      expect(s.agentActivityStore.isBusy('a2')).toBe(false)
       d()
     })
 

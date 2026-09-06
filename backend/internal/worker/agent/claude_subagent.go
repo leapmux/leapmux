@@ -151,6 +151,20 @@ func (a *ClaudeCodeAgent) claudeHandleTaskEvent(content []byte) bool {
 	}
 }
 
+// claudePreStartRowKey keys the registry row for a subagent whose forwarded
+// envelope arrived BEFORE its task_started, when no task id exists yet.
+//
+// Prefixed rather than the bare spawn span, so the key can only ever name a row
+// this path opened. handleClaudeTaskStarted then renames unconditionally: an
+// ordinary start, and a re-registration whose tool_use_id is the parent's
+// SendMessage rather than the spawn, both find nothing and change nothing.
+func claudePreStartRowKey(spawnSpanID string) string {
+	if spawnSpanID == "" {
+		return ""
+	}
+	return "prestart:" + spawnSpanID
+}
+
 // handleClaudeTaskStarted records the task<->tool_use index and upserts the
 // registry row. For a local_agent Task with a tool_use_id it also pre-creates
 // the child transcript so the registry links early and forwarded envelopes
@@ -222,6 +236,23 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	title := ev.Description
 	if title == "" && !known.exists && !restart.restarted() {
 		title = bgtask.FirstLine(ev.Prompt)
+	}
+
+	// A forwarded child envelope that ARRIVED FIRST opened a row keyed by the
+	// spawn span, because no task id existed yet (see routeSubagentMessage). Move
+	// that row onto the task id now, so the run keeps ONE row rather than
+	// gaining a second one that leaves the first orphaned and the child counted
+	// twice. The rename runs BEFORE the upsert, so the fields below land on the
+	// renamed row.
+	if ev.ToolUseID != "" {
+		// The prefixed key is why this is safe to run unconditionally. It can only
+		// name a row routeSubagentMessage opened, so the ordinary flow -- and a
+		// re-registration, whose ToolUseID is the parent's SendMessage rather than
+		// the spawn -- finds nothing and the rename is a no-op.
+		if err := a.sink.RenameBackgroundTask(claudePreStartRowKey(ev.ToolUseID), ev.TaskID); err != nil {
+			slog.Warn("claude task_started rename failed",
+				"spawn_span", ev.ToolUseID, "task_id", ev.TaskID, "error", err)
+		}
 	}
 
 	// Registry upsert (kind shell -> registry only; local_workflow -> registry
@@ -607,10 +638,37 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	spawnSpanID := env.ParentToolUseID
 	taskID := a.tasks.taskIDForToolUse(spawnSpanID)
 
-	childID, err := a.sink.EnsureChildAgent(spawnSpanID, taskID, "")
+	// The reorder. A forwarded child envelope can arrive BEFORE its
+	// task_started, so no task id is known yet -- the same ordering
+	// recordPendingTaskEnd exists for on the result side. With no id,
+	// EnsureChildAgent creates the child agent but links no registry row, and the
+	// child's registry row IS its run: the subagent then reads idle for the whole
+	// window, so its tab shows no thinking indicator while its transcript
+	// streams.
+	//
+	// Key the row by the SPAWN SPAN, which is known now and identifies the same
+	// run. handleClaudeTaskStarted renames it to the task id when that finally
+	// arrives, so one row carries the run from end to end.
+	registryKey := taskID
+	if registryKey == "" {
+		registryKey = claudePreStartRowKey(spawnSpanID)
+	}
+
+	childID, err := a.sink.EnsureChildAgent(spawnSpanID, registryKey, "")
 	if err != nil {
 		slog.Warn("claude route subagent: ensure child failed", "spawn_span", spawnSpanID, "error", err)
 		return
+	}
+	if taskID == "" {
+		// Opened RUNNING, because the envelope that got us here is the subagent
+		// working. Without a row the derivation has no live input for a child at
+		// all.
+		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: registryKey, Kind: bgtask.KindSubagent, ChildAgentID: childID,
+			ParentAgentID: a.agentID, Status: bgtask.StatusRunning,
+		}); err != nil {
+			slog.Warn("claude route subagent: open pre-start row failed", "spawn_span", spawnSpanID, "error", err)
+		}
 	}
 	// Only an index-derived id is recorded here. Resolving the task FROM the
 	// child and then writing the pair back would be a no-op write, and it would

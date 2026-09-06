@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -101,6 +102,21 @@ func waitTerminalWatchCount(t *testing.T, svc *Service, termID string, want int)
 	require.Eventually(t, func() bool {
 		return svc.Watchers.terminals.count(termID) == want
 	}, time.Second, 10*time.Millisecond)
+}
+
+// waitStreamEnded blocks until the handler sends its End frame.
+//
+// The generous limit is a backstop against a hung handler, not the mechanism:
+// the channel wakes the test the instant the frame lands. A short real-time
+// budget here measures the CI runner's load, and a loaded Windows runner needs
+// more than a second to schedule the session goroutine.
+func waitStreamEnded(t *testing.T, w *testResponseWriter) {
+	t.Helper()
+	select {
+	case <-w.streamEndSignal():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the session never sent its End frame")
+	}
 }
 
 func streamEnded(w *testResponseWriter) bool {
@@ -282,9 +298,11 @@ func TestWatchEvents_CancelFrameUnwatchesAndEnds(t *testing.T) {
 
 	w.deliverStreamRequest(nil, true)
 
-	require.Eventually(t, func() bool {
-		return !svc.Watchers.agents.hasEntity("agent-1") && streamEnded(w)
-	}, time.Second, 10*time.Millisecond)
+	// OnCancel unwatches on the caller's goroutine and only the End frame
+	// crosses to the session goroutine. So wait for that frame, then read the
+	// registry: once the stream ends, the unwatch already happened.
+	waitStreamEnded(t, w)
+	assert.False(t, svc.Watchers.agents.hasEntity("agent-1"))
 }
 
 func TestWorkerPrivateEvents_CancelReleasesSubscriber(t *testing.T) {
@@ -834,6 +852,117 @@ func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
 	assert.Equal(t, "alpha", keys["task-a"].GetTitle())
 	require.Contains(t, keys, "task-b")
 	assert.Equal(t, "beta", keys["task-b"].GetTitle())
+}
+
+// TestReplayIncludesActivitySnapshot pins the activity leg of
+// replayAgentCatchUp: a tab promoting to FULL must learn whether its agent is
+// working BEFORE the message burst, so it renders the right spinner and the
+// right Interrupt button at once rather than after the replay drains.
+//
+// This is the third leg of the same pattern the background-task registry
+// already uses -- AgentInfo.busy hydrates, this replays, AgentActivityChanged
+// pushes -- and it is the one that covers the transition into FULL.
+func TestReplayIncludesActivitySnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	// A running process is a precondition of every busy answer; the real check
+	// reads the agent manager, which holds no subprocess in a test.
+	svc.Output.processRunning = func(string) bool { return true }
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
+	}))
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
+	assert.False(t, streamEndedWithError(w), "watch replay must not surface a stream error")
+
+	var activity *leapmuxv1.AgentActivityChanged
+	var activityAgentID string
+	for _, e := range decodeAgentEvents(w) {
+		if changed := e.GetActivityChanged(); changed != nil {
+			activity = changed
+			activityAgentID = e.GetAgentId()
+			break
+		}
+	}
+	require.NotNil(t, activity, "replay must include an AgentActivityChanged event")
+	// Under the WATCHED agent's own id, not the registry owner's: a child tab's
+	// answer is its own row, which differs from its root's.
+	assert.Equal(t, "root-1", activityAgentID)
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, activity.GetState(), "a running registry row makes the agent working")
+	assert.Nil(t, activity.NumToolUses, "a replay completes no turn, so it carries no count")
+}
+
+// TestReplayActivityPrecedesTheMessageBurst pins the ORDER, which is the whole
+// reason this event is in the replay at all.
+//
+// The tab renders the replayed messages as they arrive. An activity frame that
+// lands after them leaves the burst painting with no thinking indicator and no
+// Interrupt button on an agent that is working -- exactly the window the event
+// exists to close.
+func TestReplayActivityPrecedesTheMessageBurst(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	svc.Output.processRunning = func(string) bool { return true }
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
+	}))
+	// A burst for the activity frame to precede. Without one, any order passes.
+	for i := range 3 {
+		_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+			ID:            fmt.Sprintf("msg-%d", i),
+			AgentID:       "root-1",
+			Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+			Content:       []byte("hello"),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		})
+		require.NoError(t, err)
+	}
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
+
+	activityAt, firstMessageAt := -1, -1
+	for i, e := range decodeAgentEvents(w) {
+		if e.GetActivityChanged() != nil && activityAt < 0 {
+			activityAt = i
+		}
+		if e.GetAgentMessage() != nil && firstMessageAt < 0 {
+			firstMessageAt = i
+		}
+	}
+	require.GreaterOrEqual(t, activityAt, 0, "replay must include an AgentActivityChanged event")
+	require.GreaterOrEqual(t, firstMessageAt, 0, "this case needs a message burst to overtake")
+	assert.Less(t, activityAt, firstMessageAt,
+		"the tab must know it is busy before it renders the replayed messages")
 }
 
 // TestWatchChildAgentReplaysWithoutProcess pins that watching a CHILD agent

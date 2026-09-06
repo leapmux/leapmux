@@ -280,7 +280,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   it('the agent going INACTIVE clears every live indicator', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
-      handleAgentInactive('a1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', s, undefined)
+      handleAgentInactive('a1', { agentSessionId: 'sess-1' } as unknown as AgentStatusChange, 'live', s)
       expectNothingLive(s)
       dispose()
     })
@@ -314,7 +314,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
         agentId: 'a1',
         payload: new TextEncoder().encode(JSON.stringify({ method: 'x' })),
       } as unknown as AgentControlRequest
-      handleControlRequest('a1', req, 'live', s, undefined)
+      handleControlRequest('a1', req, 'live', s)
       expect(running(s.chatStore)).toHaveLength(2)
       expect(s.chatStore.getToolProgress('a1', 'toolu_A')).toEqual({ elapsedSeconds: 30 })
       expect(s.agentSessionStore.getInfo('a1').thinkingTokens).toBeUndefined()

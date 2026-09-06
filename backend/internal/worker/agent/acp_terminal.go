@@ -427,8 +427,11 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 			}
 		}
 		sess.recordExit(ps)
-		close(sess.done)
+		// The registry row reaches its final status BEFORE done closes.
+		// terminal/wait_for_exit replies off done, so the opposite order lets
+		// the client read its own terminal's row and still see RUNNING.
 		b.closeTerminalRegistry(sess)
+		close(sess.done)
 	}()
 
 	b.terminalOK(id, map[string]interface{}{"terminalId": termID})

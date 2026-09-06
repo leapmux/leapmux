@@ -147,7 +147,7 @@ export function classifyParsedMessage(
 
 // AgentChatMessage is immutable once persisted, so caching the
 // context-free classification by message reference avoids redispatching
-// through the provider plugin on every isAgentWorking scan. Skip when a
+// through the provider plugin on every render pass. Skip when a
 // ClassificationContext is supplied (MessageBubble's per-render path)
 // because the classifier may consult context-dependent fields like the
 // command-stream length.
@@ -155,12 +155,12 @@ export function classifyParsedMessage(
 // Solid's createStore wraps stored objects in proxies, so the wire-side
 // ref passed at broadcast time and the proxy ref read by per-render
 // scans have different identities. The cache therefore primarily serves
-// the dominant cost — repeated isAgentWorking scans across visible
+// the dominant cost -- repeated classification across visible
 // chats — and broadcast-time hits act as one-shot warm-ups whose
 // entries are GC'd once the wire ref goes out of scope.
 //
-// Cache safety caveat: today's consumers (isAgentWorking,
-// shouldClearStreamingText) treat 'hidden' and 'assistant_thinking'
+// Cache safety caveat: today's consumers (shouldClearStreamingText and
+// the render path) treat 'hidden' and 'assistant_thinking'
 // equivalently, which is why the Codex reasoning classifier's
 // context-dependent split between those two kinds is currently
 // invisible to cache readers. A future caller that distinguishes them

@@ -929,7 +929,7 @@ describe('preferencesContext — parses exactly what the hub declares', () => {
     }
   })
 
-  // The hub refuses `v < 0 || v > 100`, and `useTurnEnd` assigns
+  // The hub refuses `v < 0 || v > 100`, and `useAgentSettled` assigns
   // `volume / 100` to an HTMLAudioElement, which throws IndexSizeError
   // synchronously for anything outside 0..1 -- no sound, and no turn-end
   // event either, because the rate limiter already recorded the play.

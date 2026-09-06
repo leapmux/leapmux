@@ -1,6 +1,7 @@
 import type { CatchUpPhase } from './agentEvents'
 import type { AgentEvent, TerminalEvent } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
+import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
@@ -20,12 +21,12 @@ import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
   clearPerTurnLiveState,
+  handleActivityChanged,
   handleAgentMessage,
   handleAgentStatusChange,
   handleControlRequest,
   handleStreamChunk,
   handleStreamEnd,
-  handleTurnEnd,
 } from './agentEvents'
 import {
   applyTerminalStatusChange,
@@ -134,8 +135,13 @@ export function clearOfflineAgentState(
   stores: {
     chatStore: ReturnType<typeof createChatStore>
     agentSessionStore: ReturnType<typeof createAgentSessionStore>
+    agentActivityStore?: AgentActivityStore
   },
 ): void {
+  // The worker that was going to report the settle is gone, so a retained busy
+  // flag would pin the spinner and keep the Interrupt button on an agent that
+  // nothing can interrupt.
+  stores.agentActivityStore?.forget(agentId)
   stores.chatStore.streamingText.clear(agentId)
   for (const spanId of Object.keys(stores.chatStore.getAgentCommandStreams(agentId)))
     stores.chatStore.clearCommandStream(agentId, spanId)
@@ -181,15 +187,23 @@ export interface WorkspaceConnectionParams {
   selection: TabSelectionStore
   controlStore: ReturnType<typeof createControlStore>
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
+  agentActivityStore: AgentActivityStore
   settingsLoading: ReturnType<typeof createLoadingSignal>
   repoGitStore: ReturnType<typeof createRepoGitStore>
   getActiveWorkspaceId: () => string | null
-  /** Called when an agent turn ends (turn completed or control request received). */
-  onTurnEnd?: (agentId: string, numToolUses?: number) => void
+  /** Alert + badge when an agent SETTLES. See handleAgentSettled. */
+  onAgentSettled?: (agentId: string, numToolUses?: number) => void
+  /**
+   * Refresh derived views after each TURN end -- git status and the directory
+   * tree. Separate from onAgentSettled because the two fire at different moments: a
+   * turn that leaves a subagent running changed the working tree but has not
+   * settled the agent.
+   */
+  onTurnEndRefresh?: (agentId: string) => void
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
-  const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, settingsLoading, repoGitStore } = params
+  const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, agentActivityStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
   // Per-agent catch-up phase across all workers.
@@ -301,7 +315,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           inner.value,
           { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId },
-          params.onTurnEnd,
           catchUpPhase,
         )
         break
@@ -321,7 +334,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore, repoGitStore },
           settingsLoading,
           online => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', online),
-          params.onTurnEnd,
           streamWorkerId,
         )
         break
@@ -332,7 +344,6 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           inner.value,
           catchUpPhase,
           { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore },
-          params.onTurnEnd,
         )
         break
       case 'controlCancel': {
@@ -341,12 +352,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'turnEnd':
-        handleTurnEnd(
-          agentId,
-          inner.value,
-          { metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, view },
-          params.onTurnEnd,
-        )
+        // A turn ended. That refreshes git status and the directory tree, which
+        // is right per TURN -- the working tree changed whether or not a
+        // subagent is still running.
+        //
+        // It does NOT alert. The alert belongs to the busy -> idle edge
+        // (handleAgentSettled): a turn that leaves a subagent working is not a
+        // finished piece of work, and ringing here told the user otherwise.
+        params.onTurnEndRefresh?.(agentId)
         break
       case 'inputQueueChanged': {
         agentInputQueueStore.apply(inner.value.snapshot)
@@ -373,6 +386,24 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         chatStore.backgroundTasks.replace(bc.agentId, bc.tasks)
         break
       }
+      case 'activityChanged':
+        // The Worker's authoritative "is this agent working". Notification-class
+        // and edge-triggered, so an off-screen tab still learns that its agent
+        // settled -- which is the tab that most needs to ring and badge.
+        //
+        // `catchUpPhase` is this file's shared resolution, which reads 'live'
+        // for an agent with no entry: catchUpPhases carries one only while a tab
+        // replays into FULL, so a tab watching in NOTIFY mode has none -- and
+        // that is exactly the off-screen tab this event exists to ring for.
+        handleActivityChanged(agentId, inner.value, {
+          metadata,
+          selection,
+          view,
+          getActiveWorkspaceId: params.getActiveWorkspaceId,
+          agentActivityStore,
+          onAgentSettled: params.onAgentSettled,
+        }, catchUpPhase)
+        break
       case 'catchUpStart':
         chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTails.get(agentId))
         break
@@ -542,7 +573,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           for (const tab of agents) {
             // The patch below writes the tab's status directly and never reaches
             // handleAgentInactive, so this sweep owns the whole reclamation.
-            clearOfflineAgentState(tab.id, { chatStore, agentSessionStore })
+            clearOfflineAgentState(tab.id, { chatStore, agentSessionStore, agentActivityStore })
             if (tab.agentStatus === AgentStatus.ACTIVE)
               metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
           }

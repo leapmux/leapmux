@@ -57,17 +57,17 @@ describe('pi classify', () => {
 
   it('maps agent_end (stop) to a "Turn ended" divider model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] }))
-      .toEqual({ label: 'Turn ended', turnContinues: false })
+      .toEqual({ label: 'Turn ended' })
   })
 
   it('maps an aborted stopReason to a danger "Turn aborted" model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'aborted' }] }))
-      .toEqual({ label: 'Turn aborted', isError: true, turnContinues: false })
+      .toEqual({ label: 'Turn aborted', isError: true })
   })
 
   it('maps an error stopReason to a danger "Turn failed — <msg>" model', () => {
     expect(plugin.resultDivider!({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'rate limit' }] }))
-      .toEqual({ label: 'Turn failed — rate limit', isError: true, turnContinues: false })
+      .toEqual({ label: 'Turn failed — rate limit', isError: true })
   })
 
   it('returns null when the message is not agent_end', () => {
@@ -125,10 +125,6 @@ describe('pi classify', () => {
       expect(retrying.label).toBe('Turn failed — overloaded (2.1s) · auto-retry')
     })
 
-    it('reports that the turn continues, so the thinking indicator stays up', () => {
-      expect(retrying.turnContinues).toBe(true)
-    })
-
     it('adds no meta part when Pi does not retry', () => {
       const model = plugin.resultDivider!({
         type: 'agent_end',
@@ -136,7 +132,6 @@ describe('pi classify', () => {
         messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'overloaded' }],
       })!
       expect(model.label).toBe('Turn failed — overloaded (2.1s)')
-      expect(model.turnContinues).toBe(false)
     })
   })
 

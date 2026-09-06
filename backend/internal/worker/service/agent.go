@@ -1102,7 +1102,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// scope.proto places under git:write ("manage a worktree"), the same
 		// family rule every other destructive verb follows (CloseTerminal ->
 		// terminal:write, DeleteBranch -> git:write). A read consent must never
-		// delete a worktree, so the escalation is gated here, at the action,
+		// delete a worktree, so the escalation happens here, at the action,
 		// rather than re-scoping the whole method: registering and revoking the
 		// row itself is what any file-tab client needs, and the pre-existing
 		// precedent is WatchWorkerPrivateEvents, which applies per-kind checks
@@ -1244,6 +1244,30 @@ func (svc *Service) replayAgentCatchUp(
 		return
 	}
 
+	// Resolve the root once for the whole replay. Calling rootAgentIDFor twice
+	// would run the recursive CTE twice and could return different roots if the
+	// parent chain changed between the calls, shipping one root's tasks under
+	// another's id.
+	rootID := svc.rootAgentIDFor(bgCtx(), agentID)
+
+	// Replay the derived activity BEFORE the message burst, so a tab that just
+	// promoted to FULL renders the right spinner and the right Interrupt button
+	// while the burst lands rather than after it. Under this agent's OWN id, not
+	// the root's: a child tab's answer is its own registry row, which differs
+	// from its root's.
+	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+		AgentId: agentID,
+		Event: &leapmuxv1.AgentEvent_ActivityChanged{
+			ActivityChanged: &leapmuxv1.AgentActivityChanged{
+				State: svc.Output.AgentActivitySnapshot(agentID, rootID).State,
+			},
+		},
+	})
+
+	if !sink.alive() {
+		return
+	}
+
 	// Replay up to maxMessagePageLimit messages so a just-subscribed client
 	// has recent context. A RESUMING subscriber (replay == AFTER_CURSOR) gets
 	// the forward catch-up (seq > cursor_seq). A FRESH subscriber (LATEST, or
@@ -1315,10 +1339,6 @@ func (svc *Service) replayAgentCatchUp(
 	if !sink.alive() {
 		return
 	}
-	// Resolve the root once. Calling rootAgentIDFor twice would run the
-	// recursive CTE twice and could return different roots if the parent chain
-	// changed between the calls, shipping one root's tasks under another's id.
-	rootID := svc.rootAgentIDFor(bgCtx(), agentID)
 	if bgItems, bgErr := svc.Output.LoadBackgroundTasks(bgCtx(), rootID); bgErr != nil {
 		slog.Warn("failed to load agent_background_tasks for replay", "agent_id", agentID, "error", bgErr)
 	} else {
@@ -1521,6 +1541,19 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.GitR
 		info.AcceptsMessages = true
 		info.RootAgentId = a.ID
 	}
+
+	// The hydration path of the activity state AgentActivityChanged pushes. A
+	// tab watching in NOTIFY mode gets no catch-up replay at all, so a list read
+	// is the only place it can learn the current value -- and the close guards
+	// in the browser and the CLI both start from a list read.
+	//
+	// ONE snapshot, which is what AgentActivitySnapshot returns both values for.
+	// Asking separately read the registry twice for every row of the reply, and
+	// the two reads were not atomic: a subagent finishing between them shipped
+	// WORKING with active_background_tasks=0, and the CLI then refused the close
+	// naming work its own count said was not there.
+	activity := svc.Output.AgentActivitySnapshot(a.ID, info.RootAgentId)
+	info.ActivityState, info.ActiveBackgroundTasks = activity.State, activity.ActiveTasks
 
 	if a.ClosedAt.Valid {
 		info.ClosedAt = timefmt.Format(a.ClosedAt.Time)
@@ -2523,7 +2556,7 @@ func (svc *Service) applySettingsViaRestart(dbAgent db.Agent, newOptions OptionM
 // Returns an empty map when nothing reports.
 //
 // Shared by the model-settle path (full union of keys, first sets announced) and the live
-// option-change path (only the applied keys, first sets gated by the caller's spec), so the
+// option-change path (only the applied keys, first sets restricted by the caller's spec), so the
 // catalog-resolution rules below -- the SETTLED-model catalog and the row-catalog fallback -- are
 // applied once and can't drift between the two notification emitters.
 func (svc *Service) buildSettingsChanges(

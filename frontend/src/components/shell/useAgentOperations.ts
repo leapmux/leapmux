@@ -4,6 +4,7 @@ import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResult } from '~/generated/proto/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
+import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
@@ -38,6 +39,7 @@ export interface UseAgentOperationsProps {
   agentInputQueueStore: ReturnType<typeof createAgentInputQueueStore>
   chatStore: ReturnType<typeof createChatStore>
   controlStore: ReturnType<typeof createControlStore>
+  agentActivityStore: AgentActivityStore
   view: TabView
   metadata: TabMetadataStore
   selection: TabSelectionStore
@@ -517,6 +519,12 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     forgetAgentAttachments(agentId)
     props.agentInputQueueStore.clearAgent(agentId)
     props.chatStore.forgetAgent(agentId)
+    // The activity flag goes with the tab, the way the Worker drops its own
+    // entry in CleanupAgent. A subagent close is UI-only, so its run continues
+    // and the flag is left reading `true`; reviving that tab -- the same agent
+    // id -- then paints a spinner and an Interrupt button before any hydration
+    // reply arrives, on a run that may already have ended.
+    props.agentActivityStore.forget(agentId)
   }
 
   // Close an agent.

@@ -56,6 +56,7 @@ import type {
 } from '~/generated/proto/leapmux/v1/git_pb'
 import type {
   CloseTerminalResponse,
+  InspectTerminalProcessesResponse,
   ListAvailableShellsResponse,
   ListTerminalsResponse,
   OpenTerminalResponse,
@@ -172,6 +173,8 @@ import {
 import {
   CloseTerminalRequestSchema,
   CloseTerminalResponseSchema,
+  InspectTerminalProcessesRequestSchema,
+  InspectTerminalProcessesResponseSchema,
   ListAvailableShellsRequestSchema,
   ListAvailableShellsResponseSchema,
   ListTerminalsRequestSchema,
@@ -558,6 +561,15 @@ export function updateTerminalTitle(workerId: string, req: MessageInitShape<type
 
 export function listTerminals(workerId: string, req: MessageInitShape<typeof ListTerminalsRequestSchema>): Promise<ListTerminalsResponse> {
   return callWorker(workerId, 'ListTerminals', ListTerminalsRequestSchema, ListTerminalsResponseSchema, req)
+}
+
+/**
+ * What is running inside each named terminal, so a close guard can state the
+ * reason before it tears the tab down. Batched: closing a tile asks about every
+ * terminal it holds in one round trip.
+ */
+export function inspectTerminalProcesses(workerId: string, req: MessageInitShape<typeof InspectTerminalProcessesRequestSchema>): Promise<InspectTerminalProcessesResponse> {
+  return callWorker(workerId, 'InspectTerminalProcesses', InspectTerminalProcessesRequestSchema, InspectTerminalProcessesResponseSchema, req)
 }
 
 export function listAvailableShells(workerId: string, req: MessageInitShape<typeof ListAvailableShellsRequestSchema>): Promise<ListAvailableShellsResponse> {

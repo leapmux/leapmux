@@ -408,6 +408,9 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 		ownerGatedProbe{"StatFile", "StatFile", func() proto.Message {
 			return &leapmuxv1.StatFileRequest{Path: "/tmp/x"}
 		}},
+		ownerGatedProbe{"InspectTerminalProcesses", "InspectTerminalProcesses", func() proto.Message {
+			return &leapmuxv1.InspectTerminalProcessesRequest{TerminalIds: []string{"term-1"}}
+		}},
 		ownerGatedProbe{"ListAvailableShells", "ListAvailableShells", func() proto.Message {
 			return &leapmuxv1.ListAvailableShellsRequest{}
 		}},

@@ -1,3 +1,4 @@
+import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
@@ -37,6 +38,15 @@ export interface UseTabHydratorsOpts {
   view: TabView
   metadata: TabMetadataStore
   repoGitStore: ReturnType<typeof createRepoGitStore>
+  /**
+   * Seeded from `AgentInfo.busy` on every batch reply.
+   *
+   * This is the ONLY leg that reaches a tab watching in NOTIFY mode, which gets
+   * no catch-up replay at all -- so without it a background tab would show no
+   * spinner until its agent's next transition, and the close guard would let a
+   * working agent go with no warning.
+   */
+  agentActivityStore: AgentActivityStore
   /**
    * Which workers the hub currently reports as online.
    *
@@ -555,6 +565,12 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           opts.settingsPendingAxes?.(tab.id) ?? EMPTY_PENDING_AXES,
         )
         opts.metadata.patch(tab.id, { ...fields, ...settingsFields })
+        // Hydration, not a transition: seed the store and drop the settle edge
+        // setBusy reports. This batch runs when a tab first appears and on an
+        // explicit re-ask, never as a poll, so an agent that settled between
+        // the two is not news the user asked for -- and the live event that
+        // announced that settle already rang if this client was watching.
+        opts.agentActivityStore.apply(tab.id, agent.activityState)
         resolved.add(tab.id)
       }
       return { resolved, verdicts: resp.verdicts }

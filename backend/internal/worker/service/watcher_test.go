@@ -1252,6 +1252,7 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 		"turn_end":                 true,
 		"todos_changed":            true,
 		"background_tasks_changed": true,
+		"activity_changed":         true,
 		// input_queue_changed is deliberately absent: a queue snapshot carries
 		// every item with a text preview, so it is content.
 	}
@@ -1272,6 +1273,25 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBroadcast_ActivityChangedReachesNotifyWatcher(t *testing.T) {
+	t.Parallel()
+
+	m := NewWatcherManager()
+	mock := newTestWatcher("ch-1")
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+
+	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
+		AgentId: "agent-1",
+		Event: &leapmuxv1.AgentEvent_ActivityChanged{
+			ActivityChanged: &leapmuxv1.AgentActivityChanged{State: leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE},
+		},
+	})
+	// The whole point of the event is the tab nobody is looking at: that is the
+	// one that has to ring and badge when its agent settles. A content-class
+	// classification would drop it for exactly that tab and for no other.
+	assert.Equal(t, int64(1), mock.streamCount.Load(), "ActivityChanged is notify-class")
 }
 
 // A queue snapshot carries every item with a text preview, so it is content

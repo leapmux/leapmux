@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -34,19 +35,28 @@ type testSinkModeChange struct {
 type testSink struct {
 	// persistErr, when set, is what PersistMessage returns. Read without the
 	// lock: a test sets it at construction and never changes it afterwards.
-	persistErr         error
-	mu                 sync.Mutex
-	messages           []testSinkMessage
-	notifications      []testSinkMessage
-	streamChunks       []testSinkStreamChunk
-	streamEnds         []string
-	sessionIDs         []string
-	permissionModes    []string
-	modeChanges        []testSinkModeChange
-	settingsRefreshes  []testSinkSettingsRefreshed
-	sessionInfos       []map[string]interface{}
-	openSpans          []testSinkSpanOpen
-	closedSpans        []string
+	persistErr        error
+	mu                sync.Mutex
+	messages          []testSinkMessage
+	notifications     []testSinkMessage
+	streamChunks      []testSinkStreamChunk
+	streamEnds        []string
+	sessionIDs        []string
+	permissionModes   []string
+	modeChanges       []testSinkModeChange
+	settingsRefreshes []testSinkSettingsRefreshed
+	sessionInfos      []map[string]interface{}
+	openSpans         []testSinkSpanOpen
+	closedSpans       []string
+	// TurnActiveCalls records every SetTurnActive value in order. The ORDER is
+	// the observable that matters: a provider that clears its turn flag before
+	// it publishes the turn-end envelope, or that never clears it on a path the
+	// happy case does not reach, latches the agent busy forever.
+	TurnActiveCalls []bool
+	// turnLifecycle interleaves the turn-end envelope with the turn-flag
+	// transitions, which the two slices above cannot show apart. See
+	// TurnLifecycle.
+	turnLifecycle      []string
 	reservedColorSpans []testSinkSpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
@@ -83,6 +93,10 @@ type testSink struct {
 	// (no-op upsert, absorbed reject) are skipped so length asserts stay
 	// meaningful.
 	bgTaskStatuses map[string][]bgtask.Status
+	// closeBgTaskHook runs at the START of CloseBackgroundTask, before the lock,
+	// so a test can observe what the rest of the process can see at the moment a
+	// row reaches its final status. Set it before the first close.
+	closeBgTaskHook func(rowKey string, status bgtask.Status)
 	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
 	// in order. The effect alone cannot prove the call: a revive leaves the row
 	// running, which is also how it looked before it ever finished.
@@ -182,7 +196,52 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 		TurnEnd:            true,
 		SpansOpenAtPersist: s.liveSpansLocked(),
 	})
+	s.turnLifecycle = append(s.turnLifecycle, "turn_end")
 	return nil
+}
+
+// SetTurnActive records the provider's turn flag transitions in order, so a
+// provider test can assert the exact sequence it published.
+func (s *testSink) SetTurnActive(active bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TurnActiveCalls = append(s.TurnActiveCalls, active)
+	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", active))
+}
+
+// TurnLifecycle returns the turn-end envelopes and the turn-flag transitions in
+// the one order the provider produced them.
+//
+// The order is a REQUIREMENT on every provider, not an implementation detail:
+// PersistTurnEnd hands the finished turn's tool-call count to the Worker's
+// activity latch, and the clear that follows is the settle edge that spends it.
+// A provider that clears first settles the agent with no count, and the client
+// then rings the completion sound for a turn that used no tool. Two slices
+// cannot show that, because neither records the other's position.
+func (s *testSink) TurnLifecycle() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.turnLifecycle...)
+}
+
+// TurnActives returns the published turn states in order.
+func (s *testSink) TurnActives() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.TurnActiveCalls...)
+}
+
+// LastTurnActive returns the most recently published turn state, and whether
+// anything was published at all. A provider that never published is a distinct
+// failure from one that published the wrong value: the first latches whatever
+// the agent last showed, so it never clears.
+func (s *testSink) LastTurnActive() (bool, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.TurnActiveCalls) == 0 {
+		return false, false
+	}
+	return s.TurnActiveCalls[len(s.TurnActiveCalls)-1], true
 }
 
 func (s *testSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
@@ -679,6 +738,9 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 }
 
 func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if s.closeBgTaskHook != nil {
+		s.closeBgTaskHook(rowKey, status)
+	}
 	rowKey = bgtask.NormalizeRowKey(rowKey)
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
@@ -1028,6 +1090,7 @@ func (noopSink) PersistMessage(leapmuxv1.MessageSource, []byte, SpanInfo) error 
 	return nil
 }
 func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                             { return nil }
+func (noopSink) SetTurnActive(bool)                                                {}
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}

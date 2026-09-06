@@ -26,6 +26,19 @@ type registryCache[T any] struct {
 	Rows    []T
 	nextSeq int64
 	ops     registryOps[T]
+
+	// evictedActive holds the keys of rows the cap gave up while they were still
+	// ACTIVE and that retention kept in the store. They are running work with no
+	// row in the display list.
+	//
+	// The cap is a DISPLAY limit, so a caller that reads the list to answer "is
+	// anything running" undercounts by exactly this set. The registry is the only
+	// thing that knows what it hid, so it is the only place that can say. An
+	// entry leaves when the row is re-admitted or deleted.
+	//
+	// A worker restart cannot desync it: the boot sweep ends every active row
+	// before any cache exists.
+	evictedActive map[string]struct{}
 }
 
 // seedEntry pairs a stored item with its persisted seq, so ensureSeededLocked
@@ -269,6 +282,8 @@ func (c *registryCache[T]) admitRowLocked(ctx context.Context, ownerID string, r
 		c.nextSeq++
 	}
 	c.Rows = append(c.Rows, row)
+	// Back in the list, so the list speaks for it again.
+	c.forgetEvictedActiveLocked(c.ops.keyOf(row))
 	return len(c.Rows) - 1, nil
 }
 
@@ -293,6 +308,8 @@ func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key str
 	if err := c.dropStoredRowLocked(ctx, ownerID, row); err != nil {
 		return false, fmt.Errorf("delete %s: %w", c.ops.label, err)
 	}
+	// Gone from the registry, so it is nobody's running work now.
+	c.forgetEvictedActiveLocked(key)
 	if idx < 0 {
 		return false, nil
 	}
@@ -369,7 +386,28 @@ func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, ev
 		return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
 	}
 	c.Rows = slices.Delete(c.Rows, evictIdx, evictIdx+1)
+	// Remember an ACTIVE row that survives in the store. It is still running, and
+	// the display list can no longer say so. A row retention did NOT keep is gone
+	// from the table too, so nothing can report it and nothing should try.
+	if !c.ops.isFinished(evicted) && c.ops.retention != nil && c.ops.retention.keep(evicted) {
+		if c.evictedActive == nil {
+			c.evictedActive = make(map[string]struct{}, 1)
+		}
+		c.evictedActive[c.ops.keyOf(evicted)] = struct{}{}
+	}
 	return evicted, true, nil
+}
+
+// forgetEvictedActiveLocked drops key from the hidden-active set, for a row that
+// came back into the list or left the store. Caller must hold c.Mu.
+func (c *registryCache[T]) forgetEvictedActiveLocked(key string) {
+	delete(c.evictedActive, key)
+}
+
+// EvictedActiveCount reports how many still-running rows the cap hid from the
+// display list. Caller must hold c.Mu.
+func (c *registryCache[T]) EvictedActiveCount() int32 {
+	return int32(len(c.evictedActive))
 }
 
 // dropStoredRowLocked deletes the persisted row unless ops.retention keeps it,

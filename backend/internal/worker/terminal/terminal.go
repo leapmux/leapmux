@@ -289,7 +289,24 @@ type OutputHandler func(data []byte, endOffset int64, signals []Signal)
 
 // Terminal manages a single PTY session.
 type Terminal struct {
-	id        string
+	id string
+	// shellPID is the login shell this terminal forked, captured as a plain int
+	// at spawn and never written again.
+	//
+	// A COPY, not a read of cmd.Process.Pid: that field belongs to the
+	// os.Process the waitForExit goroutine is inside Wait() on, and
+	// (*os.Process).Release sets it to -1 on every non-Windows target. os/exec
+	// does not call Release today, so reading it would be correct today -- but
+	// "correct because of what the standard library happens not to do" is not a
+	// property this file can hold, and the read would race the exit goroutine
+	// besides.
+	//
+	// Not mirrored into TerminalMeta or TerminalEntry. Respawn forks a NEW
+	// *Terminal and installTerminal swaps the map entry, so this one capture
+	// site covers every spawn path and a restart's new pid falls out of the
+	// swap. A mirrored copy is a second source of truth a future restart path
+	// can forget to update.
+	shellPID  int
 	cmd       *pty.Cmd
 	ptmx      pty.Pty
 	jobObject *procutil.JobObject
@@ -487,6 +504,7 @@ func startWithScreenBuffer(
 
 	t := &Terminal{
 		id:                opts.ID,
+		shellPID:          cmd.Process.Pid,
 		clock:             clock,
 		cmd:               cmd,
 		ptmx:              ptmx,
@@ -731,6 +749,16 @@ func (t *Terminal) IsExited() bool {
 // ID returns the terminal's ID.
 func (t *Terminal) ID() string {
 	return t.id
+}
+
+// ShellPID returns the pid of the login shell this terminal spawned. Stable for
+// the terminal's whole life, the period after the shell exits included: a
+// restart forks a NEW *Terminal (see Respawn) instead of re-pointing this one.
+//
+// No mutex, for the same reason ID() needs none: written before the *Terminal
+// escapes its constructor and never written again.
+func (t *Terminal) ShellPID() int {
+	return t.shellPID
 }
 
 // ScreenSnapshot returns the full retained PTY output and the cumulative

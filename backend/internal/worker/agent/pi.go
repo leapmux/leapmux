@@ -473,6 +473,7 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	a.toolCallPrompts.clear()
 	handle := a.sessionHandleLocked()
 	a.mu.Unlock()
+	a.publishTurnActive()
 	// The session was replaced; drop any in-flight thinking-token estimate so it
 	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next
 	// agent_start also resets, but resetting here keeps every provider's context

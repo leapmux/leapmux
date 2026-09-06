@@ -584,6 +584,9 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	if changed {
 		h.broadcastBackgroundTasks(rootAgentID, snapshot)
 	}
+	// Unconditional, unlike the broadcast above: the process died, so every
+	// descendant is idle now whether or not the DISPLAY list moved.
+	h.refreshActivityTree(rootAgentID)
 	h.WriteSubagentEndDividers(endedChildIDs, status)
 }
 
@@ -654,6 +657,18 @@ func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title 
 	}
 	if pendingBroadcast != nil {
 		s.h.broadcastBackgroundTasks(s.rootAgentID, pendingBroadcast)
+		// Linking a row to a child is the moment that row starts standing for a
+		// subagent, so it changes that subagent's own answer -- the same reason
+		// applyAndBroadcast refreshes the tree for every other registry
+		// mutation. This site reached the cache through ensureRegistryRowLocked
+		// rather than applyAndBroadcast, so without this the freshly linked
+		// child got no AgentActivityChanged for its whole run: a refresh
+		// triggered by the preceding upsert saw the row while its
+		// child_agent_id was still empty, and skipped it.
+		//
+		// Safe here and not one line earlier: the lock is released above, and
+		// refreshing reads that same cache.
+		s.h.refreshActivityTree(s.rootAgentID)
 	}
 	return childID, nil
 }
@@ -1161,6 +1176,14 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 	}
 	if change.changed {
 		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
+		// A registry row moving in or out of an active status changes the root's
+		// answer AND the answer of the child that row stands for, so the whole
+		// tree is republished. Both refreshes are edge-triggered, so the common
+		// case -- a row updating while the set of ACTIVE rows is unchanged --
+		// broadcasts nothing. Safe here and not one line earlier: the appliers
+		// released the cache lock before returning, and refreshing reads that
+		// same cache.
+		s.h.refreshActivityTree(s.rootAgentID)
 	}
 	// After the broadcast, so a slow transport cannot delay the DB write. The
 	// applier sets endedChildID only on the active -> final transition, and the

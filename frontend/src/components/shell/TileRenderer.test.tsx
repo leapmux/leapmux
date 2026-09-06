@@ -9,9 +9,11 @@ import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { clearDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createImperativeRef } from '~/lib/imperativeRef'
+import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
+import { createTabTaskScope } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
@@ -115,10 +117,17 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         chatStore: createChatStore(),
         agentInputQueueStore: createAgentInputQueueStore(),
         controlStore: createControlStore(),
+        agentActivityStore: createAgentActivityStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
         repoGitStore: createRepoGitStore(),
       },
+      // The shell builds this once and shares it with the close guard, so the
+      // chip and the prompt cannot scope "this tab's rows" differently.
+      taskScope: createTabTaskScope({
+        getAgentTab: (id: string) => s.view.getAgentTab(id),
+        tasksForRoot: () => [],
+      }),
       clientId: () => 'test-client',
       ops: {
         agentOps: {
@@ -149,6 +158,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       tab: {
         handleTabSelect: () => {},
         handleTabClose: s.handleTabClose as (tab: Tab) => Promise<boolean>,
+        probeBusy: async () => [],
         setIsTabEditing: () => {},
         closingTabKeys: () => new Set(),
       },

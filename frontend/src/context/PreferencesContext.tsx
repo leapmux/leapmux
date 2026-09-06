@@ -947,7 +947,7 @@ export const PreferencesProvider: ParentComponent = (props) => {
       browserPrefKey: 'turnEndSoundVolume',
       fallback: 100,
       // The hub refuses `v < 0 || v > 100` (usersettings/keys.go), and the
-      // consumer needs the same bound for its own reason: `useTurnEnd`
+      // consumer needs the same bound for its own reason: `useAgentSettled`
       // assigns `volume / 100` to an HTMLAudioElement, and a value outside
       // 0..1 throws IndexSizeError SYNCHRONOUSLY, after the rate limiter
       // already recorded the play. No sound, and no turn-end event.

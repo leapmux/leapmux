@@ -8,15 +8,14 @@ import {
   backgroundTaskStatusLabel,
   chipTasksFor,
   countActiveBackgroundTasks,
+  createTabTaskScope,
   filterBackgroundTasksByKind,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
   opensSubagentTranscript,
   protoBackgroundTaskToStore,
-  rootWorkState,
   shouldShowBackgroundTasksSection,
   sortBackgroundTasks,
-  subagentWorkState,
 } from '~/stores/chatBackgroundTasks'
 
 function proto(over: { id: string, kind?: BackgroundTaskKind, status: BackgroundTaskStatus, title?: string, activeForm?: string }): ProtoBackgroundTaskItem {
@@ -140,54 +139,6 @@ describe('isActiveBackgroundTaskStatus', () => {
   })
 })
 
-describe('subagentWorkState', () => {
-  const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
-    rowKey: 'r',
-    kind: 'subagent',
-    title: 't',
-    activity: '',
-    status: 'running',
-    ...over,
-  })
-
-  it('is active while this child\'s own row is running', () => {
-    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1' })])).toBe('active')
-  })
-
-  it('is active while the row is pending', () => {
-    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1', status: 'pending' })])).toBe('active')
-  })
-
-  // 'finished', not 'unknown': the row is the authoritative record of this
-  // subagent's life, so the caller must stop rather than fall through to a
-  // transcript heuristic that would report a stopped subagent as working.
-  it('is finished once this child reaches a final status', () => {
-    for (const status of ['completed', 'failed', 'stopped', 'interrupted'] as const)
-      expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1', status })])).toBe('finished')
-  })
-
-  // The whole point: a sibling still working must not keep this child's
-  // indicator alive.
-  it('ignores a sibling subagent that is still running', () => {
-    expect(subagentWorkState('child-1', [
-      row({ rowKey: 'a', childAgentId: 'child-1', status: 'completed' }),
-      row({ rowKey: 'b', childAgentId: 'child-2', status: 'running' }),
-    ])).toBe('finished')
-  })
-
-  it('is unknown when this child has no row yet', () => {
-    expect(subagentWorkState('child-1', [])).toBe('unknown')
-    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-2' })])).toBe('unknown')
-  })
-
-  it('reads the first matching row, even with duplicates', () => {
-    expect(subagentWorkState('child-1', [
-      row({ rowKey: 'a', childAgentId: 'child-1' }),
-      row({ rowKey: 'b', childAgentId: 'child-1' }),
-    ])).toBe('active')
-  })
-})
-
 describe('chipTasksFor', () => {
   const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
     kind: 'subagent',
@@ -222,29 +173,6 @@ describe('chipTasksFor', () => {
       row({ rowKey: 'grandchild', parentAgentId: 'child-1' }),
     ]
     expect(chipTasksFor('root-1', tasks, false).map(t => t.rowKey)).toEqual(['direct', 'grandchild'])
-  })
-})
-
-describe('rootWorkState', () => {
-  const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
-    rowKey: 'r',
-    kind: 'subagent',
-    title: 't',
-    activity: '',
-    status: 'running',
-    ...over,
-  })
-
-  it('is active while any row is running', () => {
-    expect(rootWorkState([row({ status: 'completed' }), row({ rowKey: 'b' })])).toBe('active')
-  })
-
-  // Never 'finished'. A root with no running subagent may still be mid-turn on
-  // its own, which the registry knows nothing about -- reporting finished here
-  // would hide the indicator for every ordinary turn.
-  it('is unknown, never finished, when nothing is running', () => {
-    expect(rootWorkState([])).toBe('unknown')
-    expect(rootWorkState([row({ status: 'completed' })])).toBe('unknown')
   })
 })
 
@@ -369,5 +297,58 @@ describe('opensSubagentTranscript', () => {
 
   it('reports a shell row as no transcript, whatever it carries', () => {
     expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'shell', childAgentId: 'c1' }))).toBe(false)
+  })
+})
+
+describe('createTabTaskScope', () => {
+  const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
+    kind: 'subagent',
+    title: 't',
+    activity: '',
+    status: 'running',
+    ...over,
+  })
+
+  // A registry keyed by ROOT owner, and two tabs reading it: `root-1` owns it,
+  // `child-1` is a subagent transcript under it.
+  const tabs: Record<string, { id: string, parentAgentId?: string, rootAgentId?: string }> = {
+    'root-1': { id: 'root-1' },
+    'child-1': { id: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' },
+  }
+  const scope = (rows: BackgroundTaskItem[]) => createTabTaskScope({
+    getAgentTab: id => tabs[id] as never,
+    tasksForRoot: rootId => (rootId === 'root-1' ? rows : []),
+  })
+
+  it('resolves a child tab to its registry owner', () => {
+    const s = scope([])
+    expect(s.rootFor('child-1')).toBe('root-1')
+    expect(s.rootFor('root-1')).toBe('root-1')
+  })
+
+  it('reads a root agent nothing knows about as its own owner', () => {
+    // An optimistic tab, or one hydration has not reached yet. It owns no
+    // registry, so resolving it to anything else would read a stranger's rows.
+    expect(scope([]).rootFor('never-seen')).toBe('never-seen')
+  })
+
+  it('hands a child tab its OWNER\'s registry, not an empty one', () => {
+    const rows = [row({ rowKey: 'mine', parentAgentId: 'child-1' })]
+    // The whole reason the resolution exists: the dependency's `tasksForRoot('child-1')` answers
+    // nothing, because only a root keys a registry.
+    expect(scope(rows).rootTasksFor('child-1').map(t => t.rowKey)).toEqual(['mine'])
+  })
+
+  it('scopes a tab to the rows IT spawned, and a root to all of them', () => {
+    const rows = [
+      row({ rowKey: 'self', childAgentId: 'child-1', parentAgentId: 'root-1' }),
+      row({ rowKey: 'mine', parentAgentId: 'child-1' }),
+    ]
+    const s = scope(rows)
+    // One definition, shared by the chip on the tab and the close guard that
+    // lists what a close would interrupt. The two must not disagree about
+    // whose work a tab is running.
+    expect(s.tasksForTab('child-1').map(t => t.rowKey)).toEqual(['mine'])
+    expect(s.tasksForTab('root-1').map(t => t.rowKey)).toEqual(['self', 'mine'])
   })
 })
