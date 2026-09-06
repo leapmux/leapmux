@@ -548,6 +548,87 @@ describe('checkpointStore', () => {
 // never perform. Left alone the origin's quota is eventually exhausted, writes
 // start failing, the checkpoint stops being refreshed, and every refresh falls
 // back to the full projection snapshot #267 exists to remove.
+// THE TWO FAILURE DOMAINS, and the Dexie property the whole arrangement rests
+// on. All three reads share ONE transaction so the header, the chunks and the
+// op-log describe the same instant. But the op-log is a REBUILDABLE tail over a
+// base that has already been read, so a failure there must truncate the replay
+// rather than discard the checkpoint -- which means catching INSIDE the
+// transaction scope and letting it commit anyway.
+//
+// That only works because Dexie calls preventDefault on a failed request's
+// event, so the failure never reaches the transaction. If it ever stopped doing
+// so, the catch would run on an already-aborted transaction and the whole read
+// would come back `failed` -- a cold start on a full snapshot, every reload,
+// for a fault in a tail the app can rebuild.
+describe('readCheckpoint when the op-log is unreadable', () => {
+  /**
+   * Fail every index read over `storeName`, and let the others through.
+   *
+   * BOTH entry points, because the two reads take different ones: the op-log
+   * walk is a cursor (`each`), while the chunk read is a `toArray()` that Dexie
+   * lowers to `getAll` on a simple equality range. Patching only the cursor
+   * left the chunk read working and its case asserting nothing.
+   */
+  function breakIndexReadsOn(storeName: string) {
+    const openCursor = IDBIndex.prototype.openCursor
+    const getAll = IDBIndex.prototype.getAll
+    const fail = (self: IDBIndex): boolean => self.objectStore.name === storeName
+    const cursorSpy = vi.spyOn(IDBIndex.prototype, 'openCursor').mockImplementation(
+      function (this: IDBIndex, ...args: Parameters<typeof openCursor>) {
+        if (fail(this))
+          throw new Error(`${storeName} index is unreadable`)
+        return openCursor.apply(this, args)
+      },
+    )
+    const getAllSpy = vi.spyOn(IDBIndex.prototype, 'getAll').mockImplementation(
+      function (this: IDBIndex, ...args: Parameters<typeof getAll>) {
+        if (fail(this))
+          throw new Error(`${storeName} index is unreadable`)
+        return getAll.apply(this, args)
+      },
+    )
+    return {
+      mockRestore: () => {
+        cursorSpy.mockRestore()
+        getAllSpy.mockRestore()
+      },
+    }
+  }
+
+  it('keeps the checkpoint and reports the replay as truncated', async () => {
+    await writeCheckpointAndTruncateOpLog('u', 'tab', fullDelta('header', { 'k:1': 'chunk-body' }), WM, 1n)
+    await opLog.append('u', 'tab', [bytes('frame-1')])
+
+    const broken = breakIndexReadsOn('opLog')
+    const got = await readCheckpoint('u', 'tab')
+    broken.mockRestore()
+
+    // The BASE survived: this is the half the app cannot rebuild.
+    expect(got.status).toBe('ok')
+    if (got.status !== 'ok')
+      return
+    expect(text(got.checkpoint.headerBytes)).toBe('header')
+    expect(got.chunks.map(c => text(c.bytes))).toEqual(['chunk-body'])
+    // And the tail is reported as lost, which is what makes the caller rewrite.
+    expect(got.opLogFrames).toEqual([])
+    expect(got.opLogTruncated).toBe(true)
+    expect(got.opLogNextOrdinal).toBe(0)
+  })
+
+  // The other domain, stated as its own case so the two cannot be confused: an
+  // unreadable CHUNK is a partial entity set, which silently loses records the
+  // resume cursor claims are present. That one is fatal.
+  it('reports a failure when the CHUNKS are unreadable instead', async () => {
+    await writeCheckpointAndTruncateOpLog('u', 'tab', fullDelta('header', { 'k:1': 'chunk-body' }), WM, 1n)
+
+    const broken = breakIndexReadsOn('checkpointChunks')
+    const got = await readCheckpoint('u', 'tab')
+    broken.mockRestore()
+
+    expect(got.status).toBe('failed')
+  })
+})
+
 describe('sweepAbandonedCheckpoints', () => {
   /** No tab answers the roll-call: every row is a collection candidate. */
 
