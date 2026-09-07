@@ -410,6 +410,34 @@ func TestActivity_ATurnEndRootsAChildEntryItCreates(t *testing.T) {
 		"the turn end records the feeding process like every other mutator")
 }
 
+func TestActivity_AChildTurnEndLeavesTheRootWorking(t *testing.T) {
+	t.Parallel()
+
+	// The main tab's thinking indicator reads the ROOT's activity, and a
+	// subagent is one step of the root's turn. A child that ended its own turn
+	// must not settle the root: the root still owes the user a reply, and
+	// dropping the spinner there says it finished while the root still runs.
+	h, rec := newActivityHandler(t, "root-1")
+	h.setTurnActive("root-1", "root-1", true)
+	require.Equal(t, []bool{true}, rec.busyStates())
+
+	// What a child sink does at its own turn end: it records the count against
+	// the CHILD, and any turn flag it publishes identifies the CHILD too.
+	h.noteTurnEnded("child-1", "root-1", 4, true)
+	h.setTurnActive("child-1", "root-1", false)
+
+	assert.Equal(t, []bool{true}, rec.busyStates(), "the root published no settle")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		h.AgentActivitySnapshot("root-1", "root-1").State)
+
+	// And the count stays the child's. The root's own settle carries none,
+	// because no turn end of the ROOT's recorded one -- which is what tells the
+	// client to ring rather than to read a zero.
+	h.setTurnActive("root-1", "root-1", false)
+	require.Equal(t, []bool{true, false}, rec.busyStates())
+	assert.Nil(t, rec.last().NumToolUses, "a child's count belongs to the child's settle")
+}
+
 func TestCountActiveBackgroundTasks(t *testing.T) {
 	t.Parallel()
 
@@ -794,7 +822,7 @@ func TestInspectTerminalProcesses_OmitsWhatItCannotWarnAbout(t *testing.T) {
 // list cannot answer on its own.
 //
 // The registry cap gives up its oldest ACTIVE row when the pool is full of
-// running work, so a subagent that is still going can be missing from the list.
+// running work, so a subagent that still runs can be missing from the list.
 // Reading that as idle drops the spinner and hides the Interrupt button on a run
 // the user can watch happening -- the load-bearing case, because the button is
 // how they cancel it.

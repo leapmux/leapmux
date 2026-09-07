@@ -30,7 +30,8 @@ import {
   setSectionFilterQuery,
   toggleSectionFilter,
 } from './workspaceListState'
-import { sumDiffStatsFromTabs, WorkspaceTabTree } from './WorkspaceTabTree'
+import { RolledUpNotificationDot, WorkspaceTabTree } from './WorkspaceTabTree'
+import { sumDiffStatsFromTabs } from './workspaceTabTree.model'
 
 /** solid-dnd directives are callable but typed as objects; this wraps the unsafe cast. */
 function applyDirective(directive: { ref: unknown }, el: HTMLElement) {
@@ -329,6 +330,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         </span>
                       </Tooltip>
                     </Show>
+                    <RolledUpNotificationDot
+                      folded={() => !isWorkspaceExpanded(id)}
+                      tabs={() => tabsFor(id)}
+                    />
 
                     <div class={sidebarActions}>
                       <Show

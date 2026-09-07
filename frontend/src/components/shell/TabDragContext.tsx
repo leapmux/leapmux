@@ -15,6 +15,27 @@ export const WORKSPACE_DROP_PREFIX = 'workspace-drop:'
 export const SIDEBAR_TAB_PREFIX = 'sidebar-tab:'
 
 /**
+ * Read back a sidebar tab's draggable id: `sidebar-tab:{workspaceId}:{tabKey}`.
+ *
+ * `TabLeaf` builds the id (see `tabBuildKey`'s neighbours in the tree module)
+ * and this reads it, so the two halves live one export apart and a test can
+ * drive the real parser rather than a copy of it.
+ *
+ * The FIRST colon separates the two parts, and only the first: a `tabKey` is
+ * itself `${type}:${id}` and an agent id may hold more colons, so all of it
+ * belongs to the second part. Answers null for an id this scheme did not build.
+ */
+export function parseSidebarTabDragId(id: string): { workspaceId: string, tabKey: string } | null {
+  if (!id.startsWith(SIDEBAR_TAB_PREFIX))
+    return null
+  const rest = id.slice(SIDEBAR_TAB_PREFIX.length)
+  const colonIdx = rest.indexOf(':')
+  if (colonIdx < 0)
+    return null
+  return { workspaceId: rest.slice(0, colonIdx), tabKey: rest.slice(colonIdx + 1) }
+}
+
+/**
  * The drag image for a sidebar tab, built from the draggable's own data.
  *
  * A sidebar tab can belong to a workspace that is not the active one, so its
@@ -106,18 +127,13 @@ function DelegatingTabDragProvider(props: TabDragProviderProps & { sectionDrag: 
       return
 
     // Sidebar tab drag: sidebar-tab:{workspaceId}:{tabType}:{tabId}
-    if (id.startsWith(SIDEBAR_TAB_PREFIX)) {
-      const rest = id.slice(SIDEBAR_TAB_PREFIX.length)
-      const colonIdx = rest.indexOf(':')
-      if (colonIdx >= 0) {
-        const wsId = rest.slice(0, colonIdx)
-        const realTabKey = rest.slice(colonIdx + 1)
-        setDraggedTabKey(realTabKey)
-        setDragSourceWorkspaceId(wsId)
-        setDragSourceTileId(null) // sidebar tabs have no tile
-        setDragOverTileId(null)
-        return
-      }
+    const sidebarDrag = parseSidebarTabDragId(id)
+    if (sidebarDrag) {
+      setDraggedTabKey(sidebarDrag.tabKey)
+      setDragSourceWorkspaceId(sidebarDrag.workspaceId)
+      setDragSourceTileId(null) // sidebar tabs have no tile
+      setDragOverTileId(null)
+      return
     }
 
     const tileId = props.lookupTileIdForTab(id)

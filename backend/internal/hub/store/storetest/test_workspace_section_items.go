@@ -85,6 +85,45 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		assert.Len(t, items, 2)
 	})
 
+	// A section item is a PLACEMENT of a workspace, so it must not outlive the
+	// workspace it places. The workspace delete is a SOFT delete, which means the
+	// ON DELETE CASCADE on the foreign key never fires, so the list has to
+	// exclude the row itself.
+	//
+	// What breaks without this: the sidebar renders its rows from the workspace
+	// list, so a deleted workspace shows no row -- but the Archived section menu
+	// counts ITEMS. It then offers "Unarchive all" and "Empty archive..." for an
+	// archive the user sees as empty, and "Unarchive all" cannot clear them,
+	// because the workspace it would move no longer exists.
+	t.Run("list by user drops an item whose workspace is soft-deleted", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsi-deleted-user")
+		secID := seedSection(t, st, user.ID, "Section", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED)
+		live := SeedWorkspace(t, st, user.ID, "Live")
+		gone := SeedWorkspace(t, st, user.ID, "Gone")
+
+		for i, wsID := range []string{live, gone} {
+			require.NoError(t, st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{
+				UserID:      userid.MustNew(user.ID),
+				WorkspaceID: wsID,
+				SectionID:   secID,
+				Position:    string(rune('a'+i)) + "0",
+			}))
+		}
+
+		rows, err := st.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
+			ID:          gone,
+			OwnerUserID: userid.MustNew(user.ID),
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rows)
+
+		items, err := st.WorkspaceSectionItems().ListByUser(ctx, userid.MustNew(user.ID))
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		assert.Equal(t, live, items[0].WorkspaceID)
+	})
+
 	// Pins the position-tie tiebreaker that defends the sidebar
 	// against shuffle bugs. `position` is a lexorank string with NO
 	// uniqueness constraint — two items can legitimately end up at the

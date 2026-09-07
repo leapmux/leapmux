@@ -1,7 +1,7 @@
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { createEffect, createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { workerProjectionsEqual } from '~/components/workspace/WorkspaceTabTree'
+import { workerProjectionsEqual } from '~/components/workspace/workspaceTabTree.model'
 import { deferred, flush } from '~/test-support/async'
 import { useTestStorage } from '~/test-support/persistentStorage'
 

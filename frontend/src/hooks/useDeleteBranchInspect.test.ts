@@ -134,7 +134,7 @@ describe('useDeleteBranchInspect', () => {
   })
 
   it('refuses to RPC with an empty gitToplevel (defense against unstamped branch rows)', async () => {
-    // Regression: WorkspaceTabTree.buildBranchRef coerces an unstamped
+    // Regression: workspaceTabTree.model's buildBranchRef coerces an unstamped
     // tab.gitToplevel to '' and used to forward that empty path to the
     // worker — SanitizePath then rejected the request as
     // permission-denied. The dialog opens stuck on an auth-style error

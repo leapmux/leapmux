@@ -91,7 +91,11 @@ export const test = base.extend<
     leapmuxServer: ServerInfo
   }
 >({
-  // Worker-scoped fixture: spawns a fresh dev-mode instance per test file
+  // Worker-scoped fixture: one dev-mode instance per Playwright WORKER, not per
+  // spec file. A worker that runs two files serves both from the same hub, so
+  // one file sees whatever account state the previous one left behind. That is
+  // the difference between a full-suite run and a single-file run, and a bug
+  // that only the shared hub exposes reads as a flake until somebody knows it.
   // eslint-disable-next-line no-empty-pattern
   leapmuxServer: [async ({}, use) => {
     const globalState = getGlobalState()

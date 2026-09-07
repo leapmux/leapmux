@@ -1,4 +1,4 @@
-import type { BranchRef } from './WorkspaceTabTree'
+import type { BranchRef } from './workspaceTabTree.model'
 import type { Tab } from '~/stores/tab.types'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'

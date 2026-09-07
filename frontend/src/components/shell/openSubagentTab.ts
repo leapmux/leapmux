@@ -176,17 +176,23 @@ function buildMetadata(
 ): TabMetadata {
   const parent = item.parentAgentId ? deps.view.getAgentTab(item.parentAgentId) : undefined
   // workerId is NOT a metadata field: it lives on the projection, and the
-  // emit*Tab op carries it. `parentAgentId` IS one (see AgentMeta in
-  // tabMetadata.store), and it is left out deliberately rather than because it
-  // has nowhere to go: listAgents hydrates it, along with `acceptsMessages`.
+  // emit*Tab op carries it.
   //
-  // The cost of leaving it out is real and worth knowing. Until hydration lands
-  // the tab has no parent, so isSteerableAgentTab calls it steerable, and a
-  // mention or quote taken in that window is routed to this tab and then
-  // dropped when the composer mounts read-only.
+  // `parentAgentId` IS one (see AgentMeta in tabMetadata.store), and the client
+  // seeds it from the registry row here rather than waiting for hydration. Five
+  // consumers read that link -- isSubagentTab (the turn-end sound),
+  // isSteerableAgentTab (the composer), TileRenderer's isChildTranscript,
+  // tabBusyProbe's close warning, and createTabTaskScope's child scoping -- and
+  // each of them treats a tab with no link as a ROOT. Between the placement and
+  // the listAgents reply that is the wrong answer for all five at once, so the
+  // seed closes one window instead of five separate fail-open paths.
   //
-  // Seed only title/workingDir/agentProvider + the optimistic git fields the
-  // sidebar groups by until hydration lands.
+  // listAgents still confirms it and adds `acceptsMessages`. That write costs
+  // nothing: mergeDefined drops a value equal to the stored one, so the
+  // confirmation does not re-key the tab or rebuild the tree.
+  //
+  // Seed title/workingDir/agentProvider + the optimistic git fields the sidebar
+  // groups by until hydration lands.
   //
   // Copy the git fields only from a parent on the SAME worker. `gitToplevel` is
   // half of the repo key, and `workerId` is the other half; this child takes
@@ -200,6 +206,7 @@ function buildMetadata(
     : undefined
   return {
     title: item.title || undefined,
+    parentAgentId: item.parentAgentId || undefined,
     workingDir: parent?.workingDir,
     agentProvider: parent?.agentProvider,
     ...git,

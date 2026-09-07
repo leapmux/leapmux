@@ -7,7 +7,7 @@ import { stampBranchOnRepo } from '~/components/shell/stampBranchOnTabs'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { repoGitView, repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
-import { buildTree } from './WorkspaceTabTree'
+import { buildTree } from './workspaceTabTree.model'
 
 describe('branchUpdate (change branch → sidebar reflects new label)', () => {
   function makeAgentTab(id: string, overrides: Partial<Tab> = {}): Tab {

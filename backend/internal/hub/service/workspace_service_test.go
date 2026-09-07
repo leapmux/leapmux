@@ -797,4 +797,14 @@ func TestWorkspaceService_DeleteWorkspace_StillWorksOnAnArchivedWorkspace(t *tes
 
 	_, getErr := st.Workspaces().GetByID(ctx, workspaceID)
 	require.ErrorIs(t, getErr, store.ErrNotFound)
+
+	// The placement goes with it. A section item states where a workspace sits,
+	// so one for a workspace that no longer exists states nothing. The delete is
+	// a SOFT delete, so the ON DELETE CASCADE on workspace_id never fires and
+	// the row would otherwise stay for the life of the account.
+	_, itemErr := st.WorkspaceSectionItems().Get(ctx, store.GetWorkspaceSectionItemParams{
+		UserID:      userid.MustNew(user.ID),
+		WorkspaceID: workspaceID,
+	})
+	require.ErrorIs(t, itemErr, store.ErrNotFound)
 }

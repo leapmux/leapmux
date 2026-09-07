@@ -12,7 +12,7 @@ import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import type { AgentTab, FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
+import type { FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -29,7 +29,7 @@ import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename, isAbsolute } from '~/lib/paths'
 import { fileTabPayload, imageTabPayload } from '~/lib/tabPayload'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { descendantAgentTabs, planOptimisticRepoGit, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
+import { descendantAgentTabs, isSubagentTab, planOptimisticRepoGit, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
@@ -499,7 +499,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // a child as tab-close-only (no teardown, no closed_at), so skip the
     // inspect/worktree prompt entirely and commit KEEP. Transcript + registry
     // survive; the tab can be revived (Part 5b).
-    if (tab.type === TabType.AGENT && (tab as AgentTab).parentAgentId) {
+    if (isSubagentTab(tab)) {
       addClosingTabKey(key)
       try {
         // Its own subagents go with it, for the same reason a root's do.

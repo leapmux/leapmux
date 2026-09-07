@@ -31,6 +31,7 @@ import { revealWorkspaceRow } from '~/components/workspace/revealWorkspaceRow'
 import { emptySection as emptySectionStyle } from '~/components/workspace/workspaceList.css'
 import { isSectionFilterShown, toggleSectionFilter } from '~/components/workspace/workspaceListState'
 import { WorkspaceSectionContent } from '~/components/workspace/WorkspaceSectionContent'
+import { RolledUpNotificationDot } from '~/components/workspace/WorkspaceTabTree'
 import { SectionType } from '~/generated/proto/leapmux/v1/section_pb'
 import { flavorFromOs } from '~/lib/paths'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
@@ -170,6 +171,11 @@ export function buildSectionDef(
     // The workspaces this section holds, for every item that acts on the whole
     // section: the repository list, Collapse/Expand all, and Reveal.
     const workspaceIds = () => ctx.getWorkspacesForGroup(sectionId).map(w => w.id)
+    const sectionTabs = () => workspaceIds().flatMap(id => ctx.view?.forWorkspace(id) ?? [])
+    // `folded` is constant true: both slots RENDER only while their own
+    // container is folded, so the dot's own guard is already satisfied and only
+    // the tab walk is left to do.
+    const activityBadge = () => <RolledUpNotificationDot folded={() => true} tabs={sectionTabs} />
     return {
       id: sectionId,
       title: section.name,
@@ -178,6 +184,13 @@ export function buildSectionDef(
       defaultOpen: sectionType !== SectionType.WORKSPACES_ARCHIVED,
       collapsible: true,
       draggable: true,
+      // The last two fold levels of the unseen-activity marker. A workspace row
+      // answers for the tabs it hides; these two answer for the workspace rows
+      // THEY hide -- a closed section, and a collapsed rail with no tree at all.
+      // Without them the marker is missing in the two states that hide the
+      // most, which are the states it exists for.
+      foldedBadge: activityBadge,
+      railBadge: activityBadge,
       // A MENU, not the `+` it replaces. Archived gains a header action it
       // never had: `canAddToSection` refuses it (a workspace created there
       // would be born read-only), so the old `+` was absent and the bulk
@@ -186,7 +199,7 @@ export function buildSectionDef(
         <WorkspaceSectionMenu
           section={liveSection()}
           canCreate={ctx.wsOps.canAddToSection(section)}
-          getTabs={() => workspaceIds().flatMap(id => ctx.view?.forWorkspace(id) ?? [])}
+          getTabs={sectionTabs}
           getWorkspaceIds={workspaceIds}
           repoGitStore={ctx.gitStatusStore}
           workerInfoFn={ctx.workerInfoFn}

@@ -159,7 +159,6 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   tabIcon: 'tabIcon',
   tabText: 'tabText',
   tabEditInput: 'tabEditInput',
-  tabNotification: 'tabNotification',
   tabClose: 'tabClose',
   tooltipTrigger: 'tooltipTrigger',
   newTabWrapper: 'newTabWrapper',

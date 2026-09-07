@@ -15,7 +15,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -940,7 +940,7 @@ describe('descendantAgentTabs', () => {
     expect(ids(cyclic, 'root')).toEqual(['b', 'a'])
   })
 
-  it('terminates when a tab names itself as its own parent', () => {
+  it('terminates when a tab claims itself as its own parent', () => {
     // Asked about `self`, the walk finds `self` among its own children. The
     // visited set is seeded with the starting id, so it stops there.
     expect(ids([agent('self', 'self')], 'self')).toEqual([])
@@ -951,10 +951,33 @@ describe('descendantAgentTabs', () => {
   })
 })
 
+describe('isSubagentTab', () => {
+  it('returns true only for an agent tab that carries a parent link', () => {
+    expect(isSubagentTab({ type: TabType.AGENT, parentAgentId: 'root' })).toBe(true)
+    expect(isSubagentTab({ type: TabType.AGENT })).toBe(false)
+  })
+
+  it('returns false for an absent tab and for a non-AGENT tab', () => {
+    // Callers hand the result of a lookup straight in, and a TERMINAL tab can
+    // share an id with an agent -- so both answers have to be false here rather
+    // than at every call site.
+    expect(isSubagentTab(undefined)).toBe(false)
+    expect(isSubagentTab({ type: TabType.TERMINAL })).toBe(false)
+    expect(isSubagentTab({ type: TabType.FILE, parentAgentId: 'root' })).toBe(false)
+  })
+
+  it('treats an empty parent link as no link', () => {
+    // AgentInfo.parent_agent_id is an empty string for a root, and the metadata
+    // hydration maps it to undefined -- but a caller that passes the wire shape
+    // must not read that empty string as a parent.
+    expect(isSubagentTab({ type: TabType.AGENT, parentAgentId: '' })).toBe(false)
+  })
+})
+
 /**
- * `isSteerableAgentTab` gates whether an agent tab's composer is enabled. Roots
- * always steer; children steer only when their provider can drive a subagent
- * conversation. Used to exclude non-steerable children from MRU-agent
+ * `isSteerableAgentTab` controls whether an agent tab's composer is enabled.
+ * Roots always steer; children steer only when their provider can drive a
+ * subagent conversation. Used to exclude non-steerable children from MRU-agent
  * resolution (mentions/quotes never target a read-only transcript).
  */
 describe('isSteerableAgentTab', () => {

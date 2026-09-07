@@ -9,6 +9,7 @@ import { Match, Show, Switch } from 'solid-js'
 import { AgentProviderIcon } from '~/components/common/AgentProviderIcon'
 import { Icon } from '~/components/common/Icon'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { isSubagentTab } from '~/stores/tab.helpers'
 import { isAgentTab } from '~/stores/tab.types'
 import { iconSize } from '~/styles/tokens'
 import * as styles from './TabTypeIcon.css'
@@ -36,7 +37,7 @@ export const TabTypeIcon: Component<TabTypeIconProps> = (props) => {
               size={iconSize[tokenSize()]}
               class={props.class}
             />
-            <Show when={tab().parentAgentId}>
+            <Show when={isSubagentTab(tab())}>
               <span class={styles.subagentOverlay}>
                 <CornerDownRight size={Math.round(iconSize[tokenSize()] * 0.6)} />
               </span>

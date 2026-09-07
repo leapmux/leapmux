@@ -1,7 +1,7 @@
 import type { AgentTab } from './tab.types'
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { rootAgentIdFor } from './tab.helpers'
+import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
 
 // ---------------------------------------------------------------------------
 // Provider-neutral background-task registry model + conversions
@@ -223,7 +223,7 @@ export function createTabTaskScope(deps: {
     tasksForTab: (agentId: string) => chipTasksFor(
       agentId,
       deps.tasksForRoot(rootFor(agentId)),
-      !!deps.getAgentTab(agentId)?.parentAgentId,
+      isSubagentTab(deps.getAgentTab(agentId)),
     ),
   }
 }

@@ -546,6 +546,21 @@ func (s *WorkspaceService) DeleteWorkspace(
 			if rows == 0 {
 				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
 			}
+			// Drop the sidebar placement in the SAME transaction. A section item
+			// states where a workspace sits, so one for a workspace that no
+			// longer exists states nothing, and this is what the ON DELETE
+			// CASCADE on workspace_id would do if the delete were a hard one.
+			//
+			// ListWorkspaceSectionItemsByUser already excludes a soft-deleted
+			// workspace, so a row left here changes nothing a reader sees. It
+			// still must go: it is dead data that no path ever collects, and a
+			// second source of truth for which section holds a workspace.
+			if err := tx.WorkspaceSectionItems().Delete(ctx, store.DeleteWorkspaceSectionItemParams{
+				UserID:      user.ID,
+				WorkspaceID: workspaceID,
+			}); err != nil {
+				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace section item: %w", err))
+			}
 			return ws.OwnerUserID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpDelete,
 				WorkspaceID: workspaceID,

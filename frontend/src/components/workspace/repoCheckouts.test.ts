@@ -1,4 +1,4 @@
-import type { BranchGroup } from './WorkspaceTabTree'
+import type { BranchGroup } from './workspaceTabTree.model'
 import { describe, expect, it } from 'vitest'
 import { listRepoCheckouts } from './repoCheckouts'
 
