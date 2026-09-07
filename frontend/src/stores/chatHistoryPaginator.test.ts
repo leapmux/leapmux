@@ -68,6 +68,8 @@ function harness(init: {
     if (seq > recordedLiveTail)
       recordedLiveTail = seq
   })
+  const caughtUpToLiveTail = init.caughtUp
+    ?? ((agentId: string) => (lastServer(agentId) ?? 0n) >= recordedLiveTail)
   const applyMessages = vi.fn()
   const replaceBackgroundTasks = vi.fn()
   const markBackgroundTasksLoadFailed = vi.fn()
@@ -107,7 +109,7 @@ function harness(init: {
     getLastSeq: agentId => lastServer(agentId) ?? 0n,
     getFirstMessageSeq: firstServer,
     getLastMessageSeq: lastServer,
-    caughtUpToLiveTail: init.caughtUp ?? (() => true),
+    caughtUpToLiveTail,
     addMessage,
     trimOldestEnd,
     trimNewestEnd,
@@ -128,6 +130,7 @@ function harness(init: {
     settleToWindow,
     resetToEmptyIfStale,
     bumpLiveTail,
+    caughtUpToLiveTail,
     getRecordedLiveTail: () => recordedLiveTail,
     replaceBackgroundTasks,
     markBackgroundTasksLoadFailed,
@@ -194,7 +197,7 @@ describe('chathistorypaginator', () => {
 
   describe('catchuptotail re-anchors an over-limit gap', () => {
     it('stops after one page, records the live tail, and skips the stale-tail clamp', async () => {
-      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false, caughtUp: () => false })
+      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
       const latestSeq = 2n + CATCH_UP_GAP_LIMIT + 1n
       listAgentMessages
         .mockResolvedValueOnce(page([makeMsg(2n)], true, latestSeq))
@@ -206,6 +209,7 @@ describe('chathistorypaginator', () => {
       expect(h.bumpLiveTail).toHaveBeenCalledWith('a', latestSeq)
       expect(h.getRecordedLiveTail()).toBe(latestSeq)
       expect(h.getRecordedLiveTail()).toBeGreaterThan(h.state.messagesByAgent.a.at(-1)!.seq)
+      expect(h.caughtUpToLiveTail('a')).toBe(false)
       expect(h.settleToWindow).not.toHaveBeenCalled()
       expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
     })
@@ -215,7 +219,6 @@ describe('chathistorypaginator', () => {
       const h = harness({
         messages: [makeMsg(1n)],
         hasMoreNewer: false,
-        caughtUp: () => true,
       })
       listAgentMessages
         .mockResolvedValueOnce(page([makeMsg(2n)], true, latestSeq))
@@ -226,6 +229,7 @@ describe('chathistorypaginator', () => {
       expect(listAgentMessages).toHaveBeenCalledTimes(2)
       expect(h.getRecordedLiveTail()).toBe(latestSeq)
       expect(h.state.messagesByAgent.a.at(-1)?.seq).toBe(latestSeq)
+      expect(h.caughtUpToLiveTail('a')).toBe(true)
       expect(h.settleToWindow).not.toHaveBeenCalled()
       expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
     })

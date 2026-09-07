@@ -464,6 +464,12 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				require.NoError(t, err)
 				seqs = append(seqs, seq)
 			}
+			require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+				AgentID:    "agent-1",
+				RequestID:  "request-1",
+				Payload:    []byte(`{"type":"permission","id":"request-1"}`),
+				ClaimToken: "instance-token-1",
+			}))
 
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
@@ -488,6 +494,10 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 
 			var start *leapmuxv1.CatchUpStart
 			replayed := 0
+			sawActivity := false
+			sawTodos := false
+			sawStatus := false
+			sawControl := false
 			for _, event := range decodeAgentEvents(w) {
 				if event.GetCatchUpStart() != nil {
 					start = event.GetCatchUpStart()
@@ -495,11 +505,19 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 				if event.GetAgentMessage() != nil {
 					replayed++
 				}
+				sawActivity = sawActivity || event.GetActivityChanged() != nil
+				sawTodos = sawTodos || event.GetTodosChanged() != nil
+				sawStatus = sawStatus || event.GetStatusChange() != nil
+				sawControl = sawControl || event.GetControlRequest() != nil
 			}
 			require.NotNil(t, start)
 			require.NotNil(t, start.LatestSeq)
 			assert.Equal(t, seqs[len(seqs)-1], start.GetLatestSeq())
 			assert.Equal(t, tc.wantReplayFrames, replayed)
+			assert.True(t, sawActivity, "the replay decision must not skip the activity snapshot")
+			assert.True(t, sawTodos, "the replay decision must not skip the to-do snapshot")
+			assert.True(t, sawStatus, "the replay decision must not skip the status marker")
+			assert.True(t, sawControl, "the replay decision must not skip pending control requests")
 		})
 	}
 }
