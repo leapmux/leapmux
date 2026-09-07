@@ -143,6 +143,59 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	assert.Equal(t, id1, id2, "spawn-span fallback reattaches the existing child")
 }
 
+// ChildSpawnSpan is how a provider re-derives the spawn span of a subagent it
+// restarted, so it must answer from the child ROW rather than from the display
+// list: the row outlives the cap, and it outlives the worker process.
+func TestChildSpawnSpan_AnswersFromTheChildRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "build feature")
+	require.NoError(t, err)
+
+	span, err := sink.ChildSpawnSpan(childID)
+	require.NoError(t, err)
+	assert.Equal(t, "span-1", span)
+
+	// A fresh handler models a worker restart: no cache exists, and the answer
+	// must be the same one.
+	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
+	sink2 := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	span, err = sink2.ChildSpawnSpan(childID)
+	require.NoError(t, err)
+	assert.Equal(t, "span-1", span, "the spawn span survives the process that recorded it")
+}
+
+// An id no child row carries is a MISS, not an error: the caller separates "no
+// such child" from "the registry could not be read", and only the second one
+// makes it refuse to act.
+func TestChildSpawnSpan_UnknownIDMisses(t *testing.T) {
+	t.Parallel()
+
+	_, sink := setupRootSink(t, "root-1")
+
+	span, err := sink.ChildSpawnSpan("no-such-child")
+	require.NoError(t, err)
+	assert.Empty(t, span)
+
+	span, err = sink.ChildSpawnSpan("")
+	require.NoError(t, err)
+	assert.Empty(t, span, "an empty id asks nothing of the database")
+}
+
+// A ROOT agent carries no spawn span, and reading one back must not invent a
+// value: the column is empty for it, and empty is the honest answer.
+func TestChildSpawnSpan_ARootAgentHasNone(t *testing.T) {
+	t.Parallel()
+
+	_, sink := setupRootSink(t, "root-1")
+
+	span, err := sink.ChildSpawnSpan("root-1")
+	require.NoError(t, err)
+	assert.Empty(t, span)
+}
+
 func TestChildSink_PersistsIntoChildSeqSpace(t *testing.T) {
 	t.Parallel()
 

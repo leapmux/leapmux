@@ -1205,9 +1205,14 @@ func TestClaude_AChildTurnEndKeepsTheRootArms(t *testing.T) {
 }
 
 // Output forwarded AFTER the revive must land in the transcript the subagent
-// already owns. The registry row key resolves it, so it does not matter whether
-// the CLI tags the forwarded envelope with the original spawn span or with the
-// tool_use id it re-registered under.
+// already owns, whether the CLI tags the envelope with the original spawn span
+// or with the tool_use id it re-registered under. The spawn span resolves the
+// first and the registry row key resolves the second.
+//
+// This is the TRANSCRIPT alone. That one run also keeps one registry row, which
+// TestClaude_RestartedSubagentKeepsOneRegistryRow pins: the two answers came
+// apart once, and a second row standing for this same transcript is what the
+// user saw in the background-task list.
 func TestClaude_RevivedSubagentOutputStaysInOneTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -1237,6 +1242,11 @@ func TestClaude_RevivedSubagentOutputStaysInOneTranscript(t *testing.T) {
 			msgs := child.Messages()
 			require.Len(t, msgs, before+2, "the revive message and the new reply both land here")
 			assert.Contains(t, string(msgs[len(msgs)-1].Content), "Checked them.")
+			// One transcript is half the answer. The row that STANDS for it must stay
+			// one too, whichever id the envelope carried: a second row linked to this
+			// same child lists the subagent twice and opens one tab from both entries.
+			assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+				"and the run keeps the single row it already had")
 		})
 	}
 }
@@ -1794,14 +1804,218 @@ func TestClaude_StartTaskWithoutAToolUseIDStillRecordsTheKind(t *testing.T) {
 
 	var idx claudeTaskIndex
 
-	pending, hasPending := idx.startTask("task-1", "", bgtask.KindSubagent)
+	pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "", "")
 	assert.False(t, hasPending, "no spawn span means no pending close to take")
 	assert.Equal(t, bgtask.StatusPending, pending)
 	assert.Equal(t, bgtask.KindSubagent, idx.kindForTask("task-1"))
 	assert.Empty(t, idx.taskIDForToolUse(""), "no pair is written under an empty key")
 
 	// And with a spawn span the pair IS written, both ways.
-	idx.startTask("task-2", "tu-2", bgtask.KindShell)
+	idx.startTask("task-2", bgtask.KindShell, "tu-2")
 	assert.Equal(t, "task-2", idx.taskIDForToolUse("tu-2"))
 	assert.Equal(t, bgtask.KindShell, idx.kindForTask("task-2"))
+}
+
+// A restart hands startTask two ids: the spawn span the restarted run forwards
+// under, and the call the event re-registered the task under. BOTH resolve the
+// run, and the closing notification drops BOTH -- an id left behind keeps
+// answering for a task that ended, which routes the NEXT subagent's output into
+// the finished one's transcript.
+func TestClaude_StartTaskIndexesEveryToolUseIDOfARun(t *testing.T) {
+	t.Parallel()
+
+	var idx claudeTaskIndex
+
+	idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
+	assert.Equal(t, "task-1", idx.taskIDForToolUse("tu-spawn"))
+	assert.Equal(t, "task-1", idx.taskIDForToolUse("tu-send"))
+
+	idx.forgetTaskIndex("task-1")
+	assert.Empty(t, idx.taskIDForToolUse("tu-spawn"), "the closing notification drops the spawn span")
+	assert.Empty(t, idx.taskIDForToolUse("tu-send"), "and the call that restarted the task")
+}
+
+// A final result can arrive before the task_started it belongs to, keyed by
+// whichever tool_use id that envelope carried. The late task_started must find
+// the close whichever id it was, so the row it opens cannot leak Running.
+func TestClaude_StartTaskTakesAPendingCloseUnderEitherToolUseID(t *testing.T) {
+	t.Parallel()
+
+	for _, recordedUnder := range []string{"tu-spawn", "tu-send"} {
+		t.Run(recordedUnder, func(t *testing.T) {
+			t.Parallel()
+
+			var idx claudeTaskIndex
+			idx.recordPendingTaskEnd(recordedUnder, bgtask.StatusFailed)
+
+			pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
+			assert.True(t, hasPending, "the reordered close is taken")
+			assert.Equal(t, bgtask.StatusFailed, pending)
+
+			_, hasPending = idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
+			assert.False(t, hasPending, "the close is consumed, not left to fire twice")
+		})
+	}
+}
+
+// The pre-start row exists for a FIRST run whose forwarded output outran its
+// task_started: no task id is known yet, so the row opens under the spawn span.
+// The late task_started renames it, so the run owns ONE row from end to end
+// instead of an orphan beside a fresh one.
+func TestClaude_AFirstStartRenamesItsPreStartRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+
+	// The reorder: the subagent talks before the CLI announces it.
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"content": [{"type": "text", "text": "Working."}]}
+	}`))
+	require.Equal(t, []string{"prestart:tu-spawn"}, bgTaskRowKeys(sink),
+		"with no task id the row opens under the spawn span")
+
+	a.HandleOutput([]byte(`{
+		"type": "system", "subtype": "task_started",
+		"task_id": "task-1", "tool_use_id": "tu-spawn",
+		"task_type": "local_agent", "description": "Explore the parser"
+	}`))
+
+	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+		"the late task_started folds the pre-start row into the run")
+	childID, status, ok, err := sink.LookupBackgroundTask("task-1")
+	require.NoError(t, err)
+	require.True(t, ok, "the renamed row answers under the task id")
+	assert.Equal(t, "child-of-tu-spawn", childID, "and it carries the transcript the pre-start row opened")
+	assert.Equal(t, bgtask.StatusRunning, status)
+}
+
+// The restarted run's first envelope can outrun its task_started, the same
+// reorder the pre-start row exists for. That row opens under the ORIGINAL spawn
+// span, so the late task_started has to rename it from THERE -- the id the event
+// itself carries names no row, and the pre-start row would stand beside the real
+// one for good.
+func TestClaude_ARestartRenamesThePreStartRowOpenedUnderTheSpawnSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	spawnAndFinishSubagent(t, a, sink)
+
+	sendMessageTo(a, "tu-send", "task-1")
+	// The reorder: output before the task_started that announces the restart.
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"content": [{"type": "text", "text": "Already going."}]}
+	}`))
+	require.Contains(t, bgTaskRowKeys(sink), "prestart:tu-spawn",
+		"the reorder opens the pre-start row this test is about")
+
+	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+
+	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+		"the late task_started folds the pre-start row back into the run")
+}
+
+// The repair reads the spawn span from the child transcript, and that read can
+// fail. A restart must still deliver its message and reopen its row: the span is
+// an optimization for the ROUTING, and refusing the restart over it would lose
+// the text the parent sent, which nothing retries.
+func TestClaude_ARestartSurvivesAnUnreadableSpawnSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{spawnSpanErr: errors.New("boom")}
+	a := newTestAgent(sink)
+	child := spawnAndFinishSubagent(t, a, sink)
+	before := len(child.Messages())
+
+	sendMessageTo(a, "tu-send", "task-1")
+	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+
+	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(), "the row still reopens")
+	require.Len(t, child.Messages(), before+1, "the delivered message still lands")
+}
+
+// A row whose child linkage a failed upsert lost has no transcript to read the
+// spawn span from. The restart must not fall back to indexing the call that
+// restarted the task under a spawn it is not -- and it must not create a child
+// keyed by that call either.
+func TestClaude_ARestartOfAnUnlinkedRowOpensNoChildUnderTheRestartCall(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	spawnAndFinishSubagent(t, a, sink)
+	sink.UnlinkBackgroundTask("task-1")
+
+	sendMessageTo(a, "tu-send", "task-1")
+	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+
+	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
+		"a re-registration's tool_use id is not a spawn span")
+}
+
+// bgTaskRowKeys lists the registry row keys this sink holds, sorted. The KEYS
+// and not the count: a duplicate row is only recognizable by the key it took.
+func bgTaskRowKeys(sink *testSink) []string {
+	rows := sink.BackgroundTasks()
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.RowKey)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// A restarted subagent forwards its new output under the ORIGINAL spawn span,
+// while its task_started re-registered the task under the call that restarted
+// it. The run must still own ONE registry row. A second row keyed by the spawn
+// span carries the SAME child transcript, so the background-task list shows the
+// subagent twice and both entries open one tab.
+//
+// Both restart forms are here: the CLI drops the original spawn span from the
+// event in each of them, so neither can rely on the other's discriminator.
+func TestClaude_RestartedSubagentKeepsOneRegistryRow(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		restart func(a *ClaudeCodeAgent)
+		// want is every row key the run legitimately leaves behind, sorted. The
+		// wake case runs a shell of its own, so it owns one more.
+		want []string
+	}{
+		{"SendMessage", func(a *ClaudeCodeAgent) {
+			sendMessageTo(a, "tu-send", "task-1")
+			reviveTaskStarted(a, "tu-send", "Also check the tests.")
+		}, []string{"task-1"}},
+		{"shell wake", func(a *ClaudeCodeAgent) {
+			finishShellTask(a, "shell-1")
+			a.HandleOutput([]byte(`{
+				"type": "system", "subtype": "task_started",
+				"task_id": "task-1", "task_type": "local_agent",
+				"prompt": ` + strconv.Quote(wakePrompt("shell-1")) + `
+			}`))
+		}, []string{"shell-1", "task-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a := newTestAgent(sink)
+			spawnAndFinishSubagent(t, a, sink)
+			tc.restart(a)
+			a.HandleOutput([]byte(`{
+				"type": "assistant",
+				"parent_tool_use_id": "tu-spawn",
+				"message": {"content": [{"type": "text", "text": "Checked them."}]}
+			}`))
+
+			assert.Equal(t, tc.want, bgTaskRowKeys(sink),
+				"the restarted run keeps the row it already had")
+		})
+	}
 }

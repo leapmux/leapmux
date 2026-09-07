@@ -411,6 +411,21 @@ type OutputSink interface {
 	// pooled fallback name.
 	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
 
+	// ChildSpawnSpan returns the tool_use span in THIS sink's transcript that
+	// spawned childAgentID -- the first argument EnsureChildAgent took, read
+	// back. Answers "" for an id no child transcript carries.
+	//
+	// It exists because that span is the ONLY durable link between a provider's
+	// events and its forwarded output, and a provider's own index of it is
+	// per-process. Claude needs it when the CLI restarts a finished subagent: the
+	// restart event identifies the call that restarted the task (the parent's
+	// SendMessage, or nothing at all for a shell wake), while the restarted run
+	// still forwards every envelope under the ORIGINAL spawn.
+	//
+	// err is non-nil when the row could not be READ, which is a third answer and
+	// not a miss, for the reason LookupBackgroundTask states.
+	ChildSpawnSpan(childAgentID string) (spawnSpanID string, err error)
+
 	// ChildSink returns an OutputSink bound to the child agent's transcript.
 	// The child sink has its OWN span tracker; transcript primitives act on the
 	// child. Registry primitives on a child sink write under the same ROOT owner.

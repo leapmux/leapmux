@@ -246,6 +246,19 @@ INSERT INTO agents (id, parent_agent_id, spawn_span_id, working_dir, home_dir, t
 -- name: GetChildAgentBySpawnSpan :one
 SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ?;
 
+-- GetChildAgentSpawnSpan is the reverse of GetChildAgentBySpawnSpan, and the
+-- only DURABLE copy of a spawn span: a provider's own index of them is
+-- per-process, while the child row keeps it for the life of the transcript.
+-- Claude reads it back when the CLI restarts a finished subagent, because the
+-- restart event identifies the call that restarted the task while the restarted
+-- run's output still arrives under the original spawn.
+--
+-- One narrow column, for the reason GetAgentTitle states: GetAgentByID answers
+-- the same question with a SELECT * that deserializes the options and
+-- option_groups JSON blobs this caller never reads.
+-- name: GetChildAgentSpawnSpan :one
+SELECT spawn_span_id FROM agents WHERE id = ?;
+
 -- GetRootAgentID walks parent_agent_id up to the root main agent. A root row
 -- has parent_agent_id IS NULL.
 -- name: GetRootAgentID :one

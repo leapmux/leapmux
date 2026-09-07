@@ -81,10 +81,11 @@ type testSink struct {
 	planModeToolUses        sync.Map
 	// childSinkMu + children let testSink serve ChildSink as a per-child testSink
 	// so provider tests can assert what got routed into a subagent transcript.
-	childSinkMu sync.Mutex
-	children    map[string]*testSink
-	childIDMu   sync.Mutex
-	childIDVal  string
+	childSinkMu  sync.Mutex
+	children     map[string]*testSink
+	childIDMu    sync.Mutex
+	childIDVal   string
+	spawnSpanVal string
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
 	// bgTaskStatuses records distinct status values per row key, in order.
@@ -110,7 +111,12 @@ type testSink struct {
 	// answer -- the "registry unreadable" third case, which a miss cannot stand
 	// in for. Read without the lock: set at construction.
 	lookupErr error
-	bgTasksMu sync.Mutex
+	// spawnSpanErr, when set, is what ChildSpawnSpan returns instead of a span --
+	// the same "could not be read" third case lookupErr covers, and the only way
+	// to reach the branch that decides what a restart does when the child's spawn
+	// span is unknowable. Read without the lock: set at construction.
+	spawnSpanErr error
+	bgTasksMu    sync.Mutex
 	// notifSuppressBroadcast makes PersistNotification report broadcast=false,
 	// simulating the service layer collapsing a flapping notification
 	// byte-identically into the existing thread tail (no frontend clear). Default
@@ -531,6 +537,7 @@ func (s *testSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string)
 	cid := "child-of-" + spawnSpanID
 	child := &testSink{}
 	child.setChildAgentID(cid)
+	child.setSpawnSpanID(spawnSpanID)
 	s.children[spawnSpanID] = child
 	if providerChildKey != "" {
 		// Normalized here for the reason the other three registry methods do it:
@@ -569,6 +576,42 @@ func (s *testSink) setChildAgentID(id string) {
 	s.childIDMu.Lock()
 	defer s.childIDMu.Unlock()
 	s.childIDVal = id
+}
+
+// spawnSpanID is the span this child was created for, recorded beside the child
+// id rather than re-derived from the parent's `children` map. That map also
+// holds the "late:" keys ChildSink mints for a child nobody spawned, and those
+// keys are not spans -- a scan of it would report one.
+func (s *testSink) spawnSpanID() string {
+	s.childIDMu.Lock()
+	defer s.childIDMu.Unlock()
+	return s.spawnSpanVal
+}
+
+func (s *testSink) setSpawnSpanID(span string) {
+	s.childIDMu.Lock()
+	defer s.childIDMu.Unlock()
+	s.spawnSpanVal = span
+}
+
+// ChildSpawnSpan mirrors the real sink: it answers from what EnsureChildAgent
+// recorded on the CHILD, so a child reached any other way answers "" exactly as
+// a row with no spawn span does.
+func (s *testSink) ChildSpawnSpan(childAgentID string) (string, error) {
+	if s.spawnSpanErr != nil {
+		return "", s.spawnSpanErr
+	}
+	if childAgentID == "" {
+		return "", nil
+	}
+	s.childSinkMu.Lock()
+	defer s.childSinkMu.Unlock()
+	for _, c := range s.children {
+		if c.childAgentID() == childAgentID {
+			return c.spawnSpanID(), nil
+		}
+	}
+	return "", nil
 }
 
 // ChildSink returns the per-child testSink created by EnsureChildAgent (or a
@@ -1120,6 +1163,7 @@ func (noopSink) PublishGoalCapabilities()                                       
 func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                         {}
 func (noopSink) CancelAutoContinue(AutoContinueReason)                             {}
 func (noopSink) EnsureChildAgent(string, string, string) (string, error)           { return "", nil }
+func (noopSink) ChildSpawnSpan(string) (string, error)                             { return "", nil }
 func (noopSink) ChildSink(string) OutputSink                                       { return noopSink{} }
 func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, SpanInfo) error {
 	return nil

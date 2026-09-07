@@ -673,6 +673,30 @@ func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title 
 	return childID, nil
 }
 
+// ChildSpawnSpan reads back the spawn span recorded on the child's agent row.
+//
+// It reads the ROW and not the registry cache: the cache holds the display list,
+// and a child transcript outlives that cap -- so the hundredth subagent of a
+// session has to answer exactly like the first. The row is a PRIMARY KEY lookup
+// of one column, and only a restart event asks.
+//
+// An unknown id is a MISS ("" and no error), the same answer the caller gets for
+// a child that carries no span. A read that FAILS returns the error, because a
+// caller must not read a database it could not reach as "no such child".
+func (s *agentOutputSink) ChildSpawnSpan(childAgentID string) (string, error) {
+	if childAgentID == "" {
+		return "", nil
+	}
+	span, err := s.h.queries.GetChildAgentSpawnSpan(s.h.bgTaskCtx(), childAgentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read spawn span of child %s: %w", childAgentID, err)
+	}
+	return span, nil
+}
+
 // ensureChildAgentLocked resolves (and creates on first sight) the virtual
 // child agent for a spawn. It keeps DB I/O OUTSIDE the per-root cache mutex so
 // a slow DB round-trip during one spawn does not serialize every other registry
