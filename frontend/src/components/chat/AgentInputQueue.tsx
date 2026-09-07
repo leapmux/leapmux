@@ -5,10 +5,10 @@ import type { AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/prot
 import { closestCenter, DragDropProvider, SortableProvider } from '@thisbeyond/solid-dnd'
 import ArrowDown from 'lucide-solid/icons/arrow-down'
 import ArrowUp from 'lucide-solid/icons/arrow-up'
-import Navigation from 'lucide-solid/icons/navigation'
 import Pencil from 'lucide-solid/icons/pencil'
 import PencilOff from 'lucide-solid/icons/pencil-off'
 import RotateCcw from 'lucide-solid/icons/rotate-ccw'
+import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import SquarePen from 'lucide-solid/icons/square-pen'
 import Trash2 from 'lucide-solid/icons/trash-2'
 import TriangleAlert from 'lucide-solid/icons/triangle-alert'
@@ -338,7 +338,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
           <Show when={isHead() && props.supportsSteering && item().canSteer}>
             <Tooltip text="Steer" ariaLabel>
               <button class={styles.steerAction} type="button" onClick={() => props.onSteer(item())}>
-                <Icon icon={Navigation} size="xs" />
+                <Icon icon={SendHorizontal} size="xs" />
                 <span>Steer</span>
               </button>
             </Tooltip>

@@ -322,7 +322,7 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 	// recipient before the tool runs, because the task_started it produces cannot
 	// be told from a session resume's hydration burst on its own. This is the
 	// ROOT transcript, so the arms are scoped to it ("").
-	a.claudeArmRevivesFromBlocks(env, "")
+	a.claudeArmRestartsFromBlocks(env, "")
 
 	toolUseCount := 0
 	planFileProcessed := false
@@ -622,7 +622,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 
 		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()
-		// Drop the ROOT's SendMessage revive arms with it. A revive's task_started
+		// Drop the ROOT's SendMessage restart arms with it. A restart's task_started
 		// lands inside the turn that sent the message (the tool awaits the
 		// restart), so an arm still standing here addressed a live subagent, a
 		// recipient outside this session, or a send the CLI refused -- and none of
@@ -631,7 +631,7 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// Only the root's. A subagent runs past this boundary and clears its own
 		// arms at its own turn end, so wiping every arm here would drop a live
 		// subagent's before its task_started arrived.
-		a.tasks.clearClaudeRevives("")
+		a.tasks.clearClaudeRestarts("")
 		notifyInputReady(a.sink)
 	}
 }

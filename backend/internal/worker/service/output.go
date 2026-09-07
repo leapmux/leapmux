@@ -299,6 +299,20 @@ func (h *OutputHandler) CancelBackgroundCtx() {
 // bgTaskCtx returns the shutdown-aware context for background-task DB work.
 // Falls back to context.Background() when no shutdown context is wired (a
 // hand-built OutputHandler in a test that never shuts down).
+//
+// It carries NO DEADLINE, deliberately. Every caller reaches it from the agent's
+// stdout-parse goroutine, so a stalled database blocks that goroutine and the
+// agent parses no further output. Two facts make a deadline the worse trade.
+// The store opens SQLite with busy_timeout=60s, so lock contention -- the stall
+// that actually happens -- already resolves or fails on its own. And a caller
+// here only LOGS a refused write, so a deadline that fires on a slow but working
+// database drops a close or a status update for good, and the row then reads
+// Running for the life of the agent. That is the failure the registry exists to
+// prevent, traded for a hang nobody has observed.
+//
+// The case a deadline would cover is a stall SQLite cannot time out, such as a
+// hung filesystem. Add one only with a limit ABOVE the busy timeout, so no
+// statement that beats SQLite's own wait can lose to it.
 func (h *OutputHandler) bgTaskCtx() context.Context {
 	if h.shutdownCtx != nil {
 		return h.shutdownCtx

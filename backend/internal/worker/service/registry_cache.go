@@ -297,7 +297,12 @@ func (c *registryCache[T]) admitRowLocked(ctx context.Context, ownerID string, r
 // reclaim is the one delete that cannot route here -- it is a set-based
 // statement over rows the cache never loaded -- so it mirrors the rule in its
 // own WHERE clause instead.
-func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key string) (bool, error) {
+// superseded says a row that SURVIVES already carries whatever index retention
+// protects for this row, so keeping this one preserves nothing. Only a caller
+// that can compare the two rows knows it, which is why it is a parameter and not
+// a rule inside retention.keep: the predicate sees one row and cannot tell an
+// only index from a second copy of one. Pass false when nothing replaces the row.
+func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key string, superseded bool) (bool, error) {
 	row, idx, found, err := c.findRowLocked(ctx, ownerID, key)
 	if err != nil {
 		return false, err
@@ -305,7 +310,7 @@ func (c *registryCache[T]) deleteRowLocked(ctx context.Context, ownerID, key str
 	if !found {
 		return false, nil
 	}
-	if err := c.dropStoredRowLocked(ctx, ownerID, row); err != nil {
+	if err := c.dropStoredRowLocked(ctx, ownerID, row, superseded); err != nil {
 		return false, fmt.Errorf("delete %s: %w", c.ops.label, err)
 	}
 	// Gone from the registry, so it is nobody's running work now.
@@ -381,7 +386,7 @@ func (c *registryCache[T]) evictFirstMatchLocked(ctx context.Context, ownerID st
 // reachable through rowIndexLocked. Caller must hold c.Mu.
 func (c *registryCache[T]) evictAtLocked(ctx context.Context, ownerID string, evictIdx int) (T, bool, error) {
 	evicted := c.Rows[evictIdx]
-	if err := c.dropStoredRowLocked(ctx, ownerID, evicted); err != nil {
+	if err := c.dropStoredRowLocked(ctx, ownerID, evicted, false); err != nil {
 		var zero T
 		return zero, false, fmt.Errorf("evict %s: %w", c.ops.label, err)
 	}
@@ -412,9 +417,14 @@ func (c *registryCache[T]) EvictedActiveCount() int32 {
 
 // dropStoredRowLocked deletes the persisted row unless ops.retention keeps it,
 // and is the ONE place that asks the question. A registry without retention
-// deletes every row. Caller must hold c.Mu.
-func (c *registryCache[T]) dropStoredRowLocked(ctx context.Context, ownerID string, row T) error {
-	if c.ops.retention != nil && c.ops.retention.keep(row) {
+// deletes every row.
+//
+// superseded overrides retention: a surviving row already holds the index this
+// row would be kept for, so keeping it stores a permanent duplicate instead of
+// an only copy. See deleteRowLocked for why the caller decides this.
+// Caller must hold c.Mu.
+func (c *registryCache[T]) dropStoredRowLocked(ctx context.Context, ownerID string, row T, superseded bool) error {
+	if !superseded && c.ops.retention != nil && c.ops.retention.keep(row) {
 		return nil
 	}
 	return c.ops.deleteByKey(ctx, ownerID, c.ops.keyOf(row))

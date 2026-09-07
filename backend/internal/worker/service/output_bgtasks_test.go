@@ -576,11 +576,11 @@ func TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate(t *testing.T) {
 }
 
 // The losing duplicate leaves the display list, but its PERSISTED row goes only
-// when it carries no child. A row that identifies a transcript is that child's one
-// index back to (owner, row_key), and the rename is no more entitled to destroy
-// it than eviction is. No provider reaches this today -- OpenCode and Kilo are
-// the only renamers, and both drop child sessions over ACP -- so the invariant
-// is pinned here rather than left to the callers that happen to exist.
+// when it carries no child THE WINNER ALSO CARRIES. A row that identifies a
+// transcript no other row identifies is that child's one index back to
+// (owner, row_key), and the rename is no more entitled to destroy it than
+// eviction is. Here the winner carries no child at all, so the loser holds the
+// only index and survives.
 func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
 	t.Parallel()
 
@@ -604,6 +604,42 @@ func TestBgTask_RenameOntoOccupiedKeyRetainsALinkedDuplicate(t *testing.T) {
 	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
 	require.NoError(t, err, "the child keeps its index")
 	assert.Equal(t, "spawn-key", row.RowKey)
+}
+
+// When the winner carries the SAME child as the loser, the loser is deleted
+// outright. Retention exists to preserve the one index from a child agent id
+// back to (owner, row_key); the winner already IS that index, so keeping the
+// loser stores a permanent duplicate instead of an only copy.
+//
+// Claude's restart reaches exactly this shape whenever the reorder outlives the
+// process that could have resolved it from the child: the pre-start row and the
+// task row both carry the subagent's transcript. A retained loser is never
+// reclaimed -- it stays Running, and every reclaim pass wants a finished row
+// with no child -- so the next cold-start seed reads it back and the sidebar
+// lists one subagent twice.
+func TestBgTask_RenameOntoOccupiedKeyDropsALoserTheWinnerSupersedes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink, ownerID, listRows := setupBgTaskTestWithService(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-1", Kind: bgtask.KindSubagent, Title: "spawn",
+		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "prestart:tu-spawn", Kind: bgtask.KindSubagent,
+		ChildAgentID: "child-1", Status: bgtask.StatusRunning,
+	}))
+
+	require.NoError(t, sink.RenameBackgroundTask("prestart:tu-spawn", "task-1"))
+
+	assert.NotContains(t, displayedRowKeys(t, svc, ownerID), "prestart:tu-spawn",
+		"the duplicate leaves the display list")
+	assert.NotContains(t, rowKeySet(listRows()), "prestart:tu-spawn",
+		"and its row goes too, because the winner already indexes that child")
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(ctx, "child-1")
+	require.NoError(t, err, "the child keeps its index")
+	assert.Equal(t, "task-1", row.RowKey, "on the row that survived")
 }
 
 // TestBgTask_RenameOnColdCacheRekeysDBRow verifies the rename seeds the cache

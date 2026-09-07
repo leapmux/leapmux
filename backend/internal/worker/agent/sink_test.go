@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +31,15 @@ type testSinkSettingsRefreshed struct {
 type testSinkModeChange struct {
 	Old string
 	New string
+}
+
+// childSpawnSpanTable is the child-agent-id -> spawn-span map the whole sink
+// tree shares. It stands in for the `agents` row, which is one table the worker
+// reads by primary key however it got there -- so a root sink, a child sink and
+// a sink built after a restart must all give one answer.
+type childSpawnSpanTable struct {
+	mu        sync.Mutex
+	byChildID map[string]string
 }
 
 // testSink is a test implementation of OutputSink that records calls.
@@ -85,6 +96,14 @@ type testSink struct {
 	children    map[string]*testSink
 	childIDMu   sync.Mutex
 	childIDVal  string
+	// spawnSpans is the child-agent-id -> spawn-span table ChildSpawnSpan reads.
+	// Every sink of one tree holds the SAME pointer, because production answers
+	// the same for a root sink, a child sink and a sink built after a restart.
+	// EnsureChildAgent creates it under childSinkMu, so a sink that never spawned
+	// a child holds nil and answers "" -- which is what production answers for an
+	// id no row carries. Nil is therefore a usable zero value, and a bare
+	// &testSink{} needs no constructor.
+	spawnSpans *childSpawnSpanTable
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
 	// bgTaskStatuses records distinct status values per row key, in order.
@@ -110,7 +129,12 @@ type testSink struct {
 	// answer -- the "registry unreadable" third case, which a miss cannot stand
 	// in for. Read without the lock: set at construction.
 	lookupErr error
-	bgTasksMu sync.Mutex
+	// spawnSpanErr, when set, is what ChildSpawnSpan returns instead of a span --
+	// the same "could not be read" third case lookupErr covers, and the only way
+	// to reach the branch that decides what a restart does when the child's spawn
+	// span is unknowable. Read without the lock: set at construction.
+	spawnSpanErr error
+	bgTasksMu    sync.Mutex
 	// notifSuppressBroadcast makes PersistNotification report broadcast=false,
 	// simulating the service layer collapsing a flapping notification
 	// byte-identically into the existing thread tail (no frontend clear). Default
@@ -531,6 +555,13 @@ func (s *testSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string)
 	cid := "child-of-" + spawnSpanID
 	child := &testSink{}
 	child.setChildAgentID(cid)
+	// Recorded BEFORE the child takes the pointer, so the child inherits a table
+	// that already exists. The child shares that table and the injected read
+	// failure, so a child handle answers exactly as the root does -- production
+	// reaches the same row through the same query whichever sink holds it.
+	s.recordSpawnSpan(cid, spawnSpanID)
+	child.spawnSpans = s.spawnSpans
+	child.spawnSpanErr = s.spawnSpanErr
 	s.children[spawnSpanID] = child
 	if providerChildKey != "" {
 		// Normalized here for the reason the other three registry methods do it:
@@ -569,6 +600,46 @@ func (s *testSink) setChildAgentID(id string) {
 	s.childIDMu.Lock()
 	defer s.childIDMu.Unlock()
 	s.childIDVal = id
+}
+
+// recordSpawnSpan files the span EnsureChildAgent created a child for, in the
+// table every sink of this tree shares. Caller must hold s.childSinkMu, which is
+// what makes the lazy creation safe.
+func (s *testSink) recordSpawnSpan(childAgentID, span string) {
+	if s.spawnSpans == nil {
+		s.spawnSpans = &childSpawnSpanTable{}
+	}
+	s.spawnSpans.mu.Lock()
+	defer s.spawnSpans.mu.Unlock()
+	if s.spawnSpans.byChildID == nil {
+		s.spawnSpans.byChildID = make(map[string]string)
+	}
+	s.spawnSpans.byChildID[childAgentID] = span
+}
+
+// ChildSpawnSpan mirrors the real sink: production runs a PRIMARY KEY read that
+// ignores which sink asks (TestChildSpawnSpan_AnswersFromTheChildRow pins it by
+// asking a sink built from a fresh OutputHandler), so this answers from the
+// shared table rather than from the receiver's own `children`. A per-sink scan
+// answered "" for a child sink asking about itself, and it read whichever entry
+// Go's random map order reached first once ChildSink minted a "late:" child
+// carrying the same id.
+//
+// The empty id comes FIRST, as production has it: an empty id asks nothing of
+// the database, so no read can fail for one.
+func (s *testSink) ChildSpawnSpan(childAgentID string) (string, error) {
+	if childAgentID == "" {
+		return "", nil
+	}
+	if s.spawnSpanErr != nil {
+		return "", s.spawnSpanErr
+	}
+	if s.spawnSpans == nil {
+		return "", nil
+	}
+	s.spawnSpans.mu.Lock()
+	defer s.spawnSpans.mu.Unlock()
+	return s.spawnSpans.byChildID[childAgentID], nil
 }
 
 // ChildSink returns the per-child testSink created by EnsureChildAgent (or a
@@ -842,24 +913,55 @@ func (s *testSink) RevivedTasks() []string {
 }
 
 func (s *testSink) RenameBackgroundTask(oldKey, newKey string) error {
+	// The empty-key no-op FIRST, as production does: NormalizeRowKey("") derives a
+	// digest, so normalizing first would rename onto a key no registry stores.
+	if oldKey == "" || newKey == "" {
+		return nil
+	}
 	// BOTH keys, as production does: normalizing one and not the other is how a
 	// rename stops finding its own row.
 	oldKey, newKey = bgtask.NormalizeRowKey(oldKey), bgtask.NormalizeRowKey(newKey)
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
-	if item, ok := s.bgTasks[oldKey]; ok {
-		delete(s.bgTasks, oldKey)
-		item.RowKey = newKey
-		s.bgTasks[newKey] = item
+	item, ok := s.bgTasks[oldKey]
+	if !ok || oldKey == newKey {
+		return nil
 	}
+	// (owner, row_key) is the PRIMARY KEY, so production resolves a rename onto an
+	// OCCUPIED key by keeping the row already at newKey -- it carries the lifecycle
+	// that reached the rename -- and dropping the duplicate at oldKey. A fake that
+	// overwrote the destination instead let a test assert the opposite outcome
+	// under the same row key, which is exactly what the key-set assertions cannot
+	// see: Claude's restart rename reaches this collision on every reorder.
+	if _, occupied := s.bgTasks[newKey]; occupied {
+		delete(s.bgTasks, oldKey)
+		return nil
+	}
+	delete(s.bgTasks, oldKey)
+	item.RowKey = newKey
+	s.bgTasks[newKey] = item
 	return nil
+}
+
+// bgTaskRowKeys lists the registry row keys this sink holds, sorted. The KEYS
+// and not the count: a duplicate row is only recognizable by the key it took.
+func bgTaskRowKeys(sink *testSink) []string {
+	rows := sink.BackgroundTasks()
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.RowKey)
+	}
+	return keys
 }
 
 // CleanupChildAgent is a no-op on the test fake: tests that exercise the
 // per-child cleanup use the real OutputHandler via svc.Output.NewSink.
 func (s *testSink) CleanupChildAgent(childAgentID string) {}
 
-// BackgroundTasks returns a snapshot of the recorded registry rows (test helper).
+// BackgroundTasks returns a snapshot of the recorded registry rows, SORTED by
+// row key. The rows live in a map, so an unsorted snapshot ordered them at
+// random and every caller that wanted a specific row scanned the slice by hand.
+// A stable order lets a test assert the whole list.
 func (s *testSink) BackgroundTasks() []bgtask.Item {
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
@@ -867,6 +969,7 @@ func (s *testSink) BackgroundTasks() []bgtask.Item {
 	for _, item := range s.bgTasks {
 		out = append(out, item)
 	}
+	slices.SortFunc(out, func(a, b bgtask.Item) int { return cmp.Compare(a.RowKey, b.RowKey) })
 	return out
 }
 
@@ -1120,6 +1223,7 @@ func (noopSink) PublishGoalCapabilities()                                       
 func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                         {}
 func (noopSink) CancelAutoContinue(AutoContinueReason)                             {}
 func (noopSink) EnsureChildAgent(string, string, string) (string, error)           { return "", nil }
+func (noopSink) ChildSpawnSpan(string) (string, error)                             { return "", nil }
 func (noopSink) ChildSink(string) OutputSink                                       { return noopSink{} }
 func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, SpanInfo) error {
 	return nil

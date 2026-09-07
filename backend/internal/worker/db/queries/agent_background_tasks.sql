@@ -182,8 +182,15 @@ SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
 -- GetAgentBackgroundTaskByChildAgentID is the reverse lookup behind
 -- send-to-subagent and interrupt routing: child agent id -> (owner, row_key).
+--
+-- idx_agent_background_tasks_child is not UNIQUE, so this :one picks a row out of
+-- a set the schema permits to hold more than one. ORDER BY makes the pick
+-- DEFINED rather than left to the plan: without it an index change or a VACUUM
+-- silently moves the answer, and a caller that steers or interrupts through it
+-- addresses a different row than it did yesterday. The lowest seq is the OLDEST
+-- row, which is the run that opened the transcript.
 -- name: GetAgentBackgroundTaskByChildAgentID :one
-SELECT * FROM agent_background_tasks WHERE child_agent_id = ?;
+SELECT * FROM agent_background_tasks WHERE child_agent_id = ? ORDER BY seq LIMIT 1;
 
 -- MarkAgentBackgroundTasksEnded gives every still-active row owned by an agent a
 -- final status (used on clean process exit).
