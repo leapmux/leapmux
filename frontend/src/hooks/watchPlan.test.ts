@@ -12,22 +12,32 @@ import {
 } from './watchPlan'
 
 describe('agentWatchEntry', () => {
-  it('uses AFTER_CURSOR_OR_NONE for a positive resume sequence', () => {
-    expect(agentWatchEntry('a1', 42n, WatchMode.FULL)).toMatchObject({
+  it('uses AFTER_CURSOR_OR_NONE and declares the loaded window tail for a positive resume sequence', () => {
+    expect(agentWatchEntry('a1', 42n, 30n, WatchMode.FULL)).toMatchObject({
       agentId: 'a1',
       replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
       cursorSeq: 42n,
+      windowTailSeq: 30n,
       mode: WatchMode.FULL,
     })
   })
 
-  it('uses LATEST with cursor zero for a cold entry', () => {
-    expect(agentWatchEntry('a1', 0n, WatchMode.FULL)).toMatchObject({
+  it('declares window tail zero on resume: an empty window re-anchors past the limit', () => {
+    expect(agentWatchEntry('a1', 42n, 0n, WatchMode.FULL)).toMatchObject({
+      replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+      cursorSeq: 42n,
+      windowTailSeq: 0n,
+    })
+  })
+
+  it('uses LATEST with cursor zero and no window tail for a cold entry', () => {
+    expect(agentWatchEntry('a1', 0n, 30n, WatchMode.FULL)).toMatchObject({
       agentId: 'a1',
       replay: WatchReplayMode.LATEST,
       cursorSeq: 0n,
       mode: WatchMode.FULL,
     })
+    expect(agentWatchEntry('a1', 0n, 30n, WatchMode.FULL)).not.toHaveProperty('windowTailSeq')
   })
 })
 
@@ -159,7 +169,7 @@ describe('buildWatchPlans', () => {
     }
     const getAgentTab = (id: string): AgentTab | undefined =>
       tabs.find(t => t.id === id) as AgentTab | undefined
-    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, () => false, getAgentTab)
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0n, () => 0, () => false, getAgentTab)
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
     // root-1 appears twice (its own FULL + the child-driven NOTIFY). The dedup
     // keeps it to one entry — the root's own tab already placed it.
@@ -179,7 +189,7 @@ describe('buildWatchPlans', () => {
         return { ...child, id: 'root-1', parentAgentId: undefined } as AgentTab
       return undefined
     }
-    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', () => 0n, () => 0, () => false, getAgentTab)
+    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', () => 0n, () => 0n, () => 0, () => false, getAgentTab)
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
     // The child's own entry + a NOTIFY root entry.
     expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
@@ -203,7 +213,7 @@ describe('buildWatchPlans', () => {
         return { type: TabType.AGENT, id: 'root-1' } as AgentTab
       return tabs.find(t => t.id === id) as AgentTab | undefined
     }
-    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, () => false, getAgentTab)
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0n, () => 0, () => false, getAgentTab)
     const rootEntries = plans.get('w1')!.agents.filter(a => a.agentId === 'root-1')
     expect(rootEntries).toHaveLength(1)
     expect(rootEntries[0].mode).toBe(WatchMode.NOTIFY)
@@ -261,6 +271,7 @@ describe('terminal resync plans', () => {
       [tab],
       'ws-1',
       () => '1:t1',
+      () => 0n,
       () => 0n,
       () => 400,
       () => true,

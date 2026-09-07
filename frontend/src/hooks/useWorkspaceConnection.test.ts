@@ -1,4 +1,4 @@
-import type { AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
@@ -1754,12 +1754,12 @@ describe('reconcileLaggingTails', () => {
     expect(resume).toEqual([])
   })
 
-  it('re-seats an EMPTY window (a full phantom reap) on the latest page instead of forward-filling', () => {
+  it('re-anchors an EMPTY window (a full phantom reap) on the latest page instead of forward-filling', () => {
     const { catchUp, resume, jumps } = run({
       agentTabs: [{ id: 'emptied', workerId: 'w1' }],
       // Not caught up (server content survives), but the loaded window is empty (getLastSeq
       // 0n) -- a full phantom reap dropped every loaded row. There's no anchor to
-      // forward-fill from, so re-seat on the latest page.
+      // forward-fill from, so re-anchor on the latest page.
       caughtUpToLiveTail: () => false,
       getLastSeq: () => 0n,
     })
@@ -1768,7 +1768,7 @@ describe('reconcileLaggingTails', () => {
     expect(resume).toEqual([])
   })
 
-  it('does NOT re-issue the empty-window re-seat while a newer fetch is already in flight', () => {
+  it('does NOT re-issue the empty-window re-anchor while a newer fetch is already in flight', () => {
     const { jumps } = run({
       agentTabs: [{ id: 'emptied', workerId: 'w1' }],
       caughtUpToLiveTail: () => false,
@@ -1778,7 +1778,7 @@ describe('reconcileLaggingTails', () => {
     expect(jumps).toEqual([]) // guarded so the reconcile tick doesn't abort + restart it
   })
 
-  it('re-seats on the latest page when the live-tail gap exceeds the limit', () => {
+  it('re-anchors on the latest page when the live-tail gap exceeds the limit', () => {
     const { catchUp, resume, jumps } = run({
       agentTabs: [{ id: 'lagging', workerId: 'w1' }],
       caughtUpToLiveTail: () => false,
@@ -1814,7 +1814,7 @@ describe('reconcileLaggingTails', () => {
     expect(resume).toEqual([])
   })
 
-  it('re-seats an over-limit deferred gap instead of resuming the fill', () => {
+  it('re-anchors an over-limit deferred gap instead of resuming the fill', () => {
     const { catchUp, resume, jumps } = run({
       agentTabs: [{ id: 'deferred', workerId: 'w1' }],
       hasNewerMessages: () => true,
@@ -1824,6 +1824,23 @@ describe('reconcileLaggingTails', () => {
       getLiveTailSeq: () => 10n + CATCH_UP_GAP_LIMIT + 1n,
     })
     expect(jumps).toEqual([{ workerId: 'w1', agentId: 'deferred' }])
+    expect(catchUp).toEqual([])
+    expect(resume).toEqual([])
+  })
+
+  it('does nothing for an over-limit gap on a plain scrolled-away wall', () => {
+    // The reader chose this gap (hasNewerMessages, no deferred fill). An
+    // over-limit re-anchor must not yank them to the bottom: scroll-down
+    // paging recovers the tail on their own schedule.
+    const { catchUp, resume, jumps } = run({
+      agentTabs: [{ id: 'scrolled-away', workerId: 'w1' }],
+      hasNewerMessages: () => true,
+      caughtUpToLiveTail: () => false,
+      isTailFillDeferred: () => false,
+      getLastSeq: () => 10n,
+      getLiveTailSeq: () => 10n + CATCH_UP_GAP_LIMIT + 1n,
+    })
+    expect(jumps).toEqual([])
     expect(catchUp).toEqual([])
     expect(resume).toEqual([])
   })
@@ -2741,6 +2758,47 @@ describe('useWorkspaceConnection chat history load', () => {
     const dispose = mountWithActiveAgent(refusal)
     try {
       await settle()
+      expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load chat history', refusal)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('announces a failed reconcile-driven re-anchor instead of leaving it unhandled', async () => {
+    // A loaded window whose recorded live tail sits past the catch-up limit:
+    // the reconcile tick re-anchors via jumpToLatestMessages, whose LATEST
+    // fetch rejects. The wiring must catch it and show the same toast -- the
+    // voided promise would otherwise surface as one unhandled rejection per
+    // retry cycle.
+    mockShowWarnToast.mockClear()
+    const refusal = new ChannelError('rpc', 'agent not found', { code: 5 })
+    vi.mocked(workerRpc.listAgentMessages).mockRejectedValue(refusal)
+    const tabs = makeTabStores()
+    tabs.addAgent('a1', { workerId: 'w1' })
+    let dispose!: () => void
+    createRoot((d) => {
+      dispose = d
+      const chatStore = createChatStore()
+      chatStore.setMessages('a1', [{ seq: 10n, id: 'm10', source: MessageSource.AGENT } as AgentChatMessage])
+      chatStore.liveTail.bump('a1', 10n + CATCH_UP_GAP_LIMIT + 1n)
+      useWorkspaceConnection({
+        chatStore,
+        agentInputQueueStore: createAgentInputQueueStore(),
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        controlStore: createControlStore(),
+        agentSessionStore: createAgentSessionStore(),
+        agentActivityStore: createAgentActivityStore(),
+        repoGitStore: createRepoGitStore(),
+        settingsLoading: createLoadingSignal(),
+        getActiveWorkspaceId: () => WS,
+      })
+    })
+    try {
+      await settle()
+      expect(workerRpc.listAgentMessages, 'the re-anchor has to have been attempted').toHaveBeenCalled()
       expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load chat history', refusal)
     }
     finally {

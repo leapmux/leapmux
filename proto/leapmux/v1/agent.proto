@@ -603,10 +603,13 @@ enum WatchReplayMode {
   // The reconnect/resume subscription that bridges the disconnect gap.
   WATCH_REPLAY_MODE_AFTER_CURSOR = 2;
   // Replay every message after cursor_seq, as AFTER_CURSOR does, but replay
-  // NOTHING when the gap from cursor_seq to the live tail is larger than
-  // contracts.CatchUpGapLimit. A windowed client abandons a gap that large and
-  // re-anchors on the newest page, so the burst would be pure waste. The client
-  // learns the tail from CatchUpStart.latest_seq, which is sent either way.
+  // NOTHING when the gap to the live tail is larger than
+  // contracts.CatchUpGapLimit. The worker measures the gap from
+  // WatchAgentEntry.window_tail_seq when the client declares it, else from
+  // cursor_seq. A windowed client abandons a gap that large and re-anchors on
+  // the newest page, so the burst would be pure waste. The client learns the
+  // tail from CatchUpStart.latest_seq. The worker sends this field for every
+  // replay mode.
   WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE = 3;
 }
 

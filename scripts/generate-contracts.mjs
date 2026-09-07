@@ -324,8 +324,11 @@ export function checkRetry(r) {
 // ---------------------------------------------------------------------------
 
 export function checkChatHistory(v) {
-  mustBe(Number.isInteger(v.messagePageLimit) && v.messagePageLimit > 0, 'chat-history.json', 'messagePageLimit must be a positive integer')
-  mustBe(Number.isInteger(v.catchUpGapLimit) && v.catchUpGapLimit >= v.messagePageLimit, 'chat-history.json', 'catchUpGapLimit must be an integer >= messagePageLimit')
+  // Safe integers only: the TS emitter writes the raw value into a bigint
+  // literal, and an unsafe value such as 1e21 stringifies as `1e+21n`, which
+  // is not a valid TypeScript literal.
+  mustBe(Number.isSafeInteger(v.messagePageLimit) && v.messagePageLimit > 0, 'chat-history.json', 'messagePageLimit must be a positive safe integer')
+  mustBe(Number.isSafeInteger(v.catchUpGapLimit) && v.catchUpGapLimit >= v.messagePageLimit, 'chat-history.json', 'catchUpGapLimit must be a safe integer >= messagePageLimit')
   return {}
 }
 
@@ -2368,8 +2371,10 @@ export function emitGoChatHistory(v) {
 // Shared chat history limits. The worker caps pages at MessagePageLimit.
 // The browser re-anchors when a catch-up gap exceeds CatchUpGapLimit.
 const (
-\tMessagePageLimit = ${v.messagePageLimit}
-\tCatchUpGapLimit  = ${v.catchUpGapLimit}
+${goConstBlock([
+  { name: 'MessagePageLimit', value: String(v.messagePageLimit) },
+  { name: 'CatchUpGapLimit', value: String(v.catchUpGapLimit) },
+])}
 )
 `
 }

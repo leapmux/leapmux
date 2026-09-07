@@ -135,27 +135,35 @@ func TestShouldSkipCatchUpReplay(t *testing.T) {
 	farTail := int64(10 + contracts.CatchUpGapLimit + 1)
 	atLimitTail := int64(10 + contracts.CatchUpGapLimit)
 	emptyTail := int64(0)
+	// A resume cursor that LEADS the loaded window tail (frames observed but
+	// dropped): the declared tail is the gap base, not the cursor.
+	leadingCursor := int64(40)
+	windowTail := int64(10)
 	cases := []struct {
-		name      string
-		replay    leapmuxv1.WatchReplayMode
-		cursorSeq int64
-		latestSeq *int64
-		want      bool
+		name        string
+		replay      leapmuxv1.WatchReplayMode
+		cursorSeq   int64
+		skipGapBase int64
+		latestSeq   *int64
+		want        bool
 	}{
-		{"unspecified mode", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_UNSPECIFIED, 10, &farTail, false},
-		{"latest mode", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, 10, &farTail, false},
-		{"after cursor mode", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, 10, &farTail, false},
-		{"capped mode with cursor zero", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 0, &farTail, false},
-		{"capped mode with nil latest seq", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, nil, false},
-		{"capped mode with empty latest seq", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, &emptyTail, false},
-		{"capped mode at the limit", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, &atLimitTail, false},
-		{"capped mode one past the limit", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, &farTail, true},
+		{"unspecified mode", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_UNSPECIFIED, 10, 10, &farTail, false},
+		{"latest mode", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, 10, 10, &farTail, false},
+		{"after cursor mode", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, 10, 10, &farTail, false},
+		{"capped mode with cursor zero", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 0, 10, &farTail, false},
+		{"capped mode with nil latest seq", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, 10, nil, false},
+		{"capped mode with empty latest seq", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, 10, &emptyTail, false},
+		{"capped mode at the limit", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, 10, &atLimitTail, false},
+		{"capped mode one past the limit", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 10, 10, &farTail, true},
+		{"capped mode skips on a window tail the cursor leads", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, leadingCursor, windowTail, &farTail, true},
+		{"capped mode replays when the window-tail gap fits", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, leadingCursor, windowTail, &atLimitTail, false},
+		{"capped mode with a declared empty window skips past the limit", leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE, 5, 0, &farTail, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, shouldSkipCatchUpReplay(tc.replay, tc.cursorSeq, tc.latestSeq))
+			assert.Equal(t, tc.want, shouldSkipCatchUpReplay(tc.replay, tc.cursorSeq, tc.skipGapBase, tc.latestSeq))
 		})
 	}
 }

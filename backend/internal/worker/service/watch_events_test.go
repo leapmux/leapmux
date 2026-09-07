@@ -426,19 +426,36 @@ func TestWatchEvents_PromoteNotifyToFullReplaysOnce(t *testing.T) {
 
 func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 	tests := []struct {
-		name             string
-		messageCount     int
+		name         string
+		messageCount int
+		// cursorFromEnd picks the resume cursor by offset from the NEWEST seq
+		// (0 = oldest message); windowTailIdx (when >= 0) declares
+		// window_tail_seq at that message's seq.
+		cursorFromEnd    int
+		windowTailIdx    int
 		wantReplayFrames int
 	}{
 		{
 			name:             "gap over limit skips message replay",
 			messageCount:     contracts.CatchUpGapLimit + 2,
+			cursorFromEnd:    contracts.CatchUpGapLimit + 1,
 			wantReplayFrames: 0,
 		},
 		{
 			name:             "gap inside limit replays messages",
 			messageCount:     3,
+			cursorFromEnd:    2,
 			wantReplayFrames: 2,
+		},
+		{
+			// The cursor LEADS the declared window tail: the cursor gap fits
+			// the limit (so the fallback base would replay), but the
+			// window-tail gap exceeds it, so the declared base must skip.
+			name:             "declared window tail skips when the cursor leads it past the limit",
+			messageCount:     contracts.CatchUpGapLimit + 2,
+			cursorFromEnd:    10,
+			windowTailIdx:    0,
+			wantReplayFrames: 0,
 		},
 	}
 
@@ -476,13 +493,18 @@ func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
 			}, w)
 			waitAgentWatchCount(t, svc, "agent-1", 1)
 
+			var windowTail *int64
+			if tc.windowTailIdx >= 0 {
+				windowTail = &seqs[tc.windowTailIdx]
+			}
 			promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
 				UpdateId: 1,
 				Agents: []*leapmuxv1.WatchAgentEntry{{
-					AgentId:   "agent-1",
-					Mode:      leapmuxv1.WatchMode_WATCH_MODE_FULL,
-					Replay:    leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE,
-					CursorSeq: seqs[0],
+					AgentId:       "agent-1",
+					Mode:          leapmuxv1.WatchMode_WATCH_MODE_FULL,
+					Replay:        leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE,
+					CursorSeq:     seqs[len(seqs)-1-tc.cursorFromEnd],
+					WindowTailSeq: windowTail,
 				}},
 			})
 			require.NoError(t, err)

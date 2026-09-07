@@ -28,7 +28,14 @@ import { createStreamingTextStore } from './chatStreamingText'
 import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
 
-/** Max number of loaded messages to keep for the visible agent tab window. */
+/**
+ * Max number of loaded messages to keep for the visible agent tab window.
+ * Derives from CATCH_UP_GAP_LIMIT on purpose: the browser drains at most a
+ * window-sized gap before it re-anchors, because the window trims any older
+ * drained rows (see contracts/chat-history.json). Note the reach of this
+ * number: it also scales the 8x ceiling (MAX_LOADED_CHAT_MESSAGES_CEILING),
+ * so a catch-up-gap change resizes the per-tab memory bound.
+ */
 export const MAX_LOADED_CHAT_MESSAGES = Number(CATCH_UP_GAP_LIMIT)
 /**
  * Hard ceiling on the visible-tab window when a scrolled-up reader is being
@@ -196,7 +203,7 @@ export function createChatStore() {
    *
    * `watchSignal` (when given) ties the fetch to the CURRENT WatchEvents
    * subscription, so a workspace switch / worker change that aborts the stream
-   * also aborts this fetch -- used by the reconcile-driven empty-window re-seat
+   * also aborts this fetch -- used by the reconcile-driven empty-window re-anchor
    * (jumpToLatestMessages) so it can't leak a LATEST page into a navigated-away
    * worker's window. A user-driven fetch omits it (already scoped to the active tab).
    */
@@ -246,7 +253,7 @@ export function createChatStore() {
       // missed the case where `watchSignal` (the WatchEvents subscription) aborts us
       // with NO superseding fetch: a workspace switch / worker change that tears the
       // stream down mid-flight then stranded `fetchingNewer = true`, wedging
-      // loadNewerPage (and the empty-window re-seat, both gated on the flag) for that
+      // loadNewerPage (and the empty-window re-anchor, both gated on the flag) for that
       // agent until an unrelated user fetch reset it. Our controller stays installed
       // in that case, so the identity check clears the flag.
       if (fetchAbort.get(agentId)?.signal === signal) {

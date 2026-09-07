@@ -241,14 +241,14 @@ describe('checkChatHistory', () => {
   it('rejects a non-positive message page limit', () => {
     expectContractError(
       () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 0 }),
-      'messagePageLimit must be a positive integer',
+      'messagePageLimit must be a positive safe integer',
     )
   })
 
   it('rejects a catch-up gap below one page', () => {
     expectContractError(
       () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: CHAT_HISTORY.messagePageLimit - 1 }),
-      'catchUpGapLimit must be an integer >= messagePageLimit',
+      'catchUpGapLimit must be a safe integer >= messagePageLimit',
     )
   })
 
@@ -262,11 +262,24 @@ describe('checkChatHistory', () => {
   it('rejects fractional limits', () => {
     expectContractError(
       () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 1.5 }),
-      'messagePageLimit must be a positive integer',
+      'messagePageLimit must be a positive safe integer',
     )
     expectContractError(
       () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: CHAT_HISTORY.catchUpGapLimit + 0.5 }),
-      'catchUpGapLimit must be an integer >= messagePageLimit',
+      'catchUpGapLimit must be a safe integer >= messagePageLimit',
+    )
+  })
+
+  it('rejects unsafe integers, which would emit an invalid TypeScript bigint literal', () => {
+    // 1e21 stringifies as '1e+21', so an emitted `CATCH_UP_GAP_LIMIT = 1e+21n`
+    // would not parse; values past 2^53 - 1 silently round.
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: 1e21 }),
+      'catchUpGapLimit must be a safe integer >= messagePageLimit',
+    )
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 2 ** 53 }),
+      'messagePageLimit must be a positive safe integer',
     )
   })
 })

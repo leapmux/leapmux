@@ -280,6 +280,15 @@ message WatchAgentEntry {
   // ignored for LATEST / while not transitioning into FULL.
   int64 cursor_seq = 3;
   WatchMode mode = 4;
+  // The subscriber's loaded window tail, used ONLY as the base of the
+  // AFTER_CURSOR_OR_NONE skip decision: a windowed client re-anchors when the
+  // gap from its LOADED tail exceeds contracts.CatchUpGapLimit, and the resume
+  // cursor can lead that tail (frames the client observed but dropped while
+  // scrolled away). UNSET (the CLI, which never skips) keeps cursor_seq as the
+  // base. Never affects the replay query itself: that still pages after
+  // cursor_seq. Present 0 (an empty loaded window) is meaningful -- that client
+  // re-anchors on any gap past the limit.
+  optional int64 window_tail_seq = 5;
 }
 
 message WatchTerminalEntry {

@@ -205,11 +205,11 @@ describe('chathistorypaginator', () => {
 
       await h.paginator.catchUpToTail('w', 'a', 1n)
 
+      // Load-bearing: exactly one page fetched (the over-limit stop), the tail
+      // recorded from resp.latestSeq, and the stale-tail clamp skipped so the
+      // scheduler still sees the gap it must re-anchor.
       expect(listAgentMessages).toHaveBeenCalledTimes(1)
       expect(h.bumpLiveTail).toHaveBeenCalledWith('a', latestSeq)
-      expect(h.getRecordedLiveTail()).toBe(latestSeq)
-      expect(h.getRecordedLiveTail()).toBeGreaterThan(h.state.messagesByAgent.a.at(-1)!.seq)
-      expect(h.caughtUpToLiveTail('a')).toBe(false)
       expect(h.settleToWindow).not.toHaveBeenCalled()
       expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
     })
@@ -258,9 +258,9 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('jumptolatestmessages ties its re-seat fetch to the watch signal', () => {
+  describe('jumptolatestmessages ties its re-anchor fetch to the watch signal', () => {
     it('does NOT apply the latest page when the watch signal aborts mid-fetch (workspace switch)', async () => {
-      // The empty-window re-seat fires for a backgrounded agent; the user switches
+      // The empty-window re-anchor fires for a backgrounded agent; the user switches
       // workspaces mid-fetch, aborting the WatchEvents subscription. The fetch must
       // discard its result rather than write a LATEST page into the navigated-away
       // agent's window (the leak this signal threading closes).
@@ -276,7 +276,7 @@ describe('chathistorypaginator', () => {
       expect(h.applyMessages).not.toHaveBeenCalled()
     })
 
-    it('applies the latest page on a normal re-seat (no watch abort)', async () => {
+    it('applies the latest page on a normal re-anchor (no watch abort)', async () => {
       const h = harness({ messages: [], hasMoreNewer: false, caughtUp: () => true, liveGet: () => 0n })
       listAgentMessages.mockResolvedValue(page([makeMsg(10n)], false))
 

@@ -3082,7 +3082,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
           store.trimNewestEnd('a1', 30) // hasMoreNewer=true, window seq 1..30
 
-          // The reconcile-driven empty-window re-seat / catch-up jump ties its fetch to
+          // The reconcile-driven empty-window re-anchor / catch-up jump ties its fetch to
           // the WatchEvents subscription. Its LATEST fetch hangs, then the subscription
           // tears down (workspace switch) mid-flight -- aborting the fetch with NO
           // superseding beginHistoryFetch to reset the flags.
@@ -3102,7 +3102,7 @@ describe('createChatStore', () => {
 
           // The flag MUST be cleared: a watch-aborted fetch that wasn't superseded
           // otherwise stranded fetchingNewer=true, wedging loadNewerPage and the
-          // empty-window re-seat (both gated on the flag) until an unrelated user fetch.
+          // empty-window re-anchor (both gated on the flag) until an unrelated user fetch.
           expect(store.isFetchingNewer('a1')).toBe(false)
 
           // Proof the wedge is gone: a subsequent loadNewerPage actually fetches.

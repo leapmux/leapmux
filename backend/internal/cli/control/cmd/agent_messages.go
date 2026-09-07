@@ -158,9 +158,9 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 	if cursorSeq < 0 {
 		return nil, errors.New("--cursor-seq must be non-negative")
 	}
-	// A non-positive --limit would be silently clamped to contracts.MessagePageLimit.
-	// reject it loudly so a typo fails the same way --cursor-seq and --anchor do
-	// instead of quietly returning a full page.
+	// The worker would silently clamp a non-positive --limit to
+	// contracts.MessagePageLimit. Reject it loudly so a typo fails the same way
+	// --cursor-seq and --anchor do instead of quietly returning a full page.
 	if limit <= 0 {
 		return nil, errors.New("--limit must be greater than 0")
 	}
@@ -478,9 +478,11 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 		// cannot cover. The replay sends at most contracts.MessagePageLimit messages.
 		// ListAgentMessages pages forward from the cursor. On a reconnect, it fills the
 		// disconnect gap. On the first connection, it fills messages created between the
-		// page 1 snapshot and watcher registration. The drain uses AFTER, so it does not
-		// emit a page 1 message again. A failed fetch returns early. The next reconnect
-		// retries from the last message that the command emitted.
+		// page 1 snapshot and watcher registration. Without the drain, a first-connect
+		// burst past the cap is lost silently: the replay keeps only the newest page,
+		// and the live stream resumes from the newest message. The drain uses AFTER, so
+		// it does not emit a page 1 message again. A failed fetch returns early. The
+		// next reconnect retries from the last message that the command emitted.
 		drained, drainErr := drainBacklog(ctx, agentID, cursor, drainFetch, emitMsg)
 		if drainErr != nil {
 			return drainErr

@@ -1271,8 +1271,15 @@ func (svc *Service) replayAgentCatchUp(
 	// Replay up to contracts.MessagePageLimit messages. AFTER_CURSOR and
 	// AFTER_CURSOR_OR_NONE use the forward page after cursor_seq. LATEST and
 	// UNSPECIFIED use the newest page. The capped mode skips the page when the
-	// browser will re-anchor instead.
-	if !shouldSkipCatchUpReplay(agentEntry.GetReplay(), agentEntry.GetCursorSeq(), replayStartTail) {
+	// browser will re-anchor instead. The skip measures the gap from the
+	// DECLARED window tail when the client sends one: the browser re-anchors on
+	// the gap from its loaded tail, and the resume cursor can lead that tail
+	// (frames observed but dropped while scrolled away).
+	skipGapBase := agentEntry.GetCursorSeq()
+	if agentEntry.WindowTailSeq != nil {
+		skipGapBase = agentEntry.GetWindowTailSeq()
+	}
+	if !shouldSkipCatchUpReplay(agentEntry.GetReplay(), agentEntry.GetCursorSeq(), skipGapBase, replayStartTail) {
 		replayAnchor := replayPageAnchor(agentEntry.GetReplay(), agentEntry.GetCursorSeq())
 		replayPlan := resolveMessagePage(replayAnchor, agentEntry.GetCursorSeq(), contracts.MessagePageLimit)
 		replayMessages, replayErr := svc.fetchMessagePageRows(bgCtx(), agentID, replayPlan.mode, replayPlan.bound, replayPlan.limit)
@@ -3423,7 +3430,9 @@ type messagePagePlan struct {
 // replayPageAnchor maps a WatchEvents resume (replay mode + cursor) to the
 // MessagePageAnchor that its replay query uses. Both cursor replay modes use
 // AFTER with a positive cursor. All other inputs use LATEST. Sequence values
-// start at 1, so a non-positive cursor does not identify a resume point.
+// start at 1, so a non-positive cursor does not identify a resume point. AFTER
+// with a non-positive cursor would scan seq > 0 and return the OLDEST page,
+// which splices the first messages in front of the latest window.
 func replayPageAnchor(replay leapmuxv1.WatchReplayMode, cursorSeq int64) leapmuxv1.MessagePageAnchor {
 	if cursorSeq > 0 && (replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR ||
 		replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE) {
@@ -3433,11 +3442,13 @@ func replayPageAnchor(replay leapmuxv1.WatchReplayMode, cursorSeq int64) leapmux
 }
 
 // shouldSkipCatchUpReplay reports whether a windowed client will discard the
-// replay page and re-anchor. An absent tail keeps the replay because the client
-// cannot calculate the gap or know that it must re-anchor.
-func shouldSkipCatchUpReplay(replay leapmuxv1.WatchReplayMode, cursorSeq int64, latestSeq *int64) bool {
+// replay page and re-anchor. skipGapBase is the seq the client measures the gap
+// from: its declared window tail, or the resume cursor when it declares none.
+// An absent tail keeps the replay because the client cannot calculate the gap
+// or know that it must re-anchor.
+func shouldSkipCatchUpReplay(replay leapmuxv1.WatchReplayMode, cursorSeq, skipGapBase int64, latestSeq *int64) bool {
 	return replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE &&
-		cursorSeq > 0 && latestSeq != nil && *latestSeq-cursorSeq > contracts.CatchUpGapLimit
+		cursorSeq > 0 && latestSeq != nil && *latestSeq-skipGapBase > contracts.CatchUpGapLimit
 }
 
 // maxSeqOrNil reads the agent's live-tail seq on a background context, returning nil
