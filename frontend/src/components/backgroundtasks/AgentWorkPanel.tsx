@@ -140,6 +140,10 @@ export const AgentWorkPanel: Component<AgentWorkPanelProps> = (props) => {
 
   const showsGoal = () => hasGoal() && (activeTab() === GOAL_TAB.key || activeTab() === 'all')
 
+  // The rule under the goal, on the one tab where something follows it. The
+  // card draws no separator of its own, because it cannot see what is below.
+  const showsGoalSeparator = () => showsGoal() && activeTab() === 'all'
+
   return (
     <div
       class={styles.root}
@@ -170,6 +174,9 @@ export const AgentWorkPanel: Component<AgentWorkPanelProps> = (props) => {
             goal={props.goal}
             announce={props.announceGoal}
           />
+        </Show>
+        <Show when={showsGoalSeparator()}>
+          <hr class={styles.goalSeparator} data-testid="goal-separator" />
         </Show>
         <Show when={listTabFor(activeTab())}>
           {kind => (

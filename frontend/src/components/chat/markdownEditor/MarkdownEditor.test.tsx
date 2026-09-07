@@ -81,6 +81,7 @@ describe('markdownEditor send', () => {
     render(() => (
       <PreferencesProvider>
         <MarkdownEditor
+          surface="chat"
           draftKey={{ key: DRAFT_KEY }}
           onSend={() => {}}
           onAfterSend={() => { throw resetFailure }}
@@ -109,6 +110,7 @@ describe('markdownEditor send', () => {
     render(() => (
       <PreferencesProvider>
         <MarkdownEditor
+          surface="chat"
           draftKey={{ key: DRAFT_KEY }}
           onSend={() => Promise.resolve().then(() => { outside.focus() })}
           imperative={{ sendRef: (fn) => { send = fn } }}
@@ -155,6 +157,7 @@ describe('markdownEditor autofocus', () => {
     render(() => (
       <PreferencesProvider>
         <MarkdownEditor
+          surface="chat"
           draftKey={{ key: FOCUS_KEY }}
           onSend={() => {}}
           suppressAutoFocus={suppressAutoFocus}
@@ -219,6 +222,7 @@ describe('markdownEditor draft key swaps', () => {
     const { container } = render(() => (
       <PreferencesProvider>
         <MarkdownEditor
+          surface="chat"
           draftKey={{ key: key() }}
           onSend={() => {}}
           imperative={{ sendRef: (fn) => { send = fn } }}
@@ -248,5 +252,93 @@ describe('markdownEditor draft key swaps', () => {
     // draft the user never even opened.
     expect((await loadDraft(KEY_B)).content).toBe('the B document')
     expect((await loadDraft(KEY_A)).content).toBe('the A document')
+  })
+})
+
+/**
+ * The composer is one of the editor's hosts, and the session-goal dialog is
+ * another. What separates them is one prop, because the two markers below are
+ * one fact -- see `MarkdownEditorSurface`.
+ */
+describe('markdownEditor surface', () => {
+  it('marks the chat composer as the chat input', async () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="chat" onSend={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    expect(container.querySelector('[data-testid="composer-box"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="chat-editor"][data-chat-input]')).not.toBeNull()
+  })
+
+  /**
+   * `useShortcuts` reads `data-chat-input` for the `chatInputFocused` context,
+   * and `$mod+j` maps to `chat.sendMessage` there -- so a goal editor carrying
+   * it would send a chat message from inside a dialog. The test ids are the
+   * same fact: about twenty E2E specs address `chat-editor` with an unscoped
+   * locator, which a second element of that name breaks.
+   */
+  it('leaves every chat marker off another surface', async () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="goal" onSend={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    expect(container.querySelector('[data-testid="goal-editor-box"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="goal-editor"]')).not.toBeNull()
+    expect(container.querySelector('[data-chat-input]')).toBeNull()
+    // Every id, not only the two that name the editor. The three layout slots
+    // would put the same collision back for anything that addresses one.
+    for (const id of ['chat-editor', 'composer-box', 'composer-plus-slot', 'composer-separator', 'composer-footer-slot'])
+      expect(container.querySelector(`[data-testid="${id}"]`), id).toBeNull()
+    expect(container.querySelector('[data-testid="goal-editor-footer-slot"]')).not.toBeNull()
+  })
+
+  // The stylesheet reserves a left column for the `[+]` button. A box with no
+  // `[+]` would otherwise start its text about 40px in, for a control that is
+  // not there.
+  it('reserves the left column only for a box that has a [+] button', async () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="chat" onSend={() => {}} plus={<button type="button">+</button>} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    expect(container.querySelector('[data-testid="composer-box"]')).toHaveAttribute('data-plus')
+  })
+
+  it('reserves no left column for a box with no [+] button', async () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor surface="goal" onSend={() => {}} />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector('.ProseMirror')).not.toBeNull())
+    expect(container.querySelector('[data-testid="goal-editor-box"]')).not.toHaveAttribute('data-plus')
+  })
+
+  /**
+   * `onContentChange` answers "is there anything here"; this one carries the
+   * text. The goal dialog measures the objective's UTF-8 length against the
+   * worker's cap, which the boolean cannot answer.
+   */
+  it('reports the document text to its host', async () => {
+    const seen: string[] = []
+    let setContent: ((text: string) => void) | undefined
+    render(() => (
+      <PreferencesProvider>
+        <MarkdownEditor
+          surface="goal"
+          onSend={() => {}}
+          onMarkdownChange={md => seen.push(md)}
+          imperative={{ contentRef: (_get, set) => { setContent = set } }}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(setContent).toBeTypeOf('function'))
+    setContent?.('ship the **auth refactor**')
+    await waitFor(() => expect(seen.at(-1)).toContain('auth refactor'))
   })
 })

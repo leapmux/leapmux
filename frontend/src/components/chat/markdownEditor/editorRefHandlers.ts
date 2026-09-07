@@ -1,6 +1,5 @@
 import type { Editor } from '@milkdown/core'
 import type { Ctx } from '@milkdown/ctx'
-import type { Setter } from 'solid-js'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { replaceAll } from '@milkdown/utils'
@@ -8,7 +7,8 @@ import { replaceAll } from '@milkdown/utils'
 /** Options for setting up the ref callbacks exposed to the parent component. */
 export interface EditorRefHandlersOptions {
   editor: Editor
-  setMarkdown: Setter<string>
+  /** Reports the document's markdown after a programmatic `set`. */
+  onMarkdown: (markdown: string) => void
   onContentChange?: (hasContent: boolean) => void
   sendRef?: (send: () => void | Promise<void>) => void
   focusRef?: (focus: () => void) => void
@@ -63,7 +63,7 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
             }
           }
         })
-        opts.setMarkdown(text)
+        opts.onMarkdown(text)
         opts.onContentChange?.(text.trim().length > 0)
       }
       catch { /* editor may not be ready */ }

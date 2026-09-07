@@ -33,6 +33,22 @@ export const container = style({
 })
 
 /**
+ * A box with no `[+]` button reserves no column for one.
+ *
+ * The VARIABLE is overridden, not the padding, so every value derived from it
+ * moves together: the ProseMirror's left padding, the action slot's width cap,
+ * the full-width footer's left edge, and the hidden probe in `./composerLayout`
+ * that measures the collapsed left pad through inheritance. A rule that
+ * overrode the padding alone would leave those three measuring a column that no
+ * longer exists.
+ */
+globalStyle(`${container}:not([data-plus])`, {
+  vars: {
+    '--composer-left-pad': 'var(--space-2)',
+  },
+})
+
+/**
  * The editor row holds the editor body and the two overlay slots: the `[+]`
  * button (left) and the action cluster (right). The slots are absolutely
  * positioned so they can hug the top corners when the content is a single

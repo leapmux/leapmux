@@ -608,6 +608,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           data-testid="file-input"
         />
         <MarkdownEditor
+          surface="chat"
           suppressAutoFocus={props.suppressAutoFocus}
           draftKey={{
             agentId: props.agentId,

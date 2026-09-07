@@ -1,13 +1,14 @@
 import type { Component } from 'solid-js'
-import type { GoalAction, GoalSurface, SessionGoal } from '~/stores/chatGoal'
-import { createMemo, For, Show } from 'solid-js'
+import type { GoalSurface, SessionGoal } from '~/stores/chatGoal'
+import { createMemo, Show } from 'solid-js'
 import { formatSecondsParts } from '~/components/chat/rendererUtils'
 import { StatusDot } from '~/components/common/StatusDot'
-import { Tooltip } from '~/components/common/Tooltip'
 import { goalActionState, goalStatusLabel } from '~/stores/chatGoal'
 import { srOnly } from '~/styles/shared.css'
 import * as taskStyles from './BackgroundTaskList.css'
+import { GoalActionsMenu } from './GoalActionsMenu'
 import * as styles from './GoalCard.css'
+import { GoalObjective } from './GoalObjective'
 
 export interface GoalCardProps {
   /** The goal, its counters, the live actions and their handler. */
@@ -21,14 +22,6 @@ export interface GoalCardProps {
    */
   announce?: boolean
 }
-
-/** The verb buttons, in the order they read. */
-const ACTIONS: { action: GoalAction, label: string }[] = [
-  { action: 'pause', label: 'Pause' },
-  { action: 'resume', label: 'Resume' },
-  { action: 'set', label: 'Replace' },
-  { action: 'clear', label: 'Clear' },
-]
 
 function statusDotClass(goal: SessionGoal): string {
   switch (goal.status) {
@@ -62,6 +55,11 @@ function statusDotClass(goal: SessionGoal): string {
  * `timeUsedSeconds` is BUDGET CONSUMED rather than wall clock -- so ticking it
  * would assert the agent is spending while it waits on an approval, and the
  * number would jump backwards when the real value lands.
+ *
+ * The objective and the verbs each live in their own component --
+ * `./GoalObjective` and `./GoalActionsMenu` -- because each owns a rule this
+ * card must not restate: the clamp and its two routes back, and the three-way
+ * hidden / enabled / refused state of every verb.
  */
 export const GoalCard: Component<GoalCardProps> = (props) => {
   // One string, rebuilt only when a field it reads changes, so the live region
@@ -93,26 +91,29 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
     return parts
   })
 
-  // Only the actions this agent offers at all. A gap in the PROVIDER is
-  // permanent -- Claude Code has no pause or resume, Reasonix can report a goal
-  // but never change one -- so its button would never light up, and a row of
-  // dead controls says less than no row. A supported action that the current
-  // goal state refuses still renders, disabled with its reason, because that one
-  // comes back.
-  // FILTER, never map. `<For>` reconciles rows by REFERENCE, so returning fresh
-  // objects would tear down and rebuild every button whenever the goal's status
-  // moved -- losing the tooltip under the pointer and the focus a screen-reader
-  // user had on a disabled control, at the exact moment the goal changed. The
-  // module-level ACTIONS entries are stable, so a row survives while it stays
-  // offered.
-  const offeredActions = createMemo(() =>
-    ACTIONS.filter(({ action }) =>
-      goalActionState(props.goal.current, props.goal.actions, action).kind !== 'hidden'),
-  )
+  /** Whether the empty state may offer its call to action. */
+  const canSetFirstGoal = () =>
+    props.goal.onAction !== undefined
+    && goalActionState(props.goal.current, props.goal.actions, 'set').kind === 'enabled'
 
   return (
     <div class={styles.card} data-testid="goal-card">
-      <div class={styles.heading}>Session goal</div>
+      <div class={styles.headerRow}>
+        {/* The section header above this card is the user-renameable
+            `section.name`, so it may say anything at all -- the card cannot
+            borrow it to say what it is. */}
+        <div class={styles.heading}>Session goal</div>
+        {/* No menu in the empty state. `set` is the only verb that applies with
+            no goal, and the empty state offers it as its own call to action --
+            a first goal must not be one click deeper than the concept it
+            introduces. */}
+        <Show when={props.goal.current && props.goal.onAction}>
+          <GoalActionsMenu
+            goal={props.goal}
+            onAction={action => props.goal.onAction?.(action)}
+          />
+        </Show>
+      </div>
       {/* Offscreen rather than hidden: `display: none` and `visibility: hidden`
           both take a live region out of the accessibility tree, so nothing is
           announced. `srOnly` is the shared spelling of that.
@@ -131,11 +132,11 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
         when={props.goal.current}
         fallback={(
           <div class={styles.empty} data-testid="goal-card-empty">
-            <span>No session goal</span>
-            <Show when={props.goal.onAction && goalActionState(props.goal.current, props.goal.actions, 'set').kind === 'enabled'}>
+            <span>No session goal.</span>
+            <Show when={canSetFirstGoal()}>
               <button
                 type="button"
-                class={styles.action}
+                class="small outline"
                 data-testid="goal-action-set"
                 onClick={() => props.goal.onAction?.('set')}
               >
@@ -147,7 +148,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
       >
         {goal => (
           <>
-            <div class={styles.objective} data-testid="goal-objective">{goal().objective}</div>
+            <GoalObjective objective={goal().objective} />
             <div class={styles.statusRow}>
               <StatusDot
                 class={statusDotClass(goal())}
@@ -169,58 +170,6 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
             </div>
             <Show when={metaParts().length > 0}>
               <div class={styles.meta} data-testid="goal-progress">{metaParts().join(' · ')}</div>
-            </Show>
-            <Show when={props.goal.onAction && offeredActions().length > 0}>
-              <div class={styles.actions}>
-                <For each={offeredActions()}>
-                  {({ action, label }) => {
-                    // Re-asked per render, so a capability that changes when the
-                    // process restarts updates the control and its tooltip
-                    // together -- one question, so the two can never disagree.
-                    const reason = () => {
-                      const state = goalActionState(props.goal.current, props.goal.actions, action)
-                      return state.kind === 'disabled' ? state.reason : undefined
-                    }
-                    return (
-                      <Show
-                        when={reason()}
-                        fallback={(
-                          <button
-                            type="button"
-                            class={styles.action}
-                            data-testid={`goal-action-${action}`}
-                            onClick={() => props.goal.onAction?.(action)}
-                          >
-                            {label}
-                          </button>
-                        )}
-                      >
-                        {why => (
-                          // A real `disabled`, wrapped in Tooltip so the reason
-                          // is reachable: a disabled control takes no focus, so
-                          // the offscreen description Tooltip leaves behind is
-                          // the only route to it for a screen-reader user.
-                          //
-                          // No `ariaLabel`: the button has visible text, and
-                          // ariaLabel would REPLACE "Pause" with the reason
-                          // sentence -- which breaks every by-role lookup and
-                          // announces a sentence where a verb belongs.
-                          <Tooltip text={why()}>
-                            <button
-                              type="button"
-                              class={styles.action}
-                              data-testid={`goal-action-${action}`}
-                              disabled
-                            >
-                              {label}
-                            </button>
-                          </Tooltip>
-                        )}
-                      </Show>
-                    )
-                  }}
-                </For>
-              </div>
             </Show>
           </>
         )}

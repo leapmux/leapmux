@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import { createSignal, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { pluralize } from '~/lib/plural'
-import * as styles from '../ControlRequestBanner.css'
+import { collapsibleToggle } from '~/styles/shared.css'
 
 interface CollapsibleTextProps {
   text: string
@@ -29,7 +29,8 @@ export function CollapsibleText(props: CollapsibleTextProps): JSX.Element {
       <Dynamic component={props.tag ?? 'pre'} class={props.class}>{visibleText()}</Dynamic>
       <Show when={shouldCollapse()}>
         <button
-          class={styles.collapsibleToggle}
+          type="button"
+          class={collapsibleToggle}
           onClick={() => setExpanded(prev => !prev)}
         >
           {expanded()

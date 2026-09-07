@@ -7,7 +7,7 @@ import type { TrailingDebounced } from '~/lib/debounce'
 import type { LinkRange } from '~/lib/editor/linkPlugin'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
-import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
+import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
@@ -28,6 +28,46 @@ import { decideSendFocus } from './sendFocus'
 const logger = createLogger('MarkdownEditor')
 
 export { clearDraft }
+
+/**
+ * What an editor IS. The one thing a host has to say about itself.
+ *
+ * ONE prop rather than a test id plus a flag, because the two facts below are
+ * one fact. `data-chat-input` decides whether the app's chat keybindings treat
+ * focus inside this box as the composer -- `useShortcuts` reads it for the
+ * `chatInputFocused` context, and `$mod+j` maps to `chat.sendMessage` there --
+ * and the test ids decide which box an E2E locator resolves to. A caller given
+ * two props can change the id and forget the marker, and the symptom is Cmd+J
+ * inside a dialog sending a chat message.
+ */
+export type MarkdownEditorSurface = 'chat' | 'goal'
+
+/**
+ * Every surface's markers.
+ *
+ * A `Record` over the union, so a new surface fails to compile until it states
+ * all four. An array of pairs type-checked with any subset, which is how a new
+ * surface would ship with the composer's own test id.
+ *
+ * EVERY test id this component writes comes from here. Three of them name
+ * layout slots rather than the editor itself, and leaving those shared would
+ * put the whole collision back for anything that addresses one: a spec with a
+ * goal dialog open resolves two `composer-footer-slot` elements and Playwright's
+ * strict mode fails it.
+ */
+const SURFACE_MARKERS: Record<MarkdownEditorSurface, {
+  /** `data-testid` for the outer box, whose `data-expanded` states the layout. */
+  boxTestId: string
+  /** `data-testid` for the ProseMirror host. */
+  editorTestId: string
+  /** Leads the `data-testid` of each layout slot inside the box. */
+  slotPrefix: string
+  /** Whether `chatInputFocused` treats focus here as the message composer. */
+  chatInput: boolean
+}> = {
+  chat: { boxTestId: 'composer-box', editorTestId: 'chat-editor', slotPrefix: 'composer', chatInput: true },
+  goal: { boxTestId: 'goal-editor-box', editorTestId: 'goal-editor', slotPrefix: 'goal-editor', chatInput: false },
+}
 
 /**
  * Identifies the stored draft key. Only one of `key` or
@@ -70,6 +110,11 @@ export interface MarkdownEditorImperative {
 
 interface MarkdownEditorProps {
   /**
+   * What this editor IS -- see {@link MarkdownEditorSurface}. Required, because
+   * a default would silently hand a new host the composer's identity.
+   */
+  surface: MarkdownEditorSurface
+  /**
    * Whether the composer must NOT take the keyboard when it finishes building.
    * Absent means "go ahead", for a caller with no competing focus.
    *
@@ -90,6 +135,16 @@ interface MarkdownEditorProps {
   maxHeight?: number
   onContentHeightChange?: (height: number) => void
   onContentChange?: (hasContent: boolean) => void
+  /**
+   * The document's markdown, on every change.
+   *
+   * Beside `onContentChange` rather than folded into it: that one answers
+   * "is there anything here", which a host reads to arm a Send button, and this
+   * one carries the text, which a host reads to measure it. The goal dialog
+   * measures the objective's UTF-8 length against the worker's cap while the
+   * user types.
+   */
+  onMarkdownChange?: (markdown: string) => void
   banner?: JSX.Element
   /**
    * The action row for the box, and the layout it needs.
@@ -137,7 +192,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorInstance: Editor | undefined
   const preferences = usePreferences()
   const enterMode = preferences.enterKeyMode
-  const [_markdown, setMarkdown] = createSignal('')
   const [contentHeight, setContentHeight] = createSignal(0)
   /**
    * Set by this component's own `onCleanup`. `buildEditor` is asynchronous, so
@@ -219,6 +273,16 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let onSendRef: MarkdownEditorProps['onSend'] = () => undefined
   let allowEmptySendRef = false
   let onContentChangeRef: MarkdownEditorProps['onContentChange']
+  let onMarkdownChangeRef: MarkdownEditorProps['onMarkdownChange']
+
+  /**
+   * Reports the document's markdown to the host.
+   *
+   * Not a signal. This component never reads the text back -- it asks the
+   * serializer whenever it needs one -- so storing it would be a second copy
+   * that only drifts.
+   */
+  const emitMarkdown = (markdown: string) => onMarkdownChangeRef?.(markdown)
 
   // Repaint the composer's code blocks when the syntax theme changes.
   //
@@ -368,7 +432,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       const clearSubmittedContent = sentContentIsCurrent()
       if (clearSubmittedContent) {
         editorInstance.action(replaceAll(''))
-        setMarkdown('')
+        emitMarkdown('')
         onContentChangeRef?.(false)
       }
       if (initialDraftKey && (!sentDraftIsCurrent() || clearSubmittedContent))
@@ -397,6 +461,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     onSendRef = props.onSend
     allowEmptySendRef = props.allowEmptySend ?? false
     onContentChangeRef = props.onContentChange
+    onMarkdownChangeRef = props.onMarkdownChange
   })
 
   // Force ProseMirror to re-render decorations when disabled or placeholder changes.
@@ -501,7 +566,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         getLinkPopoverOpen: linkPopoverOpen,
         getLinkRange: linkRange,
       },
-      setMarkdown,
+      onMarkdown: emitMarkdown,
       onContentChange: hasContent => props.onContentChange?.(hasContent),
       onDocTransaction: layout.setDocStats,
       getDraftKey,
@@ -540,7 +605,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
           return
         readyDraft = draft
         editor.action(replaceAll(draft.content))
-        setMarkdown(draft.content)
+        emitMarkdown(draft.content)
         props.onContentChange?.(draft.content.trim().length > 0)
         prevDraftKey = initialReadyDraftKey ?? null
       })
@@ -609,7 +674,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
 
     setupEditorRefHandlers({
       editor,
-      setMarkdown,
+      onMarkdown: emitMarkdown,
       onContentChange: hasContent => props.onContentChange?.(hasContent),
       sendRef: props.imperative?.sendRef,
       focusRef: props.imperative?.focusRef,
@@ -754,7 +819,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         try {
           swapTarget.action(replaceAll(draft.content))
           restoreCursor(swapTarget, draft.cursor)
-          setMarkdown(draft.content)
+          emitMarkdown(draft.content)
           notifyContentChange?.(draft.content.trim().length > 0)
           prevDraftKey = newDraftKey
         }
@@ -799,14 +864,27 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     })
   }
 
+  const markers = () => SURFACE_MARKERS[props.surface]
+  // Resolved ONCE. `props.plus` is a prop getter, so reading it twice -- once to
+  // insert it and once to ask whether it exists -- builds the menu twice and
+  // mounts two copies of it. `children` memoizes the resolved node, which is
+  // what makes the question below safe to ask. Read for TRUTH rather than
+  // against `undefined`, because a caller that writes `plus={cond && <X/>}`
+  // hands this `false`, which reserves a column for nothing.
+  const plusNode = children(() => props.plus)
+
   return (
     <div
       class={styles.container}
       // The box whose layout mode `data-expanded` states. A test that asserts
       // the collapsed-versus-expanded decision has to address this element, and
       // the class name is a build-mode-dependent hash.
-      data-testid="composer-box"
+      data-testid={markers().boxTestId}
       data-expanded={isExpanded() ? '' : undefined}
+      // Whether a `[+]` button is rendered at all. The stylesheet reserves the
+      // left column for it, and a box without one starts its text 40px in for
+      // no reason -- see `--composer-left-pad` in the stylesheet.
+      data-plus={plusNode() ? '' : undefined}
       style={{
         '--composer-right-pad': `${layout.rightPad()}px`,
         // Omitted until measured, so the stylesheet's own fallback applies.
@@ -815,23 +893,27 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     >
       {props.banner}
       <div class={styles.editorRow} ref={editorRowEl}>
-        <div class={styles.plusSlot} data-testid="composer-plus-slot">{props.plus}</div>
+        <div class={styles.plusSlot} data-testid={`${markers().slotPrefix}-plus-slot`}>{plusNode()}</div>
         <div
           class={styles.editorWrapper}
           ref={editorRef}
-          data-testid="chat-editor"
-          data-chat-input
+          data-testid={markers().editorTestId}
+          // Only the message composer claims it. `useShortcuts` reads it for the
+          // `chatInputFocused` context, and `$mod+j` sends the chat message
+          // there -- so a goal editor carrying it would send a message from
+          // inside a dialog. See `MarkdownEditorSurface`.
+          data-chat-input={markers().chatInput ? '' : undefined}
           style={editorWrapperStyle()}
         />
         {/* Separator between text area and button row in expanded mode. Positioned
             at the top of the button reservation (the editor row's padding-bottom
             area) so it sits right between the text and the buttons. */}
-        <div class={styles.editorSeparator} data-testid="composer-separator" />
+        <div class={styles.editorSeparator} data-testid={`${markers().slotPrefix}-separator`} />
         {/* The action cluster: compact Interrupt/Send (actions) when composing,
             or the full-width control-request actions (footer) when a request is
             active. `data-full-width` distinguishes the two so the expanded
             layout can stretch the control-request footer across the box. */}
-        <div class={styles.footerSlot} ref={footerSlotEl} data-testid="composer-footer-slot" data-full-width={props.actions?.layout === 'fullWidth' ? '' : undefined}>{props.actions?.node()}</div>
+        <div class={styles.footerSlot} ref={footerSlotEl} data-testid={`${markers().slotPrefix}-footer-slot`} data-full-width={props.actions?.layout === 'fullWidth' ? '' : undefined}>{props.actions?.node()}</div>
       </div>
       <CodeLanguagePopover
         open={codeLangPopoverOpen}

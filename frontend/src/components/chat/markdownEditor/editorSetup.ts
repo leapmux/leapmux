@@ -1,7 +1,6 @@
 import type { Ctx } from '@milkdown/ctx'
 import type { Node, NodeType, Schema } from '@milkdown/prose/model'
 import type { EditorView } from '@milkdown/prose/view'
-import type { Setter } from 'solid-js'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
@@ -138,8 +137,8 @@ export interface EditorSetupOptions {
   codeLangHandlers: CodeLangHandlers
   /** Link-edit popover state setters + getters (getters enable toggle-on-reclick). */
   linkClickHandlers: LinkClickHandlers
-  /** Markdown signal setter (called on every document change). */
-  setMarkdown: Setter<string>
+  /** Reports the document's markdown (called on every document change). */
+  onMarkdown: (markdown: string) => void
   /** Optional callback when content changes (has content / empty). */
   onContentChange?: (hasContent: boolean) => void
   /**
@@ -259,7 +258,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
       ctx.get(listenerCtx).markdownUpdated((_ctx, md) => {
         if (typeof md !== 'string')
           return
-        opts.setMarkdown(md)
+        opts.onMarkdown(md)
         opts.onContentChange?.(md.trim().length > 0)
         const draftKey = opts.getDraftKey()
         if (draftKey) {

@@ -82,6 +82,40 @@ describe('agentWorkPanel', () => {
     expect(queryByTestId('bg-task-row')).toBeNull()
   })
 
+  /**
+   * The rule under the goal separates it from the rows, so it belongs to the
+   * one tab that has rows. On the Goal tab the card is the last thing in the
+   * box, and a rule there underlines nothing.
+   */
+  it('rules off the goal from the rows on the All tab, and nowhere else', () => {
+    const { container, getByTestId, queryByTestId } = renderPanel({
+      tasks: [row({ rowKey: 'a' })],
+      goal: goal(),
+    })
+    // Between the two, so the rule separates what it stands between.
+    const panel = getByTestId('goal-separator').parentElement!
+    const order = [...panel.children].map(el => el.getAttribute('data-testid'))
+    expect(order.indexOf('goal-card')).toBeLessThan(order.indexOf('goal-separator'))
+
+    fireEvent.click(tab(container, 'goal'))
+    expect(getByTestId('goal-card')).not.toBeNull()
+    expect(queryByTestId('goal-separator')).toBeNull()
+  })
+
+  // The EMPTY card is still a card, and rows still follow it.
+  it('rules off an empty goal card from the rows too', () => {
+    const { getByTestId } = renderPanel({ tasks: [row({ rowKey: 'a' })] })
+    expect(getByTestId('goal-card-empty')).not.toBeNull()
+    expect(getByTestId('goal-separator')).not.toBeNull()
+  })
+
+  // No card, no rule: the rows would otherwise open with a line above them.
+  it('draws no rule for an agent with no goal surface', () => {
+    const { queryByTestId } = renderPanel({ tasks: [row({ rowKey: 'a' })], goalActions: [] })
+    expect(queryByTestId('goal-card')).toBeNull()
+    expect(queryByTestId('goal-separator')).toBeNull()
+  })
+
   it('hides the goal card on the kind tabs', () => {
     const { container, queryByTestId } = renderPanel({
       tasks: [row({ rowKey: 'a' })],

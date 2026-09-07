@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import { createSignal, For, Show } from 'solid-js'
-import * as styles from '../ControlRequestBanner.css'
+import { collapsibleToggle } from '~/styles/shared.css'
 
 interface CollapsibleListProps<T> {
   items: T[]
@@ -29,7 +29,8 @@ export function CollapsibleList<T>(props: CollapsibleListProps<T>): JSX.Element 
       </For>
       <Show when={shouldCollapse()}>
         <button
-          class={styles.collapsibleToggle}
+          type="button"
+          class={collapsibleToggle}
           onClick={() => setExpanded(prev => !prev)}
         >
           {expanded()

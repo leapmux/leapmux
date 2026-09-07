@@ -214,20 +214,6 @@ export const controlRequestPill = style({
   flexShrink: 1,
 })
 
-export const collapsibleToggle = style({
-  'all': 'unset',
-  'display': 'inline',
-  'fontSize': 'var(--text-8)',
-  'color': 'var(--muted-foreground)',
-  'cursor': 'pointer',
-  'textDecoration': 'underline',
-  'textDecorationStyle': 'dotted',
-  'textUnderlineOffset': '2px',
-  ':hover': {
-    color: 'var(--foreground)',
-  },
-})
-
 export const bannerReason = style({
   fontSize: 'var(--text-7)',
   color: 'var(--foreground)',

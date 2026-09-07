@@ -50,9 +50,25 @@ export function workPanelTab(page: Page, key: string): Locator {
   return page.locator(`[data-testid="bg-task-filter-${key}"]:visible`)
 }
 
-/** A verb button on the goal card, by action (`set`, `clear`, `pause`, `resume`). */
+/**
+ * A verb on the goal card, by action (`set`, `clear`, `pause`, `resume`).
+ *
+ * Every verb but the empty state's own `set` lives inside the card's `...`
+ * menu, so a caller opens that menu first -- see `openGoalMenu`.
+ */
 export function goalAction(page: Page, action: string): Locator {
   return page.locator(`[data-testid="goal-action-${action}"]:visible`)
+}
+
+/**
+ * Open the goal card's `...` menu, which holds every verb for a goal that
+ * already exists.
+ *
+ * The empty state is the exception: `set` is the only verb that applies with no
+ * goal, and the card offers it there as its own button.
+ */
+export async function openGoalMenu(page: Page): Promise<void> {
+  await page.locator('[data-testid="goal-actions-trigger"]:visible').click()
 }
 
 /**
