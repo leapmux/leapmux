@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createControlAnswerState, createControlSwitch, toRpcId } from './types'
+import { createControlAnswerState, createControlChoice, createControlSwitch, toRpcId } from './types'
 
 describe('toRpcId', () => {
   it('converts numeric string to number', () => {
@@ -30,6 +30,7 @@ describe('createControlAnswerState', () => {
     expect(state.customTexts()).toEqual({})
     expect(state.currentPage()).toBe(0)
     expect(state.switches()).toEqual({})
+    expect(state.choices()).toEqual({})
   })
 
   // A partial seed is the shape that comes back from storage: an older record
@@ -40,6 +41,12 @@ describe('createControlAnswerState', () => {
     expect(state.customTexts()).toEqual({})
     expect(state.currentPage()).toBe(0)
     expect(state.switches()).toEqual({})
+    expect(state.choices()).toEqual({})
+  })
+
+  it('seeds the pill choices like every other field', () => {
+    const state = createControlAnswerState({ choices: { 'control-permissions-pill': 'bypass' } })
+    expect(state.choices()).toEqual({ 'control-permissions-pill': 'bypass' })
   })
 })
 
@@ -64,14 +71,14 @@ describe('createControlSwitch', () => {
   it('keeps two switches of one record apart by id', () => {
     const state = createControlAnswerState()
     const remember = createControlSwitch(() => state, 'control-remember-checkbox')
-    const bypass = createControlSwitch(() => state, 'control-bypass-permissions-checkbox')
+    const clear = createControlSwitch(() => state, 'plan-clear-context-checkbox')
 
     remember.set(true)
-    bypass.set(true)
+    clear.set(true)
     remember.set(false)
 
     expect(remember.checked()).toBe(false)
-    expect(bypass.checked()).toBe(true)
+    expect(clear.checked()).toBe(true)
   })
 
   // The record is captured ONCE, at creation. A caller that builds one inline in
@@ -80,12 +87,58 @@ describe('createControlSwitch', () => {
   it('binds the record it was created with, not the one a later read returns', () => {
     const bound = createControlAnswerState()
     let read = bound
-    const bypass = createControlSwitch(() => read, 'control-bypass-permissions-checkbox')
+    const clear = createControlSwitch(() => read, 'plan-clear-context-checkbox')
 
-    bypass.set(true)
+    clear.set(true)
     read = createControlAnswerState()
 
-    expect(bypass.checked()).toBe(true)
-    expect(bound.switches()).toEqual({ 'control-bypass-permissions-checkbox': true })
+    expect(clear.checked()).toBe(true)
+    expect(bound.switches()).toEqual({ 'plan-clear-context-checkbox': true })
+  })
+})
+
+describe('createControlChoice', () => {
+  it('reports an unset choice as the fallback', () => {
+    const state = createControlAnswerState()
+    expect(createControlChoice(() => state, 'control-permissions-pill', 'default').choice()).toBe('default')
+  })
+
+  it('writes the choice through to the shared record', () => {
+    const state = createControlAnswerState()
+    const pill = createControlChoice(() => state, 'control-permissions-pill', 'default')
+
+    pill.setChoice('bypass')
+
+    expect(pill.choice()).toBe('bypass')
+    expect(state.choices()).toEqual({ 'control-permissions-pill': 'bypass' })
+  })
+
+  // The permission pill's choice and a switch share one RECORD but not one map,
+  // so a choice write must leave the switches untouched and vice versa.
+  it('keeps the choices map apart from the switches map', () => {
+    const state = createControlAnswerState()
+    const pill = createControlChoice(() => state, 'control-permissions-pill', 'default')
+    const remember = createControlSwitch(() => state, 'control-remember-checkbox')
+
+    pill.setChoice('bypass')
+    remember.set(true)
+
+    expect(state.choices()).toEqual({ 'control-permissions-pill': 'bypass' })
+    expect(state.switches()).toEqual({ 'control-remember-checkbox': true })
+  })
+
+  // The record is captured ONCE, at creation, for the same reason as a switch:
+  // an inline `createControlAnswerState()` prop is a getter, and a per-access
+  // read would mint a fresh empty record and lose the user's selection.
+  it('binds the record it was created with, not the one a later read returns', () => {
+    const bound = createControlAnswerState()
+    let read = bound
+    const pill = createControlChoice(() => read, 'control-permissions-pill', 'default')
+
+    pill.setChoice('smart')
+    read = createControlAnswerState()
+
+    expect(pill.choice()).toBe('smart')
+    expect(bound.choices()).toEqual({ 'control-permissions-pill': 'smart' })
   })
 })

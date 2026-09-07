@@ -15,8 +15,8 @@ export type ProviderSettingChangeHandler = (change: ProviderSettingChange) => vo
  * one permission mode, Codex switches network, sandbox and approval together, and
  * Copilot switches an axis that is not the permission mode at all. So no key is
  * guaranteed, and a consumer that needs a specific one must check for it (see
- * `./controls/planApproval`, which draws its switch only for a preset that carries a
- * permission mode).
+ * `./controls/permissionPresets`, which reads a preset's permission mode only when
+ * it carries one).
  */
 export type ProviderPermissionPreset = ProviderSettingChange
 
@@ -26,9 +26,15 @@ export interface ProviderPermissionPresets {
   bypass?: ProviderPermissionPreset
 }
 
-/** A usable bypass action. The UI receives it only when both parts exist. */
-export interface BypassController {
-  settings: ProviderPermissionPreset
+/**
+ * The usable permission presets a control request can apply: every preset the live
+ * catalog offers, plus the ONE handler that applies a settings change — the composer's
+ * `onSettingChange`, the same call the `[+]` menu's permission items make. A preset
+ * the catalog does not currently offer is `undefined`, so the pill for it is not drawn.
+ */
+export interface PermissionPresetController {
+  smart?: ProviderPermissionPreset
+  bypass?: ProviderPermissionPreset
   apply: ProviderSettingChangeHandler
 }
 

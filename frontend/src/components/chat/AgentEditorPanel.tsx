@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { FileAttachment, PendingAttachmentFile } from './attachments'
 import type { EditorContentRef } from './controls/types'
-import type { BypassController, ProviderSettingChangeHandler } from './providerSettings'
+import type { PermissionPresetController, ProviderSettingChangeHandler } from './providerSettings'
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
@@ -353,12 +353,21 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Every axis's confirmed value as one generic map keyed by group id, derived from
   // the catalog (the proto AgentInfo carries no scalar model/effort/permission fields).
   const currentOptionValues = () => optionValuesFromGroups(props.agent?.optionGroups)
-  const bypass = createMemo<BypassController | undefined>(() => {
-    const settings = props.agent?.agentProvider
-      ? providerFor(props.agent.agentProvider)?.permissionPresets?.bypass
+  // The permission presets a control request's pill group may apply, gated the
+  // same way the composer `[+]` menu gates its permission items: a preset is
+  // offered only when the live catalog carries every axis it sets. The one
+  // `apply` handler is the shared `onSettingChange`, so a pill selection and the
+  // menu item cannot diverge in what they switch.
+  const permissionPresets = createMemo<PermissionPresetController | undefined>(() => {
+    const presets = props.agent?.agentProvider
+      ? providerFor(props.agent.agentProvider)?.permissionPresets
       : undefined
-    return permissionPresetAvailable(settings, props.agent?.optionGroups) && props.onSettingChange
-      ? { settings, apply: props.onSettingChange }
+    const smartPreset = presets?.smart
+    const bypassPreset = presets?.bypass
+    const smart = permissionPresetAvailable(smartPreset, props.agent?.optionGroups) ? smartPreset : undefined
+    const bypass = permissionPresetAvailable(bypassPreset, props.agent?.optionGroups) ? bypassPreset : undefined
+    return (smart || bypass) && props.onSettingChange
+      ? { smart, bypass, apply: props.onSettingChange }
       : undefined
   })
 
@@ -754,7 +763,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         hasEditorContent={hasContent()}
                         onTriggerSend={() => { void triggerSend?.() }}
                         editorContentRef={() => editorContentRef}
-                        bypass={bypass()}
+                        presets={permissionPresets()}
                         contextUsage={props.agentSessionInfo?.contextUsage}
                         modelContextWindow={modelContextWindow()}
                       />

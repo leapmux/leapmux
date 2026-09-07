@@ -39,7 +39,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(page.getByTestId('control-deny-btn')).toHaveText('Reject')
     await expect(page.getByTestId('control-allow-btn')).toHaveText('Approve')
     await expect(page.getByTestId('plan-clear-context-checkbox')).toBeVisible()
-    await expect(page.getByTestId('plan-bypass-permissions-checkbox')).toBeVisible()
+    await expect(page.getByTestId('control-permissions-pill-group')).toBeVisible()
 
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
@@ -48,7 +48,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(page.locator('[data-testid="control-deny-btn"]')).toHaveText('Send feedback')
     await expect(page.locator('[data-testid="control-allow-btn"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="plan-clear-context-checkbox"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="plan-bypass-permissions-checkbox"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="control-permissions-pill-group"]')).not.toBeVisible()
     await page.locator('[data-testid="control-deny-btn"]').click()
 
     await waitForAgentIdle(page)

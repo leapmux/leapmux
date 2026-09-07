@@ -1,18 +1,23 @@
 import type { Component } from 'solid-js'
+import type { WirePermissionOption } from '../../controls/permissionOptions'
 import type { ActionsProps, ContentProps } from '../../controls/types'
 
-import { For, Show } from 'solid-js'
+import { createMemo, For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
-import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from '../../ControlRequestBanner.css'
 import { ControlActionRow } from '../../controls/ControlActionRow'
-import { sendResponse, toRpcId } from '../../controls/types'
-
-interface ACPPermissionOption {
-  optionId: string
-  kind: string
-  name: string
-}
+import { ControlAllowScopePillGroup, ControlPermissionPillGroup } from '../../controls/ControlDecisionFooter'
+import {
+  ALLOW_SCOPE_CHOICE_ID,
+  allowScopePillOptions,
+  isRejectPermissionKind,
+  layoutPermissionOptions,
+  permissionOptionLabel,
+  resolvePermissionOption,
+  scopeRemembers,
+} from '../../controls/permissionOptions'
+import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from '../../controls/permissionPresets'
+import { createControlChoice, sendResponse, toRpcId } from '../../controls/types'
 
 function getACPParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   return payload.params as Record<string, unknown> | undefined
@@ -22,14 +27,8 @@ function getToolCall(payload: Record<string, unknown>): Record<string, unknown> 
   return getACPParams(payload)?.toolCall as Record<string, unknown> | undefined
 }
 
-function getOptions(payload: Record<string, unknown>): ACPPermissionOption[] {
-  return (getACPParams(payload)?.options as ACPPermissionOption[] | undefined) ?? []
-}
-
-function defaultAllowOptionId(payload: Record<string, unknown>): string | undefined {
-  const options = getOptions(payload)
-  return options.find(option => option.kind === 'allow_once')?.optionId
-    ?? options.find(option => option.kind !== 'reject_once')?.optionId
+function getOptions(payload: Record<string, unknown>): WirePermissionOption[] {
+  return (getACPParams(payload)?.options as WirePermissionOption[] | undefined) ?? []
 }
 
 export function sendACPPermissionResponse(
@@ -60,51 +59,94 @@ export const ACPControlContent: Component<ContentProps> = (props) => {
 }
 
 export const ACPControlActions: Component<ActionsProps> = (props) => {
-  const options = () => getOptions(props.request.payload)
+  const layout = createMemo(() => layoutPermissionOptions(getOptions(props.request.payload)))
+  const permissionChoice = createPermissionPresetChoice(props)
+  const scopeChoice = createControlChoice(() => props.answerState, ALLOW_SCOPE_CHOICE_ID, '')
 
-  const handleOption = (optionId: string) => {
-    sendACPPermissionResponse(props.onRespond, props.request.requestId, optionId)
+  // The scope pills a payload with always options draws (Once / Always, or
+  // Once / Session / Project). The stored selection is clamped to the offered
+  // options: a payload swap must not leave the group reporting an option the
+  // agent no longer offers.
+  const scopeOptions = createMemo(() => {
+    const scope = layout().allowScope
+    return scope ? allowScopePillOptions(scope) : undefined
+  })
+  const selectedScope = () => {
+    const scope = layout().allowScope
+    if (!scope)
+      return undefined
+    return scope.some(option => option.optionId === scopeChoice.choice())
+      ? scopeChoice.choice()
+      : scope[0].optionId
   }
 
-  // Await the allow BEFORE switching the mode: the worker dispatches the two
-  // concurrently, and a mode change the provider cannot take live relaunches the
-  // agent, which kills the session before an un-awaited allow reaches it.
-  const handleBypassPermissions = async () => {
-    const allowOptionId = defaultAllowOptionId(props.request.payload)
-    if (!allowOptionId)
+  // The option's response is AWAITED before a permission preset is applied: the
+  // worker dispatches the two concurrently, and a mode change the provider cannot
+  // take live relaunches the agent, which kills the session before an un-awaited
+  // answer reaches it. A reject-kind option decides nothing about future
+  // permissions, so it applies no preset.
+  const handleOption = async (option: WirePermissionOption | undefined) => {
+    if (!option)
       return
-    await sendACPPermissionResponse(props.onRespond, props.request.requestId, allowOptionId)
-    if (props.bypass)
-      await props.bypass.apply(props.bypass.settings)
+    await sendACPPermissionResponse(props.onRespond, props.request.requestId, option.optionId)
+    if (!isRejectPermissionKind(option.kind))
+      await applyPermissionPreset(props.presets, permissionChoice.choice())
   }
+
+  const handleDecision = (polarity: 'allow' | 'reject') =>
+    handleOption(resolvePermissionOption(layout(), polarity, scopeRemembers(layout(), selectedScope()), selectedScope()))
 
   return (
     <ControlActionRow
       primary={(
-        <ButtonGroup>
-          <For each={options()}>
-            {option => (
-              <button
-                class={option.kind === 'reject_once' ? 'outline' : undefined}
-                onClick={() => handleOption(option.optionId)}
-                data-testid={`control-decision-${option.optionId}`}
-              >
-                {option.name}
-              </button>
-            )}
-          </For>
-          <Show when={props.bypass && defaultAllowOptionId(props.request.payload)}>
-            <Tooltip text="Allow this request and stop asking for permissions">
-              <button
-                data-variant="secondary"
-                onClick={handleBypassPermissions}
-                data-testid="control-bypass-btn"
-              >
-                & Bypass Permissions
-              </button>
-            </Tooltip>
+        <>
+          <Show when={scopeOptions() || buildPermissionPill(props.presets, permissionChoice)}>
+            <div class={styles.controlRequestSwitches}>
+              <Show when={scopeOptions()}>
+                {options => (
+                  <ControlAllowScopePillGroup
+                    options={options()}
+                    selected={selectedScope()!}
+                    onSelect={scopeChoice.setChoice}
+                  />
+                )}
+              </Show>
+              <Show when={buildPermissionPill(props.presets, permissionChoice)}>
+                {pill => <ControlPermissionPillGroup pill={pill()} />}
+              </Show>
+            </div>
           </Show>
-        </ButtonGroup>
+          <ButtonGroup>
+            <Show when={layout().negative}>
+              <button
+                class="outline"
+                onClick={() => handleDecision('reject')}
+                data-testid="control-deny-btn"
+              >
+                Deny
+              </button>
+            </Show>
+            <Show when={layout().positive || scopeOptions()}>
+              <button
+                onClick={() => handleDecision('allow')}
+                data-testid="control-allow-btn"
+              >
+                Allow
+              </button>
+            </Show>
+            <For each={layout().additional}>
+              {option => (
+                <button
+                  class={isRejectPermissionKind(option.kind) ? 'outline' : undefined}
+                  onClick={() => handleOption(option)}
+                  data-testid={`control-decision-${option.optionId}`}
+                >
+                  {permissionOptionLabel(option)}
+                </button>
+              )}
+            </For>
+          </ButtonGroup>
+        </>
       )}
     />
   )

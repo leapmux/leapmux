@@ -1,5 +1,5 @@
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -203,8 +203,8 @@ describe('zcode permission control', () => {
     })
   })
 
-  // ZCode declares `yolo` as its bypass mode, so the banner offers a bypass switch.
-  // It must allow FIRST and switch the mode after: applying a mode the
+  // ZCode declares `yolo` as its bypass mode, so the banner offers the permission
+  // pill group. It must allow FIRST and switch the mode after: applying a mode the
   // provider cannot take live relaunches the agent, and a relaunch that won the race
   // would kill the session before the allow arrived.
   it('allows and then switches to the bypass mode', async () => {
@@ -220,15 +220,15 @@ describe('zcode permission control', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
-        bypass={{
-          settings: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+        presets={{
+          bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } },
           apply: (change) => {
             order.push(`mode:${change.sets.permissionMode}`)
           },
         }}
       />
     ))
-    fireEvent.click(getByTestId('control-bypass-permissions-checkbox').querySelector('input')!)
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass permissions' }))
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(order).toEqual(['allow', `mode:${ZCODE_MODE.Yolo}`]))
   })

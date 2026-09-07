@@ -191,10 +191,27 @@ export const controlFooterRight = style({
   gridColumn: 3,
 })
 
+// The leading options cluster of a decision row: the request's switches, then
+// the permission pill group, on ONE line ahead of the decision buttons. The pill
+// group is button-high, so nothing here needs the second line the switch COLUMN
+// used to occupy; the cluster keeps `minWidth: 0` so a narrow composer can
+// compress the pills (they clip inside their own box) before the buttons move.
 export const controlRequestSwitches = style({
   display: 'flex',
-  flexDirection: 'column',
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
   marginRight: 'var(--space-1)',
+  minWidth: 0,
+})
+
+// The pill group yields width before the decision buttons do: `flexShrink` lets
+// the row compress it, and PillGroup's own `max-width: 100%` + `overflow: hidden`
+// decide what a compressed group shows.
+export const controlRequestPill = style({
+  display: 'flex',
+  minWidth: 0,
+  flexShrink: 1,
 })
 
 export const collapsibleToggle = style({
