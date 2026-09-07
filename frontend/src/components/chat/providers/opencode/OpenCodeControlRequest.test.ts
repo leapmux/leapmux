@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { allowScopePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from '../../controls/types'
 import { OpenCodeControlActions } from './OpenCodeControlRequest'
 
@@ -44,7 +45,7 @@ describe('openCodeControlActions', () => {
     expect(allow.textContent).toBe('Allow')
     expect(deny.compareDocumentPosition(allow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    const scope = within(screen.getByRole('radiogroup', { name: 'Allow scope' }))
+    const scope = allowScopePillGroup()
     expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(scope.getByRole('radio', { name: 'Always' })).toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-always')).not.toBeInTheDocument()
@@ -58,9 +59,9 @@ describe('openCodeControlActions', () => {
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('once')
     expect(apply).not.toHaveBeenCalled()
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Allow scope' })).getByRole('radio', { name: 'Always' }))
+    fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(decodeOptionId(onRespond.mock.calls[1][0])).toBe('always')
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'yolo' } })

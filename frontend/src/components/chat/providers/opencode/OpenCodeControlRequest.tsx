@@ -2,22 +2,10 @@ import type { Component } from 'solid-js'
 import type { WirePermissionOption } from '../../controls/permissionOptions'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
 
-import { createMemo, For, Show } from 'solid-js'
-import { ButtonGroup } from '~/components/common/ButtonGroup'
+import { Show } from 'solid-js'
 import * as styles from '../../ControlRequestBanner.css'
-import { ControlActionRow } from '../../controls/ControlActionRow'
-import { ControlAllowScopePillGroup, ControlPermissionPillGroup } from '../../controls/ControlDecisionFooter'
-import {
-  ALLOW_SCOPE_CHOICE_ID,
-  allowScopePillOptions,
-  isRejectPermissionKind,
-  layoutPermissionOptions,
-  permissionOptionLabel,
-  resolvePermissionOption,
-  scopeRemembers,
-} from '../../controls/permissionOptions'
-import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from '../../controls/permissionPresets'
-import { createControlChoice, sendResponse, toRpcId } from '../../controls/types'
+import { PermissionDecisionActions } from '../../controls/PermissionDecisionActions'
+import { sendResponse, sendSelectedOptionResponse, toRpcId } from '../../controls/types'
 
 /** Extract OpenCode requestPermission params from the control request payload. */
 function getOpenCodeParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -30,10 +18,21 @@ function getToolCall(payload: Record<string, unknown>): Record<string, unknown> 
   return params?.toolCall as Record<string, unknown> | undefined
 }
 
+/**
+ * The pair OpenCode itself answers with, for a payload that carries no options.
+ * These are the daemon's real option ids — it maps an unknown id to reject, so a
+ * synthesized pair with invented ids would turn every Allow into a reject.
+ */
+const DEFAULT_OPTIONS: readonly WirePermissionOption[] = [
+  { optionId: 'once', kind: 'allow_once', name: 'Allow' },
+  { optionId: 'reject', kind: 'reject_once', name: 'Deny' },
+]
+
 /** Extract permission options from a requestPermission payload. */
 function getOptions(payload: Record<string, unknown>): WirePermissionOption[] {
   const params = getOpenCodeParams(payload)
-  return (params?.options as WirePermissionOption[] | undefined) ?? []
+  const options = params?.options as WirePermissionOption[] | undefined
+  return options && options.length > 0 ? options : [...DEFAULT_OPTIONS]
 }
 
 function getQuestionProperties(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -67,11 +66,7 @@ export function sendOpenCodePermissionResponse(
   requestId: string,
   optionId: string,
 ): Promise<void> {
-  return sendResponse(onRespond, {
-    jsonrpc: '2.0',
-    id: toRpcId(requestId),
-    result: { outcome: { outcome: 'selected', optionId } },
-  })
+  return sendSelectedOptionResponse(onRespond, requestId, optionId)
 }
 
 export function sendOpenCodeQuestionResponse(
@@ -124,106 +119,6 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
 }
 
 /** OpenCode-specific control request action buttons. */
-export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
-  const layout = createMemo(() => layoutPermissionOptions(getOptions(props.request.payload)))
-  const permissionChoice = createPermissionPresetChoice(props)
-  const scopeChoice = createControlChoice(() => props.answerState, ALLOW_SCOPE_CHOICE_ID, '')
-
-  // The scope pills a payload with always options draws (Once / Always, or
-  // Once / Session / Project). The stored selection is clamped to the offered
-  // options: a payload swap must not leave the group reporting an option the
-  // agent no longer offers.
-  const scopeOptions = createMemo(() => {
-    const scope = layout().allowScope
-    return scope ? allowScopePillOptions(scope) : undefined
-  })
-  const selectedScope = () => {
-    const scope = layout().allowScope
-    if (!scope)
-      return undefined
-    return scope.some(option => option.optionId === scopeChoice.choice())
-      ? scopeChoice.choice()
-      : scope[0].optionId
-  }
-
-  // The option's response is AWAITED before a permission preset is applied: the
-  // worker dispatches the two concurrently, and a mode change the provider cannot
-  // take live relaunches the agent, killing the session before an un-awaited
-  // answer reaches it. A reject-kind option decides nothing about future
-  // permissions, so it applies no preset.
-  const handleOption = async (option: WirePermissionOption | undefined) => {
-    if (!option)
-      return
-    await sendOpenCodePermissionResponse(props.onRespond, props.request.requestId, option.optionId)
-    if (!isRejectPermissionKind(option.kind))
-      await applyPermissionPreset(props.presets, permissionChoice.choice())
-  }
-
-  const handleDecision = (polarity: 'allow' | 'reject') =>
-    handleOption(resolvePermissionOption(layout(), polarity, scopeRemembers(layout(), selectedScope()), selectedScope()))
-
-  return (
-    <ControlActionRow
-      primary={(
-        <>
-          <Show when={scopeOptions() || buildPermissionPill(props.presets, permissionChoice)}>
-            <div class={styles.controlRequestSwitches}>
-              <Show when={scopeOptions()}>
-                {options => (
-                  <ControlAllowScopePillGroup
-                    options={options()}
-                    selected={selectedScope()!}
-                    onSelect={scopeChoice.setChoice}
-                  />
-                )}
-              </Show>
-              <Show when={buildPermissionPill(props.presets, permissionChoice)}>
-                {pill => <ControlPermissionPillGroup pill={pill()} />}
-              </Show>
-            </div>
-          </Show>
-          <Show
-            when={layout().positive || layout().negative}
-            fallback={(
-              <ButtonGroup>
-                <button class="outline" onClick={() => handleOption({ optionId: 'reject', kind: 'reject_once', name: 'Deny' })} data-testid="control-deny-btn">Deny</button>
-                <button onClick={() => handleOption({ optionId: 'once', kind: 'allow_once', name: 'Allow' })} data-testid="control-allow-btn">Allow</button>
-              </ButtonGroup>
-            )}
-          >
-            <ButtonGroup>
-              <Show when={layout().negative}>
-                <button
-                  class="outline"
-                  onClick={() => handleDecision('reject')}
-                  data-testid="control-deny-btn"
-                >
-                  Deny
-                </button>
-              </Show>
-              <Show when={layout().positive || scopeOptions()}>
-                <button
-                  onClick={() => handleDecision('allow')}
-                  data-testid="control-allow-btn"
-                >
-                  Allow
-                </button>
-              </Show>
-              <For each={layout().additional}>
-                {option => (
-                  <button
-                    class={isRejectPermissionKind(option.kind) ? 'outline' : undefined}
-                    onClick={() => handleOption(option)}
-                    data-testid={`control-decision-${option.optionId}`}
-                  >
-                    {permissionOptionLabel(option)}
-                  </button>
-                )}
-              </For>
-            </ButtonGroup>
-          </Show>
-        </>
-      )}
-    />
-  )
-}
+export const OpenCodeControlActions: Component<ActionsProps> = props => (
+  <PermissionDecisionActions {...props} options={getOptions} send={sendOpenCodePermissionResponse} />
+)

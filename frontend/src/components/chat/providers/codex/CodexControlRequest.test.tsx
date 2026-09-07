@@ -1,7 +1,8 @@
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
+import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from '../../controls/types'
 import { CodexControlActions } from './CodexControlRequest'
 
@@ -37,10 +38,6 @@ function renderActions(request: ControlRequest, hasEditorContent = false) {
   return { onRespond, onSettingChange }
 }
 
-function permissionPill() {
-  return within(screen.getByRole('radiogroup', { name: 'Permissions' }))
-}
-
 describe('codex control request actions', () => {
   it('renders Deny and Allow with the Remember switch and the permission pills', () => {
     renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
@@ -48,8 +45,8 @@ describe('codex control request actions', () => {
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Reject')
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
     expect(screen.getByTestId('control-remember-checkbox')).toHaveTextContent('Remember')
-    expect(permissionPill().getByRole('radio', { name: 'Default' })).toBeChecked()
-    expect(permissionPill().getByRole('radio', { name: 'Bypass permissions' })).toBeInTheDocument()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Default' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' })).toBeInTheDocument()
   })
 
   it('uses the remembered Codex decision only when Remember is checked', async () => {
@@ -165,7 +162,7 @@ describe('codex control request actions', () => {
       finishResponse = resolve
     }))
 
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
@@ -204,9 +201,9 @@ describe('codex control request actions', () => {
   })
 
   it('embeds the bypass mode in a plan approval when Bypass permissions is selected', async () => {
-    const { onRespond } = renderActions(makePlanRequest())
+    const { onRespond, onSettingChange } = renderActions(makePlanRequest())
 
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
@@ -215,5 +212,8 @@ describe('codex control request actions', () => {
       permissionMode: 'never',
       response: { request_id: 'plan-1', response: { behavior: 'allow' } },
     })
+    // The mode travels INSIDE the response; a second settings change would race
+    // the restart a context-clearing approval triggers, so the handler never fires.
+    expect(onSettingChange).not.toHaveBeenCalled()
   })
 })

@@ -60,6 +60,19 @@ describe('buildPermissionPill', () => {
     const choice = createPermissionPresetChoice({ answerState: createControlAnswerState() })
     expect(buildPermissionPill(undefined, choice)).toBeUndefined()
   })
+
+  it('clamps a stored choice the catalog no longer offers back to Default', () => {
+    // The catalog withdrew smart while the stored choice still says it: the
+    // group must report Default, not a selection with no radio to check it.
+    const choice = createPermissionPresetChoice({
+      answerState: createControlAnswerState({ choices: { 'control-permissions-pill': 'smart' } }),
+    })
+
+    const pill = buildPermissionPill(controller({ smart: undefined }), choice)!
+
+    expect(pill.options.map(o => o.key)).toEqual(['default', 'bypass'])
+    expect(pill.selected).toBe('default')
+  })
 })
 
 describe('applyPermissionPreset', () => {
@@ -100,6 +113,9 @@ describe('planApprovalPresets', () => {
     const filtered = planApprovalPresets(controller())!
     expect(filtered.smart).toBe(SMART)
     expect(filtered.bypass).toBe(BYPASS)
+    // No `apply` travels with the plan view: the mode rides inside the
+    // response, and the narrower type keeps a settings change out of it.
+    expect('apply' in filtered).toBe(false)
   })
 
   it('drops a preset with no permission mode, keeping the other', () => {

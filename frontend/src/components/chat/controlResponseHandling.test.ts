@@ -248,6 +248,28 @@ describe('restoring saved answers', () => {
     dispose()
   })
 
+  it('restores a pill group choice, and a choices-only record still lands', async () => {
+    // A record carrying nothing but a pill selection is not blank: the restore
+    // must land it, or a reload would silently reset the user's preset pick.
+    const request = askRequest('ask-3', 'tok-3')
+    localStorageStore(answerKey(request), { choices: { 'control-permissions-pill': 'bypass' } })
+    await flushStorageWrites()
+
+    const answerState = createControlAnswerState()
+    const dispose = createRoot((disposeRoot) => {
+      useControlResponseHandling(
+        { agentId: 'test-agent', controlRequests: [request], onSendMessage: vi.fn() },
+        answerState,
+        () => undefined,
+        vi.fn(),
+      )
+      return disposeRoot
+    })
+
+    await vi.waitFor(() => expect(answerState.choices()).toEqual({ 'control-permissions-pill': 'bypass' }))
+    dispose()
+  })
+
   // THE RESTORE GUARD. A user clicking between two prompts swaps the active
   // request while the first one's answers are still being read. Whichever read
   // the database answers last must not decide what is on screen: landing the

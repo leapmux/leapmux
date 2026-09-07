@@ -1,8 +1,9 @@
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { permissionPillGroup } from '~/test-support/controlRequests'
 import { ControlRequestActions, ControlRequestContent } from '../../ControlRequestBanner'
 import { createControlAnswerState } from '../../controls/types'
 import { ZCodeControlActions, ZCodeControlContent } from './controls'
@@ -228,7 +229,7 @@ describe('zcode permission control', () => {
         }}
       />
     ))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     fireEvent.click(getByTestId('control-allow-btn'))
     await vi.waitFor(() => expect(order).toEqual(['allow', `mode:${ZCODE_MODE.Yolo}`]))
   })

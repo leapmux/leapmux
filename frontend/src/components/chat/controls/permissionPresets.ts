@@ -1,11 +1,12 @@
 import type { Accessor } from 'solid-js'
-import type { PermissionPresetController } from '../providerSettings'
+import type { PermissionPresetController, ProviderPermissionPresets } from '../providerSettings'
 import type { ActionsProps } from './types'
 import type { PillOptions, PillOptionSpec } from '~/components/common/PillGroup'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 import { OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
-import { PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
+import { isPillOptions } from '~/components/common/PillGroup'
+import { PERMISSION_PRESET_LABELS } from '../providerSettings'
 import { createControlChoice } from './types'
 
 /** What the permission pill group does when the request's positive action is taken. */
@@ -15,13 +16,7 @@ export type PermissionPresetChoice
     | 'bypass'
 
 /** The answer-state key the permission pill group's choice is stored under. */
-export const CONTROL_PERMISSION_CHOICE_ID = 'control-permissions-pill'
-
-/** The choice labels, shared with the composer `[+]` menu's permission items. */
-const PILL_LABELS: Record<Exclude<PermissionPresetChoice, 'default'>, string> = {
-  smart: 'Smart permissions',
-  bypass: 'Bypass permissions',
-}
+const CONTROL_PERMISSION_CHOICE_ID = 'control-permissions-pill'
 
 export interface PermissionPresetChoiceState {
   choice: Accessor<PermissionPresetChoice>
@@ -44,10 +39,6 @@ export function createPermissionPresetChoice(props: Pick<ActionsProps, 'answerSt
   }
 }
 
-function isPillOptions(options: readonly PillOptionSpec<PermissionPresetChoice>[]): options is PillOptions<PermissionPresetChoice> {
-  return options.length > 0 && options.length <= PILL_OPTION_LIMIT
-}
-
 /**
  * The pill group's options: `Default` first (the do-nothing state the group opens
  * on), then each preset the live catalog offers. A preset the catalog does not
@@ -55,16 +46,16 @@ function isPillOptions(options: readonly PillOptionSpec<PermissionPresetChoice>[
  * NEITHER is offered there is no group at all, so a provider without presets (Pi,
  * OpenCode, Cursor, ...) draws the row it drew before the group existed.
  */
-export function permissionPillOptions(presets: PermissionPresetController | undefined): PillOptions<PermissionPresetChoice> | undefined {
+export function permissionPillOptions(presets: ProviderPermissionPresets | undefined): PillOptions<PermissionPresetChoice> | undefined {
   if (!presets)
     return undefined
   const options: PillOptionSpec<PermissionPresetChoice>[] = [{ key: 'default', label: 'Default' }]
   for (const kind of ['smart', 'bypass'] as const) {
     if (presets[kind])
-      options.push({ key: kind, label: PILL_LABELS[kind] })
+      options.push({ key: kind, label: PERMISSION_PRESET_LABELS[kind] })
   }
-  // A lone Default pill is no choice at all: a controller whose presets the
-  // catalog stopped offering draws no group, same as no controller.
+  // A lone Default pill is no choice at all: presets the catalog stopped
+  // offering draw no group, same as no presets at all.
   return options.length > 1 && isPillOptions(options) ? options : undefined
 }
 
@@ -76,13 +67,18 @@ export interface ControlPermissionPill {
 }
 
 export function buildPermissionPill(
-  presets: PermissionPresetController | undefined,
+  presets: ProviderPermissionPresets | undefined,
   choiceState: PermissionPresetChoiceState,
 ): ControlPermissionPill | undefined {
   const options = permissionPillOptions(presets)
-  return options
-    ? { options, selected: choiceState.choice(), onSelect: choiceState.setChoice }
-    : undefined
+  if (!options)
+    return undefined
+  // The stored choice is clamped to the offered pills: a preset the catalog
+  // stopped offering while its choice was stored must not leave a group with no
+  // radio checked and an Allow that silently applies nothing.
+  const stored = choiceState.choice()
+  const selected = options.some(option => option.key === stored) ? stored : 'default'
+  return { options, selected, onSelect: choiceState.setChoice }
 }
 
 /**
@@ -118,7 +114,7 @@ export function applyPermissionPreset(
  * that offers a plan-approval banner has such a preset today.
  */
 export function presetPermissionMode(
-  presets: PermissionPresetController | undefined,
+  presets: ProviderPermissionPresets | undefined,
   choice: PermissionPresetChoice,
 ): PermissionMode | undefined {
   return choice === 'default' ? undefined : presets?.[choice]?.sets[OPTION_ID_PERMISSION_MODE]
@@ -126,18 +122,19 @@ export function presetPermissionMode(
 
 /**
  * The presets a PLAN APPROVAL banner may offer: only those that switch the
- * permission mode, the one axis its single response can carry. A preset naming
- * some other axis (Copilot's `allow_all`) cannot act there at all, so its pill is
- * not drawn -- drawn and silently doing nothing is the trap the plan banner's old
- * bypass switch was narrowed to avoid. No provider with a plan-approval banner
- * ships such a preset today; this keeps the rule true if one ever does.
+ * permission mode, the one axis its single response can carry. The result carries
+ * no `apply` handler — a plan approval switches the mode inside its response and
+ * never fires a settings change, and the narrower type keeps that true at compile
+ * time. A preset that switches some other axis (Copilot's `allow_all`) cannot act
+ * there at all, so its pill is not drawn -- drawn and silently doing nothing is the
+ * trap the plan banner's old bypass switch was narrowed to avoid. No provider with
+ * a plan-approval banner ships such a preset today; this keeps the rule true if one
+ * ever does.
  */
-export function planApprovalPresets(presets: PermissionPresetController | undefined): PermissionPresetController | undefined {
+export function planApprovalPresets(presets: PermissionPresetController | undefined): ProviderPermissionPresets | undefined {
   if (!presets)
     return undefined
   const smart = presets.smart?.sets[OPTION_ID_PERMISSION_MODE] !== undefined ? presets.smart : undefined
   const bypass = presets.bypass?.sets[OPTION_ID_PERMISSION_MODE] !== undefined ? presets.bypass : undefined
-  return smart || bypass
-    ? { smart, bypass, apply: presets.apply }
-    : undefined
+  return smart || bypass ? { smart, bypass } : undefined
 }

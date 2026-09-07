@@ -2,10 +2,11 @@ import type { AgentEditorPanelProps } from './AgentEditorPanel'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
 import { AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
@@ -76,6 +77,8 @@ interface RenderPanelOptions {
   agentProvider?: AgentProvider
   controlStore?: ReturnType<typeof createControlStore>
   onControlResponse?: AgentEditorPanelProps['onControlResponse']
+  onSettingChange?: AgentEditorPanelProps['onSettingChange']
+  optionGroups?: AgentInfo['optionGroups']
 }
 
 function renderPanel(options: RenderPanelOptions = {}) {
@@ -92,12 +95,17 @@ function renderPanel(options: RenderPanelOptions = {}) {
     <PreferencesProvider>
       <AgentEditorPanel
         agentId="a1"
-        agent={agent({ workerId, agentProvider: options.agentProvider ?? AgentProvider.CLAUDE_CODE })}
+        agent={agent({
+          workerId,
+          agentProvider: options.agentProvider ?? AgentProvider.CLAUDE_CODE,
+          optionGroups: options.optionGroups,
+        })}
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={() => {}}
         controlRequests={options.controlStore?.getRequests('a1')}
         onControlResponse={options.onControlResponse}
+        onSettingChange={options.onSettingChange}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -351,6 +359,60 @@ describe('agentEditorPanel control request lifecycle', () => {
   // The switch belongs to the request INSTANCE, not to the component that drew
   // it, so it must come back checked -- otherwise Approve silently omits the
   // choice the user made.
+  // The panel's preset memo follows the composer menu's rule: a preset is
+  // offered only when the live catalog carries every axis it sets. Claude's
+  // presets both switch permissionMode, so the pill group appears exactly when
+  // the catalog carries that group.
+  it('draws the permission pills only while the catalog carries the preset axes', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    const modeGroup = {
+      id: 'permissionMode',
+      label: 'Approval',
+      order: 30,
+      mutable: true,
+      defaultValue: CLAUDE_MODE.Default,
+      currentValue: CLAUDE_MODE.Default,
+      options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
+    } as unknown as AgentInfo['optionGroups'][number]
+    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Permissions' })).toBeInTheDocument())
+
+    // The catalog drops the permissionMode group: no preset the banner could
+    // offer is applicable, so the group must disappear rather than draw pills
+    // that would silently do nothing.
+    cleanup()
+    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [] })
+    await waitFor(() => expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument())
+  })
+
+  // The pill choice belongs to the request INSTANCE like a switch: a rebuild of
+  // the control component must not reset it to Default.
+  it('restores the permission pill choice of the rendered request instance after a remount', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })
+    const modeGroup = {
+      id: 'permissionMode',
+      label: 'Approval',
+      order: 30,
+      mutable: true,
+      defaultValue: CLAUDE_MODE.Default,
+      currentValue: CLAUDE_MODE.Default,
+      options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
+    } as unknown as AgentInfo['optionGroups'][number]
+    const bypassRadio = () => within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass permissions' })
+    const first = renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
+
+    fireEvent.click(bypassRadio())
+    expect(bypassRadio()).toBeChecked()
+
+    first.unmount()
+    renderPanel({ controlStore, onSettingChange: vi.fn(), optionGroups: [modeGroup] })
+
+    // Polled: the saved record is read after the remount, not during it.
+    await waitFor(() => expect(bypassRadio()).toBeChecked())
+  })
+
   it('restores the plan switches of the rendered request instance after a remount', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'plan-1', payload: toolRequestPayload('ExitPlanMode'), claimToken: 'claim-1' })

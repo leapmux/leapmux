@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
-import type { PillOptions, PillOptionSpec } from '~/components/common/PillGroup'
+import type { PillOptions } from '~/components/common/PillGroup'
 import { Show } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
-import { PILL_OPTION_LIMIT, PillGroup } from '~/components/common/PillGroup'
+import { isPillOptions, PillGroup } from '~/components/common/PillGroup'
 import * as styles from '../SettingRow.css'
 
 export interface EnumOption {
@@ -18,10 +18,6 @@ export interface EnumControlProps {
   options: EnumOption[]
   /** Commit the chosen value. */
   onChange: (value: string) => void | Promise<boolean | void>
-}
-
-function isPillOptions(options: readonly PillOptionSpec<string>[]): options is PillOptions<string> {
-  return options.length > 0 && options.length <= PILL_OPTION_LIMIT
 }
 
 function fixedPillOptions(options: readonly EnumOption[]): PillOptions<string> | undefined {

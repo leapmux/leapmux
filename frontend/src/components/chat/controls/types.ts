@@ -110,11 +110,13 @@ export function createControlSwitch(state: () => ControlAnswerState, id: string)
 
 /**
  * The one-of-N sibling of {@link createControlSwitch}: binds ONE pill group of a
- * control to the shared answer record, by the group's own id. The fallback is the
- * caller's to pass, so a group whose "no choice" state is a meaningful key (the
- * permission pill's `'default'`) reads as that key rather than `undefined`.
+ * control to the shared answer record, by the group's own id. The optional
+ * fallback is the caller's to pass, and only for a group whose "no choice" state
+ * is a meaningful key (the permission pill's `'default'`): a group with no
+ * meaningful unset key (the allow-scope pill) reads `undefined` until a
+ * selection lands, instead of a sentinel string every reader must know about.
  */
-export function createControlChoice(state: () => ControlAnswerState, id: string, fallback: string) {
+export function createControlChoice(state: () => ControlAnswerState, id: string, fallback?: string) {
   const answer = state()
   return {
     choice: () => answer.choices()[id] ?? fallback,
@@ -220,6 +222,19 @@ export function sendJsonRpcResult(
   result: unknown,
 ): Promise<void> {
   return sendResponse(onRespond, buildJsonRpcResult(requestId, result))
+}
+
+/**
+ * Sends the ACP-family `session/request_permission` reply that selects one
+ * option. The ACP and OpenCode protocols share this envelope, so both providers'
+ * senders delegate here instead of building it twice.
+ */
+export function sendSelectedOptionResponse(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  requestId: string,
+  optionId: string,
+): Promise<void> {
+  return sendJsonRpcResult(onRespond, requestId, { outcome: { outcome: 'selected', optionId } })
 }
 
 /** Convert a string request ID to a numeric JSON-RPC id when possible. */

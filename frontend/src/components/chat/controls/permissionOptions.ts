@@ -1,11 +1,11 @@
-import type { PillOptions, PillOptionSpec } from '~/components/common/PillGroup'
-
-import { PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
+import type { PillOptions } from '~/components/common/PillGroup'
+import { isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
 
 export interface WirePermissionOption {
   optionId: string
   kind: string
-  name: string
+  /** Absent on wire payloads that omit it; every reader must tolerate `undefined`. */
+  name?: string
 }
 
 const KIND_ALLOW_ONCE = 'allow_once'
@@ -22,7 +22,12 @@ export function isRejectPermissionKind(kind: string): boolean {
   return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS
 }
 
-/** Goose names every option after its kind (`name === optionId === kind`), which is no label at all. */
+/** The option family the request's positive action sends: only these apply a permission preset. */
+export function isAllowPermissionKind(kind: string): boolean {
+  return kind === KIND_ALLOW_ONCE || kind === KIND_ALLOW_ALWAYS
+}
+
+/** Goose sets every option's name to its kind (`name === optionId === kind`), which is no label at all. */
 const KIND_FALLBACK_LABELS: Record<string, string> = {
   [KIND_ALLOW_ONCE]: 'Allow once',
   [KIND_ALLOW_ALWAYS]: 'Allow always',
@@ -32,9 +37,9 @@ const KIND_FALLBACK_LABELS: Record<string, string> = {
 
 /** The label an extra option's button shows: the agent's own name, unless the name is just the id. */
 export function permissionOptionLabel(option: WirePermissionOption): string {
-  return option.name === option.optionId
-    ? KIND_FALLBACK_LABELS[option.kind] ?? option.name
-    : option.name
+  if (option.name !== undefined && option.name !== option.optionId)
+    return option.name
+  return KIND_FALLBACK_LABELS[option.kind] ?? option.name ?? option.optionId
 }
 
 /**
@@ -46,18 +51,23 @@ export function permissionOptionLabel(option: WirePermissionOption): string {
  * `reasonix_write_session`, ...). The kinds are the only stable discriminator,
  * so this mapping classifies by kind:
  *
- * - the decision buttons carry the polarity alone (Deny / Allow); HOW LONG an
- *   allow lasts is the scope pill group's question, not the button's;
+ * - the decision buttons carry the polarity alone (Deny / Allow) while a scope
+ *   pill group states HOW LONG an allow lasts; a slot that holds a remember
+ *   option with no scope group to qualify it states its own duration instead
+ *   (see `decisionLabel`);
  * - one allow-once beside one or more allow-always options becomes the
- *   `allowScope` group — Once plus each always scope, payload order — whatever
- *   their number: two options draw [Once | Always] (or [Once | Session], per
- *   the agent's own naming), three draw Reasonix's [Once | Session | Project];
+ *   `allowScope` group — Once plus each always scope, once first then payload
+ *   order — while the group fits the pill limit: two options draw
+ *   [Once | Always] (or [Once | Session], per the agent's own option names), three
+ *   draw Reasonix's [Once | Session | Project], a wider vocabulary degrades to
+ *   no group and plain extra buttons;
  * - a scope beyond Once also upgrades Deny to the agent's reject_always when it
- *   offers one (goose is the one agent that does) — the one behavior the
- *   Remember switch this group replaced carried across both polarities;
+ *   offers one (goose is the one agent that does), so one control answers both
+ *   polarities;
  * - the FIRST option of each canonical kind fills that kind's slot; every
- *   option no slot consumed (invented kinds, and duplicates beyond the first of
- *   a kind) stays in `additional`, payload order, so no answerable option is
+ *   option no rendered slot or group consumed (invented kinds, duplicates
+ *   beyond the first of a kind, and every option a degraded layout cannot
+ *   place) stays in `additional`, payload order, so no answerable option is
  *   ever dropped.
  *
  * The BUTTON ORDER is this layout's own (negative first), not the payload's:
@@ -69,12 +79,13 @@ export interface PermissionOptionLayout {
   negative?: WirePermissionOption
   /** The option Allow sends while no scope control overrides it (the once slot, or the only allow). */
   positive?: WirePermissionOption
-  /** The reject_always slot, when the agent offers one beside a reject_once. */
+  /** The reject_always slot, when the agent offers one beside a reject_once AND a scope group is drawn. */
   rememberReject?: WirePermissionOption
   /**
    * The allow options a scope pill group offers — one allow-once plus every
    * allow-always, once first then payload order. Undefined when the agent
-   * offers no always scope at all, or no single once slot to anchor the group.
+   * offers no always scope at all, no single once slot to anchor the group, or
+   * a vocabulary too wide for the pill limit.
    */
   allowScope?: WirePermissionOption[]
   additional: WirePermissionOption[]
@@ -91,36 +102,55 @@ export function layoutPermissionOptions(options: WirePermissionOption[]): Permis
   const rejectOnce = byKind.get(KIND_REJECT_ONCE)
   const rejectAlways = byKind.get(KIND_REJECT_ALWAYS)
 
-  // The scope group needs ONE once slot facing at least one always scope.
-  // Requiring exactly one allow_once keeps payloads with several (Cursor
-  // routes its ask-question options that way, and a Once pill is ambiguous
-  // when two once answers exist) out of the scope vocabulary — those are
-  // alternative answers, not durations.
+  // The scope group needs ONE once slot facing at least one always scope (a
+  // Once pill is ambiguous when two once answers exist — Cursor routes its
+  // ask-question options that way, and those are alternative answers, not
+  // durations), it must fit the pill limit (a group this layout reports is one
+  // the pills can draw, so a too-wide vocabulary degrades HERE and its options
+  // stay answerable as extra buttons), and its ids must be unique (the reply
+  // carries an id, so two options that share one are the same answer twice).
   const allOnces = options.filter(option => option.kind === KIND_ALLOW_ONCE)
   const allAlways = options.filter(option => option.kind === KIND_ALLOW_ALWAYS)
-  const allowScope = allOnces.length === 1 && allAlways.length >= 1
-    ? [allOnces[0]!, ...allAlways]
+  const once = allOnces.length === 1 ? allOnces[0] : undefined
+  const scopeAlways: WirePermissionOption[] = []
+  if (once) {
+    for (const option of allAlways) {
+      if (option.optionId !== once.optionId && !scopeAlways.some(seen => seen.optionId === option.optionId))
+        scopeAlways.push(option)
+    }
+  }
+  const allowScope = once && scopeAlways.length >= 1 && 1 + scopeAlways.length <= PILL_OPTION_LIMIT
+    ? [once, ...scopeAlways]
     : undefined
-  // The reject slots are consumed whether or not a scope group is drawn: a
-  // reject option a decision button already sends is not an extra.
-  const consumed = new Set([...(allowScope ?? [allowOnce, allowAlways]), rejectOnce, rejectAlways])
+
+  // A slot or group is consumed only when the row actually renders it: with a
+  // scope group drawn, its members plus BOTH reject slots are consumed (Deny
+  // sends the once reject; a scope beyond Once upgrades Deny to reject_always).
+  // Without one there is no reject upgrade, so reject_always stays answerable
+  // as its own extra button.
+  const positive = allowOnce ?? allowAlways
+  const negative = rejectOnce ?? rejectAlways
+  const consumed = new Set<WirePermissionOption | undefined>(allowScope ?? [positive, negative])
+  if (allowScope) {
+    consumed.add(rejectOnce)
+    consumed.add(rejectAlways)
+  }
 
   return {
-    positive: allowOnce ?? allowAlways,
-    negative: rejectOnce ?? rejectAlways,
-    rememberReject: rejectOnce && rejectAlways ? rejectAlways : undefined,
+    positive,
+    negative,
+    rememberReject: allowScope && rejectOnce && rejectAlways ? rejectAlways : undefined,
     allowScope,
     additional: options.filter(option => !consumed.has(option)),
   }
 }
 
 /**
- * Whether the selected scope pill picks a scope BEYOND Once — the pill-group
- * reading of the Remember switch this group replaced. This is what upgrades a
- * reject to the agent's reject_always, so the two polarities keep sharing one
- * control exactly as the switch made them share one checkbox.
+ * Whether the selected scope pill picks a scope BEYOND Once. This is what
+ * upgrades a reject to the agent's reject_always, so the two polarities answer
+ * through one control.
  */
-export function scopeRemembers(
+function scopeRemembers(
   layout: PermissionOptionLayout,
   selectedAllowScopeId?: string,
 ): boolean {
@@ -137,7 +167,7 @@ export function scopeRemembers(
  * For Allow, the SELECTED scope pill when a scope group is drawn (falling back
  * to its first option when nothing valid is stored), else the once slot the
  * button displays. For Reject, a scope beyond Once upgrades to the agent's
- * reject_always (`scopeRemembers` is that reading) when it offers one.
+ * reject_always when it offers one.
  *
  * An option the agent did not offer is never sent: the reject upgrade is
  * skipped when its variant is absent, and an unknown optionId is parsed as
@@ -146,7 +176,6 @@ export function scopeRemembers(
 export function resolvePermissionOption(
   layout: PermissionOptionLayout,
   polarity: 'allow' | 'reject',
-  remember: boolean,
   selectedAllowScopeId?: string,
 ): WirePermissionOption | undefined {
   if (polarity === 'allow') {
@@ -156,20 +185,34 @@ export function resolvePermissionOption(
     }
     return layout.positive
   }
-  return remember && layout.rememberReject ? layout.rememberReject : layout.negative
+  return scopeRemembers(layout, selectedAllowScopeId) && layout.rememberReject ? layout.rememberReject : layout.negative
+}
+
+/**
+ * The label a decision button shows. With a scope pill group drawn the button
+ * carries the polarity alone — the pills state how long an allow lasts. Without
+ * one, a slot that holds a REMEMBER option states its own duration through the
+ * agent's own option name (`permissionOptionLabel`): the agent offered no once
+ * variant, so the button is the only place the duration can appear, and a plain
+ * "Allow" would grant a permanent permission the user cannot see.
+ */
+export function decisionLabel(layout: PermissionOptionLayout, polarity: 'allow' | 'reject'): string {
+  const slot = polarity === 'allow' ? layout.positive : layout.negative
+  const rememberKind = polarity === 'allow' ? KIND_ALLOW_ALWAYS : KIND_REJECT_ALWAYS
+  return !layout.allowScope && slot?.kind === rememberKind ? permissionOptionLabel(slot) : polarity === 'allow' ? 'Allow' : 'Deny'
 }
 
 /**
  * One scope pill's label. The once slot is unambiguous; the always scopes read
  * their duration out of the agent's own option name ("...for this session",
- * "Add to project allow_write"), and a name that names no duration is simply
+ * "Add to project allow_write"), and a name that states no duration is simply
  * Always. Names are prose, so this is a keyword read, not a parse — a name with
  * neither keyword still gets a truthful label, just a generic one.
  */
 export function allowScopeLabel(option: WirePermissionOption): string {
   if (option.kind === KIND_ALLOW_ONCE)
     return 'Once'
-  const name = option.name.toLowerCase()
+  const name = (option.name ?? '').toLowerCase()
   if (name.includes('project'))
     return 'Project'
   if (name.includes('session'))
@@ -177,17 +220,22 @@ export function allowScopeLabel(option: WirePermissionOption): string {
   return 'Always'
 }
 
-function isPillOptions(options: readonly PillOptionSpec<string>[]): options is PillOptions<string> {
-  return options.length > 0 && options.length <= PILL_OPTION_LIMIT
-}
-
 /**
  * The scope pill group's options, keyed by optionId so a selection maps
  * straight onto the wire reply. Undefined when the scope group cannot be drawn
  * (fewer than one pill, or more than the pill limit) — the caller then leaves
- * the scope to the plain Allow button.
+ * the scope to the plain Allow button. Two scopes the keyword read cannot tell
+ * apart (both read "Always") show their own names instead, so no two pills of
+ * one group share a label the user cannot distinguish.
  */
 export function allowScopePillOptions(scope: readonly WirePermissionOption[]): PillOptions<string> | undefined {
-  const pills = scope.map(option => ({ key: option.optionId, label: allowScopeLabel(option) }))
+  const labels = scope.map(option => allowScopeLabel(option))
+  const counts = new Map<string, number>()
+  for (const label of labels)
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  const pills = scope.map((option, index) => ({
+    key: option.optionId,
+    label: (counts.get(labels[index]) ?? 0) > 1 ? permissionOptionLabel(option) : labels[index]!,
+  }))
   return isPillOptions(pills) ? pills : undefined
 }

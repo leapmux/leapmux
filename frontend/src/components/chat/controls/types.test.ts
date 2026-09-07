@@ -103,6 +103,15 @@ describe('createControlChoice', () => {
     expect(createControlChoice(() => state, 'control-permissions-pill', 'default').choice()).toBe('default')
   })
 
+  it('reads undefined before any selection when no fallback is passed', () => {
+    const state = createControlAnswerState()
+    const scope = createControlChoice(() => state, 'control-allow-scope-pill')
+    expect(scope.choice()).toBeUndefined()
+
+    scope.setChoice('always')
+    expect(scope.choice()).toBe('always')
+  })
+
   it('writes the choice through to the shared record', () => {
     const state = createControlAnswerState()
     const pill = createControlChoice(() => state, 'control-permissions-pill', 'default')

@@ -3,11 +3,12 @@ import { describe, expect, it } from 'vitest'
 import {
   allowScopeLabel,
   allowScopePillOptions,
+  decisionLabel,
+  isAllowPermissionKind,
   isRejectPermissionKind,
   layoutPermissionOptions,
   permissionOptionLabel,
   resolvePermissionOption,
-  scopeRemembers,
 } from './permissionOptions'
 
 function option(optionId: string, kind: string, name = optionId): WirePermissionOption {
@@ -98,9 +99,11 @@ describe('layoutPermissionOptions', () => {
     expect(layout.additional.map(o => o.optionId)).toEqual(['opt2', 'opt3'])
   })
 
-  it('draws no scope group when the once slot is ambiguous', () => {
+  it('keeps every option answerable when the once slot is ambiguous', () => {
     // Two allow_once options face one always: the group cannot know WHICH
-    // once answer a "Once" pill means, so the extras stay individual buttons.
+    // once answer a "Once" pill means, so no scope group is drawn and the
+    // extras -- the second once answer AND the always scope -- stay
+    // individual buttons.
     const layout = layoutPermissionOptions([
       option('once_a', 'allow_once', 'Allow once'),
       option('once_b', 'allow_once', 'Allow once more'),
@@ -110,7 +113,56 @@ describe('layoutPermissionOptions', () => {
 
     expect(layout.allowScope).toBeUndefined()
     expect(layout.positive?.optionId).toBe('once_a')
-    expect(layout.additional.map(o => o.optionId)).toEqual(['once_b'])
+    expect(layout.additional.map(o => o.optionId)).toEqual(['once_b', 'always'])
+  })
+
+  it('degrades a scope vocabulary too wide for the pill limit to extra buttons', () => {
+    // One once facing four always scopes cannot draw as pills: no group is
+    // reported, every always scope stays answerable as its own button, and
+    // Allow keeps sending the once option.
+    const layout = layoutPermissionOptions([
+      option('once', 'allow_once', 'Allow once'),
+      ...['session', 'project', 'org', 'forever'].map(scope =>
+        option(`always_${scope}`, 'allow_always', `Always allow for ${scope}`)),
+      option('reject', 'reject_once', 'Reject'),
+    ])
+
+    expect(layout.allowScope).toBeUndefined()
+    expect(layout.positive?.optionId).toBe('once')
+    expect(layout.additional.map(o => o.optionId)).toEqual([
+      'always_session',
+      'always_project',
+      'always_org',
+      'always_forever',
+    ])
+  })
+
+  it('keeps a reject_always answerable when no scope group is drawn', () => {
+    // Without an allow scope there is no remembering scope to upgrade Deny, so
+    // goose's reject_always stays an extra button instead of vanishing.
+    const layout = layoutPermissionOptions([
+      option('allow_once', 'allow_once'),
+      option('reject_once', 'reject_once'),
+      option('reject_always', 'reject_always'),
+    ])
+
+    expect(layout.allowScope).toBeUndefined()
+    expect(layout.rememberReject).toBeUndefined()
+    expect(layout.additional.map(o => o.optionId)).toEqual(['reject_always'])
+  })
+
+  it('drops a duplicate optionId from the scope group and keeps the duplicate answerable', () => {
+    // The reply carries an id, so two options that share one are the same
+    // answer twice; PillGroup also refuses duplicate keys.
+    const layout = layoutPermissionOptions([
+      option('once', 'allow_once'),
+      option('always_a', 'allow_always', 'Always allow here'),
+      option('always_a', 'allow_always', 'Always allow here again'),
+      option('reject', 'reject_once'),
+    ])
+
+    expect(layout.allowScope?.map(o => o.optionId)).toEqual(['once', 'always_a'])
+    expect(layout.additional.map(o => o.optionId)).toEqual(['always_a'])
   })
 
   it('classifies an empty payload as no buttons', () => {
@@ -123,35 +175,17 @@ describe('layoutPermissionOptions', () => {
   })
 })
 
-describe('scopeRemembers', () => {
-  it('is false for Once and true for a scope beyond it', () => {
-    const layout = layoutPermissionOptions(GOOSE_OPTIONS)
-
-    expect(scopeRemembers(layout)).toBe(false)
-    expect(scopeRemembers(layout, 'allow_once')).toBe(false)
-    expect(scopeRemembers(layout, 'allow_always')).toBe(true)
-    // An id the payload no longer offers clamps back to Once.
-    expect(scopeRemembers(layout, 'gone')).toBe(false)
-  })
-
-  it('is always false without a scope group', () => {
-    const layout = layoutPermissionOptions([
-      option('once', 'allow_once', 'Allow'),
-      option('reject', 'reject_once', 'Reject'),
-    ])
-    expect(scopeRemembers(layout, 'once')).toBe(false)
-  })
-})
-
 describe('resolvePermissionOption', () => {
   it('sends the once options while Once is selected and the always options otherwise', () => {
     const layout = layoutPermissionOptions(GOOSE_OPTIONS)
 
-    expect(resolvePermissionOption(layout, 'allow', false)?.optionId).toBe('allow_once')
-    expect(resolvePermissionOption(layout, 'allow', false, 'allow_always')?.optionId).toBe('allow_always')
-    expect(resolvePermissionOption(layout, 'reject', false)?.optionId).toBe('reject_once')
-    // A remembering scope (scopeRemembers) upgrades Deny for the agents offering reject_always.
-    expect(resolvePermissionOption(layout, 'reject', true)?.optionId).toBe('reject_always')
+    expect(resolvePermissionOption(layout, 'allow')?.optionId).toBe('allow_once')
+    expect(resolvePermissionOption(layout, 'allow', 'allow_always')?.optionId).toBe('allow_always')
+    expect(resolvePermissionOption(layout, 'reject')?.optionId).toBe('reject_once')
+    // A scope beyond Once upgrades Deny for the agents offering reject_always.
+    expect(resolvePermissionOption(layout, 'reject', 'allow_always')?.optionId).toBe('reject_always')
+    // An id the payload no longer offers clamps back to the once options.
+    expect(resolvePermissionOption(layout, 'reject', 'gone')?.optionId).toBe('reject_once')
   })
 
   it('never invents an option the agent did not offer', () => {
@@ -164,7 +198,7 @@ describe('resolvePermissionOption', () => {
     // No reject_always exists, so a remembering scope keeps reject_once -- an
     // unknown optionId is parsed as cancel (goose) or reject (OpenCode), and
     // the user asked to reject, not to cancel.
-    expect(resolvePermissionOption(layout, 'reject', true)?.optionId).toBe('reject')
+    expect(resolvePermissionOption(layout, 'reject', 'always')?.optionId).toBe('reject')
   })
 
   it('sends the selected scope pill, falling back to the first when none is stored', () => {
@@ -175,11 +209,48 @@ describe('resolvePermissionOption', () => {
       option('reasonix_write_deny', 'reject_once', 'Reject'),
     ])
 
-    expect(resolvePermissionOption(layout, 'allow', false)?.optionId).toBe('reasonix_write_once')
-    expect(resolvePermissionOption(layout, 'allow', false, 'reasonix_write_project')?.optionId).toBe('reasonix_write_project')
+    expect(resolvePermissionOption(layout, 'allow')?.optionId).toBe('reasonix_write_once')
+    expect(resolvePermissionOption(layout, 'allow', 'reasonix_write_project')?.optionId).toBe('reasonix_write_project')
     // A stored id the payload no longer offers clamps to the first scope.
-    expect(resolvePermissionOption(layout, 'allow', false, 'gone')?.optionId).toBe('reasonix_write_once')
-    expect(resolvePermissionOption(layout, 'reject', true)?.optionId).toBe('reasonix_write_deny')
+    expect(resolvePermissionOption(layout, 'allow', 'gone')?.optionId).toBe('reasonix_write_once')
+    expect(resolvePermissionOption(layout, 'reject', 'reasonix_write_project')?.optionId).toBe('reasonix_write_deny')
+  })
+
+  it('never upgrades a reject without a scope group', () => {
+    const layout = layoutPermissionOptions([
+      option('allow_once', 'allow_once'),
+      option('reject_once', 'reject_once'),
+      option('reject_always', 'reject_always'),
+    ])
+
+    expect(resolvePermissionOption(layout, 'reject', 'reject_always')?.optionId).toBe('reject_once')
+  })
+})
+
+describe('decisionLabel', () => {
+  it('carries the polarity alone while a scope group states the duration', () => {
+    const layout = layoutPermissionOptions(GOOSE_OPTIONS)
+
+    expect(decisionLabel(layout, 'allow')).toBe('Allow')
+    expect(decisionLabel(layout, 'reject')).toBe('Deny')
+  })
+
+  it('states the duration when a slot holds a remember option with no scope group', () => {
+    // The agent offered no once variant, so the button is the only place the
+    // duration can appear; a plain "Allow" would grant a permanent permission
+    // the user cannot see.
+    const layout = layoutPermissionOptions([
+      option('always', 'allow_always', 'Always allow'),
+      option('reject', 'reject_once', 'Reject'),
+    ])
+    expect(decisionLabel(layout, 'allow')).toBe('Always allow')
+
+    const gooseLayout = layoutPermissionOptions([
+      option('allow_always', 'allow_always'),
+      option('reject_always', 'reject_always'),
+    ])
+    expect(decisionLabel(gooseLayout, 'allow')).toBe('Allow always')
+    expect(decisionLabel(gooseLayout, 'reject')).toBe('Reject always')
   })
 })
 
@@ -190,10 +261,14 @@ describe('allowScopeLabel', () => {
     expect(allowScopeLabel(option('w_project', 'allow_always', 'Add to project allow_write'))).toBe('Project')
   })
 
-  it('falls back to Always for a name that names no duration', () => {
+  it('falls back to Always for a name that states no duration', () => {
     expect(allowScopeLabel(option('always', 'allow_always', 'Always allow'))).toBe('Always')
-    // Goose names options after their kind: no duration, still Always.
+    // Goose sets each option's name to its kind: no duration, still Always.
     expect(allowScopeLabel(option('allow_always', 'allow_always'))).toBe('Always')
+  })
+
+  it('tolerates an option whose name is absent', () => {
+    expect(allowScopeLabel({ optionId: 'always', kind: 'allow_always' })).toBe('Always')
   })
 })
 
@@ -217,6 +292,21 @@ describe('allowScopePillOptions', () => {
     const six = Array.from({ length: 6 }, (_, i) => option(`w${i}`, i === 0 ? 'allow_once' : 'allow_always'))
     expect(allowScopePillOptions(six)).toBeUndefined()
   })
+
+  it('shows two indistinguishable scopes their own names instead of one shared label', () => {
+    // Both always scopes read "Always" from the keyword read; identical labels
+    // on distinct answers would let the user pick the wrong permanent grant
+    // with no way to tell the pills apart.
+    const pills = allowScopePillOptions([
+      option('w_plain', 'allow_always', 'Always allow'),
+      option('w_silent', 'allow_always', 'Allow without asking'),
+    ])
+
+    expect(pills).toEqual([
+      { key: 'w_plain', label: 'Always allow' },
+      { key: 'w_silent', label: 'Allow without asking' },
+    ])
+  })
 })
 
 describe('permissionOptionLabel', () => {
@@ -224,11 +314,15 @@ describe('permissionOptionLabel', () => {
     expect(permissionOptionLabel(option('once', 'allow_once', 'Allow once'))).toBe('Allow once')
   })
 
-  it('falls back to a friendly label for goose, which names options after their kind', () => {
+  it('falls back to a friendly label for goose, which sets each option\'s name to its kind', () => {
     expect(permissionOptionLabel(option('allow_once', 'allow_once'))).toBe('Allow once')
     expect(permissionOptionLabel(option('allow_always', 'allow_always'))).toBe('Allow always')
     expect(permissionOptionLabel(option('reject_once', 'reject_once'))).toBe('Reject')
     expect(permissionOptionLabel(option('reject_always', 'reject_always'))).toBe('Reject always')
+  })
+
+  it('falls back to the id when an option has neither name nor known kind', () => {
+    expect(permissionOptionLabel({ optionId: 'opt1', kind: 'answer' })).toBe('opt1')
   })
 })
 
@@ -238,5 +332,15 @@ describe('isRejectPermissionKind', () => {
     expect(isRejectPermissionKind('reject_always')).toBe(true)
     expect(isRejectPermissionKind('allow_once')).toBe(false)
     expect(isRejectPermissionKind('allow_always')).toBe(false)
+  })
+})
+
+describe('isAllowPermissionKind', () => {
+  it('covers both allow kinds and nothing else', () => {
+    expect(isAllowPermissionKind('allow_once')).toBe(true)
+    expect(isAllowPermissionKind('allow_always')).toBe(true)
+    expect(isAllowPermissionKind('reject_once')).toBe(false)
+    expect(isAllowPermissionKind('reject_always')).toBe(false)
+    expect(isAllowPermissionKind('answer')).toBe(false)
   })
 })

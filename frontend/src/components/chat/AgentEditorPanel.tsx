@@ -50,7 +50,7 @@ import { useControlResponseHandling } from './controlResponseHandling'
 import { createControlAnswerState } from './controls/types'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { providerFor } from './providers/registry'
-import { permissionPresetAvailable } from './providerSettings'
+import { usablePresets } from './providerSettings'
 import { createQueueEditSession } from './queueEditSession'
 import {
   OPTION_ID_MODEL,
@@ -353,21 +353,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // Every axis's confirmed value as one generic map keyed by group id, derived from
   // the catalog (the proto AgentInfo carries no scalar model/effort/permission fields).
   const currentOptionValues = () => optionValuesFromGroups(props.agent?.optionGroups)
-  // The permission presets a control request's pill group may apply, gated the
-  // same way the composer `[+]` menu gates its permission items: a preset is
-  // offered only when the live catalog carries every axis it sets. The one
+  // The permission presets a control request's pill group may apply, offered
+  // under the same rule as the composer `[+]` menu's permission items (`usablePresets`):
+  // a preset is offered only when the live catalog carries every axis it sets. The one
   // `apply` handler is the shared `onSettingChange`, so a pill selection and the
   // menu item cannot diverge in what they switch.
   const permissionPresets = createMemo<PermissionPresetController | undefined>(() => {
     const presets = props.agent?.agentProvider
       ? providerFor(props.agent.agentProvider)?.permissionPresets
       : undefined
-    const smartPreset = presets?.smart
-    const bypassPreset = presets?.bypass
-    const smart = permissionPresetAvailable(smartPreset, props.agent?.optionGroups) ? smartPreset : undefined
-    const bypass = permissionPresetAvailable(bypassPreset, props.agent?.optionGroups) ? bypassPreset : undefined
-    return (smart || bypass) && props.onSettingChange
-      ? { smart, bypass, apply: props.onSettingChange }
+    const usable = usablePresets(presets, props.agent?.optionGroups)
+    return (usable.smart || usable.bypass) && props.onSettingChange
+      ? { ...usable, apply: props.onSettingChange }
       : undefined
   })
 

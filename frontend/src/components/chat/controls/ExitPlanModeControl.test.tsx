@@ -1,7 +1,8 @@
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ExitPlanModeActions } from '~/components/chat/controls/ExitPlanModeControl'
+import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from './types'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
@@ -12,10 +13,6 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
       request: { tool_name: 'ExitPlanMode', input: {} },
     },
   }
-}
-
-function permissionPill() {
-  return within(screen.getByRole('radiogroup', { name: 'Permissions' }))
 }
 
 describe('exitPlanModeActions', () => {
@@ -40,9 +37,9 @@ describe('exitPlanModeActions', () => {
     expect(screen.getByTestId('plan-reject-btn')).toBeInTheDocument()
     expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
     expect(screen.getByTestId('plan-clear-context-checkbox')).toHaveTextContent('Clear Context (30%)')
-    expect(permissionPill().getByRole('radio', { name: 'Default' })).toBeChecked()
-    expect(permissionPill().getByRole('radio', { name: 'Smart permissions' })).toBeInTheDocument()
-    expect(permissionPill().getByRole('radio', { name: 'Bypass permissions' })).toBeInTheDocument()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Default' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Smart permissions' })).toBeInTheDocument()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' })).toBeInTheDocument()
   })
 
   it('shows only Send feedback when editor has content', () => {
@@ -89,6 +86,7 @@ describe('exitPlanModeActions', () => {
 
   it('sends allow response with the bypass mode when Bypass permissions is selected', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
     const request = makeRequest('req-99', 'agent-3')
 
     render(() => (
@@ -98,12 +96,12 @@ describe('exitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply }}
       />
     ))
 
     // Select bypass permissions, then approve.
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     expect(onRespond).toHaveBeenCalledOnce()
@@ -112,10 +110,14 @@ describe('exitPlanModeActions', () => {
     expect(decoded.response.request_id).toBe('req-99')
     expect(decoded.response.response.behavior).toBe('allow')
     expect(decoded.permissionMode).toBe('bypassPermissions')
+    // The mode travels INSIDE the response; a second settings change would race
+    // the restart a context-clearing approval triggers, so the handler never fires.
+    expect(apply).not.toHaveBeenCalled()
   })
 
   it('sends allow response with the smart mode when Smart permissions is selected', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
 
     render(() => (
       <ExitPlanModeActions
@@ -127,16 +129,17 @@ describe('exitPlanModeActions', () => {
         presets={{
           smart: { sets: { permissionMode: 'auto' } },
           bypass: { sets: { permissionMode: 'bypassPermissions' } },
-          apply: vi.fn(),
+          apply,
         }}
       />
     ))
 
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Smart permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart permissions' }))
     fireEvent.click(screen.getByTestId('plan-approve-btn'))
 
     const [bytes] = onRespond.mock.calls[0]
     expect(JSON.parse(new TextDecoder().decode(bytes)).permissionMode).toBe('auto')
+    expect(apply).not.toHaveBeenCalled()
   })
 
   // A preset that switches some axis OTHER than the permission mode cannot act

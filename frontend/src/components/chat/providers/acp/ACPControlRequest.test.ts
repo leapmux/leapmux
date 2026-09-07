@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import type { PermissionPresetController } from '../../providerSettings'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { allowScopePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from '../../controls/types'
 import { ACPControlActions, sendACPPermissionResponse } from './ACPControlRequest'
 
@@ -62,6 +64,23 @@ describe('acpControlActions', () => {
     return { onRespond, apply }
   }
 
+  function renderActions(options: Array<Record<string, string>>, presets?: PermissionPresetController) {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => ACPControlActions({
+      request: {
+        agentId: 'agent1',
+        requestId: '14',
+        payload: { params: { options } },
+      },
+      onRespond,
+      answerState: createControlAnswerState(),
+      hasEditorContent: false,
+      onTriggerSend: vi.fn(),
+      presets,
+    }))
+    return { onRespond }
+  }
+
   /** OpenCode's wire shape: an allow_always with no reject_always. */
   function renderOpenCodeShapeActions() {
     const onRespond = vi.fn().mockResolvedValue(undefined)
@@ -98,10 +117,10 @@ describe('acpControlActions', () => {
     expect(allow.textContent).toBe('Allow')
     expect(deny.compareDocumentPosition(allow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    const scope = within(screen.getByRole('radiogroup', { name: 'Allow scope' }))
+    const scope = allowScopePillGroup()
     expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(scope.getByRole('radio', { name: 'Always' })).not.toBeChecked()
-    const pill = within(screen.getByRole('radiogroup', { name: 'Permissions' }))
+    const pill = permissionPillGroup()
     expect(pill.getByRole('radio', { name: 'Default' })).toBeChecked()
     // The always options live in the scope group, not as their own buttons.
     expect(screen.queryByTestId('control-decision-allow_always')).not.toBeInTheDocument()
@@ -121,7 +140,7 @@ describe('acpControlActions', () => {
   it('sends the always options once a scope beyond Once is selected', async () => {
     const { onRespond } = renderGooseActions()
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Allow scope' })).getByRole('radio', { name: 'Always' }))
+    fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('allow_always')
 
@@ -133,7 +152,7 @@ describe('acpControlActions', () => {
   it('keeps the reject-once option under a remembering scope when the agent offers no reject_always', async () => {
     const { onRespond } = renderOpenCodeShapeActions()
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Allow scope' })).getByRole('radio', { name: 'Always' }))
+    fireEvent.click(allowScopePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
     expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('reject')
 
@@ -142,32 +161,44 @@ describe('acpControlActions', () => {
   })
 
   it('draws no scope group when the agent offers no always option', () => {
-    render(() => ACPControlActions({
-      request: {
-        agentId: 'agent1',
-        requestId: '9',
-        payload: {
-          params: {
-            options: [
-              { optionId: 'once', kind: 'allow_once', name: 'Allow' },
-              { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
-            ],
-          },
-        },
-      },
-      onRespond: vi.fn().mockResolvedValue(undefined),
-      answerState: createControlAnswerState(),
-      hasEditorContent: false,
-      onTriggerSend: vi.fn(),
-    }))
+    renderActions([
+      { optionId: 'once', kind: 'allow_once', name: 'Allow' },
+      { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+    ])
 
     expect(screen.queryByRole('radiogroup', { name: 'Allow scope' })).not.toBeInTheDocument()
+  })
+
+  it('draws no permission pills when no allow option can apply them', () => {
+    // A reject-only payload has no positive action, so no selection the group
+    // offers could ever act; drawing it would be a control that silently does
+    // nothing.
+    renderActions([
+      { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+    ], { smart: { sets: { permissionMode: 'smart_approve' } }, bypass: { sets: { permissionMode: 'auto' } }, apply: vi.fn() })
+
+    expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument()
+    expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
+    expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
+  })
+
+  it('states the duration on the Allow button when the agent offers no once option', async () => {
+    const { onRespond } = renderActions([
+      { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
+      { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+    ])
+
+    expect(screen.getByTestId('control-allow-btn').textContent).toBe('Always allow')
+    expect(screen.queryByRole('radiogroup', { name: 'Allow scope' })).not.toBeInTheDocument()
+
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+    expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('always')
   })
 
   it('applies the chosen permission preset after an allow and never after a reject', async () => {
     const { onRespond, apply } = renderGooseActions()
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Permissions' })).getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(onRespond).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
@@ -177,7 +208,42 @@ describe('acpControlActions', () => {
     expect(apply).toHaveBeenCalledTimes(1)
   })
 
-  it('draws a Once / Session / Project pill group for Reasonix\'s two always scopes, replacing the Remember switch', async () => {
+  it('applies no preset when an extra option outside the allow family is clicked', async () => {
+    // The pill's contract is "applies when the request's positive action is
+    // taken": an extra button carrying an invented kind (a future agent's
+    // answer variant) is not that action, so it must not switch the mode.
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
+    render(() => ACPControlActions({
+      request: {
+        agentId: 'agent1',
+        requestId: '15',
+        payload: {
+          params: {
+            options: [
+              { optionId: 'once', kind: 'allow_once', name: 'Allow' },
+              { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+              { optionId: 'ask', kind: 'ask_user', name: 'Ask the user' },
+            ],
+          },
+        },
+      },
+      onRespond,
+      answerState: createControlAnswerState(),
+      hasEditorContent: false,
+      onTriggerSend: vi.fn(),
+      presets: { bypass: { sets: { permissionMode: 'yolo' } }, apply },
+    }))
+
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
+    await fireEvent.click(screen.getByTestId('control-decision-ask'))
+
+    expect(onRespond).toHaveBeenCalledOnce()
+    expect(decodeOptionId(onRespond.mock.calls[0][0])).toBe('ask')
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('draws a Once / Session / Project pill group for Reasonix\'s two always scopes', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     render(() => ACPControlActions({
       request: {
@@ -200,13 +266,11 @@ describe('acpControlActions', () => {
       onTriggerSend: vi.fn(),
     }))
 
-    // The scope group replaces both the Remember switch and the extra button
-    // the project option used to be.
-    const scope = within(screen.getByRole('radiogroup', { name: 'Allow scope' }))
+    // The scope group replaces the extra button the project option used to be.
+    const scope = allowScopePillGroup()
     expect(scope.getByRole('radio', { name: 'Once' })).toBeChecked()
     expect(scope.getByRole('radio', { name: 'Session' })).toBeInTheDocument()
     expect(scope.getByRole('radio', { name: 'Project' })).toBeInTheDocument()
-    expect(screen.queryByTestId('control-remember-checkbox')).not.toBeInTheDocument()
     expect(screen.queryByTestId('control-decision-reasonix_write_project')).not.toBeInTheDocument()
     expect(screen.getByTestId('control-allow-btn').textContent).toBe('Allow')
 

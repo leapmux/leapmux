@@ -1,7 +1,9 @@
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { GenericToolActions } from '~/components/chat/controls/GenericToolControl'
+import { hoverForTooltip } from '~/test-support/clipStub'
+import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from './types'
 
 function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
@@ -12,10 +14,6 @@ function makeRequest(requestId = 'req-1', agentId = 'agent-1'): ControlRequest {
       request: { tool_name: 'Bash', input: { command: 'ls' } },
     },
   }
-}
-
-function permissionPill() {
-  return within(screen.getByRole('radiogroup', { name: 'Permissions' }))
 }
 
 describe('genericToolActions', () => {
@@ -45,8 +43,8 @@ describe('genericToolActions', () => {
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
     expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
     expect(screen.getByTestId('control-permissions-pill-group')).toBeInTheDocument()
-    expect(permissionPill().getByRole('radio', { name: 'Default' })).toBeChecked()
-    expect(permissionPill().getByRole('radio', { name: 'Bypass permissions' })).not.toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Default' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' })).not.toBeChecked()
   })
 
   it('shows only Send feedback when editor has content', () => {
@@ -136,7 +134,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     // The handler AWAITS the allow before applying the preset, so the assertion
     // waits for that microtask -- ordering is the point of the fix.
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
@@ -172,7 +170,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Smart permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Smart permissions' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
@@ -193,7 +191,7 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(permissionPill().getByRole('radio', { name: 'Bypass permissions' }))
+    fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass permissions' }))
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
 
     expect(apply).not.toHaveBeenCalled()
@@ -212,5 +210,23 @@ describe('genericToolActions', () => {
 
     expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument()
     expect(screen.queryByRole('radiogroup', { name: 'Permissions' })).not.toBeInTheDocument()
+  })
+
+  // The group carries the one explanation of its consequence: a selected preset
+  // applies when the request is allowed, so the hover text must stay attached.
+  it('explains through a tooltip that the selected preset applies on allow', () => {
+    render(() => (
+      <GenericToolActions
+        request={makeRequest()}
+        answerState={createControlAnswerState()}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+      />
+    ))
+
+    const tooltip = hoverForTooltip(screen.getByTestId('control-permissions-pill-group'))
+    expect(tooltip?.textContent).toContain('selected preset applies')
   })
 })
