@@ -270,6 +270,19 @@ export function Tooltip(props: TooltipProps) {
   const descriptionId = () => props.describedBy ?? ownDescriptionId
   /** Whether this component renders the offscreen copy itself. */
   const ownsDescription = () => !props.describedBy
+  /** The accessible name this tooltip writes onto the target, if any. */
+  const effectiveAriaLabel = () => (props.ariaLabel === true ? props.text : props.ariaLabel)
+  /**
+   * Whether the offscreen description says anything the NAME does not.
+   *
+   * An icon-only control passes its own name as `text` and asks for
+   * `ariaLabel`, so the description below would repeat it: a screen reader then
+   * announces "Move Up, button, unavailable, Move Up", and every lookup that
+   * matches on that text resolves two elements. A description exists to state a
+   * REASON the name does not carry, so it is only worth publishing when the two
+   * strings differ.
+   */
+  const descriptionAddsMeaning = () => !!props.text && effectiveAriaLabel() !== props.text
   const [visible, setVisible] = createSignal(false)
   /**
    * The target presents itself as unavailable, by EITHER mechanism.
@@ -566,7 +579,7 @@ export function Tooltip(props: TooltipProps) {
       // The offscreen description, for as long as the control is disabled. It
       // is the only route to a screen-reader user there, so it does NOT wait
       // for the tooltip to open -- nothing can open it without a pointer.
-      if (describedAsDisabled() && props.text)
+      if (describedAsDisabled() && descriptionAddsMeaning())
         nextIds.push(descriptionId())
       if (visible() && hasTooltipContent())
         nextIds.push(`tooltip-${tooltipId}`)
@@ -593,9 +606,7 @@ export function Tooltip(props: TooltipProps) {
     const originalAriaLabel = target.getAttribute('aria-label')
 
     createEffect(() => {
-      const nextAriaLabel = props.ariaLabel === true
-        ? props.text
-        : props.ariaLabel
+      const nextAriaLabel = effectiveAriaLabel()
       if (nextAriaLabel)
         target.setAttribute('aria-label', nextAriaLabel)
       else if (originalAriaLabel != null)
@@ -628,10 +639,17 @@ export function Tooltip(props: TooltipProps) {
         // `inline-flex` hugs the child and stays one item of whatever row it
         // sits in.
         style={{ display: wrapperTakesBox() ? 'inline-flex' : 'contents' }}
+        // The wrapper is the HIT-TEST TARGET whenever it takes a box, because
+        // the child that forced the box dispatches no pointer event of its own.
+        // A pointer guard that decides "this press belongs to an embedded
+        // control" by walking up from `event.target` therefore lands on this
+        // span and finds no control above it. The attribute is what those
+        // guards match; see EMBEDDED_UI_SELECTOR in `~/lib/dragActivators.ts`.
+        data-tooltip-box={wrapperTakesBox() ? '' : undefined}
       >
         {props.children}
       </span>
-      <Show when={describedAsDisabled() && props.text && ownsDescription()}>
+      <Show when={describedAsDisabled() && descriptionAddsMeaning() && ownsDescription()}>
         <span id={ownDescriptionId} class={srOnly}>{props.text}</span>
       </Show>
       <Show when={visible() && hasTooltipContent()}>

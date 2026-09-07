@@ -802,6 +802,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   return (
     <div
       class={styles.container}
+      // The box whose layout mode `data-expanded` states. A test that asserts
+      // the collapsed-versus-expanded decision has to address this element, and
+      // the class name is a build-mode-dependent hash.
+      data-testid="composer-box"
       data-expanded={isExpanded() ? '' : undefined}
       style={{
         '--composer-right-pad': `${layout.rightPad()}px`,

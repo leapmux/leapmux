@@ -1032,6 +1032,47 @@ describe('tabBar mobile variant', () => {
     expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
   })
 
+  // The gesture that OPENS a rename moves the focus itself: the Rename item
+  // sits in a popover, and closing that popover hands the focus back to the tab
+  // it belongs to. Committing on that focus closed the rename before the input
+  // could take the caret, so the tab bar's context-menu Rename did nothing at
+  // all.
+  it('survives the focus that the opening gesture hands back', () => {
+    const onRename = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    fireEvent.click(within(row).getByTestId('tab-menu-rename'))
+    expect(within(row).getByTestId('tab-rename-input')).toBeInTheDocument()
+
+    // The input has not been focused yet -- the programmatic focus waits a
+    // frame -- so this focus belongs to the click that opened the rename.
+    fireEvent.focusIn(document.body)
+
+    expect(onRename).not.toHaveBeenCalled()
+    expect(within(row).getByTestId('tab-rename-input')).toBeInTheDocument()
+  })
+
+  it('commits on a focus change once the input has held the caret', () => {
+    const onRename = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    fireEvent.click(within(row).getByTestId('tab-menu-rename'))
+    const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
+    fireEvent.input(input, { target: { value: 'Terminal Liam IV' } })
+
+    // The caret arrives, so from here a focus change IS the user leaving.
+    fireEvent.focus(input)
+    fireEvent.focusIn(document.body)
+
+    expect(onRename).toHaveBeenCalledOnce()
+    expect(onRename.mock.calls[0][1]).toBe('Terminal Liam IV')
+    expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
+  })
+
   // A pointerdown INSIDE the input is the user placing the caret, not leaving.
   it('does not commit when the gesture lands inside the input', () => {
     const onRename = vi.fn()

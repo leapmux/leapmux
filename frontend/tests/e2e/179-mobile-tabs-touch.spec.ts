@@ -1,7 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
-import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
+import { COARSE_POINTER_METRICS, settleFrames, touchDown, touchDragGripOnto } from './helpers/touch'
 
 /**
  * The mobile tab UI and the touch drag model.
@@ -33,25 +33,6 @@ function serverOf(leapmuxServer: { hubUrl: string, adminToken: string, workerId:
   }
 }
 
-/**
- * Wait until the input events already dispatched have been RENDERED.
- *
- * CDP acknowledges the dispatch of a pointer event, not its processing on the
- * main thread, so a lift issued straight after the last move can race the
- * dragOver that decides where the drop lands. Two frames is the guarantee: the
- * first callback runs after the pending work is consumed, the second after
- * that work has painted.
- *
- * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
- * on schedule no matter how far behind the main thread is, which makes it
- * exactly wrong under load — the condition it is supposed to cover.
- */
-async function settleFrames(page: Page) {
-  await page.evaluate(() => new Promise<void>(resolve =>
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-  ))
-}
-
 /** Position of the row/tab whose text contains `needle`, throwing if absent. */
 async function textIndex(rows: Locator, needle: string): Promise<number> {
   const texts = await rows.allTextContents()
@@ -81,62 +62,6 @@ async function openSheet(page: Page): Promise<Locator> {
     return first !== null && second !== null && first.y === second.y
   }).toBe(true)
   return rows
-}
-
-/**
- * Touch-press `grip`, travel past the 10px activation distance, and drag
- * until the DRAGGED ROW's center sits on `target` — then lift.
- *
- * The finger does not stop at `target` itself: solid-dnd's collision
- * reference is the dragged element's transformed CENTER, which keeps the
- * grip-to-center offset it had at the press. A grip press therefore carries
- * the reference half a row past the finger, and a drop aimed at the finger's
- * position resolves a DIFFERENT droppable (observed: the tab-bar zone, a
- * same-tile no-op) whenever the drag runs right-to-left. Aiming the row's
- * center at the target makes the drop land on the target from any direction.
- *
- * `draggedRow` is also the oracle: the drag's start AND end are confirmed
- * against its `tabDragging` class, so a press that somehow never activated —
- * or a lift the drag pipeline never saw — fails HERE instead of as a
- * mysterious unchanged order later.
- */
-async function touchDragGripOnto(
-  grip: { x: number, y: number },
-  target: { x: number, y: number },
-  page: Page,
-  draggedRow: Locator,
-) {
-  const rowBox = (await draggedRow.boundingBox())!
-  // The collision reference sits this far right of the finger for the whole
-  // gesture (grip press): aim the finger so the reference lands on target.
-  const referenceOffsetX = rowBox.x + rowBox.width / 2 - grip.x
-  const fingerTarget = { x: target.x - referenceOffsetX, y: target.y }
-
-  const finger = await touchDown(page, grip.x, grip.y)
-  try {
-    // A move comfortably past the sensor's 10px activation distance, then a
-    // short pause for the drag to start before the move to the target —
-    // solid-dnd recomputes droppable collisions on every move, the same
-    // shape the mouse-driven reorder specs use.
-    await finger.moveTo(grip.x + 8, grip.y + 20)
-    await expect(draggedRow).toHaveClass(/tabDragging/)
-    const steps = 12
-    for (let step = 1; step <= steps; step++) {
-      await finger.moveTo(
-        grip.x + 8 + ((fingerTarget.x - grip.x - 8) * step) / steps,
-        grip.y + 20 + ((fingerTarget.y - grip.y - 20) * step) / steps,
-      )
-    }
-    // Settle before lifting, or a lift that races the final dragOver resolves
-    // the drop prematurely.
-    await settleFrames(page)
-  }
-  finally {
-    await finger.end()
-  }
-  // The lift ended the drag: a press whose pointerup the pipeline lost would
-  // leave the row lifted and the reorder would never be attempted.
-  await expect(draggedRow).not.toHaveClass(/tabDragging/)
 }
 
 test.describe('mobile tab sheet (phone)', () => {
@@ -190,12 +115,13 @@ test.describe('mobile tab sheet (phone)', () => {
     const grip = alphaRow.locator('[data-drag-handle]')
     const gripBox = (await grip.boundingBox())!
     const targetBox = (await rows.filter({ hasText: 'Beta' }).boundingBox())!
-    await touchDragGripOnto(
-      { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
-      { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 },
+    await touchDragGripOnto({
       page,
-      alphaRow,
-    )
+      grip: { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
+      target: { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 },
+      draggedRow: alphaRow,
+      draggingClass: /tabDragging/,
+    })
     await expect.poll(async () => await textIndex(rows, 'Beta') < await textIndex(rows, 'Alpha')).toBe(true)
   })
 
@@ -405,10 +331,27 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
     const transcript = page.locator('[data-chat-scroll-container="true"]')
     const size = page.viewportSize()!
 
-    /** A tap: down and up at one point. `dx` drags instead, past the slop. */
+    /**
+     * A tap: down and up at one point. `dx` drags instead, past the slop.
+     *
+     * BOTH events go out in ONE evaluate. The recognizer refuses a press that
+     * lasts `motion.longPress` (500ms) or more, because that gesture belongs to
+     * text selection -- and two `dispatchEvent` calls are two CDP round trips,
+     * which under load spend that entire budget before the release arrives. The
+     * tap then reads as a long press and the keyboard stays up: a failure of the
+     * driving, not of the app. One evaluate puts the two events microseconds
+     * apart, however much load the machine carries.
+     *
+     * `pointerId` and `isPrimary` are explicit for the same reason -- the
+     * recognizer keys its press on both, and neither has a useful default on
+     * `PointerEvent`.
+     */
     const tapTranscript = async (dx = 0) => {
-      await transcript.dispatchEvent('pointerdown', { clientX: 100, clientY: 100 })
-      await transcript.dispatchEvent('pointerup', { clientX: 100 + dx, clientY: 100 })
+      await transcript.evaluate((el, moveX) => {
+        const shared = { bubbles: true, isPrimary: true, pointerId: 1, clientY: 100 }
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...shared, clientX: 100 }))
+        el.dispatchEvent(new PointerEvent('pointerup', { ...shared, clientX: 100 + moveX }))
+      }, dx)
     }
 
     await editor.click()
@@ -539,12 +482,13 @@ test.describe('tablet touch (desktop layout)', () => {
     await expect(grip).toBeVisible()
     const gripBox = (await grip.boundingBox())!
     const betaBox = (await betaTab.boundingBox())!
-    await touchDragGripOnto(
-      { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
-      { x: betaBox.x + betaBox.width / 2, y: betaBox.y + betaBox.height / 2 },
+    await touchDragGripOnto({
       page,
-      alphaTab,
-    )
+      grip: { x: gripBox.x + gripBox.width / 2, y: gripBox.y + gripBox.height / 2 },
+      target: { x: betaBox.x + betaBox.width / 2, y: betaBox.y + betaBox.height / 2 },
+      draggedRow: alphaTab,
+      draggingClass: /tabDragging/,
+    })
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, from any starting order. Polled: the reorder lands when the
     // store confirms it, which can be after the lift.

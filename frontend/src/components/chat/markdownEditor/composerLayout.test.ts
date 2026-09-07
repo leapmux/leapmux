@@ -40,9 +40,19 @@ function stubbedRow(width: number): HTMLElement {
   return row
 }
 
+/**
+ * An action slot of a given width, built as a `<span>` so it picks up the
+ * `offsetWidth` stub above: ten pixels per character.
+ */
+function stubbedActionSlot(width: number): HTMLElement {
+  const slot = document.createElement('span')
+  slot.textContent = 'x'.repeat(Math.round(width / CHAR_PX))
+  return slot
+}
+
 /** Build a layout over stubbed DOM and run `fn` with it inside a reactive root. */
 function withLayout(
-  opts: { rowWidth?: number, observe?: boolean },
+  opts: { rowWidth?: number, actionSlotWidth?: number, observe?: boolean },
   fn: (layout: ReturnType<typeof createComposerLayout>) => void,
 ) {
   document.body.replaceChildren()
@@ -51,12 +61,15 @@ function withLayout(
   const row = opts.rowWidth == null ? undefined : stubbedRow(opts.rowWidth)
   if (row)
     document.body.appendChild(row)
+  const actionSlot = opts.actionSlotWidth == null ? undefined : stubbedActionSlot(opts.actionSlotWidth)
+  if (actionSlot)
+    document.body.appendChild(actionSlot)
 
   createRoot((dispose) => {
     const layout = createComposerLayout({
       editorRoot: () => root,
       row: () => row,
-      actionSlot: () => undefined,
+      actionSlot: () => actionSlot,
       // No rendered block: the layout falls back to the classifier's plain text,
       // which is the pre-mount path and keeps this test independent of Milkdown.
       firstBlock: () => undefined,
@@ -83,6 +96,29 @@ describe('createComposerLayout', () => {
     withLayout({ rowWidth: undefined }, (layout) => {
       layout.setDocStats({ multiLine: false, text: 'x'.repeat(500) })
       expect(layout.contentExpanded()).toBe(false)
+    })
+  })
+
+  it('keeps an EMPTY composer collapsed however little width the action row leaves', () => {
+    // `footerSlot` caps its own width at the row minus `--composer-left-pad`
+    // and one `space-1`, and an action row AT that cap drives the available
+    // width to zero. The expand test subtracts a 16px margin, so a text width
+    // of 0 satisfied `0 > 0 - 16` and the composer opened in the tall layout
+    // with nothing typed in it. A row of 100 with a rightPad of 100 reproduces
+    // that: available width 0, empty document.
+    withLayout({ rowWidth: 100, actionSlotWidth: 100 }, (layout) => {
+      expect(layout.rightPad()).toBe(100)
+      layout.setDocStats({ multiLine: false, text: '' })
+      expect(layout.contentExpanded()).toBe(false)
+    })
+  })
+
+  it('still expands for real text once the action row leaves no collapsed width', () => {
+    // The guard above is for the EMPTY document alone. Anything typed into a
+    // composer with no room genuinely has to wrap, so it must still expand.
+    withLayout({ rowWidth: 100, actionSlotWidth: 100 }, (layout) => {
+      layout.setDocStats({ multiLine: false, text: 'x' })
+      expect(layout.contentExpanded()).toBe(true)
     })
   })
 

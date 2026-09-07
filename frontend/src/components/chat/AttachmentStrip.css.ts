@@ -5,7 +5,11 @@ export const strip = style({
   gap: 'var(--space-2)',
   overflowX: 'auto',
   scrollbarWidth: 'none',
-  padding: 'var(--space-1) var(--space-3) var(--space-1) var(--space-3)',
+  // `inputArea` owns the gap to the neighbours; see its comment. The pills'
+  // focus ring survives the loss: the project draws it INSIDE the element
+  // (`outline-offset: -2px` in `~/styles/global.css.ts`), so this scroll
+  // container never clips it.
+  padding: 0,
   flexShrink: 0,
 })
 
@@ -18,7 +22,7 @@ export const pill = style({
   alignItems: 'center',
   gap: 'var(--space-1)',
   padding: '2px var(--space-2)',
-  borderRadius: 'var(--radius-small)',
+  borderRadius: 'var(--radius-medium)',
   backgroundColor: 'var(--card)',
   border: '1px solid var(--border)',
   fontSize: 'var(--text-8)',

@@ -1,6 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentInputKind,
@@ -8,6 +9,8 @@ import {
   AgentInputState,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
+import { flush } from '~/test-support/async'
+import { pointerEvent } from '~/test-support/pointer'
 import { AgentInputQueue } from './AgentInputQueue'
 
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
@@ -19,6 +22,10 @@ function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSch
     state: AgentInputState.QUEUED,
     ...overrides,
   })
+}
+
+function snapshotOf(items: ReturnType<typeof item>[]) {
+  return create(AgentInputQueueSnapshotSchema, { agentId: 'agent-1', items })
 }
 
 function renderQueue(overrides: {
@@ -34,20 +41,24 @@ function renderQueue(overrides: {
     onRetry: vi.fn(),
     onSteer: vi.fn(),
   }
-  const snapshot = create(AgentInputQueueSnapshotSchema, {
-    agentId: 'agent-1',
-    items: overrides.items ?? [item('one'), item('two')],
-  })
+  // A SIGNAL, not a fixed value, because the Worker pushes a whole new snapshot
+  // for every queue event -- new objects, new array, same ids. `push` replays
+  // that, which is what the keyed-row cases below need.
+  const [snapshot, setSnapshot] = createSignal(snapshotOf(overrides.items ?? [item('one'), item('two')]))
   render(() => (
     <AgentInputQueue
-      snapshot={snapshot}
+      snapshot={snapshot()}
       clientId="client-a"
       activeEditInputId={overrides.activeEditInputId}
       supportsSteering={overrides.supportsSteering ?? false}
       {...handlers}
     />
   ))
-  return handlers
+  return {
+    ...handlers,
+    /** Deliver a fresh snapshot, exactly as an `inputQueueChanged` event does. */
+    push: (items: ReturnType<typeof item>[]) => setSnapshot(snapshotOf(items)),
+  }
 }
 
 describe('agentInputQueue', () => {
@@ -87,52 +98,100 @@ describe('agentInputQueue', () => {
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), '')
   })
 
-  it('moves an input dragged upward before its drop target', async () => {
-    const handlers = renderQueue()
-    const first = screen.getByTestId('queued-input-one')
-    const second = screen.getByTestId('queued-input-two')
+  it('gives a dispatching row an inert grip, so it offers no drag it cannot do', () => {
+    renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    const dispatching = screen.getByTestId('queue-drag-handle-one')
+    const movable = screen.getByTestId('queue-drag-handle-two')
+    // Hidden rather than REMOVED, so the grip keeps its flex slot and the row's
+    // text does not shift one column left. The element being in the document is
+    // the half jsdom can check; `visibility: hidden` versus `display: none` is a
+    // declaration in `./AgentInputQueue.css.ts`, and vitest loads no stylesheet.
+    expect(dispatching).toBeInTheDocument()
+    expect(dispatching.className).toContain('dragHandleInert')
+    expect(movable.className).not.toContain('dragHandleInert')
+  })
 
-    await fireEvent.dragStart(second)
-    await fireEvent.drop(first)
+  it('withholds the drag activators from a dispatching row grip', async () => {
+    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    await flush()
+    // An affordance that cannot drag must not behave like one. Hiding the grip
+    // is only half of it: without withholding the activators, a press that
+    // reached the hidden box would still lift the row.
+    screen.getByTestId('queue-drag-handle-one').dispatchEvent(pointerEvent('pointerdown', { x: 10, y: 10, pointerType: 'touch' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 90, pointerType: 'touch' }))
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 90, pointerType: 'touch' }))
+    expect(handlers.onMove).not.toHaveBeenCalled()
+    expect(screen.getByTestId('queued-input-one').className).not.toContain('itemDragging')
+  })
+
+  it('turns a drop into onMove, which is the wiring the arithmetic tests cannot reach', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await flush()
+    // Drives the REAL sensor and the real solid-dnd context, so this covers
+    // `onDragEnd`, the `SortableProvider` ids, and the `qi-` prefix on both
+    // sides. Every rect is zero in jsdom, so `closestCenter` measures every
+    // droppable at distance 0 and keeps the FIRST it saw -- the head. The drop
+    // target is therefore deterministic, and the geometry stays with the
+    // Playwright specs.
+    screen.getByTestId('queued-input-two').dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointerup', { x: 50, y: 90, pointerType: 'mouse' }))
 
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), 'one')
   })
 
-  it('moves an input dragged downward onto the drop target slot', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+  it('drops onto the first slot the dispatching head leaves free', async () => {
+    const handlers = renderQueue({
+      items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')],
+    })
+    await flush()
+    // The head is a droppable like any other, so it used to win this collision:
+    // the list previewed the move and `handleDragEnd` then discarded it, leaving
+    // the row snapped back with no message. The collision detector takes every
+    // DISPATCHING row out of the candidates, so the drop lands on the first
+    // legal slot instead. Every rect is zero in jsdom, so `closestCenter` keeps
+    // the FIRST candidate it saw -- which the filter makes `qi-two`.
+    screen.getByTestId('queued-input-three').dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointerup', { x: 50, y: 90, pointerType: 'mouse' }))
 
-    await fireEvent.dragStart(screen.getByTestId('queued-input-one'))
-    await fireEvent.drop(screen.getByTestId('queued-input-two'))
-
-    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), 'three')
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'three' }), 'two')
   })
 
-  it('moves an input dragged onto the last row to the end', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+  it('keeps an armed Delete armed across a snapshot the Worker pushes', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await fireEvent.click(within(screen.getByTestId('queued-input-one')).getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('button', { name: 'Confirm delete?' })).toBeInTheDocument()
 
-    await fireEvent.dragStart(screen.getByTestId('queued-input-one'))
-    await fireEvent.drop(screen.getByTestId('queued-input-three'))
+    // Any queue event at all delivers a whole new snapshot with new objects. A
+    // reference-keyed list rebuilt every row here, so the armed state vanished
+    // between the user's two clicks and the second click merely re-armed.
+    handlers.push([item('one'), item('two', { state: AgentInputState.FAILED, error: 'offline' })])
+    await flush()
 
-    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), '')
+    const armed = screen.getByRole('button', { name: 'Confirm delete?' })
+    expect(armed).toBeInTheDocument()
+    await fireEvent.click(armed)
+    expect(handlers.onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
   })
 
-  it('ignores a drop on the dragged row itself', async () => {
-    const handlers = renderQueue()
-    const first = screen.getByTestId('queued-input-one')
+  it('follows a row into DISPATCHING without remounting it', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await flush()
+    const grip = screen.getByTestId('queue-drag-handle-one')
+    expect(grip.className).not.toContain('dragHandleInert')
 
-    await fireEvent.dragStart(first)
-    await fireEvent.drop(first)
+    handlers.push([item('one', { state: AgentInputState.DISPATCHING }), item('two')])
+    await flush()
 
-    expect(handlers.onMove).not.toHaveBeenCalled()
-  })
-
-  it('ignores a drop on a dispatching row', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
-
-    await fireEvent.dragStart(screen.getByTestId('queued-input-two'))
-    await fireEvent.drop(screen.getByTestId('queued-input-one'))
-
-    expect(handlers.onMove).not.toHaveBeenCalled()
+    // The SAME node, because the row's key did not change. Every per-item read
+    // in the row therefore has to go through the live accessor; one that
+    // captured the item at mount would still report the row as draggable.
+    expect(screen.getByTestId('queue-drag-handle-one')).toBe(grip)
+    expect(grip.className).toContain('dragHandleInert')
+    expect(within(screen.getByTestId('queued-input-two')).getByRole('button', { name: 'Move Up' })).toBeDisabled()
   })
 
   it('does not move an item across a dispatching head', () => {
@@ -143,7 +202,7 @@ describe('agentInputQueue', () => {
 
   it('shows Take Over for an edit owned by another client', async () => {
     const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-b' })] })
-    await fireEvent.click(screen.getByText('Take Over'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Take Over' }))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
   })
 
@@ -162,7 +221,7 @@ describe('agentInputQueue', () => {
 
   it('resumes an owned edit that this panel has not loaded', async () => {
     const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-a' })] })
-    await fireEvent.click(screen.getByText('Resume Edit'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Resume Edit' }))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), false)
   })
 
@@ -171,7 +230,7 @@ describe('agentInputQueue', () => {
       items: [item('one', { editOwnerClientId: 'client-a' })],
       activeEditInputId: 'one',
     })
-    await fireEvent.click(screen.getByText('Cancel Edit'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
     expect(handlers.onCancelEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
   })
 
@@ -204,18 +263,78 @@ describe('agentInputQueue', () => {
   it('offers Retry for a failed head', async () => {
     const handlers = renderQueue({ items: [item('one', { state: AgentInputState.FAILED, error: 'offline' })] })
     expect(screen.getByText('offline')).toBeInTheDocument()
-    await fireEvent.click(screen.getByText('Retry'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(handlers.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), false)
   })
 
   it('does not offer Retry while the failed head is edited', () => {
     renderQueue({ items: [item('one', { state: AgentInputState.FAILED, editOwnerClientId: 'client-a' })] })
-    expect(screen.queryByText('Retry')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
   })
 
   it('marks a delivery-uncertain retry as requiring confirmation', async () => {
     const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DELIVERY_UNCERTAIN })] })
-    await fireEvent.click(screen.getByText('Retry'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(handlers.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
+  })
+
+  it('keeps the first Delete click from deleting', async () => {
+    const handlers = renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(handlers.onDelete).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+
+  it('deletes on the second Delete click', async () => {
+    const handlers = renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Confirm delete?' }))
+    expect(handlers.onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
+  })
+
+  it('arms Delete as an outline, never as a filled danger button', async () => {
+    renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const armed = screen.getByRole('button', { name: 'Confirm delete?' })
+    // `data-variant` alone paints a filled danger background. Keeping the
+    // `outline` class is what reduces it to a danger BORDER, so the pair is
+    // the contract, not either half.
+    expect(armed).toHaveAttribute('data-variant', 'danger')
+    expect(armed.classList.contains('outline')).toBe(true)
+  })
+
+  it('disarms Delete when the button loses focus', async () => {
+    const handlers = renderQueue({ items: [item('one')] })
+    await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await fireEvent.blur(screen.getByRole('button', { name: 'Confirm delete?' }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+    expect(handlers.onDelete).not.toHaveBeenCalled()
+  })
+
+  it('gives every row action a name although the row renders no button text', () => {
+    renderQueue({ items: [item('one'), item('two')], supportsSteering: true })
+    const first = screen.getByTestId('queued-input-one')
+    for (const name of ['Move Up', 'Move Down', 'Edit', 'Delete']) {
+      // `getByRole` throws when the name matches nothing, so the lookup itself
+      // proves the aria-label. The icon needs its own assertion: an EMPTY
+      // button has no text content either, so the text check alone passes for a
+      // square with nothing drawn in it.
+      const button = within(first).getByRole('button', { name })
+      expect(button.textContent).toBe('')
+      expect(button.querySelector('svg')).not.toBeNull()
+    }
+  })
+
+  it('puts Steer last, as the one action that keeps a visible label', () => {
+    renderQueue({
+      items: [item('one', { canSteer: true }), item('two')],
+      supportsSteering: true,
+    })
+    const first = screen.getByTestId('queued-input-one')
+    const buttons = within(first).getAllByRole('button')
+    const steer = within(first).getByRole('button', { name: 'Steer' })
+    expect(buttons[buttons.length - 1]).toBe(steer)
+    expect(steer).toHaveTextContent('Steer')
   })
 })

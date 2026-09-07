@@ -174,6 +174,18 @@ describe('newTabMenuItems', () => {
       }
     })
 
+    it('keeps each icon button named after what it does, not after the reason', () => {
+      renderItems({ disabledReason: reason })
+      // The provider buttons hold a glyph and no text, so they need an
+      // `aria-label`. It must be their own NAME: an `ariaLabel` that reused the
+      // tooltip's `text` made the blocked reason the name once the worker went
+      // offline, which is the exact failure `title` is banned for. The reason
+      // travels as the DESCRIPTION asserted above.
+      const button = screen.getByTestId(`menu-new-agent-${AgentProvider.CLAUDE_CODE}`)
+      expect(button).toHaveAccessibleName('New Claude Code agent')
+      expect(button.getAttribute('aria-label')).not.toBe(reason)
+    })
+
     it('fires nothing while disabled', async () => {
       const handlers = renderItems({ disabledReason: reason })
       await fireEvent.click(screen.getByTestId(`menu-new-agent-${AgentProvider.CODEX}`))

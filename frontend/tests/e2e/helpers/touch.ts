@@ -1,5 +1,5 @@
-import type { Page } from '@playwright/test'
-import { devices } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
+import { devices, expect } from '@playwright/test'
 
 /**
  * Real touch input for the E2E specs, plus the device metrics that give Blink a coarse pointer.
@@ -132,4 +132,86 @@ export async function touchSwipe(
   finally {
     await finger.end()
   }
+}
+
+/**
+ * Wait until the input events already dispatched are RENDERED.
+ *
+ * CDP acknowledges the dispatch of a pointer event, not its processing on the
+ * main thread, so a lift issued straight after the last move can race the
+ * dragOver that decides where the drop lands. Two frames is the guarantee: the
+ * first callback runs after the main thread consumes the pending work, the
+ * second after that work paints.
+ *
+ * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
+ * on schedule however far behind the main thread runs, which makes it exactly
+ * wrong under load -- the condition it exists to cover.
+ */
+export async function settleFrames(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise<void>(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  ))
+}
+
+/**
+ * Touch-press `grip`, travel past the 10px activation distance, and drag until
+ * the DRAGGED ROW's center sits on `target` -- then lift.
+ *
+ * The finger does not stop at `target` itself: solid-dnd's collision reference
+ * is the dragged element's transformed CENTER, which keeps the grip-to-center
+ * offset it had at the press. A grip press therefore carries the reference half
+ * a row past the finger, and a drop aimed at the finger's position resolves a
+ * DIFFERENT droppable (observed: the tab-bar zone, a same-tile no-op) whenever
+ * the drag runs right-to-left. Aiming the row's center at the target makes the
+ * drop land on the target from any direction.
+ *
+ * `draggedRow` is also the oracle: the drag's start AND end are confirmed
+ * against `draggingClass`, so a press that somehow never activated -- or a lift
+ * the drag pipeline never saw -- fails HERE instead of as a mysterious
+ * unchanged order later. Each surface specifies that class itself, because the
+ * class is the surface's own (`tabDragging`, `itemDragging`).
+ *
+ * Shared by every grip-drag spec. The gesture's shape is not obvious -- the
+ * reference offset above is the part a second copy would get wrong -- so it has
+ * ONE home.
+ */
+export async function touchDragGripOnto(opts: {
+  page: Page
+  grip: TouchPoint
+  target: TouchPoint
+  draggedRow: Locator
+  draggingClass: RegExp
+}): Promise<void> {
+  const { page, grip, target, draggedRow, draggingClass } = opts
+  const rowBox = (await draggedRow.boundingBox())!
+  // The collision reference sits this far right of the finger for the whole
+  // gesture (grip press): aim the finger so the reference lands on target.
+  const referenceOffsetX = rowBox.x + rowBox.width / 2 - grip.x
+  const fingerTarget = { x: target.x - referenceOffsetX, y: target.y }
+
+  const finger = await touchDown(page, grip.x, grip.y)
+  try {
+    // A move comfortably past the sensor's 10px activation distance, then a
+    // short pause for the drag to start before the move to the target --
+    // solid-dnd recomputes droppable collisions on every move, the same shape
+    // the mouse-driven reorder specs use.
+    await finger.moveTo(grip.x + 8, grip.y + 20)
+    await expect(draggedRow).toHaveClass(draggingClass)
+    const steps = 12
+    for (let step = 1; step <= steps; step++) {
+      await finger.moveTo(
+        grip.x + 8 + ((fingerTarget.x - grip.x - 8) * step) / steps,
+        grip.y + 20 + ((fingerTarget.y - grip.y - 20) * step) / steps,
+      )
+    }
+    // Settle before lifting, or a lift that races the final dragOver resolves
+    // the drop prematurely.
+    await settleFrames(page)
+  }
+  finally {
+    await finger.end()
+  }
+  // The lift ended the drag: a press whose pointerup the pipeline lost would
+  // leave the row lifted and the reorder would never be attempted.
+  await expect(draggedRow).not.toHaveClass(draggingClass)
 }

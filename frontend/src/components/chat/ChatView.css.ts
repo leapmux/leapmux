@@ -1,7 +1,7 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { chipBase } from '~/styles/shared.css'
-import { breakpoints, motion } from '~/styles/tokens'
+import { breakpoints, composerContainer, motion } from '~/styles/tokens'
 import { CHAT_PAD_LEFT_VAR, CHAT_PAD_RIGHT_VAR, CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
 import { BAND_BORDER_PX } from './chatRowGeometry'
 import { contentColumnBleed } from './messageStyles.css'
@@ -274,6 +274,32 @@ export const loadingOlderIndicator = style([loadingIndicatorBase, { top: 'var(--
 export const loadingNewerIndicator = style([loadingIndicatorBase, { bottom: 'var(--space-3)' }])
 
 export const inputArea = style({
+  // ONE declaration owns every vertical gap in this column: the pause banner,
+  // the input queue, the attachment strip and the composer box.
+  //
+  // Each of those children keeps its own vertical padding at zero. Padding
+  // ADDS where two children meet. It never collapses the way margin does.
+  // Each child owned its own spacing before. The queue's bottom padding and
+  // the strip's top padding then stacked into 8px, while every other boundary
+  // was 4px. The size of one gap also changed with which optional children
+  // rendered. A container `gap` does neither.
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+  // The composer's own width, named, so the controls inside it can query it.
+  //
+  // The composer sits inside a resizable tile and a floating window, and either
+  // can be a small fraction of the viewport. A VIEWPORT media query therefore
+  // answers a question about the wrong box: a 260px composer on a 1200px
+  // display rendered "Pause Queue", "Interrupt" and "Send" in full, which
+  // crowded the `[+]` button and drove the collapsed text width to zero.
+  // `hideInNarrowComposer` in `~/styles/shared.css.ts` queries this name.
+  //
+  // `inline-size`, not `size`: the query asks about the width alone, and `size`
+  // would also apply block containment, which needs a height this column does
+  // not have.
+  containerType: 'inline-size',
+  containerName: composerContainer,
   // Bottom padding is space-1 when the status bar is shown beneath, and
   // space-2 when it's hidden (the status bar's own space-2 bottom padding
   // then provides the gap to the window edge instead).
@@ -286,27 +312,28 @@ globalStyle(`${inputArea}[data-no-status-bar]`, {
 })
 
 /**
- * The composer's action cluster (Interrupt + Send). Rendered in the box's
- * top-right (collapsed) or bottom-right (expanded) overlay slot, so it's a
- * plain inline-flex with a small gap; the positioning lives in
- * the `footerSlot` style in `./markdownEditor/MarkdownEditor.css.ts`.
+ * The composer's action cluster: the queue pause toggle, Interrupt and Send in
+ * the corner layout, and the pause toggle alone in the full-width
+ * control-request layout.
+ *
+ * Rendered in the box's top-right (collapsed) or bottom-right (expanded)
+ * overlay slot, so it is a plain flex row with a small gap; the positioning
+ * lives in the `footerSlot` style in `./markdownEditor/MarkdownEditor.css.ts`.
+ *
+ * It WRAPS, and it may shrink below its content. This cluster is the only
+ * child of `footerSlot`, so `flex-wrap` on the slot itself can never fire --
+ * a slot with one item has nothing to move to a second line. Without these two
+ * declarations the cluster kept its one-line width, overflowed the slot's
+ * capped left edge, and painted over the `[+]` button that the cap exists to
+ * protect.
  */
 export const actionCluster = style({
-  display: 'inline-flex',
+  display: 'flex',
+  flexWrap: 'wrap',
+  justifyContent: 'flex-end',
   alignItems: 'center',
+  minWidth: 0,
   gap: 'var(--space-1)',
-})
-
-/**
- * Text label inside an action button (Interrupt/Send). Hidden below `sm` so
- * the buttons become icon-only on narrow screens, saving horizontal space.
- */
-export const actionLabel = style({
-  '@media': {
-    [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      display: 'none',
-    },
-  },
 })
 
 export const scrollToBottomButton = style({

@@ -1,6 +1,8 @@
 import type { Id } from '@thisbeyond/solid-dnd'
+import type { EdgeScroller } from '~/lib/dragAutoScroll'
 import { useDragDropContext } from '@thisbeyond/solid-dnd'
 import { onCleanup, onMount } from 'solid-js'
+import { scrollableAncestor, startEdgeScroll } from '~/lib/dragAutoScroll'
 import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
 import { motion } from '~/styles/tokens'
 
@@ -22,6 +24,8 @@ export const ACTIVATION_DISTANCE_PX = 10
 export const ACTIVATION_DELAY_MS = 250
 
 const SENSOR_ID = 'pointer-sensor'
+/** The transformer that adds the auto-scroll back to the dragged row's offset. */
+const AUTO_SCROLL_TRANSFORMER_ID = 'pointer-sensor-auto-scroll'
 
 /**
  * Presses that start inside embedded UI belong to that UI, not to a drag:
@@ -80,17 +84,30 @@ const EMBEDDED_UI_SELECTOR = `${INPUT_OR_EDITABLE_SELECTOR}, [popover]`
  * Mouse and pen behavior stays identical to upstream: 250ms of hold or 10px
  * of travel, either one starts the drag.
  *
- * Rendered once, in ./SectionDragContext.tsx, in place of
- * `<DragDropSensors />`.
+ * Rendered once inside EVERY `DragDropProvider`, in place of
+ * `<DragDropSensors />`. There are two providers: the shell's, in
+ * ./SectionDragContext.tsx, and the composer's own, in
+ * ~/components/chat/AgentInputQueue.tsx.
  */
 export function GuardedPointerSensor() {
   const context = useDragDropContext()
-  // `DragDropProvider` is always an ancestor at the one mount site, but the hook is
+  // `DragDropProvider` is always an ancestor at every mount site, but the hook is
   // typed as nullable and a test tree could render this bare.
   if (!context)
     return null
 
-  const [state, { addSensor, removeSensor, sensorStart, sensorMove, sensorEnd, dragStart, dragEnd }] = context
+  const [state, {
+    addSensor,
+    removeSensor,
+    sensorStart,
+    sensorMove,
+    sensorEnd,
+    dragStart,
+    dragEnd,
+    addTransformer,
+    removeTransformer,
+    recomputeLayouts,
+  }] = context
 
   const isActiveSensor = () => state.active.sensorId === SENSOR_ID
 
@@ -98,6 +115,8 @@ export function GuardedPointerSensor() {
   let activationDelayTimeoutId: ReturnType<typeof setTimeout> | null = null
   let holdReleaseTimeoutId: ReturnType<typeof setTimeout> | null = null
   let activationDraggableId: Id | null = null
+  /** The element the press started on. The scroller to auto-scroll is above it. */
+  let pressTarget: Element | null = null
   /** The pointer this sensor tracks. `null` when no press is live. */
   let trackedPointerId: number | null = null
   /** This press is a touch, so it activates on movement only — never on a hold timer. */
@@ -107,6 +126,12 @@ export function GuardedPointerSensor() {
    * moving. The menu owns it now; no later move may start a drag from it.
    */
   let touchHoldExpired = false
+  /** The live edge-scroll loop, while a drag runs inside a scroller. */
+  let edgeScroller: EdgeScroller | undefined
+  /** The draggable this sensor registered the auto-scroll transformer on. */
+  let autoScrollDraggableId: Id | null = null
+  /** How far the auto-scroll moved the container since this drag started. */
+  let autoScrolled = 0
 
   // Declarations, not arrow constants: these handlers reference one another in
   // a cycle (attach -> onPointerMove -> onActivate -> detach -> onPointerMove),
@@ -128,6 +153,7 @@ export function GuardedPointerSensor() {
     document.addEventListener('pointercancel', onPointerCancel)
 
     activationDraggableId = draggableId
+    pressTarget = target
     trackedPointerId = event.pointerId
     isTouchPress = event.pointerType === 'touch'
     touchHoldExpired = false
@@ -154,17 +180,77 @@ export function GuardedPointerSensor() {
       clearTimeout(holdReleaseTimeoutId)
       holdReleaseTimeoutId = null
     }
+    stopEdgeScroll()
     trackedPointerId = null
+    pressTarget = null
     document.removeEventListener('pointermove', onPointerMove)
     document.removeEventListener('pointerup', onPointerUp)
     document.removeEventListener('pointercancel', onPointerCancel)
     document.removeEventListener('selectionchange', clearSelection)
   }
 
+  /**
+   * Follow the pointer to the edges of the nearest scrolling ancestor, and
+   * scroll it while the pointer rests there.
+   *
+   * Every draggable surface in this app lives in a scroller — the input queue's
+   * own box, the mobile tab sheet's list, the sidebar — and the drag moves the
+   * row with a CSS transform INSIDE it. Without this the row is clipped at the
+   * edge and every slot past the fold is unreachable: the drop lands on the last
+   * VISIBLE row rather than the one the user aimed at. A native HTML5 drag got
+   * this from the browser, and a pointer drag has to do it.
+   *
+   * TWO corrections keep the drag consistent with the scroll, and both are
+   * necessary:
+   *
+   *   - A TRANSFORMER on the dragged item. The drag transform is the pointer's
+   *     own delta, so a container that scrolls by S moves the row's box up by S
+   *     and the row leaves the cursor. Adding the accumulated scroll back keeps
+   *     the row under the finger.
+   *   - `recomputeLayouts()`. solid-dnd caches every droppable's rect at
+   *     `dragStart` and never refreshes it during the drag, so after a scroll
+   *     every cached rect names a position the row no longer occupies and the
+   *     collision detector picks the wrong target.
+   */
+  function startEdgeScrollForDrag() {
+    const scroller = scrollableAncestor(pressTarget)
+    const draggableId = activationDraggableId
+    if (!scroller || draggableId === null)
+      return
+    autoScrolled = 0
+    autoScrollDraggableId = draggableId
+    addTransformer('draggables', draggableId, {
+      id: AUTO_SCROLL_TRANSFORMER_ID,
+      // After the sensor's own transformer, so it corrects the pointer delta
+      // rather than being corrected by it.
+      order: 1,
+      callback: transform => ({ x: transform.x, y: transform.y + autoScrolled }),
+    })
+    edgeScroller = startEdgeScroll(scroller, (applied) => {
+      autoScrolled += applied
+      recomputeLayouts()
+    })
+  }
+
+  // Removes ONLY what `startEdgeScrollForDrag` added. `detach` runs for every
+  // press, including the ones that never activate a drag, so removing by
+  // `activationDraggableId` would ask the context to drop a transformer that no
+  // press ever registered.
+  function stopEdgeScroll() {
+    edgeScroller?.stop()
+    edgeScroller = undefined
+    autoScrolled = 0
+    if (autoScrollDraggableId === null)
+      return
+    removeTransformer('draggables', autoScrollDraggableId, AUTO_SCROLL_TRANSFORMER_ID)
+    autoScrollDraggableId = null
+  }
+
   function onActivate() {
     if (!state.active.sensor) {
       sensorStart(SENSOR_ID, initialCoordinates)
       dragStart(activationDraggableId!)
+      startEdgeScrollForDrag()
       clearSelection()
       document.addEventListener('selectionchange', clearSelection)
     }
@@ -194,6 +280,7 @@ export function GuardedPointerSensor() {
     if (isActiveSensor()) {
       event.preventDefault()
       sensorMove(coordinates)
+      edgeScroller?.track(coordinates.y)
     }
   }
 

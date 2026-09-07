@@ -10,6 +10,8 @@ import type { AgentSessionInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab } from '~/stores/tab.types'
+import Pause from 'lucide-solid/icons/pause'
+import Play from 'lucide-solid/icons/play'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import Square from 'lucide-solid/icons/square'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, untrack } from 'solid-js'
@@ -20,7 +22,7 @@ import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
@@ -33,9 +35,11 @@ import { registerPanelSend, unregisterPanelSend } from '~/stores/focusedChatSend
 import { repoGitView } from '~/stores/repoGit'
 import { optionValuesFromGroups } from '~/stores/tab.helpers'
 import { workerInfoStore } from '~/stores/workerInfo.store'
+import { hideInNarrowComposer } from '~/styles/shared.css'
 import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AgentInputQueue } from './AgentInputQueue'
+import { AgentInputQueuePauseBanner } from './AgentInputQueuePauseBanner'
 import { clearAttachments as clearCachedAttachments } from './attachments'
 import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
@@ -133,20 +137,50 @@ export interface AgentEditorPanelProps {
   triggerSendRef?: (fn: () => void | Promise<void>) => void
 }
 
+/**
+ * Swallows the rejection of a queue RPC.
+ *
+ * `runQueueRpc` in `~/lib/agentInputQueueOperations` already shows the failure
+ * to the user and then rethrows, so every caller here owes the promise a
+ * handler and owes the user nothing further. One helper, so the reason is
+ * stated once rather than at each of the eight call sites.
+ */
+function fireQueueRpc(call: Promise<unknown> | undefined): void {
+  void call?.catch(() => {})
+}
+
+/**
+ * The queue's pause toggle, which shares the composer's action cluster with
+ * Interrupt and Send.
+ *
+ * `hideInNarrowComposer` hides the word below `sm`, so the three buttons shrink to
+ * icons together on a phone and the cluster stops crowding the `[+]` button.
+ * The tooltip carries the name once the word is gone -- and, through
+ * `ariaLabel`, so does the accessibility tree, which reads nothing from a
+ * `display: none` label.
+ */
 const AgentInputQueuePauseButton: Component<{
   paused: boolean
-  onSetPaused?: (paused: boolean) => Promise<void>
-}> = props => (
-  <button
-    type="button"
-    class="outline"
-    onMouseDown={keepFocusOnPress}
-    onClick={() => { void props.onSetPaused?.(!props.paused).catch(() => {}) }}
-    data-testid="queue-pause-button"
-  >
-    {props.paused ? 'Resume Queue' : 'Pause Queue'}
-  </button>
-)
+  busy: boolean
+  onToggle: () => void
+}> = (props) => {
+  const label = () => (props.paused ? 'Resume Queue' : 'Pause Queue')
+  return (
+    <Tooltip text={label()} ariaLabel>
+      <button
+        type="button"
+        class="outline"
+        disabled={props.busy}
+        onMouseDown={keepFocusOnPress}
+        onClick={() => props.onToggle()}
+        data-testid="queue-pause-button"
+      >
+        <Icon icon={props.paused ? Play : Pause} size="sm" />
+        <span class={hideInNarrowComposer}>{label()}</span>
+      </button>
+    </Tooltip>
+  )
+}
 
 export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let panelRef: HTMLDivElement | undefined
@@ -163,6 +197,33 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // rest of the second.
   const [enqueueInFlight, setEnqueueInFlight] = createSignal(false)
   const interruptLoading = createLoadingSignal()
+  // A paused queue changes what Send DOES, and it is what the banner and the
+  // two pause toggles state. ONE accessor answers the question for all four, so
+  // a change to the source or to the default cannot reach three of them and
+  // miss the fourth.
+  const queuePaused = () => props.inputQueue?.paused ?? false
+  // ONE in-flight mark for the pause RPC, shared by the two controls that fire
+  // it: the banner's Resume and the composer's toggle. Neither updates
+  // optimistically -- `queuePaused()` moves only when the Worker's snapshot
+  // lands -- so both still read "Resume" for the whole round trip, which is
+  // what invites a second press. The state converges either way, because the
+  // RPC carries an absolute boolean; the cost is that `runQueueRpc` raises one
+  // warn toast per failure, so two presses of one intent raise two toasts.
+  //
+  // A plain signal, NOT `createLoadingSignal`. That hook holds `loading` true
+  // for a one-second debounce after `stop()`, which steadies a spinner but
+  // would leave this toggle dead for a second after a flip that normally
+  // settles in milliseconds.
+  const [pauseInFlight, setPauseInFlight] = createSignal(false)
+  const setQueuePaused = (paused: boolean) => {
+    if (pauseInFlight())
+      return
+    const call = props.onSetQueuePaused?.(paused)
+    if (!call)
+      return
+    setPauseInFlight(true)
+    fireQueueRpc(call.finally(() => setPauseInFlight(false)))
+  }
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
 
@@ -498,6 +559,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         class={styles.inputArea}
         data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
       >
+        <AgentInputQueuePauseBanner
+          paused={queuePaused()}
+          busy={pauseInFlight()}
+          reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
+          onResume={() => setQueuePaused(false)}
+        />
         <AgentInputQueue
           snapshot={props.inputQueue}
           clientId={props.queueClientId ?? ''}
@@ -507,19 +574,19 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             queueEdit.loadQueueEdit(item, takeover, false)
           }}
           onDelete={(item) => {
-            void props.onDeleteQueueItem?.(item).then(() => queueEdit.clearQueueEditArtifacts(item)).catch(() => {})
+            fireQueueRpc(props.onDeleteQueueItem?.(item).then(() => queueEdit.clearQueueEditArtifacts(item)))
           }}
           onCancelEdit={(item) => {
-            void props.onCancelQueueEdit?.(item).then(() => queueEdit.clearQueueEditArtifacts(item)).catch(() => {})
+            fireQueueRpc(props.onCancelQueueEdit?.(item).then(() => queueEdit.clearQueueEditArtifacts(item)))
           }}
-          onMove={(item, beforeInputId) => { void props.onMoveQueueItem?.(item, beforeInputId).catch(() => {}) }}
+          onMove={(item, beforeInputId) => fireQueueRpc(props.onMoveQueueItem?.(item, beforeInputId))}
           onRetry={(item, confirmUncertain) => {
             if (confirmUncertain)
               setUncertainRetry(item)
             else
-              void props.onRetryQueueItem?.(item, false).catch(() => {})
+              fireQueueRpc(props.onRetryQueueItem?.(item, false))
           }}
-          onSteer={(item) => { void props.onSteerQueueItem?.(item).catch(() => {}) }}
+          onSteer={item => fireQueueRpc(props.onSteerQueueItem?.(item))}
         />
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
@@ -597,7 +664,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // The ONE place that decides whether a control request blocks an
           // attachment. `MarkdownEditor` reads these handlers at event time, so
           // an absent `attachments` refuses the paste and the drop by itself.
-          // `addFiles`'s second argument marks a pasted image, which renames it.
+          // `addFiles`'s second argument marks a pasted image, which changes its filename.
           attachments={!ctrl.activeControlRequest() && !enqueueInFlight()
             ? {
                 onPaste: files => addFiles(files, true),
@@ -674,7 +741,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   node: () => (
                     <>
                       <div class={styles.actionCluster}>
-                        <AgentInputQueuePauseButton paused={props.inputQueue?.paused ?? false} onSetPaused={props.onSetQueuePaused} />
+                        <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} onToggle={() => setQueuePaused(!queuePaused())} />
                       </div>
                       <ControlRequestActions
                         request={request}
@@ -698,44 +765,65 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                   layout: 'corner' as const,
                   node: () => (
                     <div class={styles.actionCluster} data-testid="composer-actions">
-                      <AgentInputQueuePauseButton paused={props.inputQueue?.paused ?? false} onSetPaused={props.onSetQueuePaused} />
+                      <AgentInputQueuePauseButton paused={queuePaused()} busy={pauseInFlight()} onToggle={() => setQueuePaused(!queuePaused())} />
                       <Show when={ctrl.showInterrupt()}>
-                        <button
-                          class="outline"
-                          onMouseDown={keepFocusOnPress}
-                          onClick={() => {
-                            interruptLoading.start()
-                            props.onInterrupt?.()
-                            // The press leaves the composer focused, so the
-                            // keyboard would sit over the output the user just
-                            // stopped the agent to read. `keepFocusOnPress`
-                            // above is what makes the composer still the
-                            // active element here on Chrome and on Firefox,
-                            // which focus a pressed button; the send path
-                            // reads the same state through `decideSendFocus`.
-                            dismissSoftKeyboard()
-                          }}
-                          disabled={interruptLoading.loading()}
-                          data-testid="interrupt-button"
-                        >
-                          <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
-                            <Spinner />
-                          </Show>
-                          <span class={styles.actionLabel}>{interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}</span>
-                        </button>
+                        {/*
+                          The tooltip is the ONLY name this button has below
+                          `sm`, where `hideInNarrowComposer` hides the word: a
+                          `display: none` label reaches neither a screen reader
+                          nor a by-name lookup.
+                        */}
+                        <Tooltip text={interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'} ariaLabel>
+                          <button
+                            class="outline"
+                            onMouseDown={keepFocusOnPress}
+                            onClick={() => {
+                              interruptLoading.start()
+                              props.onInterrupt?.()
+                              // The press leaves the composer focused, so the
+                              // keyboard would sit over the output the user just
+                              // stopped the agent to read. `keepFocusOnPress`
+                              // above is what makes the composer still the
+                              // active element here on Chrome and on Firefox,
+                              // which focus a pressed button; the send path
+                              // reads the same state through `decideSendFocus`.
+                              dismissSoftKeyboard()
+                            }}
+                            disabled={interruptLoading.loading()}
+                            data-testid="interrupt-button"
+                          >
+                            <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
+                              <Spinner />
+                            </Show>
+                            <span class={hideInNarrowComposer}>{interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}</span>
+                          </button>
+                        </Tooltip>
                       </Show>
-                      <button
-                        type="button"
-                        disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
-                        onMouseDown={keepFocusOnPress}
-                        onClick={() => { void triggerSend?.() }}
-                        data-testid="send-button"
-                      >
-                        <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
-                          <Spinner data-testid="send-spinner" />
-                        </Show>
-                        <span class={styles.actionLabel}>Send</span>
-                      </button>
+                      {/*
+                        A paused queue does not drain, so this press parks the
+                        message rather than delivering it. The button says so at
+                        the moment of the press, which is the only moment that
+                        reaches a user who never looked at the banner.
+
+                        The visible word stays INSIDE the accessible name
+                        ("Queue" within "Add to queue"), because a name that
+                        drops the visible label breaks both a voice-control user
+                        and every by-name lookup.
+                      */}
+                      <Tooltip text={queuePaused() ? 'Add to queue' : 'Send'} ariaLabel>
+                        <button
+                          type="button"
+                          disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
+                          onMouseDown={keepFocusOnPress}
+                          onClick={() => { void triggerSend?.() }}
+                          data-testid="send-button"
+                        >
+                          <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
+                            <Spinner data-testid="send-spinner" />
+                          </Show>
+                          <span class={hideInNarrowComposer}>{queuePaused() ? 'Queue' : 'Send'}</span>
+                        </button>
+                      </Tooltip>
                     </div>
                   ),
                 }
@@ -763,7 +851,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             onConfirm={() => {
               const retryItem = item()
               setUncertainRetry()
-              void props.onRetryQueueItem?.(retryItem, true).catch(() => {})
+              fireQueueRpc(props.onRetryQueueItem?.(retryItem, true))
             }}
             onCancel={() => setUncertainRetry()}
             data-testid="retry-uncertain-input-dialog"

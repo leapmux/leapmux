@@ -8,7 +8,6 @@ import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
 import { showWarnToast } from '~/components/common/Toast'
-import { Tooltip } from '~/components/common/Tooltip'
 import { BranchStatusInfo, hasPushableWork } from '~/components/workspace/BranchStatusInfo'
 import { PushBranchButton } from '~/components/workspace/PushBranchButton'
 import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
@@ -217,20 +216,24 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
               available, so the user still closes the tab -- only the
               removal is refused.
 
-              The blocked reason goes through <Tooltip>; see that component's
-              header for why no control here takes a `title`. The same text
-              also renders in the body above, for anybody who never hovers --
-              and `describedBy` points the description at THAT element, so the
-              reason reaches the accessibility tree once rather than twice. */}
-          <Tooltip text={removalBlockedReason() || undefined} describedBy={blockedReasonId}>
-            <ConfirmButton
-              data-variant="danger"
-              disabled={Boolean(removalBlockedReason())}
-              onClick={handleScheduleDelete}
-            >
-              Delete worktree
-            </ConfirmButton>
-          </Tooltip>
+              The blocked reason goes to `blocked`, and never to a `title` or
+              to an outer <Tooltip>: ConfirmButton owns its own tooltip, because
+              its name is STATE that changes when the button arms, and one
+              tooltip nested in another disables the outer one entirely. See
+              that component's return for the mechanism.
+
+              The same text also renders in the body above, for anybody who
+              never hovers, and `reasonId` points the description at THAT
+              element -- so the reason reaches the accessibility tree once
+              rather than twice. */}
+          <ConfirmButton
+            data-variant="danger"
+            disabled={Boolean(removalBlockedReason())}
+            blocked={removalBlockedReason() ? { reason: removalBlockedReason()!, reasonId: blockedReasonId } : undefined}
+            onClick={handleScheduleDelete}
+          >
+            Delete worktree
+          </ConfirmButton>
         </Show>
         <ConfirmButton data-variant="danger" onClick={handleCloseAnyway}>
           Close anyway

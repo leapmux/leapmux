@@ -71,10 +71,17 @@ export const NewTabMenuItems: Component<NewTabMenuItemsProps> = (props) => {
             {/* `ariaLabel`, because the button holds a glyph and no text.
                 Without it a screen reader announces an unnamed button, and a
                 `getByRole('button', { name })` lookup cannot address it -- which
-                is why the tests here reach these four by test id alone. */}
+                is why the tests here reach these four by test id alone.
+
+                The label is its own STRING and never `true`. `text` becomes the
+                blocked REASON once the worker goes offline, and `ariaLabel`
+                that reuses `text` would make that sentence the button's name --
+                the exact failure `title` is banned for. Two separate strings
+                keep the name a name and leave the reason to the description
+                that `<Tooltip>` publishes for a disabled control. */}
             {provider => (
               <Tooltip
-                ariaLabel
+                ariaLabel={`New ${agentProviderLabel(provider)} agent`}
                 text={props.disabledReason ?? (
                   props.shortcuts
                     ? shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')

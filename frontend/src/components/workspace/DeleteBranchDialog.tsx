@@ -8,7 +8,6 @@ import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { labelRow } from '~/components/common/Dialog.css'
 import { Spinner } from '~/components/common/Spinner'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
-import { Tooltip } from '~/components/common/Tooltip'
 import { workingTreeDeleteLabel } from '~/components/common/WorkingTree'
 import { TabBusyDetails } from '~/components/shell/TabBusyDetails'
 import { busyGroupList } from '~/components/shell/TabBusyDetails.css'
@@ -428,21 +427,24 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
               worktree path checks whether git removes the worktree, the
               branch path runs the delete itself.
 
-              The blocked reason goes through <Tooltip>; see that component's
-              header for why no control here takes a `title`. The same text
-              also renders in the body above, for anybody who never hovers. */}
-          <Tooltip text={removalBlockedReason() || undefined} describedBy={blockedReasonId}>
-            <ConfirmButton
-              data-variant="danger"
-              disabled={!canSubmit()}
-              onClick={handleDelete}
-            >
-              <Show when={submitting.loading()} fallback={deleteLabel()}>
-                <Spinner />
-                {isWorktree() ? 'Checking...' : 'Deleting...'}
-              </Show>
-            </ConfirmButton>
-          </Tooltip>
+              The blocked reason goes to `blocked`, and never to a `title` or to
+              an outer <Tooltip>: ConfirmButton owns its own tooltip, because its
+              name is STATE that changes when the button arms, and one tooltip
+              nested in another disables the outer one entirely. See that
+              component's return for the mechanism. The same text also renders
+              in the body above, for anybody who never hovers, and `reasonId`
+              points the description at THAT element. */}
+          <ConfirmButton
+            data-variant="danger"
+            disabled={!canSubmit()}
+            blocked={removalBlockedReason() ? { reason: removalBlockedReason()!, reasonId: blockedReasonId } : undefined}
+            onClick={handleDelete}
+          >
+            <Show when={submitting.loading()} fallback={deleteLabel()}>
+              <Spinner />
+              {isWorktree() ? 'Checking...' : 'Deleting...'}
+            </Show>
+          </ConfirmButton>
         </>
       )}
     >
