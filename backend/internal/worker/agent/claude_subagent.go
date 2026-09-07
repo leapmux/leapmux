@@ -179,7 +179,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// re-registration, and two decisions below turn on it.
 	//
 	// The CLI emits task_started again for the same task_id in two cases: it
-	// revived a finished subagent, or a resumed session is re-announcing the
+	// restarted a finished subagent, or a resumed session is re-announcing the
 	// tasks it once ran. Both re-register, and in both the event's tool_use_id
 	// identifies the tool call that runs NOW, not the original spawn.
 	known := lookupClaudeKnownTask(a.sink, ev.TaskID)
@@ -315,7 +315,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// task". The registry is durable and the call index is not, so a row that
 	// outlived a worker restart, or one a reordered task_notification opened
 	// first, would suppress the close for a genuine spawn and strand its rail
-	// open for the rest of the transcript. claudeArmRevivesFromBlocks records
+	// open for the rest of the transcript. claudeArmRestartsFromBlocks records
 	// every SendMessage tool_use id as the block is parsed, and each transcript
 	// drops its own at its own turn end -- so this reads "restart call" exactly
 	// when the event re-registers a task, and nothing otherwise.
@@ -324,7 +324,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// its span type on that CHILD's tracker (routeSubagentMessage), while this
 	// runs on the ROOT sink, which answers "" for an id it never saw -- and ""
 	// is indistinguishable from a spawn here. So a sibling-to-sibling send, the
-	// case the revive exists to support, read as a spawn at both guards.
+	// case the restart exists to support, read as a spawn at both guards.
 	//
 	// An unreadable registry suppresses the close too: it cannot prove this is a
 	// spawn, and freeing a rail that is still in use is the worse of the two
@@ -439,9 +439,9 @@ func (a *ClaudeCodeAgent) openClaudeTaskChild(ev *claudeTaskEnvelope, known clau
 	case err != nil:
 		slog.Warn("claude task_started ensure child failed", "task_id", ev.TaskID, "error", err)
 	case childID == "":
-		// No transcript, and none this event can open. The revive arm is left
+		// No transcript, and none this event can open. The restart arm is left
 		// STANDING rather than consumed: the row is still finished, so a later
-		// task_started for this task in the same turn is still a revive and
+		// task_started for this task in the same turn is still a restart and
 		// deserves the retry -- the same reason a failed registry write puts
 		// its arm back.
 		slog.Warn("claude task_started resolved no child transcript",
@@ -451,11 +451,11 @@ func (a *ClaudeCodeAgent) openClaudeTaskChild(ev *claudeTaskEnvelope, known clau
 		handled, err := a.reviveClaudeSubagent(ev, childID, known, restart)
 		switch {
 		case err != nil:
-			// It WAS a revive; only the registry write failed. The delivered
+			// It WAS a restart; only the registry write failed. The delivered
 			// message is already in the transcript and the arm is back, so the
 			// first-start path below must not run -- PersistChildPrompt says
 			// nothing on a transcript that already has messages anyway.
-			slog.Warn("claude revive background task failed", "task_id", ev.TaskID, "error", err)
+			slog.Warn("claude restart background task failed", "task_id", ev.TaskID, "error", err)
 		case handled:
 			// The prompt was the message the parent just sent, appended to the
 			// running transcript rather than prepended as the opening instruction.
@@ -532,7 +532,7 @@ func lookupClaudeKnownTask(sink OutputSink, taskID string) claudeKnownTask {
 //
 // Three conditions must all hold, and each excludes a different impostor:
 //
-//   - the registry already holds this task -- a first start is not a revive;
+//   - the registry already holds this task -- a first start is not a restart;
 //   - the row is in a FINISHED status -- a duplicate task_started for a running
 //     task changes nothing;
 //   - a SendMessage this turn addressed this task id -- which is what a resumed
@@ -552,10 +552,10 @@ func lookupClaudeKnownTask(sink OutputSink, taskID string) claudeKnownTask {
 // all, and it arrives on the one event that also proves the restart happened, so
 // a send the CLI refused records nothing.
 //
-// Reports `handled` -- whether this event WAS a revive -- separately from the
+// Reports `handled` -- whether this event WAS a restart -- separately from the
 // error, because the two answer different questions. The caller skips the
 // first-start prompt path on handled, and a failed registry write does not make
-// the event any less a revive: falling back there would hand the delivered
+// the event any less a restart: falling back there would hand the delivered
 // message to PersistChildPrompt, which says nothing once the transcript has
 // messages, and the arm is spent by then.
 func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, known claudeKnownTask, restart claudeRestartEvidence) (handled bool, err error) {
@@ -571,10 +571,10 @@ func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID s
 	//
 	// The evidence arrives as a parameter, because the caller reads it before it
 	// derives the row title from the same event. Two reads of one fact would let
-	// the title and the revive disagree about what this event is. This is also
+	// the title and the restart disagree about what this event is. This is also
 	// the ONE decision that reads a single form rather than restarted(): only a
 	// SendMessage delivers text, so a wake reopens the row and writes nothing.
-	delivered := a.tasks.takeClaudeRevive(ev.TaskID)
+	delivered := a.tasks.takeClaudeRestart(ev.TaskID)
 	if !delivered && !restart.wake {
 		return false, nil
 	}
@@ -584,18 +584,18 @@ func (a *ClaudeCodeAgent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID s
 	// never written is gone, and nothing retries it.
 	if delivered {
 		if err := a.sink.PersistChildUserMessage(childID, ev.Prompt); err != nil {
-			slog.Warn("claude revive persist message failed", "child", childID, "error", err)
+			slog.Warn("claude restart persist message failed", "child", childID, "error", err)
 		}
 	}
 	if err := a.sink.ReviveBackgroundTask(ev.TaskID); err != nil {
 		// Put a consumed DELIVERY arm back. The row is still finished, so a later
-		// task_started for this task in the same turn is still a revive and
+		// task_started for this task in the same turn is still a restart and
 		// deserves the retry that a consumed arm would deny it. Re-armed at ROOT
 		// scope ("") because this runs on the root stream and the root's turn end
 		// is the later of the two boundaries -- the retry window is never cut
 		// short. A wake consumed nothing, so it has nothing to give back.
 		if delivered {
-			a.tasks.armClaudeRevive(ev.TaskID, "")
+			a.tasks.armClaudeRestart(ev.TaskID, "")
 		}
 		return true, err
 	}
@@ -723,7 +723,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	// tool_use, then a task_started carrying the message as its prompt. The
 	// delivered text rides on exactly two envelopes -- the parent's own tool_use
 	// input, and task_started.prompt -- and never on a forwarded one. So a
-	// recipient is always FINISHED by delivery time, the revive path is the whole
+	// recipient is always FINISHED by delivery time, the restart path is the whole
 	// mechanism, and there is no live-delivery case for this guard to drop.
 	if msgType == claudeMsgTypeUser && !hasToolResultBlock(env) {
 		return
@@ -828,7 +828,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		// This subagent's turn ended, so drop the arms IT set. Its own result is
 		// the boundary for them; the root's is not, because this transcript
 		// outlives the root turn that spawned it.
-		a.tasks.clearClaudeRevives(spawnSpanID)
+		a.tasks.clearClaudeRestarts(spawnSpanID)
 		return
 	}
 
@@ -854,11 +854,11 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	// parent transcript: its output goes to a transcript of its own.
 	if msgType == claudeMsgTypeAssistant {
 		// A subagent can message another agent, so its SendMessage calls arm a
-		// revive exactly as the parent's do. The arms live on the agent, not on a
+		// restart exactly as the parent's do. The arms live on the agent, not on a
 		// sink, because the task_started that fires them arrives on the root
 		// stream whichever transcript sent the message. They carry this
 		// transcript's spawn span, so the root's turn end cannot drop them.
-		a.claudeArmRevivesFromBlocks(env, spawnSpanID)
+		a.claudeArmRestartsFromBlocks(env, spawnSpanID)
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_use" && block.ID != "" {
 				childSink.SetSpanType(block.ID, block.Name)
@@ -942,9 +942,9 @@ type claudeTaskIndex struct {
 	// result can race past a reordered task_started). Keyed by spawn tool_use id
 	// so the late task_started can close the row it just opened. Guarded by i.mu.
 	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> final status
-	// pendingRevive holds the task ids the in-flight SendMessage calls addressed.
+	// pendingRestart holds the task ids the in-flight SendMessage calls addressed.
 	// A task_started for a task already in a final status is a REVIVE only when
-	// the id is armed here; see claudeArmRevivesFromBlocks for why the tool call
+	// the id is armed here; see claudeArmRestartsFromBlocks for why the tool call
 	// is the evidence and the event alone is not. Guarded by i.mu.
 	//
 	// The VALUE is the SET of transcripts that armed it: "" for the root, the
@@ -958,7 +958,7 @@ type claudeTaskIndex struct {
 	// inside a single root turn. With one scope the second sender overwrote the
 	// first, and whichever turn ended first dropped an arm the other still
 	// needed.
-	pendingRevive map[string]map[string]struct{} // task_id -> the spawn spans that armed it ("" == root)
+	pendingRestart map[string]map[string]struct{} // task_id -> the spawn spans that armed it ("" == root)
 	// sendMessageCalls holds the tool_use id of every in-flight SendMessage call,
 	// with the transcript that made it. handleClaudeTaskStarted asks it whether
 	// an event's tool_use_id is a restart call rather than the spawn span that
@@ -971,7 +971,7 @@ type claudeTaskIndex struct {
 	// spawn also answers there. Recording the call where the block is parsed
 	// covers both transcripts with one index.
 	//
-	// NOT cleared at a turn end, although pendingRevive is. A tool_use id is
+	// NOT cleared at a turn end, although pendingRestart is. A tool_use id is
 	// unique per call, so an id recorded as a SendMessage can never later identify
 	// a spawn -- which is the only thing a retained entry could get wrong. Clearing
 	// it made the answer depend on WHICH TURN the task_started landed in: a CLI
@@ -1227,15 +1227,15 @@ type claudeSendMessageInput struct {
 	To string `json:"to"`
 }
 
-// claudeArmRevivesFromBlocks records the task ids an assistant envelope's
+// claudeArmRestartsFromBlocks records the task ids an assistant envelope's
 // SendMessage calls addressed, so a following task_started for one of them is
-// recognized as a revive.
+// recognized as a restart.
 //
 // The tool call is the evidence, and the event alone cannot be. A resumed
 // session re-emits task_started for EVERY subagent it once ran, to rebuild the
 // CLI's own task registry, and those tasks are all in a final status here. So
 // "task_started for a finished row" describes the hydration burst exactly as
-// well as it describes a revive, and acting on it would resurrect every old
+// well as it describes a restart, and acting on it would resurrect every old
 // subagent with no close ever arriving. A SendMessage that gives that task id is
 // what separates the two, because the hydration burst carries none.
 //
@@ -1247,7 +1247,7 @@ type claudeSendMessageInput struct {
 // another agent, and its tool_use blocks arrive through routeSubagentMessage.
 // `armedBy` separates the two -- "" for the root, the spawn span id for a
 // subagent -- so each transcript's turn end drops only the arms it set.
-func (a *ClaudeCodeAgent) claudeArmRevivesFromBlocks(env *messageEnvelope, armedBy string) {
+func (a *ClaudeCodeAgent) claudeArmRestartsFromBlocks(env *messageEnvelope, armedBy string) {
 	for _, block := range env.ContentBlocks() {
 		if block.Type != "tool_use" || block.Name != ToolNameClaudeSendMessage {
 			continue
@@ -1263,7 +1263,7 @@ func (a *ClaudeCodeAgent) claudeArmRevivesFromBlocks(env *messageEnvelope, armed
 			slog.Warn("claude SendMessage input unmarshal failed", "agent_id", a.agentID, "error", err)
 			continue
 		}
-		a.tasks.armClaudeRevive(input.To, armedBy)
+		a.tasks.armClaudeRestart(input.To, armedBy)
 	}
 }
 
@@ -1332,7 +1332,7 @@ func (a *ClaudeCodeAgent) restartEvidenceFor(ev *claudeTaskEnvelope) claudeResta
 	}
 }
 
-// armClaudeRevive records one recipient id as revivable until the turn end of
+// armClaudeRestart records one recipient id as restartable until the turn end of
 // the transcript that sent the message. armedBy is "" for the root and the
 // spawn span id for a subagent.
 //
@@ -1343,41 +1343,41 @@ func (a *ClaudeCodeAgent) restartEvidenceFor(ev *claudeTaskEnvelope) claudeResta
 // arm under ITS scope, and the root's send found nothing to fire: the row stayed
 // finished for the whole restarted run and the delivered text never reached the
 // transcript, which is the failure the arm exists to prevent.
-func (i *claudeTaskIndex) armClaudeRevive(to, armedBy string) {
+func (i *claudeTaskIndex) armClaudeRestart(to, armedBy string) {
 	if to == "" {
 		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.pendingRevive == nil {
-		i.pendingRevive = make(map[string]map[string]struct{})
+	if i.pendingRestart == nil {
+		i.pendingRestart = make(map[string]map[string]struct{})
 	}
-	if i.pendingRevive[to] == nil {
-		i.pendingRevive[to] = make(map[string]struct{})
+	if i.pendingRestart[to] == nil {
+		i.pendingRestart[to] = make(map[string]struct{})
 	}
-	i.pendingRevive[to][armedBy] = struct{}{}
+	i.pendingRestart[to][armedBy] = struct{}{}
 }
 
-// takeClaudeRevive reports whether an in-flight SendMessage addressed taskID,
-// and consumes every arm on it so one restart cannot revive the same row twice.
+// takeClaudeRestart reports whether an in-flight SendMessage addressed taskID,
+// and consumes every arm on it so one restart cannot reopen the same row twice.
 //
 // The whole set goes, not one scope: the arms are proof that a restart is
 // expected, and the CLI restarts the recipient ONCE however many senders queued
 // a message for it.
-func (i *claudeTaskIndex) takeClaudeRevive(taskID string) bool {
+func (i *claudeTaskIndex) takeClaudeRestart(taskID string) bool {
 	if taskID == "" {
 		return false
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if _, ok := i.pendingRevive[taskID]; !ok {
+	if _, ok := i.pendingRestart[taskID]; !ok {
 		return false
 	}
-	delete(i.pendingRevive, taskID)
+	delete(i.pendingRestart, taskID)
 	return true
 }
 
-// clearClaudeRevives drops the arms that ONE transcript set, at that
+// clearClaudeRestarts drops the arms that ONE transcript set, at that
 // transcript's turn end. A SendMessage to a LIVE subagent, to a recipient
 // outside this session, or one the CLI refused emits no task_started, so
 // without this the arms would accumulate for the agent's life.
@@ -1386,18 +1386,18 @@ func (i *claudeTaskIndex) takeClaudeRevive(taskID string) bool {
 // root's result is not its turn boundary. Clearing everything there dropped a
 // live subagent's arm before its task_started could fire it, which left the
 // recipient's row finished and its transcript looking dead -- the exact bug the
-// revive exists to fix.
-func (i *claudeTaskIndex) clearClaudeRevives(armedBy string) {
+// restart exists to fix.
+func (i *claudeTaskIndex) clearClaudeRestarts(armedBy string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	// One scope leaves each recipient's set, and the recipient goes only when its
 	// last sender does. A recipient two transcripts addressed stays armed until
 	// both of their turns end, so the earlier one cannot cancel the later one's
 	// restart.
-	for to, scopes := range i.pendingRevive {
+	for to, scopes := range i.pendingRestart {
 		delete(scopes, armedBy)
 		if len(scopes) == 0 {
-			delete(i.pendingRevive, to)
+			delete(i.pendingRestart, to)
 		}
 	}
 	// The CALLS do not go with the arms. An arm is a permission to reopen a row,

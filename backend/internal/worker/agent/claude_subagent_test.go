@@ -870,18 +870,18 @@ func TestClaude_NestedSpawnOpensNoSpanInTheChildTranscript(t *testing.T) {
 		"the nested spawn's type is still recorded for its tool_result")
 }
 
-// --- SendMessage revive ---
+// --- SendMessage restart ---
 //
 // Claude restarts a FINISHED subagent when the parent messages it, and says so by
 // emitting task_started again for the same task_id. The event alone cannot drive
-// the revive: a resumed session re-announces every task it once ran the same way,
+// the restart: a resumed session re-announces every task it once ran the same way,
 // with all of them finished. So the SendMessage tool_use arms a recipient and the
 // task_started fires it. These tests pin both halves and each impostor the pair
 // excludes.
 
 // spawnAndFinishSubagent replays a full first run -- spawn, one reply, final
 // notification -- and returns the child sink the subagent wrote into. Starting
-// from the real lifecycle rather than a seeded row is what makes the revive
+// from the real lifecycle rather than a seeded row is what makes the restart
 // assertions meaningful: the transcript already holds its closing divider's
 // registry state, and the row already carries the child linkage.
 func spawnAndFinishSubagent(t *testing.T, a *ClaudeCodeAgent, sink *testSink) *testSink {
@@ -925,7 +925,7 @@ func spanIDs(opens []testSinkSpanOpen) []string {
 	return ids
 }
 
-// sendMessageTo is the parent's SendMessage tool_use, which arms the revive.
+// sendMessageTo is the parent's SendMessage tool_use, which arms the restart.
 func sendMessageTo(a *ClaudeCodeAgent, toolUseID, recipient string) {
 	a.HandleOutput([]byte(`{
 		"type": "assistant",
@@ -938,11 +938,11 @@ func sendMessageTo(a *ClaudeCodeAgent, toolUseID, recipient string) {
 	}`))
 }
 
-// reviveTaskStarted is the event the CLI emits once the restart happened. Its
+// restartTaskStarted is the event the CLI emits once the restart happened. Its
 // tool_use_id is the SENDMESSAGE call, not the original spawn -- the CLI
 // re-registers the task under the tool call that restarted it -- and its prompt
 // is the text the subagent actually received.
-func reviveTaskStarted(a *ClaudeCodeAgent, toolUseID, prompt string) {
+func restartTaskStarted(a *ClaudeCodeAgent, toolUseID, prompt string) {
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_started",
@@ -963,7 +963,7 @@ func TestClaude_SendMessageRevivesAFinishedSubagent(t *testing.T) {
 	before := len(child.Messages())
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(),
 		"the armed task_started reopens the registry row")
@@ -981,7 +981,7 @@ func TestClaude_SendMessageRevivesAFinishedSubagent(t *testing.T) {
 		"a mid-transcript message carries a scroll-rail mark; the opening prompt does not")
 }
 
-// The revive's task_started identifies the SendMessage call, which still runs in
+// The restart's task_started identifies the SendMessage call, which still runs in
 // the parent transcript. Closing its span would free the rail mid-flight and
 // leave its own tool_result drawing a connector_end with nothing above it.
 func TestClaude_ReviveDoesNotCloseTheSendMessageSpan(t *testing.T) {
@@ -993,7 +993,7 @@ func TestClaude_ReviveDoesNotCloseTheSendMessageSpan(t *testing.T) {
 
 	sendMessageTo(a, "tu-send", "task-1")
 	require.Contains(t, spanIDs(sink.OpenSpans()), "tu-send", "SendMessage owns an ordinary span")
-	reviveTaskStarted(a, "tu-send", "more work")
+	restartTaskStarted(a, "tu-send", "more work")
 
 	assert.NotContains(t, sink.ClosedSpans(), "tu-send",
 		"a re-registration's tool_use_id is not a spawn span")
@@ -1030,7 +1030,7 @@ func TestClaude_TaskStartedWithoutASendMessageDoesNotRevive(t *testing.T) {
 	child := spawnAndFinishSubagent(t, a, sink)
 	before := len(child.Messages())
 
-	reviveTaskStarted(a, "tu-spawn", "(resumed agent)")
+	restartTaskStarted(a, "tu-spawn", "(resumed agent)")
 
 	assert.Empty(t, sink.RevivedTasks(), "an unarmed re-registration is not a revive")
 	_, status, ok, _ := sink.LookupBackgroundTask("task-1")
@@ -1039,7 +1039,7 @@ func TestClaude_TaskStartedWithoutASendMessageDoesNotRevive(t *testing.T) {
 	assert.Len(t, child.Messages(), before, "nothing is appended to the transcript")
 }
 
-// An arm lives for one turn. A revive's task_started lands inside the turn that
+// An arm lives for one turn. A restart's task_started lands inside the turn that
 // sent the message, so an arm still standing at the turn end addressed a live
 // subagent, a foreign recipient, or a send the CLI refused.
 func TestClaude_SendMessageArmExpiresAtTheTurnEnd(t *testing.T) {
@@ -1051,7 +1051,7 @@ func TestClaude_SendMessageArmExpiresAtTheTurnEnd(t *testing.T) {
 
 	sendMessageTo(a, "tu-send", "task-1")
 	a.HandleOutput([]byte(`{"type": "result", "subtype": "success", "result": "ok"}`))
-	reviveTaskStarted(a, "tu-send", "too late")
+	restartTaskStarted(a, "tu-send", "too late")
 
 	assert.Empty(t, sink.RevivedTasks(), "the arm did not survive the turn")
 	_, status, ok, _ := sink.LookupBackgroundTask("task-1")
@@ -1070,7 +1070,7 @@ func TestClaude_SendMessageToAnUnknownRecipientIsInert(t *testing.T) {
 	before := len(child.Messages())
 
 	sendMessageTo(a, "tu-send", "bridge:some-other-machine")
-	reviveTaskStarted(a, "tu-send", "not for us")
+	restartTaskStarted(a, "tu-send", "not for us")
 
 	assert.Empty(t, sink.RevivedTasks())
 	assert.Len(t, child.Messages(), before)
@@ -1093,7 +1093,7 @@ func TestClaude_SendMessageToARunningSubagentDoesNotRevive(t *testing.T) {
 	}`))
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "more work")
+	restartTaskStarted(a, "tu-send", "more work")
 
 	assert.Empty(t, sink.RevivedTasks(), "an active row has nothing to revive")
 	_, status, ok, _ := sink.LookupBackgroundTask("task-1")
@@ -1121,10 +1121,10 @@ func TestClaude_SendMessageFromAChildTranscriptArms(t *testing.T) {
 			"input": {"to": "task-1", "message": "keep going"}
 		}]}
 	}`))
-	reviveTaskStarted(a, "tu-send", "from a sibling")
+	restartTaskStarted(a, "tu-send", "from a sibling")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(),
-		"a subagent's SendMessage arms the same revive the parent's does")
+		"a subagent's SendMessage arms the same restart the parent's does")
 }
 
 // sendMessageFromChild is a subagent's SendMessage, forwarded under its spawn
@@ -1155,7 +1155,7 @@ func TestClaude_AChildArmSurvivesTheRootTurnEnd(t *testing.T) {
 
 	sendMessageFromChild(a, "tu-other-spawn", "tu-send", "task-1")
 	a.HandleOutput([]byte(`{"type": "result", "subtype": "success", "result": "ok"}`))
-	reviveTaskStarted(a, "tu-send", "from a sibling")
+	restartTaskStarted(a, "tu-send", "from a sibling")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(),
 		"the root's turn end drops only the root's own arms")
@@ -1177,7 +1177,7 @@ func TestClaude_AChildArmExpiresAtTheChildTurnEnd(t *testing.T) {
 		"subtype": "success",
 		"result": "ok"
 	}`))
-	reviveTaskStarted(a, "tu-send", "too late")
+	restartTaskStarted(a, "tu-send", "too late")
 
 	assert.Empty(t, sink.RevivedTasks(), "the arm did not survive the sending transcript's turn")
 }
@@ -1198,13 +1198,13 @@ func TestClaude_AChildTurnEndKeepsTheRootArms(t *testing.T) {
 		"subtype": "success",
 		"result": "ok"
 	}`))
-	reviveTaskStarted(a, "tu-send", "still armed")
+	restartTaskStarted(a, "tu-send", "still armed")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(),
 		"a subagent's turn end leaves the root's arms alone")
 }
 
-// Output forwarded AFTER the revive must land in the transcript the subagent
+// Output forwarded AFTER the restart must land in the transcript the subagent
 // already owns, whether the CLI tags the envelope with the original spawn span
 // or with the tool_use id it re-registered under. The spawn span resolves the
 // first and the registry row key resolves the second.
@@ -1213,7 +1213,7 @@ func TestClaude_AChildTurnEndKeepsTheRootArms(t *testing.T) {
 // TestClaude_RestartedSubagentKeepsOneRegistryRow pins: the two answers came
 // apart once, and a second row standing for this same transcript is what the
 // user saw in the background-task list.
-func TestClaude_RevivedSubagentOutputStaysInOneTranscript(t *testing.T) {
+func TestClaude_RestartedSubagentOutputStaysInOneTranscript(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -1232,7 +1232,7 @@ func TestClaude_RevivedSubagentOutputStaysInOneTranscript(t *testing.T) {
 			before := len(child.Messages())
 
 			sendMessageTo(a, "tu-send", "task-1")
-			reviveTaskStarted(a, "tu-send", "Also check the tests.")
+			restartTaskStarted(a, "tu-send", "Also check the tests.")
 			a.HandleOutput([]byte(`{
 				"type": "assistant",
 				"parent_tool_use_id": "` + tc.parentToolUseID + `",
@@ -1240,7 +1240,7 @@ func TestClaude_RevivedSubagentOutputStaysInOneTranscript(t *testing.T) {
 			}`))
 
 			msgs := child.Messages()
-			require.Len(t, msgs, before+2, "the revive message and the new reply both land here")
+			require.Len(t, msgs, before+2, "the restart message and the new reply both land here")
 			assert.Contains(t, string(msgs[len(msgs)-1].Content), "Checked them.")
 			// One transcript is half the answer. The row that STANDS for it must stay
 			// one too, whichever id the envelope carried: a second row linked to this
@@ -1251,7 +1251,7 @@ func TestClaude_RevivedSubagentOutputStaysInOneTranscript(t *testing.T) {
 	}
 }
 
-// A revive with no prompt still reopens the row. The subagent runs again, so its
+// A restart with no prompt still reopens the row. The subagent runs again, so its
 // thinking indicator is owed even when there is no text to show.
 func TestClaude_ReviveWithoutAPromptStillReopensTheRow(t *testing.T) {
 	t.Parallel()
@@ -1262,13 +1262,13 @@ func TestClaude_ReviveWithoutAPromptStillReopensTheRow(t *testing.T) {
 	before := len(child.Messages())
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "   ")
+	restartTaskStarted(a, "tu-send", "   ")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks())
 	assert.Len(t, child.Messages(), before, "a blank prompt persists no bubble")
 }
 
-// One SendMessage arms one revive. A second task_started for the same task must
+// One SendMessage arms one restart. A second task_started for the same task must
 // not reopen a row that closed again in between.
 func TestClaude_OneSendMessageArmsOneRevive(t *testing.T) {
 	t.Parallel()
@@ -1278,7 +1278,7 @@ func TestClaude_OneSendMessageArmsOneRevive(t *testing.T) {
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "first")
+	restartTaskStarted(a, "tu-send", "first")
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "task_notification",
@@ -1286,7 +1286,7 @@ func TestClaude_OneSendMessageArmsOneRevive(t *testing.T) {
 		"tool_use_id": "tu-send",
 		"status": "completed"
 	}`))
-	reviveTaskStarted(a, "tu-send", "second")
+	restartTaskStarted(a, "tu-send", "second")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(), "the arm was consumed by the first")
 }
@@ -1328,7 +1328,7 @@ func TestClaude_SendMessageArmsEveryRecipientInOneMessage(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t, []string{"task-tu-spawn-a", "task-tu-spawn-b"}, sink.RevivedTasks(),
-		"a parallel pair of sends arms a revive for each recipient")
+		"a parallel pair of sends arms a restart for each recipient")
 }
 
 // A SendMessage whose input this code cannot read must not stop the turn or arm
@@ -1354,7 +1354,7 @@ func TestClaude_SendMessageWithUnreadableInputArmsNothing(t *testing.T) {
 				"input": ` + input + `
 			}]}
 		}`))
-		reviveTaskStarted(a, "tu-send", "should not land")
+		restartTaskStarted(a, "tu-send", "should not land")
 
 		assert.Empty(t, sink.RevivedTasks(), "input %s must arm nothing", input)
 	}
@@ -1362,7 +1362,7 @@ func TestClaude_SendMessageWithUnreadableInputArmsNothing(t *testing.T) {
 
 // An unreadable registry is a THIRD answer, not a miss. Folding it into
 // "no such row" made the first registry read of a process -- exactly what a
-// worker restart leaves for a revive's task_started -- close the still-running
+// worker restart leaves for a restart's task_started -- close the still-running
 // SendMessage span and treat a finished subagent as brand new.
 func TestClaude_AnUnreadableRegistryDoesNotFreeTheSendMessageSpan(t *testing.T) {
 	t.Parallel()
@@ -1372,7 +1372,7 @@ func TestClaude_AnUnreadableRegistryDoesNotFreeTheSendMessageSpan(t *testing.T) 
 
 	sendMessageTo(a, "tu-send", "task-1")
 	require.Contains(t, spanIDs(sink.OpenSpans()), "tu-send")
-	reviveTaskStarted(a, "tu-send", "more work")
+	restartTaskStarted(a, "tu-send", "more work")
 
 	assert.NotContains(t, sink.ClosedSpans(), "tu-send",
 		"a registry it could not read cannot prove this is a spawn")
@@ -1380,7 +1380,7 @@ func TestClaude_AnUnreadableRegistryDoesNotFreeTheSendMessageSpan(t *testing.T) 
 		"nor can it prove the id is a spawn span worth opening a transcript from")
 }
 
-// A row that identifies no transcript is the one state left in which a revive cannot
+// A row that identifies no transcript is the one state left in which a restart cannot
 // resolve its child, and only a failed registry write produces it: cap eviction
 // does not, because a linked row survives the display cap in the store. The
 // event's tool_use id is the SendMessage call, so handing it to EnsureChildAgent
@@ -1397,7 +1397,7 @@ func TestClaude_ReviveWithAnUnlinkedRowOpensNoSecondTranscript(t *testing.T) {
 	sink.UnlinkBackgroundTask("task-1")
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a SendMessage id must never open a transcript")
@@ -1416,7 +1416,7 @@ func TestClaude_ReviveWithAnUnlinkedRowOpensNoSecondTranscript(t *testing.T) {
 	assert.Contains(t, string(msgs[before].Content), "Checked them.")
 }
 
-// The revive arm is spent only by a revive that resolved a transcript. A
+// The restart arm is spent only by a restart that resolved a transcript. A
 // task_started that resolved none leaves it standing, so the retry a later
 // task_started deserves is still armed -- the same rule a failed registry write
 // follows.
@@ -1429,18 +1429,18 @@ func TestClaude_ATaskStartedThatResolvesNoChildKeepsTheArm(t *testing.T) {
 	sink.UnlinkBackgroundTask("task-1")
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.Empty(t, sink.RevivedTasks(), "no transcript resolved, so no revive happened")
-	assert.True(t, a.tasks.takeClaudeRevive("task-1"), "the arm is still standing for a retry")
+	assert.True(t, a.tasks.takeClaudeRestart("task-1"), "the arm is still standing for a retry")
 }
 
-// The CLI may stamp a revived run's forwarded result with the ORIGINAL spawn
+// The CLI may stamp a restarted run's forwarded result with the ORIGINAL spawn
 // span. The first completion dropped that span from the tool_use index, and the
-// revive re-registered the task under the SendMessage call -- so without a
-// child-keyed fallback the result identifies no row and the row the revive just
+// restart re-registered the task under the SendMessage call -- so without a
+// child-keyed fallback the result identifies no row and the row the restart just
 // reopened stays Running for the agent's life.
-func TestClaude_ARevivedResultUnderTheSpawnSpanClosesTheRow(t *testing.T) {
+func TestClaude_ARestartedResultUnderTheSpawnSpanClosesTheRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -1448,10 +1448,10 @@ func TestClaude_ARevivedResultUnderTheSpawnSpanClosesTheRow(t *testing.T) {
 	spawnAndFinishSubagent(t, a, sink)
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 	_, status, ok, _ := sink.LookupBackgroundTask("task-1")
 	require.True(t, ok)
-	require.Equal(t, bgtask.StatusRunning, status, "the revive reopened the row")
+	require.Equal(t, bgtask.StatusRunning, status, "the restart reopened the row")
 
 	a.HandleOutput([]byte(`{
 		"type": "result",
@@ -1462,10 +1462,10 @@ func TestClaude_ARevivedResultUnderTheSpawnSpanClosesTheRow(t *testing.T) {
 	_, status, ok, _ = sink.LookupBackgroundTask("task-1")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusCompleted, status,
-		"the revived run's result closes the row it reopened")
+		"the restarted run's result closes the row it reopened")
 }
 
-// --- Wake revive ---
+// --- Wake restart ---
 //
 // A SendMessage is not the CLI's only restart. Captured against 2.1.233: when a
 // subagent's own backgrounded shell finishes, the CLI re-registers that finished
@@ -1539,7 +1539,7 @@ func TestClaude_AWakeNamingAnUnseenShellDoesNotRevive(t *testing.T) {
 // tags. The safety is NOT here -- claudeWakeRestartedTask corroborates the id
 // against the shells THIS process finished, and reviveClaudeSubagent acts only
 // on a row already in a finished status. So the parse errs toward reading a
-// wake, because missing one restores the whole bug the revive exists to fix.
+// wake, because missing one restores the whole bug the restart exists to fix.
 func TestClaude_WakeTaskIDReadsTheBlockWhateverItsShape(t *testing.T) {
 	t.Parallel()
 
@@ -1571,7 +1571,7 @@ func TestClaude_WakeTaskIDReadsTheBlockWhateverItsShape(t *testing.T) {
 // The shape the edge-anchored parse dropped: the CLI emits the whole block on
 // ONE line. Nothing about that makes it less of a restart, and refusing it left
 // the row reading "finished" for the entire second run, with no closing divider
-// -- exactly the state the revive exists to repair.
+// -- exactly the state the restart exists to repair.
 func TestClaude_AOneLineWakeBlockRevivesTheRow(t *testing.T) {
 	t.Parallel()
 
@@ -1593,7 +1593,7 @@ func TestClaude_AOneLineWakeBlockRevivesTheRow(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
-// A revive resolves the transcript from the REGISTRY ROW, never from the event's
+// A restart resolves the transcript from the REGISTRY ROW, never from the event's
 // tool_use id. On a re-registration that id is the SendMessage call, so handing
 // it to EnsureChildAgent walks past the row-key fast path, fails the
 // spawn-span lookup, and creates a SECOND transcript keyed by the wrong span --
@@ -1607,7 +1607,7 @@ func TestClaude_ReviveResolvesTheChildFromTheRegistryRow(t *testing.T) {
 	before := len(child.Messages())
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"the SendMessage id must not open a transcript of its own")
@@ -1627,12 +1627,12 @@ func TestClaude_AFailedReviveKeepsTheMessageAndRearms(t *testing.T) {
 	before := len(child.Messages())
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	msgs := child.Messages()
 	require.Len(t, msgs, before+1, "the delivered message is recorded although the row write failed")
 	assert.JSONEq(t, `{"content":"Also check the tests."}`, string(msgs[len(msgs)-1].Content))
-	assert.True(t, a.tasks.takeClaudeRevive("task-1"), "the arm is back, so a later task_started can retry")
+	assert.True(t, a.tasks.takeClaudeRestart("task-1"), "the arm is back, so a later task_started can retry")
 }
 
 // A subagent can message a finished SIBLING, and that send must be recognized as
@@ -1658,7 +1658,7 @@ func TestClaude_ASiblingSendOpensNoSecondTranscript(t *testing.T) {
 	sink.UnlinkBackgroundTask("task-1")
 
 	sendMessageFromChild(a, "tu-spawn-2", "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "keep going")
+	restartTaskStarted(a, "tu-send", "keep going")
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a sibling's SendMessage id must never reach EnsureChildAgent")
@@ -1681,7 +1681,7 @@ func TestClaude_ASiblingSendKeepsItsSpanOpen(t *testing.T) {
 	}`))
 
 	sendMessageFromChild(a, "tu-spawn-2", "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "keep going")
+	restartTaskStarted(a, "tu-send", "keep going")
 
 	assert.NotContains(t, sink.ClosedSpans(), "tu-send",
 		"the restart call still runs in the sibling's transcript")
@@ -1712,7 +1712,7 @@ func TestClaude_ASecondSenderDoesNotCancelTheFirstsArm(t *testing.T) {
 		"type": "result", "parent_tool_use_id": "tu-spawn-2", "subtype": "success"
 	}`))
 
-	reviveTaskStarted(a, "tu-send-root", "keep going")
+	restartTaskStarted(a, "tu-send-root", "keep going")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(),
 		"the root's arm survives the sibling's turn end")
@@ -1982,7 +1982,7 @@ func TestClaude_ARestartReorderOpensNoPreStartRow(t *testing.T) {
 	require.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
 		"the child resolves the run, so no pre-start row opens")
 
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
 		"and the late task_started leaves it at one")
@@ -2035,7 +2035,7 @@ func TestClaude_ARestartCallIsRefusedAfterTheTurnEnd(t *testing.T) {
 
 	sendMessageTo(a, "tu-send", "task-1")
 	a.HandleOutput([]byte(`{"type": "result", "subtype": "success", "result": "ok"}`))
-	reviveTaskStarted(a, "tu-send", "too late")
+	restartTaskStarted(a, "tu-send", "too late")
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a SendMessage id is not a spawn span, whichever turn its task_started lands in")
@@ -2056,7 +2056,7 @@ func TestClaude_ARestartSurvivesAnUnreadableSpawnSpan(t *testing.T) {
 	before := len(child.Messages())
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(), "the row still reopens")
 	require.Len(t, child.Messages(), before+1, "the delivered message still lands")
@@ -2087,7 +2087,7 @@ func TestClaude_ARestartOfAnUnlinkedRowOpensNoChildUnderTheRestartCall(t *testin
 	sink.UnlinkBackgroundTask("task-1")
 
 	sendMessageTo(a, "tu-send", "task-1")
-	reviveTaskStarted(a, "tu-send", "Also check the tests.")
+	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a re-registration's tool_use id is not a spawn span")
@@ -2124,7 +2124,7 @@ func TestClaude_RestartedSubagentKeepsOneRegistryRow(t *testing.T) {
 	}{
 		{"SendMessage", func(a *ClaudeCodeAgent) {
 			sendMessageTo(a, "tu-send", "task-1")
-			reviveTaskStarted(a, "tu-send", "Also check the tests.")
+			restartTaskStarted(a, "tu-send", "Also check the tests.")
 		}, []string{"task-1"}},
 		{"shell wake", func(a *ClaudeCodeAgent) {
 			finishShellTask(a, "shell-1")
