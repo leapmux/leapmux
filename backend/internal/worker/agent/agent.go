@@ -276,11 +276,17 @@ type OutputSink interface {
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
-	// SetTurnActive publishes whether a turn is in flight, so the Worker can
-	// answer "is this agent busy" without a client re-deriving it from the
-	// transcript. Providers already keep this flag for their own control flow;
-	// call this from the SAME site that mutates it, so the published state
-	// cannot drift from the private one.
+	// SetTurnActive publishes whether a turn is in flight. It is the ONE signal
+	// for that fact, and the Worker derives two answers from it: "is this agent
+	// busy", which a client renders without re-deriving it from the transcript,
+	// and the input queue's dispatch guard, which holds a message until the
+	// running turn ends. Providers already keep this flag for their own control
+	// flow -- SendInput refuses input from the same value -- so call this from
+	// the SAME site that mutates it, and the three cannot drift.
+	//
+	// A publish that repeats the current state costs nothing: the Worker
+	// deduplicates it, and the queue reconciles idempotently. A MISSING publish
+	// is the only failure, and it hands the queue a turn it cannot see.
 	//
 	// Report the turn as active for as long as the agent owes the user a reply,
 	// which is not always the same as "between one envelope and the next": a
@@ -679,26 +685,6 @@ type InputSteerer interface {
 	// interface, not to an optional one, so a new provider cannot forget it and
 	// claim a capability that it does not have.
 	SupportsSteering() bool
-}
-
-type inputReadySink interface {
-	InputReady()
-}
-
-type inputStartedSink interface {
-	InputStarted()
-}
-
-func notifyInputStarted(sink OutputSink) {
-	if started, ok := sink.(inputStartedSink); ok {
-		started.InputStarted()
-	}
-}
-
-func notifyInputReady(sink OutputSink) {
-	if ready, ok := sink.(inputReadySink); ok {
-		ready.InputReady()
-	}
 }
 
 var (

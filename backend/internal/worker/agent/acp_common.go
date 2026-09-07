@@ -1317,6 +1317,10 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	}
 	if b.promptActive {
 		b.mu.Unlock()
+		// The refusal is proof that this prompt is in flight, and the Worker
+		// dispatched into it, so its view of the turn was wrong. See
+		// CodexAgent.SendInput for why the publish belongs here.
+		b.notePromptActive()
 		return ErrAgentBusy
 	}
 	b.promptActive = true
@@ -1336,7 +1340,6 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 		b.steerRunID = ""
 		b.mu.Unlock()
 		b.notePromptActive()
-		notifyInputReady(b.sink)
 	})
 	if err != nil {
 		b.mu.Lock()

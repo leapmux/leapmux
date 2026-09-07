@@ -660,6 +660,23 @@ func (a *ClaudeCodeAgent) publishTurnActive() {
 	publishTurnActiveTo(a.sink, active)
 }
 
+// armTurn records a turn that the CLI runs and this Worker did not start. The
+// output handler calls it for root output that only a live turn produces.
+//
+// It publishes on the rising edge alone. Every assistant message of one turn
+// reaches it, and the publish reconciles the Worker's input queue, so a
+// streaming turn would otherwise repeat that work once per message block.
+func (a *ClaudeCodeAgent) armTurn() {
+	a.mu.Lock()
+	already := a.turnActive
+	a.turnActive = true
+	a.mu.Unlock()
+	if already {
+		return
+	}
+	a.publishTurnActive()
+}
+
 // SupportsSteering always reports true. The Claude Code stream-json protocol
 // accepts a priority:"next" user message during any turn, so the capability
 // needs no handshake discovery.
@@ -679,8 +696,9 @@ func (a *ClaudeCodeAgent) sendInput(content string, attachments []*leapmuxv1.Att
 	// Registered BEFORE the unlock below, so it runs AFTER it: deferred calls
 	// run last-registered-first. Publishing under a.mu would hold the agent lock
 	// across a broadcast. It re-reads the flag, so the error paths below -- and a
-	// steer, which opens no turn -- publish the unchanged value and the sink
-	// drops it.
+	// steer, which opens no turn -- publish the unchanged value, and the Worker
+	// reconciles rather than moves. That covers the busy refusal for this
+	// provider, which the other four publish explicitly.
 	defer a.publishTurnActive()
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -165,21 +165,31 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.Item) (inputqueue.Disp
 }
 
 // classifyQueueDeliveryError turns a provider error into the queue's own
-// outcome. Two conditions are transient and must NOT become a permanent
-// failure that the user has to retry by hand:
+// outcome. Three conditions are transient and must NOT become a permanent
+// failure that the user has to retry by hand. All three mean the input never
+// reached the provider, so redispatch is safe.
+//
+// Two of them need the agent to change state first, so the queue pauses and
+// waits for the cause that changes it (ErrDispatchNotReady):
 //
 //   - ErrChildNotSteerableYet: the owner process runs but has not re-fired the
 //     child spawn yet, which happens after every Worker restart.
-//   - ErrAgentBusy: the provider is already inside a turn that the queue's own
-//     active_turn view has not recorded yet.
 //   - ErrAgentNotFound: the process exited between the readiness test and the
 //     write. Manager returns it from providerAfterLifecycle, which resolves the
 //     provider BEFORE any write, so nothing reached the agent.
 //
-// All three mean the input never reached the provider, so redispatch is safe.
+// The third needs nothing (ErrDispatchBusy):
+//
+//   - ErrAgentBusy: the provider is already inside a turn that the queue's own
+//     active_turn view had not recorded. The agent works, and the end of that
+//     turn releases the item on its own -- so a pause here would stop a queue
+//     that has no problem, and hold it stopped until the user resumed it by
+//     hand.
 func classifyQueueDeliveryError(err error) error {
-	if errors.Is(err, agent.ErrChildNotSteerableYet) || errors.Is(err, agent.ErrAgentBusy) ||
-		errors.Is(err, agent.ErrAgentNotFound) {
+	if errors.Is(err, agent.ErrAgentBusy) {
+		return fmt.Errorf("%w: %w", inputqueue.ErrDispatchBusy, err)
+	}
+	if errors.Is(err, agent.ErrChildNotSteerableYet) || errors.Is(err, agent.ErrAgentNotFound) {
 		return fmt.Errorf("%w: %w", inputqueue.ErrDispatchNotReady, err)
 	}
 	return &inputqueue.DeliveryError{Err: err, Uncertain: errors.Is(err, agent.ErrDeliveryUncertain)}

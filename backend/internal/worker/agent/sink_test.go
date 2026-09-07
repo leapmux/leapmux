@@ -71,11 +71,9 @@ type testSink struct {
 	reservedColorSpans []testSinkSpanOpen
 	// tracker is the REAL span engine. Delegating to it is what keeps this
 	// double from drifting from the behavior it stands in for.
-	tracker           spantrack.SpanTracker
-	resetSpanCount    int
-	inputStartedCount int
-	inputReadyCount   int
-	statusActives     []string
+	tracker        spantrack.SpanTracker
+	resetSpanCount int
+	statusActives  []string
 	// goals records every UpsertGoal in arrival order, and goalClears counts
 	// ClearGoal. A provider's goal parser is tested through these: they hold the
 	// neutral GoalUpdate, so a test asserts what the parser MEANT rather than
@@ -978,30 +976,6 @@ func (s *testSink) MessageCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.messages)
-}
-
-func (s *testSink) InputReady() {
-	s.mu.Lock()
-	s.inputReadyCount++
-	s.mu.Unlock()
-}
-
-func (s *testSink) InputStarted() {
-	s.mu.Lock()
-	s.inputStartedCount++
-	s.mu.Unlock()
-}
-
-func (s *testSink) InputStartedCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.inputStartedCount
-}
-
-func (s *testSink) InputReadyCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.inputReadyCount
 }
 
 func (s *testSink) NotificationCount() int {

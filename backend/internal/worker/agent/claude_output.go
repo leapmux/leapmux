@@ -547,6 +547,21 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		return
 	}
 
+	// A root assistant message carries this turn's reply, so a turn IS in
+	// flight. Claude Code emits no turn-start frame of its own
+	// (Codex has turn/started, ZCode turn.started), and without this the Worker
+	// learns of a turn only from its own SendInput -- so a turn the CLI runs by
+	// itself, or one it continues past a `result` already consumed, stayed
+	// invisible. Both the turn flag and the input queue then read idle, and the
+	// next message the user sent went straight into the running turn.
+	//
+	// The clear needs no counterpart rule: Claude ends EVERY turn with a
+	// `result`, including an interrupted or a failed one, and a `result` always
+	// follows the assistant messages of the turn it ends.
+	if msgType == claudeMsgTypeAssistant {
+		a.armTurn()
+	}
+
 	// Extract agent context metadata from top-level assistant and result
 	// messages. Subagent messages (with parent_tool_use_id) have their own
 	// smaller context and would make the bar show a misleadingly low value.
@@ -617,7 +632,6 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.mu.Lock()
 		a.turnActive = false
 		a.mu.Unlock()
-		a.publishTurnActive()
 		scheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.
@@ -632,7 +646,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		// arms at its own turn end, so wiping every arm here would drop a live
 		// subagent's before its task_started arrived.
 		a.tasks.clearClaudeRestarts("")
-		notifyInputReady(a.sink)
+		// Published LAST, because the publish releases the Worker's input queue:
+		// the next message dispatches on it, and it must find the spans of the
+		// finished turn already reset -- a passthrough column captured before
+		// ResetSpans draws the dead turn's bars beside the new message.
+		a.publishTurnActive()
 	}
 }
 

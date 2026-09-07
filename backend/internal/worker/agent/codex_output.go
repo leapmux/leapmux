@@ -155,7 +155,10 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 				}))
 			}
 			if childID := a.routeChildItemIfApplicable(notif.ThreadID); childID != "" {
-				notifyInputStarted(a.sink.ChildSink(childID))
+				// The child's own turn. publishTurnActive covers the MAIN thread
+				// alone, so the child's flag is published against the child's
+				// sink -- which is what its own input queue follows.
+				publishTurnActiveTo(a.sink.ChildSink(childID), true)
 			}
 			return
 		}
@@ -180,9 +183,6 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 		// reset is lock-free (the estimator self-locks), so it stays outside the
 		// critical section above.
 		a.thinkingTokens.reset()
-		// The queue normally marks a turn active before delivery. This callback
-		// repairs that state when a delayed acceptance follows an uncertain result.
-		notifyInputStarted(a.sink)
 	}
 }
 
@@ -597,7 +597,7 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 				slog.Warn("codex persist child turn/completed", "agent_id", a.agentID, "thread", notif.ThreadID, "error", err)
 			}
 			a.clearChildTurnID(notif.ThreadID)
-			notifyInputReady(a.sink.ChildSink(childID))
+			publishTurnActiveTo(a.sink.ChildSink(childID), false)
 			return
 		}
 		a.clearChildTurnID(notif.ThreadID)
@@ -642,8 +642,8 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 		}
 	}
 
-	// Clear provider turn state before the queue receives the input-ready
-	// notification. This lets the next queued input start a new turn.
+	// Clear provider turn state before the deferred publish below releases the
+	// Worker's input queue. This lets the next queued input start a new turn.
 	a.mu.Lock()
 	a.turnID = ""
 	a.turnSawPlan = false
@@ -693,10 +693,6 @@ func (a *CodexAgent) handleTurnCompleted(params json.RawMessage) {
 			}
 		}
 	}
-	// The app-server submits compaction before it sends the RPC response. A
-	// fast compaction turn can end while CompactContext's caller holds the
-	// queue coordinator. Keep this reader free to deliver the RPC response.
-	go notifyInputReady(a.sink)
 }
 
 func isRetryableCodexTurnFailure(message string) bool {

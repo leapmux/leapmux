@@ -624,3 +624,196 @@ func TestManagerStopRefusesNewWorkAndWaitJoinsDispatch(t *testing.T) {
 	close(dispatchRelease)
 	<-stopped
 }
+
+// turnEndingDispatcher reports the turn end from INSIDE the provider call, the
+// way a provider's reader goroutine does for a turn that ends before the
+// dispatch it belongs to finishes committing. Only the first dispatch does it,
+// so the test can watch the queue continue past it.
+type turnEndingDispatcher struct {
+	recordingDispatcher
+	manager *Manager
+	agentID string
+	once    sync.Once
+}
+
+func (d *turnEndingDispatcher) Dispatch(item Item) (DispatchResult, error) {
+	result, err := d.recordingDispatcher.Dispatch(item)
+	d.once.Do(func() {
+		_, _ = d.manager.TurnEnded(context.Background(), d.agentID)
+	})
+	return result, err
+}
+
+func TestManagerKeepsDrainingWhenTheTurnEndsDuringItsOwnDispatch(t *testing.T) {
+	t.Parallel()
+
+	// The manager releases the coordinator lock across the provider call, so a
+	// turn that ends inside it commits its clear first, and the drain it
+	// scheduled finds this loop still marked draining and does nothing. The
+	// acceptance must neither write that turn back nor stop the loop, or every
+	// item behind the first waits for a turn that already ended.
+	_, store := newStoreFixture(t)
+	dispatcher := &turnEndingDispatcher{agentID: "agent-1"}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	dispatcher.manager = manager
+	ctx := context.Background()
+	for _, inputID := range []string{"one", "two"} {
+		_, err := manager.Enqueue(ctx, NewItem{ID: inputID, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: inputID})
+		require.NoError(t, err)
+	}
+
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"one", "two"}, dispatcher.dispatches())
+	snapshot, err := manager.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.Items)
+	assert.True(t, snapshot.ActiveTurn, "the second dispatch's own turn is the one that stands")
+}
+
+func TestManagerTurnSignalIsIdempotentInBothDirections(t *testing.T) {
+	t.Parallel()
+
+	// Every publish of a provider's turn flag reaches the manager, and a
+	// provider republishes the unchanged value freely. A repeat must move no
+	// revision, or every watcher takes a snapshot that says what it already
+	// holds.
+	_, store := newStoreFixture(t)
+	observer := &recordingObserver{}
+	manager := NewManager(store, &recordingDispatcher{}, observer)
+	ctx := context.Background()
+
+	started, err := manager.TurnStarted(ctx, "agent-1")
+	require.NoError(t, err)
+	require.True(t, started.ActiveTurn)
+
+	repeated, err := manager.TurnStarted(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, started.Revision, repeated.Revision)
+
+	ended, err := manager.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	require.False(t, ended.ActiveTurn)
+	assert.Greater(t, ended.Revision, started.Revision)
+
+	endedAgain, err := manager.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, ended.Revision, endedAgain.Revision)
+
+	observer.mu.Lock()
+	broadcasts := len(observer.snapshots)
+	observer.mu.Unlock()
+	assert.Equal(t, 2, broadcasts, "only the two real transitions broadcast")
+}
+
+func TestManagerTurnStartedKeepsTheTurnADispatchAlreadyOwns(t *testing.T) {
+	t.Parallel()
+
+	// A provider publishes "a turn is in flight" for the very turn the queue
+	// just dispatched. That report carries no input id, so adopting it would
+	// drop the identity the dispatch recorded -- and the acceptance, which
+	// writes the turn back only while the state still holds its own dispatch,
+	// would then find no match and treat the live turn as finished.
+	_, store := newStoreFixture(t)
+	release := make(chan struct{})
+	dispatcher := &recordingDispatcher{dispatchStarted: make(chan struct{}), dispatchRelease: release}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"})
+	require.NoError(t, err)
+	<-dispatcher.dispatchStarted
+
+	_, err = manager.TurnStarted(ctx, "agent-1")
+	require.NoError(t, err)
+	close(release)
+
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, time.Second, 10*time.Millisecond)
+	snapshot, err := manager.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, snapshot.ActiveTurn, "the dispatched turn survives the provider's own report of it")
+}
+
+// busyOnceDispatcher refuses the first dispatch the way a provider refuses one
+// that collided with a turn of its own, and takes every later dispatch. endTurn
+// runs inside the refusal, which is where a provider's reader goroutine reports
+// a turn that ends while the dispatch it collided with is still in flight.
+type busyOnceDispatcher struct {
+	recordingDispatcher
+	endTurn func()
+	once    sync.Once
+}
+
+func (d *busyOnceDispatcher) Dispatch(item Item) (DispatchResult, error) {
+	result, err := d.recordingDispatcher.Dispatch(item)
+	refused := false
+	d.once.Do(func() {
+		refused = true
+		if d.endTurn != nil {
+			d.endTurn()
+		}
+	})
+	if refused {
+		return DispatchResult{}, fmt.Errorf("%w: turn-1", ErrDispatchBusy)
+	}
+	return result, err
+}
+
+func TestManagerBusyRefusalHoldsTheItemWithoutPausingTheQueue(t *testing.T) {
+	t.Parallel()
+
+	// The provider refused because a turn of its own is in flight. Nothing
+	// failed, so the item waits with no error and the queue stays open: the
+	// turn that refused it ends and delivers it. A pause here stopped a healthy
+	// queue until the user resumed it by hand.
+	_, store := newStoreFixture(t)
+	dispatcher := &busyOnceDispatcher{}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	var snapshot Snapshot
+	require.Eventually(t, func() bool {
+		snapshot, err = manager.Snapshot(ctx, "agent-1")
+		return err == nil && len(snapshot.Items) == 1 &&
+			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
+	}, time.Second, 10*time.Millisecond)
+	assert.False(t, snapshot.Paused, "a busy agent is not a stopped one")
+	assert.Empty(t, snapshot.Items[0].Error, "nothing failed, so the item carries no error")
+	assert.True(t, snapshot.ActiveTurn, "the turn the item collided with is what holds it")
+
+	_, err = manager.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		snapshot, err = manager.Snapshot(ctx, "agent-1")
+		return err == nil && len(snapshot.Items) == 0
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"one", "one"}, dispatcher.dispatches(),
+		"the same item goes out again once the turn that refused it ends")
+}
+
+func TestManagerBusyRefusalRepeatsWhenTheTurnEndsInsideIt(t *testing.T) {
+	t.Parallel()
+
+	// The turn ends while the provider call that it refused is still running.
+	// Its drain request finds this loop still marked draining, so nothing else
+	// can act on it -- and the item would then wait for a turn that already
+	// ended, with no later event to release it.
+	_, store := newStoreFixture(t)
+	dispatcher := &busyOnceDispatcher{}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	dispatcher.endTurn = func() { _, _ = manager.TurnEnded(context.Background(), "agent-1") }
+	ctx := context.Background()
+	_, err := manager.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"one", "one"}, dispatcher.dispatches(),
+		"the loop repeats for the turn end it could not see, with no outside trigger")
+}

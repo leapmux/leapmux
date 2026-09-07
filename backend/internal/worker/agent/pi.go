@@ -343,6 +343,10 @@ func (a *PiAgent) sendInput(content string, attachments []*leapmuxv1.Attachment,
 		return ErrNoActiveTurn
 	}
 	if !steer && turnActive {
+		// The refusal is proof that this turn is in flight, and the Worker
+		// dispatched into it, so its view of the turn was wrong. See
+		// CodexAgent.SendInput for why the publish belongs here.
+		a.publishTurnActive()
 		return ErrAgentBusy
 	}
 

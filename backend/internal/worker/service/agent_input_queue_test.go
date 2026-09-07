@@ -596,6 +596,19 @@ func TestClassifyQueueDeliveryErrorRequeuesAVanishedProcess(t *testing.T) {
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
 
+func TestClassifyQueueDeliveryErrorKeepsTheQueueOpenForABusyAgent(t *testing.T) {
+	t.Parallel()
+
+	// A busy agent works, and its turn end releases the item. Pausing there
+	// stopped a healthy queue on the outcome its own contract calls transient,
+	// and only the user could start it again.
+	err := classifyQueueDeliveryError(fmt.Errorf("send: %w", agent.ErrAgentBusy))
+	assert.ErrorIs(t, err, inputqueue.ErrDispatchBusy)
+	assert.ErrorIs(t, err, agent.ErrAgentBusy)
+	assert.NotErrorIs(t, err, inputqueue.ErrDispatchNotReady,
+		"a busy agent needs no state change, so the queue must not pause for one")
+}
+
 // startEchoAgent registers a mock Claude Code process for agentID. The mock is
 // a `cat`, so every frame the Worker writes to its stdin comes back as agent
 // output: a control_request the Worker sends therefore lands in the

@@ -417,7 +417,7 @@ func TestStoreRequeuedSteerReservesASequenceAfterTheEndedTurn(t *testing.T) {
 		VALUES ('turn-end', 'agent-1', ?, ?, '{}', 0)`,
 		turnEndSeq, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
 	require.NoError(t, err)
-	_, err = store.TurnEnded(ctx, "agent-1")
+	_, _, err = store.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
 	retried, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
@@ -770,7 +770,7 @@ func TestStoreSnapshotAnswersTheSteerPrecondition(t *testing.T) {
 	assert.True(t, active.Items[0].CanSteer)
 
 	// A clear runs no regular turn, so the head is not steerable into it.
-	_, err = store.TurnEnded(ctx, "agent-1")
+	_, _, err = store.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
 	_, err = store.Enqueue(ctx, NewItem{ID: "clear", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, Text: "/clear"})
 	require.NoError(t, err)

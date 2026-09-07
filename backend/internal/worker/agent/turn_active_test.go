@@ -425,3 +425,58 @@ func TestTurnEndPrecedesTheClear_PiRetryEndsNoTurn(t *testing.T) {
 
 	assert.Equal(t, []string{"turn_active:true", "turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
 }
+
+// --- a turn the Worker did not start -----------------------------------------
+
+func TestClaudeTurnActive_RootAssistantOutputArmsATurnTheWorkerDidNotStart(t *testing.T) {
+	t.Parallel()
+
+	// Claude Code emits no turn-start frame, so the Worker used to learn of a
+	// turn only from its own SendInput. A turn the CLI runs by itself -- one it
+	// continues after the `result` the Worker already consumed -- then left the
+	// flag clear, and the next queued message went straight into that running
+	// turn.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"still working"}]}}`))
+
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "root assistant output means a turn is in flight")
+	assert.ErrorIs(t, a.SendInput("second", nil), ErrAgentBusy)
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	// The refused send republishes the unchanged flag, which is what reconciles
+	// a queue that dispatched into it. The clear that follows is the result's.
+	assert.Equal(t, []bool{true, true, false}, sink.TurnActives(),
+		"the CLI's own result still ends the turn")
+}
+
+func TestClaudeTurnActive_RootAssistantOutputPublishesOncePerTurn(t *testing.T) {
+	t.Parallel()
+
+	// Every assistant message of one turn reaches this path. Only the first
+	// arms anything, so a streaming turn does not republish -- and does not
+	// reconcile the Worker's input queue -- once per message block.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	for range 3 {
+		a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"chunk"}]}}`))
+	}
+
+	assert.Equal(t, []bool{true}, sink.TurnActives())
+}
+
+func TestClaudeTurnActive_SubagentAssistantOutputArmsNoRootTurn(t *testing.T) {
+	t.Parallel()
+
+	// A forwarded subagent envelope carries parent_tool_use_id and belongs to
+	// the child's transcript. It says nothing about the root, which may well be
+	// idle while a restarted subagent runs on.
+	sink := &testSink{}
+	a, _ := newClaudeAgentWithStdin(sink)
+
+	a.HandleOutput([]byte(`{"type":"assistant","parent_tool_use_id":"parent-1","message":{"role":"assistant","content":[{"type":"text","text":"child"}]}}`))
+
+	assert.Empty(t, sink.TurnActives(), "only ROOT output arms the root's turn")
+}

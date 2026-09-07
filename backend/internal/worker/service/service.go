@@ -593,13 +593,17 @@ func New(cfg Config) *Service {
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
 	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
-	svc.Output.SetInputReadyFunc(func(agentID string) {
-		if _, err := svc.InputQueue.TurnEnded(bgCtx(), agentID); err != nil {
+	// Both edges of the one turn flag every provider publishes. A queue that
+	// already closed admission refuses them, and a Worker shutdown stops every
+	// agent it runs -- so that refusal is the expected end of the signal, not a
+	// fault to report.
+	svc.Output.SetTurnEndedFunc(func(agentID string) {
+		if _, err := svc.InputQueue.TurnEnded(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("advance agent input queue after turn end failed", "agent_id", agentID, "error", err)
 		}
 	})
-	svc.Output.SetInputStartedFunc(func(agentID string) {
-		if _, err := svc.InputQueue.TurnStarted(bgCtx(), agentID); err != nil {
+	svc.Output.SetTurnStartedFunc(func(agentID string) {
+		if _, err := svc.InputQueue.TurnStarted(bgCtx(), agentID); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("mark agent input queue turn active failed", "agent_id", agentID, "error", err)
 		}
 	})

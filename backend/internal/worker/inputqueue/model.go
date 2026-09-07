@@ -76,6 +76,13 @@ var (
 	// provider. The manager returns the item to the queue instead of storing a
 	// permanent failure, so an agent that starts later delivers it.
 	ErrDispatchNotReady = errors.New("agent cannot accept input yet")
+	// ErrDispatchBusy marks a dispatch that the provider refused because a turn
+	// of its own is already in flight. The item returns to the queue and the
+	// queue stays OPEN, which is what separates it from ErrDispatchNotReady: an
+	// agent that runs needs no pause and no manual resume, because the turn that
+	// refused the item ends, publishes that end, and releases the drain that
+	// delivers it.
+	ErrDispatchBusy = errors.New("agent input waits for the turn in flight")
 )
 
 type Attachment struct {

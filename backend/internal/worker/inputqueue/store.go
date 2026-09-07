@@ -824,13 +824,31 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	stateUpdate := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`
 	stateArgs := []any{nowText(), item.AgentID}
 	if result.StartsTurn && !result.Steering {
-		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`
-		stateArgs = []any{item.Kind, item.ID, nowText(), item.AgentID}
+		// The turn is asserted only while the state still holds THIS dispatch.
+		// PrepareDispatch opened the turn and recorded the input id before the
+		// provider call, and the manager releases the coordinator lock across
+		// that call -- so a turn that ends inside it clears both fields first.
+		// A write of the turn here would restore one that no envelope ever ends
+		// again, and the queue would then hold every later message for the life
+		// of the process.
+		stateUpdate = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`
+		stateArgs = []any{item.Kind, item.ID, nowText(), item.AgentID, item.ID}
 	} else if result.Steering {
 		stateUpdate = `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`
 	}
-	if _, err := tx.ExecContext(ctx, stateUpdate, stateArgs...); err != nil {
+	stateResult, err := tx.ExecContext(ctx, stateUpdate, stateArgs...)
+	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
+	}
+	// The guarded statement above is the one that can match no row. The item
+	// still left the queue, so the snapshot still moves and owes every watcher
+	// a revision it can order against.
+	if rows, err := stateResult.RowsAffected(); err != nil {
+		return AcceptedTranscript{}, Snapshot{}, err
+	} else if rows == 0 {
+		if err := bumpRevision(ctx, tx, item.AgentID); err != nil {
+			return AcceptedTranscript{}, Snapshot{}, err
+		}
 	}
 	snapshot, err := snapshotTx(ctx, tx, item.AgentID)
 	if err != nil {
@@ -874,61 +892,72 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 
 // TurnEnded clears the active turn.
 //
-// The clear carries no turn identity, because the provider callback that
-// reports a turn end carries none either: agent.notifyInputReady names only
-// the agent. Order is what keeps the clear correct. Every provider reports a
-// turn end on its own single reader goroutine, in wire order, and drain never
+// The clear carries no turn identity, because the provider signal that reports
+// a turn end carries none either: OutputSink.SetTurnActive names only the
+// agent. Order is what keeps the clear correct. Every provider publishes its
+// turn flag on its own single reader goroutine, in wire order, and drain never
 // starts the next turn before Accept commits, so a turn end for turn N always
 // precedes the turn start for N+1. Two rules preserve that order, and both are
-// load-bearing: no call site may report a turn end from a NEW goroutine (an
-// earlier `go notifyInputReady` in codex_output.go did, to escape the
-// coordinator lock, and reordered the two reports), and drain must not hold
-// the coordinator lock across a provider call, which is what made that escape
-// look necessary.
+// load-bearing: no call site may publish a turn end from a NEW goroutine (the
+// Codex turn/completed handler once did, to escape the coordinator lock, and
+// reordered the two reports), and drain must not hold the coordinator lock
+// across a provider call, which is what made that escape look necessary.
 //
 // One case stays open: a turn end that an agent process emits AFTER the Worker
 // replaced it clears the new process's turn. Only a provider generation
-// threaded through SetInputReadyFunc can reject that, and the callback does not
+// threaded through SetTurnEndedFunc can reject that, and the signal does not
 // carry one today.
-func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := ensureState(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`, nowText(), agentID); err != nil {
-		return Snapshot{}, err
-	}
-	return commitSnapshot(ctx, tx, agentID)
+//
+// The Boolean reports whether the durable state moved. Every publish of the
+// provider's turn flag reaches here, and a provider republishes the unchanged
+// value freely, so a call that changes nothing must leave the revision alone.
+func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, bool, error) {
+	return s.setTurnState(ctx, agentID, false)
 }
 
-func (s *Store) TurnStarted(ctx context.Context, agentID string) (Snapshot, error) {
+// TurnStarted records a turn that the agent process began on its own. It keeps
+// the turn that a dispatch already recorded: that one names its input, and this
+// call carries no identity to replace it with.
+//
+// The Boolean reports whether the durable state moved. See TurnEnded.
+func (s *Store) TurnStarted(ctx context.Context, agentID string) (Snapshot, bool, error) {
+	return s.setTurnState(ctx, agentID, true)
+}
+
+// setTurnState reconciles the durable turn flag with the state the provider
+// reports. It is idempotent in both directions, so the caller may report the
+// same state as often as the provider publishes it.
+func (s *Store) setTurnState(ctx context.Context, agentID string, active bool) (Snapshot, bool, error) {
+	statement := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_kind = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND (active_turn = 1 OR active_turn_kind <> 0 OR active_input_id <> '')`
+	args := []any{nowText(), agentID}
+	if active {
+		statement = `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_turn = 0`
+		args = []any{leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, nowText(), agentID}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := ensureState(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 1, active_turn_kind = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_turn = 0`, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, nowText(), agentID)
+	result, err := tx.ExecContext(ctx, statement, args...)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, false, err
 	}
-	if changed, _ := result.RowsAffected(); changed == 0 {
-		snapshot, err := snapshotTx(ctx, tx, agentID)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := tx.Commit(); err != nil {
-			return Snapshot{}, err
-		}
-		return snapshot, nil
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Snapshot{}, false, err
 	}
-	return commitSnapshot(ctx, tx, agentID)
+	snapshot, err := snapshotTx(ctx, tx, agentID)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Snapshot{}, false, err
+	}
+	return snapshot, rows == 1, nil
 }
 
 func (s *Store) Pause(ctx context.Context, agentID string, reason leapmuxv1.AgentInputQueuePauseReason) (Snapshot, error) {

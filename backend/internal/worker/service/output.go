@@ -260,8 +260,11 @@ type OutputHandler struct {
 	// PersistSettingsRefresh consults it to avoid clobbering a settings change
 	// that landed mid-startup with the agent's confirmed launch settings.
 	agentStarting func(agentID string) bool
-	inputReady    func(agentID string)
-	inputStarted  func(agentID string)
+	// turnStarted and turnEnded carry the provider's turn flag to the input
+	// queue. Both edges of ONE signal (OutputSink.SetTurnActive), so the queue's
+	// dispatch guard follows the same flag the provider's own SendInput reads.
+	turnStarted func(agentID string)
+	turnEnded   func(agentID string)
 
 	// wakeLock prevents system sleep while there is agent/terminal activity.
 	wakeLock *wakelock.ActivityTracker
@@ -346,12 +349,15 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 	h.agentStarting = fn
 }
 
-func (h *OutputHandler) SetInputReadyFunc(fn func(agentID string)) {
-	h.inputReady = fn
+// SetTurnStartedFunc and SetTurnEndedFunc wire the input queue's turn state to
+// the turn flag every provider publishes. Call both before any agent output is
+// processed.
+func (h *OutputHandler) SetTurnStartedFunc(fn func(agentID string)) {
+	h.turnStarted = fn
 }
 
-func (h *OutputHandler) SetInputStartedFunc(fn func(agentID string)) {
-	h.inputStarted = fn
+func (h *OutputHandler) SetTurnEndedFunc(fn func(agentID string)) {
+	h.turnEnded = fn
 }
 
 // CleanupAgent removes all per-agent state from the handler's maps.
@@ -690,18 +696,6 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, content, span, s.tracker)
 }
 
-func (s *agentOutputSink) InputReady() {
-	if s.h.inputReady != nil {
-		s.h.inputReady(s.agentID)
-	}
-}
-
-func (s *agentOutputSink) InputStarted() {
-	if s.h.inputStarted != nil {
-		s.h.inputStarted(s.agentID)
-	}
-}
-
 // PersistTurnEnd persists the universal turn-end divider envelope and
 // fires the git-status auto-broadcast. Each provider's final
 // envelope (Claude type:"result", Codex turn/completed, ACP prompt
@@ -763,8 +757,27 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 // SetTurnActive publishes the provider's own turn bookkeeping. Providers call
 // it from the same site that mutates their private flag, so the two cannot
 // drift.
+//
+// Both consumers are here, because one flag answers both: the activity latch
+// that a client renders, and the input queue that holds a message until the
+// running turn ends. The queue used to have a signal of its own, which only a
+// turn the queue itself dispatched ever raised -- so a turn the agent process
+// started on its own was invisible to it, and the next message the user sent
+// went into that turn instead of waiting behind it.
+//
+// The queue call does NOT depend on the latch's edge. The latch resets its
+// record at every process boundary, and a reconciliation that the reset drops
+// leaves the queue on a turn state the provider no longer reports. The queue
+// answers idempotently instead, and reports its own change.
 func (s *agentOutputSink) SetTurnActive(active bool) {
 	s.h.setTurnActive(s.agentID, s.rootAgentID, active)
+	notify := s.h.turnEnded
+	if active {
+		notify = s.h.turnStarted
+	}
+	if notify != nil {
+		notify(s.agentID)
+	}
 }
 
 func turnEndEvent(count int32, ok bool) *leapmuxv1.AgentTurnEnd {

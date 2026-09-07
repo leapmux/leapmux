@@ -704,6 +704,11 @@ func (a *CodexAgent) SendInput(content string, attachments []*leapmuxv1.Attachme
 	// Normal queue dispatch never changes the active turn. Steering is an
 	// explicit queue operation through SteerInput.
 	if turnID != "" {
+		// The refusal is proof that this turn is in flight, and the Worker
+		// dispatched into it, so its view of the turn was wrong. Publish before
+		// the return: the same signal drives the agent's activity state and the
+		// input queue's guard, and both are what the refusal just disproved.
+		a.publishTurnActive()
 		return fmt.Errorf("%w: %s", ErrAgentBusy, turnID)
 	}
 

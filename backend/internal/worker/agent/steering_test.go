@@ -70,20 +70,27 @@ func TestManagerSupportsSteeringAsksTheProvider(t *testing.T) {
 // ErrNoActiveTurn. The two sentinels state opposite conditions, and the queue
 // reads them differently: ErrAgentBusy is transient, so the item waits for the
 // turn to end, while ErrNoActiveTurn says that steering has no target.
+//
+// The refusal also PUBLISHES the turn it refused for. The Worker sent this
+// input, so its view of the turn disagreed with the provider's, and the
+// refusal is the proof. The publish repairs the agent's activity state and the
+// input queue's dispatch guard at the one moment both are known to be wrong.
 func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name string
-		send func(t *testing.T) error
+		send func(t *testing.T, sink OutputSink) error
 	}{
 		{
 			name: "acpBase",
-			send: func(t *testing.T) error {
+			send: func(t *testing.T, sink OutputSink) error {
 				agent, requests := newACPAgentForRPC(t,
 					func() *OpenCodeAgent { return &OpenCodeAgent{} },
 					func(agent *OpenCodeAgent) *acpBase { return &agent.acpBase },
 				)
+				agent.sink = sink
+				agent.wireTurnActive(sink)
 				agent.promptActive = true
 				err := agent.SendInput("later turn", nil)
 				assert.Empty(t, requests(), "a refused send must reach no RPC")
@@ -92,10 +99,11 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		},
 		{
 			name: "codex",
-			send: func(t *testing.T) error {
+			send: func(t *testing.T, sink OutputSink) error {
 				agent, _, requests := newCodexAgentForRPC(t, func(string) json.RawMessage {
 					return json.RawMessage(`{}`)
 				})
+				agent.sink = sink
 				agent.threadID = "thread-1"
 				agent.turnID = "turn-1"
 				err := agent.SendInput("later turn", nil)
@@ -105,26 +113,27 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		},
 		{
 			name: "claude",
-			send: func(t *testing.T) error {
-				agent := &ClaudeCodeAgent{turnActive: true}
+			send: func(t *testing.T, sink OutputSink) error {
+				agent := &ClaudeCodeAgent{turnActive: true, sink: sink}
 				return agent.SendInput("later turn", nil)
 			},
 		},
 		{
 			name: "pi",
-			send: func(t *testing.T) error {
+			send: func(t *testing.T, sink OutputSink) error {
 				agent := &PiAgent{
 					processBase:       processBase{agentID: "test-agent"},
 					currentTurnActive: true,
+					sink:              sink,
 				}
 				return agent.SendInput("later turn", nil)
 			},
 		},
 		{
 			name: "zcode",
-			send: func(t *testing.T) error {
+			send: func(t *testing.T, sink OutputSink) error {
 				stdin := &zcodeRecordedStdin{}
-				agent := newZCodeTestAgentWithStdin(t, &recordingControlSink{}, stdin)
+				agent := newZCodeTestAgentWithStdin(t, sink, stdin)
 				agent.mu.Lock()
 				agent.sessionID = "session-1"
 				agent.model = "provider/model"
@@ -137,10 +146,13 @@ func TestSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := tc.send(t)
+			sink := &testSink{}
+			err := tc.send(t, sink)
 			assert.ErrorIs(t, err, ErrAgentBusy)
 			assert.NotErrorIs(t, err, ErrNoActiveTurn,
 				"a busy agent has a turn; the no-active-turn sentinel states the opposite")
+			assert.Equal(t, []bool{true}, sink.TurnActives(),
+				"the refusal publishes the turn that caused it")
 		})
 	}
 }

@@ -11,17 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type blockingInputReadySink struct {
-	testSink
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (s *blockingInputReadySink) InputReady() {
-	close(s.entered)
-	<-s.release
-}
-
 func TestCodexCompactContextUsesNativeCompaction(t *testing.T) {
 	t.Parallel()
 
@@ -158,12 +147,11 @@ func TestHandleCodexOutput_ContextCompactionCompletionPersistsBoundary(t *testin
 	}, codexProvider{}.Classify(last.Content),
 		"the consolidator drops the compacting status only for a compaction boundary")
 
-	assert.Equal(t, 0, sink.InputReadyCount(), "the item boundary must not end its enclosing turn")
+	assert.Empty(t, sink.TurnActives(), "the item boundary must not end its enclosing turn")
 
 	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)))
-	require.Eventually(t, func() bool {
-		return sink.InputReadyCount() == 1
-	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []bool{false}, sink.TurnActives(),
+		"the turn's own completion releases the Worker's input queue")
 }
 
 // The Codex app-server still emits thread/compacted for an auto-compaction. It
@@ -190,34 +178,25 @@ func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
 		"item/completed is the compaction boundary now; thread/compacted stays a plain threadable notification")
 }
 
-func TestHandleCodexOutput_CompactionTurnCompletionDoesNotBlockReader(t *testing.T) {
+func TestHandleCodexOutput_CompactionTurnCompletionReportsTheEndInWireOrder(t *testing.T) {
 	t.Parallel()
 
-	sink := &blockingInputReadySink{
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	defer close(sink.release)
+	// The Worker's input queue takes its turn state from this publish, and the
+	// state carries no turn identity -- so ORDER is the only thing that keeps
+	// the clear attached to the turn it belongs to. Reporting it from a new
+	// goroutine (this site once did, to keep the reader free for the response
+	// to a compaction the app-server submits before it answers) lets the clear
+	// land after the NEXT turn already opened, and that turn is then dispatched
+	// into.
+	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	// Bypass the thinking-token wrapper so this test isolates the output-reader
 	// callback order. A separate assertion verifies wrapper forwarding.
 	agent.sink = sink
-	done := make(chan struct{})
 
-	go func() {
-		handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)))
-		close(done)
-	}()
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
+	handleCodexOutput(agent, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)))
 
-	select {
-	case <-sink.entered:
-	case <-time.After(time.Second):
-		t.Fatal("compaction completion did not notify the input queue")
-	}
-
-	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("input queue callback blocked the Codex output reader")
-	}
+	assert.Equal(t, []bool{true, false}, sink.TurnActives(),
+		"the handler reports the end before it returns, so the reader's next line cannot overtake it")
 }
