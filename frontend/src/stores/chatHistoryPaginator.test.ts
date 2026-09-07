@@ -14,7 +14,7 @@ const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/lea
 
 // The harness's cap/ceiling, distinct so an assertion can prove WHICH was used. The
 // production wiring passes MAX_LOADED_CHAT_MESSAGES / MAX_LOADED_CHAT_MESSAGES_CEILING.
-const BASE = 150
+const BASE = Number(CATCH_UP_GAP_LIMIT)
 const CEILING = 1200
 
 function makeMsg(seq: bigint, id?: string): AgentChatMessage {

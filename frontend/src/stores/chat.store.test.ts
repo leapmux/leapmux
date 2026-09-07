@@ -1331,7 +1331,7 @@ describe('createChatStore', () => {
           expect(store.getMessages('a1')).toHaveLength(50)
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.isInitialLoadComplete('a1')).toBe(true)
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT })
           dispose()
         })
       })
@@ -1393,7 +1393,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.BEFORE,
             cursorSeq: 51n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           dispose()
         })
@@ -1478,7 +1478,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 50n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           dispose()
         })
@@ -1515,13 +1515,13 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 50n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, 'w1', {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 100n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           dispose()
         })
@@ -1984,7 +1984,7 @@ describe('createChatStore', () => {
           expect(msgs).toHaveLength(50)
           expect(msgs.at(-1)!.seq).toBe(50n)
           expect(store.hasNewerMessages('a1')).toBe(false)
-          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.AFTER, cursorSeq: 30n, limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.AFTER, cursorSeq: 30n, limit: MESSAGE_PAGE_LIMIT })
           dispose()
         })
       })
@@ -2891,7 +2891,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 99n, // latestLiveSeq (100) - 1
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           expect(store.getLastSeq('a1')).toBe(50n) // still unreachable, so we stuck anyway
           // The unreachable seq 100 is clamped out of latestLiveSeq so a later
@@ -2933,7 +2933,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 51n, // latestLiveSeq (52) - 1
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           expect(store.getLastSeq('a1')).toBe(52n) // tail recovered
           expect(store.hasNewerMessages('a1')).toBe(false)
@@ -3033,7 +3033,7 @@ describe('createChatStore', () => {
           expect(msgs.at(-1)!.seq).toBe(50n)
           expect(store.hasOlderMessages('a1')).toBe(false) // at the very start
           expect(store.hasNewerMessages('a1')).toBe(true) // more exist beyond it
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
           dispose()
         })
       })
