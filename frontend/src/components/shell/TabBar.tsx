@@ -166,6 +166,22 @@ export const TabBar: Component<TabBarProps> = (props) => {
 
   const [editingTabKey, setEditingTabKey] = createSignal<string | null>(null)
   const [editingValue, setEditingValue] = createSignal('')
+  /**
+   * Whether the rename input has held the caret since this rename opened.
+   *
+   * A FOCUS change counts as the user leaving only after this. The gesture that
+   * OPENS a rename moves the focus itself: the Rename item sits in a popover,
+   * and closing that popover hands the focus back to the tab. So a guard that
+   * armed the moment the rename opened read its own opening gesture as a
+   * departure, committed at once, and the input never appeared -- the tab bar's
+   * context-menu Rename did nothing at all.
+   *
+   * A POINTERDOWN carries no such ambiguity, so that half needs no wait.
+   * Nothing but the user presses a pointer, and the app never synthesizes one;
+   * a focus change is the opposite, which is the whole reason this guard exists
+   * instead of a bare `blur` handler.
+   */
+  const [renameHeldCaret, setRenameHeldCaret] = createSignal(false)
 
   // Cross-tile drag context (may not be available on mobile single-tile layout)
   let crossTileDrag: ReturnType<typeof useTabDrag> | undefined
@@ -200,6 +216,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
   const startEditing = (tab: Tab) => {
     setEditingTabKey(tabKey(tab))
     setEditingValue(tabDisplayLabel(tab))
+    setRenameHeldCaret(false)
   }
 
   const commitEdit = (tab: Tab) => {
@@ -261,6 +278,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
     const leaveIfOutside = (event: Event): void => {
       const target = event.target
       if (renameInputEl && target instanceof Node && renameInputEl.contains(target))
+        return
+      // The rename has not had the caret yet, so this focus change belongs to
+      // the gesture that OPENED it -- see `renameHeldCaret`. There is nothing
+      // to leave until the input holds the caret.
+      if (event.type === 'focusin' && !renameHeldCaret())
         return
       // Resolved at GESTURE time, not at setup: the strip can re-key its rows
       // while the rename is open, and the tab to rename is whichever one the
@@ -329,6 +351,10 @@ export const TabBar: Component<TabBarProps> = (props) => {
         }
       }}
       onClick={e => e.stopPropagation()}
+      // Arms the focus half of the guard above. On the input's OWN focus, so it
+      // covers the programmatic focus below and a user who clicks straight into
+      // the field.
+      onFocus={() => setRenameHeldCaret(true)}
       ref={(el) => {
         renameInputEl = el
         onCleanup(() => {
