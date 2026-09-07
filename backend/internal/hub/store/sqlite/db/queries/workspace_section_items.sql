@@ -10,6 +10,15 @@ SELECT * FROM workspace_section_items
 WHERE user_id = ? AND workspace_id = ?;
 
 -- name: ListWorkspaceSectionItemsByUser :many
+-- A section item PLACES a workspace, so it must not outlive the workspace.
+-- The workspace delete is a SOFT delete (workspaces.is_deleted), so the
+-- ON DELETE CASCADE on workspace_id never fires and the row survives. The
+-- join to workspaces drops it here instead. Without this the sidebar counts
+-- an archived workspace nobody can see: the rows come from the workspace
+-- list, but the Archived section menu counts ITEMS, so it offers
+-- "Unarchive all" and "Empty archive..." for an empty archive, and
+-- "Unarchive all" cannot clear them because the workspace is gone.
+--
 -- workspace_id is the deterministic tiebreaker. wsi.position is a
 -- lexorank string with NO uniqueness constraint, and two items
 -- legitimately share a position: lexorank.first() always returns
@@ -26,6 +35,7 @@ WHERE user_id = ? AND workspace_id = ?;
 -- across page loads.
 SELECT wsi.* FROM workspace_section_items wsi
 JOIN workspace_sections ws ON wsi.section_id = ws.id
+JOIN workspaces w ON wsi.workspace_id = w.id AND w.is_deleted = 0
 WHERE wsi.user_id = ?
 ORDER BY ws.position, wsi.position, wsi.workspace_id;
 
