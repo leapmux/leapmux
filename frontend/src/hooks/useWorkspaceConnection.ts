@@ -14,6 +14,7 @@ import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { showWarnToastUnlessDisconnected } from '~/components/common/Toast'
 import { addTerminalInstanceReadyListener, getTerminalInstance } from '~/components/terminal/TerminalView'
+import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -154,6 +155,7 @@ export function reconcileLaggingTails(deps: {
   caughtUpToLiveTail: (agentId: string) => boolean
   isTailFillDeferred: (agentId: string) => boolean
   getLastSeq: (agentId: string) => bigint
+  getLiveTailSeq: (agentId: string) => bigint
   isFetchingNewer: (agentId: string) => boolean
   catchUpToTail: (workerId: string, agentId: string, afterSeq: bigint) => void
   resumeDeferredTailFill: (workerId: string, agentId: string) => void
@@ -162,18 +164,24 @@ export function reconcileLaggingTails(deps: {
   for (const tab of deps.agentTabs()) {
     if (!tab.workerId)
       continue
-    const atTail = !deps.hasNewerMessages(tab.id)
     const caughtUp = deps.caughtUpToLiveTail(tab.id)
-    const deferred = deps.isTailFillDeferred(tab.id)
     if (caughtUp)
       continue
-    if (deps.getLastSeq(tab.id) === 0n) {
+    const lastSeq = deps.getLastSeq(tab.id)
+    if (lastSeq === 0n) {
       if (!deps.isFetchingNewer(tab.id))
         deps.jumpToLatest(tab.workerId, tab.id)
       continue
     }
+    if (deps.getLiveTailSeq(tab.id) - lastSeq > CATCH_UP_GAP_LIMIT) {
+      if (!deps.isFetchingNewer(tab.id))
+        deps.jumpToLatest(tab.workerId, tab.id)
+      continue
+    }
+    const atTail = !deps.hasNewerMessages(tab.id)
+    const deferred = deps.isTailFillDeferred(tab.id)
     if (atTail)
-      deps.catchUpToTail(tab.workerId, tab.id, deps.getLastSeq(tab.id))
+      deps.catchUpToTail(tab.workerId, tab.id, lastSeq)
     else if (deferred)
       deps.resumeDeferredTailFill(tab.workerId, tab.id)
   }
@@ -609,6 +617,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     caughtUpToLiveTail: id => chatStore.caughtUpToLiveTail(id),
     isTailFillDeferred: id => chatStore.isTailFillDeferred(id),
     getLastSeq: id => chatStore.getLastSeq(id),
+    getLiveTailSeq: id => chatStore.liveTail.get(id),
     isFetchingNewer: id => chatStore.isFetchingNewer(id),
     catchUpToTail: (workerId, agentId, afterSeq) => {
       void chatStore.catchUpToTail(workerId, agentId, afterSeq, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)

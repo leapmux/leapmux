@@ -9,6 +9,7 @@ import { createStore, produce, unwrap } from 'solid-js/store'
 import { getAgentMessage } from '~/api/workerRpc'
 import { forgetMarkPreview } from '~/components/chat/chatMarkPreview'
 import { invalidateMessageClassificationCache } from '~/components/chat/messageClassification'
+import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
@@ -16,7 +17,7 @@ import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
 import { createCommandStreamStore } from './chatCommandStreams'
 import { createContentVersionStore } from './chatContentVersions'
 import { createGoalStore } from './chatGoalStore'
-import { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } from './chatHistoryPaginator'
+import { createHistoryPaginator, linkWatchSignal } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
@@ -28,7 +29,7 @@ import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
 
 /** Max number of loaded messages to keep for the visible agent tab window. */
-export const MAX_LOADED_CHAT_MESSAGES = 150
+export const MAX_LOADED_CHAT_MESSAGES = Number(CATCH_UP_GAP_LIMIT)
 /**
  * Hard ceiling on the visible-tab window when a scrolled-up reader is being
  * protected from the live-tail trim (see trimOldestToViewport) AND when the
@@ -95,11 +96,10 @@ export interface ChatStoreState {
   /**
    * Whether a reconnect catch-up is in flight for this agent (per agent): set when the
    * client (re)subscribes via WatchEvents, cleared at CatchUpComplete. During catch-up
-   * the recorded live tail tracks the LOADED tail (the bounded replay's own bumps), not
-   * the true server tail -- and an indeterminate (unset) tail never raises it -- so the
-   * live-append guard falls back to seq-CONTIGUITY while this is set (a non-contiguous
-   * frame is a live arrival past the unfilled replay gap; a contiguous one is the next
-   * in-order replay page). See beyondUnloadedNewerTail.
+   * CatchUpStart normally records the true server tail. An indeterminate (unset) tail
+   * tracks only loaded rows, so the live-append guard uses sequence contiguity while
+   * this is set. A non-contiguous frame is a live arrival past the unfilled replay
+   * gap. A contiguous frame is the next replay message. See beyondUnloadedNewerTail.
    */
   catchingUp: Record<string, boolean>
   /** Whether a fetch for older messages is in progress (per agent). */
@@ -1086,7 +1086,7 @@ export function createChatStore() {
      * oldest end. That trim drops the buffer on the other side, or, at the live tail,
      * the pinned tail row.
      *
-     * The threshold is CEILING - MESSAGE_PAGE_SIZE, not the ceiling itself, on
+     * The threshold is CEILING - MESSAGE_PAGE_LIMIT, not the ceiling itself, on
      * purpose. One 50-row page can take the window length from just under the ceiling
      * (1199) to just over it (1249), and trimNewestEnd flips hasMoreNewer and drops
      * the live tail only after the window length EXCEEDS the ceiling. A stop one full
@@ -1095,7 +1095,7 @@ export function createChatStore() {
      */
     atWindowCeiling(agentId: string): boolean {
       const msgs = state.messagesByAgent[agentId]
-      return !!msgs && msgs.length >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
+      return !!msgs && msgs.length >= MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_LIMIT
     },
 
     isFetchingOlder(agentId: string): boolean {

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -421,6 +422,86 @@ func TestWatchEvents_PromoteNotifyToFullReplaysOnce(t *testing.T) {
 		return a.GetUpdateId() == 2
 	})
 	assert.Equal(t, 1, countCatchUpCompletes(w), "identical FULL restatement must not replay again")
+}
+
+func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
+	tests := []struct {
+		name             string
+		messageCount     int
+		wantReplayFrames int
+	}{
+		{
+			name:             "gap over limit skips message replay",
+			messageCount:     contracts.CatchUpGapLimit + 2,
+			wantReplayFrames: 0,
+		},
+		{
+			name:             "gap inside limit replays messages",
+			messageCount:     3,
+			wantReplayFrames: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			svc, d, w := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+			}))
+
+			seqs := make([]int64, 0, tc.messageCount)
+			for i := range tc.messageCount {
+				seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+					ID:            fmt.Sprintf("msg-%d", i+1),
+					AgentID:       "agent-1",
+					Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+					Content:       []byte("hi"),
+					AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				})
+				require.NoError(t, err)
+				seqs = append(seqs, seq)
+			}
+
+			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+			}, w)
+			waitAgentWatchCount(t, svc, "agent-1", 1)
+
+			promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+				UpdateId: 1,
+				Agents: []*leapmuxv1.WatchAgentEntry{{
+					AgentId:   "agent-1",
+					Mode:      leapmuxv1.WatchMode_WATCH_MODE_FULL,
+					Replay:    leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE,
+					CursorSeq: seqs[0],
+				}},
+			})
+			require.NoError(t, err)
+			w.deliverStreamRequest(promote, false)
+
+			require.Eventually(t, func() bool {
+				return countCatchUpCompletes(w) == 1
+			}, time.Second, 10*time.Millisecond, "promotion must finish its catch-up stages")
+
+			var start *leapmuxv1.CatchUpStart
+			replayed := 0
+			for _, event := range decodeAgentEvents(w) {
+				if event.GetCatchUpStart() != nil {
+					start = event.GetCatchUpStart()
+				}
+				if event.GetAgentMessage() != nil {
+					replayed++
+				}
+			}
+			require.NotNil(t, start)
+			require.NotNil(t, start.LatestSeq)
+			assert.Equal(t, seqs[len(seqs)-1], start.GetLatestSeq())
+			assert.Equal(t, tc.wantReplayFrames, replayed)
+		})
+	}
 }
 
 func TestWatchEvents_DemoteThenRepromoteReplaysAgain(t *testing.T) {

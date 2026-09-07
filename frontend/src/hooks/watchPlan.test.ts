@@ -1,13 +1,35 @@
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
+import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import {
+  agentWatchEntry,
   buildWatchPlans,
   isTabOnScreen,
   shouldRetryRejection,
   tabWatchMode,
   watchPlanKey,
 } from './watchPlan'
+
+describe('agentWatchEntry', () => {
+  it('uses AFTER_CURSOR_OR_NONE for a positive resume sequence', () => {
+    expect(agentWatchEntry('a1', 42n, WatchMode.FULL)).toMatchObject({
+      agentId: 'a1',
+      replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+      cursorSeq: 42n,
+      mode: WatchMode.FULL,
+    })
+  })
+
+  it('uses LATEST with cursor zero for a cold entry', () => {
+    expect(agentWatchEntry('a1', 0n, WatchMode.FULL)).toMatchObject({
+      agentId: 'a1',
+      replay: WatchReplayMode.LATEST,
+      cursorSeq: 0n,
+      mode: WatchMode.FULL,
+    })
+  })
+})
 
 function agent(overrides: Partial<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
   return {

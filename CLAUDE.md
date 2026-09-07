@@ -32,6 +32,7 @@ before building).
   trigger and hard wrap bound), and the frame length prefix. `headers.json` —
   cross-program HTTP headers (both elevation headers,
   credential-rejected). `retry.json` — the events-rejection retry policy.
+  `chat-history.json` — the message page limit and browser catch-up gap limit.
   `worker-vocab.json` — notification-type tokens, the notification-thread
   discriminator, the Codex rate-limit token, and the model sentinels.
   `goose-protocol.json` — Goose permission modes. `copilot-permissions.json` —

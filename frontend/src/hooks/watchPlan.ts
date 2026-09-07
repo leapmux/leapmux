@@ -82,7 +82,7 @@ export function agentWatchEntry(
   mode: WatchMode,
 ): WatchAgentEntry {
   const base = resumeSeq > 0n
-    ? { agentId, replay: WatchReplayMode.AFTER_CURSOR, cursorSeq: resumeSeq, mode }
+    ? { agentId, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE, cursorSeq: resumeSeq, mode }
     : { agentId, replay: WatchReplayMode.LATEST, cursorSeq: BigInt(0), mode }
   return base as WatchAgentEntry
 }

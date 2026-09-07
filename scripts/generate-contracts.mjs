@@ -320,6 +320,16 @@ export function checkRetry(r) {
 }
 
 // ---------------------------------------------------------------------------
+// chat-history: cross-language page and catch-up limits
+// ---------------------------------------------------------------------------
+
+export function checkChatHistory(v) {
+  mustBe(Number.isInteger(v.messagePageLimit) && v.messagePageLimit > 0, 'chat-history.json', 'messagePageLimit must be a positive integer')
+  mustBe(Number.isInteger(v.catchUpGapLimit) && v.catchUpGapLimit >= v.messagePageLimit, 'chat-history.json', 'catchUpGapLimit must be an integer >= messagePageLimit')
+  return {}
+}
+
+// ---------------------------------------------------------------------------
 // session-info: the agent_session_info wire vocabulary
 // ---------------------------------------------------------------------------
 
@@ -2352,6 +2362,28 @@ export const ${constName} = {
   return `${TS_HEADER('retry.json')}\n${blocks.join('\n')}`
 }
 
+export function emitGoChatHistory(v) {
+  return `${GO_HEADER('chat-history.json')}package contracts
+
+// Shared chat history limits. The worker caps pages at MessagePageLimit.
+// The browser re-anchors when a catch-up gap exceeds CatchUpGapLimit.
+const (
+\tMessagePageLimit = ${v.messagePageLimit}
+\tCatchUpGapLimit  = ${v.catchUpGapLimit}
+)
+`
+}
+
+export function emitTsChatHistory(v) {
+  return `${TS_HEADER('chat-history.json')}
+/** The maximum number of messages in one history page. */
+export const MESSAGE_PAGE_LIMIT = ${v.messagePageLimit} as const
+
+/** The largest sequence gap that the browser drains before it re-anchors. */
+export const CATCH_UP_GAP_LIMIT = ${v.catchUpGapLimit}n
+`
+}
+
 /**
  * One queued agent input's caps. The browser pre-checks a composer draft and
  * the Worker enforces the same numbers, so both must measure ONE quantity:
@@ -2599,6 +2631,15 @@ const DOMAINS = [
       checkRetry(r)
       out['backend/generated/contracts/retry.go'] = emitGoRetry(r)
       out['frontend/src/generated/contracts/retry.ts'] = emitTsRetry(r)
+    },
+  },
+  {
+    name: 'chat-history',
+    emit(out, read) {
+      const v = read('chat-history')
+      checkChatHistory(v)
+      out['backend/generated/contracts/chat-history.go'] = emitGoChatHistory(v)
+      out['frontend/src/generated/contracts/chat-history.ts'] = emitTsChatHistory(v)
     },
   },
   {

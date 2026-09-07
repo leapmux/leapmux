@@ -3,9 +3,9 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
+import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore, MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
-import { MESSAGE_PAGE_SIZE } from '~/stores/chatHistoryPaginator'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerPage / catchUpToTail
 const mockListAgentMessages = vi.fn()
@@ -1797,8 +1797,8 @@ describe('createChatStore', () => {
     describe('atWindowCeiling', () => {
       // The filler must stop a full page BEFORE the hard ceiling so its last allowed
       // fetch can't cross it and drop the live tail -- so the threshold is
-      // CEILING - MESSAGE_PAGE_SIZE.
-      const threshold = MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
+      // CEILING - MESSAGE_PAGE_LIMIT.
+      const threshold = MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_LIMIT
 
       it('trips a full page BEFORE the hard ceiling', () => {
         createRoot((dispose) => {
@@ -1807,7 +1807,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: threshold - 1 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
           expect(store.atWindowCeiling('a1')).toBe(false) // one short of the page-margin threshold
           store.addMessage('a1', makeMessage('edge', BigInt(threshold)))
-          expect(store.atWindowCeiling('a1')).toBe(true) // at CEILING - MESSAGE_PAGE_SIZE
+          expect(store.atWindowCeiling('a1')).toBe(true) // at CEILING - MESSAGE_PAGE_LIMIT
           dispose()
         })
       })

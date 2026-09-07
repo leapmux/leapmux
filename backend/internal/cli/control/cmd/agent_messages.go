@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
@@ -39,7 +40,7 @@ func RunAgentMessages(rawCtx any, args []string) error {
 			// three mutually-exclusive flags -- you can't pick two pages at once.
 			fs.StringVar(&anchor, "anchor", "latest", "page to fetch: latest, oldest, before, or after")
 			fs.Int64Var(&cursorSeq, "cursor-seq", 0, "exclusive seq bound for --anchor before/after")
-			fs.IntVar(&limit, "limit", 50, "max messages per page (hub caps at 50)")
+			fs.IntVar(&limit, "limit", contracts.MessagePageLimit, fmt.Sprintf("max messages per page (worker caps at %d)", contracts.MessagePageLimit))
 			fs.BoolVar(&follow, "follow", false, "tail new messages indefinitely")
 		},
 		noDeadline: true,
@@ -55,7 +56,7 @@ func RunAgentMessages(rawCtx any, args []string) error {
 			// Page 1: history pulled via ListAgentMessages so the user sees
 			// prior context before the live tail starts. WatchEvents can replay the
 			// LATEST page too, but ListAgentMessages is shaped for paginated
-			// history (cap = 50/page), so we keep it for the single-page
+			// history, capped by contracts.MessagePageLimit. Keep it for the single-page
 			// show-history-first behaviour.
 			var resp leapmuxv1.ListAgentMessagesResponse
 			if err := callInnerRPC(ctx, c, workerID, "ListAgentMessages", req, &resp); err != nil {
@@ -136,7 +137,7 @@ func followSelectorError(follow bool, anchor leapmuxv1.MessagePageAnchor) error 
 
 // clampInt32 saturates an int to the int32 range so the conversion can't wrap.
 // A value above MaxInt32 becomes MaxInt32 and one below MinInt32 becomes
-// MinInt32; both land outside the hub's [1,50] window and are clamped there.
+// MinInt32. Both values land outside the worker's valid page-limit range.
 func clampInt32(v int) int32 {
 	if v > math.MaxInt32 {
 		return math.MaxInt32
@@ -157,7 +158,7 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 	if cursorSeq < 0 {
 		return nil, errors.New("--cursor-seq must be non-negative")
 	}
-	// A non-positive --limit would be silently clamped to the hub default (50);
+	// A non-positive --limit would be silently clamped to contracts.MessagePageLimit.
 	// reject it loudly so a typo fails the same way --cursor-seq and --anchor do
 	// instead of quietly returning a full page.
 	if limit <= 0 {
@@ -167,8 +168,8 @@ func listMessagesPageRequest(agentID, anchor string, cursorSeq int64, limit int)
 	req := &leapmuxv1.ListAgentMessagesRequest{
 		AgentId: agentID,
 		// Clamp to the int32 wire range so a huge --limit can't wrap to a small
-		// positive that slips past the hub's <=50 cap (e.g. int32(2^32+1)==1).
-		// The hub does the real [1,50] clamp; the CLI only guards the conversion.
+		// positive that slips past the worker's cap. For example, int32(2^32+1) is 1.
+		// The worker applies the page-limit clamp. The CLI only guards the conversion.
 		Limit: clampInt32(limit),
 	}
 	switch strings.ToLower(strings.TrimSpace(anchor)) {
@@ -330,10 +331,6 @@ func (b *reconnectBackoff) afterSession(deliveredEvent bool) time.Duration {
 	return wait
 }
 
-// followDrainPageLimit bounds each backlog-drain page. The hub clamps the page
-// size to 50 regardless; matching it keeps one page to one round-trip.
-const followDrainPageLimit = 50
-
 // messagePager fetches one ascending page of messages with seq > afterSeq and
 // reports whether more remain past it. Injected so the reconnect drain loop is
 // unit-testable without a live worker RPC.
@@ -341,7 +338,7 @@ type messagePager func(ctx context.Context, afterSeq int64) (msgs []*leapmuxv1.A
 type messageEmitter func(*leapmuxv1.AgentChatMessage) error
 
 // drainBacklog forwards every message between the cursor and the live tail that
-// the capped WatchEvents replay (<= maxMessagePageLimit per reconnect) would
+// the capped WatchEvents replay (at most contracts.MessagePageLimit per reconnect) would
 // otherwise skip. It pages forward from the cursor until caught up, emitting each
 // message and advancing the cursor so the subsequent subscription replay only has
 // to cover the small remaining gap.
@@ -451,7 +448,7 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	drainFetch := func(ctx context.Context, afterSeq int64) ([]*leapmuxv1.AgentChatMessage, bool, error) {
 		req := &leapmuxv1.ListAgentMessagesRequest{
 			AgentId: agentID,
-			Limit:   followDrainPageLimit,
+			Limit:   contracts.MessagePageLimit,
 		}
 		if streamevents.IsResumeCursor(afterSeq) {
 			req.Anchor = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER
@@ -477,18 +474,13 @@ func tailAgentMessages(ctx context.Context, c *control.Client, workerID, agentID
 	)
 	backoff := newReconnectBackoff(initialBackoff, maxBackoff)
 	for {
-		// Before EVERY (re)subscribe -- including the first -- bridge the gap the capped
-		// WatchEvents replay (<= maxMessagePageLimit per connect) can't cover, by paging
-		// ListAgentMessages forward from the cursor. On a RECONNECT this is the
-		// disconnect gap; on the FIRST connect it is a burst created between page-1's
-		// snapshot and the watcher registering that overflows the 50-row replay -- page-1
-		// shows recent history but does NOT cover a >50 in-flight burst, so without this
-		// drain those middle messages are silently skipped (the replay caps at 50 and the
-		// live stream resumes from the newest). The drain pages AFTER the cursor (strict
-		// seq > cursor), so it never re-emits a page-1 message. Best-effort: if the drain
-		// can't reach the worker yet it returns early and the resubscribe/backoff below
-		// retries -- the cursor only advances past emitted messages, so the next
-		// reconnect's drain re-attempts the gap.
+		// Before each subscription, bridge the gap that the capped WatchEvents replay
+		// cannot cover. The replay sends at most contracts.MessagePageLimit messages.
+		// ListAgentMessages pages forward from the cursor. On a reconnect, it fills the
+		// disconnect gap. On the first connection, it fills messages created between the
+		// page 1 snapshot and watcher registration. The drain uses AFTER, so it does not
+		// emit a page 1 message again. A failed fetch returns early. The next reconnect
+		// retries from the last message that the command emitted.
 		drained, drainErr := drainBacklog(ctx, agentID, cursor, drainFetch, emitMsg)
 		if drainErr != nil {
 			return drainErr

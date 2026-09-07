@@ -3,10 +3,8 @@ import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
 import type { AgentChatMessage, AgentGoal as ProtoAgentGoal, AgentGoalAction as ProtoAgentGoalAction, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { listAgentMessages } from '~/api/workerRpc'
+import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { MessagePageAnchor } from '~/generated/proto/leapmux/v1/agent_pb'
-
-/** Per-page size for the windowed history fetch (the hub caps the page at 50). */
-export const MESSAGE_PAGE_SIZE = 50
 /**
  * Max forward-fill rounds before forwardFillToLiveTail settles regardless, so a
  * genuinely-vanished live seq stops the loop instead of spinning.
@@ -67,7 +65,7 @@ function listMessagesAfter(workerId: string, agentId: string, cursorSeq: bigint)
     agentId,
     anchor: MessagePageAnchor.AFTER,
     cursorSeq,
-    limit: MESSAGE_PAGE_SIZE,
+    limit: MESSAGE_PAGE_LIMIT,
   })
 }
 
@@ -200,7 +198,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         resp = await listAgentMessages(workerId, {
           agentId,
           anchor: MessagePageAnchor.LATEST,
-          limit: MESSAGE_PAGE_SIZE,
+          limit: MESSAGE_PAGE_LIMIT,
         })
       }
       catch (err) {
@@ -249,7 +247,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         agentId,
         anchor: MessagePageAnchor.BEFORE,
         cursorSeq: firstSeq,
-        limit: MESSAGE_PAGE_SIZE,
+        limit: MESSAGE_PAGE_LIMIT,
       })
       if (signal.aborted)
         return
@@ -333,9 +331,9 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
   }
 
   /**
-   * Fetch messages forward from a given seq, looping until all are retrieved.
-   * Used after WatchEvents catch-up replay to fill any gap beyond the
-   * 50-message replay limit.
+   * Fetch messages forward from a given sequence while the authoritative gap
+   * fits in the live-tail window. A response that identifies a larger gap stops
+   * the drain and records the tail. The scheduler then re-anchors on LATEST.
    *
    * No-op when the window is scrolled away from the live tail (hasMoreNewer):
    * refilling the tail would defeat the bidirectional window. The live deltas
@@ -353,9 +351,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * so an in-flight page is discarded the moment the user takes over the tail --
    * the two never race on the window.
    *
-   * Each page is trimmed as it lands -- trim the OLDEST end to the CEILING (not the
-   * base), mirroring loadNewerPage -- so a large reconnect gap is bounded by the
-   * ceiling rather than growing without limit. Capping to the ceiling (not the base)
+   * Each page is trimmed as it lands. Trim the OLDEST end to the CEILING, not the
+   * base, to match loadNewerPage. Capping to the ceiling instead of the base
    * is what spares a SCROLLED-UP reader: the loop runs while at the live tail
    * (hasMoreNewer false), but the reader can be scrolled up into a ceiling-grown older
    * buffer, and a base trim would reap that buffer (and rows below their anchor). The
@@ -365,12 +362,12 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    */
   async function catchUpToTail(workerId: string, agentId: string, afterSeq: bigint, watchSignal?: AbortSignal): Promise<void> {
     // Idempotent under the continuous reconcile effect (runSingleFlightTailLoop no-ops
-    // while a loop is draining this agent): the loop itself keeps fetching while
-    // resp.hasMore, so a lag that grows mid-fill (a live arrival dropped beyond the
-    // window) is closed by the running loop, not a re-kick. A user fetch still
-    // supersedes via catchUpAbort/beginHistoryFetch.
+    // while a loop drains this agent). The loop fetches while resp.hasMore and
+    // the authoritative gap fits in the live-tail window. A user fetch still
+    // supersedes it through catchUpAbort and beginHistoryFetch.
     await runSingleFlightTailLoop(agentId, watchSignal, async (signal, liveSeqAtEntry) => {
       let cursor = afterSeq
+      let stoppedForOverLimitGap = false
       while (!signal.aborted && !state.hasMoreNewer[agentId]) {
         const resp = await listMessagesAfter(workerId, agentId, cursor)
         // Superseded mid-flight (a user jump/scroll, or subscription teardown):
@@ -379,6 +376,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
           return
         for (const msg of resp.messages) {
           deps.addMessage(agentId, msg)
+        }
+        if (resp.latestSeq !== undefined) {
+          deps.liveTail.bump(agentId, resp.latestSeq)
+          stoppedForOverLimitGap = resp.latestSeq - deps.getLastSeq(agentId) > CATCH_UP_GAP_LIMIT
         }
         // Cap the window as we go: trim the oldest end (sets hasMoreOlder; leaves
         // hasMoreNewer false so the loop and the live-append guard keep working). Cap to
@@ -391,6 +392,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // (trimOldestToViewport) brings a FOLLOWED tail back to the lean base; a
         // scrolled-up reader keeps their buffer up to the ceiling.
         deps.trimOldestEnd(agentId, deps.maxLoadedCeiling)
+        if (stoppedForOverLimitGap)
+          break
         if (!resp.hasMore || resp.messages.length === 0)
           break
         // The server returns each page ordered ascending by seq (ORDER BY seq
@@ -398,16 +401,11 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // for the next forward page.
         cursor = resp.messages.at(-1)!.seq
       }
-      // The loop drained the server's forward pages (reached has_more=false or an empty
-      // page) while at the tail (hasMoreNewer stayed false). If the recorded live tail
-      // STILL sits ahead of the loaded window, it points at a seq the server can no
-      // longer give us. A server-side history change can leave this client with a
-      // stale high-water value. Without clamping it,
-      // caughtUpToLiveTail never resolves, so the continuous reconcile re-issues this
-      // empty fetch on EVERY tick and the scroll-to-bottom affordance stays lit forever.
-      // Clamp it to the window (mirrors loadNewerPage's dedup-stall settle); an empty
-      // window resets to empty (mirrors jumpToLatestMessages' authoritative-empty path).
-      if (!signal.aborted && !state.hasMoreNewer[agentId] && !deps.caughtUpToLiveTail(agentId)) {
+      // An over-limit stop keeps the recorded gap for the scheduler. Otherwise,
+      // the loop drained the forward pages. A remaining gap points at a sequence
+      // that the server cannot return. Clamp that stale tail to the window, or
+      // reset it when the window is empty. This prevents repeated empty fetches.
+      if (!stoppedForOverLimitGap && !signal.aborted && !state.hasMoreNewer[agentId] && !deps.caughtUpToLiveTail(agentId)) {
         const windowTail = deps.getLastSeq(agentId)
         if (windowTail > 0n)
           deps.liveTail.settleToWindow(agentId, liveSeqAtEntry, windowTail)
@@ -656,7 +654,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       const liveSeqAtEntry = deps.liveTail.get(agentId)
       // Always re-anchor on a fresh latest page so the window is contiguous
       // up to the tail regardless of how far it had drifted.
-      const latest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_SIZE })
+      const latest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT })
       if (signal.aborted)
         return
       applyLatestPage(agentId, latest)
@@ -682,7 +680,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    */
   async function jumpToOldestMessages(workerId: string, agentId: string): Promise<void> {
     await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
-      const oldest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_SIZE })
+      const oldest = await listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
       if (signal.aborted)
         return
       // applyMessages sets hasMoreOlder from its `hasMore` argument and
@@ -715,8 +713,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // fetch raises it past this, and hasMoreNewer/resetToEmptyIfStale must respect that.
       const liveSeqAtEntry = deps.liveTail.get(agentId)
       const beforeRequest = seq >= MAX_INT64_SEQ
-        ? { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_SIZE }
-        : { agentId, anchor: MessagePageAnchor.BEFORE, cursorSeq: seq + 1n, limit: MESSAGE_PAGE_SIZE }
+        ? { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT }
+        : { agentId, anchor: MessagePageAnchor.BEFORE, cursorSeq: seq + 1n, limit: MESSAGE_PAGE_LIMIT }
       // Both requests carry `signal`, so an abort ends them at the transport rather than only
       // discarding what they return. That is what makes a seek genuinely abandonable: the caller
       // that gave up (the rail, when its scrub leaves this target) stops the round trip instead
@@ -725,7 +723,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       try {
         [before, after] = await Promise.all([
           listAgentMessages(workerId, beforeRequest, { signal }),
-          listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.AFTER, cursorSeq: seq, limit: MESSAGE_PAGE_SIZE }, { signal }),
+          listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.AFTER, cursorSeq: seq, limit: MESSAGE_PAGE_LIMIT }, { signal }),
         ])
       }
       catch (err) {

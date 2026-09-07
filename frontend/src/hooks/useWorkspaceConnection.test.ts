@@ -4,14 +4,14 @@ import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
+import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
+import { AgentActivityState, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
 import { clearOfflineAgentState, collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails, useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
-import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
 import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { extractCompactionContextTokens, parseMessageContent } from '~/lib/messageParser'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -119,29 +119,6 @@ type TabStores = ReturnType<typeof makeTabStores>
 function simulatePhase(phase: 'catchingUp' | 'live'): 'catchingUp' | 'live' {
   return phase
 }
-
-describe('watch plan helpers', () => {
-  it('maps resume cursors to explicit replay modes', () => {
-    expect(agentWatchEntry('a1', 0n, WatchMode.FULL)).toMatchObject({
-      agentId: 'a1',
-      replay: WatchReplayMode.LATEST,
-      cursorSeq: 0n,
-      mode: WatchMode.FULL,
-    })
-    expect(agentWatchEntry('a1', 42n, WatchMode.NOTIFY)).toMatchObject({
-      agentId: 'a1',
-      replay: WatchReplayMode.AFTER_CURSOR,
-      cursorSeq: 42n,
-      mode: WatchMode.NOTIFY,
-    })
-  })
-
-  it('watchPlanKey moves when a mode changes', () => {
-    const notify = { agents: [{ agentId: 'a1', mode: WatchMode.NOTIFY } as never], terminals: [] as never[], terminalResync: new Set<string>() }
-    const full = { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] as never[], terminalResync: new Set<string>() }
-    expect(watchPlanKey(notify)).not.toBe(watchPlanKey(full))
-  })
-})
 
 /**
  * These tests verify the control-request guard in useWorkspaceConnection's
@@ -1686,6 +1663,7 @@ describe('reconcileLaggingTails', () => {
     caughtUpToLiveTail?: (id: string) => boolean
     isTailFillDeferred?: (id: string) => boolean
     getLastSeq?: (id: string) => bigint
+    getLiveTailSeq?: (id: string) => bigint
     isFetchingNewer?: (id: string) => boolean
   }) {
     const catchUp: Array<{ workerId: string, agentId: string, afterSeq: bigint }> = []
@@ -1699,6 +1677,7 @@ describe('reconcileLaggingTails', () => {
       // Default to a NON-empty loaded window (1n); the empty-window (0n) recovery branch
       // is exercised explicitly by its own test.
       getLastSeq: overrides.getLastSeq ?? (() => 1n),
+      getLiveTailSeq: overrides.getLiveTailSeq ?? (() => 1n),
       isFetchingNewer: overrides.isFetchingNewer ?? (() => false),
       catchUpToTail: (workerId, agentId, afterSeq) => catchUp.push({ workerId, agentId, afterSeq }),
       resumeDeferredTailFill: (workerId, agentId) => resume.push({ workerId, agentId }),
@@ -1797,6 +1776,68 @@ describe('reconcileLaggingTails', () => {
       isFetchingNewer: () => true, // jumpToLatest's own fetch is resolving
     })
     expect(jumps).toEqual([]) // guarded so the reconcile tick doesn't abort + restart it
+  })
+
+  it('re-seats on the latest page when the live-tail gap exceeds the limit', () => {
+    const { catchUp, resume, jumps } = run({
+      agentTabs: [{ id: 'lagging', workerId: 'w1' }],
+      caughtUpToLiveTail: () => false,
+      getLastSeq: () => 10n,
+      getLiveTailSeq: () => 10n + CATCH_UP_GAP_LIMIT + 1n,
+    })
+    expect(jumps).toEqual([{ workerId: 'w1', agentId: 'lagging' }])
+    expect(catchUp).toEqual([])
+    expect(resume).toEqual([])
+  })
+
+  it('drains a live-tail gap at the inclusive limit', () => {
+    const { catchUp, jumps } = run({
+      agentTabs: [{ id: 'lagging', workerId: 'w1' }],
+      caughtUpToLiveTail: () => false,
+      getLastSeq: () => 10n,
+      getLiveTailSeq: () => 10n + CATCH_UP_GAP_LIMIT,
+    })
+    expect(catchUp).toEqual([{ workerId: 'w1', agentId: 'lagging', afterSeq: 10n }])
+    expect(jumps).toEqual([])
+  })
+
+  it('does nothing for an over-limit gap while a newer fetch runs', () => {
+    const { catchUp, resume, jumps } = run({
+      agentTabs: [{ id: 'lagging', workerId: 'w1' }],
+      caughtUpToLiveTail: () => false,
+      getLastSeq: () => 10n,
+      getLiveTailSeq: () => 10n + CATCH_UP_GAP_LIMIT + 1n,
+      isFetchingNewer: () => true,
+    })
+    expect(jumps).toEqual([])
+    expect(catchUp).toEqual([])
+    expect(resume).toEqual([])
+  })
+
+  it('re-seats an over-limit deferred gap instead of resuming the fill', () => {
+    const { catchUp, resume, jumps } = run({
+      agentTabs: [{ id: 'deferred', workerId: 'w1' }],
+      hasNewerMessages: () => true,
+      caughtUpToLiveTail: () => false,
+      isTailFillDeferred: () => true,
+      getLastSeq: () => 10n,
+      getLiveTailSeq: () => 10n + CATCH_UP_GAP_LIMIT + 1n,
+    })
+    expect(jumps).toEqual([{ workerId: 'w1', agentId: 'deferred' }])
+    expect(catchUp).toEqual([])
+    expect(resume).toEqual([])
+  })
+
+  it('does nothing for a caught-up tab', () => {
+    const { catchUp, resume, jumps } = run({
+      agentTabs: [{ id: 'caught-up', workerId: 'w1' }],
+      caughtUpToLiveTail: () => true,
+      getLastSeq: () => 10n,
+      getLiveTailSeq: () => 10n,
+    })
+    expect(jumps).toEqual([])
+    expect(catchUp).toEqual([])
+    expect(resume).toEqual([])
   })
 })
 

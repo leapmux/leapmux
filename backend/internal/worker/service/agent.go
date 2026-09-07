@@ -1201,7 +1201,7 @@ func (svc *Service) resolveChildRegistryRow(agentID string, sender channel.Respo
 }
 
 // replayAgentCatchUp replays one verified agent's catch-up burst to a freshly
-// (re)subscribed watcher: a CatchUpStart pre-trim marker, the bounded message replay,
+// (re)subscribed watcher: a CatchUpStart marker, an optional capped message replay,
 // the authoritative to-do snapshot, the status marker, pending control requests, and
 // the CatchUpComplete sentinel -- in that order. The CatchUpStart/CatchUpComplete
 // tail reads bracket the replay so a reconnecting client reaps only the
@@ -1268,40 +1268,32 @@ func (svc *Service) replayAgentCatchUp(
 		return
 	}
 
-	// Replay up to maxMessagePageLimit messages so a just-subscribed client
-	// has recent context. A RESUMING subscriber (replay == AFTER_CURSOR) gets
-	// the forward catch-up (seq > cursor_seq). A FRESH subscriber (LATEST, or
-	// UNSPECIFIED defaulting to it) gets the LATEST page, matching the
-	// windowing client's own initial latest-page load (ListAgentMessages
-	// LATEST) so the two dedup -- replaying the OLDEST page here instead would
-	// splice the first messages in front of the latest window and tear a gap
-	// into the loaded history.
-	// Route the resume mode through the SAME resolveMessagePage the paginated
-	// ListAgentMessages handler uses (replayPageAnchor picks the anchor, mirroring
-	// the client's AgentWatchEntry), rather than hand-rolling the query choice.
-	replayAnchor := replayPageAnchor(agentEntry.GetReplay(), agentEntry.GetCursorSeq())
-	replayPlan := resolveMessagePage(replayAnchor, agentEntry.GetCursorSeq(), maxMessagePageLimit)
-	replayMessages, replayErr := svc.fetchMessagePageRows(bgCtx(), agentID, replayPlan.mode, replayPlan.bound, replayPlan.limit)
-	// A LATEST plan comes back newest-first; reverse to ascending so the replay
-	// broadcasts oldest-to-newest like the forward path. (No has_more trim: the
-	// replay is a bounded best-effort burst, not a paginated read.)
-	if replayPlan.mode.descending() {
-		reverseMessages(replayMessages)
-	}
-	if replayErr != nil {
-		slog.Error("failed to list messages for replay", "agent_id", agentID, "error", replayErr)
-	} else {
-		for j := range replayMessages {
-			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
-				AgentId: agentID,
-				// No replayed flag: message seqs are monotonic (a deleted seq is
-				// never reused, see message_seq_hwm), so a live frame is ALWAYS
-				// at seq > the consumer's forwarded high-water and a plain
-				// seq <= cursor dedup drops only true replay duplicates.
-				Event: &leapmuxv1.AgentEvent_AgentMessage{
-					AgentMessage: messageToProto(&replayMessages[j]),
-				},
-			})
+	// Replay up to contracts.MessagePageLimit messages. AFTER_CURSOR and
+	// AFTER_CURSOR_OR_NONE use the forward page after cursor_seq. LATEST and
+	// UNSPECIFIED use the newest page. The capped mode skips the page when the
+	// browser will re-anchor instead.
+	if !shouldSkipCatchUpReplay(agentEntry.GetReplay(), agentEntry.GetCursorSeq(), replayStartTail) {
+		replayAnchor := replayPageAnchor(agentEntry.GetReplay(), agentEntry.GetCursorSeq())
+		replayPlan := resolveMessagePage(replayAnchor, agentEntry.GetCursorSeq(), contracts.MessagePageLimit)
+		replayMessages, replayErr := svc.fetchMessagePageRows(bgCtx(), agentID, replayPlan.mode, replayPlan.bound, replayPlan.limit)
+		// A LATEST plan returns newest-first. Reverse it so all replay modes send
+		// messages in ascending sequence order.
+		if replayPlan.mode.descending() {
+			reverseMessages(replayMessages)
+		}
+		if replayErr != nil {
+			slog.Error("failed to list messages for replay", "agent_id", agentID, "error", replayErr)
+		} else {
+			for j := range replayMessages {
+				broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+					AgentId: agentID,
+					// Sequence values increase monotonically. A deleted value stays
+					// unused, so cursor dedup removes only replay duplicates.
+					Event: &leapmuxv1.AgentEvent_AgentMessage{
+						AgentMessage: messageToProto(&replayMessages[j]),
+					},
+				})
+			}
 		}
 	}
 
@@ -3393,11 +3385,6 @@ func buildAgentControlRequest(agentID string, provider leapmuxv1.AgentProvider, 
 	}
 }
 
-// maxMessagePageLimit is the hub-enforced ceiling on a ListAgentMessages page
-// size: a request asking for more (or for a non-positive count) is clamped to
-// this. Mirrored in the proto doc comment and the CLI flag help.
-const maxMessagePageLimit = 50
-
 // messagePageMode is the DB scan resolveMessagePage selects for an anchor.
 type messagePageMode int
 
@@ -3434,19 +3421,23 @@ type messagePagePlan struct {
 }
 
 // replayPageAnchor maps a WatchEvents resume (replay mode + cursor) to the
-// MessagePageAnchor its replay query uses -- the worker-side mirror of the client's
-// AgentWatchEntry (which maps the resume cursor to the replay mode). AFTER_CURSOR with
-// a real (positive) cursor pages forward (AFTER seq > cursor); everything else -- a
-// fresh LATEST/UNSPECIFIED subscribe, OR an AFTER_CURSOR whose cursor is non-positive
-// (a malformed client: seqs are assigned from 1, so "after <= 0" specifies no resume
-// point) -- replays the LATEST page. Mapping a non-positive AFTER_CURSOR to AFTER
-// instead would scan seq > 0 and return the OLDEST page, splicing the first messages
-// in front of the latest window. Pure, so the routing is unit-testable.
+// MessagePageAnchor that its replay query uses. Both cursor replay modes use
+// AFTER with a positive cursor. All other inputs use LATEST. Sequence values
+// start at 1, so a non-positive cursor does not identify a resume point.
 func replayPageAnchor(replay leapmuxv1.WatchReplayMode, cursorSeq int64) leapmuxv1.MessagePageAnchor {
-	if replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR && cursorSeq > 0 {
+	if cursorSeq > 0 && (replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR ||
+		replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE) {
 		return leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER
 	}
 	return leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST
+}
+
+// shouldSkipCatchUpReplay reports whether a windowed client will discard the
+// replay page and re-anchor. An absent tail keeps the replay because the client
+// cannot calculate the gap or know that it must re-anchor.
+func shouldSkipCatchUpReplay(replay leapmuxv1.WatchReplayMode, cursorSeq int64, latestSeq *int64) bool {
+	return replay == leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE &&
+		cursorSeq > 0 && latestSeq != nil && *latestSeq-cursorSeq > contracts.CatchUpGapLimit
 }
 
 // maxSeqOrNil reads the agent's live-tail seq on a background context, returning nil
@@ -3475,8 +3466,8 @@ func (svc *Service) maxSeqOrNil(agentID, logMsg string) *int64 {
 // malformed and clamps to 0; with bound 0 the natural boundary results hold
 // (AFTER returns from the oldest message, BEFORE returns empty).
 func resolveMessagePage(anchor leapmuxv1.MessagePageAnchor, cursorSeq, limit int64) messagePagePlan {
-	if limit <= 0 || limit > maxMessagePageLimit {
-		limit = maxMessagePageLimit
+	if limit <= 0 || limit > contracts.MessagePageLimit {
+		limit = contracts.MessagePageLimit
 	}
 	if cursorSeq < 0 {
 		cursorSeq = 0
