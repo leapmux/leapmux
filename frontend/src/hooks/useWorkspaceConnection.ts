@@ -18,6 +18,7 @@ import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
+import { exceedsCatchUpGapLimit } from '~/stores/chatLiveTail'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
   clearPerTurnLiveState,
@@ -154,6 +155,7 @@ export function reconcileLaggingTails(deps: {
   caughtUpToLiveTail: (agentId: string) => boolean
   isTailFillDeferred: (agentId: string) => boolean
   getLastSeq: (agentId: string) => bigint
+  getLiveTailSeq: (agentId: string) => bigint
   isFetchingNewer: (agentId: string) => boolean
   catchUpToTail: (workerId: string, agentId: string, afterSeq: bigint) => void
   resumeDeferredTailFill: (workerId: string, agentId: string) => void
@@ -162,18 +164,24 @@ export function reconcileLaggingTails(deps: {
   for (const tab of deps.agentTabs()) {
     if (!tab.workerId)
       continue
-    const atTail = !deps.hasNewerMessages(tab.id)
     const caughtUp = deps.caughtUpToLiveTail(tab.id)
-    const deferred = deps.isTailFillDeferred(tab.id)
     if (caughtUp)
       continue
-    if (deps.getLastSeq(tab.id) === 0n) {
+    const lastSeq = deps.getLastSeq(tab.id)
+    const atTail = !deps.hasNewerMessages(tab.id)
+    const deferred = deps.isTailFillDeferred(tab.id)
+    // Re-anchor when forward-fill cannot reach the tail: an empty window, or a
+    // gap beyond the catch-up limit. The drain abandons a gap that large, so
+    // the window re-anchors on the newest page. A deferred tail fill cannot
+    // cross a gap that large either. A plain scrolled-away wall keeps its
+    // window: the reader chose that gap, and scroll-down paging recovers it.
+    if (lastSeq === 0n || (exceedsCatchUpGapLimit(deps.getLiveTailSeq(tab.id), lastSeq) && (atTail || deferred))) {
       if (!deps.isFetchingNewer(tab.id))
         deps.jumpToLatest(tab.workerId, tab.id)
       continue
     }
     if (atTail)
-      deps.catchUpToTail(tab.workerId, tab.id, deps.getLastSeq(tab.id))
+      deps.catchUpToTail(tab.workerId, tab.id, lastSeq)
     else if (deferred)
       deps.resumeDeferredTailFill(tab.workerId, tab.id)
   }
@@ -279,6 +287,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       params.getActiveWorkspaceId(),
       tileId => selection.activeKeyForTile(tileId),
       agentId => untrack(() => chatStore.getResumeAfterSeq(agentId)),
+      // Untracked like the resume seq: the loaded tail moves with every message,
+      // and the plan must not re-send a watch update per arrival. The worker
+      // reads it only for the capped-replay skip decision.
+      agentId => untrack(() => chatStore.getLastSeq(agentId)),
       terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
       // Tracked on purpose: the plan must go out the moment a terminal is
       // flagged, and back out when the snapshot lands. Only this field is
@@ -609,15 +621,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     caughtUpToLiveTail: id => chatStore.caughtUpToLiveTail(id),
     isTailFillDeferred: id => chatStore.isTailFillDeferred(id),
     getLastSeq: id => chatStore.getLastSeq(id),
+    getLiveTailSeq: id => chatStore.liveTail.get(id),
     isFetchingNewer: id => chatStore.isFetchingNewer(id),
     catchUpToTail: (workerId, agentId, afterSeq) => {
       void chatStore.catchUpToTail(workerId, agentId, afterSeq, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)
     },
     resumeDeferredTailFill: (workerId, agentId) => {
-      void chatStore.resumeDeferredTailFill(workerId, agentId, abortSignalFor(workerId))
+      void chatStore.resumeDeferredTailFill(workerId, agentId, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)
     },
     jumpToLatest: (workerId, agentId) => {
-      void chatStore.jumpToLatestMessages(workerId, agentId, abortSignalFor(workerId))
+      void chatStore.jumpToLatestMessages(workerId, agentId, abortSignalFor(workerId)).catch(warnChatHistoryLoadFailed)
     },
   }))
 

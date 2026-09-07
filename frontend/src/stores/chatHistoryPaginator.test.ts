@@ -2,26 +2,27 @@ import type { ChatStoreState } from './chat.store'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createStore } from 'solid-js/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { CATCH_UP_GAP_LIMIT, MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 
 // listAgentMessages is the only external dependency; hoist the mock so the factory
 // can reference it (vi.mock is hoisted above imports).
 const { listAgentMessages } = vi.hoisted(() => ({ listAgentMessages: vi.fn() }))
 vi.mock('~/api/workerRpc', () => ({ listAgentMessages }))
 
-const { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } = await import('./chatHistoryPaginator')
+const { createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
 const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/leapmux/v1/agent_pb')
 
 // The harness's cap/ceiling, distinct so an assertion can prove WHICH was used. The
 // production wiring passes MAX_LOADED_CHAT_MESSAGES / MAX_LOADED_CHAT_MESSAGES_CEILING.
-const BASE = 150
+const BASE = Number(CATCH_UP_GAP_LIMIT)
 const CEILING = 1200
 
 function makeMsg(seq: bigint, id?: string): AgentChatMessage {
   return { seq, id: id ?? `m${seq}`, source: MessageSource.AGENT } as AgentChatMessage
 }
 
-function page(messages: AgentChatMessage[], hasMore: boolean) {
-  return { messages, hasMore, todos: [], todosLoaded: false }
+function page(messages: AgentChatMessage[], hasMore: boolean, latestSeq?: bigint) {
+  return { messages, hasMore, latestSeq, todos: [], todosLoaded: false }
 }
 
 function harness(init: {
@@ -62,6 +63,13 @@ function harness(init: {
 
   const settleToWindow = vi.fn()
   const resetToEmptyIfStale = vi.fn()
+  let recordedLiveTail = init.liveGet?.() ?? 0n
+  const bumpLiveTail = vi.fn((_agentId: string, seq: bigint) => {
+    if (seq > recordedLiveTail)
+      recordedLiveTail = seq
+  })
+  const caughtUpToLiveTail = init.caughtUp
+    ?? ((agentId: string) => (lastServer(agentId) ?? 0n) >= recordedLiveTail)
   const applyMessages = vi.fn()
   const replaceBackgroundTasks = vi.fn()
   const markBackgroundTasksLoadFailed = vi.fn()
@@ -89,8 +97,8 @@ function harness(init: {
     mergeFetchedMessages,
     applyMessages,
     liveTail: {
-      get: init.liveGet ?? (() => 0n),
-      bump: vi.fn(),
+      get: init.liveGet ?? (() => recordedLiveTail),
+      bump: bumpLiveTail,
       caughtUp: () => true,
       settleToWindow,
       resetToEmptyIfStale,
@@ -101,7 +109,7 @@ function harness(init: {
     getLastSeq: agentId => lastServer(agentId) ?? 0n,
     getFirstMessageSeq: firstServer,
     getLastMessageSeq: lastServer,
-    caughtUpToLiveTail: init.caughtUp ?? (() => true),
+    caughtUpToLiveTail,
     addMessage,
     trimOldestEnd,
     trimNewestEnd,
@@ -111,7 +119,23 @@ function harness(init: {
     replaceGoal,
   })
 
-  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed, replaceGoal }
+  return {
+    state,
+    setState,
+    paginator,
+    trimNewestEnd,
+    trimOldestEnd,
+    addMessage,
+    applyMessages,
+    settleToWindow,
+    resetToEmptyIfStale,
+    bumpLiveTail,
+    caughtUpToLiveTail,
+    getRecordedLiveTail: () => recordedLiveTail,
+    replaceBackgroundTasks,
+    markBackgroundTasksLoadFailed,
+    replaceGoal,
+  }
 }
 
 describe('chathistorypaginator', () => {
@@ -171,9 +195,72 @@ describe('chathistorypaginator', () => {
     })
   })
 
-  describe('jumptolatestmessages ties its re-seat fetch to the watch signal', () => {
+  describe('catchuptotail re-anchors an over-limit gap', () => {
+    it('stops after one page, records the live tail, and skips the stale-tail clamp', async () => {
+      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      const latestSeq = 2n + CATCH_UP_GAP_LIMIT + 1n
+      listAgentMessages
+        .mockResolvedValueOnce(page([makeMsg(2n)], true, latestSeq))
+        .mockResolvedValueOnce(page([makeMsg(3n)], false, latestSeq))
+
+      await h.paginator.catchUpToTail('w', 'a', 1n)
+
+      // Load-bearing: exactly one page fetched (the over-limit stop), the tail
+      // recorded from resp.latestSeq, and the stale-tail clamp skipped so the
+      // scheduler still sees the gap it must re-anchor.
+      expect(listAgentMessages).toHaveBeenCalledTimes(1)
+      expect(h.bumpLiveTail).toHaveBeenCalledWith('a', latestSeq)
+      expect(h.settleToWindow).not.toHaveBeenCalled()
+      expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
+    })
+
+    it('drains a gap at the inclusive limit and finishes at the recorded tail', async () => {
+      const latestSeq = 2n + CATCH_UP_GAP_LIMIT
+      const h = harness({
+        messages: [makeMsg(1n)],
+        hasMoreNewer: false,
+      })
+      listAgentMessages
+        .mockResolvedValueOnce(page([makeMsg(2n)], true, latestSeq))
+        .mockResolvedValueOnce(page([makeMsg(latestSeq)], false, latestSeq))
+
+      await h.paginator.catchUpToTail('w', 'a', 1n)
+
+      expect(listAgentMessages).toHaveBeenCalledTimes(2)
+      expect(h.getRecordedLiveTail()).toBe(latestSeq)
+      expect(h.state.messagesByAgent.a.at(-1)?.seq).toBe(latestSeq)
+      expect(h.caughtUpToLiveTail('a')).toBe(true)
+      expect(h.settleToWindow).not.toHaveBeenCalled()
+      expect(h.resetToEmptyIfStale).not.toHaveBeenCalled()
+    })
+
+    it('drains by hasMore when latestSeq is absent', async () => {
+      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      listAgentMessages
+        .mockResolvedValueOnce(page([makeMsg(2n)], true))
+        .mockResolvedValueOnce(page([makeMsg(3n)], false))
+
+      await h.paginator.catchUpToTail('w', 'a', 1n)
+
+      expect(listAgentMessages).toHaveBeenCalledTimes(2)
+      expect(h.bumpLiveTail).not.toHaveBeenCalled()
+    })
+
+    it('does not lower a live tail that a broadcast raised above the page tail', async () => {
+      const h = harness({ messages: [makeMsg(1n)], hasMoreNewer: false })
+      h.bumpLiveTail('a', 300n)
+      listAgentMessages.mockResolvedValue(page([makeMsg(2n)], false, 200n))
+
+      await h.paginator.catchUpToTail('w', 'a', 1n)
+
+      expect(h.bumpLiveTail).toHaveBeenLastCalledWith('a', 200n)
+      expect(h.getRecordedLiveTail()).toBe(300n)
+    })
+  })
+
+  describe('jumptolatestmessages ties its re-anchor fetch to the watch signal', () => {
     it('does NOT apply the latest page when the watch signal aborts mid-fetch (workspace switch)', async () => {
-      // The empty-window re-seat fires for a backgrounded agent; the user switches
+      // The empty-window re-anchor fires for a backgrounded agent; the user switches
       // workspaces mid-fetch, aborting the WatchEvents subscription. The fetch must
       // discard its result rather than write a LATEST page into the navigated-away
       // agent's window (the leak this signal threading closes).
@@ -189,7 +276,7 @@ describe('chathistorypaginator', () => {
       expect(h.applyMessages).not.toHaveBeenCalled()
     })
 
-    it('applies the latest page on a normal re-seat (no watch abort)', async () => {
+    it('applies the latest page on a normal re-anchor (no watch abort)', async () => {
       const h = harness({ messages: [], hasMoreNewer: false, caughtUp: () => true, liveGet: () => 0n })
       listAgentMessages.mockResolvedValue(page([makeMsg(10n)], false))
 
@@ -237,12 +324,12 @@ describe('chathistorypaginator', () => {
 
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({
         anchor: MessagePageAnchor.LATEST,
-        limit: MESSAGE_PAGE_SIZE,
+        limit: MESSAGE_PAGE_LIMIT,
       }), expect.anything())
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({
         anchor: MessagePageAnchor.AFTER,
         cursorSeq: maxInt64Seq,
-        limit: MESSAGE_PAGE_SIZE,
+        limit: MESSAGE_PAGE_LIMIT,
       }), expect.anything())
       expect(listAgentMessages).not.toHaveBeenCalledWith('w', expect.objectContaining({
         cursorSeq: maxInt64Seq + 1n,

@@ -1,6 +1,7 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { createLiveTailTracker } from '~/stores/chatLiveTail'
+import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
+import { createLiveTailTracker, exceedsCatchUpGapLimit } from '~/stores/chatLiveTail'
 
 /** Run a body with a fresh tracker inside a reactive root (its store needs an owner). */
 function withTracker(body: (t: ReturnType<typeof createLiveTailTracker>) => void) {
@@ -129,6 +130,18 @@ describe('chatlivetail', () => {
         t.setAuthoritative('a1', 30n, 40n) // 38 is in (30, 40] -> phantom, lower to 30
         expect(t.get('a1')).toBe(30n)
       })
+    })
+  })
+
+  describe('exceedsCatchUpGapLimit', () => {
+    it('drains a gap at the inclusive limit and re-anchors one past it', () => {
+      expect(exceedsCatchUpGapLimit(10n + CATCH_UP_GAP_LIMIT, 10n)).toBe(false)
+      expect(exceedsCatchUpGapLimit(10n + CATCH_UP_GAP_LIMIT + 1n, 10n)).toBe(true)
+    })
+
+    it('treats a tail at or below the window tail as no gap', () => {
+      expect(exceedsCatchUpGapLimit(10n, 10n)).toBe(false)
+      expect(exceedsCatchUpGapLimit(9n, 10n)).toBe(false)
     })
   })
 

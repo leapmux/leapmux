@@ -1,0 +1,5 @@
+{
+  "_readme": "Chat history limits consumed by the Go programs and the TypeScript browser. messagePageLimit caps one history page. catchUpGapLimit sets the largest sequence gap that the browser drains before it re-anchors on the newest page. The gap limit matches the browser's live-tail window because older drained messages do not remain in that window. The gap counts sequence distance, not rows: a sequence that a delete or a notification-thread reseq frees still counts toward the gap even when no loadable row sits there, so a hole-heavy gap can re-anchor the window where a one-page drain would also close it.",
+  "messagePageLimit": 50,
+  "catchUpGapLimit": 150
+}

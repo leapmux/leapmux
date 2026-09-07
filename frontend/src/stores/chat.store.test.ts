@@ -3,9 +3,9 @@ import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClassifiedEntryCache } from '~/components/chat/chatEntryCache'
+import { MESSAGE_PAGE_LIMIT } from '~/generated/contracts/chat-history'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MarkType, MessageMarkSchema, MessagePageAnchor, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore, MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
-import { MESSAGE_PAGE_SIZE } from '~/stores/chatHistoryPaginator'
 
 // Mock workerRpc for loadInitialMessages / loadOlderMessages / loadNewerPage / catchUpToTail
 const mockListAgentMessages = vi.fn()
@@ -1331,7 +1331,7 @@ describe('createChatStore', () => {
           expect(store.getMessages('a1')).toHaveLength(50)
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.isInitialLoadComplete('a1')).toBe(true)
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT })
           dispose()
         })
       })
@@ -1393,7 +1393,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.BEFORE,
             cursorSeq: 51n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           dispose()
         })
@@ -1478,7 +1478,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 50n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           dispose()
         })
@@ -1515,13 +1515,13 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 50n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           expect(mockListAgentMessages).toHaveBeenNthCalledWith(2, 'w1', {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 100n,
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           dispose()
         })
@@ -1797,8 +1797,8 @@ describe('createChatStore', () => {
     describe('atWindowCeiling', () => {
       // The filler must stop a full page BEFORE the hard ceiling so its last allowed
       // fetch can't cross it and drop the live tail -- so the threshold is
-      // CEILING - MESSAGE_PAGE_SIZE.
-      const threshold = MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_SIZE
+      // CEILING - MESSAGE_PAGE_LIMIT.
+      const threshold = MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_LIMIT
 
       it('trips a full page BEFORE the hard ceiling', () => {
         createRoot((dispose) => {
@@ -1807,7 +1807,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: threshold - 1 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
           expect(store.atWindowCeiling('a1')).toBe(false) // one short of the page-margin threshold
           store.addMessage('a1', makeMessage('edge', BigInt(threshold)))
-          expect(store.atWindowCeiling('a1')).toBe(true) // at CEILING - MESSAGE_PAGE_SIZE
+          expect(store.atWindowCeiling('a1')).toBe(true) // at CEILING - MESSAGE_PAGE_LIMIT
           dispose()
         })
       })
@@ -1984,7 +1984,7 @@ describe('createChatStore', () => {
           expect(msgs).toHaveLength(50)
           expect(msgs.at(-1)!.seq).toBe(50n)
           expect(store.hasNewerMessages('a1')).toBe(false)
-          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.AFTER, cursorSeq: 30n, limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.AFTER, cursorSeq: 30n, limit: MESSAGE_PAGE_LIMIT })
           dispose()
         })
       })
@@ -2891,7 +2891,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 99n, // latestLiveSeq (100) - 1
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           expect(store.getLastSeq('a1')).toBe(50n) // still unreachable, so we stuck anyway
           // The unreachable seq 100 is clamped out of latestLiveSeq so a later
@@ -2933,7 +2933,7 @@ describe('createChatStore', () => {
             agentId: 'a1',
             anchor: MessagePageAnchor.AFTER,
             cursorSeq: 51n, // latestLiveSeq (52) - 1
-            limit: 50,
+            limit: MESSAGE_PAGE_LIMIT,
           })
           expect(store.getLastSeq('a1')).toBe(52n) // tail recovered
           expect(store.hasNewerMessages('a1')).toBe(false)
@@ -3033,7 +3033,7 @@ describe('createChatStore', () => {
           expect(msgs.at(-1)!.seq).toBe(50n)
           expect(store.hasOlderMessages('a1')).toBe(false) // at the very start
           expect(store.hasNewerMessages('a1')).toBe(true) // more exist beyond it
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: 50 })
+          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
           dispose()
         })
       })
@@ -3082,7 +3082,7 @@ describe('createChatStore', () => {
           store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))))
           store.trimNewestEnd('a1', 30) // hasMoreNewer=true, window seq 1..30
 
-          // The reconcile-driven empty-window re-seat / catch-up jump ties its fetch to
+          // The reconcile-driven empty-window re-anchor / catch-up jump ties its fetch to
           // the WatchEvents subscription. Its LATEST fetch hangs, then the subscription
           // tears down (workspace switch) mid-flight -- aborting the fetch with NO
           // superseding beginHistoryFetch to reset the flags.
@@ -3102,7 +3102,7 @@ describe('createChatStore', () => {
 
           // The flag MUST be cleared: a watch-aborted fetch that wasn't superseded
           // otherwise stranded fetchingNewer=true, wedging loadNewerPage and the
-          // empty-window re-seat (both gated on the flag) until an unrelated user fetch.
+          // empty-window re-anchor (both gated on the flag) until an unrelated user fetch.
           expect(store.isFetchingNewer('a1')).toBe(false)
 
           // Proof the wedge is gone: a subsequent loadNewerPage actually fetches.

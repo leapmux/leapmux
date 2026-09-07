@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -421,6 +422,126 @@ func TestWatchEvents_PromoteNotifyToFullReplaysOnce(t *testing.T) {
 		return a.GetUpdateId() == 2
 	})
 	assert.Equal(t, 1, countCatchUpCompletes(w), "identical FULL restatement must not replay again")
+}
+
+func TestWatchEvents_PromoteWithCappedCursorReplay(t *testing.T) {
+	tests := []struct {
+		name         string
+		messageCount int
+		// cursorFromEnd picks the resume cursor by offset from the NEWEST seq
+		// (0 = oldest message); windowTailIdx (when >= 0) declares
+		// window_tail_seq at that message's seq.
+		cursorFromEnd    int
+		windowTailIdx    int
+		wantReplayFrames int
+	}{
+		{
+			name:             "gap over limit skips message replay",
+			messageCount:     contracts.CatchUpGapLimit + 2,
+			cursorFromEnd:    contracts.CatchUpGapLimit + 1,
+			wantReplayFrames: 0,
+		},
+		{
+			name:             "gap inside limit replays messages",
+			messageCount:     3,
+			cursorFromEnd:    2,
+			wantReplayFrames: 2,
+		},
+		{
+			// The cursor LEADS the declared window tail: the cursor gap fits
+			// the limit (so the fallback base would replay), but the
+			// window-tail gap exceeds it, so the declared base must skip.
+			name:             "declared window tail skips when the cursor leads it past the limit",
+			messageCount:     contracts.CatchUpGapLimit + 2,
+			cursorFromEnd:    10,
+			windowTailIdx:    0,
+			wantReplayFrames: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			svc, d, w := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+			}))
+
+			seqs := make([]int64, 0, tc.messageCount)
+			for i := range tc.messageCount {
+				seq, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+					ID:            fmt.Sprintf("msg-%d", i+1),
+					AgentID:       "agent-1",
+					Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+					Content:       []byte("hi"),
+					AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				})
+				require.NoError(t, err)
+				seqs = append(seqs, seq)
+			}
+			require.NoError(t, svc.Queries.CreateControlRequest(ctx, db.CreateControlRequestParams{
+				AgentID:    "agent-1",
+				RequestID:  "request-1",
+				Payload:    []byte(`{"type":"permission","id":"request-1"}`),
+				ClaimToken: "instance-token-1",
+			}))
+
+			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+			}, w)
+			waitAgentWatchCount(t, svc, "agent-1", 1)
+
+			var windowTail *int64
+			if tc.windowTailIdx >= 0 {
+				windowTail = &seqs[tc.windowTailIdx]
+			}
+			promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+				UpdateId: 1,
+				Agents: []*leapmuxv1.WatchAgentEntry{{
+					AgentId:       "agent-1",
+					Mode:          leapmuxv1.WatchMode_WATCH_MODE_FULL,
+					Replay:        leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE,
+					CursorSeq:     seqs[len(seqs)-1-tc.cursorFromEnd],
+					WindowTailSeq: windowTail,
+				}},
+			})
+			require.NoError(t, err)
+			w.deliverStreamRequest(promote, false)
+
+			require.Eventually(t, func() bool {
+				return countCatchUpCompletes(w) == 1
+			}, time.Second, 10*time.Millisecond, "promotion must finish its catch-up stages")
+
+			var start *leapmuxv1.CatchUpStart
+			replayed := 0
+			sawActivity := false
+			sawTodos := false
+			sawStatus := false
+			sawControl := false
+			for _, event := range decodeAgentEvents(w) {
+				if event.GetCatchUpStart() != nil {
+					start = event.GetCatchUpStart()
+				}
+				if event.GetAgentMessage() != nil {
+					replayed++
+				}
+				sawActivity = sawActivity || event.GetActivityChanged() != nil
+				sawTodos = sawTodos || event.GetTodosChanged() != nil
+				sawStatus = sawStatus || event.GetStatusChange() != nil
+				sawControl = sawControl || event.GetControlRequest() != nil
+			}
+			require.NotNil(t, start)
+			require.NotNil(t, start.LatestSeq)
+			assert.Equal(t, seqs[len(seqs)-1], start.GetLatestSeq())
+			assert.Equal(t, tc.wantReplayFrames, replayed)
+			assert.True(t, sawActivity, "the replay decision must not skip the activity snapshot")
+			assert.True(t, sawTodos, "the replay decision must not skip the to-do snapshot")
+			assert.True(t, sawStatus, "the replay decision must not skip the status marker")
+			assert.True(t, sawControl, "the replay decision must not skip pending control requests")
+		})
+	}
 }
 
 func TestWatchEvents_DemoteThenRepromoteReplaysAgain(t *testing.T) {

@@ -16,10 +16,10 @@ import (
 // replaySink sends catch-up events to one subscriber and stops as soon
 // as the transport underneath it dies.
 //
-// The catch-up burst is by far the largest thing the worker sends: per
-// agent a CatchUpStart, up to maxMessagePageLimit messages, a todo
-// refresh, a status, every pending control request and a CatchUpComplete
-// -- then a screen snapshot and a status per terminal. Each send used to
+// The catch-up burst is the largest group that the worker sends. The worker sends
+// a CatchUpStart and up to contracts.MessagePageLimit messages for each agent.
+// It then sends a to-do refresh, a status, each pending control request, and a
+// CatchUpComplete. Each terminal gets a screen snapshot and a status. Each send used to
 // discard its error, so a client that dropped at the start of a page
 // refresh had the worker marshal, encrypt and hand every remaining event
 // to a transport that was already gone, and only the next LIVE broadcast

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chat-history.schema.json",
+  "title": "cross-language chat history limit contract",
+  "description": "Limits for history pages and browser catch-up gaps.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "messagePageLimit", "catchUpGapLimit"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "messagePageLimit": { "type": "integer", "minimum": 1 },
+    "catchUpGapLimit": { "type": "integer", "minimum": 1 }
+  }
+}

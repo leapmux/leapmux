@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control/streamevents"
 )
@@ -399,9 +400,8 @@ func seqRange(n int) []int64 {
 	return out
 }
 
-// TestDrainBacklog_PagesUntilCaughtUp: a reconnect with a >50-message gap must
-// drain EVERY message in seq order across pages (not just the first 50 the capped
-// replay would deliver) and leave the cursor at the live tail.
+// TestDrainBacklog_PagesUntilCaughtUp verifies that a multi-page reconnect gap
+// drains every message in sequence order and leaves the cursor at the live tail.
 func TestDrainBacklog_PagesUntilCaughtUp(t *testing.T) {
 	cursor := streamevents.NewAgentCursor()
 	cursor.Track("a-1", 0)
@@ -411,7 +411,7 @@ func TestDrainBacklog_PagesUntilCaughtUp(t *testing.T) {
 		return nil
 	}
 
-	drained, err := drainBacklog(context.Background(), "a-1", cursor, pagingFetch(seqRange(120), followDrainPageLimit), emit)
+	drained, err := drainBacklog(context.Background(), "a-1", cursor, pagingFetch(seqRange(120), contracts.MessagePageLimit), emit)
 	require.NoError(t, err)
 	require.True(t, drained)
 
@@ -430,7 +430,7 @@ func TestDrainBacklog_ReportsWhetherItEmitted(t *testing.T) {
 		cursor := streamevents.NewAgentCursor()
 		cursor.Track("a-1", 0)
 		drained, err := drainBacklog(context.Background(), "a-1", cursor,
-			pagingFetch(seqRange(60), followDrainPageLimit), func(*leapmuxv1.AgentChatMessage) error { return nil })
+			pagingFetch(seqRange(60), contracts.MessagePageLimit), func(*leapmuxv1.AgentChatMessage) error { return nil })
 		require.NoError(t, err)
 		assert.True(t, drained, "a drain that emitted messages reports activity")
 	})
@@ -438,7 +438,7 @@ func TestDrainBacklog_ReportsWhetherItEmitted(t *testing.T) {
 		cursor := streamevents.NewAgentCursor()
 		cursor.Track("a-1", 60)
 		drained, err := drainBacklog(context.Background(), "a-1", cursor,
-			pagingFetch(seqRange(60), followDrainPageLimit), func(*leapmuxv1.AgentChatMessage) error { return nil })
+			pagingFetch(seqRange(60), contracts.MessagePageLimit), func(*leapmuxv1.AgentChatMessage) error { return nil })
 		require.NoError(t, err)
 		assert.False(t, drained, "a drain with nothing past the cursor reports no activity")
 	})
@@ -465,7 +465,7 @@ func TestDrainBacklog_DrainsOnlyPastCursor(t *testing.T) {
 		return nil
 	}
 
-	drained, err := drainBacklog(context.Background(), "a-1", cursor, pagingFetch(seqRange(120), followDrainPageLimit), emit)
+	drained, err := drainBacklog(context.Background(), "a-1", cursor, pagingFetch(seqRange(120), contracts.MessagePageLimit), emit)
 	require.NoError(t, err)
 	require.True(t, drained)
 
@@ -550,7 +550,7 @@ func TestDrainBacklog_ReturnsEmitError(t *testing.T) {
 	errWrite := errors.New("write failed")
 
 	drained, err := drainBacklog(context.Background(), "a-1", cursor,
-		pagingFetch([]int64{1, 2}, followDrainPageLimit),
+		pagingFetch([]int64{1, 2}, contracts.MessagePageLimit),
 		func(*leapmuxv1.AgentChatMessage) error { return errWrite },
 	)
 

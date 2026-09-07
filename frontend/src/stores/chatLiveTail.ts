@@ -1,3 +1,4 @@
+import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
 import { createPerAgentStore } from './chatPerAgentStore'
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,18 @@ import { createPerAgentStore } from './chatPerAgentStore'
 // (get / set / remove). Only the bump, settle, and authoritative reconcilers
 // below are bespoke high-water logic.
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether the gap from the loaded window tail (`windowTail`) to an authoritative
+ * tail seq exceeds the catch-up limit: the largest sequence gap the browser
+ * drains before it re-anchors on the newest page (contracts/chat-history.json).
+ * The worker mirrors the same boundary when it skips the capped replay
+ * (shouldSkipCatchUpReplay in the worker service), so the strict `>` must agree
+ * on both sides of the wire.
+ */
+export function exceedsCatchUpGapLimit(tailSeq: bigint, windowTail: bigint): boolean {
+  return tailSeq - windowTail > CATCH_UP_GAP_LIMIT
+}
 
 export function createLiveTailTracker() {
   const base = createPerAgentStore<bigint>(0n)

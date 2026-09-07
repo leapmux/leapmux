@@ -81,17 +81,19 @@ func TestListMessagesPageRequest(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("an over-range positive limit saturates instead of wrapping past the hub cap", func(t *testing.T) {
+	t.Run("an over-range positive limit saturates instead of wrapping past the worker cap", func(t *testing.T) {
 		// int32(math.MaxInt32+1) would wrap to a small/negative value that could
-		// slip past the hub's <=50 clamp; saturating keeps it out of [1,50].
+		// slip past the worker's page-limit clamp; saturating keeps it out of the
+		// valid page-limit range.
 		req, err := listMessagesPageRequest("a-1", "latest", 0, math.MaxInt32+1)
 		require.NoError(t, err)
 		assert.Equal(t, int32(math.MaxInt32), req.GetLimit())
 	})
 
-	t.Run("a non-positive limit is rejected, not silently clamped to the hub default", func(t *testing.T) {
-		// A zero/negative --limit would be silently clamped to 50 by the hub;
-		// reject it loudly so a typo fails the same way --cursor-seq and --anchor do.
+	t.Run("a non-positive limit is rejected, not silently clamped by the worker", func(t *testing.T) {
+		// The worker would silently clamp a zero/negative --limit to
+		// contracts.MessagePageLimit; reject it loudly so a typo fails the same
+		// way --cursor-seq and --anchor do.
 		_, err := listMessagesPageRequest("a-1", "latest", 0, 0)
 		require.Error(t, err)
 		_, err = listMessagesPageRequest("a-1", "latest", 0, -5)

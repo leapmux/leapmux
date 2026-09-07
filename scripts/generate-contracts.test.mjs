@@ -16,6 +16,7 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   bufDescriptor,
+  checkChatHistory,
   checkCodexBypass,
   checkDesktop,
   checkExternalApps,
@@ -38,6 +39,7 @@ import {
   DESKTOP_RS_BEHAVIOR_NAMES,
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
+  emitGoChatHistory,
   emitGoDesktop,
   emitGoExternalApps,
   emitGoHeaders,
@@ -48,6 +50,7 @@ import {
   emitGoValidate,
   emitGoWire,
   emitRsDesktop,
+  emitTsChatHistory,
   emitTsDesktop,
   emitTsExternalApps,
   emitTsHeaders,
@@ -81,6 +84,7 @@ const readContract = name => JSON.parse(readFileSync(join(ROOT, 'contracts', `${
 const WIRE = readContract('wire')
 const HEADERS = readContract('headers')
 const RETRY = readContract('retry')
+const CHAT_HISTORY = readContract('chat-history')
 const TRUSTED_PROXIES = readContract('trusted-proxies')
 
 function expectContractError(fn, fragment) {
@@ -229,6 +233,57 @@ describe('checkHeaders / checkRetry', () => {
   })
 })
 
+describe('checkChatHistory', () => {
+  it('accepts the shipped contract', () => {
+    expect(() => checkChatHistory(CHAT_HISTORY)).not.toThrow()
+  })
+
+  it('rejects a non-positive message page limit', () => {
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 0 }),
+      'messagePageLimit must be a positive safe integer',
+    )
+  })
+
+  it('rejects a catch-up gap below one page', () => {
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: CHAT_HISTORY.messagePageLimit - 1 }),
+      'catchUpGapLimit must be a safe integer >= messagePageLimit',
+    )
+  })
+
+  it('accepts a catch-up gap equal to one page', () => {
+    expect(() => checkChatHistory({
+      ...CHAT_HISTORY,
+      catchUpGapLimit: CHAT_HISTORY.messagePageLimit,
+    })).not.toThrow()
+  })
+
+  it('rejects fractional limits', () => {
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 1.5 }),
+      'messagePageLimit must be a positive safe integer',
+    )
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: CHAT_HISTORY.catchUpGapLimit + 0.5 }),
+      'catchUpGapLimit must be a safe integer >= messagePageLimit',
+    )
+  })
+
+  it('rejects unsafe integers, which would emit an invalid TypeScript bigint literal', () => {
+    // 1e21 stringifies as '1e+21', so an emitted `CATCH_UP_GAP_LIMIT = 1e+21n`
+    // would not parse; values past 2^53 - 1 silently round.
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, catchUpGapLimit: 1e21 }),
+      'catchUpGapLimit must be a safe integer >= messagePageLimit',
+    )
+    expectContractError(
+      () => checkChatHistory({ ...CHAT_HISTORY, messagePageLimit: 2 ** 53 }),
+      'messagePageLimit must be a positive safe integer',
+    )
+  })
+})
+
 describe('name tables', () => {
   it('maps every emitted wire value to distinct Go and TS names', () => {
     expect(new Set(Object.values(WIRE_GO_NAMES)).size).toBe(Object.keys(WIRE_GO_NAMES).length)
@@ -320,6 +375,15 @@ describe('emitters', () => {
     const go = emitGoRetry(RETRY)
     expect(go).toContain('EventsRejectionRetryInitial     = time.Duration(500) * time.Millisecond')
     expect(go).toContain('EventsRejectionRetryMaxAttempts = 8')
+  })
+
+  it('emits the chat history limits for Go and TypeScript', () => {
+    const go = emitGoChatHistory(CHAT_HISTORY)
+    expect(go).toContain('MessagePageLimit = 50')
+    expect(go).toContain('CatchUpGapLimit  = 150')
+    const ts = emitTsChatHistory(CHAT_HISTORY)
+    expect(ts).toContain('MESSAGE_PAGE_LIMIT = 50 as const')
+    expect(ts).toContain('CATCH_UP_GAP_LIMIT = 150n')
   })
 
   it('emits the multiplier on the Go side too, so both sides can consume it', () => {
@@ -600,6 +664,7 @@ describe('generate', () => {
     expect(Object.keys(files).sort()).toEqual([
       'backend/generated/contracts/agent-input.go',
       'backend/generated/contracts/captcha.go',
+      'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
       'backend/generated/contracts/codex-bypass.go',
       'backend/generated/contracts/copilot-permissions.go',
@@ -624,6 +689,7 @@ describe('generate', () => {
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/agent-input.ts',
       'frontend/src/generated/contracts/captcha.ts',
+      'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
       'frontend/src/generated/contracts/copilot-permissions.ts',

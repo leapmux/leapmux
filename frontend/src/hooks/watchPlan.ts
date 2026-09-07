@@ -74,15 +74,18 @@ export function isTabOnScreen(
 /**
  * Build a WatchEvents agent entry from a resume cursor and mode. A resume seq
  * of 0n means nothing has been observed yet, so subscribe fresh (LATEST).
- * cursor/replay are only meaningful on the transition INTO FULL.
+ * cursor/replay are only meaningful on the transition INTO FULL. windowTailSeq
+ * declares the loaded window tail so the worker's skip decision measures the
+ * gap from the same seq the browser re-anchors on (the cursor can lead it).
  */
 export function agentWatchEntry(
   agentId: string,
   resumeSeq: bigint,
+  windowTailSeq: bigint,
   mode: WatchMode,
 ): WatchAgentEntry {
   const base = resumeSeq > 0n
-    ? { agentId, replay: WatchReplayMode.AFTER_CURSOR, cursorSeq: resumeSeq, mode }
+    ? { agentId, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE, cursorSeq: resumeSeq, windowTailSeq, mode }
     : { agentId, replay: WatchReplayMode.LATEST, cursorSeq: BigInt(0), mode }
   return base as WatchAgentEntry
 }
@@ -107,6 +110,7 @@ export function buildWatchPlans(
   activeWorkspaceId: string | null,
   activeKeyForTile: (tileId: string) => string | null,
   agentResumeSeq: (agentId: string) => bigint = () => 0n,
+  agentWindowTailSeq: (agentId: string) => bigint = () => 0n,
   terminalAfterOffset: (terminalId: string) => bigint | number = () => 0,
   terminalNeedsResync: (terminalId: string) => boolean = () => false,
   getAgentTab: ((agentId: string) => AgentTab | undefined) | undefined = undefined,
@@ -139,7 +143,7 @@ export function buildWatchPlans(
     }
     if (tab.type === TabType.AGENT) {
       const seen = agentIdsFor(workerId)
-      plan.agents.push(agentWatchEntry(tab.id, agentResumeSeq(tab.id), mode))
+      plan.agents.push(agentWatchEntry(tab.id, agentResumeSeq(tab.id), agentWindowTailSeq(tab.id), mode))
       seen.add(tab.id)
       // A child tab also needs the root's notification-class events
       // (BackgroundTasksChanged, the root's TodosChanged). These are broadcast
@@ -149,7 +153,7 @@ export function buildWatchPlans(
       if (getAgentTab && tab.parentAgentId) {
         const rootId = rootAgentIdFor(getAgentTab, tab.id)
         if (rootId !== tab.id && !seen.has(rootId)) {
-          plan.agents.push(agentWatchEntry(rootId, 0n, WatchMode.NOTIFY))
+          plan.agents.push(agentWatchEntry(rootId, 0n, 0n, WatchMode.NOTIFY))
           seen.add(rootId)
         }
       }

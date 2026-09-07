@@ -589,7 +589,7 @@ enum MessagePageAnchor {
 }
 
 // WatchReplayMode selects which history a WatchEvents subscriber replays before
-// the live stream begins. Sibling of MessagePageAnchor, narrowed to the two modes
+// the live stream begins. Sibling of MessagePageAnchor, narrowed to the modes
 // a tail subscription actually supports -- so OLDEST/BEFORE (meaningless for a
 // live tail) are simply unrepresentable rather than rejected at runtime.
 enum WatchReplayMode {
@@ -602,13 +602,22 @@ enum WatchReplayMode {
   // Replay every message after cursor_seq (seq > cursor_seq), then stream live.
   // The reconnect/resume subscription that bridges the disconnect gap.
   WATCH_REPLAY_MODE_AFTER_CURSOR = 2;
+  // Replay every message after cursor_seq, as AFTER_CURSOR does, but replay
+  // NOTHING when the gap to the live tail is larger than
+  // contracts.CatchUpGapLimit. The worker measures the gap from
+  // WatchAgentEntry.window_tail_seq when the client declares it, else from
+  // cursor_seq. A windowed client abandons a gap that large and re-anchors on
+  // the newest page, so the burst would be pure waste. The client learns the
+  // tail from CatchUpStart.latest_seq. The worker sends this field for every
+  // replay mode.
+  WATCH_REPLAY_MODE_AFTER_CURSOR_OR_NONE = 3;
 }
 
 message ListAgentMessagesRequest {
   string agent_id = 1;
   MessagePageAnchor anchor = 2; // Which page to return; defaults to LATEST.
   int64 cursor_seq = 3;         // Exclusive seq bound for BEFORE/AFTER; ignored for LATEST/OLDEST.
-  int32 limit = 4;              // Max messages to return (Hub enforces max 50).
+  int32 limit = 4;              // Max messages to return (contracts.MessagePageLimit).
 }
 
 message ListAgentMessagesResponse {
