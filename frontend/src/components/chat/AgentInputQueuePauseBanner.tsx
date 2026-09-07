@@ -26,13 +26,23 @@ const PAUSE_SENTENCES = {
   [AgentInputQueuePauseReason.DELIVERY_UNCERTAIN]: 'Queue paused because an input may not have reached the agent.',
 } satisfies Record<AgentInputQueuePauseReason, string>
 
+/**
+ * The sentence for a reason, including one this build does not know.
+ *
+ * A Worker ahead of this client sends an enum number the table has no key for,
+ * and protobuf-es passes that number through unchanged. `UNSPECIFIED` is
+ * already the "the Worker told us nothing" bucket, so the fallback points
+ * there rather than at a second reason that happens to read the same.
+ */
 export function pauseSentence(reason: AgentInputQueuePauseReason): string {
-  return PAUSE_SENTENCES[reason] ?? PAUSE_SENTENCES[AgentInputQueuePauseReason.MANUAL]
+  return PAUSE_SENTENCES[reason] ?? PAUSE_SENTENCES[AgentInputQueuePauseReason.UNSPECIFIED]
 }
 
 export interface AgentInputQueuePauseBannerProps {
   paused: boolean
   reason: AgentInputQueuePauseReason
+  /** A resume RPC is in flight, so the button refuses a second press. */
+  busy?: boolean
   onResume?: () => void
 }
 
@@ -47,32 +57,37 @@ export interface AgentInputQueuePauseBannerProps {
  *
  * Resume is repeated here rather than pointed at, because the toggle sits in a
  * different row from the sentence a user just read.
+ *
+ * ONE node carries the sentence, and it is ALWAYS mounted. A live region that
+ * appears together with its content announces nothing on several screen
+ * readers, and four of the five pause reasons arrive with no user action to
+ * explain them -- so the region cannot wait for the pause. A SECOND node
+ * holding the same sentence is equally wrong: a screen reader then announces
+ * the sentence twice, and every lookup that matches on that text resolves two
+ * elements. So the class swaps instead. While the queue runs the region is
+ * `srOnly`, which is `position: absolute` and therefore out of `inputArea`'s
+ * flex flow, so it opens no gap; once the queue pauses the same node becomes
+ * the visible banner.
  */
 export const AgentInputQueuePauseBanner: Component<AgentInputQueuePauseBannerProps> = props => (
-  <>
-    {/*
-      The live region is ALWAYS mounted, and only its text changes. A region
-      that appears together with its content announces nothing on several
-      screen readers, and four of the five pause reasons arrive with no user
-      action to explain them. `srOnly` is absolutely positioned, so it is out
-      of flow and adds no flex item and no gap to `inputArea`.
-    */}
-    <div class={srOnly} role="status" aria-live="polite">
-      {props.paused ? pauseSentence(props.reason) : ''}
-    </div>
+  <div
+    class={props.paused ? styles.banner : srOnly}
+    role="status"
+    aria-live="polite"
+    data-testid={props.paused ? 'queue-pause-banner' : undefined}
+  >
     <Show when={props.paused}>
-      <div class={styles.banner} data-testid="queue-pause-banner">
-        <Icon icon={PauseCircle} size="xs" class={styles.icon} />
-        <span class={styles.text}>{pauseSentence(props.reason)}</span>
-        <button
-          class={`outline ${styles.resume}`}
-          type="button"
-          onClick={() => props.onResume?.()}
-          data-testid="queue-pause-banner-resume"
-        >
-          Resume
-        </button>
-      </div>
+      <Icon icon={PauseCircle} size="xs" class={styles.icon} />
+      <span class={styles.text}>{pauseSentence(props.reason)}</span>
+      <button
+        class={`outline ${styles.resume}`}
+        type="button"
+        disabled={props.busy}
+        onClick={() => props.onResume?.()}
+        data-testid="queue-pause-banner-resume"
+      >
+        Resume
+      </button>
     </Show>
-  </>
+  </div>
 )

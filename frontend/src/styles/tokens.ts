@@ -54,3 +54,46 @@ export const breakpoints = {
   sm: 640,
   md: 768,
 }
+
+// The compact action button: a queue row's icon actions, the queue row's Steer
+// button, and the pause banner's Resume button beside them.
+//
+// `compactActionSize` is a CONTROL size, not a step on the spacing scale, so no
+// `--space-N` token fits it. It is in `rem`, so it follows the root font size
+// the way the text in the same row does.
+//
+// `compactTextSize` is the queue's metadata type size. It sits between
+// `--text-8` (0.75rem) and nothing smaller, so no `--text-N` token matches it
+// either. Named here because two components repeat it five times.
+export const compactActionSize = '1.75rem'
+export const compactTextSize = '0.72rem'
+
+// The geometry that every compact action button shares.
+//
+// A stylesheet SPREADS this into its own `style()` call. It does not compose a
+// shared CLASS, because two unlayered classes from two stylesheets tie on
+// specificity, and the emission order of the bundler then decides which
+// `padding` wins. The `controlReset` comment in `~/styles/shared.css.ts`
+// records the rule that this obeys.
+export const compactAction = {
+  height: compactActionSize,
+  flexShrink: 0,
+} as const
+
+// The compact action button that also shows a word.
+export const compactActionLabelled = {
+  ...compactAction,
+  padding: `0 var(--space-2)`,
+  fontSize: compactTextSize,
+} as const
+
+// The composer column's container-query name.
+//
+// `inputArea` in `~/components/chat/ChatView.css.ts` declares the container;
+// `hideInNarrowComposer` in `~/styles/shared.css.ts` and the input queue's own
+// rules query it. The composer sits inside a resizable tile and a floating
+// window, either of which can be a fraction of the viewport, so a viewport
+// media query answers a question about the wrong box: a 260px composer on a
+// 1200px display kept rendering "Pause Queue / Interrupt / Send" in full and
+// crowded the `[+]` button.
+export const composerContainer = 'composer'

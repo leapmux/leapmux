@@ -3,7 +3,6 @@ import { createMemo, createSignal, For, Show } from 'solid-js'
 import { actionsFooter } from '~/components/common/actionsFooter.css'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
-import { Tooltip } from '~/components/common/Tooltip'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 import { clearAllKeyPins, clearKeyPin, listKeyPins } from '~/lib/keyPinStore'
 import * as styles from './KeyPinsControl.css'
@@ -53,15 +52,21 @@ export const KeyPinsControl: Component = () => {
               <ClippedText text={pin.workerId} class={styles.pinWorker} testId={`key-pin-id-${pin.workerId}`} />
               <div class={styles.pinMeta}>
                 <span class={styles.pinDate}>{formatLocalDateTime(new Date(pin.firstSeen))}</span>
-                <Tooltip text="Remove" ariaLabel>
-                  <ConfirmButton
-                    class="small outline"
-                    data-testid={`key-pin-remove-${pin.workerId}`}
-                    onClick={() => remove(pin.workerId)}
-                  >
-                    Remove
-                  </ConfirmButton>
-                </Tooltip>
+                {/*
+                  No `<Tooltip>` here. This button shows a word, so its children
+                  already give it a name, and `ConfirmButton` swaps that word
+                  for "Confirm?" when it arms. A wrapper with `ariaLabel` pinned
+                  the accessible name to "Remove" in BOTH states, so a screen
+                  reader heard "Remove" for the confirming click as well and
+                  never learnt that the first click had armed anything.
+                */}
+                <ConfirmButton
+                  class="small outline"
+                  data-testid={`key-pin-remove-${pin.workerId}`}
+                  onClick={() => remove(pin.workerId)}
+                >
+                  Remove
+                </ConfirmButton>
               </div>
             </div>
           )}

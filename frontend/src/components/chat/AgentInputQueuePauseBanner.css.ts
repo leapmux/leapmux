@@ -1,5 +1,5 @@
 import { style } from '@vanilla-extract/css'
-import { ACTION_SIZE } from './AgentInputQueue.css'
+import { compactActionLabelled, compactTextSize } from '~/styles/tokens'
 
 /**
  * The paused-queue notice, directly above the queue and the composer.
@@ -7,14 +7,14 @@ import { ACTION_SIZE } from './AgentInputQueue.css'
  * No background, no border and no horizontal padding: it is a line of text in
  * the composer's own column, not a card sitting on top of it. Vertical padding
  * is zero too, because `inputArea` owns every gap in that column -- see the
- * `inputArea` comment in `./ChatView.css.ts`.
+ * `inputArea` comment in `~/components/chat/ChatView.css.ts`.
  */
 export const banner = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-2)',
   padding: 0,
-  fontSize: '0.72rem',
+  fontSize: compactTextSize,
   color: 'var(--muted-foreground)',
 })
 
@@ -29,9 +29,9 @@ export const text = style({
   minWidth: 0,
 })
 
-export const resume = style({
-  height: ACTION_SIZE,
-  padding: '0 var(--space-2)',
-  fontSize: '0.72rem',
-  flexShrink: 0,
-})
+/**
+ * Resume sits in the same column as the queue's own row actions, so it takes
+ * the shared compact-action geometry from `~/styles/tokens.ts`. One source, so
+ * the two heights cannot drift.
+ */
+export const resume = style({ ...compactActionLabelled })

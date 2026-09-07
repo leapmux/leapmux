@@ -16,12 +16,20 @@ export type DragActivatorProps = Record<string, (event: PointerEvent) => void>
  *
  * `INPUT_OR_EDITABLE_SELECTOR` carries the text-entry group that all three
  * pointer guards share, and `[popover]` stands in the list itself, as it does
- * in the other two. The last three entries are this guard's own and make it
+ * in the other two. The last four entries are this guard's own and make it
  * the widest: `select` and `button` keep a slow or drifting press on a row
  * control a click, and `[data-drag-handle]` keeps one grip press to one
  * activation.
  *
- * Do NOT push those three into the shared fragment or into the other two
+ * `[data-tooltip-box]` covers the control that `button` alone misses. A
+ * DISABLED button dispatches no pointer event of its own, so `<Tooltip>` gives
+ * it a real box and that wrapper span becomes the hit-test target. `closest`
+ * then walks UP from the span, finds no button, and lets the press through --
+ * so a press on Move Up at the top of a queue, a control the row draws as
+ * unavailable, started a drag of the whole row. `<Tooltip>` marks the wrapper
+ * with this attribute exactly when it takes the box.
+ *
+ * Do NOT push those four into the shared fragment or into the other two
  * lists. ~/components/shell/guardedPointerSensor.ts would then decline the
  * grip's own press and break touch reorder, and
  * ~/components/common/contextMenuGesture.ts would stop opening a row's menu
@@ -29,7 +37,7 @@ export type DragActivatorProps = Record<string, (event: PointerEvent) => void>
  * on a row body, so the two lists already compose where the wider one is
  * wanted.
  */
-const EMBEDDED_UI_SELECTOR = `${INPUT_OR_EDITABLE_SELECTOR}, [popover], select, button, [data-drag-handle]`
+const EMBEDDED_UI_SELECTOR = `${INPUT_OR_EDITABLE_SELECTOR}, [popover], select, button, [data-tooltip-box], [data-drag-handle]`
 
 /**
  * Wrap a draggable's `dragActivators` for a ROW BODY: the press must start on

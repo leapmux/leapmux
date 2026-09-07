@@ -1,8 +1,37 @@
+import type { Page } from '@playwright/test'
 import { Buffer } from 'node:buffer'
 import { getUserId } from './helpers/api'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
 import { loginViaToken, openWorkspace, sendMessage, waitForEditorDraft } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
+
+/**
+ * Pause the queue, park two inputs in it, and hand back the locators that both
+ * drag tests need.
+ *
+ * Kept in this spec rather than under `helpers/`, where the repo's
+ * co-located-test rule would ask for a `.test.ts` beside a function that only
+ * drives a browser.
+ *
+ * The row pattern is ANCHORED (`/^queued-input-/`). The two copies of this
+ * setup had already drifted onto two different patterns, and the unanchored one
+ * matches more than the row.
+ */
+async function seedTwoQueuedRows(page: Page) {
+  await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+  await page.getByTestId('queue-pause-button').click()
+  await sendMessage(page, 'first queued')
+  await sendMessage(page, 'second queued')
+
+  const rows = page.getByTestId(/^queued-input-/)
+  await expect(rows).toHaveCount(2)
+  await expect(rows.first()).toContainText('first queued')
+  return {
+    rows,
+    source: rows.filter({ hasText: 'first queued' }),
+    target: rows.filter({ hasText: 'second queued' }),
+  }
+}
 
 test.describe('agent input queue', () => {
   test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker }) => {
@@ -94,12 +123,24 @@ test.describe('agent input queue', () => {
       await expect(previews.first()).toHaveText('queued second')
 
       // Delete arms on the first click and removes the input on the second, so
-      // each of the two rows takes a pair. The row locator is rebuilt per pass
-      // because deleting one re-resolves `.first()` onto the next.
-      for (let pass = 0; pass < 2; pass++) {
-        const row = page.getByTestId(/queued-input-/).first()
+      // each of the two rows takes a pair.
+      //
+      // Each pass is pinned to ONE row's own test id, and the pass waits for
+      // that row to go before starting the next. `.first()` would not do:
+      // Playwright re-resolves a locator on every action, the removal is not
+      // optimistic (the row survives until the Worker's snapshot returns), and
+      // `ConfirmButton` returns to "Delete" the instant the confirming click
+      // fires -- so a second pass through `.first()` can arm the row the first
+      // pass already deleted, and then find no armed button once it goes.
+      const rowIds = await page.getByTestId(/queued-input-/).evaluateAll(rows =>
+        rows.map(row => row.getAttribute('data-testid')!),
+      )
+      expect(rowIds).toHaveLength(2)
+      for (const rowId of rowIds) {
+        const row = page.getByTestId(rowId)
         await row.getByRole('button', { name: 'Delete' }).click()
         await row.getByRole('button', { name: 'Confirm delete?' }).click()
+        await expect(row).toHaveCount(0)
       }
       for (const clientPage of [page, secondPage])
         await expect(clientPage.getByTestId('agent-input-queue')).toHaveCount(0)
@@ -120,17 +161,7 @@ test.describe('agent input queue', () => {
 
     test('reorders a queued input by dragging its grip with a finger', async ({ page, authenticatedWorkspace }) => {
       void authenticatedWorkspace
-      await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
-      await page.getByTestId('queue-pause-button').click()
-      await sendMessage(page, 'first queued')
-      await sendMessage(page, 'second queued')
-
-      const rows = page.getByTestId(/^queued-input-/)
-      await expect(rows).toHaveCount(2)
-      await expect(rows.first()).toContainText('first queued')
-
-      const source = rows.filter({ hasText: 'first queued' })
-      const target = rows.filter({ hasText: 'second queued' })
+      const { rows, source, target } = await seedTwoQueuedRows(page)
       const grip = source.locator('[data-drag-handle]')
       // The grip is visible ONLY here. On a fine pointer it is display:none,
       // which is the workspace list's own rule.
@@ -154,20 +185,10 @@ test.describe('agent input queue', () => {
 
   test('reorders a queued input by dragging its row', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
-    await page.getByTestId('queue-pause-button').click()
-    await sendMessage(page, 'first queued')
-    await sendMessage(page, 'second queued')
-
-    const rows = page.getByTestId(/^queued-input-/)
-    await expect(rows).toHaveCount(2)
-    await expect(rows.first()).toContainText('first queued')
-
     // A mouse is a FINE pointer, so the grip is hidden and the row body is what
     // drags -- exactly as it is in the workspace list. The grip carries the
     // touch path, which a mouse-driven browser cannot exercise.
-    const source = page.getByTestId(/queued-input-/).filter({ hasText: 'first queued' })
-    const target = page.getByTestId(/queued-input-/).filter({ hasText: 'second queued' })
+    const { rows, source, target } = await seedTwoQueuedRows(page)
     const from = (await source.boundingBox())!
     const to = (await target.boundingBox())!
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
@@ -179,7 +200,7 @@ test.describe('agent input queue', () => {
     await page.mouse.up()
 
     // The Worker owns the order, so the reorder is real only once it comes back.
-    await expect(page.getByTestId(/^queued-input-/).first()).toContainText('second queued')
+    await expect(rows.first()).toContainText('second queued')
   })
 
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
@@ -205,29 +226,41 @@ test.describe('agent input queue', () => {
     // paddings ADDED -- padding never collapses the way margin does -- so one
     // boundary was double the rest, and its size changed with which optional
     // children happened to render.
-    const gaps = await page.getByTestId('agent-input-queue').evaluate((queue) => {
+    const measured = await page.getByTestId('agent-input-queue').evaluate((queue) => {
       const column = queue.parentElement!
-      const boxes = Array.from(column.children)
-        .filter((child) => {
+      const children = Array.from(column.children).filter((child) => {
+        const style = getComputedStyle(child)
+        // The live region is absolutely positioned and the file input is
+        // `display: none`. Neither is a flex item, so neither takes a gap.
+        return style.display !== 'none' && style.position !== 'absolute'
+      })
+      const boxes = children.map(child => child.getBoundingClientRect())
+      return {
+        gaps: boxes.slice(1).map((rect, index) => rect.top - (boxes[index]!.top + boxes[index]!.height)),
+        // The OTHER half of the contract, and the half a gap cannot see. A
+        // child's own vertical padding lives INSIDE its border box, so
+        // restoring it changes no measured gap at all while the visible
+        // spacing goes uneven again -- which is the very regression this test
+        // exists to catch.
+        paddings: children.map((child) => {
           const style = getComputedStyle(child)
-          // The live region is absolutely positioned and the file input is
-          // `display: none`. Neither is a flex item, so neither takes a gap.
-          return style.display !== 'none' && style.position !== 'absolute'
-        })
-        .map(child => child.getBoundingClientRect())
-      return boxes.slice(1).map((rect, index) => rect.top - (boxes[index]!.top + boxes[index]!.height))
+          return [style.paddingTop, style.paddingBottom]
+        }),
+      }
     })
 
     // Four children: the banner, the queue, the attachment strip, the composer.
-    expect(gaps).toHaveLength(3)
+    expect(measured.gaps).toHaveLength(3)
     // Rounded: sub-pixel layout puts a fraction on each measurement, and the
     // claim is that the gaps MATCH, not that they are integers.
-    const rounded = gaps.map(gap => Math.round(gap))
+    const rounded = measured.gaps.map(gap => Math.round(gap))
     // Equal AND non-zero: three collapsed gaps are equal too, and that is a
     // different bug rather than a pass.
     expect(rounded[0]).toBeGreaterThan(0)
-    expect(rounded, `gaps between the composer column's children (raw: ${gaps.join(', ')})`)
+    expect(rounded, `gaps between the composer column's children (raw: ${measured.gaps.join(', ')})`)
       .toEqual([rounded[0], rounded[0], rounded[0]])
+    expect(measured.paddings, 'vertical padding of each composer column child')
+      .toEqual(measured.paddings.map(() => ['0px', '0px']))
   })
 
   test('keeps the composer action row clear of the [+] button on a phone', async ({ page, authenticatedWorkspace }) => {
@@ -249,6 +282,54 @@ test.describe('agent input queue', () => {
     const plusBox = (await plus.boundingBox())!
     const footerBox = (await footer.boundingBox())!
     expect(footerBox.x).toBeGreaterThanOrEqual(plusBox.x + plusBox.width)
+
+    // And the `[+]` still answers a click, which the overlap denied.
+    await plus.click()
+    await expect(page.getByTestId('composer-plus-popover')).toBeVisible()
+  })
+
+  test('goes icon-only and stays clear of the [+] when the composer is narrow on a wide viewport', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace // fixture trigger
+    // A WIDE viewport with a NARROW composer, which the phone test above cannot
+    // reach: a 320px viewport is already below `sm` on every measure. A split
+    // pane or a floating window puts a ~260px composer on a 1200px display, and
+    // a VIEWPORT media query calls that composer wide.
+    await page.setViewportSize({ width: 1200, height: 800 })
+    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toBeVisible()
+    await page.addStyleTag({ content: '[data-testid="agent-editor-panel"] { max-width: 260px; }' })
+
+    const plus = page.getByTestId('composer-plus-trigger')
+    const footer = page.getByTestId('composer-footer-slot')
+    const cluster = page.getByTestId('composer-actions')
+    await expect(plus).toBeVisible()
+    await expect(cluster).toBeVisible()
+    // `hideInNarrowComposer` is a CONTAINER query on `inputArea`, so the labels
+    // follow the COMPOSER's width and go away here, although the viewport is
+    // 1200px wide. They stay reachable as the buttons' accessible names, which
+    // is the whole contract of an icon-only control.
+    //
+    // The LABEL's visibility, not the button's text: `toHaveText` reads
+    // `textContent`, which includes a `display: none` span, so it reports
+    // "Send" for a button that renders nothing but an icon.
+    await expect(page.getByTestId('send-button').locator('span')).toBeHidden()
+    await expect(page.getByRole('button', { name: 'Send' })).toBeVisible()
+
+    // The CLUSTER's own box, not the slot's. The slot obeys its `max-width`
+    // whatever its content does, so measuring the slot alone proves nothing --
+    // a cluster that refuses to shrink simply overflows the slot's left edge
+    // and paints across the `[+]` from there.
+    const plusBox = (await plus.boundingBox())!
+    const footerBox = (await footer.boundingBox())!
+    const clusterBox = (await cluster.boundingBox())!
+    const plusRight = plusBox.x + plusBox.width
+    expect(footerBox.x, 'the footer slot must stop right of the [+]').toBeGreaterThanOrEqual(plusRight)
+    expect(clusterBox.x, 'the action cluster must stop right of the [+]').toBeGreaterThanOrEqual(plusRight)
+
+    // An EMPTY composer stays collapsed. The cap drives the available collapsed
+    // width to zero here, and the expand test subtracts a margin from it, so a
+    // text width of zero used to satisfy the comparison and open the tall
+    // layout with nothing typed.
+    await expect(page.getByTestId('composer-box')).not.toHaveAttribute('data-expanded')
 
     // And the `[+]` still answers a click, which the overlap denied.
     await plus.click()

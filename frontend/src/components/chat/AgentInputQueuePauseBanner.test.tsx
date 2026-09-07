@@ -31,7 +31,7 @@ describe('agentInputQueuePauseBanner', () => {
       expect(pauseSentence(reason)).toContain(fragment)
   })
 
-  it('describes the state, never a cause, when the Worker names no reason', () => {
+  it('describes the state, never a cause, when the Worker gives no reason', () => {
     // Inventing a cause is worse than describing the state, so UNSPECIFIED
     // reads exactly as the manual pause does.
     expect(pauseSentence(AgentInputQueuePauseReason.UNSPECIFIED))
@@ -39,11 +39,12 @@ describe('agentInputQueuePauseBanner', () => {
     expect(pauseSentence(AgentInputQueuePauseReason.UNSPECIFIED)).not.toContain('because')
   })
 
-  it('falls back to the manual sentence for a reason this build does not know', () => {
+  it('falls back to the UNSPECIFIED sentence for a reason this build does not know', () => {
     // A Worker ahead of this client sends an enum value the generated table has
-    // no key for. The banner must still say something.
+    // no key for. The banner must still say something, and UNSPECIFIED is
+    // already the "the Worker told us nothing" bucket.
     expect(pauseSentence(99 as AgentInputQueuePauseReason))
-      .toBe(pauseSentence(AgentInputQueuePauseReason.MANUAL))
+      .toBe(pauseSentence(AgentInputQueuePauseReason.UNSPECIFIED))
   })
 
   it('resumes from its own button', async () => {
@@ -56,8 +57,9 @@ describe('agentInputQueuePauseBanner', () => {
   })
 
   it('survives a Resume press with no handler attached', () => {
-    // `onResume` is optional, and AgentEditorPanel leaves it unset whenever the
-    // panel has no `onSetQueuePaused`. The press must not throw there.
+    // `onResume` is optional so this component renders standalone here. The one
+    // production caller always supplies it, so the press must not throw for a
+    // test that does not.
     render(() => (
       <AgentInputQueuePauseBanner paused reason={AgentInputQueuePauseReason.MANUAL} />
     ))
@@ -82,5 +84,32 @@ describe('agentInputQueuePauseBanner', () => {
     expect(container.querySelector('[role="status"]')).toHaveTextContent(
       'Queue paused because the agent stopped.',
     )
+  })
+
+  it('holds the sentence in ONE node, so a screen reader hears it once', () => {
+    const sentence = 'Queue paused because the agent stopped.'
+    const { container } = render(() => (
+      <AgentInputQueuePauseBanner paused reason={AgentInputQueuePauseReason.AGENT_STOPPED} />
+    ))
+    // A second copy beside the live region reaches the accessibility tree too,
+    // so the reader hears the sentence twice and a by-text lookup resolves two
+    // elements. The visible banner IS the live region here; only its class
+    // swaps.
+    const carriers = [...container.querySelectorAll('*')].filter(el => el.textContent === sentence)
+    expect(carriers).toHaveLength(1)
+    expect(container.querySelector('[role="status"]')).toContainElement(carriers[0] as HTMLElement)
+  })
+
+  it('keeps the live region out of flow while the queue runs, so it takes no gap', () => {
+    const { container } = render(() => (
+      <AgentInputQueuePauseBanner paused={false} reason={AgentInputQueuePauseReason.MANUAL} />
+    ))
+    // `inputArea` is a flex column with a `gap`, so an in-flow empty child
+    // would open a gap above the queue. `srOnly` is `position: absolute`, which
+    // takes the node out of that flow. It also carries no test id while the
+    // queue runs, so a locator cannot resolve a banner that is not showing.
+    const live = container.querySelector('[role="status"]')!
+    expect(live.className).toContain('srOnly')
+    expect(live).not.toHaveAttribute('data-testid')
   })
 })

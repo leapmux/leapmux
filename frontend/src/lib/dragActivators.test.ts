@@ -100,6 +100,28 @@ describe('rowBodyActivators', () => {
     }
   })
 
+  it('swallows a mouse press that lands on the box a Tooltip gives a disabled control', () => {
+    // A DISABLED button dispatches no pointer event of its own, so `<Tooltip>`
+    // stops being `display: contents` and takes a real box -- which makes the
+    // wrapper span the hit-test target. `closest` then walks UP from the span,
+    // finds no button above it, and the press reached the row: pressing Move Up
+    // at the top of a queue, a control the row draws as unavailable, started a
+    // drag of the whole row. The attribute is what closes that.
+    const handler = vi.fn()
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
+    const wrapper = document.createElement('span')
+    wrapper.setAttribute('data-tooltip-box', '')
+    const button = document.createElement('button')
+    button.disabled = true
+    wrapper.appendChild(button)
+    row.appendChild(wrapper)
+
+    activators.onPointerdown(pressOn('mouse', wrapper))
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+
   it('swallows a mouse press that starts on a drag grip, so one press activates once', () => {
     const handler = vi.fn()
     const activators = rowBodyActivators({ onPointerdown: handler })
@@ -125,10 +147,13 @@ describe('rowBodyActivators', () => {
     })
     const grip = document.createElement('span')
     grip.setAttribute('data-drag-handle', '')
+    const tooltipBox = document.createElement('span')
+    tooltipBox.setAttribute('data-tooltip-box', '')
     const cases = [
       ...inputOrEditableHosts(),
       popoverHost(),
       ...ownTail,
+      { label: '[data-tooltip-box]', host: tooltipBox, target: tooltipBox },
       { label: '[data-drag-handle]', host: grip, target: grip },
     ]
 

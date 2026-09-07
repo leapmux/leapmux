@@ -491,6 +491,67 @@ describe('tooltip on a disabled control', () => {
     expect(button.getAttribute('aria-describedby')).toBeTruthy()
   })
 
+  // A pointer guard decides "this press belongs to an embedded control" by
+  // walking UP from `event.target`. When the wrapper takes the box it IS that
+  // target, and no control sits above it -- so the guard needs a mark on the
+  // wrapper itself. See EMBEDDED_UI_SELECTOR in `~/lib/dragActivators.ts`,
+  // where a press on a disabled row button used to drag the whole row.
+  it('marks the wrapper exactly while it takes a box', async () => {
+    const [disabled, setDisabled] = createSignal(true)
+    render(() => (
+      <Tooltip text="Busy">
+        <button type="button" disabled={disabled()}>Save</button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Save' })
+    expect(wrapperOf(button)).toHaveAttribute('data-tooltip-box')
+
+    setDisabled(false)
+    await flushAttributeChange()
+    // Boxless again, so the wrapper is out of the hit test and the mark would
+    // guard a press that can no longer land on it.
+    expect(wrapperOf(button)).not.toHaveAttribute('data-tooltip-box')
+  })
+
+  it('leaves an unmarked wrapper on a control that refuses no pointer event', () => {
+    render(() => (
+      <Tooltip text="Save">
+        <button type="button">Save</button>
+      </Tooltip>
+    ))
+    expect(wrapperOf(screen.getByRole('button'))).not.toHaveAttribute('data-tooltip-box')
+  })
+
+  // An icon-only control passes its own NAME as `text` and asks for
+  // `ariaLabel`. Publishing a description as well announced "Move Up, button,
+  // unavailable, Move Up", and every lookup on that text resolved two
+  // elements. A description exists to state a REASON the name does not carry.
+  it('publishes no description that only repeats the name', () => {
+    render(() => (
+      <Tooltip text="Move Up" ariaLabel>
+        <button type="button" disabled><svg /></button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'Move Up' })
+    expect(button).toHaveAttribute('aria-label', 'Move Up')
+    expect(button).not.toHaveAttribute('aria-describedby')
+  })
+
+  it('still describes a disabled control whose reason differs from its name', () => {
+    render(() => (
+      <Tooltip text="The worker is offline." ariaLabel="New agent">
+        <button type="button" disabled><svg /></button>
+      </Tooltip>
+    ))
+
+    const button = screen.getByRole('button', { name: 'New agent' })
+    const describedBy = button.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    expect(document.getElementById(describedBy!)?.textContent).toBe('The worker is offline.')
+  })
+
   it('opens from the wrapper, which is what the pointer can reach', () => {
     render(() => (
       <Tooltip text="Open the hub over HTTPS to add a passkey.">

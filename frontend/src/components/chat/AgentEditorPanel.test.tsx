@@ -460,7 +460,7 @@ describe('agent editor panel', () => {
     expect(screen.getByTestId('queue-pause-button')).toHaveTextContent('Pause Queue')
   })
 
-  it('names the composer actions although a phone hides their labels', () => {
+  it('gives the composer actions a name although a phone hides their labels', () => {
     renderPanel()
     // Each label is a `display: none` span below `sm`, and that reaches
     // neither a screen reader nor a by-name lookup. The aria-label does.
@@ -476,6 +476,40 @@ describe('agent editor panel', () => {
   it('shows no pause banner while the queue runs', () => {
     renderPanel()
     expect(screen.queryByTestId('queue-pause-banner')).not.toBeInTheDocument()
+  })
+
+  it('turns the pause toggle into Resume Queue, in the label and in the name', () => {
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      pauseReason: AgentInputQueuePauseReason.MANUAL,
+    })
+    const { unmount } = render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent({ workerId: 'w1' })}
+          repoGitStore={createRepoGitStore()}
+          gitTab={{ workerId: 'w1', gitToplevel: WORKTREE_DIR }}
+          onSendMessage={() => {}}
+          branchActions={stubBranchMenuActions()}
+          branchWorkerId="w1"
+          inputQueue={snapshot}
+        />
+      </PreferencesProvider>
+    ))
+
+    const toggle = screen.getByTestId('queue-pause-button')
+    // Both halves, because below `sm` the label is `display: none` and the
+    // aria-label is the button's only name. The visible word must also stay
+    // INSIDE that name, or a voice-control user cannot address it.
+    expect(toggle).toHaveTextContent('Resume Queue')
+    expect(toggle).toHaveAttribute('aria-label', 'Resume Queue')
+    // A `Play` icon, not the `Pause` one it shows at rest. `lucide-solid` puts
+    // the icon's own name in the class list, which is the only handle on which
+    // glyph rendered.
+    expect(toggle.querySelector('svg')?.getAttribute('class')).toContain('play')
+    unmount()
   })
 
   it('says Send will queue while the queue is paused', () => {
@@ -536,6 +570,51 @@ describe('agent editor panel', () => {
 
     await fireEvent.click(screen.getByTestId('queue-pause-banner-resume'))
     expect(onSetQueuePaused).toHaveBeenCalledWith(false)
+  })
+
+  it('sends one pause RPC for two fast presses of Resume', async () => {
+    let settle: () => void = () => {}
+    const onSetQueuePaused = vi.fn(() => new Promise<void>((resolve) => {
+      settle = resolve
+    }))
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'a1',
+      paused: true,
+      pauseReason: AgentInputQueuePauseReason.AGENT_STOPPED,
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="a1"
+          agent={agent({ workerId: 'w1' })}
+          repoGitStore={createRepoGitStore()}
+          gitTab={{ workerId: 'w1', gitToplevel: WORKTREE_DIR }}
+          onSendMessage={() => {}}
+          branchActions={stubBranchMenuActions()}
+          branchWorkerId="w1"
+          inputQueue={snapshot}
+          onSetQueuePaused={onSetQueuePaused}
+        />
+      </PreferencesProvider>
+    ))
+
+    // Nothing updates optimistically: `paused` moves only when the Worker's
+    // snapshot lands, so the button still reads Resume for the whole round trip
+    // and invites a second press. The state converges either way, because the
+    // RPC carries an absolute boolean -- but a failure raises one warn toast per
+    // call, so two presses of one intent raise two toasts.
+    const resume = screen.getByTestId('queue-pause-banner-resume')
+    await fireEvent.click(resume)
+    await fireEvent.click(resume)
+    expect(onSetQueuePaused).toHaveBeenCalledTimes(1)
+    expect(resume).toBeDisabled()
+    // The composer's own toggle is the SAME intent, so it is refused too.
+    expect(screen.getByTestId('queue-pause-button')).toBeDisabled()
+
+    settle()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resume).not.toBeDisabled()
   })
 
   it('blocks new attachments while an enqueue remains in flight', async () => {

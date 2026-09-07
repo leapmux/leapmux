@@ -134,7 +134,19 @@ export async function touchSwipe(
   }
 }
 
-/** Wait two animation frames, so a transform the drag just wrote is on screen. */
+/**
+ * Wait until the input events already dispatched are RENDERED.
+ *
+ * CDP acknowledges the dispatch of a pointer event, not its processing on the
+ * main thread, so a lift issued straight after the last move can race the
+ * dragOver that decides where the drop lands. Two frames is the guarantee: the
+ * first callback runs after the main thread consumes the pending work, the
+ * second after that work paints.
+ *
+ * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
+ * on schedule however far behind the main thread runs, which makes it exactly
+ * wrong under load -- the condition it exists to cover.
+ */
 export async function settleFrames(page: Page): Promise<void> {
   await page.evaluate(() => new Promise<void>(resolve =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -156,7 +168,7 @@ export async function settleFrames(page: Page): Promise<void> {
  * `draggedRow` is also the oracle: the drag's start AND end are confirmed
  * against `draggingClass`, so a press that somehow never activated -- or a lift
  * the drag pipeline never saw -- fails HERE instead of as a mysterious
- * unchanged order later. Each surface names that class itself, because the
+ * unchanged order later. Each surface specifies that class itself, because the
  * class is the surface's own (`tabDragging`, `itemDragging`).
  *
  * Shared by every grip-drag spec. The gesture's shape is not obvious -- the

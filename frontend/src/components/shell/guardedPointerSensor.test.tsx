@@ -252,6 +252,125 @@ describe('guardedPointerSensor', () => {
     expect(activeDraggableId()).toBe('row-1')
   })
 
+  /**
+   * The same provider, with the row inside a SCROLLING box whose content
+   * overflows it.
+   *
+   * jsdom lays nothing out, so every rect and every scroll metric is stubbed.
+   * That is enough for the wiring under test: which element the sensor picks as
+   * the scroller, and whether it drives it while the pointer sits at an edge.
+   * The arithmetic itself is covered in `~/lib/dragAutoScroll.test.ts`, and the
+   * real geometry in the Playwright specs.
+   */
+  function renderScrollerProbe() {
+    let scroller!: HTMLDivElement
+    let rowEl!: HTMLDivElement
+    let scrollTop = 0
+
+    function Row() {
+      const draggable = createDraggable('row-1')
+      return (
+        <div
+          ref={(el) => {
+            rowEl = el
+            draggable(el)
+          }}
+        >
+          row
+        </div>
+      )
+    }
+
+    render(() => (
+      <DragDropProvider>
+        <GuardedPointerSensor />
+        <div ref={(el: HTMLDivElement) => { scroller = el }} style={{ 'overflow-y': 'auto' }}>
+          <Row />
+        </div>
+      </DragDropProvider>
+    ))
+
+    Object.defineProperty(scroller, 'scrollHeight', { get: () => 1000, configurable: true })
+    Object.defineProperty(scroller, 'clientHeight', { get: () => 400, configurable: true })
+    Object.defineProperty(scroller, 'scrollTop', {
+      get: () => scrollTop,
+      set: (next: number) => { scrollTop = Math.max(0, Math.min(next, 600)) },
+      configurable: true,
+    })
+    scroller.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 400, left: 0, right: 100, width: 100, height: 400, x: 0, y: 0, toJSON: () => ({}) })
+
+    return { rowEl, scroller, scrollTopOf: () => scrollTop }
+  }
+
+  it('scrolls the row\'s own scroller while a drag rests at its edge', () => {
+    // solid-dnd moves the row with a transform INSIDE the scroller, so without
+    // this every slot past the fold is unreachable: the row is clipped at the
+    // edge and the drop lands on the last VISIBLE row. A native HTML5 drag got
+    // this from the browser for free.
+    const frames: Array<() => void> = []
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => frames.push(cb))
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    try {
+      const { rowEl, scrollTopOf } = renderScrollerProbe()
+
+      rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 200, pointerType: 'mouse' }))
+      vi.advanceTimersByTime(ACTIVATION_DELAY_MS)
+      document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 399, pointerType: 'mouse' }))
+      frames.splice(0, frames.length).forEach(frame => frame())
+
+      expect(scrollTopOf()).toBeGreaterThan(0)
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('stands still while the drag stays away from either edge', () => {
+    const frames: Array<() => void> = []
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => frames.push(cb))
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    try {
+      const { rowEl, scrollTopOf } = renderScrollerProbe()
+
+      rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 200, pointerType: 'mouse' }))
+      vi.advanceTimersByTime(ACTIVATION_DELAY_MS)
+      document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 210, pointerType: 'mouse' }))
+      frames.splice(0, frames.length).forEach(frame => frame())
+
+      expect(scrollTopOf()).toBe(0)
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('stops scrolling once the press ends', () => {
+    const frames: Array<() => void> = []
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => frames.push(cb))
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    try {
+      const { rowEl, scrollTopOf } = renderScrollerProbe()
+
+      rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 200, pointerType: 'mouse' }))
+      vi.advanceTimersByTime(ACTIVATION_DELAY_MS)
+      document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 399, pointerType: 'mouse' }))
+      frames.splice(0, frames.length).forEach(frame => frame())
+      const scrolledDuringDrag = scrollTopOf()
+      expect(scrolledDuringDrag).toBeGreaterThan(0)
+
+      // A loop that outlived the lift would keep scrolling a list nobody is
+      // dragging.
+      document.dispatchEvent(pointerEvent('pointerup', { x: 50, y: 399, pointerType: 'mouse' }))
+      frames.splice(0, frames.length).forEach(frame => frame())
+
+      expect(scrollTopOf()).toBe(scrolledDuringDrag)
+    }
+    finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('a secondary finger\'s release does not end the primary press', () => {
     const { rowEl, activeDraggableId } = renderProbe()
 

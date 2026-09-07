@@ -162,6 +162,22 @@ export function createComposerLayout(refs: ComposerLayoutRefs): ComposerLayout {
       setContentExpanded(true)
       return
     }
+    // An EMPTY document never expands, whatever the action row costs.
+    //
+    // The comparison below subtracts a margin from the available width, so a
+    // width of 0 still expands once the available width falls under that
+    // margin. The action row reaches that point on its own: `footerSlot` caps
+    // its width at the row minus `--composer-left-pad` and one `space-1`, and a
+    // slot at the cap leaves `collapsedAvailableWidth()` at exactly zero. The
+    // composer then opened in the tall layout with nothing typed in it.
+    //
+    // There is nothing to wrap in an empty document, so the collapsed layout is
+    // always the correct one here. The full-width control-request layout is a
+    // separate flag and this does not touch it.
+    if (width === 0) {
+      setContentExpanded(false)
+      return
+    }
     const availWidth = collapsedAvailableWidth()
     setContentExpanded(prev => width > availWidth - (prev ? COLLAPSE_MARGIN_PX : EXPAND_MARGIN_PX))
   })

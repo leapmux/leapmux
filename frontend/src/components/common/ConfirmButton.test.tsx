@@ -1,7 +1,6 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
-import { Tooltip } from '~/components/common/Tooltip'
 
 describe('confirmButton', () => {
   beforeEach(() => {
@@ -158,7 +157,7 @@ describe('confirmButton', () => {
     expect(button).toHaveAttribute('data-armed')
   })
 
-  it('adds no aria-label for a button that names itself with text', () => {
+  it('adds no aria-label for a button whose text is already its name', () => {
     render(() => (
       <ConfirmButton onClick={() => {}}>
         Delete
@@ -167,7 +166,7 @@ describe('confirmButton', () => {
     expect(screen.getByRole('button')).not.toHaveAttribute('aria-label')
   })
 
-  it('names an icon-only button from the tooltip props, and renames it when armed', () => {
+  it('gives an icon-only button its name from the tooltip props, and changes it when armed', () => {
     render(() => (
       <ConfirmButton
         onClick={() => {}}
@@ -204,23 +203,59 @@ describe('confirmButton', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument()
   })
 
-  it('leaves a caller-supplied Tooltip in sole charge of the button', () => {
-    // LastTabCloseDialog and DeleteBranchDialog wrap this button in their own
-    // `<Tooltip describedBy>` to say why Delete is refused. Both tooltips
-    // resolve the same `<button>` as their target and both write its
-    // `aria-label` and `aria-describedby`, so this component must add NO
-    // tooltip of its own unless the caller asked for one.
+  it('describes a blocked button from the element that already shows the reason', () => {
+    // LastTabCloseDialog and DeleteBranchDialog say why Delete is refused. They
+    // pass `blocked` rather than wrapping this button, because this component
+    // owns its own tooltip and a nested one disables the outer one entirely.
+    // `reasonId` points at the sentence the dialog ALREADY renders, so the
+    // reason reaches the accessibility tree once rather than twice.
     render(() => (
       <>
         <span id="reason-1">held for review</span>
-        <Tooltip text="held for review" describedBy="reason-1">
-          <ConfirmButton disabled onClick={() => {}}>
-            Delete worktree
-          </ConfirmButton>
-        </Tooltip>
+        <ConfirmButton disabled blocked={{ reason: 'held for review', reasonId: 'reason-1' }} onClick={() => {}}>
+          Delete worktree
+        </ConfirmButton>
       </>
     ))
-    expect(screen.getByRole('button')).toHaveAttribute('aria-describedby', 'reason-1')
+    const button = screen.getByRole('button')
+    expect(button).toHaveAttribute('aria-describedby', 'reason-1')
+    // The reason is a DESCRIPTION and never the NAME. A sentence long enough to
+    // be useful would replace "Delete worktree" if it went to `aria-label`,
+    // which is exactly what `title` is banned for.
+    expect(button).not.toHaveAttribute('aria-label')
+    expect(button).toHaveAccessibleName('Delete worktree')
+  })
+
+  it('renders one tooltip and no second copy of the reason', () => {
+    // A caller that wrapped this button instead would nest one `<Tooltip>` in
+    // another. That does not merely publish the reason twice: the outer tooltip
+    // resolves the INNER wrapper span as its target, stops detecting the
+    // disabled state, and once the inner one adds an offscreen description the
+    // outer wrapper holds two children and gives up entirely.
+    const { container } = render(() => (
+      <>
+        <span id="reason-2">held for review</span>
+        <ConfirmButton disabled blocked={{ reason: 'held for review', reasonId: 'reason-2' }} onClick={() => {}}>
+          Delete worktree
+        </ConfirmButton>
+      </>
+    ))
+    const copies = [...container.querySelectorAll('*')].filter(el => el.textContent === 'held for review')
+    expect(copies).toHaveLength(1)
+    expect(copies[0]).toHaveAttribute('id', 'reason-2')
+  })
+
+  it('adds no accessible name for a text button that passes no tooltip', () => {
+    // The unconditional `<Tooltip>` must stay invisible to a button that never
+    // asked for one: with no `tooltip` and no `blocked` it has nothing to show,
+    // so it writes no `aria-label` and the children keep naming the button.
+    render(() => (
+      <ConfirmButton onClick={() => {}}>Close anyway</ConfirmButton>
+    ))
+    const button = screen.getByRole('button')
+    expect(button).not.toHaveAttribute('aria-label')
+    expect(button).not.toHaveAttribute('aria-describedby')
+    expect(button).toHaveAccessibleName('Close anyway')
   })
 
   it('keeps the resting name when armed and no confirm tooltip is given', () => {
@@ -230,18 +265,23 @@ describe('confirmButton', () => {
       </ConfirmButton>
     ))
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-    // Not renamed, but still NAMED. Falling through to undefined would strip
+    // The name does not change, but the button still HAS one. Falling through to undefined would strip
     // the aria-label and leave an icon-only button unlabelled while armed.
     expect(screen.getByRole('button', { name: 'Delete' })).toHaveAttribute('data-armed')
   })
 
-  it('renders an element confirmLabel instead of the default text', () => {
+  it('renders an element confirmLabel as an ELEMENT, not as its text', () => {
     render(() => (
-      <ConfirmButton onClick={() => {}} confirmLabel={<span>Gone?</span>}>
+      <ConfirmButton onClick={() => {}} confirmLabel={<span data-testid="armed-label">Gone?</span>}>
         Delete
       </ConfirmButton>
     ))
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('button')).toHaveTextContent('Gone?')
+    // The element itself, not `toHaveTextContent`. `confirmLabel` used to take a
+    // string alone, and a text assertion passes either way -- Solid's `insert`
+    // renders a `<span>` the same before and after the type widened, so it can
+    // never observe the change it exists for. An icon-only caller needs the
+    // NODE to survive, which this asserts.
+    expect(screen.getByTestId('armed-label').tagName).toBe('SPAN')
   })
 })

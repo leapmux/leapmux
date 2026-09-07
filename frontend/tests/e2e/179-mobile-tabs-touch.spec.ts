@@ -33,19 +33,6 @@ function serverOf(leapmuxServer: { hubUrl: string, adminToken: string, workerId:
   }
 }
 
-/**
- * Wait until the input events already dispatched have been RENDERED.
- *
- * CDP acknowledges the dispatch of a pointer event, not its processing on the
- * main thread, so a lift issued straight after the last move can race the
- * dragOver that decides where the drop lands. Two frames is the guarantee: the
- * first callback runs after the pending work is consumed, the second after
- * that work has painted.
- *
- * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
- * on schedule no matter how far behind the main thread is, which makes it
- * exactly wrong under load — the condition it is supposed to cover.
- */
 /** Position of the row/tab whose text contains `needle`, throwing if absent. */
 async function textIndex(rows: Locator, needle: string): Promise<number> {
   const texts = await rows.allTextContents()
@@ -353,7 +340,7 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
      * which under load spend that entire budget before the release arrives. The
      * tap then reads as a long press and the keyboard stays up: a failure of the
      * driving, not of the app. One evaluate puts the two events microseconds
-     * apart, whatever the machine is doing.
+     * apart, however much load the machine carries.
      *
      * `pointerId` and `isPrimary` are explicit for the same reason -- the
      * recognizer keys its press on both, and neither has a useful default on

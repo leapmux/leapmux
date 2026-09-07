@@ -1,6 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentInputKind,
@@ -8,7 +9,9 @@ import {
   AgentInputState,
   QueuedAgentInputSchema,
 } from '~/generated/proto/leapmux/v1/agent_pb'
-import { AgentInputQueue, resolveQueueDrop } from './AgentInputQueue'
+import { flush } from '~/test-support/async'
+import { pointerEvent } from '~/test-support/pointer'
+import { AgentInputQueue } from './AgentInputQueue'
 
 function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSchema> = {}) {
   return create(QueuedAgentInputSchema, {
@@ -19,6 +22,10 @@ function item(id: string, overrides: MessageInitShape<typeof QueuedAgentInputSch
     state: AgentInputState.QUEUED,
     ...overrides,
   })
+}
+
+function snapshotOf(items: ReturnType<typeof item>[]) {
+  return create(AgentInputQueueSnapshotSchema, { agentId: 'agent-1', items })
 }
 
 function renderQueue(overrides: {
@@ -34,76 +41,25 @@ function renderQueue(overrides: {
     onRetry: vi.fn(),
     onSteer: vi.fn(),
   }
-  const snapshot = create(AgentInputQueueSnapshotSchema, {
-    agentId: 'agent-1',
-    items: overrides.items ?? [item('one'), item('two')],
-  })
+  // A SIGNAL, not a fixed value, because the Worker pushes a whole new snapshot
+  // for every queue event -- new objects, new array, same ids. `push` replays
+  // that, which is what the keyed-row cases below need.
+  const [snapshot, setSnapshot] = createSignal(snapshotOf(overrides.items ?? [item('one'), item('two')]))
   render(() => (
     <AgentInputQueue
-      snapshot={snapshot}
+      snapshot={snapshot()}
       clientId="client-a"
       activeEditInputId={overrides.activeEditInputId}
       supportsSteering={overrides.supportsSteering ?? false}
       {...handlers}
     />
   ))
-  return handlers
+  return {
+    ...handlers,
+    /** Deliver a fresh snapshot, exactly as an `inputQueueChanged` event does. */
+    push: (items: ReturnType<typeof item>[]) => setSnapshot(snapshotOf(items)),
+  }
 }
-
-// A pointer drag cannot be reproduced here: solid-dnd activates on real
-// pointer geometry and collision detection, which jsdom does not supply. The
-// gesture is covered in tests/e2e/108-agent-input-queue.spec.ts; the
-// arithmetic it feeds is covered directly.
-describe('resolveQueueDrop', () => {
-  const three = [item('one'), item('two'), item('three')]
-
-  it('points an upward drop at the drop target itself', () => {
-    expect(resolveQueueDrop(three, 'qi-two', 'qi-one')).toEqual({
-      moved: expect.objectContaining({ id: 'two' }),
-      beforeInputId: 'one',
-    })
-  })
-
-  it('points a downward drop at the item after the drop target', () => {
-    // The removal shifts everything below up by one, so aiming at the target
-    // itself would land the row one slot short.
-    expect(resolveQueueDrop(three, 'qi-one', 'qi-two')).toEqual({
-      moved: expect.objectContaining({ id: 'one' }),
-      beforeInputId: 'three',
-    })
-  })
-
-  it('sends a drop on the last row to the end', () => {
-    expect(resolveQueueDrop(three, 'qi-one', 'qi-three')).toEqual({
-      moved: expect.objectContaining({ id: 'one' }),
-      beforeInputId: '',
-    })
-  })
-
-  it('refuses a drop on the dragged row itself', () => {
-    expect(resolveQueueDrop(three, 'qi-two', 'qi-two')).toBeUndefined()
-  })
-
-  it('refuses an id that is not in the list', () => {
-    expect(resolveQueueDrop(three, 'qi-nope', 'qi-one')).toBeUndefined()
-    expect(resolveQueueDrop(three, 'qi-one', 'qi-nope')).toBeUndefined()
-  })
-
-  it('refuses to move a dispatching row', () => {
-    const list = [item('one', { state: AgentInputState.DISPATCHING }), item('two')]
-    expect(resolveQueueDrop(list, 'qi-one', 'qi-two')).toBeUndefined()
-  })
-
-  it('refuses to displace a dispatching row', () => {
-    // The Worker is already sending it, so its slot is not the user's to take.
-    const list = [item('one', { state: AgentInputState.DISPATCHING }), item('two')]
-    expect(resolveQueueDrop(list, 'qi-two', 'qi-one')).toBeUndefined()
-  })
-
-  it('refuses an empty list', () => {
-    expect(resolveQueueDrop([], 'qi-one', 'qi-two')).toBeUndefined()
-  })
-})
 
 describe('agentInputQueue', () => {
   it('renders operation, state, text, and attachment metadata', () => {
@@ -146,10 +102,96 @@ describe('agentInputQueue', () => {
     renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
     const dispatching = screen.getByTestId('queue-drag-handle-one')
     const movable = screen.getByTestId('queue-drag-handle-two')
-    // Hidden rather than removed: the grip keeps its grid cell, so the row's
-    // text does not shift one column left.
+    // Hidden rather than REMOVED, so the grip keeps its flex slot and the row's
+    // text does not shift one column left. The element being in the document is
+    // the half jsdom can check; `visibility: hidden` versus `display: none` is a
+    // declaration in `./AgentInputQueue.css.ts`, and vitest loads no stylesheet.
+    expect(dispatching).toBeInTheDocument()
     expect(dispatching.className).toContain('dragHandleInert')
     expect(movable.className).not.toContain('dragHandleInert')
+  })
+
+  it('withholds the drag activators from a dispatching row grip', async () => {
+    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    await flush()
+    // An affordance that cannot drag must not behave like one. Hiding the grip
+    // is only half of it: without withholding the activators, a press that
+    // reached the hidden box would still lift the row.
+    screen.getByTestId('queue-drag-handle-one').dispatchEvent(pointerEvent('pointerdown', { x: 10, y: 10, pointerType: 'touch' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 10, y: 90, pointerType: 'touch' }))
+    document.dispatchEvent(pointerEvent('pointerup', { x: 10, y: 90, pointerType: 'touch' }))
+    expect(handlers.onMove).not.toHaveBeenCalled()
+    expect(screen.getByTestId('queued-input-one').className).not.toContain('itemDragging')
+  })
+
+  it('turns a drop into onMove, which is the wiring the arithmetic tests cannot reach', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await flush()
+    // Drives the REAL sensor and the real solid-dnd context, so this covers
+    // `onDragEnd`, the `SortableProvider` ids, and the `qi-` prefix on both
+    // sides. Every rect is zero in jsdom, so `closestCenter` measures every
+    // droppable at distance 0 and keeps the FIRST it saw -- the head. The drop
+    // target is therefore deterministic, and the geometry stays with the
+    // Playwright specs.
+    screen.getByTestId('queued-input-two').dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointerup', { x: 50, y: 90, pointerType: 'mouse' }))
+
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), 'one')
+  })
+
+  it('drops onto the first slot the dispatching head leaves free', async () => {
+    const handlers = renderQueue({
+      items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')],
+    })
+    await flush()
+    // The head is a droppable like any other, so it used to win this collision:
+    // the list previewed the move and `handleDragEnd` then discarded it, leaving
+    // the row snapped back with no message. The collision detector takes every
+    // DISPATCHING row out of the candidates, so the drop lands on the first
+    // legal slot instead. Every rect is zero in jsdom, so `closestCenter` keeps
+    // the FIRST candidate it saw -- which the filter makes `qi-two`.
+    screen.getByTestId('queued-input-three').dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointerup', { x: 50, y: 90, pointerType: 'mouse' }))
+
+    expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'three' }), 'two')
+  })
+
+  it('keeps an armed Delete armed across a snapshot the Worker pushes', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await fireEvent.click(within(screen.getByTestId('queued-input-one')).getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('button', { name: 'Confirm delete?' })).toBeInTheDocument()
+
+    // Any queue event at all delivers a whole new snapshot with new objects. A
+    // reference-keyed list rebuilt every row here, so the armed state vanished
+    // between the user's two clicks and the second click merely re-armed.
+    handlers.push([item('one'), item('two', { state: AgentInputState.FAILED, error: 'offline' })])
+    await flush()
+
+    const armed = screen.getByRole('button', { name: 'Confirm delete?' })
+    expect(armed).toBeInTheDocument()
+    await fireEvent.click(armed)
+    expect(handlers.onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
+  })
+
+  it('follows a row into DISPATCHING without remounting it', async () => {
+    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    await flush()
+    const grip = screen.getByTestId('queue-drag-handle-one')
+    expect(grip.className).not.toContain('dragHandleInert')
+
+    handlers.push([item('one', { state: AgentInputState.DISPATCHING }), item('two')])
+    await flush()
+
+    // The SAME node, because the row's key did not change. Every per-item read
+    // in the row therefore has to go through the live accessor; one that
+    // captured the item at mount would still report the row as draggable.
+    expect(screen.getByTestId('queue-drag-handle-one')).toBe(grip)
+    expect(grip.className).toContain('dragHandleInert')
+    expect(within(screen.getByTestId('queued-input-two')).getByRole('button', { name: 'Move Up' })).toBeDisabled()
   })
 
   it('does not move an item across a dispatching head', () => {
@@ -270,13 +312,17 @@ describe('agentInputQueue', () => {
     expect(handlers.onDelete).not.toHaveBeenCalled()
   })
 
-  it('names every row action although the row renders no button text', () => {
+  it('gives every row action a name although the row renders no button text', () => {
     renderQueue({ items: [item('one'), item('two')], supportsSteering: true })
     const first = screen.getByTestId('queued-input-one')
     for (const name of ['Move Up', 'Move Down', 'Edit', 'Delete']) {
+      // `getByRole` throws when the name matches nothing, so the lookup itself
+      // proves the aria-label. The icon needs its own assertion: an EMPTY
+      // button has no text content either, so the text check alone passes for a
+      // square with nothing drawn in it.
       const button = within(first).getByRole('button', { name })
-      expect(button).toBeInTheDocument()
       expect(button.textContent).toBe('')
+      expect(button.querySelector('svg')).not.toBeNull()
     }
   })
 

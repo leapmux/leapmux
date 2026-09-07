@@ -1,5 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { declareAppLayers } from '~/styles/layers'
+import { breakpoints, composerContainer } from '~/styles/tokens'
 
 const layers = declareAppLayers()
 
@@ -256,4 +257,32 @@ export const srOnly = style({
   clipPath: 'inset(50%)',
   whiteSpace: 'nowrap',
   border: 0,
+})
+
+/**
+ * Hides the word beside an icon once the COMPOSER is narrow, so a control
+ * shrinks to its icon there.
+ *
+ * A CONTAINER query, not a viewport one. The composer lives inside a resizable
+ * tile and a floating window, and either can be a small fraction of the
+ * viewport, so a viewport query answers a question about the wrong box: a 260px
+ * composer on a 1200px display kept rendering three full words, which crowded
+ * the `[+]` button and drove the collapsed text width to zero.
+ *
+ * ONE declaration for every such label, because the composer's action cluster
+ * and the input queue's row actions sit in the same column. Two copies of the
+ * threshold let them collapse to icons at two different widths.
+ *
+ * A control that composes this MUST give its name to a `<Tooltip ariaLabel>`.
+ * `display: none` reaches neither a screen reader nor a by-name lookup, so the
+ * hidden word is not a name. The one action whose icon cannot speak for
+ * itself -- Steer -- therefore does NOT compose this; see `steerAction` in
+ * `~/components/chat/AgentInputQueue.css.ts`.
+ */
+export const hideInNarrowComposer = style({
+  '@container': {
+    [`${composerContainer} (max-width: ${breakpoints.sm - 1}px)`]: {
+      display: 'none',
+    },
+  },
 })

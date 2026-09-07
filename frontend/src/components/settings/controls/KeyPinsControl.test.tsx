@@ -42,6 +42,22 @@ describe('keyPinsControl', () => {
     expect(listKeyPins().map(p => p.workerId)).toEqual(['worker-b'])
   })
 
+  it('lets the armed Remove reach a screen reader', () => {
+    seedPins()
+    render(() => <KeyPinsControl />)
+    const remove = screen.getByTestId('key-pin-remove-worker-a')
+    // No `aria-label`, so the NAME is the button's own text -- and the text is
+    // what `ConfirmButton` swaps when it arms. A `<Tooltip ariaLabel>` around
+    // this button pinned the name to "Remove" in both states, so a screen
+    // reader heard "Remove" for the confirming click too and never learnt that
+    // the first click had armed anything.
+    expect(remove).not.toHaveAttribute('aria-label')
+    expect(remove).toHaveAccessibleName('Remove')
+
+    fireEvent.click(remove)
+    expect(remove).toHaveAccessibleName('Confirm?')
+  })
+
   it('puts the worker id above the date and Remove actions', () => {
     seedPins()
     render(() => <KeyPinsControl />)
