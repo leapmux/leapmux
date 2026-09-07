@@ -178,7 +178,7 @@ type SpanInfo struct {
 	// a subagent spawn. Its SpanColor of 0 is the ANSWER, not a gap to fill, so
 	// the persist path must not substitute the connector's color for it. Without
 	// this the spawn card takes a rail color that matches no rail anywhere,
-	// whenever its ParentSpanID happens to name a span that is still open.
+	// whenever its ParentSpanID happens to identify a span that is still open.
 	NoSpan bool
 }
 
@@ -412,15 +412,16 @@ type OutputSink interface {
 	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
 
 	// ChildSpawnSpan returns the tool_use span in THIS sink's transcript that
-	// spawned childAgentID -- the first argument EnsureChildAgent took, read
-	// back. Answers "" for an id no child transcript carries.
+	// spawned childAgentID. It is the first argument EnsureChildAgent took, read
+	// back. The answer is "" for an id this sink spawned no child under.
 	//
-	// It exists because that span is the ONLY durable link between a provider's
-	// events and its forwarded output, and a provider's own index of it is
-	// per-process. Claude needs it when the CLI restarts a finished subagent: the
-	// restart event identifies the call that restarted the task (the parent's
-	// SendMessage, or nothing at all for a shell wake), while the restarted run
-	// still forwards every envelope under the ORIGINAL spawn.
+	// It exists because that span is the only DURABLE link between a provider's
+	// events and its forwarded output. A provider indexes the span in memory, and
+	// that index cannot survive a worker restart; the child row can.
+	//
+	// A provider needs it when its CLI restarts a finished subagent under an id
+	// that is not the original spawn. See the Claude implementation for the shape
+	// that motivated it.
 	//
 	// err is non-nil when the row could not be READ, which is a third answer and
 	// not a miss, for the reason LookupBackgroundTask states.
@@ -614,7 +615,7 @@ type Agent interface {
 	//   - A protocol with no acknowledgement (Claude, over stdin): the write to
 	//     the process IS the delivery. Return once it lands.
 	//   - A protocol that acknowledges (Codex's `turn/started`): return on the
-	//     ack, or report the delivery unconfirmed after a bounded wait. Send the
+	//     ack, or report the delivery unconfirmed after a limited wait. Send the
 	//     request itself without waiting on its response, because a protocol
 	//     whose response arrives at TURN END answers a different question.
 	//

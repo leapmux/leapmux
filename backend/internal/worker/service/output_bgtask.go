@@ -675,10 +675,13 @@ func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title 
 
 // ChildSpawnSpan reads back the spawn span recorded on the child's agent row.
 //
-// It reads the ROW and not the registry cache: the cache holds the display list,
-// and a child transcript outlives that cap -- so the hundredth subagent of a
-// session has to answer exactly like the first. The row is a PRIMARY KEY lookup
-// of one column, and only a restart event asks.
+// It reads the ROW and not the registry cache. The cache holds the display list,
+// and a child transcript outlives that cap, so the hundredth subagent of a
+// session has to answer exactly like the first. The read is one indexed column,
+// and only a restart event asks for it.
+//
+// Scoped to THIS sink's children, so the answer can only be a span from the
+// transcript the caller owns. A child of another root misses.
 //
 // An unknown id is a MISS ("" and no error), the same answer the caller gets for
 // a child that carries no span. A read that FAILS returns the error, because a
@@ -687,7 +690,10 @@ func (s *agentOutputSink) ChildSpawnSpan(childAgentID string) (string, error) {
 	if childAgentID == "" {
 		return "", nil
 	}
-	span, err := s.h.queries.GetChildAgentSpawnSpan(s.h.bgTaskCtx(), childAgentID)
+	span, err := s.h.queries.GetChildAgentSpawnSpan(s.h.bgTaskCtx(), db.GetChildAgentSpawnSpanParams{
+		ID:            childAgentID,
+		ParentAgentID: sqlString(s.agentID),
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -782,7 +788,7 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 	// routeSubagentMessage passes "" by design, and Codex's collabChildTitle
 	// answers "" for a thread it has not titled yet), or cleaning removed
 	// every character of the one it gave. Both take the SAME fallback
-	// OpenAgent takes, so one rule names every untitled agent row, and two
+	// OpenAgent takes, so one rule titles every untitled agent row, and two
 	// untitled subagents stay apart in the tab strip -- a fixed literal would
 	// label them identically.
 	//
@@ -1172,9 +1178,9 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 // The log line is the only trace a derived key leaves. The key it stores is a
 // stable digest, so the sidebar row appears and stays addressable, but its
 // LABEL falls back to that digest when the provider sent no title -- and
-// nothing else on the path would tell an operator why a row is named after a
-// hash. `what` names the call site, because a rename normalizes two keys and
-// the reason can differ between them.
+// nothing else on the path would tell an operator why a row carries a hash as
+// its key. `what` identifies the call site, because a rename normalizes two keys
+// and the reason can differ between them.
 func (s *agentOutputSink) normalizeRowKey(rowKey, what string) string {
 	normalized := bgtask.NormalizeRowKey(rowKey)
 	if normalized != rowKey {
@@ -1394,17 +1400,47 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 			cache.Mu.Unlock()
 			return nil
 		}
+		// Does the WINNER already carry the loser's child transcript? Read both
+		// rows through the retention loader, so a row the display cap evicted still
+		// answers. A read failure leaves supersededChild false, which retains the
+		// loser -- the conservative half, because an orphaned child costs a
+		// transcript nobody can reopen while a retained row costs one stale entry.
+		supersededChild := false
+		if loser, found, err := s.h.loadStoredBgTask(ctx, s.rootAgentID, oldKey); err != nil {
+			slog.Warn("bgtask rename: read the losing row failed",
+				"owner", s.rootAgentID, "row_key", oldKey, "error", err)
+		} else if found && loser.ChildAgentID != "" {
+			winner, wfound, err := s.h.loadStoredBgTask(ctx, s.rootAgentID, newKey)
+			switch {
+			case err != nil:
+				slog.Warn("bgtask rename: read the winning row failed",
+					"owner", s.rootAgentID, "row_key", newKey, "error", err)
+			case wfound:
+				supersededChild = winner.ChildAgentID == loser.ChildAgentID
+			}
+		}
 		// deleteRowLocked, not a delete of this caller's own: whether the loser's
 		// PERSISTED row goes with it is the question eviction asks, and the answer
 		// is the same, so both ask registryRetention.keep through one function. A
 		// row that carries a child transcript is the only index from that child
-		// agent id back to (owner, row_key), so it is retained and only hidden. No
-		// caller reaches this with a linked row today -- the ACP providers that
-		// rename (OpenCode, Kilo) drop child sessions over ACP and never report a
-		// ChildAgentKey -- but the invariant belongs to every row, not to the ones
-		// a caller happens to produce, and the next delete path added must not
-		// have to remember it.
-		dropped, err := cache.deleteRowLocked(ctx, s.rootAgentID, oldKey)
+		// agent id back to (owner, row_key), so it is retained and only hidden.
+		//
+		// Claude's restart rename reaches this with a LINKED loser: a restarted
+		// run whose forwarded envelope outran its task_started opened a pre-start
+		// row under the original spawn span, and that row carries the child. The
+		// ACP providers that rename (OpenCode, Kilo) drop child sessions over ACP
+		// and never report a ChildAgentKey, so their loser is unlinked.
+		//
+		// A loser that carries the SAME child as the winner is deleted outright.
+		// Retention exists to keep the one index from a child agent id back to
+		// (owner, row_key); the winner already IS that index, so keeping the loser
+		// preserves nothing and costs a permanent second row. Nothing closes it --
+		// the run's result closes the winner -- so it survives every reclaim pass
+		// (`child_agent_id = ''` excludes it, and it never reaches a finished
+		// status in this process), and the next cold-start seed reads it back
+		// beside the winner. The sidebar then lists one subagent twice, which is
+		// the failure the rename exists to prevent.
+		dropped, err := cache.deleteRowLocked(ctx, s.rootAgentID, oldKey, supersededChild)
 		if err != nil {
 			cache.Mu.Unlock()
 			return err

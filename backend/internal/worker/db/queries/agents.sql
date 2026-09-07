@@ -246,18 +246,21 @@ INSERT INTO agents (id, parent_agent_id, spawn_span_id, working_dir, home_dir, t
 -- name: GetChildAgentBySpawnSpan :one
 SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ?;
 
--- GetChildAgentSpawnSpan is the reverse of GetChildAgentBySpawnSpan, and the
--- only DURABLE copy of a spawn span: a provider's own index of them is
--- per-process, while the child row keeps it for the life of the transcript.
--- Claude reads it back when the CLI restarts a finished subagent, because the
--- restart event identifies the call that restarted the task while the restarted
--- run's output still arrives under the original spawn.
+-- GetChildAgentSpawnSpan is the reverse of GetChildAgentBySpawnSpan. It reads
+-- the only DURABLE copy of a spawn span. A provider's own index of them is
+-- per-process, while the child row keeps its span for the life of the
+-- transcript. Claude reads it back when the CLI restarts a finished subagent.
+--
+-- Scoped by parent_agent_id, exactly as GetChildAgentBySpawnSpan is. A span
+-- belongs to the transcript that spawned the child, so an unscoped read answers
+-- for a child of another root and files a run under a span from a transcript the
+-- caller does not own. A root agent matches no parent and correctly misses.
 --
 -- One narrow column, for the reason GetAgentTitle states: GetAgentByID answers
 -- the same question with a SELECT * that deserializes the options and
 -- option_groups JSON blobs this caller never reads.
 -- name: GetChildAgentSpawnSpan :one
-SELECT spawn_span_id FROM agents WHERE id = ?;
+SELECT spawn_span_id FROM agents WHERE id = ? AND parent_agent_id = ?;
 
 -- GetRootAgentID walks parent_agent_id up to the root main agent. A root row
 -- has parent_agent_id IS NULL.
@@ -345,7 +348,7 @@ WHERE closed_at IS NULL AND parent_agent_id IS NULL AND workspace_archived = 0;
 -- makes the exclusion set complete. A handle can be open under one directory
 -- while a provider's store files it under another: the store records the
 -- directory the session was CREATED in, and a user who resumes it elsewhere
--- leaves an open row that carries the second directory. Restricting both arms
+-- leaves an open row that carries the second directory. Restricting both branches
 -- to one directory hid exactly that row, and the store then offered the live
 -- handle back.
 --

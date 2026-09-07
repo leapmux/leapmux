@@ -719,7 +719,7 @@ func TestClaude_AgentTaskStartedLeavesNoSpanOpen(t *testing.T) {
 	assert.Empty(t, msgs[1].SpansOpenAtPersist, "the spawn left no rail behind")
 }
 
-// task_started is the authority, so a task type this code does not name is
+// task_started is the authority, so a task type this code does not list is
 // still a spawn and still gives its span back. Matching only the tool name left
 // such a run's rail open for the whole child run -- the exact defect the change
 // removes for the names it does know.
@@ -761,7 +761,7 @@ func TestClaude_UnknownTaskTypeGivesTheSpanBack(t *testing.T) {
 	assert.Empty(t, msgs[1].SpansOpenAtPersist, "the unknown spawn's rail is gone")
 }
 
-// A workflow event without a tool_use_id has no span to name, so it discards
+// A workflow event without a tool_use_id has no span to identify, so it discards
 // nothing rather than discarding the empty id.
 func TestClaude_WorkflowTaskStartedWithoutToolUseIDClosesNothing(t *testing.T) {
 	t.Parallel()
@@ -806,7 +806,7 @@ func TestClaude_ChildTranscriptReservesUnderTheSpawnSpan(t *testing.T) {
 
 // A spawn row reports span_color 0 as its ANSWER, so the persist path must not
 // fill it from the connector. Claude resolves a top-level envelope's parent span
-// from its own tool_use_id, so a spawn CAN carry a ParentSpanID naming a span
+// from its own tool_use_id, so a spawn CAN carry a ParentSpanID that identifies a span
 // that is still open -- and the connector-colour fallback would then tint the
 // spawn card with a colour no rail anywhere draws.
 func TestClaude_SpawnRowUnderAnOpenParentStillTakesTheNeutralBorder(t *testing.T) {
@@ -1401,7 +1401,7 @@ func TestClaude_ReviveWithAnUnlinkedRowOpensNoSecondTranscript(t *testing.T) {
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a SendMessage id must never open a transcript")
-	assert.Len(t, child.Messages(), before, "nothing is written to a transcript the row does not name")
+	assert.Len(t, child.Messages(), before, "the router writes nothing to a transcript the row does not identify")
 
 	// Refusing the SendMessage id costs no transcript: the subagent's own output
 	// still resolves the real one through the spawn span.
@@ -1808,12 +1808,41 @@ func TestClaude_StartTaskWithoutAToolUseIDStillRecordsTheKind(t *testing.T) {
 	assert.False(t, hasPending, "no spawn span means no pending close to take")
 	assert.Equal(t, bgtask.StatusPending, pending)
 	assert.Equal(t, bgtask.KindSubagent, idx.kindForTask("task-1"))
-	assert.Empty(t, idx.taskIDForToolUse(""), "no pair is written under an empty key")
+	// The MAPS, not taskIDForToolUse(""), which answers "" from its own guard
+	// before it reads either one -- so it holds whatever startTask wrote.
+	assert.Empty(t, idx.toolUseTask, "no reverse entry is written under an empty key")
+	assert.Empty(t, idx.taskToolUse, "and no forward set either")
 
 	// And with a spawn span the pair IS written, both ways.
-	idx.startTask("task-2", bgtask.KindShell, "tu-2")
+	idx.startTask("task-2", bgtask.KindShell, "tu-2", "tu-2")
 	assert.Equal(t, "task-2", idx.taskIDForToolUse("tu-2"))
 	assert.Equal(t, bgtask.KindShell, idx.kindForTask("task-2"))
+}
+
+// The title rule, reached directly. Through the handler it takes six sink calls
+// to arrange each branch, and three of the four are only reachable there by a
+// failure the fake has to inject.
+func TestClaude_TaskStartedTitleRule(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "desc",
+		claudeTaskStartedTitle(&claudeTaskEnvelope{Description: "desc", Prompt: "p\nq"}, claudeKnownTask{}, claudeRestartEvidence{}),
+		"a description wins outright")
+	assert.Equal(t, "p",
+		claudeTaskStartedTitle(&claudeTaskEnvelope{Prompt: "p\nq"}, claudeKnownTask{}, claudeRestartEvidence{}),
+		"a first start falls back to the prompt's first line")
+	assert.Empty(t,
+		claudeTaskStartedTitle(&claudeTaskEnvelope{Prompt: "p"}, claudeKnownTask{exists: true}, claudeRestartEvidence{}),
+		"a row that already exists keeps the title it has")
+	assert.Empty(t,
+		claudeTaskStartedTitle(&claudeTaskEnvelope{Prompt: "p"}, claudeKnownTask{}, claudeRestartEvidence{wake: true}),
+		"and a wake never renames the row to its own block")
+	assert.Empty(t,
+		claudeTaskStartedTitle(&claudeTaskEnvelope{Prompt: "p"}, claudeKnownTask{}, claudeRestartEvidence{sendMessage: true}),
+		"nor does the message the parent just sent")
+	assert.Equal(t, "p",
+		claudeTaskStartedTitle(&claudeTaskEnvelope{Prompt: "p"}, claudeKnownTask{unreadable: true}, claudeRestartEvidence{}),
+		"an UNREADABLE registry is not evidence, so the fallback still runs")
 }
 
 // A restart hands startTask two ids: the spawn span the restarted run forwards
@@ -1858,6 +1887,40 @@ func TestClaude_StartTaskTakesAPendingCloseUnderEitherToolUseID(t *testing.T) {
 	}
 }
 
+// BOTH ids can hold a close, and then the SPAWN span decides: it is the id every
+// forwarded envelope of the run carries, so its result describes the run. The
+// other entry is still consumed, because an entry left behind fires against a
+// future run of this same task -- the spawn span outlives every one of them.
+func TestClaude_StartTakesTheSpawnSpansCloseWhenBothIDsHoldOne(t *testing.T) {
+	t.Parallel()
+
+	var idx claudeTaskIndex
+	idx.recordPendingTaskEnd("tu-spawn", bgtask.StatusFailed)
+	idx.recordPendingTaskEnd("tu-send", bgtask.StatusStopped)
+
+	pending, hasPending := idx.startTask("task-1", bgtask.KindSubagent, "tu-spawn", "tu-send")
+	assert.True(t, hasPending)
+	assert.Equal(t, bgtask.StatusFailed, pending, "the spawn span decides, not the last id visited")
+	assert.Empty(t, idx.pendingTaskEnd, "and both entries are consumed")
+}
+
+// A restart reads its spawn span back from the child row, so a task can index an
+// id its own event never carried -- and two tasks can then hold one id. The
+// LATER writer owns the reverse entry, and the earlier task's closing
+// notification must not drop it: every forwarded envelope of the live run
+// resolves through exactly that entry.
+func TestClaude_ForgetTaskIndexKeepsAnIDAnotherTaskNowOwns(t *testing.T) {
+	t.Parallel()
+
+	var idx claudeTaskIndex
+	idx.startTask("task-A", bgtask.KindSubagent, "tu-spawn", "")
+	idx.startTask("task-B", bgtask.KindSubagent, "tu-spawn", "")
+
+	idx.forgetTaskIndex("task-A")
+	assert.Equal(t, "task-B", idx.taskIDForToolUse("tu-spawn"),
+		"the id still resolves to the task that owns it")
+}
+
 // The pre-start row exists for a FIRST run whose forwarded output outran its
 // task_started: no task id is known yet, so the row opens under the spawn span.
 // The late task_started renames it, so the run owns ONE row from end to end
@@ -1893,11 +1956,16 @@ func TestClaude_AFirstStartRenamesItsPreStartRow(t *testing.T) {
 }
 
 // The restarted run's first envelope can outrun its task_started, the same
-// reorder the pre-start row exists for. That row opens under the ORIGINAL spawn
-// span, so the late task_started has to rename it from THERE -- the id the event
-// itself carries names no row, and the pre-start row would stand beside the real
-// one for good.
-func TestClaude_ARestartRenamesThePreStartRowOpenedUnderTheSpawnSpan(t *testing.T) {
+// reorder the pre-start row exists for. A RESTART needs no such row: the
+// subagent already owns a transcript, so routeSubagentMessage resolves the run
+// from the CHILD and writes straight to the row that run already has.
+//
+// The stronger property, and the reason it is worth pinning: the second row is
+// IMPOSSIBLE here rather than opened and renamed away. A rename can only repair
+// the duplicate afterwards, and its destination key is always occupied on this
+// path -- see TestBgTask_RenameOntoOccupiedKeyDropsALoserTheWinnerSupersedes for
+// what that costs when the reorder outlives the process that could resolve it.
+func TestClaude_ARestartReorderOpensNoPreStartRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -1911,13 +1979,68 @@ func TestClaude_ARestartRenamesThePreStartRowOpenedUnderTheSpawnSpan(t *testing.
 		"parent_tool_use_id": "tu-spawn",
 		"message": {"content": [{"type": "text", "text": "Already going."}]}
 	}`))
-	require.Contains(t, bgTaskRowKeys(sink), "prestart:tu-spawn",
-		"the reorder opens the pre-start row this test is about")
+	require.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+		"the child resolves the run, so no pre-start row opens")
 
 	reviveTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
-		"the late task_started folds the pre-start row back into the run")
+		"and the late task_started leaves it at one")
+	child, _ := sink.ChildSink("child-of-tu-spawn").(*testSink)
+	require.NotNil(t, child)
+	assert.Contains(t, string(child.Messages()[len(child.Messages())-1].Content), "Also check the tests.",
+		"the delivered message still reaches the transcript the row carries")
+}
+
+// A wake whose shell ran in an EARLIER process is a re-registration this one
+// cannot prove: the evidence for it lives in maps the previous process owned,
+// and a wake carries no tool_use_id of its own. The registry row is durable
+// though, and it still carries the child transcript -- so the spawn span is
+// readable whether or not this process can prove the restart.
+func TestClaude_ARestartWithNoPerProcessEvidenceStillKeepsOneRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	spawnAndFinishSubagent(t, newTestAgent(sink), sink)
+
+	// A fresh agent over the SAME sink models the worker restart: the registry row
+	// and the child row survive, the tool_use index and childTask do not.
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"content": [{"type": "text", "text": "Back at it."}]}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system", "subtype": "task_started",
+		"task_id": "task-1", "task_type": "local_agent",
+		"description": "Explore the parser"
+	}`))
+
+	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+		"the durable spawn span folds the pre-start row back into the run")
+}
+
+// A tool_use id is unique per call, so an id recorded as a SendMessage can never
+// later identify a spawn. The guards that refuse it must therefore not depend on
+// the task_started landing inside the sending turn -- the CLI concludes the
+// recipient's run before it delivers, so the event can arrive after it.
+func TestClaude_ARestartCallIsRefusedAfterTheTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	spawnAndFinishSubagent(t, a, sink)
+	sink.UnlinkBackgroundTask("task-1")
+
+	sendMessageTo(a, "tu-send", "task-1")
+	a.HandleOutput([]byte(`{"type": "result", "subtype": "success", "result": "ok"}`))
+	reviveTaskStarted(a, "tu-send", "too late")
+
+	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
+		"a SendMessage id is not a spawn span, whichever turn its task_started lands in")
+	assert.NotContains(t, sink.ClosedSpans(), "tu-send",
+		"and its rail is not freed either")
 }
 
 // The repair reads the spawn span from the child transcript, and that read can
@@ -1937,6 +2060,18 @@ func TestClaude_ARestartSurvivesAnUnreadableSpawnSpan(t *testing.T) {
 
 	assert.Equal(t, []string{"task-1"}, sink.RevivedTasks(), "the row still reopens")
 	require.Len(t, child.Messages(), before+1, "the delivered message still lands")
+
+	// And the run still owns ONE row. With no spawn span the tool_use index cannot
+	// resolve the forwarded envelope, so routeSubagentMessage falls to the CHILD --
+	// without that fallback this envelope opens prestart:tu-spawn for the very
+	// transcript task-1 already carries, and nothing ever closes it.
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"content": [{"type": "text", "text": "Checked them."}]}
+	}`))
+	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+		"an unreadable spawn span still costs no second row")
 }
 
 // A row whose child linkage a failed upsert lost has no transcript to read the
@@ -1956,18 +2091,17 @@ func TestClaude_ARestartOfAnUnlinkedRowOpensNoChildUnderTheRestartCall(t *testin
 
 	assert.NotContains(t, sink.ChildAgentIDs(), "child-of-tu-send",
 		"a re-registration's tool_use id is not a spawn span")
-}
 
-// bgTaskRowKeys lists the registry row keys this sink holds, sorted. The KEYS
-// and not the count: a duplicate row is only recognizable by the key it took.
-func bgTaskRowKeys(sink *testSink) []string {
-	rows := sink.BackgroundTasks()
-	keys := make([]string, 0, len(rows))
-	for _, row := range rows {
-		keys = append(keys, row.RowKey)
-	}
-	slices.Sort(keys)
-	return keys
+	// The row that HAS no child link still keeps its identity: the forwarded
+	// envelope resolves the run through childTask, which the first start filled
+	// and no completion drops, so no pre-start row opens beside it.
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"content": [{"type": "text", "text": "Checked them."}]}
+	}`))
+	assert.Equal(t, []string{"task-1"}, bgTaskRowKeys(sink),
+		"an unlinked row still costs no second row")
 }
 
 // A restarted subagent forwards its new output under the ORIGINAL spawn span,

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"strings"
 	"sync"
 
@@ -49,7 +48,7 @@ func claudeToolSpawnsSubagent(toolName string) bool {
 // shell, which is NOT the same as a BACKGROUNDED shell; local_agent is a Task
 // subagent; local_workflow is a Workflow run. Only local_bash is NOT a spawn, so
 // the code tests for that one and treats every other value -- including one this
-// list does not name -- as a spawn that owns no span and gets a child
+// list does not carry -- as a spawn that owns no span and gets a child
 // transcript.
 //
 // A foreground shell reports local_bash too, once the command runs for 2
@@ -154,10 +153,12 @@ func (a *ClaudeCodeAgent) claudeHandleTaskEvent(content []byte) bool {
 // claudePreStartRowKey keys the registry row for a subagent whose forwarded
 // envelope arrived BEFORE its task_started, when no task id exists yet.
 //
-// Prefixed rather than the bare spawn span, so the key can only ever name a row
-// this path opened. handleClaudeTaskStarted then renames unconditionally: an
-// ordinary start, and a re-registration whose tool_use_id is the parent's
-// SendMessage rather than the spawn, both find nothing and change nothing.
+// Prefixed rather than the bare spawn span, so the key can only ever identify a
+// row this path opened. handleClaudeTaskStarted then renames unconditionally. An
+// ordinary start finds nothing, because its own envelope arrived after the
+// task_started. A RESTART keyed on the original spawn span does find the row,
+// and folding it back in is the point -- see the rename there for what happens
+// when the task id it moves onto already exists.
 func claudePreStartRowKey(spawnSpanID string) string {
 	if spawnSpanID == "" {
 		return ""
@@ -192,69 +193,55 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	if ev.TaskType == claudeTaskTypeBash {
 		startedKind = bgtask.KindShell
 	}
-	// The span every forwarded envelope of THIS run will carry, which is what
-	// the tool_use index has to hold. On a first start the event's own
-	// tool_use_id is that span. On a re-registration it is not, and the two
-	// disagree in every restart form the CLI has: it registers the task under
-	// the call that restarted it (the parent's SendMessage) or under no call at
-	// all (a shell wake), while it runs the agent under the toolUseId recorded
-	// at the ORIGINAL spawn -- so the restarted run keeps forwarding under that
-	// one. Indexing the event's id there left the run unresolvable, and every
-	// envelope of it opened a second registry row keyed by the spawn span (see
-	// routeSubagentMessage) that stood for the transcript the first row already
-	// carried.
+	// The span every forwarded envelope of THIS run carries, which is what the
+	// tool_use index has to hold. On a first start the event's own tool_use_id is
+	// that span. On a re-registration it is not.
+	//
+	// The two disagree in every restart form the CLI has. It registers the task
+	// under the call that restarted it (the parent's SendMessage), or under no
+	// call at all (a shell wake). It runs the agent under the toolUseId recorded
+	// at the ORIGINAL spawn, so the restarted run keeps forwarding under that one.
+	//
+	// Indexing the event's id there left the run unresolvable. Every envelope of
+	// it then opened a second registry row keyed by the spawn span, which stood
+	// for the transcript the first row already carried. See
+	// routeSubagentMessage.
+	//
+	// A row that already carries a CHILD TRANSCRIPT triggers the read too, and it
+	// is positive evidence rather than the absence of an impostor: only an earlier
+	// registration of this same task id can have linked one. Nothing opens a row
+	// keyed ev.TaskID with a child before the first task_started for it, because
+	// routeSubagentMessage keys its early row under the spawn span, so a genuine
+	// first start reads known.childID == "" and this branch does not run. It
+	// matters because the restart evidence is PER-PROCESS: a shell wake carries no
+	// tool_use_id and its proof lives in a map the previous process owned, so
+	// without this the run indexes no id at all and every envelope of it opens a
+	// second row.
 	spawnSpanID := ev.ToolUseID
-	if restart.restarted() {
+	if restart.restarted() || known.childID != "" {
 		spawnSpanID = a.claudeRestartSpawnSpan(known.childID)
 	}
 	// Both ids: the spawn span the restarted run forwards under, and the id the
 	// event itself carried. See claudeTaskIndex.taskToolUse for why a restart
 	// needs each of them. They are the same string on a first start.
 	pendingEnd, hasPending := a.tasks.startTask(ev.TaskID, startedKind, spawnSpanID, ev.ToolUseID)
+	if restart.restarted() {
+		// A pending close describes the run that ENDED, and this event announces a
+		// new one. The spawn span keys that close and survives every run of the
+		// subagent, so a close the previous run left unconsumed -- a result whose
+		// task_started never followed, which a fresh process reaches because both
+		// the tool_use index and childTask start empty -- would otherwise close the
+		// row reviveClaudeSubagent is about to reopen. The subagent then reads
+		// Completed in the sidebar for the whole restarted run.
+		//
+		// Dropped here rather than left in the map: startTask already deleted the
+		// entry, so refusing it now cannot leave it to fire against a later run.
+		hasPending = false
+	}
 
-	kind := startedKind
 	groupKey, groupLabel := a.workflowGroup(ev)
 
-	// Some task_started events omit description but carry the spawn prompt;
-	// fall back to the prompt's first line so the row never has an empty title.
-	//
-	// For a local_bash task the description is what the row shows, and it is
-	// left out of Description here: copying the title into it rendered the row's
-	// secondary line as a verbatim echo of its own title. task_notification
-	// later fills it with the shell's output_file, which the title does not say.
-	//
-	// TitleIsCommand stays FALSE for it. BashTool sends `description || command`
-	// (src/tools/BashTool/BashTool.tsx), and task_started forwards only that one
-	// resolved string (src/utils/task/framework.ts) -- so the title is the
-	// model's prose whenever it wrote any, the raw command when it did not, and
-	// nothing on the wire says which. Prose set in the monospace face reads
-	// worse than a command set in the normal one, so the ambiguous case takes
-	// the normal one.
-	//
-	// The prompt fallback is for a FIRST start only. On a re-registration the
-	// prompt is the message the parent just sent, and a non-blank title
-	// overwrites the row's own (PreservingBlanksFrom keeps only a BLANK one), so
-	// the Background-tasks entry would rename itself to a chat message while the
-	// child agents row -- which EnsureChildAgent never rewrites -- kept the real
-	// title. A blank title here is the correct value for a row that already has
-	// one.
-	//
-	// Positive restart evidence suppresses the fallback, and an UNREADABLE
-	// registry is not evidence. Keying on the read failure had the asymmetry
-	// backwards: a read fails most often on the first registry touch of a
-	// process, where a first start is the overwhelmingly common event, and the
-	// row then took a blank title that nothing rewrites -- and EnsureChildAgent,
-	// given the same blank, took the tab name from the pool instead of from the
-	// prompt.
-	//
-	// The WAKE half of the evidence matters here even though `known.exists`
-	// usually answers for it: a wake against a registry this process cannot read
-	// leaves exists false, and the fallback then renamed the row to the wake
-	// block itself -- a literal <task-notification> in the sidebar.
-	title := ev.Description
-	if title == "" && !known.exists && !restart.restarted() {
-		title = bgtask.FirstLine(ev.Prompt)
-	}
+	title := claudeTaskStartedTitle(ev, known, restart)
 
 	// A forwarded child envelope that ARRIVED FIRST opened a row keyed by the
 	// spawn span, because no task id existed yet (see routeSubagentMessage). Move
@@ -269,7 +256,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		// nothing and leave that row standing beside this one.
 		//
 		// The prefixed key is why this is safe to run unconditionally. It can only
-		// name a row routeSubagentMessage opened, so the ordinary flow finds
+		// identify a row routeSubagentMessage opened, so the ordinary flow finds
 		// nothing and the rename is a no-op.
 		if err := a.sink.RenameBackgroundTask(claudePreStartRowKey(spawnSpanID), ev.TaskID); err != nil {
 			slog.Warn("claude task_started rename failed",
@@ -277,11 +264,24 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		}
 	}
 
+	// For a local_bash task the description is what the row shows, and it is
+	// left out of Description here: copying the title into it rendered the row's
+	// secondary line as a verbatim echo of its own title. task_notification
+	// later fills it with the shell's output_file, which the title does not say.
+	//
+	// TitleIsCommand stays FALSE for it. BashTool sends `description || command`
+	// (src/tools/BashTool/BashTool.tsx), and task_started forwards only that one
+	// resolved string (src/utils/task/framework.ts) -- so the title is the
+	// model's prose whenever it wrote any, the raw command when it did not, and
+	// nothing on the wire says which. Prose set in the monospace face reads
+	// worse than a command set in the normal one, so the ambiguous case takes
+	// the normal one.
+	//
 	// Registry upsert (kind shell -> registry only; local_workflow -> registry
 	// only, grouped; local_agent -> registry + child transcript below).
 	upsert := bgtask.Upsert{
 		RowKey:        ev.TaskID,
-		Kind:          kind,
+		Kind:          startedKind,
 		ParentAgentID: a.agentID,
 		Title:         title,
 		GroupKey:      groupKey,
@@ -343,74 +343,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// local_bash (shell) and local_workflow have no transcript; their envelopes
 	// are never forwarded.
 	if ev.TaskType != claudeTaskTypeBash && ev.TaskType != claudeTaskTypeWorkflow {
-		// The registry's own linkage FIRST, and EnsureChildAgent only when the row
-		// carries none. On a re-registration ev.ToolUseID is the SendMessage call,
-		// not the spawn span, so handing it to EnsureChildAgent walks past the
-		// row-key fast path (which misses whenever the row lost its linkage),
-		// fails GetChildAgentBySpawnSpan, and CREATES a second transcript keyed by
-		// that id -- then re-links the row to the orphan. Reading known.childID
-		// makes the two resolutions one, so they cannot disagree.
-		childID, err := known.childID, error(nil)
-		//
-		// Never from a SendMessage id. EnsureChildAgent takes a SPAWN SPAN, and a
-		// re-registration's tool_use_id is the call that RESTARTED the task -- so
-		// handing it over walks past the row-key fast path, fails
-		// GetChildAgentBySpawnSpan, and CREATES a child keyed by a non-spawn id,
-		// which a later forwarded envelope under the real spawn span then
-		// duplicates.
-		//
-		// A linked row never reaches this test, because the registry row that
-		// carries the child outlives the display cap. What reaches it is a row
-		// that holds no linkage at all: an EnsureChildAgent that a DB failure
-		// defeated at spawn time, or a registry this process could not read. The
-		// in-flight SendMessage calls are the only positive evidence available in
-		// either state, and refusing an unproven id costs a transcript the
-		// subagent never had -- creating one under the wrong key costs the
-		// transcript it does have.
-		//
-		// The restart evidence and not a span-type read: the span tracker answers for one
-		// transcript, and a subagent's own SendMessage lands on that child's
-		// tracker rather than the root's. See the guard above.
-		if childID == "" && ev.ToolUseID != "" && !restart.restarted() {
-			childID, err = a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
-		}
-		if childID != "" {
-			a.tasks.rememberTaskChild(ev.TaskID, childID)
-		}
-		switch {
-		case err != nil:
-			slog.Warn("claude task_started ensure child failed", "task_id", ev.TaskID, "error", err)
-		case childID == "":
-			// No transcript, and none this event can open. The revive arm is left
-			// STANDING rather than consumed: the row is still finished, so a later
-			// task_started for this task in the same turn is still a revive and
-			// deserves the retry -- the same reason a failed registry write puts
-			// its arm back.
-			slog.Warn("claude task_started resolved no child transcript",
-				"task_id", ev.TaskID, "tool_use_id", ev.ToolUseID,
-				"row_exists", known.exists, "registry_unreadable", known.unreadable)
-		default:
-			handled, err := a.reviveClaudeSubagent(ev, childID, known, restart)
-			switch {
-			case err != nil:
-				// It WAS a revive; only the registry write failed. The delivered
-				// message is already in the transcript and the arm is back, so the
-				// first-start path below must not run -- PersistChildPrompt says
-				// nothing on a transcript that already has messages anyway.
-				slog.Warn("claude revive background task failed", "task_id", ev.TaskID, "error", err)
-			case handled:
-				// The prompt was the message the parent just sent, appended to the
-				// running transcript rather than prepended as the opening instruction.
-			default:
-				if err := a.sink.PersistChildPrompt(childID, ev.Prompt); err != nil {
-					// task_started is the only Claude event that carries the spawn
-					// prompt, and it lands before any forwarded envelope, so the child
-					// transcript opens on the instruction rather than on the reply.
-					// Losing it costs the first message, not the transcript.
-					slog.Warn("claude task_started persist prompt failed", "task_id", ev.TaskID, "error", err)
-				}
-			}
-		}
+		a.openClaudeTaskChild(ev, known, restart, title)
 	}
 
 	// Apply a pending close from a result that arrived before this
@@ -420,6 +353,121 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		logRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(ev.TaskID, pendingEnd, ""))
 		logRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(ev.TaskID, pendingEnd))
 		a.tasks.forgetTaskIndex(ev.TaskID)
+	}
+}
+
+// claudeTaskStartedTitle picks the registry row title for a task_started.
+//
+// Some task_started events omit description but carry the spawn prompt;
+// fall back to the prompt's first line so the row never has an empty title.
+//
+// The prompt fallback is for a FIRST start only. On a re-registration the
+// prompt is the message the parent just sent, and a non-blank title
+// overwrites the row's own (PreservingBlanksFrom keeps only a BLANK one), so
+// the Background-tasks entry would rename itself to a chat message while the
+// child agents row -- which EnsureChildAgent never rewrites -- kept the real
+// title. A blank title here is the correct value for a row that already has
+// one.
+//
+// Positive restart evidence suppresses the fallback, and an UNREADABLE
+// registry is not evidence. Keying on the read failure had the asymmetry
+// backwards: a read fails most often on the first registry touch of a
+// process, where a first start is the overwhelmingly common event, and the
+// row then took a blank title that nothing rewrites -- and EnsureChildAgent,
+// given the same blank, took the tab name from the pool instead of from the
+// prompt.
+//
+// The WAKE half of the evidence matters here even though `known.exists`
+// usually answers for it: a wake against a registry this process cannot read
+// leaves exists false, and the fallback then renamed the row to the wake
+// block itself -- a literal <task-notification> in the sidebar.
+func claudeTaskStartedTitle(ev *claudeTaskEnvelope, known claudeKnownTask, restart claudeRestartEvidence) string {
+	if ev.Description != "" {
+		return ev.Description
+	}
+	if known.exists || restart.restarted() {
+		return ""
+	}
+	return bgtask.FirstLine(ev.Prompt)
+}
+
+// openClaudeTaskChild resolves the child transcript of a task_started and puts
+// the event's prompt into it. The registry row's own linkage answers first, and
+// EnsureChildAgent runs only for a row that carries none. A restart appends the
+// delivered message through reviveClaudeSubagent; a first start prepends the
+// spawn prompt.
+//
+// The caller keeps the task-type test, because a local_bash and a local_workflow
+// task have no transcript at all. `open` and not `start`: startTask already owns
+// that verb in this file, for the index write.
+func (a *ClaudeCodeAgent) openClaudeTaskChild(ev *claudeTaskEnvelope, known claudeKnownTask, restart claudeRestartEvidence, title string) {
+	// The registry's own linkage FIRST, and EnsureChildAgent only when the row
+	// carries none. On a re-registration ev.ToolUseID is the SendMessage call,
+	// not the spawn span, so handing it to EnsureChildAgent walks past the
+	// row-key fast path (which misses whenever the row lost its linkage),
+	// fails GetChildAgentBySpawnSpan, and CREATES a second transcript keyed by
+	// that id -- then re-links the row to the orphan. Reading known.childID
+	// makes the two resolutions one, so they cannot disagree.
+	childID, err := known.childID, error(nil)
+	//
+	// Never from a SendMessage id. EnsureChildAgent takes a SPAWN SPAN, and a
+	// re-registration's tool_use_id is the call that RESTARTED the task -- so
+	// handing it over walks past the row-key fast path, fails
+	// GetChildAgentBySpawnSpan, and CREATES a child keyed by a non-spawn id,
+	// which a later forwarded envelope under the real spawn span then
+	// duplicates.
+	//
+	// A linked row never reaches this test, because the registry row that
+	// carries the child outlives the display cap. What reaches it is a row
+	// that holds no linkage at all: an EnsureChildAgent that a DB failure
+	// defeated at spawn time, or a registry this process could not read. The
+	// in-flight SendMessage calls are the only positive evidence available in
+	// either state, and refusing an unproven id costs a transcript the
+	// subagent never had -- creating one under the wrong key costs the
+	// transcript it does have.
+	//
+	// The restart evidence and not a span-type read: the span tracker answers for one
+	// transcript, and a subagent's own SendMessage lands on that child's
+	// tracker rather than the root's. See the guard above.
+	if childID == "" && ev.ToolUseID != "" && !restart.restarted() {
+		childID, err = a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
+	}
+	if childID != "" {
+		a.tasks.rememberTaskChild(ev.TaskID, childID)
+	}
+	switch {
+	case err != nil:
+		slog.Warn("claude task_started ensure child failed", "task_id", ev.TaskID, "error", err)
+	case childID == "":
+		// No transcript, and none this event can open. The revive arm is left
+		// STANDING rather than consumed: the row is still finished, so a later
+		// task_started for this task in the same turn is still a revive and
+		// deserves the retry -- the same reason a failed registry write puts
+		// its arm back.
+		slog.Warn("claude task_started resolved no child transcript",
+			"task_id", ev.TaskID, "tool_use_id", ev.ToolUseID,
+			"row_exists", known.exists, "registry_unreadable", known.unreadable)
+	default:
+		handled, err := a.reviveClaudeSubagent(ev, childID, known, restart)
+		switch {
+		case err != nil:
+			// It WAS a revive; only the registry write failed. The delivered
+			// message is already in the transcript and the arm is back, so the
+			// first-start path below must not run -- PersistChildPrompt says
+			// nothing on a transcript that already has messages anyway.
+			slog.Warn("claude revive background task failed", "task_id", ev.TaskID, "error", err)
+		case handled:
+			// The prompt was the message the parent just sent, appended to the
+			// running transcript rather than prepended as the opening instruction.
+		default:
+			if err := a.sink.PersistChildPrompt(childID, ev.Prompt); err != nil {
+				// task_started is the only Claude event that carries the spawn
+				// prompt, and it lands before any forwarded envelope, so the child
+				// transcript opens on the instruction rather than on the reply.
+				// Losing it costs the first message, not the transcript.
+				slog.Warn("claude task_started persist prompt failed", "task_id", ev.TaskID, "error", err)
+			}
+		}
 	}
 }
 
@@ -450,17 +498,18 @@ type claudeKnownTask struct {
 // when the in-memory index cannot answer.
 //
 // Answers "" for a row that carries no transcript and for a read that FAILED.
-// Both leave the run out of the tool_use index, which is the state the code
-// already handles -- routeSubagentMessage opens a pre-start row for it. The
-// alternative, indexing the id the event did carry, is worse: it files the run
-// under a call that is not a spawn, which no forwarded envelope will ever name.
+// Both leave the SPAWN SPAN out of the tool_use index. The caller still files
+// the id the event carried, so the run stays resolvable from the parent's side;
+// what it loses is the id every forwarded envelope of the restarted run
+// identifies itself by. routeSubagentMessage covers that gap from the CHILD,
+// which is why neither answer opens a second registry row.
 func (a *ClaudeCodeAgent) claudeRestartSpawnSpan(childID string) string {
 	if childID == "" {
 		return ""
 	}
 	span, err := a.sink.ChildSpawnSpan(childID)
 	if err != nil {
-		slog.Warn("claude task_started: child spawn span lookup failed",
+		slog.Warn("claude task_started: cannot read the spawn span of the child",
 			"child", childID, "error", err)
 		return ""
 	}
@@ -694,15 +743,28 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	// Key the row by the SPAWN SPAN, which is known now and identifies the same
 	// run. handleClaudeTaskStarted renames it to the task id when that finally
 	// arrives, so one row carries the run from end to end.
-	registryKey := taskID
-	if registryKey == "" {
-		registryKey = claudePreStartRowKey(spawnSpanID)
-	}
-
-	childID, err := a.sink.EnsureChildAgent(spawnSpanID, registryKey, "")
+	//
+	// A blank key links nothing, so resolving the child costs no registry write
+	// while the run is still unidentified.
+	childID, err := a.sink.EnsureChildAgent(spawnSpanID, taskID, "")
 	if err != nil {
 		slog.Warn("claude route subagent: ensure child failed", "spawn_span", spawnSpanID, "error", err)
 		return
+	}
+	if taskID == "" {
+		// The CHILD answers when the tool_use index cannot. A transcript is the one
+		// identifier stable across every run of a subagent and across both of a
+		// restart's tool_use ids, so it resolves the run whenever handleClaudeTaskStarted
+		// could not file the spawn span -- an unlinked registry row, or a child row
+		// the process could not read. Without this the envelope opens a SECOND row
+		// for a transcript the first row already carries, and nothing closes it: the
+		// result path resolves the real row through this same map and closes THAT
+		// one, so the stray row sits Running for good.
+		taskID = a.tasks.taskIDForChild(childID)
+	}
+	registryKey := taskID
+	if registryKey == "" {
+		registryKey = claudePreStartRowKey(spawnSpanID)
 	}
 	if taskID == "" {
 		// Opened RUNNING, because the envelope that got us here is the subagent
@@ -715,11 +777,9 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			slog.Warn("claude route subagent: open pre-start row failed", "spawn_span", spawnSpanID, "error", err)
 		}
 	}
-	// Only an index-derived id is recorded here. Resolving the task FROM the
-	// child and then writing the pair back would be a no-op write, and it would
-	// leave two copies of the child-keyed fallback -- the result branch below
-	// holds the one that earns its place, where a revived run's result is the
-	// only reader that needs it.
+	// Idempotent for an id the resolution above already read out of this same
+	// map, and the write that matters for an index-derived one. A blank taskID is
+	// dropped by rememberTaskChild.
 	a.tasks.rememberTaskChild(taskID, childID)
 
 	// Resolve the span metadata and reserve the tool_use's color with the SAME
@@ -741,23 +801,18 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		if err := childSink.PersistTurnEnd(content, spanInfo); err != nil {
 			slog.Warn("claude route subagent turn-end failed", "child", childID, "error", err)
 		}
-		if taskID == "" {
-			// The last resort for a RESTARTED run whose result the CLI forwarded
-			// under the ORIGINAL spawn span. handleClaudeTaskStarted normally files
-			// that span in the tool_use index, by reading it back from this same
-			// child; this branch covers the two states where it could not -- a
-			// registry row that carries no transcript, and a child row the process
-			// could not read. The child transcript is the same across every run of
-			// the subagent, so it still identifies the row. Without this the
-			// reopened row stays Running for good whenever no task_notification
-			// follows.
-			taskID = a.tasks.taskIDForChild(childID)
+		// Both branches below report the same outcome, so one reading of IsError
+		// serves them and a later third reader cannot disagree with it.
+		//
+		// taskID already carries the child-derived answer: the resolution above
+		// runs it for every envelope, which is what a RESTARTED run needs when
+		// handleClaudeTaskStarted could not file the spawn span. So "" here means
+		// no run is identifiable at all, not that the tool_use index missed.
+		status := bgtask.StatusCompleted
+		if env.IsError {
+			status = bgtask.StatusFailed
 		}
 		if taskID != "" {
-			status := bgtask.StatusCompleted
-			if env.IsError {
-				status = bgtask.StatusFailed
-			}
 			logRegistryRefusal("claude", "status", a.sink.UpdateBackgroundTaskStatus(taskID, status, ""))
 			logRegistryRefusal("claude", "close", a.sink.CloseBackgroundTask(taskID, status))
 			// Drop the index entry on the fallback path too (a task that ends
@@ -768,10 +823,6 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			// status keyed by the spawn span so the late task_started can close
 			// the row it opens. Without this, task_started upserts a Running row
 			// that nothing ever closes (the result already passed through).
-			status := bgtask.StatusCompleted
-			if env.IsError {
-				status = bgtask.StatusFailed
-			}
 			a.tasks.recordPendingTaskEnd(spawnSpanID, status)
 		}
 		// This subagent's turn ended, so drop the arms IT set. Its own result is
@@ -859,12 +910,13 @@ type claudeTaskIndex struct {
 	toolUseTask map[string]string              // tool_use_id -> task_id
 	// childTask indexes the same link from the CHILD transcript side, so a
 	// forwarded envelope resolves its registry row when the tool_use index
-	// cannot. A revive re-registers the task under the SendMessage tool_use id,
-	// and the first completion already dropped the spawn span, so a run-2 result
-	// forwarded under the ORIGINAL spawn resolves no task and leaves the row the
-	// revive reopened Running for the agent's life. Guarded by i.mu, and NOT
-	// dropped at a completion: the entry describes the transcript, which outlives
-	// every run of it.
+	// cannot. routeSubagentMessage reads it for EVERY envelope whose spawn span
+	// the tool_use index misses, which is the state a restart leaves whenever
+	// handleClaudeTaskStarted could not read the spawn span back -- an unlinked
+	// registry row, or a child row the read failed on. Without it the envelope
+	// opens a second registry row for a transcript the first row already carries.
+	// Guarded by i.mu, and NOT dropped at a completion: the entry describes the
+	// transcript, which outlives every run of it.
 	childTask map[string]string // child_agent_id -> task_id
 	// finishedTasks holds the id of every backgrounded SHELL this process gave a
 	// final status. A wake block identifies the shell whose completion restarted
@@ -917,58 +969,57 @@ type claudeTaskIndex struct {
 	// span type on that child's tracker, while handleClaudeTaskStarted reads the
 	// ROOT sink -- which answers "" for an id it never saw, and "" is what a
 	// spawn also answers there. Recording the call where the block is parsed
-	// covers both transcripts with one index. Guarded by i.mu, and cleared with
-	// pendingRevive at the turn end of the transcript that set it.
-	sendMessageCalls map[string]string // tool_use_id -> the spawn span that made it ("" == root)
+	// covers both transcripts with one index.
+	//
+	// NOT cleared at a turn end, although pendingRevive is. A tool_use id is
+	// unique per call, so an id recorded as a SendMessage can never later identify
+	// a spawn -- which is the only thing a retained entry could get wrong. Clearing
+	// it made the answer depend on WHICH TURN the task_started landed in: a CLI
+	// that concludes the recipient's run first can emit the event after the sending
+	// turn ended, and every decision below then read the id as a spawn. That opened
+	// a child transcript keyed by a call that is not a spawn, and freed a rail the
+	// call still holds. Limited to the SendMessage calls of one session, the same
+	// limit finishedTasks accepts. Guarded by i.mu.
+	sendMessageCalls map[string]struct{} // tool_use ids of SendMessage calls
 }
 
 // startTask records what a task_started says a task IS, indexes every tool_use
 // id that identifies the run, and takes any pending close that a reordered final
 // result left for it.
 //
-// One critical section for all three maps, because they describe one event: the
+// One critical section for four maps, because they describe one event: the
 // task_id <-> tool_use_id links, the kind, and the reordered close. No link is
-// cleared at a turn end -- a background task outlives the turn that spawned it
-// -- and forgetTaskIndex drops all three on the closing notification.
+// cleared at a turn end -- a background task outlives the turn that spawned it.
+// forgetTaskIndex drops the links and the kind on the closing notification; a
+// start takes the pending close, which is the only path that drops one.
 //
-// toolUseIDs are the ids this event says identify the run, most authoritative
-// first: the SPAWN span, then the id the event itself carried. The two differ
-// only on a restart, and a blank one is skipped -- so a first start indexes one
-// id and a task_started with no tool_use_id at all indexes none.
+// spawnSpanID is the span the run forwards under, and eventToolUseID is the id
+// the event itself carried. They hold the same string on a first start and
+// differ only on a restart. The loop skips a blank one, so a first start indexes
+// one id and a task_started with no tool_use_id at all indexes none.
 //
 // The pending close is keyed by the tool_use id a forwarded envelope carried: a
 // final result can arrive BEFORE the task_started it belongs to, and taking it
 // here lets the caller close the row this event is about to open, so the row
-// cannot leak Running. Each id is tried in turn, because which of them the early
-// envelope carried is the very thing that is not known.
-func (i *claudeTaskIndex) startTask(taskID string, kind bgtask.Kind, toolUseIDs ...string) (bgtask.Status, bool) {
+// cannot leak Running. The loop tries each id, because nothing here knows which
+// of them the early envelope carried. The SPAWN span decides the status, and the
+// loop still visits the rest, so a close under the other id is consumed rather
+// than left to fire against a future run of this same task.
+func (i *claudeTaskIndex) startTask(taskID string, kind bgtask.Kind, spawnSpanID, eventToolUseID string) (bgtask.Status, bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.taskKind == nil {
 		i.taskKind = make(map[string]bgtask.Kind)
 	}
 	i.taskKind[taskID] = kind
-	var pending bgtask.Status
+	pending := bgtask.StatusPending
 	found := false
-	for _, toolUseID := range toolUseIDs {
+	// The spawn span first, so it decides the status when both ids hold a close.
+	for _, toolUseID := range [2]string{spawnSpanID, eventToolUseID} {
 		if toolUseID == "" {
 			continue
 		}
-		if i.taskToolUse == nil {
-			i.taskToolUse = make(map[string]map[string]struct{})
-		}
-		if i.toolUseTask == nil {
-			i.toolUseTask = make(map[string]string)
-		}
-		if i.taskToolUse[taskID] == nil {
-			i.taskToolUse[taskID] = make(map[string]struct{})
-		}
-		i.taskToolUse[taskID][toolUseID] = struct{}{}
-		i.toolUseTask[toolUseID] = taskID
-		// The FIRST id that holds a close decides the status, and the loop still
-		// visits the rest -- so every id lands in the index, and a close under a
-		// later id is consumed here rather than left to fire against a future run
-		// of this same task.
+		i.indexToolUseLocked(taskID, toolUseID)
 		if status, ok := i.pendingTaskEnd[toolUseID]; ok {
 			delete(i.pendingTaskEnd, toolUseID)
 			if !found {
@@ -977,6 +1028,22 @@ func (i *claudeTaskIndex) startTask(taskID string, kind bgtask.Kind, toolUseIDs 
 		}
 	}
 	return pending, found
+}
+
+// indexToolUseLocked records one tool_use id as an identifier of taskID, in both
+// directions. Caller must hold i.mu.
+func (i *claudeTaskIndex) indexToolUseLocked(taskID, toolUseID string) {
+	if i.taskToolUse == nil {
+		i.taskToolUse = make(map[string]map[string]struct{})
+	}
+	if i.toolUseTask == nil {
+		i.toolUseTask = make(map[string]string)
+	}
+	if i.taskToolUse[taskID] == nil {
+		i.taskToolUse[taskID] = make(map[string]struct{})
+	}
+	i.taskToolUse[taskID][toolUseID] = struct{}{}
+	i.toolUseTask[toolUseID] = taskID
 }
 
 // taskIDForToolUse resolves the registry row_key (Claude task_id) for a
@@ -1119,14 +1186,23 @@ func (i *claudeTaskIndex) forgetTaskIndex(taskID string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	for tuid := range i.taskToolUse[taskID] {
-		delete(i.toolUseTask, tuid)
+		// Only an id that still resolves to THIS task. A restart reads its spawn
+		// span back from the child row, so a task can index an id its own event
+		// never carried, and two tasks can hold the same id in their sets. The
+		// later writer owns toolUseTask, and dropping its entry here would leave
+		// every forwarded envelope of a LIVE run unresolved.
+		if i.toolUseTask[tuid] == taskID {
+			delete(i.toolUseTask, tuid)
+		}
 	}
 	delete(i.taskToolUse, taskID)
 	// childTask deliberately SURVIVES. It describes the transcript, not the run,
-	// and a transcript is permanent: a revived run's forwarded envelopes still
-	// have to name this row, and the spawn span the tool_use index carried is
-	// gone by then. Limited to the number of subagents this agent spawned, which
-	// is the same bound as the child sinks the sink already holds.
+	// and a transcript is permanent: a restarted run's forwarded envelopes still
+	// have to identify this row, and the spawn span the tool_use index carried is
+	// gone by then. routeSubagentMessage reads it on every index miss, so this is
+	// the entry that keeps a restart from opening a second row. Limited to the
+	// number of subagents this agent spawned, which is the same limit as the
+	// child sinks the sink already holds.
 	delete(i.taskKind, taskID)
 }
 
@@ -1181,7 +1257,7 @@ func (a *ClaudeCodeAgent) claudeArmRevivesFromBlocks(env *messageEnvelope, armed
 		// restart call rather than a spawn span", and that answer does not depend
 		// on the recipient resolving -- an input this code cannot parse is still
 		// not a spawn.
-		a.tasks.rememberSendMessageCall(block.ID, armedBy)
+		a.tasks.rememberSendMessageCall(block.ID)
 		var input claudeSendMessageInput
 		if err := json.Unmarshal(block.Input, &input); err != nil {
 			slog.Warn("claude SendMessage input unmarshal failed", "agent_id", a.agentID, "error", err)
@@ -1191,27 +1267,27 @@ func (a *ClaudeCodeAgent) claudeArmRevivesFromBlocks(env *messageEnvelope, armed
 	}
 }
 
-// rememberSendMessageCall records one in-flight SendMessage tool_use id with the
-// transcript that made it, until that transcript's turn end.
-func (i *claudeTaskIndex) rememberSendMessageCall(toolUseID, armedBy string) {
+// rememberSendMessageCall records one SendMessage tool_use id for the life of the
+// agent. See claudeTaskIndex.sendMessageCalls for why it outlives the turn.
+func (i *claudeTaskIndex) rememberSendMessageCall(toolUseID string) {
 	if toolUseID == "" {
 		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.sendMessageCalls == nil {
-		i.sendMessageCalls = make(map[string]string)
+		i.sendMessageCalls = make(map[string]struct{})
 	}
-	i.sendMessageCalls[toolUseID] = armedBy
+	i.sendMessageCalls[toolUseID] = struct{}{}
 }
 
 // claudeRestartCall reports whether toolUseID is an in-flight SendMessage call,
 // which is what separates a task_started that RE-REGISTERS a task from the spawn
 // that created one.
 //
-// It is not consumed. Both guards in handleClaudeTaskStarted read it, and a
-// second task_started for the same call inside the turn must get the same
-// answer; the turn end of the transcript that made the call drops it.
+// It is not consumed, and it does not expire. Every decision in
+// handleClaudeTaskStarted that asks it must get one answer for one id, whichever
+// turn the event arrives in.
 func (i *claudeTaskIndex) claudeRestartCall(toolUseID string) bool {
 	if toolUseID == "" {
 		return false
@@ -1324,12 +1400,10 @@ func (i *claudeTaskIndex) clearClaudeRevives(armedBy string) {
 			delete(i.pendingRevive, to)
 		}
 	}
-	// The calls go with the arms. Both describe the same in-flight SendMessage
-	// tool calls and carry the same scope, so one boundary ends both -- and a
-	// call left standing would keep answering "restart" for an id whose turn
-	// ended, which suppresses the span close for a later genuine spawn. The
-	// tool_use id is unique per call, so this side needs no set.
-	maps.DeleteFunc(i.sendMessageCalls, func(_, scope string) bool { return scope == armedBy })
+	// The CALLS do not go with the arms. An arm is a permission to reopen a row,
+	// and it must expire with the turn that granted it. A recorded call is a FACT
+	// about one tool_use id, and a tool_use id is unique per call, so the fact
+	// stays true for the life of the agent. See claudeTaskIndex.sendMessageCalls.
 }
 
 // recordPendingTaskEnd remembers a final status for a Task subagent whose
