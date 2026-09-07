@@ -52,6 +52,26 @@ zcodeTest.describe('ZCode Permission Prompt', () => {
     await deny.click()
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
   })
+
+  // The banner's permission pills are the same settings change the composer
+  // menu's bypass shortcut makes, applied when the request is allowed.
+  zcodeTest('the permission banner applies the selected bypass pill on allow', async ({ authenticatedZCodeWorkspace, page }) => {
+    void authenticatedZCodeWorkspace
+    await sendMessage(page, 'Run this exact bash command and do not skip the confirmation: rm -rf /tmp/zcode-e2e-must-not-exist')
+
+    const banner = await waitForControlBanner(page)
+    await expect(banner).toContainText('Bash')
+    const pills = page.getByRole('radiogroup', { name: 'Permissions' })
+    await expect(pills.getByRole('radio', { name: 'Default' })).toBeChecked()
+    const bypass = pills.getByRole('radio', { name: 'Bypass permissions' })
+    await bypass.click()
+    await expect(bypass).toBeChecked()
+
+    await page.getByTestId('control-allow-btn').click()
+    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+    // The same chip the composer menu's bypass shortcut lands on.
+    await expectSettingsChip(page, 'Yolo')
+  })
 })
 
 zcodeTest.describe('ZCode Mode Switch', () => {

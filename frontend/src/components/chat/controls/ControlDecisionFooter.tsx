@@ -1,10 +1,12 @@
 import type { Accessor, Component } from 'solid-js'
+import type { ControlPermissionPill } from './permissionPresets'
 
 import { For, Index, Show } from 'solid-js'
 import { CompactSwitch } from '~/components/common/CompactSwitch'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import * as styles from '../ControlRequestBanner.css'
 import { ControlActionRow } from './ControlActionRow'
+import { ControlPermissionPillGroup } from './ControlPillGroups'
 
 export interface ControlRequestSwitch {
   id: string
@@ -28,16 +30,22 @@ export const ControlDecisionFooter: Component<{
   negativeAction: ControlDecisionAction
   positiveAction: ControlDecisionAction
   switches?: Accessor<ControlRequestSwitch[]>
+  /** The permission pill group, or omit it when no preset is available. */
+  permissionPill?: Accessor<ControlPermissionPill | undefined>
   additionalActions?: Accessor<ControlDecisionAction[]>
 }> = (props) => {
   const switches = () => props.switches?.() ?? []
   const additionalActions = () => props.additionalActions?.() ?? []
+  // One leading cluster -- [switches][permission pill] -- so the row reads as
+  // options followed by decisions: a pill is button-high, so it shares the row
+  // with the switches instead of stacking above them.
+  const leadingOptions = () => switches().length > 0 || !!props.permissionPill?.()
 
   return (
     <ControlActionRow
       primary={(
         <>
-          <Show when={!props.hasEditorContent && switches().length > 0}>
+          <Show when={!props.hasEditorContent && leadingOptions()}>
             <div class={styles.controlRequestSwitches}>
               <Index each={switches()}>
                 {item => (
@@ -52,6 +60,9 @@ export const ControlDecisionFooter: Component<{
                   </CompactSwitch>
                 )}
               </Index>
+              <Show when={props.permissionPill?.()}>
+                {pill => <ControlPermissionPillGroup pill={pill()} />}
+              </Show>
             </div>
           </Show>
           <button

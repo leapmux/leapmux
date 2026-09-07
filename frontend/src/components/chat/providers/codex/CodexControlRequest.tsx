@@ -8,6 +8,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ControlRequestBanner.css'
 import { CollapsibleText } from '../../controls/CollapsibleText'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
+import { applyPermissionPreset, buildPermissionPill, createPermissionPresetChoice } from '../../controls/permissionPresets'
 import { createPlanApprovalState, planApprovalSwitches } from '../../controls/planApproval'
 import { createControlSwitch, sendJsonRpcResult, sendResponse } from '../../controls/types'
 import { codexDecisionKey, codexDecisionLabel, parseCodexDecision } from './controlResponse'
@@ -204,7 +205,7 @@ export const CodexControlContent: Component<ContentProps> = (props) => {
 
 const CodexPermissionsActions: Component<ActionsProps> = (props) => {
   const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
-  const bypassSwitch = createControlSwitch(() => props.answerState, 'control-bypass-permissions-checkbox')
+  const permissionChoice = createPermissionPresetChoice(props)
   const handleAllow = async () => {
     await sendCodexPermissionsResponse(
       props.onRespond,
@@ -212,8 +213,7 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
       codexRequestedPermissions(props.request.payload),
       rememberSwitch.checked() ? 'session' : 'turn',
     )
-    if (bypassSwitch.checked() && props.bypass)
-      await props.bypass.apply(props.bypass.settings)
+    await applyPermissionPreset(props.presets, permissionChoice.choice())
   }
   return (
     <ControlDecisionFooter
@@ -227,15 +227,13 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
       positiveAction={{ label: 'Allow', testId: 'control-allow-btn', onSelect: handleAllow }}
       switches={() => [
         { id: 'control-remember-checkbox', label: 'Remember', checked: rememberSwitch.checked(), onChange: rememberSwitch.set },
-        ...(props.bypass
-          ? [{ id: 'control-bypass-permissions-checkbox', label: 'Bypass Permissions', checked: bypassSwitch.checked(), onChange: bypassSwitch.set }]
-          : []),
       ]}
+      permissionPill={() => buildPermissionPill(props.presets, permissionChoice)}
     />
   )
 }
 
-/** Codex plan-mode prompt actions with clear-context and bypass switches. */
+/** Codex plan-mode prompt actions with clear-context and permission pills. */
 const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   const planApproval = createPlanApprovalState(props)
 
@@ -258,6 +256,7 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
       }}
       positiveAction={{ label: 'Approve', testId: 'control-allow-btn', onSelect: handleApprove }}
       switches={() => planApprovalSwitches(planApproval)}
+      permissionPill={planApproval.permissionPill}
     />
   )
 }
@@ -269,7 +268,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   const params = () => getCodexParams(props.request.payload)
   const decisions = createMemo(() => resolveCodexDecisions(params()?.availableDecisions))
   const rememberSwitch = createControlSwitch(() => props.answerState, 'control-remember-checkbox')
-  const bypassSwitch = createControlSwitch(() => props.answerState, 'control-bypass-permissions-checkbox')
+  const permissionChoice = createPermissionPresetChoice(props)
 
   const handleDecision = (decision: CodexDecision) => sendCodexDecision(
     props.onRespond,
@@ -279,8 +278,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
 
   const handleAllow = async () => {
     await handleDecision(rememberSwitch.checked() ? (decisions().remembered ?? decisions().positive) : decisions().positive)
-    if (bypassSwitch.checked() && props.bypass)
-      await props.bypass.apply(props.bypass.settings)
+    await applyPermissionPreset(props.presets, permissionChoice.choice())
   }
 
   return (
@@ -300,15 +298,8 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                   onChange: rememberSwitch.set,
                 }]
               : []),
-            ...(props.bypass
-              ? [{
-                  id: 'control-bypass-permissions-checkbox',
-                  label: 'Bypass Permissions',
-                  checked: bypassSwitch.checked(),
-                  onChange: bypassSwitch.set,
-                }]
-              : []),
           ]}
+          permissionPill={() => buildPermissionPill(props.presets, permissionChoice)}
           additionalActions={() => decisions().additional.map(decision => ({
             label: codexDecisionLabel(decision),
             testId: `control-decision-${codexDecisionKey(decision)}`,

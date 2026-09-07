@@ -1,50 +1,44 @@
 import type { Accessor } from 'solid-js'
 import type { ControlRequestSwitch } from './ControlDecisionFooter'
+import type { ControlPermissionPill } from './permissionPresets'
 import type { ActionsProps } from './types'
 import type { PermissionMode } from '~/utils/controlResponse'
 
 import { createMemo } from 'solid-js'
-import { OPTION_ID_PERMISSION_MODE } from '~/components/chat/settingsGroups'
 import { computePercentage } from '~/components/chat/widgets/ContextUsageGrid'
+import { buildPermissionPill, createPermissionPresetChoice, planApprovalPresets, presetPermissionMode } from './permissionPresets'
 import { createControlSwitch } from './types'
 
 export interface PlanApprovalState {
   clearContext: Accessor<boolean>
   setClearContext: (v: boolean) => void
-  bypassPermissions: Accessor<boolean>
-  setBypassPermissions: (v: boolean) => void
+  /** The permission pill group this banner draws, or undefined when no applicable preset exists. */
+  permissionPill: Accessor<ControlPermissionPill | undefined>
   permissionMode: Accessor<PermissionMode | undefined>
-  /**
-   * The permission mode this provider's bypass preset selects, or undefined when the
-   * preset carries no permission mode at all.
-   *
-   * The approval travels as ONE control response, so the only part of a preset this
-   * banner can apply is the mode it puts in that response. A preset that switches some
-   * other axis (Copilot's bypass sets `allow_all`) cannot be applied here, and the
-   * switch is not drawn — rather than drawn and silently doing nothing, which is what
-   * a bare `sets.permissionMode` read produced once the preset type stopped
-   * guaranteeing that key.
-   */
-  bypassMode: Accessor<PermissionMode | undefined>
   contextPct: Accessor<number | null>
 }
 
-/** Creates shared plan approval state (clear context + bypass permissions). */
-export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'bypass' | 'answerState'>): PlanApprovalState {
-  // Both switches live in the composer's shared answer record, keyed by the id
-  // that `planApprovalSwitches` below renders them under. See `createControlSwitch`.
+/** Creates shared plan approval state (clear context + permission preset choice). */
+export function createPlanApprovalState(props: Pick<ActionsProps, 'contextUsage' | 'modelContextWindow' | 'agentProvider' | 'presets' | 'answerState'>): PlanApprovalState {
+  // The switch lives in the composer's shared answer record, keyed by the id
+  // that `planApprovalSwitches` below renders it under; the permission pill
+  // choice is stored the same way under its own group id. See
+  // `createControlSwitch` / `createPermissionPresetChoice`.
   const clear = createControlSwitch(() => props.answerState, 'plan-clear-context-checkbox')
-  const bypassSwitch = createControlSwitch(() => props.answerState, 'plan-bypass-permissions-checkbox')
+  const permissionChoice = createPermissionPresetChoice(props)
   const { checked: clearContext, set: setClearContext } = clear
-  const { checked: bypassPermissions, set: setBypassPermissions } = bypassSwitch
   const contextPct = createMemo(() => {
     const pct = computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider)
     return pct !== null ? Math.round(pct) : null
   })
-  const bypassMode = () => props.bypass?.settings.sets[OPTION_ID_PERMISSION_MODE]
-  const permissionMode = () => bypassPermissions() ? bypassMode() : undefined
+  // A plan approval carries only the preset's permission MODE (see
+  // `planApprovalPresets`), so both the pill it draws and the mode it embeds
+  // read from that filtered view of the controller.
+  const presets = () => planApprovalPresets(props.presets)
+  const permissionMode = () => presetPermissionMode(presets(), permissionChoice.choice())
+  const permissionPill = () => buildPermissionPill(presets(), permissionChoice)
 
-  return { clearContext, setClearContext, bypassPermissions, setBypassPermissions, contextPct, permissionMode, bypassMode }
+  return { clearContext, setClearContext, permissionPill, contextPct, permissionMode }
 }
 
 /** Builds the shared option list for a plan approval. */
@@ -57,13 +51,5 @@ export function planApprovalSwitches(state: PlanApprovalState): ControlRequestSw
       onChange: state.setClearContext,
       suffix: state.contextPct() !== null ? ` (${state.contextPct()}%)` : undefined,
     },
-    ...(state.bypassMode()
-      ? [{
-          id: 'plan-bypass-permissions-checkbox',
-          label: 'Bypass Permissions',
-          checked: state.bypassPermissions(),
-          onChange: state.setBypassPermissions,
-        }]
-      : []),
   ]
 }

@@ -9,7 +9,7 @@ import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
-import { permissionPresetAvailable } from '~/components/chat/providerSettings'
+import { PERMISSION_PRESET_LABELS, permissionPresetAvailable, usablePresets } from '~/components/chat/providerSettings'
 import { hasOptions, resolvedCurrent } from '~/components/chat/settingsGroups'
 import { DisabledReasonMenuItem } from '~/components/common/DisabledReasonMenuItem'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
@@ -163,21 +163,21 @@ interface PermissionAction {
 }
 
 const PERMISSION_ACTIONS: ReadonlyArray<Omit<PermissionAction, 'preset'>> = [
-  { kind: 'smart', label: 'Smart permissions', testId: 'composer-smart-permissions' },
-  { kind: 'bypass', label: 'Bypass permissions', testId: 'composer-bypass-permissions' },
+  { kind: 'smart', label: PERMISSION_PRESET_LABELS.smart, testId: 'composer-smart-permissions' },
+  { kind: 'bypass', label: PERMISSION_PRESET_LABELS.bypass, testId: 'composer-bypass-permissions' },
 ]
 
 function permissionActionsFor(
   provider: AgentProvider | undefined,
   groups: AvailableOptionGroup[] | undefined,
 ): PermissionAction[] {
-  const presets = pluginFor(provider)?.permissionPresets
-  if (!presets)
-    return []
+  // The same `usablePresets` rule the control-request pill group follows, so the
+  // menu and a banner's pills cannot offer different preset sets.
+  const usable = usablePresets(pluginFor(provider)?.permissionPresets, groups)
   const actions: PermissionAction[] = []
   for (const action of PERMISSION_ACTIONS) {
-    const preset = presets[action.kind]
-    if (permissionPresetAvailable(preset, groups))
+    const preset = usable[action.kind]
+    if (preset)
       actions.push({ ...action, preset })
   }
   return actions

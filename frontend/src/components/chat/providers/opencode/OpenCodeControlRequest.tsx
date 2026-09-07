@@ -1,12 +1,11 @@
 import type { Component } from 'solid-js'
+import type { WirePermissionOption } from '../../controls/permissionOptions'
 import type { ActionsProps, ContentProps, ControlAnswerState, Question } from '../../controls/types'
 
-import { For, Show } from 'solid-js'
-import { ButtonGroup } from '~/components/common/ButtonGroup'
-import { Tooltip } from '~/components/common/Tooltip'
+import { Show } from 'solid-js'
 import * as styles from '../../ControlRequestBanner.css'
-import { ControlActionRow } from '../../controls/ControlActionRow'
-import { sendResponse, toRpcId } from '../../controls/types'
+import { PermissionDecisionActions } from '../../controls/PermissionDecisionActions'
+import { sendResponse, sendSelectedOptionResponse, toRpcId } from '../../controls/types'
 
 /** Extract OpenCode requestPermission params from the control request payload. */
 function getOpenCodeParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -19,10 +18,21 @@ function getToolCall(payload: Record<string, unknown>): Record<string, unknown> 
   return params?.toolCall as Record<string, unknown> | undefined
 }
 
+/**
+ * The pair OpenCode itself answers with, for a payload that carries no options.
+ * These are the daemon's real option ids — it maps an unknown id to reject, so a
+ * synthesized pair with invented ids would turn every Allow into a reject.
+ */
+const DEFAULT_OPTIONS: readonly WirePermissionOption[] = [
+  { optionId: 'once', kind: 'allow_once', name: 'Allow' },
+  { optionId: 'reject', kind: 'reject_once', name: 'Deny' },
+]
+
 /** Extract permission options from a requestPermission payload. */
-function getOptions(payload: Record<string, unknown>): Array<{ optionId: string, kind: string, name: string }> {
+function getOptions(payload: Record<string, unknown>): WirePermissionOption[] {
   const params = getOpenCodeParams(payload)
-  return (params?.options as Array<{ optionId: string, kind: string, name: string }>) ?? []
+  const options = params?.options as WirePermissionOption[] | undefined
+  return options && options.length > 0 ? options : [...DEFAULT_OPTIONS]
 }
 
 function getQuestionProperties(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -56,11 +66,7 @@ export function sendOpenCodePermissionResponse(
   requestId: string,
   optionId: string,
 ): Promise<void> {
-  return sendResponse(onRespond, {
-    jsonrpc: '2.0',
-    id: toRpcId(requestId),
-    result: { outcome: { outcome: 'selected', optionId } },
-  })
+  return sendSelectedOptionResponse(onRespond, requestId, optionId)
 }
 
 export function sendOpenCodeQuestionResponse(
@@ -113,64 +119,6 @@ export const OpenCodeControlContent: Component<ContentProps> = (props) => {
 }
 
 /** OpenCode-specific control request action buttons. */
-export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
-  const options = () => getOptions(props.request.payload)
-
-  const handleOption = (optionId: string) => {
-    sendOpenCodePermissionResponse(props.onRespond, props.request.requestId, optionId)
-  }
-
-  // Allow once, then switch to bypass mode. The allow is AWAITED first: the
-  // worker dispatches the two concurrently, and a mode change the provider
-  // cannot take live relaunches the agent, killing the session before an
-  // un-awaited allow reaches it.
-  const handleBypassPermissions = async () => {
-    await sendOpenCodePermissionResponse(props.onRespond, props.request.requestId, 'once')
-    if (props.bypass)
-      await props.bypass.apply(props.bypass.settings)
-  }
-
-  return (
-    <ControlActionRow
-      primary={(
-        <Show
-          when={options().length > 0}
-          fallback={(
-            <ButtonGroup>
-              <button class="outline" onClick={() => handleOption('reject')} data-testid="control-deny-btn">Reject</button>
-              <button onClick={() => handleOption('once')} data-testid="control-allow-btn">Allow once</button>
-              <Show when={props.bypass}>
-                <Tooltip text="Allow this request and stop asking for permissions">
-                  <button data-variant="secondary" onClick={handleBypassPermissions} data-testid="control-bypass-btn">
-                    & Bypass Permissions
-                  </button>
-                </Tooltip>
-              </Show>
-            </ButtonGroup>
-          )}
-        >
-          <ButtonGroup>
-            <For each={options()}>
-              {option => (
-                <button
-                  class={option.kind === 'reject_once' ? 'outline' : undefined}
-                  onClick={() => handleOption(option.optionId)}
-                  data-testid={`control-decision-${option.optionId}`}
-                >
-                  {option.name}
-                </button>
-              )}
-            </For>
-            <Show when={props.bypass}>
-              <Tooltip text="Allow this request and stop asking for permissions">
-                <button data-variant="secondary" onClick={handleBypassPermissions} data-testid="control-bypass-btn">
-                  & Bypass Permissions
-                </button>
-              </Tooltip>
-            </Show>
-          </ButtonGroup>
-        </Show>
-      )}
-    />
-  )
-}
+export const OpenCodeControlActions: Component<ActionsProps> = props => (
+  <PermissionDecisionActions {...props} options={getOptions} send={sendOpenCodePermissionResponse} />
+)

@@ -24,6 +24,16 @@ export type PillOptions<K>
 
 export const PILL_OPTION_LIMIT = 4
 
+/**
+ * Whether a list of option specs is a drawable {@link PillOptions} — one through
+ * `PILL_OPTION_LIMIT` entries. The one source of the "what counts as a drawable
+ * pill set" rule, so callers that must degrade on a longer list (a menu instead)
+ * all apply the same cutoff.
+ */
+export function isPillOptions<K extends string>(options: readonly PillOptionSpec<K>[]): options is PillOptions<K> {
+  return options.length > 0 && options.length <= PILL_OPTION_LIMIT
+}
+
 type PillOptionState
   = | { kind: 'enabled' }
     | { kind: 'option-refused', reason: string }

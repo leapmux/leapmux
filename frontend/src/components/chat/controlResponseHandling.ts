@@ -57,6 +57,7 @@ function isBlankAnswer(value: ControlAnswerSeed): boolean {
     && Object.keys(value.selections ?? {}).length === 0
     && Object.keys(value.customTexts ?? {}).length === 0
     && Object.keys(value.switches ?? {}).length === 0
+    && Object.keys(value.choices ?? {}).length === 0
 }
 
 export function useControlResponseHandling(
@@ -143,6 +144,7 @@ export function useControlResponseHandling(
     customTexts: answerState.customTexts(),
     currentPage: answerState.currentPage(),
     switches: answerState.switches(),
+    choices: answerState.choices(),
   })
 
   // Reset the user's in-progress answer when the active request INSTANCE changes.
@@ -190,6 +192,7 @@ export function useControlResponseHandling(
       answerState.setCustomTexts({})
       answerState.setCurrentPage(0)
       answerState.setSwitches({})
+      answerState.setChoices({})
       if (!request || !props.agentId) {
         restoringFor = null
         return
@@ -214,6 +217,7 @@ export function useControlResponseHandling(
         answerState.setCustomTexts(saved.customTexts ?? {})
         answerState.setCurrentPage(saved.currentPage ?? 0)
         answerState.setSwitches(saved.switches ?? {})
+        answerState.setChoices(saved.choices ?? {})
       })
     },
   ))

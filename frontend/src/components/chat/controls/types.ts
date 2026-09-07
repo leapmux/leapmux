@@ -1,5 +1,5 @@
 import type { Accessor, Setter } from 'solid-js'
-import type { BypassController } from '../providerSettings'
+import type { PermissionPresetController } from '../providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -28,10 +28,12 @@ export interface Question {
  * or a reload brings the answer back.
  *
  * `switches` holds every toggle a control offers, by the switch's own id
- * (`plan-clear-context-checkbox`, `control-bypass-permissions-checkbox`,
- * `control-remember-checkbox`). One map covers every control rather than a
- * field per switch, so a new switch needs no change here and cannot be the one
- * that a rebuild silently unchecks.
+ * (`plan-clear-context-checkbox`, `control-remember-checkbox`). One map covers
+ * every control rather than a field per switch, so a new switch needs no change
+ * here and cannot be the one that a rebuild silently unchecks. `choices` is its
+ * one-of-N sibling, holding a pill group's selection by the group's id
+ * (`control-permissions-pill`) — a string, because a pill picks a key, not a
+ * boolean.
  */
 export interface ControlAnswerState {
   selections: Accessor<Record<number, string[]>>
@@ -42,6 +44,8 @@ export interface ControlAnswerState {
   setCurrentPage: Setter<number>
   switches: Accessor<Record<string, boolean>>
   setSwitches: Setter<Record<string, boolean>>
+  choices: Accessor<Record<string, string>>
+  setChoices: Setter<Record<string, string>>
 }
 
 /** The saved shape of a {@link ControlAnswerState}, as it is stored and restored. */
@@ -50,6 +54,7 @@ export interface ControlAnswerSeed {
   customTexts?: Record<number, string>
   currentPage?: number
   switches?: Record<string, boolean>
+  choices?: Record<string, string>
 }
 
 /**
@@ -63,6 +68,7 @@ export function createControlAnswerState(seed: ControlAnswerSeed = {}): ControlA
   const [customTexts, setCustomTexts] = createSignal(seed.customTexts ?? {})
   const [currentPage, setCurrentPage] = createSignal(seed.currentPage ?? 0)
   const [switches, setSwitches] = createSignal(seed.switches ?? {})
+  const [choices, setChoices] = createSignal(seed.choices ?? {})
   return {
     selections,
     setSelections,
@@ -72,6 +78,8 @@ export function createControlAnswerState(seed: ControlAnswerSeed = {}): ControlA
     setCurrentPage,
     switches,
     setSwitches,
+    choices,
+    setChoices,
   }
 }
 
@@ -97,6 +105,22 @@ export function createControlSwitch(state: () => ControlAnswerState, id: string)
   return {
     checked: () => answer.switches()[id] ?? false,
     set: (value: boolean) => answer.setSwitches(prev => ({ ...prev, [id]: value })),
+  }
+}
+
+/**
+ * The one-of-N sibling of {@link createControlSwitch}: binds ONE pill group of a
+ * control to the shared answer record, by the group's own id. The optional
+ * fallback is the caller's to pass, and only for a group whose "no choice" state
+ * is a meaningful key (the permission pill's `'default'`): a group with no
+ * meaningful unset key (the allow-scope pill) reads `undefined` until a
+ * selection lands, instead of a sentinel string every reader must know about.
+ */
+export function createControlChoice(state: () => ControlAnswerState, id: string, fallback?: string) {
+  const answer = state()
+  return {
+    choice: () => answer.choices()[id] ?? fallback,
+    setChoice: (value: string) => answer.setChoices(prev => ({ ...prev, [id]: value })),
   }
 }
 
@@ -141,8 +165,12 @@ export interface ActionsProps {
    */
   editorContentRef?: () => EditorContentRef | undefined
   agentProvider?: AgentProvider
-  /** Applies the provider's complete bypass settings change. */
-  bypass?: BypassController
+  /**
+   * The provider's usable permission presets and the ONE handler that applies a
+   * settings change. A control request's permission pill group is drawn from this;
+   * selecting a preset applies it when the request's positive action is taken.
+   */
+  presets?: PermissionPresetController
   contextUsage?: ContextUsageInfo
   modelContextWindow?: number
   /**
@@ -194,6 +222,19 @@ export function sendJsonRpcResult(
   result: unknown,
 ): Promise<void> {
   return sendResponse(onRespond, buildJsonRpcResult(requestId, result))
+}
+
+/**
+ * Sends the ACP-family `session/request_permission` reply that selects one
+ * option. The ACP and OpenCode protocols share this envelope, so both providers'
+ * senders delegate here instead of building it twice.
+ */
+export function sendSelectedOptionResponse(
+  onRespond: (content: Uint8Array) => Promise<void>,
+  requestId: string,
+  optionId: string,
+): Promise<void> {
+  return sendJsonRpcResult(onRespond, requestId, { outcome: { outcome: 'selected', optionId } })
 }
 
 /** Convert a string request ID to a numeric JSON-RPC id when possible. */
