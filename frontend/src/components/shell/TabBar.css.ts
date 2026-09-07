@@ -78,14 +78,6 @@ export const newTabWrapper = style({
   gap: 'var(--space-1)',
 })
 
-export const tabNotification = style({
-  width: '6px',
-  height: '6px',
-  borderRadius: '50%',
-  backgroundColor: 'var(--primary)',
-  flexShrink: 0,
-})
-
 /** Thin task-progress bar for OSC 9;4 terminal tabs. */
 export const tabProgress = style({
   'width': '24px',

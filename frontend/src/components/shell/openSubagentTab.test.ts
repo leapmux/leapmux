@@ -182,6 +182,41 @@ describe('openSubagentTab', () => {
       expect(deps.selection.setActiveById).toHaveBeenCalledWith(TabType.AGENT, 'child-1')
     })
 
+    it('seeds parentAgentId, so the tab reads as a child from its first frame', () => {
+      // Without the seed the link arrives only with the listAgents reply, and
+      // in that window every lineage consumer reads the child as a ROOT -- the
+      // turn-end sound rings for it and spends the cooldown the parent's own
+      // settle needs.
+      const { deps, agentTabs } = makeDeps({})
+      agentTabs.set('parent-1', parentAgentTab())
+
+      openSubagentTab(deps, { childAgentId: 'child-1', parentAgentId: 'parent-1' })
+
+      expect(deps.metadata.patch).toHaveBeenCalledWith(
+        'child-1',
+        expect.objectContaining({ parentAgentId: 'parent-1' }),
+      )
+    })
+
+    it('seeds no link for a row that carries no parent', () => {
+      // Claude and the ACP providers leave parentAgentId empty on the registry
+      // row -- the owner IS the parent. An empty string is not a parent, and
+      // writing one would make `isSubagentTab` answer true for a root.
+      const { deps, agentTabs } = makeDeps({
+        focusedTileId: () => 'tile-focused',
+        activeKeyForTile: (tileId: string) =>
+          tileId === 'tile-focused' ? tabKey({ type: TabType.AGENT, id: 'root-owner' }) : null,
+      })
+      agentTabs.set('root-owner', { ...parentAgentTab(), id: 'root-owner' })
+
+      expect(openSubagentTab(deps, { childAgentId: 'child-1' })).toBe('opened')
+
+      const meta = vi.mocked(deps.metadata.patch).mock.calls[0]?.[1]
+      expect(meta).toBeDefined()
+      expect(meta).not.toHaveProperty('parentAgentId', '')
+      expect((meta as { parentAgentId?: string }).parentAgentId).toBeUndefined()
+    })
+
     it('emits against the parent\'s tile with a position computed after the parent key', () => {
       const { deps, agentTabs } = makeDeps({})
       agentTabs.set('parent-1', parentAgentTab())

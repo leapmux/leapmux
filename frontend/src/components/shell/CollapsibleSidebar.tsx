@@ -26,6 +26,17 @@ export interface SidebarSectionDef {
   /** Optional badge below the rail icon (e.g., todo count). */
   railBadge?: () => JSX.Element | undefined
   /**
+   * Optional mark beside the section title, rendered ONLY while the section is
+   * folded. The sibling of {@link railBadge} one fold level down: the rail
+   * answers for a sidebar the user collapsed, and this answers for a section
+   * the user closed inside an open sidebar.
+   *
+   * Folded only, deliberately. An open section shows every row it holds, and
+   * each row carries its own mark, so a second one on the header would repeat
+   * what is already on screen below it.
+   */
+  foldedBadge?: () => JSX.Element | undefined
+  /**
    * Section body content factory.  Called once when the section first mounts;
    * the returned JSX persists for the lifetime of the section.  Reactive props
    * inside the JSX still update fine-grainedly via SolidJS getters.
@@ -383,6 +394,9 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                       </div>
                     </Show>
                     <span class={styles.sidebarTitle}>{section().title}</span>
+                    <Show when={!sectionOpen()}>
+                      {section().foldedBadge?.()}
+                    </Show>
                     {/* `sectionOpen()` does NOT control this. The Archived
                         section ships `defaultOpen: false`, and its header menu
                         is the only route to Unarchive all, Empty archive and

@@ -14,7 +14,8 @@ import { hoverForTooltip, unhoverTooltip } from '~/test-support/clipStub'
 import { withPreferences } from '~/test-support/preferencesProvider'
 import { label as workingTreeLabel } from '../common/WorkingTree.css'
 import { labelWithStats } from '../tree/sharedTree.css'
-import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
+import { WorkspaceTabTree } from './WorkspaceTabTree'
+import { buildTree } from './workspaceTabTree.model'
 
 const repoGitStore = createRepoGitStore()
 
@@ -1979,5 +1980,125 @@ describe('workspaceTabTree subagent nesting', () => {
     const rows = leafIndents()
     expect(rows.map(r => r.id)).toEqual(['root', 'kid'])
     expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
+  })
+})
+
+// The unseen-activity marker: on a tab row for its own notification, and on a
+// COLLAPSED group header for anything folded under it.
+describe('workspaceTabTree activity marker', () => {
+  const MARKER = 'sidebar-tab-notification'
+  const TOPLEVEL = '/home/user/Workspaces/r'
+
+  /** A tab in a repo, so it lands under a repo group and a branch group. */
+  function repoTab(id: string, hasNotification?: boolean): Tab {
+    seedRepo('w1', TOPLEVEL, { branch: 'feature', originUrl: 'https://github.com/o/r.git' })
+    return {
+      type: TabType.AGENT,
+      workspaceId: 'ws-marker',
+      id,
+      title: id,
+      tileId: 'tile-1',
+      position: '0',
+      workerId: 'w1',
+      gitToplevel: TOPLEVEL,
+      hasNotification,
+    } as Tab
+  }
+
+  function renderTabs(tabs: () => Tab[], workspaceId: string) {
+    renderTree(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={tabs()}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
+        workspaceId={workspaceId}
+      />
+    ))
+  }
+
+  const branchRow = () => screen.getByTestId('tab-tree-branch-group')
+  const repoRow = () => screen.getByTestId('tab-tree-repo-group')
+
+  it('marks the tab row that carries a notification, and only that row', () => {
+    renderTabs(() => [
+      { ...makeTab(TabType.AGENT, 'a1', 'Marked'), hasNotification: true } as Tab,
+      makeTab(TabType.AGENT, 'a2', 'Quiet'),
+    ], 'ws-marker-leaf')
+
+    const [marked, quiet] = screen.getAllByTestId('tab-tree-leaf')
+    expect(within(marked).getByTestId(MARKER)).toBeInTheDocument()
+    expect(within(quiet).queryByTestId(MARKER)).not.toBeInTheDocument()
+  })
+
+  it('leaves the group headers unmarked while they are expanded', async () => {
+    // The leaf row shows its own marker there, so a second dot on the header
+    // would say the same thing twice.
+    renderTabs(() => [repoTab('a1', true)], 'ws-marker-expanded')
+
+    expect(within(screen.getByTestId('tab-tree-leaf')).getByTestId(MARKER)).toBeInTheDocument()
+    expect(within(branchRow()).queryByTestId(MARKER)).not.toBeInTheDocument()
+    expect(within(repoRow()).queryByTestId(MARKER)).not.toBeInTheDocument()
+  })
+
+  it('rolls the marker up to a collapsed branch header', async () => {
+    renderTabs(() => [repoTab('a1', true)], 'ws-marker-branch')
+
+    await fireEvent.click(branchRow())
+
+    expect(within(branchRow()).getByTestId(MARKER)).toBeInTheDocument()
+  })
+
+  it('rolls the marker up to a collapsed repo header', async () => {
+    renderTabs(() => [repoTab('a1', true)], 'ws-marker-repo')
+
+    await fireEvent.click(repoRow())
+
+    // Collapsing the repo hides the branch row along with its own roll-up, so
+    // the repo header has to answer for every tab below it.
+    expect(within(repoRow()).getByTestId(MARKER)).toBeInTheDocument()
+  })
+
+  it('leaves a collapsed header unmarked when nothing under it is marked', async () => {
+    renderTabs(() => [repoTab('a1')], 'ws-marker-none')
+
+    await fireEvent.click(branchRow())
+
+    expect(within(branchRow()).queryByTestId(MARKER)).not.toBeInTheDocument()
+  })
+
+  it('reads the LIVE tab, so a marker that changes no structure still rolls up', async () => {
+    // `tabBuildKey` deliberately excludes hasNotification, so this update
+    // rebuilds nothing: the branch group keeps the tab objects it cached. A
+    // roll-up that read those would stay dark for the rest of the session.
+    // renderTabs cannot take this signal: solid/reactivity rejects an accessor
+    // handed to a plain helper, and an arrow that calls it, and the rule exempts
+    // only a `use*`/`create*` name that a test render helper should not carry.
+    const [tabs, setTabs] = createSignal<Tab[]>([repoTab('a1')])
+    renderTree(() => (
+      <WorkspaceTabTree
+        repoGitStore={repoGitStore}
+        tabs={tabs()}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        isLocalWorkerFn={() => false}
+        workspaceId="ws-marker-live"
+      />
+    ))
+
+    await fireEvent.click(branchRow())
+    expect(within(branchRow()).queryByTestId(MARKER)).not.toBeInTheDocument()
+
+    setTabs([repoTab('a1', true)])
+
+    expect(within(branchRow()).getByTestId(MARKER)).toBeInTheDocument()
+
+    // And the other direction: a closed tab marks nothing. The branch group
+    // still holds the cached object for `a1`, so a roll-up that skipped the
+    // live resolution would keep the header lit for a tab that is gone.
+    setTabs([])
+
+    expect(screen.queryByTestId(MARKER)).not.toBeInTheDocument()
   })
 })

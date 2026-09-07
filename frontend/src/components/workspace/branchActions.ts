@@ -1,4 +1,4 @@
-import type { BranchRef } from './WorkspaceTabTree'
+import type { BranchRef } from './workspaceTabTree.model'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { createRepoGitStore } from '~/stores/repoGit.store'

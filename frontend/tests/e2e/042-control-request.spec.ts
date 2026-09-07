@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openAgentViaUI, openWorkspace, sendMessage, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { loginViaToken, openAgentViaUI, openWorkspace, sendMessage, sidebarLeaves, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /** Wait for the control request banner to appear and return a scoped locator. */
 async function waitForControlBanner(page: Page) {
@@ -277,6 +277,24 @@ test.describe('Control Request - AskUserQuestion', () => {
       await workspaceRow(page, ws1).click()
       await waitForWorkspaceReady(page)
 
+      // The sidebar carries the marker too, and from here it is the only place
+      // that shows it: ws2's tab strip is off screen. The retry is the NOTIFY
+      // path arriving, the same one the tab-strip assertion below waits for.
+      const sidebarMarker = '[data-testid="sidebar-tab-notification"]'
+      await expect(sidebarLeaves(page, ws2).locator(sidebarMarker)).toHaveCount(1)
+
+      // Folded away, the workspace row answers for the tab under it.
+      //
+      // The fold state comes from `data-expanded`, never from the leaves. A
+      // folded row keeps them in the DOM, and neither a count nor a visibility
+      // check can tell folded from open there: the grid clips the subtree to
+      // zero height, but each leaf keeps its own box, and an expanded branch
+      // group inside re-declares `visibility: visible` over the folded
+      // ancestor. The row's own marker is the bit that really moves.
+      await workspaceChevron(page, ws2).click()
+      await expect(workspaceRow(page, ws2)).toHaveAttribute('data-expanded', 'false')
+      await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toBeVisible()
+
       // Return with agent 2 still active. Retry until the backgrounded agent's
       // control request has arrived (NOTIFY while we were on ws1).
       await expect(async () => {
@@ -284,6 +302,12 @@ test.describe('Control Request - AskUserQuestion', () => {
         await waitForWorkspaceReady(page)
         expect(await agentTabs.first().locator('[data-testid="tab-notification"]').count()).toBe(1)
       }).toPass()
+
+      // Activating the workspace expands it again, and the row hands the marker
+      // back to the leaf it belongs to.
+      await expect(workspaceRow(page, ws2)).toHaveAttribute('data-expanded', 'true')
+      await expect(workspaceRow(page, ws2).locator(sidebarMarker)).toHaveCount(0)
+      await expect(sidebarLeaves(page, ws2).locator(sidebarMarker)).toHaveCount(1)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})

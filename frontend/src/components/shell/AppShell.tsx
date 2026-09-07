@@ -9,7 +9,7 @@ import type { SetGoalState } from '~/components/shell/AppShellDialogs'
 import type { BranchRefActions } from '~/components/workspace/branchActions'
 import type { WorkspaceStartActions, WorkspaceStartAt } from '~/components/workspace/workspaceStartActions'
 import type { WorkspaceStartPoint } from '~/components/workspace/workspaceStartPoint'
-import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
+import type { BranchRef } from '~/components/workspace/workspaceTabTree.model'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import type { GoalAction, GoalSurface } from '~/stores/chatGoal'
@@ -64,7 +64,7 @@ import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
 import { focusedRepoKeyFromTab, gitStatusProbePath } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { createSectionStore } from '~/stores/section.store'
-import { agentTabToInfo, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
 import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
 import { createTabView } from '~/stores/tabView'
@@ -91,6 +91,7 @@ import { createTabBusyProbe } from './tabBusyProbe'
 import { TabDragProvider } from './TabDragContext'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
+import { createTurnEndRefreshGate } from './turnEndRefresh'
 import { useAgentOperations } from './useAgentOperations'
 import { useAgentSettled } from './useAgentSettled'
 import { useCrdtRuntime } from './useCrdtRuntime'
@@ -334,7 +335,33 @@ export const AppShell: Component = () => {
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     ownClientId,
     isAgentClosing: agentId => isAgentClosing(agentId),
+    // Three states, not two. A parent link says "child". Its ABSENCE says
+    // "root" only once the worker has answered for this tab: a tab restored
+    // from the CRDT carries no link until listAgents replies, and reading that
+    // as "root" is what would let a child spend the cooldown.
+    isSubagent: (agentId) => {
+      const tab = tabView.getAgentTab(agentId)
+      if (!tab)
+        return undefined
+      if (isSubagentTab(tab))
+        return true
+      return tabMetadata.get(agentId)?.hydrated === true ? false : undefined
+    },
   })
+
+  // The turn-end refresh, restricted and coalesced: which turn end can show in
+  // the tree this client shows, and how many refreshes a burst costs. See
+  // createTurnEndRefreshGate. `getCurrentTabContext` is a hoisted function
+  // declaration for the same reason `focusEditor` below is one -- the gate only
+  // ever CALLS it from a later event, so hoisting lets the gate sit beside the
+  // consumer that reads it rather than 300 lines further down.
+  const turnEndRefresh = createTurnEndRefreshGate({
+    shownWorkerId: () => getCurrentTabContext().workerId,
+    workerIdForAgent: agentId => tabView.getAgentTab(agentId)?.workerId ?? '',
+    isAgentClosing: agentId => isAgentClosing(agentId),
+    refresh: () => setTurnEndTrigger(v => v + 1),
+  })
+  onCleanup(() => turnEndRefresh.dispose())
 
   // Streaming connection management
   useWorkspaceConnection({
@@ -351,13 +378,9 @@ export const AppShell: Component = () => {
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
     onAgentSettled: handleAgentSettled,
     // Per TURN, not per settle: the working tree changed even when a subagent
-    // keeps the agent busy afterwards. Still skipped for an agent that is
-    // closing, which is the gate this shared with the alert before the two
-    // split -- a tab being torn down has nothing to refresh for.
-    onTurnEndRefresh: (agentId: string) => {
-      if (!isAgentClosing(agentId))
-        setTurnEndTrigger(v => v + 1)
-    },
+    // keeps the agent busy afterwards. The gate decides which turn end can
+    // show in the tree the user sees, and collapses a burst of them.
+    onTurnEndRefresh: turnEndRefresh.notify,
   })
 
   // Auto-open new workspace dialog from URL search params
@@ -610,8 +633,10 @@ export const AppShell: Component = () => {
     return isTabReadyForGitStatus(tab, agentTabToInfo(tab))
   })
 
-  // Get worker, working directory, and home directory from the currently active tab
-  const getCurrentTabContext = (): TabContext => {
+  // Get worker, working directory, and home directory from the currently active
+  // tab. A function declaration, not a const: the turn-end gate above closes
+  // over it and only ever calls it from a later event.
+  function getCurrentTabContext(): TabContext {
     const tab = activeTab()
     if (!tab)
       return { workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }

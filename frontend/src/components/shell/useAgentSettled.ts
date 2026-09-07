@@ -24,6 +24,20 @@ import { monotonicNow } from '~/lib/monotonicNow'
  *     multi-client tie than silently swallowing a turn-end for a
  *     focused user.
  *
+ * A SUBAGENT tab rings nothing. Its settle is one step of the parent's work,
+ * and the parent settles on its own once the whole piece of work is done --
+ * which is the settle the user waits for. The tab still shows its dot, which
+ * says "this transcript moved" without interrupting anybody, and
+ * handleAgentSettled owns that one layer up.
+ *
+ * `isSubagent` answers `undefined` while this client does not know the lineage
+ * yet -- a tab restored from the CRDT carries no parent link until the
+ * listAgents reply lands. That case RINGS, because a swallowed completion is
+ * worse than a spurious one, but it does not SPEND the cooldown. Spending it on
+ * a settle that turns out to be a child's would silence the root's own settle
+ * for the next minute, which is exactly the failure the subagent rule exists to
+ * prevent.
+ *
  * `isAgentClosing` is late-bound (the caller initializes it after
  * useTabOperations is constructed); the returned handler reads it on
  * every invocation, so a getter-style binding is fine.
@@ -41,6 +55,11 @@ export interface UseAgentSettledOpts {
   getActiveWorkspaceId: () => string | null | undefined
   ownClientId: () => string
   isAgentClosing: (agentId: string) => boolean
+  /**
+   * Whether this agent is a subagent transcript, or `undefined` while the
+   * lineage is not known yet. See isSubagentTab.
+   */
+  isSubagent: (agentId: string) => boolean | undefined
 }
 
 const TURN_END_SOUND_COOLDOWN_MS = 60_000
@@ -57,6 +76,13 @@ export function useAgentSettled(opts: UseAgentSettledOpts): (agentId: string, nu
 
   return (agentId: string, numToolUses?: number) => {
     if (opts.isAgentClosing(agentId))
+      return
+    // A subagent settles for its own step of the parent's work. Before the
+    // cooldown, deliberately: a child that spent it would silence the ROOT's
+    // settle that follows within the same minute, which is the one the user
+    // waits for.
+    const subagent = opts.isSubagent(agentId)
+    if (subagent === true)
       return
     // Skip the audible notification for a trivial single-exchange turn.
     // UNDEFINED is not zero here: a settle that no turn end caused (a permission
@@ -76,7 +102,11 @@ export function useAgentSettled(opts: UseAgentSettledOpts): (agentId: string, nu
       return
     const sound = opts.preferences.turnEndSound()
     if (sound === 'ding-dong') {
-      lastSoundPlayedAt = now
+      // Only a KNOWN root spends the cooldown. `undefined` here is a tab whose
+      // lineage has not arrived; it can still turn out to be a child, and a
+      // child must never take the minute the root's own settle needs.
+      if (subagent === false)
+        lastSoundPlayedAt = now
       turnEndAudio!.currentTime = 0
       turnEndAudio!.volume = opts.preferences.turnEndSoundVolume() / 100
       turnEndAudio!.play().catch(() => {})

@@ -1593,9 +1593,16 @@ export function workspaceRow(page: Page, workspaceId: string): Locator {
  * The workspace row's expand chevron. Addressed by its own testid because it
  * is no longer the row's first SVG: the drag grip precedes it, and the grip
  * stays `display: none` on fine-pointer devices.
+ *
+ * Derived from {@link workspaceRow} rather than located on its own, so it
+ * inherits the `:visible` scoping every other sidebar locator carries. A bare
+ * `workspace-chevron-<id>` also matches a row the collapsed rail keeps in the
+ * DOM under `display: none`, where the click waits for a chevron that never
+ * becomes actionable and reports a timeout instead of the real cause.
  */
 export function workspaceChevron(page: Page, workspaceId: string): Locator {
-  return page.locator(`[data-testid="workspace-chevron-${workspaceId}"]`)
+  return workspaceRow(page, workspaceId)
+    .locator(`[data-testid="workspace-chevron-${workspaceId}"]`)
 }
 
 /**

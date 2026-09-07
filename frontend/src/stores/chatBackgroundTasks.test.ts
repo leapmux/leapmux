@@ -2,6 +2,7 @@ import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it } from 'vitest'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import {
   backgroundTaskEndLabel,
   backgroundTaskEndTooltip,
@@ -311,9 +312,15 @@ describe('createTabTaskScope', () => {
 
   // A registry keyed by ROOT owner, and two tabs reading it: `root-1` owns it,
   // `child-1` is a subagent transcript under it.
-  const tabs: Record<string, { id: string, parentAgentId?: string, rootAgentId?: string }> = {
-    'root-1': { id: 'root-1' },
-    'child-1': { id: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' },
+  //
+  // `type` is not decoration: `isSubagentTab` -- which decides the child
+  // scoping below -- tests it at runtime, so a fixture that omits it reads
+  // `child-1` as a root. The helper tests `type` because `tabBusyProbe` hands
+  // it an unnarrowed tab; the dep here is typed `AgentTab | undefined`, and the
+  // real `getAgentTab` answers with an AGENT tab or with nothing.
+  const tabs: Record<string, { type: TabType, id: string, parentAgentId?: string, rootAgentId?: string }> = {
+    'root-1': { type: TabType.AGENT, id: 'root-1' },
+    'child-1': { type: TabType.AGENT, id: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' },
   }
   const scope = (rows: BackgroundTaskItem[]) => createTabTaskScope({
     getAgentTab: id => tabs[id] as never,

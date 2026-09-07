@@ -1,5 +1,5 @@
 import type { RepositoryCheckout } from './RepositoryMenuItems'
-import type { BranchGroup } from './WorkspaceTabTree'
+import type { BranchGroup } from './workspaceTabTree.model'
 import { compositeKey } from './branchKeys'
 
 /**

@@ -297,6 +297,29 @@ export function descendantAgentTabs(tabs: readonly Tab[], agentId: string): Agen
 }
 
 /**
+ * Whether this tab is a SUBAGENT transcript rather than a root agent.
+ *
+ * `parentAgentId` is the link, and it is set only for a virtual child agent
+ * (see AgentTab). A non-agent tab and an absent tab both answer false, so a
+ * caller that holds a lookup result passes it straight in.
+ *
+ * Two paths write the link. `openSubagentTab` seeds it from the registry row
+ * when it places the tab, and `listAgents` hydration confirms it
+ * (AgentInfo.parent_agent_id). So a child this client opened answers true from
+ * its first frame.
+ *
+ * One window remains, and it belongs to a tab this client did NOT place: a
+ * child restored from the CRDT after a reload carries no link until its
+ * hydration reply lands, because tab metadata is in-memory. This predicate
+ * answers false there, which reads as "root". A caller for which that answer is
+ * harmful must ask whether the tab is hydrated as well -- see `isSubagent` in
+ * UseAgentSettledOpts, which distinguishes "root" from "not known yet".
+ */
+export function isSubagentTab(tab: { type: TabType, parentAgentId?: string } | undefined): boolean {
+  return tab?.type === TabType.AGENT && !!tab.parentAgentId
+}
+
+/**
  * Whether an agent tab accepts a user message (its composer is enabled). Roots
  * always accept. Children accept only when their feeding provider can steer a
  * subagent conversation (acceptsMessages === true); a non-steerable child is a

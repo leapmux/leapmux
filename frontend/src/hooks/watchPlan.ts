@@ -18,7 +18,7 @@ import {
   WatchMode,
   WatchRejectionReason,
 } from '~/generated/proto/leapmux/v1/workspace_pb'
-import { rootAgentIdFor } from '~/stores/tab.helpers'
+import { isSubagentTab, rootAgentIdFor } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 
 export interface WatchPlan {
@@ -150,7 +150,7 @@ export function buildWatchPlans(
       // under the root id, so subscribe to it with NOTIFY. Skip when the root
       // is already watched (the root tab itself is placed, or a sibling child
       // already added it).
-      if (getAgentTab && tab.parentAgentId) {
+      if (getAgentTab && isSubagentTab(tab)) {
         const rootId = rootAgentIdFor(getAgentTab, tab.id)
         if (rootId !== tab.id && !seen.has(rootId)) {
           plan.agents.push(agentWatchEntry(rootId, 0n, 0n, WatchMode.NOTIFY))

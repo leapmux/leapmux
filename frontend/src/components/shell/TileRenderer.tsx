@@ -49,7 +49,7 @@ import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { insertIntoAgentEditor, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabToInfo, isSteerableAgentTab } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSteerableAgentTab, isSubagentTab } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { warningText } from '~/styles/shared.css'
@@ -970,7 +970,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 >
                   <ChatView
                     agentId={agentId}
-                    isChildTranscript={!!view.getAgentTab(agentId)?.parentAgentId}
+                    isChildTranscript={isSubagentTab(agent())}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.streamingText.get(agentId)}

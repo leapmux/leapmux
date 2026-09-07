@@ -1984,6 +1984,28 @@ describe('extracted handleAgentEvent arm handlers', () => {
       })
     })
 
+    it('keeps the parent WORKING when its subagent settles', () => {
+      createRoot((dispose) => {
+        // The ThinkingIndicator reads isBusy for the tab's OWN agent id, and a
+        // subagent's activity carries the CHILD's id. A settle that moved the
+        // parent's answer would drop the spinner on a main agent whose turn is
+        // still in flight -- the subagent is one step of that turn.
+        const tabs = makeTabStores()
+        tabs.addAgent('root-1')
+        tabs.addAgent('child-1', { parentAgentId: 'root-1' })
+        const activity = createAgentActivityStore()
+        const stores = activityStores(tabs, activity)
+
+        handleActivityChanged('root-1', { state: AgentActivityState.WORKING }, stores, 'live')
+        handleActivityChanged('child-1', { state: AgentActivityState.WORKING }, stores, 'live')
+        handleActivityChanged('child-1', { state: AgentActivityState.IDLE }, stores, 'live')
+
+        expect(activity.isBusy('child-1')).toBe(false)
+        expect(activity.isBusy('root-1'), 'the parent owes the user a reply').toBe(true)
+        dispose()
+      })
+    })
+
     it('rings once when the same idle report arrives twice', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()

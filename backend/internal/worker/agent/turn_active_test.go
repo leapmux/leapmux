@@ -154,6 +154,37 @@ func TestCodexTurnActive_ReadsTurnIDNotTheInheritedPromptActive(t *testing.T) {
 	assert.True(t, last, "the published state comes from turnID")
 }
 
+func TestCodexTurnActive_ChildThreadCompletionLeavesTheRootTurnOpen(t *testing.T) {
+	t.Parallel()
+
+	// A collab child ends its own turn while the main thread keeps working.
+	// The root's flag is what the MAIN tab's thinking indicator reads, so
+	// clearing it here would report the agent finished while the root still runs.
+	// Claude's forwarded-subagent result is pinned the same way above.
+	sink := &recordingControlSink{}
+	a := newCodexAgentWithSink(sink)
+
+	handleCodexOutput(a, parseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`)))
+	require.Equal(t, []bool{true}, sink.TurnActives())
+
+	// A REGISTERED child: the spawn puts child-1 in the child index, so its
+	// completion routes into the child transcript.
+	spawn := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-42","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(a, parseLine([]byte(spawn)))
+	handleCodexOutput(a, parseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c1"}}}`)))
+	handleCodexOutput(a, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-c1","status":"completed"}}}`)))
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "a registered child's turn end is not the root's")
+
+	// An UNREGISTERED thread takes the other branch of the same test -- a late
+	// receiver the spawn never named -- and must not clear the root either.
+	handleCodexOutput(a, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"stranger","turn":{"id":"turn-x","status":"completed"}}}`)))
+	assert.Equal(t, []bool{true}, sink.TurnActives(), "an unknown thread is still not the main thread")
+
+	// The main thread's own completion is what ends the root's turn.
+	handleCodexOutput(a, parseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-42","status":"completed"}}}`)))
+	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+}
+
 // --- Pi ----------------------------------------------------------------------
 
 func TestPiTurnActive_StaysOpenAcrossAnAutoRetry(t *testing.T) {
@@ -162,7 +193,7 @@ func TestPiTurnActive_StaysOpenAcrossAnAutoRetry(t *testing.T) {
 	// Pi restarts a failed run itself. The turn stays open for the whole
 	// backoff, where nothing streams and no envelope arrives -- and a client
 	// that inferred idleness there would drop the spinner and hide the Interrupt
-	// button on a run that is still going.
+	// button on a run that is not finished.
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 

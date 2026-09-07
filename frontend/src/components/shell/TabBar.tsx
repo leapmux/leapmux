@@ -22,6 +22,7 @@ import { createContextMenuAnchor, DropdownMenu, DropdownMenuCheckableItem } from
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { NewTabMenuItems } from '~/components/common/NewTabMenuItems'
 import { providerButton } from '~/components/common/NewTabMenuItems.css'
+import { NotificationDot } from '~/components/common/NotificationDot'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -480,7 +481,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
           <TabRenameInput tab={tab} />
         </Show>
         <Show when={tab().hasNotification}>
-          <span class={styles.tabNotification} data-testid="tab-notification" />
+          <NotificationDot testId="tab-notification" />
         </Show>
         <Show when={terminalProgressVisible(tab())}>
           <span
@@ -832,7 +833,7 @@ export const TabBar: Component<TabBarProps> = (props) => {
                         </span>
                         <span class={styles.mobileClippedLabel}>{tabDisplayLabel(tab())}</span>
                         <Show when={tab().hasNotification}>
-                          <span class={styles.tabNotification} data-testid="tab-notification" />
+                          <NotificationDot testId="tab-notification" />
                         </Show>
                       </>
                     )}

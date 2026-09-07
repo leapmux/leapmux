@@ -6,7 +6,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
 import { isActiveBackgroundTaskStatus } from '~/stores/chatBackgroundTasks'
-import { tabDisplayLabel } from '~/stores/tab.helpers'
+import { isSubagentTab, tabDisplayLabel } from '~/stores/tab.helpers'
 
 const log = createLogger('tabBusyProbe')
 
@@ -50,7 +50,7 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
     // A subagent tab closes in the UI only: the worker treats CloseAgent on a
     // child as tab-close-only, the transcript survives and the tab can be
     // revived. Nothing stops, so there is nothing to warn about.
-    if (tab.type !== TabType.AGENT || tab.parentAgentId)
+    if (tab.type !== TabType.AGENT || isSubagentTab(tab))
       return null
     // interruptsWork, not isBusy. They differ for an agent blocked on a
     // permission prompt: the indicator must not spin at somebody who is being

@@ -1,5 +1,5 @@
 import type { RepoCheckout } from './repoCheckouts'
-import type { BranchGroup } from './WorkspaceTabTree'
+import type { BranchGroup } from './workspaceTabTree.model'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
