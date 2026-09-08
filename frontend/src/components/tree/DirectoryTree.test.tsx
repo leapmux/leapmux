@@ -1415,6 +1415,47 @@ describe('directoryTree expandPath', () => {
     expect(expandedPaths()).toEqual([root, `${root}/home`])
   })
 
+  /**
+   * The picker's Home button does exactly this pair, in this order.
+   *
+   * Selecting a home directory on another Windows drive re-roots the tree, and
+   * a new root REPLACES the expansion state wholesale. The write therefore has
+   * to land after that replacement, which it does because a signal write runs
+   * the whole update cycle before it returns.
+   */
+  it('survives a root change made in the same tick', async () => {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === 'C:\\')
+        return oneListing([dirEntry('C:\\', 'Users', '\\')])
+      return oneListing([dirEntry('D:\\', 'work', '\\')])
+    })
+    const [treeRoot, setTreeRoot] = createSignal('D:\\')
+    let handle!: DirectoryTreeHandle
+    const captureHandle = (h: DirectoryTreeHandle) => {
+      handle = h
+    }
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={treeRoot()}
+        selectedPath=""
+        onSelect={() => {}}
+        ref={captureHandle}
+      />
+    ))
+    await waitFor(() => expect(rowFor('work')).toBeTruthy())
+
+    setTreeRoot('C:\\')
+    handle.expandPath('C:\\Users')
+    await settle()
+
+    const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(
+      `${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`,
+    )
+    expect(Object.keys(stored?.expandedPaths ?? {}).sort()).toEqual(['C:\\', 'C:\\Users'])
+  })
+
   // An empty path names no node. The key would persist, and no chevron could
   // ever collapse it again.
   it('ignores an empty path instead of persisting a key for it', async () => {
@@ -1431,5 +1472,192 @@ describe('directoryTree expandPath', () => {
     await settle()
 
     expect(expandedPaths()).toEqual([root])
+  })
+})
+
+describe('directoryTree keyboard navigation', () => {
+  const root = '/aria'
+
+  /**
+   * Two directories at the root, one of them holding a file.
+   *
+   * Both children are directories on purpose: the visible order is then a
+   * plain name sort, whatever the comparator does with files. `inner.txt`
+   * gives the walk a row that IS in the DOM while its parent is closed.
+   */
+  function mockTree() {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === `${root}/alpha`)
+        return oneListing([entry(`${root}/alpha`, 'inner.txt')])
+      if (req.path === `${root}/beta`)
+        return oneListing([])
+      return oneListing([dirEntry(root, 'alpha'), dirEntry(root, 'beta')])
+    })
+  }
+
+  function treeEl(): HTMLElement {
+    return document.querySelector('[role="tree"]') as HTMLElement
+  }
+
+  function rootRow(): HTMLElement {
+    return document.querySelector('[data-testid="tree-root-node"]') as HTMLElement
+  }
+
+  // Dispatched on the focused row, not on the container, so it travels the
+  // path a browser gives it and the delegation is under test too.
+  function press(key: string) {
+    fireEvent.keyDown(document.activeElement ?? treeEl(), { key })
+  }
+
+  async function renderReady(props: Record<string, unknown> = {}) {
+    mockTree()
+    renderTree({ rootPath: root, ...props })
+    await waitFor(() => expect(rowFor('alpha')).toBeTruthy())
+    await settle()
+  }
+
+  it('marks the tree, its rows and its groups', async () => {
+    await renderReady()
+
+    expect(treeEl()).toBeTruthy()
+    expect(rootRow().getAttribute('role')).toBe('treeitem')
+    expect(rootRow().getAttribute('aria-expanded')).toBe('true')
+    expect(rootRow().getAttribute('aria-level')).toBe('1')
+
+    expect(rowFor('alpha')!.getAttribute('role')).toBe('treeitem')
+    expect(rowFor('alpha')!.getAttribute('aria-expanded')).toBe('false')
+    expect(rowFor('alpha')!.getAttribute('aria-level')).toBe('2')
+    expect(document.querySelectorAll('[role="group"]').length).toBeGreaterThan(0)
+  })
+
+  // A row that can never open must say nothing about expansion, or a screen
+  // reader announces the file as a collapsed directory.
+  it('leaves aria-expanded off a file row', async () => {
+    await renderReady()
+    rootRow().focus()
+    press('ArrowDown')
+    press('ArrowRight')
+    await waitFor(() => expect(rowFor('inner.txt')).toBeTruthy())
+
+    expect(rowFor('inner.txt')!.hasAttribute('aria-expanded')).toBe(false)
+    expect(rowFor('inner.txt')!.getAttribute('aria-level')).toBe('3')
+  })
+
+  // A tree is ONE stop in the page's tab order.
+  it('holds exactly one tab stop, on the root until a row takes focus', async () => {
+    await renderReady()
+
+    let stops = document.querySelectorAll('[role="treeitem"][tabindex="0"]')
+    expect(stops).toHaveLength(1)
+    expect(stops[0]).toBe(rootRow())
+
+    rootRow().focus()
+    press('ArrowDown')
+
+    stops = document.querySelectorAll('[role="treeitem"][tabindex="0"]')
+    expect(stops).toHaveLength(1)
+    expect(stops[0]).toBe(rowFor('alpha'))
+  })
+
+  it('steps through the VISIBLE rows, not the rendered ones', async () => {
+    await renderReady()
+    rootRow().focus()
+
+    press('ArrowDown')
+    expect(document.activeElement).toBe(rowFor('alpha'))
+
+    // Open it and close it again, so its child stays RENDERED while hidden.
+    // That is the row a walk of the DOM would step into: it sits between
+    // `alpha` and `beta` there, and nowhere on screen.
+    press('ArrowRight')
+    await waitFor(() => expect(rowFor('inner.txt')).toBeTruthy())
+    press('ArrowLeft')
+    await waitFor(() => expect(rowFor('alpha')!.getAttribute('aria-expanded')).toBe('false'))
+    expect(rowFor('inner.txt')).toBeTruthy()
+
+    press('ArrowDown')
+    expect(document.activeElement).toBe(rowFor('beta'))
+
+    // The last row: the focus stays rather than wrapping.
+    press('ArrowDown')
+    expect(document.activeElement).toBe(rowFor('beta'))
+
+    press('ArrowUp')
+    expect(document.activeElement).toBe(rowFor('alpha'))
+  })
+
+  it('opens with ArrowRight, descends on the second press, and closes with ArrowLeft', async () => {
+    await renderReady()
+    rootRow().focus()
+    press('ArrowDown')
+
+    // The first press opens the directory and does NOT move the focus.
+    press('ArrowRight')
+    await waitFor(() => expect(rowFor('alpha')!.getAttribute('aria-expanded')).toBe('true'))
+    expect(document.activeElement).toBe(rowFor('alpha'))
+
+    // The listing lands after the expansion, so the child row is not there
+    // the moment the directory reports itself open.
+    await waitFor(() => expect(rowFor('inner.txt')).toBeTruthy())
+    press('ArrowRight')
+    expect(document.activeElement).toBe(rowFor('inner.txt'))
+
+    // A row that cannot close moves to its parent instead.
+    press('ArrowLeft')
+    expect(document.activeElement).toBe(rowFor('alpha'))
+
+    press('ArrowLeft')
+    expect(rowFor('alpha')!.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(rowFor('alpha'))
+  })
+
+  it('jumps to the first and last visible rows with Home and End', async () => {
+    await renderReady()
+    rootRow().focus()
+
+    press('End')
+    expect(document.activeElement).toBe(rowFor('beta'))
+
+    press('Home')
+    expect(document.activeElement).toBe(rootRow())
+  })
+
+  it('activates the focused row on Enter, exactly as a click does', async () => {
+    const onSelect = vi.fn()
+    await renderReady({ onSelect })
+    rootRow().focus()
+    press('ArrowDown')
+
+    press('Enter')
+
+    // A click both selects and toggles, so Enter must do both too. It awaits
+    // the listing before it selects, so this cannot be a synchronous check.
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(`${root}/alpha`))
+    expect(rowFor('alpha')!.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  // The tab stop cannot name a row that is no longer on screen, or the tree
+  // drops out of the tab order entirely.
+  it('returns the tab stop to the root when the focused row is collapsed away', async () => {
+    let handle!: DirectoryTreeHandle
+    const captureHandle = (h: DirectoryTreeHandle) => {
+      handle = h
+    }
+    await renderReady({ ref: captureHandle })
+    rootRow().focus()
+    press('ArrowDown')
+    press('ArrowRight')
+    await waitFor(() => expect(rowFor('inner.txt')).toBeTruthy())
+    press('ArrowRight')
+    expect(document.activeElement).toBe(rowFor('inner.txt'))
+
+    // Collapse All, which is the one way to close the directory under the
+    // focused row: ArrowLeft would move to the parent before it closed it.
+    handle.collapseAll()
+    await settle()
+
+    const stops = document.querySelectorAll('[role="treeitem"][tabindex="0"]')
+    expect(stops).toHaveLength(1)
+    expect(stops[0]).toBe(rootRow())
   })
 })

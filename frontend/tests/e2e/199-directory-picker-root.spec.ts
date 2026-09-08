@@ -84,11 +84,12 @@ test.describe('Directory picker root', () => {
     // box tildifies a path under the home directory, and the home directory
     // itself is the shortest such path.
     await expect(page.getByPlaceholder('Enter path...')).toHaveValue(/^(~|\/(home|Users|root)\/)/)
-    await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(1)
+    const homeRow = page.locator('[data-testid="tree-row"][data-active="true"]:visible')
+    await expect(homeRow).toHaveCount(1)
 
-    // That the button also OPENS the directory is asserted in
-    // `DirectoryTree.test.tsx`, against the tree's expansion state. Here it
-    // would need the Worker's home directory to hold a child, which no CI host
-    // guarantees.
+    // The button OPENS the directory as well as selecting it. The row states
+    // that itself, so this needs no child under the Worker's home directory --
+    // which no CI host guarantees.
+    await expect(homeRow).toHaveAttribute('aria-expanded', 'true')
   })
 })

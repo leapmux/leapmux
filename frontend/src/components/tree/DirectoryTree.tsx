@@ -192,6 +192,29 @@ interface TreeContextValue {
    */
   refetchChildren: (path: string) => Promise<void>
   isTruncated: (path: string) => boolean
+  /**
+   * The one row that holds a tab stop.
+   *
+   * A tree is ONE stop in the page's tab order, so every row carries
+   * `tabindex="-1"` except this one. It follows the last focused row, and
+   * falls back to the selection, then to the root, when that row goes away
+   * with the directory that held it.
+   */
+  tabStopPath: () => string
+  /** Move the tab stop, and the DOM focus, to one row. */
+  focusRow: (path: string) => void
+  /** Record the row the browser just focused, so the tab stop follows it. */
+  noteRowFocus: (path: string) => void
+  /** Register a row's element, or forget it with `undefined`. */
+  registerRow: (path: string, el: HTMLElement | undefined) => void
+}
+
+/** One row of {@link visibleRows}: what the keyboard pattern needs, and no more. */
+interface VisibleRow {
+  path: string
+  isDir: boolean
+  /** The directory that renders this row, or undefined for the root row. */
+  parent: string | undefined
 }
 
 const TreeContext = createStableContext<TreeContextValue>('tree/DirectoryTree')
@@ -281,6 +304,8 @@ const TreeNode: Component<{
     tree.comparator(),
   ))
   const loaded = () => tree.getChildren(props.node.path) !== undefined
+  // The registry outlives this row, so the row takes its entry with it.
+  onCleanup(() => tree.registerRow(props.node.path, undefined))
 
   const doScroll = () => {
     const container = tree.scrollContainer
@@ -496,6 +521,7 @@ const TreeNode: Component<{
         ref={(el) => {
           nodeRef = el
           setNodeEl(el)
+          tree.registerRow(props.node.path, el)
         }}
         class={styles.node}
         classList={{ [styles.nodeSelected]: isSelected() }}
@@ -505,6 +531,15 @@ const TreeNode: Component<{
         data-active={isSelected() ? 'true' : 'false'}
         style={{ 'padding-left': indent() }}
         data-testid="tree-row"
+        role="treeitem"
+        // Omitted for a file. `aria-expanded` on a row that can never open
+        // announces it as a directory that happens to be closed.
+        aria-expanded={props.node.isDir ? expanded() : undefined}
+        aria-selected={isSelected()}
+        // The root row is level 1, so a depth-0 child is level 2.
+        aria-level={props.depth + 2}
+        tabIndex={tree.tabStopPath() === props.node.path ? 0 : -1}
+        onFocus={() => tree.noteRowFocus(props.node.path)}
         onClick={toggle}
       >
         <Show
@@ -568,7 +603,7 @@ const TreeNode: Component<{
       </Show>
       <Show when={loaded()}>
         <div ref={childrenRef} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: expanded() && !loading() }}>
-          <div class={styles.childrenInner}>
+          <div class={styles.childrenInner} role="group">
             <For each={children()}>
               {child => (
                 <TreeNode
@@ -851,6 +886,148 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     return visibleSortedChildren(all, showHidden(), props.isVisible, comparator())
   })
 
+  // -------------------------------------------------------------------------
+  // Keyboard navigation — the WAI-ARIA tree pattern
+  // -------------------------------------------------------------------------
+
+  /**
+   * Every row the user can see, in the order the tree renders them.
+   *
+   * NOT the DOM order. A collapsed directory still renders its children and
+   * hides them with `visibility: hidden`, so a walk of the DOM would step into
+   * rows that are not on screen. This walk stops at a directory the store
+   * calls closed, and it filters and sorts each level exactly as the render
+   * does, so the two orders cannot drift.
+   */
+  const visibleRows = createMemo<VisibleRow[]>(() => {
+    const rp = rootPath()
+    const rows: VisibleRow[] = [{ path: rp, isDir: true, parent: undefined }]
+    const hidden = showHidden()
+    const visible = props.isVisible
+    const compare = comparator()
+    const walk = (parent: string) => {
+      const all = getChildren(parent)
+      if (!all)
+        return
+      for (const child of visibleSortedChildren(all, hidden, visible, compare)) {
+        rows.push({ path: child.path, isDir: child.isDir, parent })
+        if (child.isDir && isNodeExpanded(child.path))
+          walk(child.path)
+      }
+    }
+    // Unconditional, because the root row renders its children whatever the
+    // store holds for it. It is open by definition.
+    walk(rp)
+    return rows
+  })
+
+  const rowEls = new Map<string, HTMLElement>()
+  const registerRow = (path: string, el: HTMLElement | undefined) => {
+    if (el)
+      rowEls.set(path, el)
+    else
+      rowEls.delete(path)
+  }
+
+  const [focusedPath, setFocusedPath] = createSignal('')
+  const tabStopPath = createMemo(() => {
+    const rows = visibleRows()
+    const onScreen = (path: string) => !!path && rows.some(r => r.path === path)
+    if (onScreen(focusedPath()))
+      return focusedPath()
+    if (onScreen(props.selectedPath))
+      return props.selectedPath
+    return rootPath()
+  })
+
+  const focusRow = (path: string) => {
+    setFocusedPath(path)
+    // `isConnected` covers a row replaced between the walk and this call.
+    // Focus on a detached element does nothing at all, and says nothing.
+    const el = rowEls.get(path)
+    if (el?.isConnected)
+      el.focus()
+  }
+
+  // The root row has no chevron and cannot close, so it reports open whatever
+  // the store says about it.
+  const rowIsOpen = (row: VisibleRow) => row.path === rootPath() || isNodeExpanded(row.path)
+
+  const onTreeKeyDown = (e: KeyboardEvent) => {
+    const rows = visibleRows()
+    const index = rows.findIndex(r => r.path === tabStopPath())
+    if (index < 0)
+      return
+    const row = rows[index]
+    switch (e.key) {
+      case 'ArrowDown':
+        if (index + 1 < rows.length) {
+          e.preventDefault()
+          focusRow(rows[index + 1].path)
+        }
+        break
+      case 'ArrowUp':
+        if (index > 0) {
+          e.preventDefault()
+          focusRow(rows[index - 1].path)
+        }
+        break
+      case 'ArrowRight': {
+        if (!row.isDir)
+          break
+        e.preventDefault()
+        if (!rowIsOpen(row)) {
+          setNodeExpanded(row.path, true)
+          break
+        }
+        // Open already, so the key means "go inside". The first child is the
+        // next row by construction: the walk emits it immediately after.
+        const first = rows[index + 1]
+        if (first?.parent === row.path)
+          focusRow(first.path)
+        break
+      }
+      case 'ArrowLeft':
+        e.preventDefault()
+        if (row.isDir && rowIsOpen(row) && row.path !== rootPath()) {
+          setNodeExpanded(row.path, false)
+          break
+        }
+        if (row.parent)
+          focusRow(row.parent)
+        break
+      case 'Home':
+        e.preventDefault()
+        focusRow(rows[0].path)
+        break
+      case 'End':
+        e.preventDefault()
+        focusRow(rows[rows.length - 1].path)
+        break
+      case 'Enter':
+      case ' ': {
+        e.preventDefault()
+        // The row's OWN click handler, never a copy of it. A click selects and
+        // toggles together, and the two input methods must not drift apart.
+        const el = rowEls.get(row.path)
+        if (el?.isConnected)
+          el.click()
+        break
+      }
+    }
+  }
+
+  // The root row's element, registered under the CURRENT root. `rootPath` can
+  // change under a mounted tree, and a ref callback fires once per element.
+  createEffect(() => {
+    const el = rootNodeEl()
+    const rp = rootPath()
+    if (!el)
+      return
+    registerRow(rp, el)
+    onCleanup(() => registerRow(rp, undefined))
+  })
+
   /**
    * The root row's own modification time, for its three-dot menu.
    *
@@ -963,6 +1140,10 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     ensureChildren,
     refetchChildren,
     isTruncated,
+    tabStopPath,
+    focusRow,
+    noteRowFocus: (path: string) => setFocusedPath(path),
+    registerRow,
   }
 
   return (
@@ -970,7 +1151,15 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       <div class={styles.container}>
         <div class={styles.tree} ref={treeRef}>
           <Switch fallback={(
-            <div class={styles.treeInner}>
+            // One key handler for the whole tree, because a tree is ONE tab
+            // stop: the row that holds it is the row the keys act on, and it
+            // is reachable from here without a listener on every row.
+            <div
+              class={styles.treeInner}
+              role="tree"
+              aria-label="Directory tree"
+              onKeyDown={onTreeKeyDown}
+            >
               {/* Root directory row */}
               <div
                 ref={setRootNodeEl}
@@ -979,6 +1168,14 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 data-active={props.selectedPath === rootPath() ? 'true' : 'false'}
                 style={{ 'padding-left': '8px' }}
                 data-testid="tree-root-node"
+                role="treeitem"
+                // Always open: this row has no chevron, and it renders its
+                // children whenever it has them.
+                aria-expanded={true}
+                aria-selected={props.selectedPath === rootPath()}
+                aria-level={1}
+                tabIndex={tabStopPath() === rootPath() ? 0 : -1}
+                onFocus={() => setFocusedPath(rootPath())}
                 onClick={() => props.onSelect(rootPath())}
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
@@ -998,7 +1195,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               </div>
               <Show when={rootChildren() !== undefined}>
                 <div class={`${styles.childrenWrapper} ${styles.childrenWrapperExpanded}`}>
-                  <div class={styles.childrenInner}>
+                  <div class={styles.childrenInner} role="group">
                     <Show
                       when={rootChildren()!.length > 0}
                       fallback={<div class={emptyState}>{props.isVisible ? 'No changes' : 'Empty directory'}</div>}

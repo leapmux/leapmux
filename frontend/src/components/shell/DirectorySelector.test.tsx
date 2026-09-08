@@ -382,6 +382,29 @@ describe('directorySelector home button', () => {
     expect(expandTreePath).not.toHaveBeenCalled()
   })
 
+  // The home directory can live on a drive the picker is not showing. The
+  // selection is what re-roots the tree, which is the other reason the button
+  // selects before it expands.
+  it('re-roots onto the home drive when the home directory is on another one', async () => {
+    workerOs.mockReturnValue('windows')
+    workerHome.mockReturnValue('C:\\Users\\alice')
+    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+
+    const [workingDir, setWorkingDir] = createSignal('D:\\work')
+    const { state, tree } = makeState()
+    state.workingDir = workingDir
+    state.setWorkingDir = vi.fn((path: string) => setWorkingDir(path))
+    render(withPreferences(() => (
+      <DirectorySelector state={state as any} tree={tree as any} repoGitStore={createRepoGitStore()} />
+    )))
+    await waitFor(() => expect(screen.getByTestId('directory-tree').getAttribute('data-root-path')).toBe('D:\\'))
+
+    fireEvent.click(screen.getByTestId('directory-selector-home'))
+
+    await waitFor(() => expect(screen.getByTestId('directory-tree').getAttribute('data-root-path')).toBe('C:\\'))
+    expect(tree.expandTreePath).toHaveBeenCalledWith('C:\\Users\\alice')
+  })
+
   it('sits between the hidden-files toggle and the refresh button', () => {
     renderSelector()
 
